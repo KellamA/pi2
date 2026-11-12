@@ -67,7 +67,8 @@ struct BackgroundSettings: View {
     var body: some View {
         Section {
             Toggle("Keep agents running after I quit pi²", isOn: $keepEngine)
-            Toggle("Start the engine when I log in", isOn: Binding(get: { atLogin }, set: setLoginItem))
+            // A closure, not the method itself: Swift 6.3 (Xcode 26) crashes turning a method into a binding's setter.
+            Toggle("Start the engine when I log in", isOn: Binding(get: { atLogin }, set: { setLoginItem($0) }))
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
         } header: {
             Text("In the background")
