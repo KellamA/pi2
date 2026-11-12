@@ -106,8 +106,10 @@ struct Item: Codable, Identifiable, Equatable {
     var name: String?
     var isError: Bool?
     var details: JSONValue?
-    /// How many pictures a tool result holds; they are fetched when shown, not sent with the transcript.
+    /// How many pictures a tool result or a message holds; they are fetched when shown, not sent with the transcript.
     var images: Int?
+    /// What a message was sent with: its pictures and files, by name.
+    var attachments: [AttachmentNote]?
 }
 
 struct PartialAnswer: Codable, Equatable {
@@ -153,6 +155,7 @@ struct QueuedInput: Codable, Equatable, Identifiable {
     let id: Int
     let mode: String
     let text: String
+    var attachments: [AttachmentNote]? = nil
 }
 
 struct AgentInfo: Codable, Equatable {
@@ -452,6 +455,21 @@ struct ConversationData: Equatable {
 
 struct EndpointModel: Codable, Equatable, Hashable {
     let id: String
+    var name: String? = nil
+    var contextWindow: Int? = nil
+    var reasoning: Bool? = nil
+    /// Whether the person marked the model as able to see pictures.
+    var vision: Bool? = nil
+
+    /// What the engine's `endpoints.save` takes; fields that are not set are left out.
+    var payload: [String: Any] {
+        var result: [String: Any] = ["id": id]
+        if let name { result["name"] = name }
+        if let contextWindow { result["contextWindow"] = contextWindow }
+        if let reasoning { result["reasoning"] = reasoning }
+        if vision == true { result["vision"] = true }
+        return result
+    }
 }
 
 struct EndpointConfig: Codable, Equatable {
@@ -497,6 +515,8 @@ struct ModelInfo: Codable, Equatable, Identifiable {
     let contextWindow: Int
     /// Left out of the model pickers by the choice made in Settings.
     var hidden: Bool? = nil
+    /// Whether the model can be sent pictures. Nil from an engine that does not say.
+    var vision: Bool? = nil
 
     var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
 }

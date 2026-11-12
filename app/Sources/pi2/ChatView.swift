@@ -7,6 +7,9 @@ struct ChatView: View {
 
     @State private var draft = ""
     @State private var steer = true
+    /// Pictures and files waiting to go with the draft.
+    @State private var attachments = ComposerAttachments()
+    @State private var dropTargeted = false
     @FocusState private var composerFocused: Bool
 
     private var data: ConversationData { engine.open[id] ?? ConversationData() }
@@ -67,6 +70,13 @@ struct ChatView: View {
             composer
         }
         .background(Theme.window)
+        // Files and pictures dropped anywhere on the conversation are attached to the draft.
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
+            attachments.add(dropped: providers)
+            composerFocused = true
+            return true
+        }
+        .overlay { if dropTargeted { DropHighlight() } }
         .navigationTitle(title)
         .navigationSubtitle(subtitle)
         .toolbar {
@@ -106,7 +116,7 @@ struct ChatView: View {
                     ForEach(queued) { item in
                         HStack(spacing: 6) {
                             Text(item.mode == "steer" ? "Steering" : "Queued").foregroundStyle(Theme.tx3)
-                            Text(item.text).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
+                            Text(item.summary).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
                             Button("Remove", systemImage: "xmark") {
                                 engine.perform("withdraw", ["submissionId": item.id])
                             }
@@ -133,8 +143,15 @@ struct ChatView: View {
         return parent == nil ? "Message \(agentName)…" : "Message \(agentName) directly…"
     }
 
+    /// The conversation's model, when it is known not to take pictures.
+    private var blindModel: String? {
+        guard let ref = state?.agent.model, let model = engine.allModels.first(where: { $0.ref == ref }), model.vision == false else { return nil }
+        return model.name
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
+            AttachmentStrip(attachments: attachments, blindModel: blindModel)
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
@@ -143,7 +160,18 @@ struct ChatView: View {
                 .onSubmit(send)
                 .accessibilityIdentifier("composer")
                 .padding(.horizontal, 2).padding(.top, 2)
+                // ⌘V with a picture, files or a very long text on the pasteboard attaches them.
+                .background(PasteCatcher(active: composerFocused, dragging: dropTargeted) { attachments.paste() })
             HStack(spacing: 8) {
+                Button("Attach", systemImage: "paperclip") {
+                    attachments.chooseFiles()
+                    composerFocused = true
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.tx2)
+                .help("Attach pictures or files. You can also paste them, or drop them on the conversation.")
+                .accessibilityLabel("Attach Files")
                 if let agent = engine.agent(state?.agent.agentId) {
                     HStack(spacing: 6) {
                         AgentAvatar(agent: agent, size: 16)
@@ -183,17 +211,23 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        engine.status == .connected && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Attachments can be the whole message. One still being read, or one the model cannot take, holds it back.
+        let hasContent = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.ready.isEmpty
+        return engine.status == .connected && hasContent && !attachments.isReading && attachments.problem(blindModel: blindModel) == nil
     }
 
     private func send() {
         guard canSend else { return }
         let text = draft
+        let carried = attachments.takeReady()
         let steering = busy && steer
         draft = ""
         Task {
-            // A refused message goes back in the box rather than being lost.
-            if await !engine.submit(text, to: id, steer: steering), draft.isEmpty { draft = text }
+            // A refused message goes back in the box, with what it carried, rather than being lost.
+            if await !engine.submit(text, attachments: carried.compactMap(\.payload), to: id, steer: steering) {
+                if draft.isEmpty { draft = text }
+                attachments.restore(carried)
+            }
         }
     }
 }
@@ -434,11 +468,17 @@ struct TranscriptView: View {
                     case "user":
                         HStack {
                             Spacer(minLength: 120)
-                            Text(item.text)
-                                .textSelection(.enabled)
-                                .lineSpacing(2)
-                                .padding(.horizontal, 13).padding(.vertical, 9)
-                                .background(Theme.card2, in: UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 4, topTrailingRadius: 14, style: .continuous))
+                            VStack(alignment: .trailing, spacing: 6) {
+                                SentAttachments(engine: engine, conversationID: conversationID, item: item)
+                                // A message can be attachments alone.
+                                if !item.text.isEmpty {
+                                    Text(item.text)
+                                        .textSelection(.enabled)
+                                        .lineSpacing(2)
+                                        .padding(.horizontal, 13).padding(.vertical, 9)
+                                        .background(Theme.card2, in: UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 4, topTrailingRadius: 14, style: .continuous))
+                                }
+                            }
                         }
                     case "assistant":
                         AssistantRow(engine: engine, conversationID: conversationID, item: item, results: results, live: live, running: state?.busy ?? false)

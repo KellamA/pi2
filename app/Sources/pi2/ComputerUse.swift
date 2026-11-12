@@ -270,53 +270,73 @@ struct ComputerUseSection: View {
     }
 }
 
-// MARK: - Screenshots in the transcript
+// MARK: - Pictures in the transcript
 
-/// A picture an agent took, fetched from the engine when it is first shown.
+/// A picture kept with a transcript entry (a screenshot an agent took, or a picture the person attached), fetched
+/// from the engine when it is first shown.
 struct ScreenshotView: View {
     let engine: EngineClient
     let conversationID: Int
     let entryID: Int
+    /// Which of the entry's pictures.
+    var index = 0
+    /// What the picture is, for the tooltip.
+    var caption = "What the agent saw"
+    /// And for VoiceOver.
+    var label = "Screenshot the agent took"
+    /// Set to show the picture as a thumbnail this high, shaped as the picture is, instead of across the row.
+    var thumbnailHeight: CGFloat?
     @State private var image: NSImage?
     @State private var failed = false
     @State private var large = false
 
-    @MainActor private static let cache = NSCache<NSNumber, NSImage>()
+    @MainActor private static let cache = NSCache<NSString, NSImage>()
+    private var key: String { "\(entryID)/\(index)" }
 
     var body: some View {
         Group {
             if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .frame(maxHeight: large ? 640 : 240)
+                framed(Image(nsImage: image).resizable().interpolation(.high).scaledToFit(), image)
                     .clipShape(.rect(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line2))
                     .onTapGesture { withAnimation(.snappy(duration: 0.2)) { large.toggle() } }
-                    .help(large ? "What the agent saw. Click to shrink." : "What the agent saw. Click to enlarge.")
-                    .accessibilityLabel("Screenshot the agent took")
+                    .help(large ? "\(caption). Click to shrink." : "\(caption). Click to enlarge.")
+                    .accessibilityLabel(label)
             } else if failed {
                 Text("The picture could not be loaded.").font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
             } else {
-                ProgressView().controlSize(.small).frame(height: 60)
+                ProgressView().controlSize(.small).frame(width: thumbnailHeight, height: thumbnailHeight ?? 60)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .task(id: entryID) { await load() }
+        .frame(maxWidth: thumbnailHeight == nil ? .infinity : nil, alignment: .leading)
+        .task(id: key) { await load() }
+    }
+
+    @ViewBuilder
+    private func framed(_ picture: some View, _ image: NSImage) -> some View {
+        if let thumbnailHeight {
+            // Sized outright from the picture's own shape, so a row of thumbnails needs no guessing to lay out.
+            let limit = large ? CGSize(width: 560, height: 560) : CGSize(width: thumbnailHeight * 2.4, height: thumbnailHeight)
+            let width = max(image.size.width, 1), height = max(image.size.height, 1)
+            // A very small picture is shown large enough to click, and no larger.
+            let scale = min(limit.width / width, limit.height / height, max(1, 44 / height))
+            picture.frame(width: width * scale, height: height * scale)
+        } else {
+            picture.frame(maxHeight: large ? 640 : 240)
+        }
     }
 
     private func load() async {
-        if let cached = Self.cache.object(forKey: NSNumber(value: entryID)) {
+        if let cached = Self.cache.object(forKey: key as NSString) {
             image = cached
             return
         }
-        guard let result = try? await engine.call("conversation.image", ["id": conversationID, "entryId": entryID, "index": 0]),
+        guard let result = try? await engine.call("conversation.image", ["id": conversationID, "entryId": entryID, "index": index]),
               let data = result["data"]?.stringValue.flatMap({ Data(base64Encoded: $0) }), let loaded = NSImage(data: data) else {
             failed = true
             return
         }
-        Self.cache.setObject(loaded, forKey: NSNumber(value: entryID))
+        Self.cache.setObject(loaded, forKey: key as NSString)
         image = loaded
     }
 }

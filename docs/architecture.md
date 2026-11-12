@@ -29,6 +29,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/state.ts` | The app's own documents (conversation index, agents) and the Inbox |
 | `src/extensions.ts` | What pi² adds to every conversation: approvals, `ask_user`, `delegate`, `read_reference`, `computer` |
 | `src/providers.ts` | Built-in providers, custom endpoints, the scripted demo model |
+| `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
 | `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
 | `src/reference.ts` | An agent's reference files |
@@ -64,7 +65,7 @@ Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folde
 - Approvals wait inside the running engine and are asked again after a restart. pi durable ends a waiting call after five crashes in a row.
 - Whether a subscription may be used from a third-party app is up to each provider's terms.
 - With "Full access", commands run without asking. Tools always work inside the conversation's folder, or the app's own scratch folder when none is chosen.
-- A model on a custom endpoint is treated as text-only, so it gets the list of controls in computer use but not the pictures.
+- A model on a custom endpoint is treated as text-only until it is marked as able to see pictures in the endpoint's settings. Unmarked, it gets the list of controls in computer use but not the pictures, and cannot be sent attached pictures.
 - Computer use: a click at a bare point (not on a listed control) is ignored by some apps while they are in the background; the agent is told when nothing changed. Pop-up menus and apps with little accessibility support (some games, some cross-platform apps) may not be workable.
 - macOS ties the Accessibility and Screen Recording permissions to the exact build. After rebuilding a development build, remove pi² from those lists in System Settings and grant it again.
 - Anything running as you can talk to the engine's socket. With computer use on, that includes asking an agent to use the apps you allowed.

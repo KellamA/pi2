@@ -107,11 +107,14 @@ final class EngineClient {
     }
 
     /// Sends a message. Returns false, after showing why, when the engine refused it.
+    /// `attachments` are pictures and files to go with it, as `ComposerAttachments.Draft.payload` makes them.
     @discardableResult
-    func submit(_ text: String, to id: Int, steer: Bool) async -> Bool {
+    func submit(_ text: String, attachments: [[String: Any]] = [], to id: Int, steer: Bool) async -> Bool {
         do {
             // The request ID makes a resend after a lost reply harmless: the engine finds the same submission.
-            try await call("submit", ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString])
+            var params: [String: Any] = ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString]
+            if !attachments.isEmpty { params["attachments"] = attachments }
+            try await call("submit", params)
             return true
         } catch {
             lastError = error.localizedDescription
@@ -238,6 +241,8 @@ final class EngineClient {
 
     private func consume(_ data: Data) {
         buffer.append(data)
+        // A picture arrives as one long line in many pieces; only a piece with a line break can finish one.
+        guard data.contains(0x0A) else { return }
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = Data(buffer[buffer.startIndex..<newline])
             buffer.removeSubrange(buffer.startIndex...newline)
