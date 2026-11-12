@@ -18,7 +18,10 @@ final class EngineClient {
     private(set) var conversations: [ConversationSummary] = []
     private(set) var open: [Int: ConversationData] = [:]
     private(set) var providers: [ProviderInfo] = []
-    private(set) var models: [ModelInfo] = []
+    /// Every model of every connected provider, including the ones hidden in Settings.
+    private(set) var allModels: [ModelInfo] = []
+    /// The models the pickers offer.
+    var models: [ModelInfo] { allModels.filter { $0.hidden != true } }
     private(set) var defaultModel: ModelRef?
     /// Whether the first-run welcome has been completed for this data folder. Nil until the engine has said.
     private(set) var onboarded: Bool?
@@ -296,7 +299,7 @@ final class EngineClient {
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 providers = event.providers
-                models = event.models
+                allModels = event.models
                 defaultModel = event.defaultModel
                 onboarded = event.onboarded ?? true
             case "conversation":

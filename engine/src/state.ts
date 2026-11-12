@@ -1,5 +1,6 @@
 // The app's own durable state, and the in-memory list of things waiting on the person.
 
+import type { ReferenceFile } from "./reference.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { defineDoc } from "@earendil-works/pi-durable";
 
@@ -29,6 +30,8 @@ export type AgentProfile = {
 	codeMode?: boolean;
 	/** IDs of the MCP servers whose tools the agent gets. */
 	mcpServers?: string[];
+	/** Files and folders every conversation of the agent may read. */
+	files?: ReferenceFile[];
 	createdAt: number;
 };
 

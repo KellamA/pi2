@@ -92,6 +92,18 @@ struct ProvidersSettings: View {
     @State private var search = ""
     @State private var keyTarget: ProviderInfo?
     @State private var addingEndpoint = false
+    @State private var modelsTarget: ProviderInfo?
+
+    /// How many of a provider's models the pickers offer, and the button that changes it.
+    @ViewBuilder
+    private func modelsButton(_ provider: ProviderInfo) -> some View {
+        let all = engine.allModels.filter { $0.provider == provider.id }
+        if !all.isEmpty {
+            let shown = all.filter { $0.hidden != true }.count
+            Button(shown == all.count ? "Models…" : "Models (\(shown) of \(all.count))…") { modelsTarget = provider }
+                .help("Choose which of \(provider.name)'s models appear in the model menus")
+        }
+    }
 
     private var subscriptions: [ProviderInfo] {
         engine.providers.filter { $0.oauth?.subscription == true }
@@ -115,6 +127,7 @@ struct ProvidersSettings: View {
                         }
                         Spacer()
                         if provider.status?.type == "oauth" {
+                            modelsButton(provider)
                             Button("Sign Out") { engine.perform("providers.logout", ["id": provider.id]) }
                         } else {
                             Button("Sign In…") { engine.startSignIn(provider) }
@@ -136,6 +149,7 @@ struct ProvidersSettings: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        modelsButton(provider)
                         Button("Remove", role: .destructive) { engine.perform("endpoints.remove", ["id": provider.id]) }
                     }
                 }
@@ -154,6 +168,7 @@ struct ProvidersSettings: View {
                         Text(provider.name)
                         Spacer()
                         Text(provider.statusText).font(.caption).foregroundStyle(.secondary)
+                        if provider.status != nil { modelsButton(provider) }
                         if provider.status?.source == "stored credential" {
                             Button("Remove") { engine.perform("providers.logout", ["id": provider.id]) }
                         } else if provider.status == nil {
@@ -168,11 +183,90 @@ struct ProvidersSettings: View {
         .sheet(item: $keyTarget) { provider in
             KeySheet(engine: engine, provider: provider)
         }
+        .sheet(item: $modelsTarget) { provider in
+            ModelsSheet(engine: engine, provider: provider)
+        }
         .sheet(isPresented: $addingEndpoint) {
             EndpointSheet(engine: engine)
         }
         .sheet(isPresented: Binding(get: { engine.signIn != nil }, set: { if !$0 { engine.cancelSignIn() } })) {
             SignInSheet(engine: engine)
+        }
+    }
+}
+
+/// Which of one provider's models the model menus offer.
+struct ModelsSheet: View {
+    let engine: EngineClient
+    let provider: ProviderInfo
+    @State private var error: String?
+    @Environment(\.dismiss) private var dismiss
+
+    /// The sheet's own copy of the choice, so quick ticks build on each other without waiting for the engine.
+    @State private var hidden: Set<String> = []
+
+    private var models: [ModelInfo] {
+        engine.allModels.filter { $0.provider == provider.id }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    private var shown: Int { models.filter { !hidden.contains($0.id) }.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("\(provider.name) models").font(.headline)
+            Text("Ticked models appear in the model menus. A hidden model that a conversation or agent already uses keeps working.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Newest Only") { apply(["id": provider.id, "newest": true]) }
+                    .help("Keep the newest version of each model family, such as one Opus, one Sonnet and one Haiku")
+                Button("Show All") {
+                    hidden = []
+                    apply(["id": provider.id, "hidden": [String]()])
+                }
+                    .disabled(shown == models.count)
+                Spacer()
+                Text("\(shown) of \(models.count) showing").font(.callout).foregroundStyle(.secondary)
+            }
+            List(models) { model in
+                Toggle(isOn: Binding(
+                    get: { !hidden.contains(model.id) },
+                    set: { show in
+                        if show { hidden.remove(model.id) } else { hidden.insert(model.id) }
+                        apply(["id": provider.id, "hidden": hidden.sorted()])
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(model.name)
+                        Text(model.id).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                }
+                // The last model showing cannot be hidden: the menus would have nothing from this provider.
+                .disabled(!hidden.contains(model.id) && shown == 1)
+            }
+            .listStyle(.bordered)
+            .frame(height: 320)
+            if let error { Text(error).font(.callout).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .onAppear { hidden = Set(models.filter { $0.hidden == true }.map(\.id)) }
+    }
+
+    private func apply(_ params: [String: Any]) {
+        Task {
+            do {
+                let result = try await engine.call("providers.setHiddenModels", params)
+                // "Newest only" is worked out by the engine; take its answer.
+                if params["newest"] != nil, let chosen = result["hidden"]?.arrayValue { hidden = Set(chosen.compactMap(\.stringValue)) }
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+                hidden = Set(models.filter { $0.hidden == true }.map(\.id))
+            }
         }
     }
 }

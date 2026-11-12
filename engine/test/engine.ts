@@ -2,12 +2,13 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { newestOnly } from "../src/providers.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
@@ -373,6 +374,33 @@ try {
 	assert.deepEqual(client.agents.find((x) => x.id === "atlas")!.delegates, ["forge"], "deleted agents leave other agents' lists");
 	step("create, edit and delete agents");
 
+	// ---- Reference files: read on demand, whatever the tool access, and nothing outside them
+	const refs = join(home, "refs");
+	mkdirSync(join(refs, "guides"), { recursive: true });
+	writeFileSync(join(refs, "brief.md"), "The launch is on the 14th.\n");
+	writeFileSync(join(refs, "guides", "style.md"), Array.from({ length: 30 }, (_, i) => `rule ${i + 1}`).join("\n"));
+	writeFileSync(join(home, "secret.txt"), "not for agents");
+	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", files: [{ path: join(refs, "nope.md") }] } }), /Not found/);
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", files: [{ path: join(refs, "brief.md"), note: "Launch facts" }, { path: join(refs, "guides") }] } });
+	await client.until("files saved", () => (client.agents.find((x) => x.id === custom) as any)?.files?.length === 2);
+	const { id: q } = await client.call("conversation.create", { agentId: custom });
+	await client.call("conversation.open", { id: q });
+	assert.equal(client.conversations.get(q)!.state.agent.access, "none");
+	const openRef = async (path: string, results: number) => {
+		await client.call("submit", { id: q, text: `/ref ${path}` });
+		await settled(q, results);
+		return toolResults(q)[results - 1]! as any;
+	};
+	assert.match((await openRef(join(refs, "brief.md"), 1)).text, /launch is on the 14th/);
+	assert.match((await openRef(join(refs, "guides"), 2)).text, /style\.md/);
+	assert.match((await openRef("style.md", 3)).text, /rule 30/);
+	const refused = await openRef(join(home, "secret.txt"), 4);
+	assert.ok(refused.isError && !refused.text.includes("not for agents"), "a file that was not listed cannot be read");
+	assert.equal((await openRef(join(refs, "guides", "..", "..", "secret.txt"), 5)).isError, true, "nor one reached by climbing out of a folder");
+	writeFileSync(join(refs, "brief.md"), "The launch moved to the 21st.\n");
+	assert.match((await openRef("brief.md", 6)).text, /moved to the 21st/, "an edited file is read fresh");
+	step("reference files: read and listed on demand with tools off, re-read after an edit, nothing outside them");
+
 	// ---- Schedules
 	const { nextRun } = await import("../src/schedules.ts");
 	const monday9 = new Date(2026, 10, 9, 9, 0).getTime(); // a Monday, 09:00 local
@@ -523,6 +551,21 @@ try {
 	});
 	assert.deepEqual(leaked, [], "no secret on disk");
 	step("API key stored in the Keychain, not on disk; provider becomes available");
+
+	// ---- Choosing which of a provider's models show
+	const groq = () => client.models.filter((m: any) => m.provider === "groq");
+	const groqIds = groq().map((m: any) => m.id as string);
+	assert.ok(groqIds.length > 1 && groq().every((m: any) => m.hidden === false));
+	await client.call("providers.setHiddenModels", { id: "groq", hidden: groqIds.slice(1) });
+	await client.until("all but one hidden", () => groq().filter((m: any) => !m.hidden).length === 1 && groq().length === groqIds.length);
+	await assert.rejects(client.call("providers.setHiddenModels", { id: "groq", hidden: groqIds }), /at least one/);
+	await client.call("providers.setHiddenModels", { id: "groq", newest: true });
+	// Which of groq's models that hides depends on their names; the rule itself is checked below.
+	await client.until("newest only", () => groq().filter((m: any) => !m.hidden).length > 1);
+	await client.call("providers.setHiddenModels", { id: "groq", hidden: [] });
+	await client.until("all showing", () => groq().every((m: any) => !m.hidden));
+	assert.deepEqual([...newestOnly(["claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "gpt-4o", "gpt-4o-2024-05-13"])].sort(), ["claude-haiku-4-5", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-4o"]);
+	step("models can be hidden per provider, never all of them; newest-only keeps one per family");
 
 	await client.call("providers.logout", { id: "groq" });
 	await client.until("groq removed", () => client.providers.find((p) => p.id === "groq")!.status === null);

@@ -186,7 +186,7 @@ struct ContextMeter: View {
                 Text(context.window.map { "Context: \(Formats.tokens(context.used)) of \(Formats.tokens($0)) tokens" } ?? "Context: \(Formats.tokens(context.used)) tokens")
             }
             if let usage = state?.usage {
-                Text("This conversation: \(usage.costText) · \(usage.tokensText) tokens")
+                Text("This conversation: \(Formats.usage(tokens: usage.tokens, cost: usage.cost))")
             }
             Divider()
             Button("Summarise Earlier Messages") { engine.perform("conversation.compact", ["id": id]) }
@@ -224,7 +224,7 @@ struct ModelMenu: View {
 
     private var current: ModelInfo? {
         guard let ref = agent?.model else { return nil }
-        return engine.models.first { $0.ref == ref }
+        return engine.allModels.first { $0.ref == ref }
     }
 
     private var groups: [(provider: String, name: String, models: [ModelInfo])] {
@@ -340,6 +340,17 @@ extension EngineClient {
     }
 
     static func pickFolder() -> String? { chooseFolder() }
+
+    /// Files and folders for an agent to keep at hand.
+    static func pickReferenceFiles() -> [String] {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Choose files or folders this agent can always read."
+        return panel.runModal() == .OK ? panel.urls.map(\.path) : []
+    }
 
     private static func chooseFolder() -> String? {
         let panel = NSOpenPanel()
@@ -564,6 +575,7 @@ struct ToolCard: View {
             let name = named.isEmpty ? (subagent?.name ?? "agent") : named
             return call.arguments["chat"]?.intValue == nil ? "Delegate to \(name)" : "Continue with \(name)"
         case "ask_user": return "Question"
+        case "read_reference": return "Read reference file"
         case "codemode": return "Script"
         default:
             // An MCP tool reads as "Server: tool" rather than its long internal name.

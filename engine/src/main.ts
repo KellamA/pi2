@@ -33,7 +33,8 @@ import { createBackup, restoreBackup } from "./backup.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
 import { McpServers } from "./mcp.ts";
-import { DEMO_MODEL, DEMO_PROVIDER, Providers } from "./providers.ts";
+import { validateReferenceFiles } from "./reference.ts";
+import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
@@ -148,7 +149,9 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
 function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undefined) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
-	return [...files, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+	// Reference files can be read whatever the access level: the person chose them for this agent.
+	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
+	return [...files, ...reference, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -182,7 +185,7 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean; deviceId?: string } = (() => {
+const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean; deviceId?: string; hiddenModels?: Record<string, string[]> } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -280,8 +283,18 @@ type UsageDocShape = { models?: Record<string, UsageJson>; tools?: Record<string
  * it a price (PI2_DEMO_COST, dollars per million tokens) so that spend and budgets have something to count.
  */
 const demoPrice = Number(process.env.PI2_DEMO_COST ?? 0);
-const costOf = (key: string, usage: UsageJson) =>
-	key === `${DEMO_PROVIDER}/${DEMO_MODEL}` && demoPrice > 0 ? ((usage.totalTokens ?? 0) * demoPrice) / 1_000_000 : (usage.cost?.total ?? 0);
+/**
+ * Providers signed in with a subscription. pi-ai prices every answer at the model's list price, which is not what a
+ * subscription costs, so their usage counts tokens only: no dollar figure, and nothing towards the daily budget.
+ * This follows how the provider is connected now, so switching a provider between a subscription and a key
+ * re-labels its earlier usage too.
+ */
+let subscriptions = new Set<string>();
+const onSubscription = (key: string) => subscriptions.has(key.split("/")[0]!);
+const costOf = (key: string, usage: UsageJson) => {
+	if (onSubscription(key)) return 0;
+	return key === `${DEMO_PROVIDER}/${DEMO_MODEL}` && demoPrice > 0 ? ((usage.totalTokens ?? 0) * demoPrice) / 1_000_000 : (usage.cost?.total ?? 0);
+};
 const usageTotals = (usage: UsageDocShape | undefined) => {
 	let cost = 0;
 	let tokens = 0;
@@ -397,11 +410,15 @@ inbox.onChange = () => {
 };
 
 async function providersEvent() {
-	const [list, models] = await Promise.all([providers.listProviders(), providers.listModels()]);
+	const [list, all] = await Promise.all([providers.listProviders(), providers.listModels()]);
+	// Hidden models stay in the list, marked: settings shows them, the pickers leave them out, and one already in use keeps working.
+	const models = all.map((model) => ({ ...model, hidden: settings.hiddenModels?.[model.provider]?.includes(model.id) === true }));
 	return { event: "providers", providers: list, models, defaultModel: await defaultModel(), onboarded: settings.onboarded === true };
 }
 async function announceProviders(): Promise<void> {
 	broadcast(await providersEvent());
+	// Signing in or out changes which usage has a price.
+	scheduleUsageRefresh();
 }
 
 /** The model a new conversation starts with: the last one picked if it is still usable, else the demo model. */
@@ -557,6 +574,20 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await refreshUsage();
 		return {};
 	},
+	"providers.setHiddenModels": async (params) => {
+		const id = text(params, "id");
+		const available = (await providers.listModels()).filter((model) => model.provider === id).map((model) => model.id);
+		if (available.length === 0) throw new Error("That provider has no models to choose from yet");
+		const hidden = params.newest === true ? available.filter((model) => !newestOnly(available).has(model)) : params.hidden;
+		if (!Array.isArray(hidden) || hidden.some((model) => typeof model !== "string")) throw new Error("hidden must be a list of model ids");
+		if (available.every((model) => hidden.includes(model))) throw new Error("Keep at least one model showing");
+		settings.hiddenModels = { ...settings.hiddenModels, [id]: hidden as string[] };
+		if (hidden.length === 0) delete settings.hiddenModels[id];
+		saveSettings();
+		// Answer first: asking every provider about its sign-in takes a moment, and the sheet is waiting.
+		void announceProviders().catch((error) => log("announcing providers failed:", error));
+		return { hidden };
+	},
 	"mcp.save": async (params) => {
 		const saved = await mcp.save(params as never);
 		return { id: saved.id };
@@ -711,6 +742,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
 			codeMode: input.codeMode ?? previous?.codeMode ?? false,
 			mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
+			files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
@@ -952,17 +984,19 @@ let todayCost = 0;
 const overBudget = () => typeof settings.dailyBudget === "number" && todayCost >= settings.dailyBudget;
 
 async function refreshUsage(): Promise<void> {
+	subscriptions = await providers.subscriptionProviders();
 	const session = (await harness.usage(context)) as UsageDocShape;
 	const total = usageTotals(session);
 	// Whatever was spent since the last look belongs to today.
 	const spend = await harness.commit(async (tx) => {
 		const doc = await tx.doc(Spend);
-		const delta = { cost: Math.max(0, total.cost - doc.lastCost), tokens: Math.max(0, total.tokens - doc.lastTokens) };
-		if (delta.cost > 0 || delta.tokens > 0) {
+		// The total only falls when usage stops being priced (a provider now on a subscription); take that back off today.
+		const delta = { cost: total.cost - doc.lastCost, tokens: Math.max(0, total.tokens - doc.lastTokens) };
+		if (delta.cost !== 0 || delta.tokens > 0) {
 			// Create the day, then read it back: only the document's own copy records changes.
 			doc.days[dayKey()] ??= { cost: 0, tokens: 0 };
 			const day = doc.days[dayKey()]!;
-			day.cost += delta.cost;
+			day.cost = Math.max(0, day.cost + delta.cost);
 			day.tokens += delta.tokens;
 			doc.lastCost = total.cost;
 			doc.lastTokens = total.tokens;
@@ -995,7 +1029,7 @@ async function refreshUsage(): Promise<void> {
 	usageSummary = {
 		event: "usage",
 		models: Object.entries(session.models ?? {})
-			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage) }))
+			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key) }))
 			.sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),

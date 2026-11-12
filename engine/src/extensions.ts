@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord/context";
+import { describeReferenceFiles, readReference } from "./reference.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
@@ -125,10 +126,33 @@ export function pi2Extension(host: Host): Extension {
 		},
 	});
 
+	/** The reference files of the agent a conversation belongs to, as they are listed now. */
+	const filesOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.files ?? [];
+
+	const readReferenceTool = defineTool({
+		name: "read_reference",
+		description:
+			"Read one of the reference files the person gave you, listed in the <reference_files> section, or list one of the reference folders. Pass the full path. Long files come in windows of lines; pass `offset` for the next one.",
+		parameters: obj({
+			path: str(),
+			offset: opt(int({ description: "Line to start at, from 1" })),
+			limit: opt(int({ description: "How many lines to read" })),
+		}),
+		replay: "safe", // reading changes nothing
+		execute: async (args, api) => {
+			const result = readReference(filesOf(api.conversationId), args.path, args.offset, args.limit);
+			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
+		},
+	});
+
 	return defineExtension({
 		name: "pi2",
-		tools: [askUser, delegate],
+		tools: [askUser, delegate, readReferenceTool],
 		sections: [
+			section("reference_files", (input) => {
+				if (!input.agent.tools.some((tool) => tool.name === "read_reference")) return undefined;
+				return describeReferenceFiles(filesOf(input.conversationId));
+			}),
 			section("agents", (input) => {
 				const offered = input.agent.tools.some((tool) => tool.name === "delegate");
 				const agents = offered ? delegatesOf(host, input.conversationId) : [];

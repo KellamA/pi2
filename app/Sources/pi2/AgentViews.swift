@@ -80,6 +80,11 @@ struct AgentEditor: View {
         }
     }
 
+    private static func isFolder(_ path: String) -> Bool {
+        var folder: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &folder) && folder.boolValue
+    }
+
     private func load() {
         draft = saved
         turnsText = saved?.maxTurns.map(String.init) ?? ""
@@ -88,7 +93,7 @@ struct AgentEditor: View {
     @ViewBuilder
     private func form(_ draft: Binding<AgentProfile>) -> some View {
         let agent = draft.wrappedValue
-        let chosenModel = engine.models.first { $0.ref == agent.model }
+        let chosenModel = engine.allModels.first { $0.ref == agent.model }
         VStack(spacing: 0) {
             Form {
                 Section {
@@ -127,6 +132,47 @@ struct AgentEditor: View {
                         .font(.body)
                         .frame(minHeight: 110)
                         .accessibilityLabel("Instructions")
+                }
+
+                Section {
+                    let files = agent.files ?? []
+                    ForEach(files) { file in
+                        HStack(spacing: 8) {
+                            Image(systemName: Self.isFolder(file.path) ? "folder" : "doc.text")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text((file.path as NSString).lastPathComponent).lineLimit(1)
+                                Text(((file.path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath)
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                            }
+                            .frame(width: 190, alignment: .leading)
+                            .help(file.path)
+                            TextField("What it is for", text: Binding(
+                                get: { file.note },
+                                set: { note in
+                                    guard let index = draft.wrappedValue.files?.firstIndex(where: { $0.path == file.path }) else { return }
+                                    draft.wrappedValue.files?[index].note = note
+                                }
+                            ), prompt: Text("What it is for (optional)"))
+                            .labelsHidden()
+                            Button("Remove", systemImage: "minus.circle") { draft.wrappedValue.files?.removeAll { $0.path == file.path } }
+                                .labelStyle(.iconOnly)
+                                .buttonStyle(.borderless)
+                                .help("Remove \((file.path as NSString).lastPathComponent)")
+                        }
+                    }
+                    Button("Add Files or Folders…") {
+                        var list = draft.wrappedValue.files ?? []
+                        for path in EngineClient.pickReferenceFiles() where !list.contains(where: { $0.path == path }) {
+                            list.append(ReferenceFile(path: path, note: ""))
+                        }
+                        draft.wrappedValue.files = list
+                    }
+                } header: {
+                    Text("Reference files")
+                } footer: {
+                    Text("The agent sees this list in every conversation and opens a file when it needs it, so files cost nothing until they are read. They are read from disk each time, so your edits are picked up. The agent can only read them, even with tools off.")
                 }
 
                 Section {

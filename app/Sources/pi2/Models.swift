@@ -164,6 +164,13 @@ struct AgentInfo: Codable, Equatable {
 }
 
 /// A saved setup that conversations start from.
+/// A file or folder an agent may always read, with a note on what it is for.
+struct ReferenceFile: Codable, Equatable, Identifiable {
+    var path: String
+    var note: String
+    var id: String { path }
+}
+
 struct AgentProfile: Codable, Equatable, Identifiable {
     var id: String
     var name: String
@@ -178,6 +185,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var maxTurns: Int?
     var codeMode: Bool?
     var mcpServers: [String]?
+    /// Files and folders every conversation of the agent may read.
+    var files: [ReferenceFile]?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -192,6 +201,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "maxTurns": maxTurns as Any? ?? NSNull(),
             "codeMode": codeMode ?? false,
             "mcpServers": mcpServers ?? [],
+            "files": (files ?? []).map { ["path": $0.path, "note": $0.note] },
         ]
     }
 }
@@ -336,6 +346,11 @@ enum Formats {
         return value < 0.01 ? "< $0.01" : String(format: "$%.2f", value)
     }
 
+    /// Tokens, with the cost only when there is one: subscription and local use has no price.
+    static func usage(tokens: Int, cost: Double) -> String {
+        cost > 0 ? "\(Formats.tokens(tokens)) · \(Formats.cost(cost))" : "\(Formats.tokens(tokens)) tokens"
+    }
+
     static func tokens(_ value: Int) -> String {
         switch value {
         case 1_000_000...: String(format: "%.1fM", Double(value) / 1_000_000)
@@ -353,6 +368,8 @@ struct UsageSummary: Codable, Equatable {
         let output: Int
         let tokens: Int
         let cost: Double
+        /// Paid for by a subscription sign-in, so there is no per-use cost to show.
+        var subscription: Bool? = nil
         var id: String { key }
     }
     struct AgentRow: Codable, Equatable, Identifiable {
@@ -466,6 +483,8 @@ struct ModelInfo: Codable, Equatable, Identifiable {
     let name: String
     let thinkingLevels: [String]
     let contextWindow: Int
+    /// Left out of the model pickers by the choice made in Settings.
+    var hidden: Bool? = nil
 
     var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
 }

@@ -43,7 +43,38 @@ export type ModelInfo = {
 	name: string;
 	thinkingLevels: string[];
 	contextWindow: number;
+	/** Left out of the model pickers by the person's choice in settings. */
+	hidden?: boolean;
 };
+
+/**
+ * Of a provider's model ids, the newest of each family, for the "newest only" shortcut in settings.
+ * A family is the id without its version numbers and dates ("claude-opus", "gpt-mini"), so "claude-opus-5-5" replaces
+ * "claude-opus-4-8" but not "claude-sonnet-5". It is a guess from naming, which is why the person can adjust the result.
+ */
+export function newestOnly(ids: readonly string[]): Set<string> {
+	const best = new Map<string, { id: string; version: number[] }>();
+	for (const id of ids) {
+		const family: string[] = [];
+		const version: number[] = [];
+		// Date stamps ("-20251101", "-2024-05-13", "-04-2026") say which build, not which version.
+		for (const token of id.replace(/-(\d{4}-\d{2}-\d{2}|\d{2}-\d{4}|\d{6,})(?=-|$)/g, "").split("-")) {
+			if (/^\d+(\.\d+)*$/.test(token)) version.push(...token.split(".").map(Number));
+			else if (token !== "latest" && token !== "preview") family.push(token);
+		}
+		const key = family.join("-");
+		const held = best.get(key);
+		let newer = held === undefined;
+		if (held !== undefined) {
+			let order = 0;
+			for (let i = 0; i < Math.max(version.length, held.version.length) && order === 0; i++) order = (version[i] ?? 0) - (held.version[i] ?? 0);
+			// The same version twice is one model under two ids (a dated one and its alias): keep the shorter.
+			newer = order > 0 || (order === 0 && id.length < held.id.length);
+		}
+		if (newer) best.set(key, { id, version });
+	}
+	return new Set([...best.values()].map((entry) => entry.id));
+}
 
 const ENDPOINT_APIS: readonly EndpointApi[] = ["openai-completions", "openai-responses", "anthropic-messages"];
 
@@ -75,6 +106,9 @@ function demoProvider(): Provider {
 			// "/continue <sub-chat number>: <task>"
 			const [chat, ...task] = prompt.slice(10).split(":");
 			return fauxAssistantMessage([fauxText("Carrying on in that sub-chat."), fauxToolCall("delegate", { agent: "", chat: Number(chat), task: task.join(":").trim() })], { stopReason: "toolUse" });
+		}
+		if (prompt.startsWith("/ref ")) {
+			return fauxAssistantMessage([fauxText("Opening that reference file."), fauxToolCall("read_reference", { path: prompt.slice(5).trim() })], { stopReason: "toolUse" });
 		}
 		if (prompt.startsWith("/delegate ")) {
 			const [agent, ...task] = prompt.slice(10).split(":");
@@ -176,6 +210,17 @@ export class Providers {
 				};
 			}),
 		);
+	}
+
+	/** Providers whose work is currently paid for by a subscription sign-in, so their tokens have no per-use price. */
+	async subscriptionProviders(): Promise<Set<string>> {
+		const ids = new Set<string>();
+		for (const provider of this.models.getProviders()) {
+			if (provider.auth.oauth?.isSubscription !== true) continue;
+			const check = await this.models.checkAuth(provider.id).catch(() => undefined);
+			if (check?.type === "oauth") ids.add(provider.id);
+		}
+		return ids;
 	}
 
 	/** Chat models of every provider that is configured. */

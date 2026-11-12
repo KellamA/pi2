@@ -16,10 +16,10 @@ struct UsageView: View {
                         tile("Models used", "\(usage.models.count)", usage.models.first.map { "most: \($0.key)" } ?? "none yet")
                     }
                     budget(usage)
-                    bars("By model", usage.models.map { ($0.key, $0.tokens, "\(Formats.tokens($0.tokens)) · \(Formats.cost($0.cost))", Color.piAccent) })
+                    bars("By model", usage.models.map { ($0.key, $0.tokens, $0.subscription == true ? "\(Formats.tokens($0.tokens)) tokens · subscription" : Formats.usage(tokens: $0.tokens, cost: $0.cost), Color.piAccent) })
                     bars("By agent", usage.agents.map { row in
                         let agent = engine.agent(row.agentId)
-                        return (agent?.name ?? "Deleted agent", row.tokens, "\(Formats.tokens(row.tokens)) · \(Formats.cost(row.cost))", AgentColor.color(agent?.color))
+                        return (agent?.name ?? "Deleted agent", row.tokens, Formats.usage(tokens: row.tokens, cost: row.cost), AgentColor.color(agent?.color))
                     })
                     days(usage)
                     VStack(alignment: .leading, spacing: 8) {
@@ -31,11 +31,11 @@ struct UsageView: View {
                                     .buttonStyle(.link)
                                     .lineLimit(1)
                                 Spacer()
-                                Text("\(Formats.tokens(row.tokens)) · \(Formats.cost(row.cost))").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                                Text(Formats.usage(tokens: row.tokens, cost: row.cost)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                             }
                         }
                     }
-                    Text("Cost is what each provider reports for metered use. Subscription sign-ins and local models show tokens but usually no cost.")
+                    Text("Cost is an estimate for models you pay for by use, such as an API key. Models used through a subscription sign-in, and local models, count tokens only and do not count towards the budget.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(20)
