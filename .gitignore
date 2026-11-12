@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Engine (Node)
+node_modules/
+*.log
+
+# App (Swift)
+app/.build/
+app/build/
+*.xcuserstate
+xcuserdata/
+
+# Local secrets and settings
+.env
+.env.*

@@ -1,0 +1,347 @@
+import AppKit
+import Foundation
+import Network
+import Observation
+
+/// Talks to pi2-engine over its Unix socket, starts the engine when it is not running, and reconnects when it dies.
+/// Everything shown in the app is the engine's committed state, mirrored here; the app keeps no truth of its own.
+@MainActor
+@Observable
+final class EngineClient {
+    enum Status: Equatable {
+        case connecting
+        case connected
+        case restarting
+    }
+
+    private(set) var status: Status = .connecting
+    private(set) var conversations: [ConversationSummary] = []
+    private(set) var open: [Int: ConversationData] = [:]
+    private(set) var providers: [ProviderInfo] = []
+    private(set) var models: [ModelInfo] = []
+    private(set) var defaultModel: ModelRef?
+    private(set) var hasLoadedLibrary = false
+    var signIn: SignInFlow?
+    var lastError: String?
+
+    private let home: URL
+    private var connection: NWConnection?
+    private var buffer = Data()
+    private var nextRequestID = 1
+    private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
+    private var lastLaunch = Date.distantPast
+
+    init() {
+        if let override = ProcessInfo.processInfo.environment["PI2_HOME"] {
+            home = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            home = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("pi2", isDirectory: true)
+        }
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    }
+
+    // MARK: - Requests
+
+    @discardableResult
+    func call(_ method: String, _ params: [String: Any] = [:]) async throws -> JSONValue {
+        guard let connection, status == .connected else { throw EngineError(message: "The engine is not running yet.") }
+        let id = nextRequestID
+        nextRequestID += 1
+        var data = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
+        data.append(0x0A)
+        return try await withCheckedThrowingContinuation { continuation in
+            pending[id] = continuation
+            connection.send(content: data, completion: .contentProcessed { _ in })
+        }
+    }
+
+    /// Runs a request whose only interesting outcome is failure, and shows that failure in the window.
+    func perform(_ method: String, _ params: [String: Any] = [:]) {
+        Task {
+            do { try await call(method, params) } catch { lastError = error.localizedDescription }
+        }
+    }
+
+    func createConversation() async -> Int? {
+        do {
+            let result = try await call("conversation.create")
+            guard let id = result["id"]?.intValue else { return nil }
+            openConversation(id)
+            return id
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    func openConversation(_ id: Int) {
+        guard open[id] == nil else { return }
+        open[id] = ConversationData()
+        perform("conversation.open", ["id": id])
+    }
+
+    func submit(_ text: String, to id: Int, steer: Bool) {
+        // The request ID makes a resend after a lost reply harmless: the engine finds the same submission.
+        perform("submit", ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString])
+    }
+
+    func configure(_ id: Int, _ change: [String: Any]) {
+        var params = change
+        params["id"] = id
+        perform("conversation.configure", params)
+    }
+
+    // MARK: - Sign-in
+
+    func startSignIn(_ provider: ProviderInfo) {
+        signIn = SignInFlow(providerId: provider.id, providerName: provider.oauth?.name ?? provider.name)
+        Task {
+            do {
+                try await call("providers.login", ["id": provider.id])
+                signIn = nil
+            } catch {
+                if signIn != nil {
+                    signIn?.error = error.localizedDescription
+                    signIn?.finished = true
+                }
+            }
+        }
+    }
+
+    func answerSignInPrompt(_ value: String) {
+        guard let promptId = signIn?.promptId else { return }
+        signIn?.promptId = nil
+        signIn?.prompt = nil
+        perform("auth.answer", ["promptId": promptId, "value": value])
+    }
+
+    func cancelSignIn() {
+        if let loginId = signIn?.loginId, signIn?.finished == false { perform("auth.cancel", ["loginId": loginId]) }
+        signIn = nil
+    }
+
+    // MARK: - Connection
+
+    func start() {
+        guard connection == nil else { return }
+        connect()
+    }
+
+    private func connect() {
+        let socketPath = home.appendingPathComponent("engine.sock").path
+        let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
+        self.connection = connection
+        buffer.removeAll()
+        connection.stateUpdateHandler = { [weak self] state in
+            MainActor.assumeIsolated {
+                guard let self, self.connection === connection else { return }
+                switch state {
+                case .ready:
+                    self.status = .connected
+                    self.receive(on: connection)
+                    // The engine forgets subscriptions with the connection; ask again for what is on screen.
+                    for id in self.open.keys { self.perform("conversation.open", ["id": id]) }
+                case .waiting(let error), .failed(let error):
+                    if self.status == .connected { self.note("connection failed: \(error)") }
+                    self.retry()
+                default:
+                    break
+                }
+            }
+        }
+        connection.start(queue: .main)
+    }
+
+    private func receive(on connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 18) { [weak self] data, _, isComplete, error in
+            MainActor.assumeIsolated {
+                guard let self, self.connection === connection else { return }
+                if let data { self.consume(data) }
+                if isComplete || error != nil {
+                    self.note("connection lost: \(error.map { "\($0)" } ?? "closed by the engine")")
+                    self.status = .restarting
+                    self.retry()
+                } else {
+                    self.receive(on: connection)
+                }
+            }
+        }
+    }
+
+    private func consume(_ data: Data) {
+        buffer.append(data)
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = Data(buffer[buffer.startIndex..<newline])
+            buffer.removeSubrange(buffer.startIndex...newline)
+            if !line.isEmpty { handle(line) }
+        }
+    }
+
+    private struct Envelope: Decodable {
+        let event: String?
+        let id: Int?
+        let error: String?
+        let result: JSONValue?
+    }
+    private struct LibraryEvent: Decodable { let conversations: [ConversationSummary] }
+    private struct ProvidersEvent: Decodable {
+        let providers: [ProviderInfo]
+        let models: [ModelInfo]
+        let defaultModel: ModelRef?
+    }
+    private struct ConversationEvent: Decodable {
+        let id: Int
+        let reset: Bool
+        let items: [Item]
+        let state: ConversationState
+    }
+    private struct AuthEventMessage: Decodable {
+        let loginId: String
+        let kind: String
+        let notice: AuthNotice?
+        let promptId: String?
+        let prompt: AuthPromptInfo?
+    }
+
+    private func handle(_ line: Data) {
+        let decoder = JSONDecoder()
+        guard let envelope = try? decoder.decode(Envelope.self, from: line) else { return }
+        do {
+            switch envelope.event {
+            case "library":
+                conversations = try decoder.decode(LibraryEvent.self, from: line).conversations
+                hasLoadedLibrary = true
+            case "providers":
+                let event = try decoder.decode(ProvidersEvent.self, from: line)
+                providers = event.providers
+                models = event.models
+                defaultModel = event.defaultModel
+            case "conversation":
+                let event = try decoder.decode(ConversationEvent.self, from: line)
+                guard var data = open[event.id] else { return }
+                if event.reset { data.items = [] }
+                data.items.append(contentsOf: event.items)
+                data.state = event.state
+                open[event.id] = data
+            case "auth":
+                handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
+            default:
+                guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
+                if let error = envelope.error {
+                    continuation.resume(throwing: EngineError(message: error))
+                } else {
+                    continuation.resume(returning: envelope.result ?? .null)
+                }
+            }
+        } catch {
+            lastError = "The engine sent something the app could not read (\(envelope.event ?? "reply"))."
+        }
+    }
+
+    private func handleAuth(_ event: AuthEventMessage) {
+        guard signIn != nil else { return }
+        switch event.kind {
+        case "started":
+            signIn?.loginId = event.loginId
+        case "notify":
+            guard let notice = event.notice else { return }
+            switch notice.type {
+            case "auth_url":
+                signIn?.openURL = notice.url
+                if let instructions = notice.instructions { signIn?.messages.append(instructions) }
+                if let url = notice.url.flatMap(URL.init(string:)) { NSWorkspace.shared.open(url) }
+            case "device_code":
+                signIn?.userCode = notice.userCode
+                signIn?.openURL = notice.verificationUri
+            default:
+                if let message = notice.message { signIn?.messages.append(message) }
+            }
+        case "prompt":
+            signIn?.promptId = event.promptId
+            signIn?.prompt = event.prompt
+        case "promptClosed":
+            if signIn?.promptId == event.promptId {
+                signIn?.promptId = nil
+                signIn?.prompt = nil
+            }
+        default:
+            break
+        }
+    }
+
+    /// A line in app.log next to the engine's log, for working out why a connection dropped.
+    private func note(_ message: String) {
+        let line = "\(Date().formatted(.iso8601)) \(message)\n"
+        let url = home.appendingPathComponent("app.log")
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
+            try? handle.close()
+        }
+    }
+
+    /// Drop the current connection, make sure an engine is running, and try again shortly.
+    private func retry() {
+        connection?.cancel()
+        connection = nil
+        if status == .connected { status = .restarting }
+        for continuation in pending.values { continuation.resume(throwing: EngineError(message: "The engine stopped before it answered.")) }
+        pending.removeAll()
+        launchEngineIfNeeded()
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, self.connection == nil else { return }
+            self.connect()
+        }
+    }
+
+    // MARK: - Engine process
+
+    private var enginePID: pid_t? {
+        guard let text = try? String(contentsOf: home.appendingPathComponent("engine.pid"), encoding: .utf8),
+              let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), kill(pid, 0) == 0
+        else { return nil }
+        return pid
+    }
+
+    private func launchEngineIfNeeded() {
+        guard enginePID == nil, Date().timeIntervalSince(lastLaunch) > 3 else { return }
+        let environment = ProcessInfo.processInfo.environment
+        let node = Bundle.main.object(forInfoDictionaryKey: "PI2NodePath") as? String ?? environment["PI2_NODE"]
+        let main = Bundle.main.object(forInfoDictionaryKey: "PI2EngineMain") as? String ?? environment["PI2_ENGINE_MAIN"]
+        guard let node, let main else {
+            lastError = "The app does not know where the engine is. Build it with app/build.sh."
+            return
+        }
+        lastLaunch = Date()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [main]
+        process.environment = environment.merging(["PI2_HOME": home.path]) { _, new in new }
+        let logURL = home.appendingPathComponent("engine.log")
+        // Append, so the output of an engine that crashed is still there after the restart.
+        if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
+        if let log = try? FileHandle(forWritingTo: logURL) {
+            _ = try? log.seekToEnd()
+            process.standardOutput = log
+            process.standardError = log
+        }
+        do {
+            try process.run()
+        } catch {
+            lastError = "Could not start the engine: \(error.localizedDescription)"
+        }
+    }
+
+    /// Simulates a crash: SIGKILL, no chance to clean up.
+    func killEngine() {
+        if let pid = enginePID { kill(pid, SIGKILL) }
+    }
+
+    /// A clean stop, used when the app quits. Milestone 3 leaves the engine running as a login item instead.
+    func stopEngine() {
+        if let pid = enginePID { kill(pid, SIGTERM) }
+    }
+}

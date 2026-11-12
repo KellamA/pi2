@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pi² — mockups</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --page:#0b0c0f; --win:#17181c; --side:#1d1e23; --panel:#1f2026; --card:#24262d; --card2:#2a2c34;
+  --line:#ffffff14; --line2:#ffffff24; --tx:#ececf1; --tx2:#a3a5b0; --tx3:#6e7080;
+  --acc:#8b93ff; --accbg:#8b93ff22; --ok:#4cc38a; --okbg:#4cc38a1f; --warn:#f0b24a; --warnbg:#f0b24a1f; --bad:#f2647a; --badbg:#f2647a1f;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--page);color:var(--tx);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;padding:28px 24px 60px;-webkit-font-smoothing:antialiased}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px}
+header{max-width:1240px;margin:0 auto 18px}
+h1{font-size:22px;font-weight:650;letter-spacing:-.02em}
+header p{color:var(--tx2);margin-top:4px;max-width:720px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-top:16px}
+nav button{font:inherit;color:var(--tx2);background:transparent;border:1px solid var(--line2);border-radius:999px;padding:6px 14px;cursor:pointer}
+nav button.on{background:var(--tx);color:#111;border-color:var(--tx);font-weight:600}
+.screen{display:none;max-width:1240px;margin:0 auto}
+.screen.on{display:block}
+.win{background:var(--win);border:1px solid var(--line2);border-radius:12px;overflow:hidden;box-shadow:0 30px 80px #000a;display:flex;flex-direction:column;height:720px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-top:16px}
+.notes div{border:1px solid var(--line);border-radius:10px;padding:12px 14px;color:var(--tx2)}
+.notes b{display:block;color:var(--tx);margin-bottom:3px}
+/* window chrome */
+.bar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+.lights{display:flex;gap:8px;margin-right:6px}.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.body{flex:1;display:flex;min-height:0}
+.grow{flex:1;min-width:0}.row{display:flex;align-items:center;gap:8px}.col{display:flex;flex-direction:column}
+.sp{flex:1}
+.t2{color:var(--tx2)}.t3{color:var(--tx3)}.sm{font-size:11.5px}.b{font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);border-radius:8px;padding:4px 9px;color:var(--tx);background:var(--card);white-space:nowrap}
+.pill.ghost{background:transparent;color:var(--tx2)}
+.btn{display:inline-flex;align-items:center;gap:6px;border-radius:7px;padding:5px 11px;background:var(--card2);border:1px solid var(--line2);color:var(--tx);white-space:nowrap}
+.btn.pri{background:var(--acc);border-color:transparent;color:#10112a;font-weight:600}
+.btn.bad{color:var(--bad)}
+.tag{font-size:10.5px;border-radius:5px;padding:1px 6px;background:var(--card2);color:var(--tx2);white-space:nowrap}
+.tag.ok{background:var(--okbg);color:var(--ok)}.tag.warn{background:var(--warnbg);color:var(--warn)}.tag.acc{background:var(--accbg);color:var(--acc)}.tag.bad{background:var(--badbg);color:var(--bad)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--tx3);flex:none}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.acc{background:var(--acc)}
+.spin{width:10px;height:10px;border-radius:50%;border:2px solid var(--accbg);border-top-color:var(--acc);animation:s 1s linear infinite;flex:none}@keyframes s{to{transform:rotate(360deg)}}
+.av{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#111;flex:none}
+.a1{background:#b9a6ff}.a2{background:#ffb37a}.a3{background:#7fd8c4}.a4{background:#9fc5ff}
+/* sidebar */
+.side{width:248px;flex:none;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:10px 8px;gap:2px;overflow:hidden}
+.search{border:1px solid var(--line);background:#0003;border-radius:8px;padding:6px 9px;color:var(--tx3);display:flex;margin-bottom:8px}
+.lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);padding:10px 8px 4px;display:flex}
+.it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--tx2);white-space:nowrap;overflow:hidden}
+.it.on{background:#ffffff12;color:var(--tx)}
+.it span.n{overflow:hidden;text-overflow:ellipsis}
+.foot{margin-top:auto;border-top:1px solid var(--line);padding:9px 8px 2px;color:var(--tx2)}
+/* chat */
+.chat{flex:1;min-width:0;display:flex;flex-direction:column}
+.scroll{flex:1;overflow:hidden;padding:20px 28px;display:flex;flex-direction:column;gap:14px}
+.u{align-self:flex-end;background:var(--card2);border-radius:14px 14px 4px 14px;padding:9px 13px;max-width:70%}
+.a{max-width:92%;color:var(--tx)}
+.tool{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+.tool .h{display:flex;align-items:center;gap:8px;padding:7px 11px}
+.tool pre{border-top:1px solid var(--line);padding:8px 11px;color:var(--tx2);white-space:pre-wrap}
+.gate{border:1px solid #f0b24a55;background:var(--warnbg);border-radius:10px;padding:11px 13px}
+.sub{border:1px solid var(--line);border-left:3px solid #7fd8c4;border-radius:10px;background:var(--panel);padding:9px 12px}
+.caret{display:inline-block;width:7px;height:14px;background:var(--acc);vertical-align:-2px;border-radius:1px;animation:b 1s steps(2) infinite}@keyframes b{50%{opacity:0}}
+.comp{margin:0 28px 18px;border:1px solid var(--line2);border-radius:14px;background:var(--panel);padding:10px 12px}
+.queue{margin:0 28px 8px;display:flex;gap:6px;flex-wrap:wrap}
+.insp{width:270px;flex:none;border-left:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.box{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--panel)}
+.box h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);font-weight:600;margin-bottom:7px}
+.meter{height:6px;border-radius:3px;background:#ffffff14;overflow:hidden;margin:6px 0}.meter i{display:block;height:100%;background:var(--acc);border-radius:3px}
+.tree div{display:flex;align-items:center;gap:7px;padding:2.5px 0;white-space:nowrap}
+.kv{display:flex;justify-content:space-between;padding:2px 0;color:var(--tx2)}.kv b{color:var(--tx);font-weight:500}
+/* forms */
+.pane{flex:1;min-width:0;padding:22px 26px;overflow:hidden;display:flex;flex-direction:column;gap:14px}
+.pane h2{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.field{display:flex;flex-direction:column;gap:5px}.field label{color:var(--tx2);font-size:11.5px}
+.in{border:1px solid var(--line2);background:#0003;border-radius:8px;padding:6px 10px;color:var(--tx);display:flex;align-items:center;gap:8px;min-height:30px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}.seg span{padding:5px 11px;color:var(--tx2);border-right:1px solid var(--line)}.seg span:last-child{border:0}.seg span.on{background:var(--accbg);color:var(--acc);font-weight:600}
+.sw{width:30px;height:18px;border-radius:9px;background:#ffffff22;position:relative;flex:none}.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff}.sw.on{background:var(--ok)}.sw.on::after{left:14px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.list .r{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line)}.list .r:last-child{border:0}
+.list{border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{width:100%;border-collapse:collapse}th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);text-align:left;font-weight:600;padding:7px 12px;border-bottom:1px solid var(--line)}td{padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}tr:last-child td{border:0}
+.barrow{display:grid;grid-template-columns:150px 1fr 60px;align-items:center;gap:10px;padding:5px 0}.barrow .tr{height:10px;border-radius:5px;background:#ffffff10}.barrow .tr i{display:block;height:100%;border-radius:5px;background:var(--acc)}.barrow span:last-child{text-align:right}
+/* desktop */
+.desk{height:720px;border-radius:12px;border:1px solid var(--line2);overflow:hidden;position:relative;background:radial-gradient(1200px 600px at 70% 0%,#3a3f8f 0%,#1b1c3a 45%,#0d0e1a 100%)}
+.menubar{height:26px;background:#0006;backdrop-filter:blur(10px);display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12.5px}
+.pop{position:absolute;top:34px;right:120px;width:420px;background:#1c1d23f2;border:1px solid var(--line2);border-radius:14px;box-shadow:0 30px 70px #000b;padding:12px}
+.palette{position:absolute;left:48px;top:150px;width:560px;background:#1c1d23f2;border:1px solid var(--line2);border-radius:14px;box-shadow:0 30px 70px #000b;overflow:hidden}
+.note-toast{position:absolute;top:40px;right:14px;width:320px;background:#26272ef2;border:1px solid var(--line2);border-radius:14px;padding:11px 13px;display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>pi² <span class="t3" style="font-weight:400">— a native Mac home for pi durable agents</span></h1>
+  <p>Six screens, static mockups: layout, hierarchy and features are the point, not final pixels. Every element maps to something pi durable already stores (entries, <span class="mono">pi.live</span>, <span class="mono">pi.inbox</span>, <span class="mono">pi.usage</span>, the task graph).</p>
+  <nav id="nav">
+    <button data-s="chat" class="on">1 · Conversation</button>
+    <button data-s="agents">2 · Agents</button>
+    <button data-s="providers">3 · Providers</button>
+    <button data-s="activity">4 · Activity &amp; Inbox</button>
+    <button data-s="quick">5 · Quick Ask &amp; Palette</button>
+    <button data-s="usage">6 · Usage</button>
+  </nav>
+</header>
+
+<!-- 1 CHAT -->
+<section class="screen on" id="chat">
+<div class="win">
+  <div class="bar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="b">Fix flaky login test</span>
+    <span class="tag">~/code/webapp</span>
+    <span class="sp"></span>
+    <span class="pill"><span class="av a1" style="width:16px;height:16px;font-size:9px">A</span>Atlas</span>
+    <span class="pill">Claude Opus 5.5 <span class="t3">· High ▾</span></span>
+    <span class="pill ghost">⑂ Fork</span>
+    <span class="pill ghost">◧</span>
+  </div>
+  <div class="body">
+    <aside class="side">
+      <div class="search"><span>Search or run a command</span><span class="sp"></span><span>⌘K</span></div>
+      <div class="it"><span>＋</span><span class="n">New conversation</span><span class="sp"></span><span class="t3">⌘N</span></div>
+      <div class="it"><span>◉</span><span class="n">Inbox</span><span class="sp"></span><span class="tag warn">2</span></div>
+      <div class="it"><span>≋</span><span class="n">Activity</span><span class="sp"></span><span class="tag acc">3 running</span></div>
+      <div class="lbl">Agents<span class="sp"></span>＋</div>
+      <div class="it on"><span class="av a1">A</span><span class="n">Atlas</span><span class="sp"></span><span class="t3 sm">Opus 5.5</span></div>
+      <div class="it"><span class="av a2">F</span><span class="n">Forge</span><span class="sp"></span><span class="t3 sm">gpt-6-sol</span></div>
+      <div class="it"><span class="av a3">S</span><span class="n">Scout</span><span class="sp"></span><span class="t3 sm">Sonnet 5.5</span></div>
+      <div class="it"><span class="av a4">L</span><span class="n">Local</span><span class="sp"></span><span class="t3 sm">Ollama</span></div>
+      <div class="lbl">Conversations</div>
+      <div class="it on"><span class="spin"></span><span class="n">Fix flaky login test</span></div>
+      <div class="it"><span class="dot warn"></span><span class="n">Release notes for 2.4</span><span class="sp"></span><span class="tag warn">needs you</span></div>
+      <div class="it"><span class="spin"></span><span class="n">Overnight: dependency audit</span></div>
+      <div class="it"><span class="dot"></span><span class="n">Trip planning — Lisbon</span></div>
+      <div class="it"><span class="dot"></span><span class="n">Explain Raft to me</span></div>
+      <div class="it"><span class="dot"></span><span class="n">Budget spreadsheet formulas</span></div>
+      <div class="foot row"><span class="dot ok"></span><span>Engine running</span><span class="sp"></span><span class="t3">$4.12 today</span></div>
+    </aside>
+    <main class="chat">
+      <div class="scroll">
+        <div class="u">The login test fails about 1 in 5 runs on CI. Find out why and fix it.</div>
+        <div class="a">I'll reproduce it first, then look at how the session cookie is set. I've asked Scout to check whether the auth library has a known race here.</div>
+        <div class="tool">
+          <div class="h"><span class="tag ok">bash</span><span class="mono grow">npm test -- login --repeat 20</span><span class="t3 sm">14.2s · exit 1</span><span class="t3">▾</span></div>
+          <pre class="mono">✓ 16 passed
+✗ 4 failed  login › redirects after sign-in
+  Expected cookie "sid" to be set before navigation</pre>
+        </div>
+        <div class="sub">
+          <div class="row"><span class="av a3">S</span><span class="b">Scout</span><span class="tag">subagent · Sonnet 5.5</span><span class="sp"></span><span class="spin"></span><span class="t2 sm">2 tools · 0:41</span><span class="t3">Open ↗</span></div>
+          <div class="t2" style="margin-top:6px">Reading auth-kit changelog… found issue #2214 "setCookie resolves before write on Node 24".</div>
+        </div>
+        <div class="tool">
+          <div class="h"><span class="tag ok">edit</span><span class="mono grow">src/auth/session.ts</span><span class="sm" style="color:var(--ok)">+6</span><span class="sm" style="color:var(--bad)">−2</span><span class="t3">▸</span></div>
+        </div>
+        <div class="gate">
+          <div class="row"><span class="b">Atlas wants to run a command that needs approval</span><span class="sp"></span><span class="t2 sm">waits up to 24h · survives restart</span></div>
+          <div class="mono" style="margin:7px 0 10px">git push origin fix/login-race</div>
+          <div class="row"><span class="btn pri">Allow once</span><span class="btn">Always allow <span class="mono">git push</span> here</span><span class="btn bad">Deny</span><span class="sp"></span><span class="t2 sm">⌘↵ allow · ⌘⌫ deny</span></div>
+        </div>
+        <div class="a">While that waits: the root cause is that <span class="mono">setSession()</span> wasn't awaited, so the redirect could win the race<span class="caret"></span></div>
+      </div>
+      <div class="queue"><span class="pill"><span class="t3">Queued</span> Also bump the auth-kit version <span class="t3">✕</span></span></div>
+      <div class="comp">
+        <div class="t3" style="padding:2px 2px 12px">Steer Atlas while it works, or queue a follow-up…</div>
+        <div class="row">
+          <span class="pill ghost">＋</span><span class="pill ghost">@ Agent</span><span class="pill ghost">/ Command</span>
+          <span class="sp"></span>
+          <span class="seg"><span class="on">Steer</span><span>Queue</span></span>
+          <span class="btn bad">■ Stop</span><span class="btn pri">↑</span>
+        </div>
+      </div>
+    </main>
+    <aside class="insp">
+      <div class="box"><h4>Context</h4>
+        <div class="kv"><span>184k of 1M tokens</span><b>18%</b></div><div class="meter"><i style="width:18%"></i></div>
+        <div class="t3 sm">Auto-compacts at 85% · <span style="color:var(--acc)">Compact now</span></div></div>
+      <div class="box"><h4>This run</h4>
+        <div class="kv"><span>Turn</span><b>4 of 50</b></div><div class="kv"><span>Elapsed</span><b>2m 08s</b></div><div class="kv"><span>Cost</span><b>$0.84</b></div></div>
+      <div class="box tree"><h4>Live tasks</h4>
+        <div><span class="spin"></span>generation <span class="t3 sm">Opus 5.5</span></div>
+        <div style="padding-left:14px"><span class="dot warn"></span>bash <span class="tag warn">awaiting approval</span></div>
+        <div style="padding-left:14px"><span class="spin"></span>subagent <span class="t3 sm">Scout</span></div>
+        <div style="padding-left:28px"><span class="spin"></span>generation <span class="t3 sm">Sonnet 5.5</span></div>
+        <div style="padding-left:42px"><span class="dot ok"></span>web_fetch</div></div>
+      <div class="box"><h4>Files changed</h4>
+        <div class="kv"><span class="mono">src/auth/session.ts</span><b class="sm">+6 −2</b></div>
+        <div class="kv"><span class="mono">test/login.spec.ts</span><b class="sm">+11</b></div></div>
+    </aside>
+  </div>
+</div>
+<div class="notes">
+  <div><b>Never blocked while it works</b>Typing during a run steers the current work or queues a follow-up; queued items are visible and removable. Stop aborts the whole task tree.</div>
+  <div><b>Tool calls as cards</b>Collapsed by default with live streamed output; edits open a diff. Subagents show inline with their own agent and model, and open as full conversations.</div>
+  <div><b>Approvals are durable</b>A gated tool call sleeps on a signal — quit the app, reboot, answer tomorrow. The same card appears in the Inbox and as a notification.</div>
+  <div><b>Inspector</b>Context meter with compaction, run budget, the live task tree, and changed files. Toggle with ⌘⌥I.</div>
+</div>
+</section>
+
+<!-- 2 AGENTS -->
+<section class="screen" id="agents">
+<div class="win">
+  <div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="b">Agents</span><span class="sp"></span><span class="pill ghost">Duplicate</span><span class="pill ghost">Export…</span><span class="btn pri">＋ New agent</span></div>
+  <div class="body">
+    <aside class="side" style="width:230px">
+      <div class="it"><span class="av a1">A</span><div class="col"><span>Atlas</span><span class="t3 sm">General · Opus 5.5</span></div></div>
+      <div class="it on"><span class="av a2">F</span><div class="col"><span>Forge</span><span class="t3 sm">Coding · gpt-6-sol</span></div></div>
+      <div class="it"><span class="av a3">S</span><div class="col"><span>Scout</span><span class="t3 sm">Research · Sonnet 5.5</span></div></div>
+      <div class="it"><span class="av a4">L</span><div class="col"><span>Local</span><span class="t3 sm">Private · qwen3-coder</span></div></div>
+      <div class="lbl">Templates</div>
+      <div class="it"><span>＋</span><span>Reviewer</span></div>
+      <div class="it"><span>＋</span><span>Writer</span></div>
+      <div class="it"><span>＋</span><span>Planner (read-only)</span></div>
+    </aside>
+    <div class="pane">
+      <div class="row"><span class="av a2" style="width:36px;height:36px;font-size:16px;border-radius:10px">F</span><div class="col"><h2>Forge</h2><span class="t2">Careful coding agent. Writes code, runs tests, asks before pushing.</span></div></div>
+      <div class="grid2">
+        <div class="field"><label>Model</label><div class="in"><span class="dot ok"></span>OpenAI · gpt-6-sol<span class="sp"></span><span class="tag">ChatGPT sign-in</span><span class="t3">▾</span></div></div>
+        <div class="field"><label>Thinking</label><div><span class="seg"><span>Off</span><span>Low</span><span>Medium</span><span class="on">High</span><span>Max</span></span></div></div>
+      </div>
+      <div class="field"><label>Instructions</label><div class="in" style="align-items:flex-start;min-height:74px;color:var(--tx2)">You are a concise coding assistant. Reproduce before fixing. Run the test suite after every change and keep diffs minimal. Never push without approval.</div></div>
+      <div class="grid2">
+        <div class="field"><label>Tools</label>
+          <div class="list">
+            <div class="r"><span class="grow">Files <span class="t3 sm">read · write · edit</span></span><span class="sw on"></span></div>
+            <div class="r"><span class="grow">Shell <span class="t3 sm">bash</span></span><span class="tag warn">ask if risky</span><span class="sw on"></span></div>
+            <div class="r"><span class="grow">Code mode <span class="t3 sm">scripts that call tools</span></span><span class="sw on"></span></div>
+            <div class="r"><span class="grow">GitHub <span class="t3 sm">MCP · 31 tools, loaded on demand</span></span><span class="sw on"></span></div>
+            <div class="r"><span class="grow">Web search &amp; fetch</span><span class="sw"></span></div>
+          </div>
+        </div>
+        <div class="field"><label>Can delegate to</label>
+          <div class="list">
+            <div class="r"><span class="av a3">S</span><span class="grow">Scout <span class="t3 sm">Sonnet 5.5</span></span><span class="sw on"></span></div>
+            <div class="r"><span class="av a4">L</span><span class="grow">Local <span class="t3 sm">qwen3-coder</span></span><span class="sw on"></span></div>
+            <div class="r"><span class="av a1">A</span><span class="grow">Atlas <span class="t3 sm">Opus 5.5</span></span><span class="sw"></span></div>
+          </div>
+          <label style="margin-top:8px">After each run</label>
+          <div class="list"><div class="r"><span class="grow">Run tests if files changed</span><span class="sw on"></span></div><div class="r"><span class="grow">Review by <b>Atlas</b> before answering</span><span class="sw"></span></div></div>
+        </div>
+      </div>
+    </div>
+    <aside class="insp" style="width:290px">
+      <div class="box"><h4>Model routing</h4>
+        <div class="kv"><span>Main</span><b>gpt-6-sol</b></div>
+        <div class="kv"><span>Subagent default</span><b>Sonnet 5.5</b></div>
+        <div class="kv"><span>Compaction</span><b>Haiku 5.5</b></div>
+        <div class="kv"><span>Titles &amp; summaries</span><b>qwen3 (local)</b></div>
+        <div class="kv"><span>Fallback if unavailable</span><b>Opus 5.5</b></div></div>
+      <div class="box"><h4>Limits</h4>
+        <div class="kv"><span>Max turns per run</span><b>50</b></div>
+        <div class="kv"><span>Spend cap per run</span><b>$5.00</b></div>
+        <div class="kv"><span>Auto-compact</span><b>On · keep 20k</b></div></div>
+      <div class="box"><h4>Workspace</h4>
+        <div class="kv"><span>Default folder</span><b class="mono">~/code</b></div>
+        <div class="kv"><span>Runs on</span><b>This Mac ▾</b></div>
+        <div class="t3 sm" style="margin-top:4px">Or a remote machine over SSH (pi-env).</div></div>
+      <div class="box"><h4>Last 7 days</h4><div class="kv"><span>Runs</span><b>42</b></div><div class="kv"><span>Spend</span><b>$11.30</b></div></div>
+    </aside>
+  </div>
+</div>
+<div class="notes">
+  <div><b>An agent is a saved setup</b>Model, thinking level, instructions, tools, folder and limits — exactly what pi durable stores per conversation in <span class="mono">pi.agent</span>. Start a chat with any agent; override per conversation from the toolbar.</div>
+  <div><b>Different models for different jobs</b>Each agent picks its own model, and routes cheap work (compaction, titles, subagents) to cheaper or local models.</div>
+  <div><b>Delegation</b>Agents can hand work to other agents as subagents — a coder on one provider asking a researcher on another.</div>
+  <div><b>Portable</b>Export an agent as a file, import someone else's, or start from a template.</div>
+</div>
+</section>
+
+<!-- 3 PROVIDERS -->
+<section class="screen" id="providers">
+<div class="win">
+  <div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="b">Settings</span></div>
+  <div class="body">
+    <aside class="side" style="width:200px">
+      <div class="it">General</div><div class="it on">Providers</div><div class="it">Models</div><div class="it">Tools &amp; MCP</div><div class="it">Permissions</div><div class="it">Notifications</div><div class="it">Shortcuts</div><div class="it">Storage &amp; Backup</div><div class="it">Advanced</div>
+    </aside>
+    <div class="pane">
+      <div><h2>Providers</h2><span class="t2">Sign in with a subscription, paste an API key, or point at any hosted or local model server. Secrets live in the macOS Keychain.</span></div>
+      <div class="lbl" style="padding:0">Subscriptions</div>
+      <div class="grid3">
+        <div class="box"><div class="row"><span class="b grow">Claude</span><span class="tag ok">Signed in</span></div><div class="t2 sm" style="margin:4px 0 10px">Pro / Max · 4 models</div><span class="btn">Manage</span></div>
+        <div class="box"><div class="row"><span class="b grow">ChatGPT</span><span class="tag ok">Signed in</span></div><div class="t2 sm" style="margin:4px 0 10px">Plus / Pro · 6 models</div><span class="btn">Manage</span></div>
+        <div class="box"><div class="row"><span class="b grow">GitHub Copilot</span><span class="tag">Not connected</span></div><div class="t2 sm" style="margin:4px 0 10px">Copilot subscription</div><span class="btn pri">Sign in…</span></div>
+      </div>
+      <div class="lbl" style="padding:0">API keys</div>
+      <div class="list">
+        <div class="r"><span class="dot ok"></span><span class="b" style="width:120px">OpenRouter</span><span class="mono t2 grow">sk-or-••••••••4f2a</span><span class="t3 sm">312 models</span><span class="btn">Edit</span></div>
+        <div class="r"><span class="dot ok"></span><span class="b" style="width:120px">xAI</span><span class="mono t2 grow">xai-••••••••91c0</span><span class="t3 sm">5 models</span><span class="btn">Edit</span></div>
+        <div class="r"><span class="dot"></span><span class="b" style="width:120px">Google</span><span class="t3 grow">Not set</span><span class="btn">Add key</span></div>
+        <div class="r"><span class="t3 grow">Anthropic, OpenAI, Groq, Mistral, DeepSeek, Bedrock, Vertex and 20 more…</span><span class="btn">Browse all</span></div>
+      </div>
+      <div class="lbl" style="padding:0">Hosted &amp; local endpoints</div>
+      <div class="list">
+        <div class="r"><span class="dot ok"></span><span class="b" style="width:120px">Ollama</span><span class="mono t2 grow">http://localhost:11434/v1</span><span class="tag acc">auto-detected</span><span class="t3 sm">6 models</span><span class="btn">Edit</span></div>
+        <div class="r"><span class="dot ok"></span><span class="b" style="width:120px">Home GPU box</span><span class="mono t2 grow">https://llm.home.example/v1</span><span class="tag">OpenAI-compatible</span><span class="t3 sm">2 models</span><span class="btn">Edit</span></div>
+        <div class="r"><span class="grow t2">＋ Add endpoint — name, base URL, API style, optional key, then "Fetch models"</span><span class="btn pri">Add…</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="notes">
+  <div><b>Three ways in</b>Subscription sign-in (browser OAuth, tokens refresh automatically), API keys, or a custom endpoint for Ollama, LM Studio, vLLM, llama.cpp or a company gateway.</div>
+  <div><b>Custom endpoints done properly</b>Choose the API style (OpenAI chat, OpenAI responses, Anthropic-compatible), fetch the model list, set context size and quirks per model, test with one click.</div>
+  <div><b>Models tab</b>One catalog across providers: star favourites, hide the rest, see price and context window, set the app-wide default.</div>
+  <div><b>Health at a glance</b>Green means verified. An expired sign-in turns amber here and on any agent that depends on it, with a one-click re-login.</div>
+</div>
+</section>
+
+<!-- 4 ACTIVITY -->
+<section class="screen" id="activity">
+<div class="win">
+  <div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="b">Activity</span><span class="sp"></span><span class="seg"><span class="on">Live</span><span>Scheduled</span><span>History</span></span><span class="sp"></span><span class="btn bad">■ Stop all</span></div>
+  <div class="body">
+    <div class="pane" style="padding:16px 18px">
+      <div class="list"><table>
+        <tr><th>Task</th><th>Agent · model</th><th>Conversation</th><th>Status</th><th>Elapsed</th><th></th></tr>
+        <tr><td><span class="row"><span class="spin"></span>generation</span></td><td>Atlas · Opus 5.5</td><td>Fix flaky login test</td><td><span class="tag acc">running · turn 4</span></td><td>2m 08s</td><td class="t3">■</td></tr>
+        <tr><td style="padding-left:30px"><span class="row"><span class="dot warn"></span>bash <span class="mono t3">git push…</span></span></td><td class="t3">—</td><td class="t3">″</td><td><span class="tag warn">awaiting approval</span></td><td>0m 31s</td><td class="t3">■</td></tr>
+        <tr><td style="padding-left:30px"><span class="row"><span class="spin"></span>subagent</span></td><td>Scout · Sonnet 5.5</td><td class="t3">″</td><td><span class="tag acc">running</span></td><td>0m 41s</td><td class="t3">■</td></tr>
+        <tr><td><span class="row"><span class="spin"></span>generation</span></td><td>Forge · gpt-6-sol</td><td>Overnight: dependency audit</td><td><span class="tag acc">running · turn 27</span></td><td>3h 12m</td><td class="t3">■</td></tr>
+        <tr><td style="padding-left:30px"><span class="row"><span class="dot"></span>run_ci</span></td><td class="t3">—</td><td class="t3">″</td><td><span class="tag">waiting on webhook · ≤ 2h</span></td><td>11m</td><td class="t3">■</td></tr>
+        <tr><td><span class="row"><span class="dot warn"></span>review</span></td><td>Atlas · Opus 5.5</td><td>Release notes for 2.4</td><td><span class="tag warn">asked you a question</span></td><td>1d 2h</td><td class="t3">■</td></tr>
+        <tr><td><span class="row"><span class="dot"></span>schedule</span></td><td>Scout · Sonnet 5.5</td><td>Morning news brief</td><td><span class="tag">sleeping · tomorrow 7:00</span></td><td>—</td><td class="t3">■</td></tr>
+        <tr><td><span class="row"><span class="dot" style="background:var(--bad)"></span>generation</span></td><td>Local · qwen3-coder</td><td>Budget spreadsheet formulas</td><td><span class="tag bad">failed · model unreachable</span></td><td>—</td><td style="color:var(--acc)">Continue</td></tr>
+      </table></div>
+      <div class="box"><div class="row"><span class="dot ok"></span><span class="b">Recovered after restart</span><span class="t2">· Today 09:14 — the Mac restarted for an update. 2 runs resumed from their last checkpoint; 1 shell command was not re-run (not safe to repeat) and the agent was told.</span></div></div>
+    </div>
+    <aside class="insp" style="width:330px">
+      <div class="row"><span class="b">Inbox</span><span class="tag warn">2</span><span class="sp"></span><span class="t3 sm">things waiting on you</span></div>
+      <div class="gate">
+        <div class="row"><span class="av a1">A</span><span class="b">Atlas</span><span class="t2 sm">Fix flaky login test</span></div>
+        <div style="margin:6px 0 2px">Run this command?</div>
+        <div class="mono" style="margin-bottom:9px">git push origin fix/login-race</div>
+        <div class="row"><span class="btn pri">Allow</span><span class="btn">Always</span><span class="btn bad">Deny</span></div>
+      </div>
+      <div class="gate" style="border-color:var(--line2);background:var(--panel)">
+        <div class="row"><span class="av a1">A</span><span class="b">Atlas</span><span class="t2 sm">Release notes for 2.4</span></div>
+        <div style="margin:6px 0 8px">"Should the notes mention the pricing change, or is that being announced separately?"</div>
+        <div class="in t3" style="margin-bottom:8px">Type an answer…</div>
+        <div class="row"><span class="btn pri">Send</span><span class="btn">Open conversation</span><span class="sp"></span><span class="t3 sm">expires in 22h</span></div>
+      </div>
+      <div class="box"><h4>Scheduled</h4>
+        <div class="kv"><span>Morning news brief</span><b>Daily 7:00</b></div>
+        <div class="kv"><span>Weekly repo health</span><b>Mon 9:00</b></div>
+        <div class="kv"><span>Remind: renew domain</span><b>Nov 30</b></div>
+        <div style="color:var(--acc);margin-top:5px">＋ New schedule</div></div>
+    </aside>
+  </div>
+</div>
+<div class="notes">
+  <div><b>Everything running, one place</b>The session's live task graph across all conversations: who is running, waiting on a webhook, sleeping until a time, or waiting on you.</div>
+  <div><b>Inbox</b>Approvals and questions from every agent. Answer here, from a notification, or from the menu bar — the agent wakes and carries on.</div>
+  <div><b>Schedules</b>Recurring and one-off runs are durable sleeping tasks, so they fire even after a reboot (the engine runs in the background, not in the window).</div>
+  <div><b>Honest recovery</b>After a crash or restart the app says plainly what resumed, what was retried and what was deliberately not repeated.</div>
+</div>
+</section>
+
+<!-- 5 QUICK -->
+<section class="screen" id="quick">
+<div class="desk">
+  <div class="menubar"><span class="b"></span><span class="b">Finder</span><span>File</span><span>Edit</span><span>View</span><span class="sp"></span><span style="background:#fff3;border-radius:5px;padding:1px 7px">◎ 3</span><span>Wed 9:41</span></div>
+  <div class="pop">
+    <div class="in" style="background:#0004"><span class="av a1" style="width:18px;height:18px;font-size:10px">A</span><span class="t3 grow">Ask Atlas anything…</span><span class="tag">⌥Space</span></div>
+    <div class="lbl" style="padding-left:2px">Needs you</div>
+    <div class="it" style="background:var(--warnbg);color:var(--tx)"><span class="dot warn"></span><span class="n">Allow <span class="mono">git push origin fix/login-race</span>?</span><span class="sp"></span><span class="btn pri" style="padding:2px 9px">Allow</span><span class="btn" style="padding:2px 9px">Deny</span></div>
+    <div class="lbl" style="padding-left:2px">Running</div>
+    <div class="it"><span class="spin"></span><span class="n">Fix flaky login test</span><span class="sp"></span><span class="t3 sm">Atlas · 2m</span></div>
+    <div class="it"><span class="spin"></span><span class="n">Overnight: dependency audit</span><span class="sp"></span><span class="t3 sm">Forge · 3h</span></div>
+    <div class="lbl" style="padding-left:2px">Next up</div>
+    <div class="it"><span class="dot"></span><span class="n">Morning news brief</span><span class="sp"></span><span class="t3 sm">tomorrow 7:00</span></div>
+    <div class="row" style="border-top:1px solid var(--line);margin-top:8px;padding:9px 4px 0;color:var(--tx2)"><span>Open pi²</span><span class="sp"></span><span>$4.12 today</span><span>·</span><span>Pause all</span></div>
+  </div>
+  <div class="palette">
+    <div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line);font-size:15px"><span class="t3">⌘K</span><span>forge</span><span class="caret" style="height:17px"></span></div>
+    <div style="padding:6px">
+      <div class="it on"><span class="av a2">F</span><span>New conversation with <b>Forge</b></span><span class="sp"></span><span class="t3">↵</span></div>
+      <div class="it"><span>⇄</span><span>Switch this conversation to <b>Forge</b></span></div>
+      <div class="it"><span>⑂</span><span>Fork this conversation and hand to <b>Forge</b></span></div>
+      <div class="it"><span>⚙</span><span>Edit agent: <b>Forge</b></span></div>
+      <div class="lbl">Conversations</div>
+      <div class="it"><span class="spin"></span><span>Overnight: dependency audit</span><span class="sp"></span><span class="t3 sm">Forge · running</span></div>
+      <div class="it"><span class="dot"></span><span>Refactor payment webhooks</span><span class="sp"></span><span class="t3 sm">Forge · 3 days ago</span></div>
+      <div class="lbl">In messages</div>
+      <div class="it"><span class="dot"></span><span class="t2">"…ask <b>Forge</b> to bisect it against last week's build…"</span></div>
+    </div>
+  </div>
+</div>
+<div class="notes">
+  <div><b>Menu bar</b>Agents keep working with the window closed. The menu bar shows what's running, what needs you, and what's next — and lets you approve without opening the app.</div>
+  <div><b>Quick Ask (⌥Space)</b>A global hotkey opens a small prompt from anywhere; the answer streams in place and can be promoted to a full conversation.</div>
+  <div><b>Command palette (⌘K)</b>One box for everything: start, switch, fork, hand off, search every message, change model, run any command.</div>
+  <div><b>Notifications</b>Finished runs, approvals and questions arrive as native notifications with inline Allow / Deny / Reply actions.</div>
+</div>
+</section>
+
+<!-- 6 USAGE -->
+<section class="screen" id="usage">
+<div class="win">
+  <div class="bar"><div class="lights"><i></i><i></i><i></i></div><span class="b">Usage</span><span class="sp"></span><span class="seg"><span>Today</span><span class="on">7 days</span><span>30 days</span><span>All</span></span><span class="sp"></span><span class="pill ghost">Export CSV</span></div>
+  <div class="body"><div class="pane">
+    <div class="grid3" style="grid-template-columns:repeat(4,1fr)">
+      <div class="box"><h4>Spend</h4><div style="font-size:24px;font-weight:650">$31.47</div><div class="t3 sm">metered providers only</div></div>
+      <div class="box"><h4>Subscription use</h4><div style="font-size:24px;font-weight:650">18.2M <span class="t3 sm">tokens</span></div><div class="t3 sm">Claude + ChatGPT sign-ins</div></div>
+      <div class="box"><h4>Local</h4><div style="font-size:24px;font-weight:650">6.4M <span class="t3 sm">tokens</span></div><div class="t3 sm">free · Ollama</div></div>
+      <div class="box"><h4>Runs</h4><div style="font-size:24px;font-weight:650">137</div><div class="t3 sm">4 failed · 2 recovered</div></div>
+    </div>
+    <div class="grid2" style="flex:1">
+      <div class="box"><h4>By model</h4>
+        <div class="barrow"><span>Claude Opus 5.5</span><div class="tr"><i style="width:82%"></i></div><span>9.1M</span></div>
+        <div class="barrow"><span>gpt-6-sol</span><div class="tr"><i style="width:64%"></i></div><span>7.0M</span></div>
+        <div class="barrow"><span>qwen3-coder</span><div class="tr"><i style="width:58%"></i></div><span>6.4M</span></div>
+        <div class="barrow"><span>Claude Sonnet 5.5</span><div class="tr"><i style="width:31%"></i></div><span>3.4M</span></div>
+        <div class="barrow"><span>Claude Haiku 5.5</span><div class="tr"><i style="width:12%"></i></div><span>1.3M</span></div>
+        <div class="barrow"><span>grok (xAI)</span><div class="tr"><i style="width:7%"></i></div><span>0.8M</span></div></div>
+      <div class="box"><h4>By agent</h4>
+        <div class="barrow"><span class="row"><span class="av a2">F</span>Forge</span><div class="tr"><i style="width:76%;background:#ffb37a"></i></div><span>$14.20</span></div>
+        <div class="barrow"><span class="row"><span class="av a1">A</span>Atlas</span><div class="tr"><i style="width:60%;background:#b9a6ff"></i></div><span>$11.30</span></div>
+        <div class="barrow"><span class="row"><span class="av a3">S</span>Scout</span><div class="tr"><i style="width:32%;background:#7fd8c4"></i></div><span>$5.97</span></div>
+        <div class="barrow"><span class="row"><span class="av a4">L</span>Local</span><div class="tr"><i style="width:2%;background:#9fc5ff"></i></div><span>$0.00</span></div>
+        <h4 style="margin-top:14px">Most expensive conversations</h4>
+        <div class="kv"><span>Overnight: dependency audit</span><b>$8.12</b></div>
+        <div class="kv"><span>Refactor payment webhooks</span><b>$4.40</b></div>
+        <div class="kv"><span>Fix flaky login test</span><b>$0.84</b></div></div>
+    </div>
+    <div class="box"><div class="row"><span class="b">Budgets</span><span class="t2">Daily cap $10 · warn at 80% · pause runs at 100%</span><span class="sp"></span><span class="meter" style="width:220px;margin:0"><i style="width:41%"></i></span><span class="t2">$4.12 of $10 today</span><span class="btn">Edit</span></div></div>
+  </div></div>
+</div>
+<div class="notes">
+  <div><b>Straight from <span class="mono">pi.usage</span></b>pi durable already totals tokens and cost per provider/model and per tool, including failed attempts. The app adds per-agent and per-day rollups.</div>
+  <div><b>Budgets</b>Daily and per-run caps that warn, then pause runs durably instead of killing them — raise the cap and they continue.</div>
+  <div><b>Metered vs subscription vs local</b>Shown separately so the dollar figure only counts what you actually pay per token.</div>
+</div>
+</section>
+
+<script>
+document.getElementById('nav').addEventListener('click',function(e){
+  var b=e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#nav button').forEach(function(x){x.classList.toggle('on',x===b)});
+  document.querySelectorAll('.screen').forEach(function(s){s.classList.toggle('on',s.id===b.dataset.s)});
+});
+</script>
+</body>
+</html>
