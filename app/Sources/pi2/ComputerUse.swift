@@ -206,7 +206,7 @@ struct ComputerUseSection: View {
         } header: {
             Text("Computer use")
         } footer: {
-            Text(footer)
+            Text(footer).formFooter()
         }
     }
 

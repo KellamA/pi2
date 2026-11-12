@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start a conversation with …
+        2. Send …
+        3. …
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.5"
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options:
+        - Development build (./app/build.sh)
+        - Release build (./app/build.sh release)
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Provider and model, if it matters
+      placeholder: "Ollama, llama3.3"
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Anything relevant from engine.log in ~/Library/Application Support/pi2. Check it for keys and private text first.
+      render: text

@@ -1,58 +1,107 @@
-# pi²
+<p align="center">
+  <img src="docs/images/icon.png" width="112" alt="pi² icon">
+</p>
 
-A native macOS app for running AI agents on [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable). Every model turn, tool call and decision is committed to storage before it is shown, so a crash, a restart or quitting the app does not lose a run.
+<h1 align="center">pi²</h1>
 
-- **Agents** with their own model, instructions, tools, folder and limits, which can hand work to each other.
-- **Any model**: sign in with a subscription, paste an API key, or point at a local or hosted server (Ollama, LM Studio, vLLM, a gateway).
-- **Control**: tool access per conversation (off, read, ask first, full), approvals and questions collected in an Inbox.
-- **Computer use**: an agent can work the apps you choose, one window at a time, in the background, asking before it acts.
-- **Always on**: schedules, a menu bar icon, Quick Ask (⌃⌥Space), and an engine that can keep running after the app quits.
-- **Extras**: MCP servers, scripts that call tools, fork, search, a command palette (⌘K), usage and a daily budget, export and backup.
+<p align="center">
+  <b>A native Mac app for AI agents that don't lose their work.</b><br>
+  Give each agent its own model, tools and limits. Let them hand work to each other, use your apps, and run while you're away.<br>
+  Approve what matters from one inbox.
+</p>
 
-The original plan and screen mockups are in [PLAN.md](PLAN.md) and [mockups.html](mockups.html).
+<p align="center">
+  <a href="https://github.com/KellamA/pi2/actions/workflows/ci.yml"><img src="https://github.com/KellamA/pi2/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/macOS-15%2B-1f2026" alt="macOS 15 or later">
+  <img src="https://img.shields.io/badge/app-SwiftUI-8b93ff" alt="SwiftUI">
+  <img src="https://img.shields.io/badge/engine-pi%20durable%201.5.2-4cc38a" alt="pi durable 1.5.2">
+</p>
 
-## How it is put together
+<p align="center">
+  <img src="docs/images/hero.png" alt="A conversation in pi²: an agent runs a test, hands a question to a second agent, edits a file, and asks before pushing" width="900">
+</p>
 
-```
-app/      SwiftUI app (the window, menu bar, Quick Ask, settings)
-          Sources/ComputerKit   seeing and working other apps' windows
-          Sources/pi2-probe     a command-line way to try ComputerKit while developing; not part of the app
-engine/   Node + TypeScript process that hosts the pi durable harness
-```
+<p align="center"><sub>The screenshots show sample conversations, with answers scripted for the pictures.</sub></p>
 
-The app is a view of the engine's committed state. They talk over a Unix socket in the data folder, one JSON object per line: requests from the app, events from the engine. The engine is the only process that opens the database.
+## What it is
 
-| Engine file | What it holds |
-|---|---|
-| `src/main.ts` | Startup, the socket server, request handlers, events |
-| `src/state.ts` | The app's own documents (conversation index, agents) and the Inbox |
-| `src/extensions.ts` | Approvals, `ask_user`, `delegate`, `read_reference`, `computer` |
-| `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
-| `src/reference.ts` | An agent's reference files |
-| `src/providers.ts` | Built-in providers, custom endpoints, the scripted demo model |
-| `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
-| `src/schedules.ts` | Schedule rules and next-run times |
-| `src/mcp.ts` | MCP servers and their tools |
-| `src/backup.ts` | Backup and restore |
+pi² is a home for agents on your Mac, built on [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable). Every model turn, tool call and decision is saved before it is shown, so a crash, a restart or quitting the app does not lose a run. It picks up where it stopped.
 
-Data lives in `~/Library/Application Support/pi2` (one SQLite database plus a few settings files). Keys and sign-ins live in the Keychain under the service `dev.pi2.credentials`.
+It works with the models you already have: sign in with a subscription, paste an API key, or point it at a local server such as Ollama or LM Studio. Each agent can use a different one.
 
-## Computer use
+## What you can do with it
 
-Turn it on per agent, in the agent's settings, and add the apps it may use. The engine decides what is allowed and asks for approval; the app does the seeing and clicking, because macOS gives the permissions for those (Accessibility, and Screen Recording for pictures) to the app. So the app has to be open.
+### Run a team of agents
 
-- The agent gets a numbered list of the window's controls, read through the accessibility API, and a picture if its model takes images. It acts on a control by number where it can, and on a point in the picture where it cannot. A text-only model works from the list alone, and that needs no Screen Recording permission.
-- Every action answers with the window as it is afterwards. Only the two newest pictures are sent to the model; the transcript keeps them all.
-- With "Ask before each action" on (the default), each click, keystroke and menu command waits for approval, described in words ("Click the “Send” button in Mail"). An app can be allowed for the rest of a conversation. Looking is not asked about.
-- Terminals, script editors and password managers cannot be added. Browsers and System Settings can be looked at but not controlled. Password fields are never typed into, and the Apple menu is off limits. These limits are checked in the engine and again in the app.
-- While an agent is acting, a pill at the top of the screen says so; its Stop button, or Esc twice, stops the run.
+An agent is a saved setup: a model, instructions, tools, a folder, and limits. Pick one to start a conversation.
 
-## Build and run
+<p align="center"><img src="docs/images/welcome.png" alt="The welcome screen with four agents to choose from" width="820"></p>
 
-Needs macOS 15 or later, Xcode's command line tools, and Node 26 or later.
+Agents can hand work to each other. Each handoff opens a sub-chat under the conversation that started it, so you can watch an orchestrator's helpers work, open any of them, and talk to them directly.
+
+<p align="center"><img src="docs/images/orchestration.png" alt="An agent hands two tasks to other agents and writes a plan from their answers" width="820"></p>
+
+### Stay in control
+
+Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
+
+<p align="center"><img src="docs/images/inbox.png" alt="The Inbox with a question and two approvals waiting" width="820"></p>
+
+### Let an agent use your apps
+
+Turn on computer use for an agent and choose which apps it may use. It works one window at a time, in the background, while you keep working. It reads the window's buttons and fields, and sees a picture of it if its model can. Before it clicks, types or picks a menu command, it tells you what it is about to do and waits.
+
+<p align="center"><img src="docs/images/computer-use.png" alt="An agent asks to type notes into TextEdit" width="820"></p>
+
+Terminals and password managers can never be added. Browsers and System Settings can be looked at but not controlled. [How computer use works](docs/computer-use.md).
+
+<p align="center"><img src="docs/images/agent-computer-use.png" alt="The Computer use section of an agent's settings" width="820"></p>
+
+### Use any model
+
+Sign in with a subscription, add API keys for any of 40 or so providers, or add your own endpoint. Choose which of a provider's models show up in the menus; "Newest Only" keeps one of each family.
+
+<p align="center">
+  <img src="docs/images/providers.png" alt="Provider settings: a local endpoint and two API keys" width="400">
+  <img src="docs/images/models.png" alt="Choosing which models show" width="400">
+</p>
+
+### Leave it running
+
+Schedules start conversations on their own: every morning, every hour, or once at a set time. Activity shows what is running and what is waiting for you. Closing the window leaves pi² in the menu bar, and the engine can keep going after you quit.
+
+<p align="center"><img src="docs/images/activity.png" alt="Activity: running conversations and two schedules" width="820"></p>
+
+### Know what it costs
+
+Usage is counted by model, agent and conversation. Models you pay for by use show a cost and count toward an optional daily budget; subscriptions and local models count tokens only.
+
+<p align="center"><img src="docs/images/usage.png" alt="Usage by model and by agent" width="820"></p>
+
+### And the rest
+
+- **Reference files**: give an agent files and folders it can always read. It opens them when it needs them, so they cost nothing until then.
+- **MCP servers**: add tools from other apps and services, per agent.
+- **Scripts**: let a model chain many tool calls in one step.
+- **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.
+- **Command palette** (⌘K) and **Quick Ask** from anywhere (⌃⌥Space).
+- **Backup and restore** of everything except your keys.
+- **Dark and light**, dark by default.
+
+<p align="center"><img src="docs/images/hero-light.png" alt="The same conversation in light mode" width="820"></p>
+
+## Install
+
+There is no download yet. pi² builds from source in a couple of minutes.
+
+You need macOS 15 or later, Xcode's command line tools, and Node 26 or later.
 
 ```bash
-cd engine && npm ci
+git clone https://github.com/KellamA/pi2.git && cd pi2
+```
+
+```bash
+cd engine && npm ci && cd ..
 ```
 
 ```bash
@@ -63,51 +112,53 @@ cd engine && npm ci
 open "app/build/pi².app"
 ```
 
-That is a development build: it runs the engine from `engine/` with the Node on your `PATH`, so it only works on this machine and engine edits take effect the next time the engine starts.
-
-For an app that carries its own Node and engine and can be moved:
+That is a development build: it runs the engine from the `engine` folder, so keep the folder where it is. For an app that carries its own engine and can be moved to Applications:
 
 ```bash
 ./app/build.sh release
 ```
 
-To sign and notarize a release build for someone else, set `SIGN_IDENTITY` (a Developer ID Application identity) and optionally `NOTARY_PROFILE` (a `notarytool` keychain profile) before running it. That path is written but has not been exercised.
+## First run
 
-## Tests
+1. pi² opens with a scripted demo model, so you can click around before connecting anything.
+2. Open **Settings › Providers** and sign in, add a key, or add an endpoint. If Ollama or LM Studio is running, the welcome screen offers to add it for you.
+3. Pick a model from the toolbar of a conversation, or set one per agent.
+4. To let an agent touch files, set **tool access** in the conversation's toolbar and choose a folder. Start with "Ask first".
 
-```bash
-cd engine && npm test
-```
+## Status
 
-The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, tools, approvals, delegation, schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint, export, backup and restore.
+pi² is early. Read this before you rely on it.
 
-```bash
-cd engine && npm run check
-```
+- pi durable, the library underneath, is marked experimental. pi² pins one exact version.
+- The engine has an end-to-end test suite that runs on every change. The app has no automated tests; it is checked by hand.
+- Subscription sign-in and computer use are the newest parts and have had the least real use.
+- A few things are built but have had little or no testing: Quick Ask and its global shortcut, the menu bar panel, notifications, and starting the engine at login.
+- Builds are not signed or notarized, so there is no ready-made download.
 
-type-checks the engine.
+Known limits are listed in [docs/architecture.md](docs/architecture.md#known-limits).
 
-Computer use is tested in the engine with a stand-in for the app. The part that touches the screen has no automated test; try it by hand against one app with the probe:
+## Privacy and safety
 
-```bash
-cd app && swift build --product pi2-probe
-```
+- Conversations, agents and settings stay on your Mac, in `~/Library/Application Support/pi2`.
+- Keys and sign-ins are stored in the macOS Keychain, never in pi²'s files.
+- pi² sends nothing anywhere on its own. Your messages go to the model providers and MCP servers you connect, and nowhere else.
+- With "Full access", an agent runs commands without asking. Tools work inside the conversation's folder.
+- Whether a subscription may be used from another app is up to each provider's terms.
 
-```bash
-.build/debug/pi2-probe --only com.apple.TextEdit --out /tmp/probe '[{"action":"open_app"},{"action":"type","text":"hello"}]'
-```
+To report a security problem, see [SECURITY.md](SECURITY.md).
 
-It uses the permissions of the terminal it is run from.
+## Documentation
 
-Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested).
+- [Architecture](docs/architecture.md): how the app and the engine fit together, where data lives, known limits.
+- [Computer use](docs/computer-use.md): how it works, what it will not do, how to try it safely.
+- [Development](docs/development.md): building, testing, and the layout of the code.
+- [Changelog](CHANGELOG.md)
+- [The original plan and mockups](docs/design/PLAN.md)
 
-## Known limits
+## Contributing
 
-- pi durable is marked experimental. The engine pins version 1.5.2 exactly.
-- Approvals wait inside the running engine and are asked again after a restart. pi durable ends a waiting call after five crashes in a row.
-- Whether a subscription may be used from a third-party app is up to each provider's terms.
-- With "Full access", commands run without asking. Tools always work inside the conversation's folder, or the app's own scratch folder when none is chosen.
-- Computer use: a click at a bare point (not on a listed control) is ignored by some apps while they are in the background; the agent is told when nothing changed. Pop-up menus and apps with little accessibility support (some games, some cross-platform apps) may not be workable.
-- macOS ties the Accessibility and Screen Recording permissions to the exact build. After rebuilding a development build, remove pi² from those lists in System Settings and grant it again.
-- Anything running as you can talk to the engine's socket, as it always could. With computer use on, that includes asking an agent to use the apps you allowed.
-- Not built: remote environments over SSH, MCP sign-in (OAuth), per-run budgets, automatic updates, loading very old messages in very long conversations.
+Bug reports and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Acknowledgements
+
+pi² is a front end for [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable) and the rest of the [pi](https://github.com/earendil-works/pi) libraries by Earendil Works, which do the hard part: durable runs, providers, tools and MCP.

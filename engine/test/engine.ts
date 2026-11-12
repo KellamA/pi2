@@ -692,6 +692,20 @@ try {
 	assert.equal(seenAuthorization, "Bearer mock-secret");
 	step("custom OpenAI-compatible endpoint: probe, save, stream a chat, key sent from the Keychain");
 
+	// A local server has no key at all; it must still be usable.
+	const { id: keyless } = await client.call("endpoints.save", { name: "No Key Box", baseUrl: mockUrl, api: "openai-completions", models: [{ id: "mock-1" }] });
+	await client.until("keyless endpoint offered", () => client.models.some((m) => m.provider === keyless));
+	const { id: d2 } = await client.call("conversation.create", { model: { provider: keyless, modelId: "mock-1" } });
+	await client.call("conversation.open", { id: d2 });
+	await client.call("submit", { id: d2, text: "hi, no key" });
+	conv = await client.idle(d2);
+	assert.equal(conv.state.failure, null, "an endpoint saved without a key answers");
+	assert.equal(conv.items.find((i) => i.kind === "assistant")!.text, "Hello from the mock endpoint.");
+	await client.call("conversation.configure", { id: d2, model: { provider: "demo", modelId: "demo-1" } });
+	await client.until("model switched back", () => client.conversations.get(d2)!.state.agent.model?.provider === "demo");
+	await client.call("endpoints.remove", { id: keyless });
+	step("an endpoint with no key (Ollama, LM Studio) works");
+
 	await client.call("conversation.configure", { id: d, model: { provider: "demo", modelId: "demo-1" } });
 	await client.until("model switched", () => client.conversations.get(d)!.state.agent.model?.provider === "demo");
 	await client.call("endpoints.remove", { id: endpointId });

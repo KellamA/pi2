@@ -1,0 +1,19 @@
+name: Feature request
+description: Something pi² should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task or the situation, rather than the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+  - type: textarea
+    id: now
+    attributes:
+      label: What you do today instead

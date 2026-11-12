@@ -322,6 +322,8 @@ struct ToolsMenu: View {
 
     private var access: String { agent?.access ?? "none" }
     private var folderName: String? { agent?.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } }
+    /// Whether this conversation's agent may use apps on this Mac, which is set on the agent, not here.
+    private var usesComputer: Bool { engine.agent(agent?.agentId)?.computer?.enabled == true }
 
     var body: some View {
         Menu {
@@ -348,7 +350,7 @@ struct ToolsMenu: View {
         case "read": "Read · \(folderName ?? "scratch folder")"
         case "ask": "Ask first · \(folderName ?? "scratch folder")"
         case "full": "Full · \(folderName ?? "scratch folder")"
-        default: "Tools off"
+        default: usesComputer ? "Computer use" : "Tools off"
         }
     }
 
@@ -602,11 +604,16 @@ struct ToolCard: View {
 
     /// pi durable wraps the results it writes itself (refused, blocked, interrupted) in a tag meant for the model.
     private static func readable(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("<harness>"), trimmed.hasSuffix("</harness>") else { return text }
-        var inner = String(trimmed.dropFirst("<harness>".count).dropLast("</harness>".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if inner.hasPrefix("[error] ") { inner.removeFirst("[error] ".count) }
-        return inner
+        // The tag can be the whole result (a refusal) or follow the tool's own output (a command that exited non-zero).
+        var result = text
+        while let open = result.range(of: "<harness>"), let close = result.range(of: "</harness>", range: open.upperBound..<result.endIndex) {
+            let note = result[open.upperBound..<close.lowerBound]
+                .split(separator: "\n")
+                .map { $0.replacingOccurrences(of: #"^\[(error|warning|info)\] "#, with: "", options: .regularExpression) }
+                .joined(separator: "\n")
+            result.replaceSubrange(open.lowerBound..<close.upperBound, with: note)
+        }
+        return result.trimmingCharacters(in: .newlines)
     }
     private var expanded: Bool { expandedChoice ?? (isRunning || isError) }
 
@@ -796,7 +803,7 @@ struct SubagentCard: View {
                 }
             }
             if !task.isEmpty {
-                Text(task).foregroundStyle(Theme.tx2).lineLimit(expanded ? nil : 2)
+                Text(inlineMarkdown(task)).foregroundStyle(Theme.tx2).lineLimit(expanded ? nil : 2)
             }
             if finished, !answer.isEmpty {
                 Button {
@@ -804,7 +811,8 @@ struct SubagentCard: View {
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Image(systemName: "arrow.turn.down.right").font(.system(size: 10)).foregroundStyle(Theme.tx3)
-                        Text(answer)
+                        // Folded, the answer reads as one run of text; opened, it keeps its own lines.
+                        Text(inlineMarkdown(expanded ? answer : answer.replacingOccurrences(of: #"\s*\n+\s*"#, with: " ", options: .regularExpression)))
                             .foregroundStyle(isError ? Theme.bad : Theme.tx)
                             .lineLimit(expanded ? nil : 2)
                             .multilineTextAlignment(.leading)
@@ -852,7 +860,7 @@ struct MessageText: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+            ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
                 if segment.code {
                     Text(segment.text)
                         .font(Theme.mono)
@@ -861,6 +869,14 @@ struct MessageText: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12).padding(.vertical, 10)
                         .panel(radius: 8)
+                } else if streaming, index == segments.count - 1 {
+                    // The caret sits at the end of the words still arriving, as part of the line.
+                    TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                        let on = Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+                        (Text(markdown(segment.text)) + Text(" ▍").foregroundColor(on ? Theme.acc : .clear))
+                            .lineSpacing(3.5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 } else {
                     Text(markdown(segment.text))
                         .textSelection(.enabled)
@@ -868,13 +884,17 @@ struct MessageText: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if streaming { Caret() }
+            // Nothing to attach it to yet (or a code block is still arriving): the caret stands alone.
+            if streaming, segments.last?.code ?? true { Caret() }
         }
     }
 
-    private func markdown(_ source: String) -> AttributedString {
-        (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
-    }
+    private func markdown(_ source: String) -> AttributedString { inlineMarkdown(source) }
+}
+
+/// Bold, italics, code and links, with line breaks kept; block Markdown is left as typed.
+func inlineMarkdown(_ source: String) -> AttributedString {
+    (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
 }
 
 /// Steer or queue, as two segments in the accent style.

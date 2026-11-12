@@ -11,12 +11,12 @@ struct UsageView: View {
             if let usage = engine.usage {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(spacing: 12) {
-                        tile("Today", usage.today.costText, "\(usage.today.tokensText) tokens")
-                        tile("All time", usage.total.costText, "\(usage.total.tokensText) tokens")
-                        tile("Models used", "\(usage.models.count)", usage.models.first.map { "most: \($0.key)" } ?? "none yet")
+                        spendTile("Today", usage.today)
+                        spendTile("All time", usage.total)
+                        tile("Models used", "\(usage.models.count)", usage.models.first.map { "most: \(modelName($0.key))" } ?? "none yet")
                     }
                     budget(usage)
-                    bars("By model", usage.models.map { ($0.key, $0.tokens, $0.subscription == true ? "\(Formats.tokens($0.tokens)) tokens · subscription" : Formats.usage(tokens: $0.tokens, cost: $0.cost), Color.piAccent) })
+                    bars("By model", usage.models.map { (modelName($0.key), $0.tokens, $0.subscription == true ? "\(Formats.tokens($0.tokens)) tokens · subscription" : Formats.usage(tokens: $0.tokens, cost: $0.cost), Color.piAccent) })
                     bars("By agent", usage.agents.map { row in
                         let agent = engine.agent(row.agentId)
                         return (agent?.name ?? "Deleted agent", row.tokens, Formats.usage(tokens: row.tokens, cost: row.cost), AgentColor.color(agent?.color))
@@ -49,6 +49,19 @@ struct UsageView: View {
         .background(Theme.window)
         .navigationTitle("Usage")
         .onAppear { budgetText = engine.usage?.budget.daily.map { String(format: "%.2f", $0) } ?? "" }
+    }
+
+    /// "Ollama · Llama 3.3" for the engine's "custom-ollama/llama3.3"; the key itself for a model no longer connected.
+    private func modelName(_ key: String) -> String {
+        guard let model = engine.allModels.first(where: { "\($0.provider)/\($0.id)" == key }) else { return key }
+        return "\(model.providerName) · \(model.name)"
+    }
+
+    /// Money when some of the use was metered; otherwise the tokens, since a subscription or a local model has no bill.
+    private func spendTile(_ title: String, _ spend: Spend) -> some View {
+        spend.cost > 0
+            ? tile(title, spend.costText, "\(spend.tokensText) tokens")
+            : tile(title, spend.tokensText, spend.tokens > 0 ? "tokens · nothing metered" : "tokens")
     }
 
     private func tile(_ title: String, _ value: String, _ detail: String) -> some View {

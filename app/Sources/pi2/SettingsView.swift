@@ -31,7 +31,7 @@ struct GeneralSettings: View {
                 }
                 .onChange(of: appearance) { _, value in AppAppearance.apply(AppAppearance(rawValue: value) ?? .dark) }
             } footer: {
-                Text("pi² is designed dark first. Light follows the same palette.")
+                Text("pi² is designed dark first. Light follows the same palette.").formFooter()
             }
             Section {
                 Toggle("Notify me when an agent needs me", isOn: $notify)
@@ -49,7 +49,7 @@ struct GeneralSettings: View {
                         .font(.callout).foregroundStyle(.orange)
                 }
             } footer: {
-                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.")
+                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.").formFooter()
             }
             BackgroundSettings()
         }
@@ -72,7 +72,7 @@ struct BackgroundSettings: View {
         } header: {
             Text("In the background")
         } footer: {
-            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on.\(EngineClient.isSelfContained ? " The login item points at this copy of the app; turn it off and on again after moving the app." : " This development build runs the engine from its source folder, so that folder must stay where it is.")")
+            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on.\(EngineClient.isSelfContained ? " The login item points at this copy of the app; turn it off and on again after moving the app." : " This development build runs the engine from its source folder, so that folder must stay where it is.")").formFooter()
         }
     }
 
@@ -146,7 +146,7 @@ struct ProvidersSettings: View {
             } header: {
                 Text("Subscriptions")
             } footer: {
-                Text("Sign-in uses your existing plan. Each provider decides whether its subscription may be used from other apps; check their terms.")
+                Text("Sign-in uses your existing plan. Each provider decides whether its subscription may be used from other apps; check their terms.").formFooter()
             }
 
             Section {
@@ -166,7 +166,7 @@ struct ProvidersSettings: View {
             } header: {
                 Text("Hosted and local endpoints")
             } footer: {
-                Text("Any server that speaks the OpenAI or Anthropic API: Ollama, LM Studio, vLLM, llama.cpp, or a gateway you run.")
+                Text("Any server that speaks the OpenAI or Anthropic API: Ollama, LM Studio, vLLM, llama.cpp, or a gateway you run.").formFooter()
             }
 
             Section("API keys") {

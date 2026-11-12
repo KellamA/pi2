@@ -148,6 +148,9 @@ function demoProvider(): Provider {
 	return faux.provider;
 }
 
+/** Sent as the key to an endpoint that was saved without one. */
+const KEYLESS = "no-key";
+
 function endpointProvider(config: EndpointConfig): Provider {
 	const api = { "openai-completions": openAICompletionsApi, "openai-responses": openAIResponsesApi, "anthropic-messages": anthropicMessagesApi }[config.api]();
 	const models = config.models.map((m) => {
@@ -171,8 +174,10 @@ function endpointProvider(config: EndpointConfig): Provider {
 		id: config.id,
 		name: config.name,
 		baseUrl: config.baseUrl,
-		// A stored key is used when there is one; a keyless server is still "configured".
-		auth: { apiKey: { name: config.name, resolve: async ({ credential }) => ({ auth: credential?.key ? { apiKey: credential.key } : {} }) } },
+		// A stored key is used when there is one. A server without one (Ollama, LM Studio, llama.cpp) is still
+		// "configured": pi-ai refuses to send a request with no key at all, so it is given a stand-in, which such
+		// servers ignore.
+		auth: { apiKey: { name: config.name, resolve: async ({ credential }) => ({ auth: { apiKey: credential?.key ? credential.key : KEYLESS } }) } },
 		models,
 		api,
 	});

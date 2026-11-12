@@ -238,6 +238,13 @@ extension View {
     }
 }
 
+extension Text {
+    /// The explanation under a group of settings: left-aligned, wrapping, the full width of the group.
+    func formFooter() -> some View {
+        multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// The pi² mark, drawn in type so it scales: a large π with a small ² in the accent gradient.
 struct PiMark: View {
     var size: CGFloat = 56

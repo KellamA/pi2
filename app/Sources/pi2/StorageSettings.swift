@@ -49,7 +49,7 @@ struct StorageSettings: View {
                     }
                 }
             } footer: {
-                Text("Conversations, agents, schedules and settings live here in one database. Keys and sign-ins live in your macOS Keychain.")
+                Text("Conversations, agents, schedules and settings live here in one database. Keys and sign-ins live in your macOS Keychain.").formFooter()
             }
             Section {
                 Button(working ? "Working…" : "Back Up Now…") { backUp() }.disabled(working)
@@ -63,7 +63,7 @@ struct StorageSettings: View {
             } header: {
                 Text("Backup")
             } footer: {
-                Text("A backup is a folder with a copy of everything except keys and sign-ins. It can be made while agents are working. Restoring replaces what is here now; the replaced data is moved aside inside the data folder, not deleted.")
+                Text("A backup is a folder with a copy of everything except keys and sign-ins. It can be made while agents are working. Restoring replaces what is here now; the replaced data is moved aside inside the data folder, not deleted.").formFooter()
             }
         }
         .formStyle(.grouped)

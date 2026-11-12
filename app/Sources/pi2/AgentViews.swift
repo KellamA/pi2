@@ -175,7 +175,7 @@ struct AgentEditor: View {
                 } header: {
                     Text("Reference files")
                 } footer: {
-                    Text("The agent sees this list in every conversation and opens a file when it needs it, so files cost nothing until they are read. They are read from disk each time, so your edits are picked up. The agent can only read them, even with tools off.")
+                    Text("The agent sees this list in every conversation and opens a file when it needs it, so files cost nothing until they are read. They are read from disk each time, so your edits are picked up. The agent can only read them, even with tools off.").formFooter()
                 }
 
                 Section {
@@ -198,7 +198,7 @@ struct AgentEditor: View {
                 } header: {
                     Text("Tools")
                 } footer: {
-                    Text(AccessLevel.all.first { $0.id == agent.access }?.detail ?? "")
+                    Text(AccessLevel.all.first { $0.id == agent.access }?.detail ?? "").formFooter()
                 }
 
                 Section {
@@ -224,7 +224,7 @@ struct AgentEditor: View {
                 } header: {
                     Text("Extra tools")
                 } footer: {
-                    Text("Scripts let the model chain many tool calls in one step. MCP servers add tools from other apps and services.")
+                    Text("Scripts let the model chain many tool calls in one step. MCP servers add tools from other apps and services.").formFooter()
                 }
 
                 ComputerUseSection(settings: Binding(
@@ -253,7 +253,7 @@ struct AgentEditor: View {
                 } header: {
                     Text("Can hand work to")
                 } footer: {
-                    Text("The other agent runs with its own model, instructions and tools, and reports back.")
+                    Text("The other agent runs with its own model, instructions and tools, and reports back.").formFooter()
                 }
             }
             .formStyle(.grouped)
