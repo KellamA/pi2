@@ -172,6 +172,8 @@ function cleanKeychain(): void {
 }
 cleanKeychain(); // anything an earlier failed run left behind
 
+let backupPath = "";
+let restoredId = -1;
 let engine = startEngine();
 try {
 	let client = await Client.attach();
@@ -527,9 +529,34 @@ try {
 	await client.until("endpoint gone", () => !client.providers.some((p) => p.id === endpointId));
 	step("switch a conversation's model; remove the endpoint");
 
+	// ---- Export and backup (taken before the archive below, so a restore brings that conversation back)
+	const markdown = (await client.call("conversation.export", { id: b, format: "markdown" })).text as string;
+	assert.ok(markdown.includes("## You") && markdown.includes("/bash pwd && echo tool-ran") && markdown.includes("**Tool: bash**") && markdown.includes("tool-ran"));
+	const exported = JSON.parse((await client.call("conversation.export", { id: b, format: "json" })).text);
+	assert.ok(exported.items.length >= 4 && exported.items[0].kind === "user");
+	backupPath = (await client.call("backup.create", { directory: workdir })).path;
+	assert.ok(existsSync(join(backupPath, "session.sqlite")) && existsSync(join(backupPath, "manifest.json")));
+	await assert.rejects(client.call("backup.create", { directory: "/definitely/not/here" }), /Not a folder/);
+	restoredId = d;
+	step("export a conversation as Markdown and JSON; write a backup while running");
+
 	await client.call("conversation.archive", { id: d });
 	await client.until("archived", () => !client.library.some((x) => x.id === d));
 	step("archive a conversation");
+
+	// ---- Restore: stop the engine, put the backup back, start again
+	const restoreArgs = [main, "--restore", backupPath];
+	const restoreEnv = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE };
+	assert.throws(() => execFileSync(process.execPath, restoreArgs, { env: restoreEnv, stdio: "pipe" }), "restoring is refused while the engine runs");
+	engine.kill("SIGTERM");
+	await new Promise((resolve) => engine.once("exit", resolve));
+	assert.throws(() => execFileSync(process.execPath, [main, "--restore", workdir], { env: restoreEnv, stdio: "pipe" }), "a folder that is not a backup is refused");
+	const restored = JSON.parse(execFileSync(process.execPath, restoreArgs, { env: restoreEnv, encoding: "utf8" }));
+	assert.ok(existsSync(join(restored.previousDataMovedTo, "session.sqlite")), "the data that was replaced is kept aside");
+	engine = startEngine();
+	const afterRestore = await Client.attach();
+	await afterRestore.until("restored library", () => afterRestore.library.some((x) => x.id === restoredId));
+	step("restore a backup: the conversation archived after it is back, and the replaced data is kept");
 	console.log("PASS");
 } finally {
 	engine.kill("SIGTERM");

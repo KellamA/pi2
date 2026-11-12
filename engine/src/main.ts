@@ -28,6 +28,7 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createBackup, restoreBackup } from "./backup.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
 import { McpServers } from "./mcp.ts";
@@ -60,6 +61,23 @@ const alreadyRunning = await new Promise<boolean>((resolve) => {
 	const probe = connect(socketPath);
 	probe.once("connect", () => (probe.destroy(), resolve(true))).once("error", () => resolve(false));
 });
+// `--restore <folder>`: replace the data with a backup, then exit. The app runs this between stopping and starting
+// the engine.
+const restoreFrom = process.argv.indexOf("--restore");
+if (restoreFrom !== -1) {
+	if (alreadyRunning) {
+		console.error("Stop the engine before restoring a backup.");
+		process.exit(2);
+	}
+	try {
+		const aside = restoreBackup(home, process.argv[restoreFrom + 1] ?? "");
+		console.log(JSON.stringify({ restored: true, previousDataMovedTo: aside }));
+		process.exit(0);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		process.exit(1);
+	}
+}
 if (alreadyRunning) {
 	log("another engine is already running on", socketPath);
 	process.exit(0); // not a failure: launchd must not keep restarting a second copy
@@ -146,7 +164,7 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null } = (() => {
+const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -341,7 +359,7 @@ inbox.onChange = () => {
 
 async function providersEvent() {
 	const [list, models] = await Promise.all([providers.listProviders(), providers.listModels()]);
-	return { event: "providers", providers: list, models, defaultModel: await defaultModel() };
+	return { event: "providers", providers: list, models, defaultModel: await defaultModel(), onboarded: settings.onboarded === true };
 }
 async function announceProviders(): Promise<void> {
 	broadcast(await providersEvent());
@@ -512,6 +530,48 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await mcp.reconnect(text(params, "id"));
 		return {};
 	},
+	"conversation.export": async (params) => {
+		const conv = await conversation(params.id);
+		const meta = library.conversations[String(conv.id)];
+		const items: Item[] = [];
+		let cursor: unknown;
+		for (;;) {
+			const batch = await conv.entries({ order: "ascending" }, 500, cursor as never, context);
+			for (const entry of batch.items) {
+				const item = toItem(entry);
+				if (item !== undefined) items.push(item);
+			}
+			cursor = (batch as { next?: unknown }).next;
+			if (cursor === undefined || batch.items.length === 0) break;
+		}
+		if (params.format === "json") return { text: JSON.stringify({ title: meta?.title ?? "", agent: agents[meta?.agentId ?? ""]?.name ?? null, exportedAt: new Date().toISOString(), items }, null, 2) };
+		const agentName = agents[meta?.agentId ?? ""]?.name ?? "Assistant";
+		const fence = "```";
+		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
+		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
+		const lines: string[] = [`# ${meta?.title || "Conversation"}`, ""];
+		for (const item of items) {
+			if (item.kind === "user") lines.push("## You", "", item.text, "");
+			else if (item.kind === "marker") lines.push(`*${item.text}*`, "");
+			else if (item.kind === "assistant") {
+				lines.push(`## ${agentName}${item.stop === "aborted" || item.stop === "error" ? " (interrupted)" : ""}`, "");
+				if (item.text !== "") lines.push(item.text, "");
+				for (const call of item.toolCalls) {
+					const result = results.get(call.callId);
+					lines.push(`**Tool: ${call.name}**`, "", `${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
+					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
+				}
+			}
+		}
+		return { text: lines.join("\n") };
+	},
+	"settings.finishOnboarding": async () => {
+		settings.onboarded = true;
+		saveSettings();
+		await announceProviders();
+		return {};
+	},
+	"backup.create": async (params) => ({ path: await createBackup(home, text(params, "directory")) }),
 	"conversation.archive": async (params) => {
 		const conv = await conversation(params.id);
 		await conv.abort(context);

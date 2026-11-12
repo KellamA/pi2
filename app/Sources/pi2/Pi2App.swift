@@ -203,6 +203,10 @@ struct RootView: View {
         }
         .background(WindowOpener(model: model))
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
+        .sheet(isPresented: Binding(get: { engine.onboarded == false }, set: { _ in })) {
+            OnboardingView(model: model)
+                .interactiveDismissDisabled()
+        }
         .onChange(of: model.selection) { _, selection in
             if case .conversation(let id) = selection { engine.openConversation(id) }
         }
@@ -434,6 +438,11 @@ struct ConversationCommands: View {
             if let id, let last = engine.open[id]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) { engine.fork(id, at: last.id) }
         }
         .disabled(id == nil)
+        Menu("Export") {
+            Button("As Markdown…") { if let conversation = model.selectedConversation { StorageActions.export(conversation, format: "markdown", engine: engine) } }
+            Button("As JSON…") { if let conversation = model.selectedConversation { StorageActions.export(conversation, format: "json", engine: engine) } }
+        }
+        .disabled(model.selectedConversation == nil)
         Divider()
         Button("Rename…") { if let conversation = model.selectedConversation { model.beginRename(conversation) } }
             .disabled(model.selectedConversation == nil)

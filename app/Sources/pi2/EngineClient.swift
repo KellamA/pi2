@@ -20,6 +20,8 @@ final class EngineClient {
     private(set) var providers: [ProviderInfo] = []
     private(set) var models: [ModelInfo] = []
     private(set) var defaultModel: ModelRef?
+    /// Whether the first-run welcome has been completed for this data folder. Nil until the engine has said.
+    private(set) var onboarded: Bool?
     private(set) var agents: [AgentProfile] = []
     private(set) var inbox: [InboxItem] = [] {
         didSet {
@@ -46,6 +48,8 @@ final class EngineClient {
     private var nextRequestID = 1
     private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
     private var lastLaunch = Date.distantPast
+    /// Set while a backup is being restored, so the engine is not started underneath it.
+    private var holdEngine = false
 
     init() {
         if let override = ProcessInfo.processInfo.environment["PI2_HOME"] {
@@ -243,6 +247,7 @@ final class EngineClient {
         let providers: [ProviderInfo]
         let models: [ModelInfo]
         let defaultModel: ModelRef?
+        let onboarded: Bool?
     }
     private struct ConversationEvent: Decodable {
         let id: Int
@@ -285,6 +290,7 @@ final class EngineClient {
                 providers = event.providers
                 models = event.models
                 defaultModel = event.defaultModel
+                onboarded = event.onboarded ?? true
             case "conversation":
                 let event = try decoder.decode(ConversationEvent.self, from: line)
                 guard var data = open[event.id] else { return }
@@ -375,11 +381,9 @@ final class EngineClient {
     }
 
     private func launchEngineIfNeeded() {
-        guard enginePID == nil, Date().timeIntervalSince(lastLaunch) > 3 else { return }
+        guard !holdEngine, enginePID == nil, Date().timeIntervalSince(lastLaunch) > 3 else { return }
         let environment = ProcessInfo.processInfo.environment
-        let node = Bundle.main.object(forInfoDictionaryKey: "PI2NodePath") as? String ?? environment["PI2_NODE"]
-        let main = Bundle.main.object(forInfoDictionaryKey: "PI2EngineMain") as? String ?? environment["PI2_ENGINE_MAIN"]
-        guard let node, let main else {
+        guard let (node, main) = Self.enginePaths else {
             lastError = "The app does not know where the engine is. Build it with app/build.sh."
             return
         }
@@ -400,6 +404,58 @@ final class EngineClient {
             try process.run()
         } catch {
             lastError = "Could not start the engine: \(error.localizedDescription)"
+        }
+    }
+
+    /// Where Node and the engine's entry point are: inside the app for a self-contained build, otherwise the
+    /// development paths the build recorded.
+    static var enginePaths: (node: String, main: String)? {
+        let fileManager = FileManager.default
+        if let resources = Bundle.main.resourceURL {
+            let node = resources.appendingPathComponent("node").path
+            let main = resources.appendingPathComponent("engine/src/main.ts").path
+            if fileManager.isExecutableFile(atPath: node), fileManager.fileExists(atPath: main) { return (node, main) }
+        }
+        let environment = ProcessInfo.processInfo.environment
+        guard let node = Bundle.main.object(forInfoDictionaryKey: "PI2NodePath") as? String ?? environment["PI2_NODE"],
+              let main = Bundle.main.object(forInfoDictionaryKey: "PI2EngineMain") as? String ?? environment["PI2_ENGINE_MAIN"]
+        else { return nil }
+        return (node, main)
+    }
+
+    /// Whether this build carries its own engine, and so can be moved or copied.
+    static var isSelfContained: Bool {
+        guard let resources = Bundle.main.resourceURL else { return false }
+        return FileManager.default.fileExists(atPath: resources.appendingPathComponent("engine/src/main.ts").path)
+    }
+
+    var dataFolder: URL { home }
+
+    /// Replace all data with a backup: stop the engine, swap the files, start it again. What was replaced is kept
+    /// in a `before-restore-…` folder inside the data folder.
+    func restoreBackup(from folder: URL) async throws {
+        guard let (node, main) = Self.enginePaths else { throw EngineError(message: "This build does not know where its engine is.") }
+        holdEngine = true
+        defer {
+            holdEngine = false
+            lastLaunch = .distantPast
+            open = [:]
+        }
+        stopEngine()
+        for _ in 0..<50 where enginePID != nil { try await Task.sleep(for: .milliseconds(100)) }
+        if enginePID != nil { throw EngineError(message: "The engine did not stop, so nothing was changed.") }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [main, "--restore", folder.path]
+        process.environment = ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path]) { _, new in new }
+        let errors = Pipe()
+        process.standardError = errors
+        process.standardOutput = Pipe()
+        try process.run()
+        process.waitUntilExit()
+        if process.terminationStatus != 0 {
+            let message = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw EngineError(message: message?.isEmpty == false ? message! : "The backup could not be restored.")
         }
     }
 

@@ -11,6 +11,8 @@ struct SettingsView: View {
                 .tabItem { Label("Providers", systemImage: "key") }
             ToolsSettings(engine: engine)
                 .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
+            StorageSettings(engine: engine)
+                .tabItem { Label("Storage", systemImage: "externaldrive") }
         }
         .frame(width: 660, height: 600)
     }
@@ -61,17 +63,14 @@ struct BackgroundSettings: View {
         } header: {
             Text("In the background")
         } footer: {
-            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on. This development build runs the engine from its source folder, so that folder must stay where it is.")
+            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on.\(EngineClient.isSelfContained ? " The login item points at this copy of the app; turn it off and on again after moving the app." : " This development build runs the engine from its source folder, so that folder must stay where it is.")")
         }
     }
 
     private func setLoginItem(_ on: Bool) {
         error = nil
         if on {
-            let info = Bundle.main
-            guard let node = info.object(forInfoDictionaryKey: "PI2NodePath") as? String,
-                  let main = info.object(forInfoDictionaryKey: "PI2EngineMain") as? String
-            else {
+            guard let (node, main) = EngineClient.enginePaths else {
                 error = "This build does not know where its engine is."
                 return
             }
