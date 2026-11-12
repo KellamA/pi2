@@ -9,6 +9,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             ProvidersSettings(engine: engine)
                 .tabItem { Label("Providers", systemImage: "key") }
+            ToolsSettings(engine: engine)
+                .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
         }
         .frame(width: 660, height: 600)
     }

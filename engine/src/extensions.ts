@@ -20,6 +20,8 @@ const GATED = new Set(["bash", "write", "edit"]);
 
 export type Host = {
 	inbox: Inbox;
+	/** Whether a tool outside the built-in set changes things, and so needs approval under "ask". */
+	changesThings(tool: string): boolean;
 	meta(conversationId: ConversationId): Meta | undefined;
 	agent(id: string | undefined): AgentProfile | undefined;
 	allowAlways(conversationId: ConversationId, tool: string): Promise<void>;
@@ -118,7 +120,7 @@ export function pi2Extension(host: Host): Extension {
 			hook(ToolTask, {
 				beforeTool: async (call, api, context) => {
 					const meta = host.meta(api.conversationId);
-					if (meta?.access !== "ask" || !GATED.has(call.name)) return undefined;
+					if (meta?.access !== "ask" || !(GATED.has(call.name) || host.changesThings(call.name))) return undefined;
 					if (meta.autoApprove?.includes(call.name)) return undefined;
 					const decision = await host.inbox.ask(
 						{

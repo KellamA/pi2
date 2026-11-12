@@ -16,16 +16,21 @@ import {
 	type ConversationId,
 	type ConversationView,
 	createRegistry,
+	defineDoc,
 	type EntryId,
 	type EntryRecord,
 	Harness,
 	type SubmissionId,
+	UsageDoc,
 } from "@earendil-works/pi-durable";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
+import { McpServers } from "./mcp.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, Providers } from "./providers.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
@@ -68,13 +73,16 @@ writeFileSync(runningMarker, String(Date.now()));
 
 // ---- Models, tools, harness
 
-const providers = new Providers(home, new KeychainCredentialStore(home));
+const credentials = new KeychainCredentialStore(home);
+const providers = new Providers(home, credentials);
+const mcp = new McpServers(home, credentials);
 const inbox = new Inbox();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
 let agents: Record<string, AgentProfile> = {};
 
 const pi2 = pi2Extension({
 	inbox,
+	changesThings: (name) => mcp.changesThings(name),
 	meta: (id) => library.conversations[String(id)],
 	agent: (id) => (id === undefined ? undefined : agents[id]),
 	allowAlways: (id, tool) =>
@@ -89,14 +97,22 @@ const pi2 = pi2Extension({
 	},
 });
 const registry = createRegistry();
+const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
+let mcpTools = mcp.extension();
 registry.install(CodingTools);
 registry.install(pi2);
-const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!].find((t) => t.name === name)!;
+registry.install(codemode);
+registry.install(mcpTools);
+const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemode.tools!, ...mcpTools.tools!].find((t) => t.name === name);
 
-/** The tools a conversation is given: file and shell tools by access level, asking the person, and delegation. */
-function toolsFor(access: Access, delegate: boolean) {
+/**
+ * The tools a conversation is given: file and shell tools by access level, asking the person, delegation, and what
+ * its agent adds (scripts, MCP servers). A tool whose server is not connected right now is left out.
+ */
+function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undefined) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
-	return [...files, "ask_user", ...(delegate ? ["delegate"] : [])].map(tool);
+	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
+	return [...files, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -106,7 +122,7 @@ async function agentChange(agent: AgentProfile, options: { delegate: boolean }):
 		model,
 		thinkingLevel: (agent.thinkingLevel as never) ?? null,
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
-		tools: toolsFor(agent.access, options.delegate && agent.delegates.some((id) => agents[id] !== undefined)),
+		tools: toolsFor(agent.access, options.delegate && agent.delegates.some((id) => agents[id] !== undefined), agent),
 		cwd: agent.cwd,
 		maxTurns: agent.maxTurns,
 	};
@@ -130,7 +146,7 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef; lastAgent?: string } = (() => {
+const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -208,7 +224,41 @@ type LiveDocShape = {
 	generation?: { message?: AssistantLike; retry?: { at: number; error: string } };
 	tools?: { callId: string; name: string; status: string; output?: string; details?: unknown }[];
 	runFailure?: { reason: string; detail?: string };
+	compactions?: unknown[];
+	compactionFailure?: { error?: string };
 };
+
+type UsageJson = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number; cost?: { total?: number } };
+type UsageDocShape = { models?: Record<string, UsageJson>; tools?: Record<string, UsageJson> };
+/**
+ * What a usage entry cost. Providers report this themselves; the scripted demo model is free, except that tests give
+ * it a price (PI2_DEMO_COST, dollars per million tokens) so that spend and budgets have something to count.
+ */
+const demoPrice = Number(process.env.PI2_DEMO_COST ?? 0);
+const costOf = (key: string, usage: UsageJson) =>
+	key === `${DEMO_PROVIDER}/${DEMO_MODEL}` && demoPrice > 0 ? ((usage.totalTokens ?? 0) * demoPrice) / 1_000_000 : (usage.cost?.total ?? 0);
+const usageTotals = (usage: UsageDocShape | undefined) => {
+	let cost = 0;
+	let tokens = 0;
+	for (const [key, entry] of [...Object.entries(usage?.models ?? {}), ...Object.entries(usage?.tools ?? {})]) {
+		cost += costOf(key, entry);
+		tokens += entry.totalTokens ?? 0;
+	}
+	return { cost, tokens };
+};
+
+/** How full the model's context is, from the newest answer's own token counts. */
+function contextOf(view: ConversationView, model: ModelRef | undefined) {
+	const window = model === undefined ? undefined : providers.models.getModel(model.provider, model.modelId)?.contextWindow;
+	for (let i = view.entries.length - 1; i >= 0; i--) {
+		const entry = view.entries[i]!;
+		if (entry.kind === "pi.reset") break;
+		const usage = (entry.model?.[0] as { role?: string; usage?: UsageJson } | undefined)?.usage;
+		if (usage === undefined) continue;
+		return { used: (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0), window: window ?? null };
+	}
+	return { used: 0, window: window ?? null };
+}
 
 function stateOf(view: ConversationView, meta: Meta | undefined) {
 	const live = (view.docs["pi.live"] ?? {}) as LiveDocShape;
@@ -222,6 +272,10 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		retry: live.generation?.retry ?? null,
 		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "", details: slot.details ?? null })),
 		failure: live.runFailure === undefined ? null : { reason: live.runFailure.reason, detail: live.runFailure.detail ?? null },
+		usage: usageTotals(view.docs["pi.usage"] as UsageDocShape | undefined),
+		context: contextOf(view, agent.model),
+		compacting: (live.compactions ?? []).length > 0,
+		compactionError: live.compactionFailure?.error ?? null,
 		queued: (inbox.items ?? []).filter((item) => item.mode !== "write").map((item) => ({ id: item.id, mode: item.mode, text: textOf(item.content) })),
 		agent: {
 			model: agent.model ?? null,
@@ -372,6 +426,92 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await editMeta(conv.id, (meta) => void (meta.title = title));
 		return {};
 	},
+	"conversation.fork": async (params) => {
+		const conv = await conversation(params.id);
+		const source = library.conversations[String(conv.id)];
+		const now = Date.now();
+		// The fork sees the conversation up to and including that entry, then goes its own way.
+		const fork = await conv.fork(
+			params.entryId as EntryId,
+			{
+				ownership: { kind: "ownerless" },
+				init: async (tx, id) => {
+					(await tx.doc(Library)).conversations[String(id)] = {
+						title: `${source?.title || "Conversation"} (fork)`,
+						createdAt: now,
+						updatedAt: now,
+						access: source?.access ?? "none",
+						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
+					};
+				},
+			},
+			context,
+		);
+		return { id: fork.id };
+	},
+	"conversation.compact": async (params) => {
+		const instructions = typeof params.instructions === "string" && params.instructions.trim() !== "" ? params.instructions.trim() : undefined;
+		await (await conversation(params.id)).compact(instructions, context);
+		return {};
+	},
+	"conversation.reset": async (params) => {
+		const note = typeof params.note === "string" && params.note.trim() !== "" ? params.note.trim() : undefined;
+		await (await conversation(params.id)).reset(note, context);
+		return {};
+	},
+	search: async (params) => {
+		const query = text(params, "query").trim().toLowerCase();
+		if (query.length < 2) return { results: [] };
+		const results: { conversationId: number; title: string; entryId: number; role: string; snippet: string }[] = [];
+		const ids = Object.entries(library.conversations)
+			.filter(([, meta]) => meta.archived !== true && meta.parent === undefined)
+			.sort(([, x], [, y]) => y.updatedAt - x.updatedAt)
+			.map(([id]) => Number(id));
+		for (const id of ids) {
+			const conv = await harness.conversation(id as unknown as ConversationId, context);
+			if (conv === undefined) continue;
+			let cursor: unknown;
+			// Newest first, at most 2,000 entries of each conversation.
+			for (let page = 0; page < 10 && results.length < 40; page++) {
+				const batch = await conv.entries({ order: "descending" }, 200, cursor as never, context);
+				for (const entry of batch.items) {
+					const message = entry.model?.[0] as { role?: string; content?: unknown } | undefined;
+					if (message?.role !== "user" && message?.role !== "assistant") continue;
+					const body = textOf(message.content);
+					const at = body.toLowerCase().indexOf(query);
+					if (at === -1) continue;
+					const start = Math.max(0, at - 40);
+					const snippet = (start > 0 ? "…" : "") + body.slice(start, at + query.length + 80).replace(/\s+/g, " ") + (at + query.length + 80 < body.length ? "…" : "");
+					results.push({ conversationId: id, title: library.conversations[String(id)]?.title ?? "", entryId: entry.id as unknown as number, role: message.role, snippet });
+					if (results.length >= 40) break;
+				}
+				cursor = (batch as { next?: unknown }).next;
+				if (cursor === undefined) break;
+			}
+			if (results.length >= 40) break;
+		}
+		return { results };
+	},
+	"usage.setBudget": async (params) => {
+		const daily = params.daily;
+		if (daily !== null && !(typeof daily === "number" && Number.isFinite(daily) && daily > 0)) throw new Error("The budget must be an amount above zero, or off");
+		settings.dailyBudget = daily as number | null;
+		saveSettings();
+		await refreshUsage();
+		return {};
+	},
+	"mcp.save": async (params) => {
+		const saved = await mcp.save(params as never);
+		return { id: saved.id };
+	},
+	"mcp.delete": async (params) => {
+		await mcp.remove(text(params, "id"));
+		return {};
+	},
+	"mcp.reconnect": async (params) => {
+		await mcp.reconnect(text(params, "id"));
+		return {};
+	},
 	"conversation.archive": async (params) => {
 		const conv = await conversation(params.id);
 		await conv.abort(context);
@@ -400,7 +540,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			const meta = library.conversations[String(id)];
 			const own = agents[meta?.agentId ?? ""];
 			const delegate = meta?.parent === undefined && (own?.delegates ?? []).some((other) => agents[other] !== undefined);
-			await conv.configure({ tools: toolsFor(access, delegate) }, context);
+			await conv.configure({ tools: toolsFor(access, delegate, own) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -411,6 +551,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const conv = await conversation(params.id);
 		const content = text(params, "text");
 		if (content.trim() === "") throw new Error("The message is empty");
+		if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
 		const submission = await conv.submit(
 			{
 				type: "input",
@@ -469,6 +610,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
 			delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
 			maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
+			codeMode: input.codeMode ?? previous?.codeMode ?? false,
+			mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
@@ -683,7 +826,95 @@ graphWatch.start(async (call) => {
 	const changed = before.size !== busyConversations.size || [...busyConversations].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
 	broadcast(activityEvent());
+	scheduleUsageRefresh();
 });
+
+// ---- MCP servers: their tools are one extension, replaced whenever a server connects or drops
+
+const mcpEvent = () => ({ event: "mcp", servers: mcp.list() });
+mcp.onChange = () => {
+	mcpTools = mcp.extension();
+	registry.install(mcpTools);
+	broadcast(mcpEvent());
+};
+
+// ---- Usage: totals from pi durable's own counters, plus a per-day ledger for "today" and budgets
+
+const Spend = defineDoc<{ days: Record<string, { cost: number; tokens: number }>; lastCost: number; lastTokens: number }>({
+	kind: "pi2.spend",
+	version: 1,
+	scope: "session",
+	initial: () => ({ days: {}, lastCost: 0, lastTokens: 0 }),
+	checkpointWhen: () => true,
+});
+const dayKey = (at = new Date()) => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+let usageSummary: Record<string, unknown> = { event: "usage", models: [], agents: [], conversations: [], total: { cost: 0, tokens: 0 }, today: { cost: 0, tokens: 0 }, days: [], budget: { daily: null }, overBudget: false };
+let todayCost = 0;
+const overBudget = () => typeof settings.dailyBudget === "number" && todayCost >= settings.dailyBudget;
+
+async function refreshUsage(): Promise<void> {
+	const session = (await harness.usage(context)) as UsageDocShape;
+	const total = usageTotals(session);
+	// Whatever was spent since the last look belongs to today.
+	const spend = await harness.commit(async (tx) => {
+		const doc = await tx.doc(Spend);
+		const delta = { cost: Math.max(0, total.cost - doc.lastCost), tokens: Math.max(0, total.tokens - doc.lastTokens) };
+		if (delta.cost > 0 || delta.tokens > 0) {
+			// Create the day, then read it back: only the document's own copy records changes.
+			doc.days[dayKey()] ??= { cost: 0, tokens: 0 };
+			const day = doc.days[dayKey()]!;
+			day.cost += delta.cost;
+			day.tokens += delta.tokens;
+			doc.lastCost = total.cost;
+			doc.lastTokens = total.tokens;
+		}
+		// A plain copy: the document itself is only readable inside this commit.
+		return { days: JSON.parse(JSON.stringify(doc.days)) as Record<string, { cost: number; tokens: number }> };
+	}, context);
+	const today = spend.days[dayKey()] ?? { cost: 0, tokens: 0 };
+	todayCost = today.cost;
+
+	const byAgent = new Map<string, { cost: number; tokens: number }>();
+	const byConversation: { id: number; title: string; cost: number; tokens: number }[] = [];
+	for (const [id, meta] of Object.entries(library.conversations)) {
+		const usage = usageTotals((await harness.snapshot(UsageDoc, Number(id) as unknown as ConversationId, context)) as UsageDocShape | undefined);
+		if (usage.tokens === 0) continue;
+		const agent = byAgent.get(meta.agentId ?? "") ?? { cost: 0, tokens: 0 };
+		agent.cost += usage.cost;
+		agent.tokens += usage.tokens;
+		byAgent.set(meta.agentId ?? "", agent);
+		// A subagent's spend is shown under the conversation that started it.
+		const root = meta.parent ?? Number(id);
+		const row = byConversation.find((r) => r.id === root);
+		if (row !== undefined) {
+			row.cost += usage.cost;
+			row.tokens += usage.tokens;
+		} else if (library.conversations[String(root)]?.archived !== true) {
+			byConversation.push({ id: root, title: library.conversations[String(root)]?.title ?? "", ...usage });
+		}
+	}
+	usageSummary = {
+		event: "usage",
+		models: Object.entries(session.models ?? {})
+			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage) }))
+			.sort((x, y) => y.tokens - x.tokens),
+		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
+		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),
+		total,
+		today,
+		days: Object.entries(spend.days).sort(([x], [y]) => x.localeCompare(y)).slice(-14).map(([day, usage]) => ({ day, ...usage })),
+		budget: { daily: settings.dailyBudget ?? null },
+		overBudget: overBudget(),
+	};
+	broadcast(usageSummary);
+}
+let usageTimer: ReturnType<typeof setTimeout> | undefined;
+/** Usage changes when work ends; recount shortly after, once, however many tasks finished together. */
+const scheduleUsageRefresh = () => {
+	clearTimeout(usageTimer);
+	usageTimer = setTimeout(() => void refreshUsage().catch((error) => log("usage refresh failed:", error)), 400);
+};
+await refreshUsage();
 
 // ---- Schedules
 
@@ -755,14 +986,20 @@ function armSchedules(): void {
 	if (due.length === 0) return;
 	const next = Math.min(...due.map((x) => x.nextRunAt!));
 	// setTimeout cannot wait longer than about 24 days; waking early and re-arming is harmless.
-	scheduleTimer = setTimeout(() => void tickSchedules(), Math.min(Math.max(next - Date.now(), 0), 2_000_000_000));
+	// While the budget is used up a due run stays due; look again in a minute rather than spinning.
+	const soonest = overBudget() ? 60_000 : 0;
+	scheduleTimer = setTimeout(() => void tickSchedules(), Math.min(Math.max(next - Date.now(), soonest), 2_000_000_000));
 }
 
 async function tickSchedules(): Promise<void> {
 	const now = Date.now();
 	for (const schedule of Object.values(schedules)) {
 		if (schedule.pending !== null) await deliver(schedule.id).catch((error) => log("schedule", schedule.id, "delivery failed:", error));
-		else if (schedule.enabled && schedule.nextRunAt !== null && schedule.nextRunAt <= now) await fire(schedule.id, false);
+		else if (schedule.enabled && schedule.nextRunAt !== null && schedule.nextRunAt <= now) {
+			// Out of budget: the run stays due and starts once there is budget again.
+			if (overBudget()) log("schedule", schedule.id, "is waiting: today's budget is used up");
+			else await fire(schedule.id, false);
+		}
 	}
 	armSchedules();
 }
@@ -786,6 +1023,8 @@ const server = createServer((socket) => {
 	send(client, activityEvent());
 	send(client, schedulesEvent());
 	send(client, recoveryEvent());
+	send(client, usageSummary);
+	send(client, mcpEvent());
 	void providersEvent().then((event) => send(client, event));
 	let buffer = "";
 	socket.setEncoding("utf8");
@@ -824,6 +1063,7 @@ server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished
 	void tickSchedules(); // and start whatever came due while the engine was not running
+	void mcp.start(); // connect to MCP servers without holding up the app
 });
 
 // A clean stop closes the Harness. SIGKILL is the crash case and needs no handler: reopening recovers.
@@ -834,6 +1074,8 @@ async function stop(): Promise<void> {
 	server.close();
 	for (const client of clients) client.socket.destroy();
 	clearTimeout(scheduleTimer);
+	clearTimeout(usageTimer);
+	await mcp.stop();
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
 	rmSync(runningMarker, { force: true });

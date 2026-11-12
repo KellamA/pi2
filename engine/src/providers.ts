@@ -75,6 +75,14 @@ function demoProvider(): Provider {
 			const [agent, ...task] = prompt.slice(10).split(":");
 			return fauxAssistantMessage([fauxText(`Handing that to ${agent!.trim()}.`), fauxToolCall("delegate", { agent: agent!.trim(), task: task.join(":").trim() })], { stopReason: "toolUse" });
 		}
+		if (prompt.startsWith("/code ")) {
+			return fauxAssistantMessage([fauxText("Running a script."), fauxToolCall("codemode", { code: prompt.slice(6) })], { stopReason: "toolUse" });
+		}
+		if (prompt.startsWith("/mcp ")) {
+			// "/mcp <tool name> <json arguments>"
+			const [name, ...rest] = prompt.slice(5).split(" ");
+			return fauxAssistantMessage([fauxText("Calling that tool."), fauxToolCall(name!, JSON.parse(rest.join(" ") || "{}"))], { stopReason: "toolUse" });
+		}
 		if (prompt.startsWith("/read ")) {
 			return fauxAssistantMessage([fauxText("Reading that file."), fauxToolCall("read", { path: prompt.slice(6).trim() })], { stopReason: "toolUse" });
 		}

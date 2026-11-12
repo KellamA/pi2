@@ -83,6 +83,7 @@ struct ToolCall: Codable, Equatable, Identifiable {
         if let command = arguments["command"]?.stringValue { return command }
         if let path = arguments["path"]?.stringValue { return path }
         if let task = arguments["task"]?.stringValue { return task }
+        if let code = arguments["code"]?.stringValue { return code.replacingOccurrences(of: "\n", with: " ") }
         if let question = arguments["question"]?.stringValue { return question }
         return arguments.displayText.replacingOccurrences(of: "\n", with: " ")
     }
@@ -172,6 +173,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var cwd: String?
     var delegates: [String]
     var maxTurns: Int?
+    var codeMode: Bool?
+    var mcpServers: [String]?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -184,6 +187,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "cwd": cwd as Any? ?? NSNull(),
             "delegates": delegates,
             "maxTurns": maxTurns as Any? ?? NSNull(),
+            "codeMode": codeMode ?? false,
+            "mcpServers": mcpServers ?? [],
         ]
     }
 }
@@ -297,6 +302,115 @@ struct ConversationState: Codable, Equatable {
     let failure: RunFailure?
     let queued: [QueuedInput]
     let agent: AgentInfo
+    let usage: Spend
+    let context: ContextSize
+    let compacting: Bool
+    let compactionError: String?
+}
+
+struct Spend: Codable, Equatable {
+    let cost: Double
+    let tokens: Int
+
+    var costText: String { Formats.cost(cost) }
+    var tokensText: String { Formats.tokens(tokens) }
+}
+
+/// How full a conversation's context is. `window` is nil when the model's size is not known.
+struct ContextSize: Codable, Equatable {
+    let used: Int
+    let window: Int?
+
+    var fraction: Double? {
+        guard let window, window > 0 else { return nil }
+        return min(1, Double(used) / Double(window))
+    }
+}
+
+enum Formats {
+    static func cost(_ value: Double) -> String {
+        if value == 0 { return "$0.00" }
+        return value < 0.01 ? "< $0.01" : String(format: "$%.2f", value)
+    }
+
+    static func tokens(_ value: Int) -> String {
+        switch value {
+        case 1_000_000...: String(format: "%.1fM", Double(value) / 1_000_000)
+        case 1_000...: String(format: "%.0fk", Double(value) / 1_000)
+        default: "\(value)"
+        }
+    }
+}
+
+/// Spend across the whole app, as the engine summarises it.
+struct UsageSummary: Codable, Equatable {
+    struct ModelRow: Codable, Equatable, Identifiable {
+        let key: String
+        let input: Int
+        let output: Int
+        let tokens: Int
+        let cost: Double
+        var id: String { key }
+    }
+    struct AgentRow: Codable, Equatable, Identifiable {
+        let agentId: String
+        let cost: Double
+        let tokens: Int
+        var id: String { agentId }
+    }
+    struct ConversationRow: Codable, Equatable, Identifiable {
+        let id: Int
+        let title: String
+        let cost: Double
+        let tokens: Int
+    }
+    struct Day: Codable, Equatable, Identifiable {
+        let day: String
+        let cost: Double
+        let tokens: Int
+        var id: String { day }
+    }
+    struct Budget: Codable, Equatable {
+        let daily: Double?
+    }
+    let models: [ModelRow]
+    let agents: [AgentRow]
+    let conversations: [ConversationRow]
+    let total: Spend
+    let today: Spend
+    let days: [Day]
+    let budget: Budget
+    let overBudget: Bool
+}
+
+struct McpServer: Codable, Equatable, Identifiable {
+    struct Tool: Codable, Equatable, Identifiable {
+        let name: String
+        let toolName: String
+        let description: String
+        let readOnly: Bool
+        var id: String { toolName }
+    }
+    let id: String
+    let name: String
+    let transport: String
+    let command: String?
+    let args: [String]?
+    let url: String?
+    let enabled: Bool
+    let status: String
+    let error: String?
+    let hasToken: Bool
+    let tools: [Tool]
+}
+
+struct SearchResult: Codable, Equatable, Identifiable {
+    let conversationId: Int
+    let title: String
+    let entryId: Int
+    let role: String
+    let snippet: String
+    var id: Int { entryId }
 }
 
 struct ConversationData: Equatable {

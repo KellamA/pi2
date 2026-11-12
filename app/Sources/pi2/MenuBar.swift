@@ -85,7 +85,7 @@ struct MenuBarView: View {
         draft = ""
         Task {
             guard let id = await engine.createConversation() else { return }
-            engine.submit(text, to: id, steer: false)
+            await engine.submit(text, to: id, steer: false)
             show(.conversation(id))
         }
     }
@@ -222,7 +222,7 @@ struct QuickAskView: View {
         draft = ""
         Task {
             if conversationID == nil { conversationID = await engine.createConversation() }
-            if let conversationID { engine.submit(text, to: conversationID, steer: false) }
+            if let conversationID, await !engine.submit(text, to: conversationID, steer: false), draft.isEmpty { draft = text }
         }
     }
 }

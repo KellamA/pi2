@@ -25,6 +25,10 @@ export type AgentProfile = {
 	/** IDs of the agents this one may hand work to. */
 	delegates: string[];
 	maxTurns: number | null;
+	/** Whether the agent may write scripts that call its tools. */
+	codeMode?: boolean;
+	/** IDs of the MCP servers whose tools the agent gets. */
+	mcpServers?: string[];
 	createdAt: number;
 };
 

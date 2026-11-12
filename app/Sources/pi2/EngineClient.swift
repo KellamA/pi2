@@ -33,6 +33,10 @@ final class EngineClient {
     private(set) var activity: [ActivityRun] = []
     private(set) var schedules: [Schedule] = []
     private(set) var recovery: RecoveryReport?
+    private(set) var usage: UsageSummary?
+    private(set) var mcpServers: [McpServer] = []
+    /// Asked to show a conversation, for example a fork that was just made.
+    var onNavigate: (Int) -> Void = { _ in }
     var signIn: SignInFlow?
     var lastError: String?
 
@@ -93,15 +97,43 @@ final class EngineClient {
         perform("conversation.open", ["id": id])
     }
 
-    func submit(_ text: String, to id: Int, steer: Bool) {
-        // The request ID makes a resend after a lost reply harmless: the engine finds the same submission.
-        perform("submit", ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString])
+    /// Sends a message. Returns false, after showing why, when the engine refused it.
+    @discardableResult
+    func submit(_ text: String, to id: Int, steer: Bool) async -> Bool {
+        do {
+            // The request ID makes a resend after a lost reply harmless: the engine finds the same submission.
+            try await call("submit", ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString])
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
     }
 
     func configure(_ id: Int, _ change: [String: Any]) {
         var params = change
         params["id"] = id
         perform("conversation.configure", params)
+    }
+
+    /// Branch a conversation at one of its entries and show the new one.
+    func fork(_ id: Int, at entryId: Int) {
+        Task {
+            do {
+                let result = try await call("conversation.fork", ["id": id, "entryId": entryId])
+                if let fork = result["id"]?.intValue {
+                    openConversation(fork)
+                    onNavigate(fork)
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func search(_ query: String) async -> [SearchResult] {
+        guard let result = try? await call("search", ["query": query]), let data = try? JSONEncoder().encode(result["results"] ?? .array([])) else { return [] }
+        return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
     }
 
     func agent(_ id: String?) -> AgentProfile? {
@@ -206,6 +238,7 @@ final class EngineClient {
     private struct ActivityEvent: Decodable { let runs: [ActivityRun] }
     private struct SchedulesEvent: Decodable { let schedules: [Schedule] }
     private struct RecoveryEvent: Decodable { let recovery: RecoveryReport? }
+    private struct McpEvent: Decodable { let servers: [McpServer] }
     private struct ProvidersEvent: Decodable {
         let providers: [ProviderInfo]
         let models: [ModelInfo]
@@ -243,6 +276,10 @@ final class EngineClient {
                 schedules = try decoder.decode(SchedulesEvent.self, from: line).schedules
             case "recovery":
                 recovery = try decoder.decode(RecoveryEvent.self, from: line).recovery
+            case "usage":
+                usage = try decoder.decode(UsageSummary.self, from: line)
+            case "mcp":
+                mcpServers = try decoder.decode(McpEvent.self, from: line).servers
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 providers = event.providers

@@ -4,6 +4,7 @@ import SwiftUI
 enum Selection: Hashable {
     case inbox
     case activity
+    case usage
     case agent(String)
     case conversation(Int)
 }
@@ -14,6 +15,12 @@ enum Selection: Hashable {
 final class AppModel {
     let engine = EngineClient()
     var selection: Selection?
+    var showingPalette = false
+
+    init() {
+        engine.onNavigate = { [weak self] id in self?.selection = .conversation(id) }
+    }
+
     /// The conversation whose rename prompt is showing.
     var renaming: ConversationSummary?
     var newTitle = ""
@@ -104,6 +111,8 @@ struct Pi2App: App {
                 Button("New Agent") { model.newAgent() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()
+                Button("Command Palette…") { model.showingPalette = true }
+                    .keyboardShortcut("k")
                 Button("Quick Ask (⌃⌥Space anywhere)") { QuickAsk.shared.show(model: model) }
             }
             CommandGroup(after: .sidebar) {
@@ -111,6 +120,8 @@ struct Pi2App: App {
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                 Button("Show Activity") { model.selection = .activity }
                     .keyboardShortcut("a", modifiers: [.command, .shift])
+                Button("Show Usage") { model.selection = .usage }
+                    .keyboardShortcut("u", modifiers: [.command, .shift])
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -170,6 +181,8 @@ struct RootView: View {
                 InboxView(model: model)
             case .activity:
                 ActivityView(model: model)
+            case .usage:
+                UsageView(model: model)
             case .agent(let id):
                 AgentEditor(model: model, agentID: id)
                     .id(id)
@@ -189,6 +202,7 @@ struct RootView: View {
             }
         }
         .background(WindowOpener(model: model))
+        .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
         .onChange(of: model.selection) { _, selection in
             if case .conversation(let id) = selection { engine.openConversation(id) }
         }
@@ -264,6 +278,22 @@ struct SidebarView: View {
                 Image(systemName: "waveform.path.ecg")
             }
             .tag(Selection.activity)
+
+            Label {
+                HStack {
+                    Text("Usage")
+                    Spacer()
+                    if engine.usage?.overBudget == true {
+                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                            .accessibilityLabel("Over budget")
+                    } else if let today = engine.usage?.today, today.cost > 0 {
+                        Text(today.costText).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: "chart.bar")
+            }
+            .tag(Selection.usage)
 
             Section {
                 ForEach(engine.agents) { agent in
@@ -393,6 +423,15 @@ struct ConversationCommands: View {
                     }
                 }
             }
+        }
+        .disabled(id == nil)
+        Divider()
+        Button("Summarise Earlier Messages") { if let id { engine.perform("conversation.compact", ["id": id]) } }
+            .disabled(id == nil || state?.compacting == true)
+        Button("Start Fresh Context") { if let id { engine.perform("conversation.reset", ["id": id]) } }
+            .disabled(id == nil)
+        Button("Fork From Last Answer") {
+            if let id, let last = engine.open[id]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) { engine.fork(id, at: last.id) }
         }
         .disabled(id == nil)
         Divider()

@@ -24,6 +24,12 @@ struct ChatView: View {
                 InboxCard(engine: engine, item: item, showsSource: true)
                     .padding(.horizontal, 20).padding(.top, 8)
             }
+            if state?.compacting == true {
+                banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: .secondary)
+            }
+            if let error = state?.compactionError, state?.compacting != true {
+                banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: .orange)
+            }
             if let retry = state?.retry {
                 banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: .orange)
             }
@@ -49,6 +55,7 @@ struct ChatView: View {
         .navigationSubtitle(engine.agent(state?.agent.agentId)?.name ?? "")
         .toolbar {
             ToolbarItemGroup {
+                ContextMeter(engine: engine, id: id, state: state)
                 ModelMenu(engine: engine, id: id, agent: state?.agent)
                 ToolsMenu(engine: engine, id: id, agent: state?.agent)
             }
@@ -139,12 +146,64 @@ struct ChatView: View {
 
     private func send() {
         guard canSend else { return }
-        engine.submit(draft, to: id, steer: busy && steer)
+        let text = draft
+        let steering = busy && steer
         draft = ""
+        Task {
+            // A refused message goes back in the box rather than being lost.
+            if await !engine.submit(text, to: id, steer: steering), draft.isEmpty { draft = text }
+        }
     }
 }
 
 // MARK: - Toolbar menus
+
+/// How full the context is and what this conversation has cost, with the ways to make room.
+struct ContextMeter: View {
+    let engine: EngineClient
+    let id: Int
+    let state: ConversationState?
+    @State private var resetting = false
+    @State private var note = ""
+
+    private var lastAnswer: Item? { engine.open[id]?.items.last { $0.kind == "assistant" && $0.stop == "stop" } }
+
+    var body: some View {
+        Menu {
+            if let context = state?.context {
+                Text(context.window.map { "Context: \(Formats.tokens(context.used)) of \(Formats.tokens($0)) tokens" } ?? "Context: \(Formats.tokens(context.used)) tokens")
+            }
+            if let usage = state?.usage {
+                Text("This conversation: \(usage.costText) · \(usage.tokensText) tokens")
+            }
+            Divider()
+            Button("Summarise Earlier Messages") { engine.perform("conversation.compact", ["id": id]) }
+                .disabled(state?.compacting == true)
+            Button("Start Fresh Context…") { resetting = true }
+            Button("Fork From Last Answer") { if let lastAnswer { engine.fork(id, at: lastAnswer.id) } }
+                .disabled(lastAnswer == nil)
+        } label: {
+            Label(label, systemImage: "gauge.with.dots.needle.33percent")
+                .labelStyle(.titleAndIcon)
+        }
+        .help("How full the model's context is. Earlier messages are summarised automatically when it fills up.")
+        .alert("Start a fresh context?", isPresented: $resetting) {
+            TextField("Note to carry over (optional)", text: $note)
+            Button("Start Fresh") {
+                engine.perform("conversation.reset", ["id": id, "note": note])
+                note = ""
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The model stops seeing earlier messages. They stay in the conversation for you.")
+        }
+    }
+
+    private var label: String {
+        if let fraction = state?.context.fraction { return "\(Int((fraction * 100).rounded()))%" }
+        return Formats.tokens(state?.context.used ?? 0)
+    }
+}
 
 struct ModelMenu: View {
     let engine: EngineClient
@@ -325,6 +384,13 @@ struct TranscriptView: View {
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     case "assistant":
                         AssistantRow(engine: engine, conversationID: conversationID, item: item, results: results, live: live, running: state?.busy ?? false)
+                            .contextMenu {
+                                Button("Fork From Here") { engine.fork(conversationID, at: item.id) }
+                                Button("Copy") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(item.text, forType: .string)
+                                }
+                            }
                     default:
                         HStack {
                             VStack { Divider() }
@@ -481,9 +547,16 @@ struct ToolCard: View {
 
     private var title: String {
         switch call.name {
-        case "delegate": "Delegate to \(call.arguments["agent"]?.stringValue ?? "agent")"
-        case "ask_user": "Question"
-        default: call.name
+        case "delegate": return "Delegate to \(call.arguments["agent"]?.stringValue ?? "agent")"
+        case "ask_user": return "Question"
+        case "codemode": return "Script"
+        default:
+            // An MCP tool reads as "Server: tool" rather than its long internal name.
+            if let server = engine.mcpServers.first(where: { $0.tools.contains { $0.toolName == call.name } }),
+               let tool = server.tools.first(where: { $0.toolName == call.name }) {
+                return "\(server.name): \(tool.name)"
+            }
+            return call.name
         }
     }
 
@@ -494,7 +567,8 @@ struct ToolCard: View {
         case "write", "edit": "pencil"
         case "delegate": "person.2"
         case "ask_user": "questionmark.bubble"
-        default: "hammer"
+        case "codemode": "chevron.left.forwardslash.chevron.right"
+        default: call.name.hasPrefix("mcp__") ? "puzzlepiece.extension" : "hammer"
         }
     }
 

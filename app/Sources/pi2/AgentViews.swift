@@ -153,6 +153,32 @@ struct AgentEditor: View {
                 }
 
                 Section {
+                    Toggle("Write scripts that call its tools", isOn: Binding(get: { agent.codeMode ?? false }, set: { draft.wrappedValue.codeMode = $0 }))
+                    if engine.mcpServers.isEmpty {
+                        Text("No MCP servers are connected. Add them in Settings › Tools.").foregroundStyle(.secondary)
+                    }
+                    ForEach(engine.mcpServers) { server in
+                        Toggle(isOn: Binding(
+                            get: { agent.mcpServers?.contains(server.id) ?? false },
+                            set: { on in
+                                var list = (draft.wrappedValue.mcpServers ?? []).filter { $0 != server.id }
+                                if on { list.append(server.id) }
+                                draft.wrappedValue.mcpServers = list
+                            }
+                        )) {
+                            HStack {
+                                Text(server.name)
+                                Text(server.status == "connected" ? "\(server.tools.count) tools" : "not connected").foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Extra tools")
+                } footer: {
+                    Text("Scripts let the model chain many tool calls in one step. MCP servers add tools from other apps and services.")
+                }
+
+                Section {
                     let others = engine.agents.filter { $0.id != agentID }
                     if others.isEmpty { Text("There are no other agents yet.").foregroundStyle(.secondary) }
                     ForEach(others) { other in

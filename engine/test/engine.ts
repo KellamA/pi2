@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -17,11 +17,11 @@ const KEYCHAIN_SERVICE = "dev.pi2.credentials.test";
 
 type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
 type InboxItem = { id: string; kind: string; conversationId: number; rootConversationId: number; tool: string; question: string | null; agentName: string | null; callId: string };
-type State = { busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null; agentId: string | null; parent: number | null }; tools: { name: string; status: string }[] };
+type State = { usage: { cost: number; tokens: number }; context: { used: number; window: number | null }; busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null; agentId: string | null; parent: number | null }; tools: { name: string; status: string }[] };
 type Conv = { items: Item[]; state: State };
 
 function startEngine(): ChildProcess {
-	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE }, stdio: ["ignore", "ignore", "inherit"] });
+	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5" }, stdio: ["ignore", "ignore", "inherit"] });
 }
 
 class Client {
@@ -33,6 +33,8 @@ class Client {
 	activity: { conversationId: number; rootConversationId: number; status: string }[] = [];
 	schedules: { id: string; title: string; enabled: boolean; nextRunAt: number | null; lastConversationId: number | null; pending: unknown }[] = [];
 	recovery: { at: number; conversations: { id: number }[] } | null | undefined;
+	usage: any;
+	mcp: { id: string; status: string; error: string | null; tools: { name: string; toolName: string; readOnly: boolean }[] }[] = [];
 	providers: { id: string; kind: string; status: unknown; oauth: { subscription: boolean } | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	#nextId = 1;
@@ -72,6 +74,8 @@ class Client {
 		else if (message.event === "activity") this.activity = message.runs;
 		else if (message.event === "schedules") this.schedules = message.schedules;
 		else if (message.event === "recovery") this.recovery = message.recovery;
+		else if (message.event === "usage") this.usage = message;
+		else if (message.event === "mcp") this.mcp = message.servers;
 		else if (message.event === "providers") {
 			this.providers = message.providers;
 			this.models = message.models;
@@ -112,6 +116,22 @@ class Client {
 		});
 	}
 }
+
+// A minimal MCP server over stdio: one read-only tool and one that claims to change things.
+const MCP_TEST_SERVER = `
+import { createInterface } from "node:readline";
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+	const message = JSON.parse(line);
+	if (message.method === "initialize") reply(message.id, { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "echo", version: "1" } });
+	else if (message.method === "tools/list") reply(message.id, { tools: [
+		{ name: "echo", description: "Echo text back", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, annotations: { readOnlyHint: true } },
+		{ name: "write_note", description: "Pretend to save a note", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+	] });
+	else if (message.method === "tools/call") reply(message.id, { content: [{ type: "text", text: (message.params.name === "echo" ? "echo: " : "saved: ") + message.params.arguments.text }] });
+	else if (message.id !== undefined) reply(message.id, {});
+});
+`;
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -377,6 +397,93 @@ try {
 	await client.call("recovery.dismiss");
 	await client.until("report dismissed", () => client.recovery === null);
 	step("a run that came due while the engine was down happens once on restart; the restart is reported");
+
+	// ---- Usage, context size and the daily budget
+	await client.call("conversation.open", { id: a });
+	conv = await client.until("conversation a", () => client.conversations.get(a));
+	assert.ok(conv.state.usage.tokens > 0 && conv.state.usage.cost > 0, "a conversation counts its own tokens and cost");
+	assert.ok(conv.state.context.used > 0 && conv.state.context.window !== null, "and how full its context is");
+	const usage = await client.until("usage summary", () => (client.usage?.total.tokens > 0 ? client.usage : undefined));
+	assert.ok(Math.abs(usage.today.cost - usage.total.cost) < 1e-9 && usage.today.tokens === usage.total.tokens, "everything spent so far was spent today");
+	assert.ok(usage.models.some((m: any) => m.key === "demo/demo-1"));
+	assert.ok(usage.agents.some((x: any) => x.agentId === "atlas") && usage.conversations.length > 0);
+	await client.call("usage.setBudget", { daily: 0.000001 });
+	await client.until("over budget", () => client.usage.overBudget === true);
+	await assert.rejects(client.call("submit", { id: a, text: "too expensive" }), /budget/);
+	await client.call("usage.setBudget", { daily: null });
+	await client.until("budget off", () => client.usage.overBudget === false);
+	step("usage by model, agent and conversation; a used-up daily budget refuses new work until it is raised");
+
+	// ---- Fork, reset, compact, search
+	const firstAnswer = conv.items.find((i) => i.kind === "assistant")!;
+	const { id: forkId } = await client.call("conversation.fork", { id: a, entryId: firstAnswer.id });
+	await client.call("conversation.open", { id: forkId });
+	const fork = await client.until("fork", () => (client.conversations.get(forkId)?.items.length === 2 ? client.conversations.get(forkId) : undefined));
+	assert.deepEqual(fork.items.map((i) => i.text), conv.items.slice(0, 2).map((i) => i.text));
+	assert.ok(client.library.find((x) => x.id === forkId)!.title.endsWith("(fork)"));
+	const originalLength = conv.items.length;
+	await client.call("submit", { id: forkId, text: "only in the fork" });
+	await client.until("fork answered", () => {
+		const v = client.conversations.get(forkId)!;
+		return !v.state.busy && v.items.length === 4;
+	});
+	assert.equal(client.conversations.get(a)!.items.length, originalLength, "the original is untouched");
+	const found = (await client.call("search", { query: "ONLY IN THE fork" })).results;
+	assert.ok(found.some((r: any) => r.conversationId === forkId && r.role === "user" && r.snippet.includes("only in the fork")));
+	assert.deepEqual((await client.call("search", { query: "zzz-not-there" })).results, []);
+	await client.call("conversation.reset", { id: forkId, note: "We were testing forks." });
+	await client.until("reset marker", () => client.conversations.get(forkId)!.items.some((i) => i.kind === "marker" && i.text === "Context reset"));
+	await client.call("conversation.compact", { id: a });
+	step("fork from a message, search across conversations, reset the context, ask for a compaction");
+
+	// ---- Code mode
+	const { id: scripter } = await client.call("agents.save", { agent: { name: "Scripter", access: "full", codeMode: true, cwd: workdir } });
+	await client.until("scripter", () => client.agents.some((x) => x.id === scripter));
+	const { id: sc } = await client.call("conversation.create", { agentId: scripter });
+	await client.call("conversation.open", { id: sc });
+	await client.call("submit", { id: sc, text: "/code const r = await tools.bash({ command: 'echo from-a-script' }); console.log('script saw: ' + r.output.trim());" });
+	await client.until("script finished", () => {
+		const v = client.conversations.get(sc);
+		return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool") ? v : undefined;
+	});
+	const scriptResult = client.conversations.get(sc)!.items.find((i) => i.kind === "tool")!;
+	assert.ok(scriptResult.text.includes("script saw: from-a-script"), `the script called a tool and printed its output: ${scriptResult.text}`);
+	step("code mode: a script calls the conversation's tools");
+
+	// ---- MCP servers
+	const serverPath = join(home, "mcp-test-server.mjs");
+	writeFileSync(serverPath, MCP_TEST_SERVER);
+	const { id: server } = await client.call("mcp.save", { name: "Echo", transport: "stdio", command: process.execPath, args: [serverPath] });
+	const connected = await client.until("mcp connected", () => client.mcp.find((x) => x.id === server && x.status !== "connecting"));
+	assert.equal(connected.status, "connected", connected.error ?? "");
+	assert.deepEqual(connected.tools.map((t) => [t.name, t.readOnly]), [["echo", true], ["write_note", false]]);
+	const echoTool = connected.tools[0]!.toolName;
+	const { id: caller } = await client.call("agents.save", { agent: { name: "Caller", access: "ask", mcpServers: [server] } });
+	await client.until("caller", () => client.agents.some((x) => x.id === caller));
+	const { id: mc } = await client.call("conversation.create", { agentId: caller });
+	await client.call("conversation.open", { id: mc });
+	await client.call("submit", { id: mc, text: `/mcp ${echoTool} {"text":"hello mcp"}` });
+	await client.until("mcp result", () => {
+		const v = client.conversations.get(mc);
+		return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool") ? v : undefined;
+	});
+	assert.equal(client.conversations.get(mc)!.items.find((i) => i.kind === "tool")!.text, "echo: hello mcp");
+	await client.call("submit", { id: mc, text: `/mcp ${connected.tools[1]!.toolName} {"text":"x"}` });
+	const mcpAsk = await client.until("mcp approval", () => client.inbox.find((i) => i.conversationId === mc));
+	assert.equal(mcpAsk.kind, "approval");
+	await client.call("inbox.decide", { id: mcpAsk.id, decision: "once" });
+	await client.until("mcp write result", () => {
+		const v = client.conversations.get(mc)!;
+		return !v.state.busy && v.items.filter((i) => i.kind === "tool").length === 2;
+	});
+	await assert.rejects(client.call("mcp.save", { name: "Bad", transport: "stdio", command: "" }), /command/);
+	const { id: broken } = await client.call("mcp.save", { name: "Broken", transport: "stdio", command: "/definitely/not/a/program" });
+	const failed = await client.until("broken server reported", () => client.mcp.find((x) => x.id === broken && x.status === "error"));
+	assert.ok(failed.error);
+	await client.call("mcp.delete", { id: broken });
+	await client.call("mcp.delete", { id: server });
+	await client.until("servers removed", () => client.mcp.length === 0);
+	step("MCP: connect a server, call its tools, ask before tools that change things, report a server that will not start");
 
 	// ---- Providers: built-ins, an API key in the Keychain, removing it
 	const anthropic = client.providers.find((p) => p.id === "anthropic")!;
