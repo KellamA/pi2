@@ -5,10 +5,41 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            GeneralSettings()
+                .tabItem { Label("General", systemImage: "gearshape") }
             ProvidersSettings(engine: engine)
                 .tabItem { Label("Providers", systemImage: "key") }
         }
         .frame(width: 660, height: 600)
+    }
+}
+
+struct GeneralSettings: View {
+    @AppStorage(Notifier.defaultsKey) private var notify = false
+    @State private var denied = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Notify me when an agent needs me", isOn: $notify)
+                    .onChange(of: notify) { _, on in
+                        guard on else { return }
+                        Task {
+                            if await !Notifier.shared.requestPermission() {
+                                notify = false
+                                denied = true
+                            }
+                        }
+                    }
+                if denied {
+                    Text("macOS is not allowing notifications from pi². Turn them on in System Settings › Notifications.")
+                        .font(.callout).foregroundStyle(.orange)
+                }
+            } footer: {
+                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.")
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

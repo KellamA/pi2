@@ -20,6 +20,15 @@ final class EngineClient {
     private(set) var providers: [ProviderInfo] = []
     private(set) var models: [ModelInfo] = []
     private(set) var defaultModel: ModelRef?
+    private(set) var agents: [AgentProfile] = []
+    private(set) var inbox: [InboxItem] = [] {
+        didSet {
+            guard inbox != oldValue else { return }
+            NSApp.dockTile.badgeLabel = inbox.isEmpty ? nil : String(inbox.count)
+            let known = Set(oldValue.map(\.id))
+            for item in inbox where !known.contains(item.id) { Notifier.shared.needsYou(item) }
+        }
+    }
     private(set) var hasLoadedLibrary = false
     var signIn: SignInFlow?
     var lastError: String?
@@ -63,9 +72,9 @@ final class EngineClient {
         }
     }
 
-    func createConversation() async -> Int? {
+    func createConversation(agentId: String? = nil) async -> Int? {
         do {
-            let result = try await call("conversation.create")
+            let result = try await call("conversation.create", agentId.map { ["agentId": $0] } ?? [:])
             guard let id = result["id"]?.intValue else { return nil }
             openConversation(id)
             return id
@@ -90,6 +99,10 @@ final class EngineClient {
         var params = change
         params["id"] = id
         perform("conversation.configure", params)
+    }
+
+    func agent(_ id: String?) -> AgentProfile? {
+        agents.first { $0.id == id }
     }
 
     // MARK: - Sign-in
@@ -185,6 +198,8 @@ final class EngineClient {
         let result: JSONValue?
     }
     private struct LibraryEvent: Decodable { let conversations: [ConversationSummary] }
+    private struct AgentsEvent: Decodable { let agents: [AgentProfile] }
+    private struct InboxEvent: Decodable { let items: [InboxItem] }
     private struct ProvidersEvent: Decodable {
         let providers: [ProviderInfo]
         let models: [ModelInfo]
@@ -212,6 +227,10 @@ final class EngineClient {
             case "library":
                 conversations = try decoder.decode(LibraryEvent.self, from: line).conversations
                 hasLoadedLibrary = true
+            case "agents":
+                agents = try decoder.decode(AgentsEvent.self, from: line).agents
+            case "inbox":
+                inbox = try decoder.decode(InboxEvent.self, from: line).items
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 providers = event.providers

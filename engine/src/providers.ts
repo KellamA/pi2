@@ -62,11 +62,18 @@ function demoProvider(): Provider {
 			(message) => message.role === "user" || message.role === "toolResult",
 		);
 		if (last?.role === "toolResult") {
-			return fauxAssistantMessage(last.isError ? "The tool reported an error; its output is above." : "Done. The tool's output is above.");
+			return fauxAssistantMessage(last.isError ? "The tool reported an error; its output is above." : `Done. The tool returned: ${textOf(last.content).slice(0, 200)}`);
 		}
 		const prompt = textOf(last?.content).trim();
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
+		}
+		if (prompt.startsWith("/ask ")) {
+			return fauxAssistantMessage([fauxText("I need to check something with you."), fauxToolCall("ask_user", { question: prompt.slice(5) })], { stopReason: "toolUse" });
+		}
+		if (prompt.startsWith("/delegate ")) {
+			const [agent, ...task] = prompt.slice(10).split(":");
+			return fauxAssistantMessage([fauxText(`Handing that to ${agent!.trim()}.`), fauxToolCall("delegate", { agent: agent!.trim(), task: task.join(":").trim() })], { stopReason: "toolUse" });
 		}
 		if (prompt.startsWith("/read ")) {
 			return fauxAssistantMessage([fauxText("Reading that file."), fauxToolCall("read", { path: prompt.slice(6).trim() })], { stopReason: "toolUse" });
@@ -74,8 +81,8 @@ function demoProvider(): Provider {
 		return fauxAssistantMessage(
 			`You said: "${prompt}". I am the demo model, a scripted stand-in with no intelligence behind it. ` +
 				"Connect a real provider in Settings, then pick its model from the toolbar. " +
-				"Until then you can try `/bash <command>` or `/read <path>` to see tool calls " +
-				"(turn on tool access for the conversation first). One, two, three, four, five. Done.",
+				"Until then you can try `/bash <command>`, `/read <path>`, `/ask <question>` or `/delegate <agent>: <task>` " +
+				"to see tool calls. One, two, three, four, five. Done.",
 		);
 	};
 	faux.setResponses(Array.from({ length: 100_000 }, () => step));

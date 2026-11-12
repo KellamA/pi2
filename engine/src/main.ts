@@ -10,11 +10,13 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
+	type AgentChange,
+	AssistantEntry,
 	type Conversation,
 	type ConversationId,
 	type ConversationView,
 	createRegistry,
-	defineDoc,
+	type EntryId,
 	type EntryRecord,
 	Harness,
 	type SubmissionId,
@@ -23,7 +25,9 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { KeychainCredentialStore } from "./credentials.ts";
+import { pi2Extension } from "./extensions.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, Providers } from "./providers.ts";
+import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
 const home = process.env.PI2_HOME ?? join(homedir(), "Library", "Application Support", "pi2");
@@ -58,25 +62,52 @@ writeFileSync(join(home, "engine.pid"), String(process.pid));
 
 // ---- Models, tools, harness
 
-type ModelRef = { provider: string; modelId: string };
-type Access = "none" | "read" | "full";
-type Meta = { title: string; createdAt: number; updatedAt: number; archived?: boolean; access: Access };
-
 const providers = new Providers(home, new KeychainCredentialStore(home));
+const inbox = new Inbox();
+let library: { conversations: Record<string, Meta> } = { conversations: {} };
+let agents: Record<string, AgentProfile> = {};
+
+const pi2 = pi2Extension({
+	inbox,
+	meta: (id) => library.conversations[String(id)],
+	agent: (id) => (id === undefined ? undefined : agents[id]),
+	allowAlways: (id, tool) =>
+		editMeta(id, (meta) => {
+			if (!meta.autoApprove?.includes(tool)) meta.autoApprove = [...(meta.autoApprove ?? []), tool];
+		}),
+	agentChange: (agent, options) => agentChange(agent, options),
+	answerText: async (id, entryId) => {
+		const conv = await harness.conversation(id, context);
+		const entry = await conv?.commit((tx) => tx.entry(AssistantEntry, entryId as EntryId), context);
+		return textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content);
+	},
+});
 const registry = createRegistry();
 registry.install(CodingTools);
-const readTool = CodingTools.tools!.find((tool) => tool.name === "read")!;
-/** What `configure({ tools })` takes for an access level: nothing, read only, or everything installed. */
-const toolsFor = (access: Access) => (access === "none" ? [] : access === "read" ? [readTool] : null);
+registry.install(pi2);
+const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!].find((t) => t.name === name)!;
 
-/** The app's own index of conversations: titles, order, and tool access. Committed like everything else. */
-const Library = defineDoc<{ conversations: Record<string, Meta> }>({
-	kind: "pi2.library",
-	version: 1,
-	scope: "session",
-	initial: () => ({ conversations: {} }),
-	checkpointWhen: () => true,
-});
+/** The tools a conversation is given: file and shell tools by access level, asking the person, and delegation. */
+function toolsFor(access: Access, delegate: boolean) {
+	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
+	return [...files, "ask_user", ...(delegate ? ["delegate"] : [])].map(tool);
+}
+
+/** How a conversation that starts from `agent` is configured. */
+async function agentChange(agent: AgentProfile, options: { delegate: boolean }): Promise<AgentChange> {
+	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
+	return {
+		model,
+		thinkingLevel: (agent.thinkingLevel as never) ?? null,
+		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
+		tools: toolsFor(agent.access, options.delegate && agent.delegates.some((id) => agents[id] !== undefined)),
+		cwd: agent.cwd,
+		maxTurns: agent.maxTurns,
+	};
+}
+
+const workspace = join(home, "workspace");
+mkdirSync(workspace, { recursive: true });
 
 const storage = await openNodeSqliteStorage(join(home, "session.sqlite"));
 const harness = await Harness.open(
@@ -84,7 +115,8 @@ const harness = await Harness.open(
 	{
 		models: providers.models,
 		registry,
-		env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? homedir() }),
+		// A conversation without a chosen folder works in the app's own scratch folder, never the home folder.
+		env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? workspace }),
 		identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
 		onReport: (report) => log("report", report.kind, report.error instanceof Error ? report.error.message : ""),
 	},
@@ -92,7 +124,7 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef } = (() => {
+const settings: { defaultModel?: ModelRef; lastAgent?: string } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -126,7 +158,7 @@ type ToolCall = { callId: string; name: string; arguments: unknown };
 type Item =
 	| { id: number; kind: "user"; text: string }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
-	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean }
+	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown }
 	| { id: number; kind: "marker"; text: string };
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -138,6 +170,13 @@ function assistantParts(message: AssistantLike): { text: string; thinking: strin
 		thinking: blocks.map((b) => (b?.type === "thinking" && typeof b.thinking === "string" ? b.thinking : "")).join(""),
 		toolCalls: blocks.filter((b) => b?.type === "toolCall").map((b) => ({ callId: String(b.id), name: String(b.name), arguments: b.arguments ?? {} })),
 	};
+}
+
+/** A tool result's `details`, wherever this version of pi durable keeps them on the entry. */
+function detailsOf(entry: EntryRecord): unknown {
+	const data = entry.data as { details?: unknown } | undefined;
+	const message = entry.model?.[0] as { details?: unknown } | undefined;
+	return data?.details ?? message?.details ?? null;
 }
 
 function toItem(entry: EntryRecord): Item | undefined {
@@ -152,7 +191,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 		case "assistant":
 			return { id, kind: "assistant", ...assistantParts(message), stop: message.stopReason ?? "stop", error: message.errorMessage ?? null, model: message.model ?? null };
 		case "toolResult":
-			return { id, kind: "tool", callId: String(message.toolCallId), name: String(message.toolName), text: textOf(message.content), isError: message.isError === true };
+			return { id, kind: "tool", callId: String(message.toolCallId), name: String(message.toolName), text: textOf(message.content), isError: message.isError === true, details: detailsOf(entry) };
 		default:
 			return undefined;
 	}
@@ -161,7 +200,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 type LiveDocShape = {
 	run?: { turns?: number };
 	generation?: { message?: AssistantLike; retry?: { at: number; error: string } };
-	tools?: { callId: string; name: string; status: string; output?: string }[];
+	tools?: { callId: string; name: string; status: string; output?: string; details?: unknown }[];
 	runFailure?: { reason: string; detail?: string };
 };
 
@@ -175,10 +214,17 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		turns: live.run?.turns ?? 0,
 		partial: partial === undefined ? null : assistantParts(partial),
 		retry: live.generation?.retry ?? null,
-		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "" })),
+		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "", details: slot.details ?? null })),
 		failure: live.runFailure === undefined ? null : { reason: live.runFailure.reason, detail: live.runFailure.detail ?? null },
 		queued: (inbox.items ?? []).filter((item) => item.mode !== "write").map((item) => ({ id: item.id, mode: item.mode, text: textOf(item.content) })),
-		agent: { model: agent.model ?? null, thinkingLevel: agent.thinkingLevel ?? null, cwd: agent.cwd ?? null, access: meta?.access ?? "none" },
+		agent: {
+			model: agent.model ?? null,
+			thinkingLevel: agent.thinkingLevel ?? null,
+			cwd: agent.cwd ?? null,
+			access: meta?.access ?? "none",
+			agentId: meta?.agentId ?? null,
+			parent: meta?.parent ?? null,
+		},
 	};
 }
 
@@ -198,16 +244,37 @@ function broadcast(message: unknown): void {
 	for (const client of clients) send(client, message);
 }
 
-let library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
+library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
 let busyConversations = new Set<number>();
 
 function libraryEvent() {
 	const conversations = Object.entries(library.conversations)
-		.filter(([, meta]) => meta.archived !== true)
-		.map(([id, meta]) => ({ id: Number(id), title: meta.title, updatedAt: meta.updatedAt, busy: busyConversations.has(Number(id)) }))
+		.filter(([, meta]) => meta.archived !== true && meta.parent === undefined)
+		.map(([id, meta]) => ({ id: Number(id), title: meta.title, updatedAt: meta.updatedAt, busy: busyConversations.has(Number(id)), agentId: meta.agentId ?? null }))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 	return { event: "library", conversations };
 }
+
+function agentsEvent() {
+	return { event: "agents", agents: Object.values(agents).sort((a, b) => a.createdAt - b.createdAt) };
+}
+
+/** Everything waiting on the person, with enough context to answer from anywhere in the app. */
+function inboxEvent() {
+	const items = inbox.list().map((item) => {
+		const meta = library.conversations[String(item.conversationId)];
+		const root = meta?.parent ?? item.conversationId;
+		return {
+			...item,
+			title: meta?.title ?? "",
+			agentName: agents[meta?.agentId ?? ""]?.name ?? null,
+			rootConversationId: root,
+			rootTitle: library.conversations[String(root)]?.title ?? "",
+		};
+	});
+	return { event: "inbox", items };
+}
+inbox.onChange = () => broadcast(inboxEvent());
 
 async function providersEvent() {
 	const [list, models] = await Promise.all([providers.listProviders(), providers.listModels()]);
@@ -262,18 +329,22 @@ const text = (params: Params, key: string): string => {
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"conversation.create": async (params) => {
-		const model = (params.model as ModelRef | undefined) ?? (await defaultModel());
+		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
+		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
+		const change = await agentChange(agent, { delegate: true });
 		const now = Date.now();
 		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
-				agent: { model, tools: [] },
+				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef } : change,
 				init: async (tx, id) => {
-					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none" };
+					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
 				},
 			},
 			context,
 		);
+		settings.lastAgent = agent.id;
+		saveSettings();
 		return { id: created.id };
 	},
 	"conversation.open": async (params, client) => {
@@ -316,8 +387,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		}
 		if (params.access !== undefined) {
 			const access = params.access as Access;
-			if (!["none", "read", "full"].includes(access)) throw new Error(`Unknown access level: ${String(access)}`);
-			await conv.configure({ tools: toolsFor(access) }, context);
+			if (!ACCESS_LEVELS.includes(access)) throw new Error(`Unknown access level: ${String(access)}`);
+			const meta = library.conversations[String(id)];
+			const own = agents[meta?.agentId ?? ""];
+			const delegate = meta?.parent === undefined && (own?.delegates ?? []).some((other) => agents[other] !== undefined);
+			await conv.configure({ tools: toolsFor(access, delegate) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -354,6 +428,64 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	withdraw: async (params) => {
 		const submission = await harness.submission(params.submissionId as SubmissionId, context);
 		await submission?.abort(context);
+		return {};
+	},
+
+	"agents.save": async (params) => {
+		const input = params.agent as Partial<AgentProfile> | undefined;
+		const name = typeof input?.name === "string" ? input.name.trim() : "";
+		if (input === undefined || name === "") throw new Error("Give the agent a name");
+		if (input.access !== undefined && !ACCESS_LEVELS.includes(input.access)) throw new Error(`Unknown access level: ${String(input.access)}`);
+		if (typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
+		if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
+		const taken = Object.values(agents).some((other) => other.id !== input.id && other.name.toLowerCase() === name.toLowerCase());
+		if (taken) throw new Error(`There is already an agent called ${name}`);
+		let id = input.id;
+		if (id !== undefined && agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
+		if (id === undefined) {
+			const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
+			id = slug;
+			for (let n = 2; agents[id] !== undefined; n++) id = `${slug}-${n}`;
+		}
+		const previous = agents[id];
+		const agent: AgentProfile = {
+			id,
+			name,
+			description: (input.description ?? previous?.description ?? "").trim(),
+			color: input.color ?? previous?.color ?? "violet",
+			model: input.model === undefined ? (previous?.model ?? null) : input.model,
+			thinkingLevel: input.thinkingLevel === undefined ? (previous?.thinkingLevel ?? null) : input.thinkingLevel,
+			instructions: input.instructions ?? previous?.instructions ?? "",
+			access: input.access ?? previous?.access ?? "none",
+			cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
+			delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
+			maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
+			createdAt: previous?.createdAt ?? Date.now(),
+		};
+		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
+		return { id };
+	},
+	"agents.delete": async (params) => {
+		const id = text(params, "id");
+		if (agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
+		if (Object.keys(agents).length === 1) throw new Error("Keep at least one agent");
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(Agents);
+			delete doc.agents[id];
+			for (const other of Object.values(doc.agents)) other.delegates = other.delegates.filter((d) => d !== id);
+		}, context);
+		return {};
+	},
+	"inbox.decide": async (params) => {
+		const decision = text(params, "decision");
+		if (!["once", "always", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
+		if (!inbox.answer(text(params, "id"), decision)) throw new Error("That request is no longer waiting");
+		return {};
+	},
+	"inbox.answer": async (params) => {
+		const answer = text(params, "text");
+		if (answer.trim() === "") throw new Error("The answer is empty");
+		if (!inbox.answer(text(params, "id"), answer)) throw new Error("That question is no longer waiting");
 		return {};
 	},
 
@@ -427,6 +559,22 @@ libraryWatch.start(async (call) => {
 	if (call.kind !== "value") return;
 	library = call.value;
 	broadcast(libraryEvent());
+	broadcast(inboxEvent()); // titles shown in the inbox come from here
+});
+
+// Agents: created with three starters on a first launch, then whatever the person makes of them.
+await harness.commit(async (tx) => {
+	const doc = await tx.doc(Agents);
+	if (Object.keys(doc.agents).length === 0) for (const agent of starterAgents(Date.now())) doc.agents[agent.id] = agent;
+}, context);
+const agentsWatch = await harness.watchDoc(Agents, context);
+if (agentsWatch === undefined) throw new Error("The agents document could not be opened");
+agents = agentsWatch.value.agents;
+agentsWatch.start(async (call) => {
+	if (call.kind !== "value") return;
+	agents = call.value.agents;
+	broadcast(agentsEvent());
+	broadcast(inboxEvent());
 });
 const graphWatch = await harness.watchTaskGraph(context);
 const busyFrom = (graph: { tasks: Record<string, { conversationId?: unknown }> }) =>
@@ -447,6 +595,8 @@ const server = createServer((socket) => {
 	const client: Client = { socket, subscriptions: new Map() };
 	clients.add(client);
 	send(client, libraryEvent());
+	send(client, agentsEvent());
+	send(client, inboxEvent());
 	void providersEvent().then((event) => send(client, event));
 	let buffer = "";
 	socket.setEncoding("utf8");

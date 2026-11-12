@@ -18,7 +18,12 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TranscriptView(items: data.items, state: state)
+            TranscriptView(engine: engine, conversationID: id, items: data.items, state: state)
+            // A subagent of this conversation is waiting on the person.
+            ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in
+                InboxCard(engine: engine, item: item, showsSource: true)
+                    .padding(.horizontal, 20).padding(.top, 8)
+            }
             if let retry = state?.retry {
                 banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: .orange)
             }
@@ -41,6 +46,7 @@ struct ChatView: View {
             composer
         }
         .navigationTitle(title)
+        .navigationSubtitle(engine.agent(state?.agent.agentId)?.name ?? "")
         .toolbar {
             ToolbarItemGroup {
                 ModelMenu(engine: engine, id: id, agent: state?.agent)
@@ -219,9 +225,9 @@ struct ToolsMenu: View {
     var body: some View {
         Menu {
             Picker("Tool access", selection: Binding(get: { access }, set: { engine.setAccess($0, for: id) })) {
-                Text("Off — chat only").tag("none")
-                Text("Read files").tag("read")
-                Text("Full access — edit files and run commands").tag("full")
+                ForEach(AccessLevel.all, id: \.id) { level in
+                    Text("\(level.title) — \(level.detail)").tag(level.id)
+                }
             }
             .pickerStyle(.inline)
             Divider()
@@ -233,13 +239,14 @@ struct ToolsMenu: View {
             Label(label, systemImage: access == "none" ? "wrench.and.screwdriver" : "wrench.and.screwdriver.fill")
                 .labelStyle(.titleAndIcon)
         }
-        .help("What the model may do on this Mac in this conversation. Commands run without asking when access is Full.")
+        .help("What the agent may do on this Mac in this conversation")
     }
 
     private var label: String {
         switch access {
-        case "read": "Read · \(folderName ?? "no folder")"
-        case "full": "Full · \(folderName ?? "no folder")"
+        case "read": "Read · \(folderName ?? "scratch folder")"
+        case "ask": "Ask first · \(folderName ?? "scratch folder")"
+        case "full": "Full · \(folderName ?? "scratch folder")"
         default: "Tools off"
         }
     }
@@ -261,6 +268,8 @@ extension EngineClient {
         if let folder = Self.chooseFolder() { configure(id, ["cwd": folder]) }
     }
 
+    static func pickFolder() -> String? { chooseFolder() }
+
     private static func chooseFolder() -> String? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -275,6 +284,8 @@ extension EngineClient {
 // MARK: - Transcript
 
 struct TranscriptView: View {
+    let engine: EngineClient
+    let conversationID: Int
     let items: [Item]
     let state: ConversationState?
 
@@ -313,7 +324,7 @@ struct TranscriptView: View {
                             .background(.quaternary, in: .rect(cornerRadius: 12))
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     case "assistant":
-                        AssistantRow(item: item, results: results, live: live, running: state?.busy ?? false)
+                        AssistantRow(engine: engine, conversationID: conversationID, item: item, results: results, live: live, running: state?.busy ?? false)
                     default:
                         HStack {
                             VStack { Divider() }
@@ -381,6 +392,8 @@ private struct ScrollSnapshot: Equatable {
 }
 
 struct AssistantRow: View {
+    let engine: EngineClient
+    let conversationID: Int
     let item: Item
     let results: [String: Item]
     let live: [String: LiveTool]
@@ -403,7 +416,7 @@ struct AssistantRow: View {
                 Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
             }
             ForEach(item.toolCalls ?? []) { call in
-                ToolCard(call: call, result: results[call.callId], live: live[call.callId], running: running)
+                ToolCard(engine: engine, conversationID: conversationID, call: call, result: results[call.callId], live: live[call.callId], running: running)
             }
             if item.stop == "length" {
                 Text("The answer was cut off at the model's output limit.").font(.caption).foregroundStyle(.secondary)
@@ -432,23 +445,55 @@ struct ThinkingView: View {
 }
 
 struct ToolCard: View {
+    let engine: EngineClient
+    let conversationID: Int
     let call: ToolCall
     let result: Item?
     let live: LiveTool?
     /// Whether the conversation has a run going; a call without a result is only "running" while it does.
     let running: Bool
     @State private var expandedChoice: Bool?
+    @State private var showingSubagent = false
+
+    /// The approval or question this call is waiting on, if any.
+    private var pending: InboxItem? {
+        engine.inbox.first { $0.conversationId == conversationID && $0.callId == call.callId }
+    }
+    /// For a delegation: the subagent's conversation and name, once the call has created it.
+    private var subagent: (id: Int, name: String)? {
+        guard let details = result?.details ?? live?.details, let id = details["conversationId"]?.intValue else { return nil }
+        return (id, details["agentName"]?.stringValue ?? "Subagent")
+    }
 
     private var isRunning: Bool { result == nil && running }
     private var isError: Bool { result?.isError ?? false }
-    private var output: String { result?.text ?? live?.output ?? "" }
+    private var output: String { Self.readable(result?.text ?? live?.output ?? "") }
+
+    /// pi durable wraps the results it writes itself (refused, blocked, interrupted) in a tag meant for the model.
+    private static func readable(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("<harness>"), trimmed.hasSuffix("</harness>") else { return text }
+        var inner = String(trimmed.dropFirst("<harness>".count).dropLast("</harness>".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if inner.hasPrefix("[error] ") { inner.removeFirst("[error] ".count) }
+        return inner
+    }
     private var expanded: Bool { expandedChoice ?? (isRunning || isError) }
+
+    private var title: String {
+        switch call.name {
+        case "delegate": "Delegate to \(call.arguments["agent"]?.stringValue ?? "agent")"
+        case "ask_user": "Question"
+        default: call.name
+        }
+    }
 
     private var icon: String {
         switch call.name {
         case "bash": "terminal"
         case "read": "doc.text"
         case "write", "edit": "pencil"
+        case "delegate": "person.2"
+        case "ask_user": "questionmark.bubble"
         default: "hammer"
         }
     }
@@ -460,13 +505,15 @@ struct ToolCard: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: icon).foregroundStyle(.secondary).frame(width: 16)
-                    Text(call.name).font(.callout.weight(.medium))
+                    Text(title).font(.callout.weight(.medium))
                     Text(call.summary)
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 8)
-                    if isRunning {
+                    if pending != nil {
+                        Text("Waiting for you").font(.caption.weight(.medium)).foregroundStyle(.orange)
+                    } else if isRunning {
                         ProgressView().controlSize(.small)
                     } else if result == nil {
                         Text("no result").font(.caption).foregroundStyle(.secondary)
@@ -483,7 +530,22 @@ struct ToolCard: View {
             .buttonStyle(.plain)
             .accessibilityLabel("\(call.name) \(call.summary)")
 
-            if expanded {
+            if let pending {
+                Divider()
+                InboxCard(engine: engine, item: pending, showsSource: false, framed: false)
+                    .padding(12)
+            }
+            if let subagent {
+                Divider()
+                Button("Open \(subagent.name)’s Transcript", systemImage: "arrow.up.forward.square") { showingSubagent = true }
+                    .buttonStyle(.link)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .sheet(isPresented: $showingSubagent) {
+                        SubagentSheet(engine: engine, id: subagent.id, name: subagent.name)
+                    }
+            }
+
+            if expanded && pending == nil {
                 Divider()
                 ScrollView {
                     Text(output.isEmpty ? (isRunning ? "Running…" : "(no output)") : output)

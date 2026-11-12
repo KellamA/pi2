@@ -27,4 +27,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>PI2EngineMain</key><string>$ENGINE_MAIN</string>
 </dict></plist>
 PLIST
+# Ad-hoc signature: enough for macOS to let the app ask for notification permission.
+codesign --force --sign - "$APP" 2>/dev/null || true
 echo "Built $PWD/$APP"

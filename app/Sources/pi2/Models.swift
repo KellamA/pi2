@@ -69,6 +69,7 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let title: String
     let updatedAt: Double
     let busy: Bool
+    let agentId: String?
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {
@@ -81,6 +82,8 @@ struct ToolCall: Codable, Equatable, Identifiable {
     var summary: String {
         if let command = arguments["command"]?.stringValue { return command }
         if let path = arguments["path"]?.stringValue { return path }
+        if let task = arguments["task"]?.stringValue { return task }
+        if let question = arguments["question"]?.stringValue { return question }
         return arguments.displayText.replacingOccurrences(of: "\n", with: " ")
     }
 }
@@ -98,6 +101,7 @@ struct Item: Codable, Identifiable, Equatable {
     var callId: String?
     var name: String?
     var isError: Bool?
+    var details: JSONValue?
 }
 
 struct PartialAnswer: Codable, Equatable {
@@ -111,6 +115,7 @@ struct LiveTool: Codable, Equatable {
     let name: String
     let status: String
     let output: String
+    let details: JSONValue?
 }
 
 struct RetryInfo: Codable, Equatable {
@@ -149,6 +154,65 @@ struct AgentInfo: Codable, Equatable {
     let thinkingLevel: String?
     let cwd: String?
     let access: String
+    let agentId: String?
+    /// Set for a subagent's conversation: the conversation that delegated to it.
+    let parent: Int?
+}
+
+/// A saved setup that conversations start from.
+struct AgentProfile: Codable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var description: String
+    var color: String
+    var model: ModelRef?
+    var thinkingLevel: String?
+    var instructions: String
+    var access: String
+    var cwd: String?
+    var delegates: [String]
+    var maxTurns: Int?
+    var createdAt: Double
+
+    /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
+    var payload: [String: Any] {
+        [
+            "id": id, "name": name, "description": description, "color": color,
+            "model": model.map { ["provider": $0.provider, "modelId": $0.modelId] as Any } ?? NSNull(),
+            "thinkingLevel": thinkingLevel as Any? ?? NSNull(),
+            "instructions": instructions, "access": access,
+            "cwd": cwd as Any? ?? NSNull(),
+            "delegates": delegates,
+            "maxTurns": maxTurns as Any? ?? NSNull(),
+        ]
+    }
+}
+
+/// Something a run is waiting on the person for: approval of a tool call, or an answer to a question.
+struct InboxItem: Codable, Equatable, Identifiable {
+    let id: String
+    let kind: String
+    let conversationId: Int
+    let callId: String
+    let tool: String
+    let arguments: JSONValue
+    let question: String?
+    let title: String
+    let agentName: String?
+    /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
+    let rootConversationId: Int
+    let rootTitle: String
+
+    var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
+}
+
+enum AccessLevel {
+    static let all: [(id: String, title: String, detail: String)] = [
+        ("none", "Off", "Chat only"),
+        ("read", "Read files", "Can read files in its folder"),
+        ("ask", "Ask first", "Can edit files and run commands after you approve each one"),
+        ("full", "Full access", "Edits files and runs commands without asking"),
+    ]
 }
 
 struct ConversationState: Codable, Equatable {

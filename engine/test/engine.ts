@@ -15,8 +15,9 @@ const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 const KEYCHAIN_SERVICE = "dev.pi2.credentials.test";
 
-type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; toolCalls?: { callId: string; name: string }[] };
-type State = { busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null }; tools: { name: string; status: string }[] };
+type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
+type InboxItem = { id: string; kind: string; conversationId: number; rootConversationId: number; tool: string; question: string | null; agentName: string | null; callId: string };
+type State = { busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null; agentId: string | null; parent: number | null }; tools: { name: string; status: string }[] };
 type Conv = { items: Item[]; state: State };
 
 function startEngine(): ChildProcess {
@@ -27,6 +28,8 @@ class Client {
 	socket!: Socket;
 	conversations = new Map<number, Conv>();
 	library: { id: number; title: string; busy: boolean }[] = [];
+	agents: { id: string; name: string; access: string; delegates: string[] }[] = [];
+	inbox: InboxItem[] = [];
 	providers: { id: string; kind: string; status: unknown; oauth: { subscription: boolean } | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	#nextId = 1;
@@ -52,20 +55,22 @@ class Client {
 			buffer += chunk;
 			const lines = buffer.split("\n");
 			buffer = lines.pop()!;
-			for (const line of lines) client.#receive(JSON.parse(line));
+			for (const line of lines) client.receive(JSON.parse(line));
 			client.#wake?.();
 		});
 		client.socket.on("error", () => {});
 		return client;
 	}
 
-	#receive(message: any): void {
+	receive(message: any): void {
 		if (message.event === "library") this.library = message.conversations;
+		else if (message.event === "agents") this.agents = message.agents;
+		else if (message.event === "inbox") this.inbox = message.items;
 		else if (message.event === "providers") {
 			this.providers = message.providers;
 			this.models = message.models;
 		} else if (message.event === "conversation") {
-			const conv = this.conversations.get(message.id) ?? { items: [], state: message.state };
+			const conv: Conv = this.conversations.get(message.id) ?? { items: [], state: message.state };
 			if (message.reset) conv.items = [];
 			conv.items.push(...message.items);
 			conv.state = message.state;
@@ -216,6 +221,108 @@ try {
 	assert.equal(conv.items.filter((i) => i.kind === "assistant" && i.stop === "stop").length, 1);
 	assert.equal(client.library.length, 3, "the library survived the crash");
 	step(`kill -9 mid-answer: resumed, ${conv.items.filter((i) => i.kind === "assistant" && i.stop !== "stop").length} interrupted attempt kept`);
+
+	// ---- Agents
+	await client.until("agents", () => client.agents.length > 0);
+	assert.deepEqual(client.agents.map((x) => x.id), ["atlas", "forge", "scout"]);
+	const { id: f } = await client.call("conversation.create", { agentId: "forge" });
+	await client.call("conversation.open", { id: f });
+	await client.call("conversation.configure", { id: f, cwd: workdir });
+	let forge = await client.until("forge conversation", () => client.conversations.get(f));
+	assert.equal(forge.state.agent.agentId, "forge");
+	assert.equal(forge.state.agent.access, "ask");
+	step("three starter agents; a conversation starts with its agent's setup");
+
+	// ---- Approvals
+	const toolResults = (id: number) => client.conversations.get(id)!.items.filter((i) => i.kind === "tool");
+	const settled = (id: number, results: number) =>
+		client.until(`${results} tool result(s) and idle`, () => {
+			const v = client.conversations.get(id)!;
+			return !v.state.busy && toolResults(id).length === results ? v : undefined;
+		});
+	await client.call("submit", { id: f, text: "/bash echo approved-ran" });
+	let ask = await client.until("approval request", () => client.inbox.find((i) => i.conversationId === f));
+	assert.equal(ask.kind, "approval");
+	assert.equal(ask.tool, "bash");
+	await sleep(500);
+	assert.equal(toolResults(f).length, 0, "nothing runs before the decision");
+	await client.call("inbox.decide", { id: ask.id, decision: "once" });
+	await settled(f, 1);
+	assert.ok(toolResults(f)[0]!.text.includes("approved-ran"));
+	assert.equal(client.inbox.length, 0);
+	step("a gated command waits for approval, then runs");
+
+	await client.call("submit", { id: f, text: "/bash echo must-not-run" });
+	ask = await client.until("second approval request", () => client.inbox.find((i) => i.conversationId === f));
+	await client.call("inbox.decide", { id: ask.id, decision: "deny" });
+	await settled(f, 2);
+	assert.equal(toolResults(f)[1]!.isError, true);
+	assert.ok(!toolResults(f)[1]!.text.includes("must-not-run\n") && /declined/.test(toolResults(f)[1]!.text));
+	step("denying blocks the command and tells the model");
+
+	// ---- An approval survives a crash
+	await client.call("submit", { id: f, text: "/bash echo after-crash" });
+	await client.until("approval before crash", () => client.inbox.find((i) => i.conversationId === f));
+	engine.kill("SIGKILL");
+	await new Promise((resolve) => engine.once("exit", resolve));
+	engine = startEngine();
+	client = await Client.attach();
+	await client.call("conversation.open", { id: f });
+	ask = await client.until("approval asked again after restart", () => client.inbox.find((i) => i.conversationId === f));
+	await client.call("inbox.decide", { id: ask.id, decision: "always" });
+	await settled(f, 3);
+	assert.ok(toolResults(f)[2]!.text.includes("after-crash"));
+	step("kill -9 while waiting: the approval is asked again, then the command runs once");
+
+	await client.call("submit", { id: f, text: "/bash echo no-prompt" });
+	await settled(f, 4);
+	assert.ok(toolResults(f)[3]!.text.includes("no-prompt"));
+	step("\"always allow\" skips the prompt for that tool in that conversation");
+
+	// ---- Asking the person
+	await client.call("submit", { id: f, text: "/ask Which colour?" });
+	const question = await client.until("question", () => client.inbox.find((i) => i.kind === "question"));
+	assert.equal(question.question, "Which colour?");
+	await assert.rejects(client.call("inbox.answer", { id: question.id, text: "  " }), /empty/);
+	await client.call("inbox.answer", { id: question.id, text: "blue" });
+	await settled(f, 5);
+	assert.equal(toolResults(f)[4]!.text, "blue");
+	step("an agent asks a question and gets the answer");
+
+	// ---- Delegation
+	const { id: m } = await client.call("conversation.create", { agentId: "atlas" });
+	await client.call("conversation.open", { id: m });
+	await client.call("submit", { id: m, text: "/delegate Scout: say hi to the team" });
+	await client.until("delegation finished", () => {
+		const v = client.conversations.get(m);
+		return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool") ? v : undefined;
+	});
+	const handoff = toolResults(m)[0]!;
+	assert.equal(handoff.isError, false, handoff.text);
+	assert.ok(handoff.text.includes('You said: "say hi to the team"'), "the subagent's answer comes back");
+	const childId = handoff.details?.conversationId as number;
+	assert.equal(typeof childId, "number", "the call's details name the subagent's conversation");
+	assert.ok(!client.library.some((x) => x.id === childId), "subagent conversations stay out of the sidebar");
+	await client.call("conversation.open", { id: childId });
+	const child = await client.until("child transcript", () => client.conversations.get(childId));
+	assert.equal(child.state.agent.agentId, "scout");
+	assert.equal(child.state.agent.parent, m);
+	assert.equal(child.items[0]!.text, "say hi to the team");
+	await client.call("submit", { id: f, text: "/delegate Scout: not allowed" });
+	await settled(f, 6);
+	assert.equal(toolResults(f)[5]!.isError, true, "Forge has no agents to delegate to");
+	step("delegation: the subagent runs as its own agent and its answer returns; agents without delegates cannot");
+
+	// ---- Editing agents
+	await assert.rejects(client.call("agents.save", { agent: { name: "Atlas" } }), /already an agent/);
+	const { id: custom } = await client.call("agents.save", { agent: { name: "Quill", description: "Writer", access: "read", delegates: ["scout"] } });
+	await client.until("new agent", () => client.agents.some((x) => x.id === custom));
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", access: "none" } });
+	await client.until("edited agent", () => client.agents.find((x) => x.id === custom)?.access === "none");
+	await client.call("agents.delete", { id: "scout" });
+	await client.until("agent deleted", () => !client.agents.some((x) => x.id === "scout"));
+	assert.deepEqual(client.agents.find((x) => x.id === "atlas")!.delegates, ["forge"], "deleted agents leave other agents' lists");
+	step("create, edit and delete agents");
 
 	// ---- Providers: built-ins, an API key in the Keychain, removing it
 	const anthropic = client.providers.find((p) => p.id === "anthropic")!;

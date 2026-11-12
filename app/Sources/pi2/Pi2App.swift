@@ -1,26 +1,62 @@
 import SwiftUI
 
-/// App-level UI state: which conversation is on screen.
+/// What the main window is showing.
+enum Selection: Hashable {
+    case inbox
+    case agent(String)
+    case conversation(Int)
+}
+
+/// App-level UI state.
 @MainActor
 @Observable
 final class AppModel {
     let engine = EngineClient()
-    var selection: Int?
+    var selection: Selection?
     /// The conversation whose rename prompt is showing.
     var renaming: ConversationSummary?
     var newTitle = ""
+    /// The conversation whose delete confirmation is showing.
+    var deleting: ConversationSummary?
+
+    var selectedConversationID: Int? {
+        if case .conversation(let id) = selection { return id }
+        return nil
+    }
 
     var selectedConversation: ConversationSummary? {
-        engine.conversations.first { $0.id == selection }
+        engine.conversations.first { $0.id == selectedConversationID }
+    }
+
+    /// Starts a conversation with `agentId`, or with the agent used last when nil.
+    func newConversation(agentId: String? = nil) {
+        Task {
+            if let id = await engine.createConversation(agentId: agentId) { selection = .conversation(id) }
+        }
+    }
+
+    func newAgent() {
+        Task {
+            // A unique placeholder name; the editor opens so it can be changed straight away.
+            var name = "New Agent"
+            var n = 2
+            while engine.agents.contains(where: { $0.name.lowercased() == name.lowercased() }) {
+                name = "New Agent \(n)"
+                n += 1
+            }
+            do {
+                let result = try await engine.call("agents.save", ["agent": ["name": name, "description": "", "access": "none"]])
+                if let id = result["id"]?.stringValue { selection = .agent(id) }
+            } catch {
+                engine.lastError = error.localizedDescription
+            }
+        }
     }
 
     func beginRename(_ conversation: ConversationSummary) {
         newTitle = conversation.title
         renaming = conversation
     }
-
-    /// The conversation whose delete confirmation is showing.
-    var deleting: ConversationSummary?
 
     func delete(_ conversation: ConversationSummary) {
         deleting = conversation
@@ -29,12 +65,6 @@ final class AppModel {
     func confirmDelete() {
         if let deleting { engine.perform("conversation.archive", ["id": deleting.id]) }
         deleting = nil
-    }
-
-    func newConversation() {
-        Task {
-            if let id = await engine.createConversation() { selection = id }
-        }
     }
 }
 
@@ -50,18 +80,29 @@ struct Pi2App: App {
     var body: some Scene {
         Window("pi²", id: "main") {
             RootView(model: model)
-                .frame(minWidth: 760, minHeight: 480)
+                .frame(minWidth: 820, minHeight: 480)
                 .tint(.piAccent)
                 .onAppear {
                     delegate.engine = model.engine
                     model.engine.start()
                 }
         }
-        .defaultSize(width: 1080, height: 720)
+        .defaultSize(width: 1120, height: 740)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Conversation") { model.newConversation() }
                     .keyboardShortcut("n")
+                Menu("New Conversation With") {
+                    ForEach(model.engine.agents) { agent in
+                        Button(agent.name) { model.newConversation(agentId: agent.id) }
+                    }
+                }
+                Button("New Agent") { model.newAgent() }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .sidebar) {
+                Button("Show Inbox") { model.selection = .inbox }
+                    .keyboardShortcut("i", modifiers: [.command, .shift])
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -101,12 +142,18 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 340)
+                .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
-            if let id = model.selection, engine.conversations.contains(where: { $0.id == id }) || engine.open[id] != nil {
+            switch model.selection {
+            case .inbox:
+                InboxView(model: model)
+            case .agent(let id):
+                AgentEditor(model: model, agentID: id)
+                    .id(id)
+            case .conversation(let id):
                 ChatView(engine: engine, id: id)
                     .id(id)
-            } else {
+            case nil:
                 ContentUnavailableView {
                     Label("No conversation selected", systemImage: "bubble.left.and.bubble.right")
                 } description: {
@@ -118,15 +165,18 @@ struct RootView: View {
                 }
             }
         }
-        .onChange(of: model.selection) { _, id in
-            if let id { engine.openConversation(id) }
+        .onChange(of: model.selection) { _, selection in
+            if case .conversation(let id) = selection { engine.openConversation(id) }
         }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
             // On launch, land on the most recent conversation.
-            if loaded, model.selection == nil, let first = engine.conversations.first { model.selection = first.id }
+            if loaded, model.selection == nil, let first = engine.conversations.first { model.selection = .conversation(first.id) }
         }
         .onChange(of: engine.conversations) { _, list in
-            if let id = model.selection, !list.contains(where: { $0.id == id }) { model.selection = list.first?.id }
+            // The conversation on screen was deleted: move to the next one.
+            if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }) {
+                model.selection = list.first.map { .conversation($0.id) }
+            }
         }
         .confirmationDialog(
             "Delete “\(model.deleting.map { $0.title.isEmpty ? "New conversation" : $0.title } ?? "")”?",
@@ -151,18 +201,70 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $model.selection) {
+            Label {
+                HStack {
+                    Text("Inbox")
+                    Spacer()
+                    if !engine.inbox.isEmpty {
+                        Text("\(engine.inbox.count)")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 1)
+                            .background(.orange, in: .capsule)
+                            .foregroundStyle(.white)
+                            .accessibilityLabel("\(engine.inbox.count) waiting")
+                    }
+                }
+            } icon: {
+                Image(systemName: engine.inbox.isEmpty ? "tray" : "tray.full")
+            }
+            .tag(Selection.inbox)
+
+            Section {
+                ForEach(engine.agents) { agent in
+                    HStack(spacing: 8) {
+                        AgentAvatar(agent: agent)
+                        Text(agent.name).lineLimit(1)
+                        Spacer()
+                        Button("New conversation with \(agent.name)", systemImage: "plus.bubble") {
+                            model.newConversation(agentId: agent.id)
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help("New conversation with \(agent.name)")
+                    }
+                    .tag(Selection.agent(agent.id))
+                }
+            } header: {
+                HStack {
+                    Text("Agents")
+                    Spacer()
+                    Button("New Agent", systemImage: "plus") { model.newAgent() }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help("New agent (⇧⌘N)")
+                }
+            }
+
             Section("Conversations") {
                 ForEach(engine.conversations) { conversation in
                     HStack(spacing: 8) {
                         if conversation.busy {
                             ProgressView().controlSize(.small)
+                                .frame(width: 16)
                                 .accessibilityLabel("Working")
+                        } else {
+                            AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
                         }
                         Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
                             .lineLimit(1)
                             .foregroundStyle(conversation.title.isEmpty ? .secondary : .primary)
+                        Spacer(minLength: 0)
+                        if engine.inbox.contains(where: { $0.rootConversationId == conversation.id }) {
+                            Circle().fill(.orange).frame(width: 8, height: 8)
+                                .accessibilityLabel("Needs you")
+                        }
                     }
-                    .tag(conversation.id)
+                    .tag(Selection.conversation(conversation.id))
                     .contextMenu {
                         Button("Rename…") { model.beginRename(conversation) }
                         Button("Delete", role: .destructive) { model.delete(conversation) }
@@ -220,17 +322,15 @@ struct SidebarView: View {
 struct ConversationCommands: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
-    private var state: ConversationState? { model.selection.flatMap { engine.open[$0]?.state } }
+    private var state: ConversationState? { model.selectedConversationID.flatMap { engine.open[$0]?.state } }
 
     var body: some View {
-        let id = model.selection
+        let id = model.selectedConversationID
         Picker("Tool Access", selection: Binding(
             get: { state?.agent.access ?? "none" },
             set: { value in if let id { engine.setAccess(value, for: id) } }
         )) {
-            Text("Tools Off").tag("none")
-            Text("Read Files").tag("read")
-            Text("Full Access").tag("full")
+            ForEach(AccessLevel.all, id: \.id) { Text($0.title).tag($0.id) }
         }
         .pickerStyle(.inline)
         .disabled(id == nil)
