@@ -3,6 +3,7 @@ import SwiftUI
 /// What the main window is showing.
 enum Selection: Hashable {
     case inbox
+    case activity
     case agent(String)
     case conversation(Int)
 }
@@ -18,6 +19,8 @@ final class AppModel {
     var newTitle = ""
     /// The conversation whose delete confirmation is showing.
     var deleting: ConversationSummary?
+    /// Brings back the main window after it was closed; set by the views that can open windows.
+    var showMainWindow: () -> Void = {}
 
     var selectedConversationID: Int? {
         if case .conversation(let id) = selection { return id }
@@ -85,6 +88,7 @@ struct Pi2App: App {
                 .onAppear {
                     delegate.engine = model.engine
                     model.engine.start()
+                    QuickAsk.shared.install(model: model)
                 }
         }
         .defaultSize(width: 1120, height: 740)
@@ -99,10 +103,14 @@ struct Pi2App: App {
                 }
                 Button("New Agent") { model.newAgent() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                Divider()
+                Button("Quick Ask (⌃⌥Space anywhere)") { QuickAsk.shared.show(model: model) }
             }
             CommandGroup(after: .sidebar) {
                 Button("Show Inbox") { model.selection = .inbox }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button("Show Activity") { model.selection = .activity }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -112,6 +120,16 @@ struct Pi2App: App {
                     .keyboardShortcut("k", modifiers: [.command, .option, .shift])
             }
         }
+
+        MenuBarExtra {
+            MenuBarView(model: model)
+                .tint(.piAccent)
+        } label: {
+            // The count of things waiting, next to the icon, so it is visible without opening anything.
+            Image(systemName: model.engine.inbox.isEmpty ? "circle.hexagongrid" : "circle.hexagongrid.fill")
+            if !model.engine.inbox.isEmpty { Text("\(model.engine.inbox.count)") }
+        }
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(engine: model.engine)
@@ -128,10 +146,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// Closing the window leaves pi² in the menu bar, so agents keep working and can still reach the person.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { engine?.stopEngine() }
+        // Quitting stops the engine cleanly unless the person asked for agents to keep running.
+        let keep = UserDefaults.standard.bool(forKey: BackgroundSettings.keepEngineKey) || EngineLoginItem.installed
+        if !keep { MainActor.assumeIsolated { engine?.stopEngine() } }
     }
 }
 
@@ -147,6 +168,8 @@ struct RootView: View {
             switch model.selection {
             case .inbox:
                 InboxView(model: model)
+            case .activity:
+                ActivityView(model: model)
             case .agent(let id):
                 AgentEditor(model: model, agentID: id)
                     .id(id)
@@ -165,6 +188,7 @@ struct RootView: View {
                 }
             }
         }
+        .background(WindowOpener(model: model))
         .onChange(of: model.selection) { _, selection in
             if case .conversation(let id) = selection { engine.openConversation(id) }
         }
@@ -218,6 +242,28 @@ struct SidebarView: View {
                 Image(systemName: engine.inbox.isEmpty ? "tray" : "tray.full")
             }
             .tag(Selection.inbox)
+
+            Label {
+                HStack {
+                    Text("Activity")
+                    Spacer()
+                    if engine.recovery != nil {
+                        Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(.green)
+                            .help("The engine restarted after stopping unexpectedly")
+                            .accessibilityLabel("Engine restarted")
+                    }
+                    if !engine.activity.isEmpty {
+                        Text("\(engine.activity.count)")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 7).padding(.vertical, 1)
+                            .background(.quaternary, in: .capsule)
+                            .accessibilityLabel("\(engine.activity.count) running")
+                    }
+                }
+            } icon: {
+                Image(systemName: "waveform.path.ecg")
+            }
+            .tag(Selection.activity)
 
             Section {
                 ForEach(engine.agents) { agent in
@@ -360,5 +406,15 @@ struct ConversationCommands: View {
             .disabled(state?.busy != true)
         Button("Continue") { if let id { engine.perform("continue", ["id": id]) } }
             .disabled(state?.failure == nil || state?.busy == true)
+    }
+}
+
+/// Hands the app model a way to reopen the main window, from a view that has the environment to do it.
+private struct WindowOpener: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear.onAppear { model.showMainWindow = { openWindow(id: "main") } }
     }
 }

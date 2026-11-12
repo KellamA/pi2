@@ -30,6 +30,9 @@ class Client {
 	library: { id: number; title: string; busy: boolean }[] = [];
 	agents: { id: string; name: string; access: string; delegates: string[] }[] = [];
 	inbox: InboxItem[] = [];
+	activity: { conversationId: number; rootConversationId: number; status: string }[] = [];
+	schedules: { id: string; title: string; enabled: boolean; nextRunAt: number | null; lastConversationId: number | null; pending: unknown }[] = [];
+	recovery: { at: number; conversations: { id: number }[] } | null | undefined;
 	providers: { id: string; kind: string; status: unknown; oauth: { subscription: boolean } | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	#nextId = 1;
@@ -66,6 +69,9 @@ class Client {
 		if (message.event === "library") this.library = message.conversations;
 		else if (message.event === "agents") this.agents = message.agents;
 		else if (message.event === "inbox") this.inbox = message.items;
+		else if (message.event === "activity") this.activity = message.runs;
+		else if (message.event === "schedules") this.schedules = message.schedules;
+		else if (message.event === "recovery") this.recovery = message.recovery;
 		else if (message.event === "providers") {
 			this.providers = message.providers;
 			this.models = message.models;
@@ -246,6 +252,7 @@ try {
 	assert.equal(ask.tool, "bash");
 	await sleep(500);
 	assert.equal(toolResults(f).length, 0, "nothing runs before the decision");
+	assert.equal(client.activity.find((run) => run.conversationId === f)?.status, "waiting", "the activity feed shows it waiting on the person");
 	await client.call("inbox.decide", { id: ask.id, decision: "once" });
 	await settled(f, 1);
 	assert.ok(toolResults(f)[0]!.text.includes("approved-ran"));
@@ -323,6 +330,53 @@ try {
 	await client.until("agent deleted", () => !client.agents.some((x) => x.id === "scout"));
 	assert.deepEqual(client.agents.find((x) => x.id === "atlas")!.delegates, ["forge"], "deleted agents leave other agents' lists");
 	step("create, edit and delete agents");
+
+	// ---- Schedules
+	const { nextRun } = await import("../src/schedules.ts");
+	const monday9 = new Date(2026, 10, 9, 9, 0).getTime(); // a Monday, 09:00 local
+	assert.equal(nextRun({ kind: "daily", hour: 7, minute: 30 }, monday9), new Date(2026, 10, 10, 7, 30).getTime());
+	assert.equal(nextRun({ kind: "daily", hour: 18, minute: 0 }, monday9), new Date(2026, 10, 9, 18, 0).getTime());
+	assert.equal(nextRun({ kind: "weekly", weekday: 1, hour: 9, minute: 0 }, monday9), new Date(2026, 10, 16, 9, 0).getTime());
+	assert.equal(nextRun({ kind: "once", at: monday9 - 1 }, monday9), null);
+	await assert.rejects(client.call("schedules.save", { schedule: { title: "Late", agentId: "atlas", prompt: "x", repeat: { kind: "once", at: Date.now() - 1000 } } }), /already passed/);
+
+	const countTitled = (title: string) => client.library.filter((x) => x.title === title).length;
+	await client.call("schedules.save", { schedule: { title: "Soon", agentId: "atlas", prompt: "scheduled hello", repeat: { kind: "once", at: Date.now() + 1200 } } });
+	await client.until("scheduled conversation", () => countTitled("Soon") === 1);
+	const soonId = client.library.find((x) => x.title === "Soon")!.id;
+	await client.call("conversation.open", { id: soonId });
+	conv = await client.idle(soonId);
+	assert.equal(conv.items[0]!.text, "scheduled hello");
+	const soon = await client.until("schedule finished", () => client.schedules.find((x) => x.title === "Soon" && x.pending === null && !x.enabled));
+	assert.equal(soon.nextRunAt, null);
+	assert.equal(soon.lastConversationId, soonId);
+	step("a one-off schedule starts a conversation with its agent at its time, then turns itself off");
+
+	const { id: hourly } = await client.call("schedules.save", { schedule: { title: "Hourly", agentId: "atlas", prompt: "tick", repeat: { kind: "interval", minutes: 60 } } });
+	const before = (await client.until("hourly saved", () => client.schedules.find((x) => x.id === hourly))).nextRunAt!;
+	assert.ok(before > Date.now() + 59 * 60_000);
+	await client.call("schedules.runNow", { id: hourly });
+	await client.until("manual run", () => countTitled("Hourly") === 1);
+	assert.equal(client.schedules.find((x) => x.id === hourly)!.nextRunAt, before, "running it by hand leaves the timetable alone");
+	await client.call("schedules.delete", { id: hourly });
+	await client.until("schedule deleted", () => !client.schedules.some((x) => x.id === hourly));
+	step("a repeating schedule: next time computed, run now, delete");
+
+	// ---- A schedule that comes due while the engine is down, and the recovery report
+	await client.call("schedules.save", { schedule: { title: "Missed", agentId: "atlas", prompt: "catch up", repeat: { kind: "once", at: Date.now() + 2000 } } });
+	await client.until("missed saved", () => client.schedules.some((x) => x.title === "Missed"));
+	engine.kill("SIGKILL");
+	await new Promise((resolve) => engine.once("exit", resolve));
+	await sleep(2600);
+	engine = startEngine();
+	client = await Client.attach();
+	await client.until("caught up", () => countTitled("Missed") === 1 && client.schedules.find((x) => x.title === "Missed")?.pending === null);
+	await sleep(1500);
+	assert.equal(countTitled("Missed"), 1, "a missed run happens once");
+	assert.ok(client.recovery, "the engine reports that it restarted after an unclean stop");
+	await client.call("recovery.dismiss");
+	await client.until("report dismissed", () => client.recovery === null);
+	step("a run that came due while the engine was down happens once on restart; the restart is reported");
 
 	// ---- Providers: built-ins, an API key in the Keychain, removing it
 	const anthropic = client.providers.find((p) => p.id === "anthropic")!;

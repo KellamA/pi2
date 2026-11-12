@@ -30,6 +30,9 @@ final class EngineClient {
         }
     }
     private(set) var hasLoadedLibrary = false
+    private(set) var activity: [ActivityRun] = []
+    private(set) var schedules: [Schedule] = []
+    private(set) var recovery: RecoveryReport?
     var signIn: SignInFlow?
     var lastError: String?
 
@@ -200,6 +203,9 @@ final class EngineClient {
     private struct LibraryEvent: Decodable { let conversations: [ConversationSummary] }
     private struct AgentsEvent: Decodable { let agents: [AgentProfile] }
     private struct InboxEvent: Decodable { let items: [InboxItem] }
+    private struct ActivityEvent: Decodable { let runs: [ActivityRun] }
+    private struct SchedulesEvent: Decodable { let schedules: [Schedule] }
+    private struct RecoveryEvent: Decodable { let recovery: RecoveryReport? }
     private struct ProvidersEvent: Decodable {
         let providers: [ProviderInfo]
         let models: [ModelInfo]
@@ -231,6 +237,12 @@ final class EngineClient {
                 agents = try decoder.decode(AgentsEvent.self, from: line).agents
             case "inbox":
                 inbox = try decoder.decode(InboxEvent.self, from: line).items
+            case "activity":
+                activity = try decoder.decode(ActivityEvent.self, from: line).runs
+            case "schedules":
+                schedules = try decoder.decode(SchedulesEvent.self, from: line).schedules
+            case "recovery":
+                recovery = try decoder.decode(RecoveryEvent.self, from: line).recovery
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 providers = event.providers
@@ -359,7 +371,7 @@ final class EngineClient {
         if let pid = enginePID { kill(pid, SIGKILL) }
     }
 
-    /// A clean stop, used when the app quits. Milestone 3 leaves the engine running as a login item instead.
+    /// A clean stop, used when the app quits unless the person chose to keep agents running.
     func stopEngine() {
         if let pid = enginePID { kill(pid, SIGTERM) }
     }

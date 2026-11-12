@@ -206,6 +206,79 @@ struct InboxItem: Codable, Equatable, Identifiable {
     var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
 }
 
+/// A conversation with work in flight, as the Activity view lists it.
+struct ActivityRun: Codable, Equatable, Identifiable {
+    let conversationId: Int
+    let parent: Int?
+    let rootConversationId: Int
+    let title: String
+    let agentId: String?
+    let status: String
+    let since: Double
+    var id: Int { conversationId }
+}
+
+struct Repeat: Codable, Equatable {
+    var kind: String
+    var at: Double?
+    var minutes: Int?
+    var hour: Int?
+    var minute: Int?
+    var weekday: Int?
+
+    var payload: [String: Any] {
+        switch kind {
+        case "once": ["kind": kind, "at": at ?? 0]
+        case "interval": ["kind": kind, "minutes": minutes ?? 60]
+        case "weekly": ["kind": kind, "weekday": weekday ?? 1, "hour": hour ?? 9, "minute": minute ?? 0]
+        default: ["kind": "daily", "hour": hour ?? 9, "minute": minute ?? 0]
+        }
+    }
+
+    var summary: String {
+        let time = String(format: "%02d:%02d", hour ?? 0, minute ?? 0)
+        switch kind {
+        case "once":
+            return "Once, " + Date(timeIntervalSince1970: (at ?? 0) / 1000).formatted(date: .abbreviated, time: .shortened)
+        case "interval":
+            let m = minutes ?? 60
+            return m % 60 == 0 ? "Every \(m / 60 == 1 ? "hour" : "\(m / 60) hours")" : "Every \(m) minutes"
+        case "weekly":
+            return "Every \(Calendar.current.weekdaySymbols[(weekday ?? 1) % 7]) at \(time)"
+        default:
+            return "Every day at \(time)"
+        }
+    }
+}
+
+struct Schedule: Codable, Equatable, Identifiable {
+    var id: String
+    var title: String
+    var agentId: String
+    var prompt: String
+    var `repeat`: Repeat
+    var enabled: Bool
+    var nextRunAt: Double?
+    var lastRunAt: Double?
+    var lastConversationId: Int?
+
+    func payload(isNew: Bool) -> [String: Any] {
+        var result: [String: Any] = ["title": title, "agentId": agentId, "prompt": prompt, "repeat": `repeat`.payload, "enabled": enabled]
+        if !isNew { result["id"] = id }
+        return result
+    }
+}
+
+/// What an engine that started after an unclean stop found and resumed.
+struct RecoveryReport: Codable, Equatable {
+    struct Resumed: Codable, Equatable, Identifiable {
+        let id: Int
+        let title: String
+    }
+    let at: Double
+    let conversations: [Resumed]
+}
+
 enum AccessLevel {
     static let all: [(id: String, title: String, detail: String)] = [
         ("none", "Off", "Chat only"),

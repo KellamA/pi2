@@ -38,8 +38,51 @@ struct GeneralSettings: View {
             } footer: {
                 Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.")
             }
+            BackgroundSettings()
         }
         .formStyle(.grouped)
+    }
+}
+
+/// How long the engine lives: with the app, after it quits, or from login.
+struct BackgroundSettings: View {
+    static let keepEngineKey = "keepEngineAfterQuit"
+    @AppStorage(BackgroundSettings.keepEngineKey) private var keepEngine = false
+    @State private var atLogin = EngineLoginItem.installed
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            Toggle("Keep agents running after I quit pi²", isOn: $keepEngine)
+            Toggle("Start the engine when I log in", isOn: Binding(get: { atLogin }, set: setLoginItem))
+            if let error { Text(error).font(.callout).foregroundStyle(.red) }
+        } header: {
+            Text("In the background")
+        } footer: {
+            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on. This development build runs the engine from its source folder, so that folder must stay where it is.")
+        }
+    }
+
+    private func setLoginItem(_ on: Bool) {
+        error = nil
+        if on {
+            let info = Bundle.main
+            guard let node = info.object(forInfoDictionaryKey: "PI2NodePath") as? String,
+                  let main = info.object(forInfoDictionaryKey: "PI2EngineMain") as? String
+            else {
+                error = "This build does not know where its engine is."
+                return
+            }
+            let home = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("pi2").path
+            do {
+                try EngineLoginItem.install(node: node, main: main, home: home)
+            } catch {
+                self.error = "Could not install the login item: \(error.localizedDescription)"
+            }
+        } else {
+            EngineLoginItem.remove()
+        }
+        atLogin = EngineLoginItem.installed
     }
 }
 

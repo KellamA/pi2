@@ -27,6 +27,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, Providers } from "./providers.ts";
+import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -56,9 +57,14 @@ const alreadyRunning = await new Promise<boolean>((resolve) => {
 });
 if (alreadyRunning) {
 	log("another engine is already running on", socketPath);
-	process.exit(3);
+	process.exit(0); // not a failure: launchd must not keep restarting a second copy
 }
 writeFileSync(join(home, "engine.pid"), String(process.pid));
+
+// A marker that is only removed by a clean stop: finding it at start means the last engine was killed or crashed.
+const runningMarker = join(home, "engine.running");
+const stoppedUncleanly = existsSync(runningMarker);
+writeFileSync(runningMarker, String(Date.now()));
 
 // ---- Models, tools, harness
 
@@ -274,7 +280,10 @@ function inboxEvent() {
 	});
 	return { event: "inbox", items };
 }
-inbox.onChange = () => broadcast(inboxEvent());
+inbox.onChange = () => {
+	broadcast(inboxEvent());
+	broadcast(activityEvent());
+};
 
 async function providersEvent() {
 	const [list, models] = await Promise.all([providers.listProviders(), providers.listModels()]);
@@ -476,6 +485,53 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		}, context);
 		return {};
 	},
+	"schedules.save": async (params) => {
+		const input = params.schedule as Partial<Schedule> | undefined;
+		const title = typeof input?.title === "string" ? input.title.trim() : "";
+		const prompt = typeof input?.prompt === "string" ? input.prompt.trim() : "";
+		if (input === undefined || title === "") throw new Error("Give the schedule a name");
+		if (prompt === "") throw new Error("Write what the agent should do");
+		if (typeof input.agentId !== "string" || agents[input.agentId] === undefined) throw new Error("Choose an agent");
+		const repeat = validateRepeat(input.repeat);
+		const previous = input.id === undefined ? undefined : schedules[input.id];
+		if (input.id !== undefined && previous === undefined) throw new Error(`Unknown schedule: ${input.id}`);
+		const now = Date.now();
+		const enabled = input.enabled ?? previous?.enabled ?? true;
+		const next = nextRun(repeat, now);
+		if (repeat.kind === "once" && next === null && enabled) throw new Error("That time has already passed");
+		const id = input.id ?? `s${now.toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+		const schedule: Schedule = {
+			id,
+			title,
+			agentId: input.agentId,
+			prompt,
+			repeat,
+			enabled: enabled && next !== null,
+			nextRunAt: next,
+			lastRunAt: previous?.lastRunAt ?? null,
+			lastConversationId: previous?.lastConversationId ?? null,
+			pending: previous?.pending ?? null,
+			createdAt: previous?.createdAt ?? now,
+		};
+		await harness.commit(async (tx) => void ((await tx.doc(Schedules)).schedules[id] = schedule), context);
+		return { id };
+	},
+	"schedules.delete": async (params) => {
+		const id = text(params, "id");
+		await harness.commit(async (tx) => void delete (await tx.doc(Schedules)).schedules[id], context);
+		return {};
+	},
+	"schedules.runNow": async (params) => {
+		const id = text(params, "id");
+		if (schedules[id] === undefined) throw new Error(`Unknown schedule: ${id}`);
+		await fire(id, true);
+		return { conversationId: schedules[id]?.lastConversationId ?? null };
+	},
+	"recovery.dismiss": async () => {
+		recovery = null;
+		broadcast(recoveryEvent());
+		return {};
+	},
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
 		if (!["once", "always", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
@@ -577,15 +633,145 @@ agentsWatch.start(async (call) => {
 	broadcast(inboxEvent());
 });
 const graphWatch = await harness.watchTaskGraph(context);
-const busyFrom = (graph: { tasks: Record<string, { conversationId?: unknown }> }) =>
-	new Set(Object.values(graph.tasks).map((task) => task.conversationId as number));
-busyConversations = busyFrom(graphWatch.value as never);
+type Graph = { tasks: Record<string, { conversationId?: unknown }> };
+const rootOf = (id: number): number => library.conversations[String(id)]?.parent ?? id;
+const conversationsWithWork = (graph: Graph) => new Set(Object.values(graph.tasks).map((task) => task.conversationId as number));
+let working = conversationsWithWork(graphWatch.value as never);
+/** When each conversation's current work was first seen, for "running for…" in the app. */
+const since = new Map<number, number>();
+const refreshBusy = () => {
+	const now = Date.now();
+	for (const id of working) if (!since.has(id)) since.set(id, now);
+	for (const id of [...since.keys()]) if (!working.has(id)) since.delete(id);
+	busyConversations = new Set([...working].map(rootOf));
+};
+refreshBusy();
+
+/** What is running right now, one row per conversation with live work; subagents point at their parent. */
+function activityEvent() {
+	const waiting = new Set(inbox.list().map((item) => item.conversationId));
+	const runs = [...working]
+		.map((id) => {
+			const meta = library.conversations[String(id)];
+			return {
+				conversationId: id,
+				parent: meta?.parent ?? null,
+				rootConversationId: rootOf(id),
+				title: meta?.title ?? "",
+				agentId: meta?.agentId ?? null,
+				status: waiting.has(id) ? "waiting" : "working",
+				since: since.get(id) ?? Date.now(),
+			};
+		})
+		.sort((x, y) => x.since - y.since);
+	return { event: "activity", runs };
+}
+
+// ---- Recovery: what an engine that starts after a crash found and picked up
+
+type Recovery = { at: number; conversations: { id: number; title: string }[] };
+let recovery: Recovery | null = stoppedUncleanly
+	? { at: Date.now(), conversations: [...new Set([...working].map(rootOf))].map((id) => ({ id, title: library.conversations[String(id)]?.title ?? "" })) }
+	: null;
+const recoveryEvent = () => ({ event: "recovery", recovery });
+
 graphWatch.start(async (call) => {
 	if (call.kind !== "value") return;
-	const next = busyFrom(call.value as never);
-	const changed = next.size !== busyConversations.size || [...next].some((id) => !busyConversations.has(id));
-	busyConversations = next;
+	const before = busyConversations;
+	working = conversationsWithWork(call.value as never);
+	refreshBusy();
+	const changed = before.size !== busyConversations.size || [...busyConversations].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
+	broadcast(activityEvent());
+});
+
+// ---- Schedules
+
+await harness.commit(async (tx) => void (await tx.doc(Schedules)), context);
+const schedulesWatch = await harness.watchDoc(Schedules, context);
+if (schedulesWatch === undefined) throw new Error("The schedules document could not be opened");
+let schedules = schedulesWatch.value.schedules;
+const schedulesEvent = () => ({ event: "schedules", schedules: Object.values(schedules).sort((x, y) => x.createdAt - y.createdAt) });
+let scheduleTimer: ReturnType<typeof setTimeout> | undefined;
+const firing = new Set<string>();
+
+/** Submit the prompt of a run whose conversation exists. The request ID makes doing this twice harmless. */
+async function deliver(id: string): Promise<void> {
+	const schedule = schedules[id];
+	const pending = schedule?.pending;
+	if (schedule === undefined || pending == null) return;
+	const conv = await harness.conversation(pending.conversationId as unknown as ConversationId, context);
+	await conv?.submit({ type: "input", content: schedule.prompt, requestId: `schedule:${id}:${pending.runAt}` }, context);
+	await harness.commit(async (tx) => {
+		const current = (await tx.doc(Schedules)).schedules[id];
+		if (current?.pending?.runAt === pending.runAt) current.pending = null;
+	}, context);
+}
+
+/** Start one run of a schedule: a new conversation with its agent, then its prompt. */
+async function fire(id: string, manual: boolean): Promise<void> {
+	const schedule = schedules[id];
+	if (schedule === undefined || firing.has(id)) return;
+	firing.add(id);
+	try {
+		const agent = agents[schedule.agentId] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
+		if (agent === undefined) return;
+		const change = await agentChange(agent, { delegate: true });
+		const now = Date.now();
+		const due = schedule.nextRunAt;
+		await harness.createConversation(
+			{
+				ownership: { kind: "ownerless" },
+				agent: change,
+				// The conversation and the schedule's bookkeeping are one commit: a crash leaves both or neither.
+				init: async (tx, conversationId) => {
+					const current = (await tx.doc(Schedules)).schedules[id];
+					if (current === undefined || (!manual && current.nextRunAt !== due)) throw new Error("The schedule changed while it was starting");
+					(await tx.doc(Library)).conversations[String(conversationId)] = { title: current.title, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
+					current.pending = { conversationId: conversationId as unknown as number, runAt: now };
+					current.lastRunAt = now;
+					current.lastConversationId = conversationId as unknown as number;
+					if (!manual) {
+						// Runs missed while the engine was off are not replayed one by one: the next run is in the future.
+						current.nextRunAt = nextRun(current.repeat, now);
+						if (current.nextRunAt === null) current.enabled = false;
+					}
+				},
+			},
+			context,
+		);
+		schedules = (await harness.snapshot(Schedules, context))?.schedules ?? schedules;
+		await deliver(id);
+	} catch (error) {
+		log("schedule", id, "did not start:", error instanceof Error ? error.message : error);
+	} finally {
+		firing.delete(id);
+	}
+}
+
+function armSchedules(): void {
+	clearTimeout(scheduleTimer);
+	const due = Object.values(schedules).filter((x) => x.enabled && x.nextRunAt !== null);
+	if (due.length === 0) return;
+	const next = Math.min(...due.map((x) => x.nextRunAt!));
+	// setTimeout cannot wait longer than about 24 days; waking early and re-arming is harmless.
+	scheduleTimer = setTimeout(() => void tickSchedules(), Math.min(Math.max(next - Date.now(), 0), 2_000_000_000));
+}
+
+async function tickSchedules(): Promise<void> {
+	const now = Date.now();
+	for (const schedule of Object.values(schedules)) {
+		if (schedule.pending !== null) await deliver(schedule.id).catch((error) => log("schedule", schedule.id, "delivery failed:", error));
+		else if (schedule.enabled && schedule.nextRunAt !== null && schedule.nextRunAt <= now) await fire(schedule.id, false);
+	}
+	armSchedules();
+}
+
+schedulesWatch.start(async (call) => {
+	if (call.kind !== "value") return;
+	schedules = call.value.schedules;
+	broadcast(schedulesEvent());
+	armSchedules();
 });
 
 // ---- Socket server
@@ -597,6 +783,9 @@ const server = createServer((socket) => {
 	send(client, libraryEvent());
 	send(client, agentsEvent());
 	send(client, inboxEvent());
+	send(client, activityEvent());
+	send(client, schedulesEvent());
+	send(client, recoveryEvent());
 	void providersEvent().then((event) => send(client, event));
 	let buffer = "";
 	socket.setEncoding("utf8");
@@ -634,6 +823,7 @@ const server = createServer((socket) => {
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished
+	void tickSchedules(); // and start whatever came due while the engine was not running
 });
 
 // A clean stop closes the Harness. SIGKILL is the crash case and needs no handler: reopening recovers.
@@ -643,8 +833,10 @@ async function stop(): Promise<void> {
 	stopping = true;
 	server.close();
 	for (const client of clients) client.socket.destroy();
+	clearTimeout(scheduleTimer);
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
+	rmSync(runningMarker, { force: true });
 	process.exit(0);
 }
 process.on("SIGINT", () => void stop());
