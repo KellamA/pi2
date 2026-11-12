@@ -80,7 +80,7 @@ Usage is counted by model, agent and conversation. Models you pay for by use sho
 
 ### And the rest
 
-- **Reference files**: give an agent files and folders it can always read. It opens them when it needs them, so they cost nothing until then.
+- **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent.
 - **Scripts**: let a model chain many tool calls in one step.
 - **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.

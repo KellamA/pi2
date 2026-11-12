@@ -426,6 +426,8 @@ try {
 	assert.equal((await openRef(join(refs, "guides", "..", "..", "secret.txt"), 5)).isError, true, "nor one reached by climbing out of a folder");
 	writeFileSync(join(refs, "brief.md"), "The launch moved to the 21st.\n");
 	assert.match((await openRef("brief.md", 6)).text, /moved to the 21st/, "an edited file is read fresh");
+	writeFileSync(join(refs, "guides", "resume.rtf"), "{\\rtf1\\ansi Ten years of shipping software.\\par Led a team of six.}");
+	assert.match((await openRef("resume.rtf", 7)).text, /Ten years of shipping software\.\s+Led a team of six\./, "a Word-style document is read as its text");
 	step("reference files: read and listed on demand with tools off, re-read after an edit, nothing outside them");
 
 	// ---- Computer use: the engine decides and asks; a fake app stands in for the screen

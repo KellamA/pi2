@@ -4,8 +4,9 @@
 // each time, so an edit shows up in the next read. Reading is all that is offered, whatever the conversation's tool
 // access, and only inside what the person listed.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, sep } from "node:path";
+import { basename, extname, isAbsolute, join, sep } from "node:path";
 
 export type ReferenceFile = {
 	/** Absolute path of a file or a folder. */
@@ -18,6 +19,8 @@ const MAX_FILES = 50;
 const MAX_LINES = 2000;
 const MAX_BYTES = 200_000;
 const MAX_ENTRIES = 300;
+/** Documents that are not plain text but have text in them, which is what the agent is given. */
+const DOCUMENTS = new Set([".docx", ".doc", ".rtf", ".odt"]);
 
 /** Check and tidy what the app sends when an agent is saved. */
 export function validateReferenceFiles(input: unknown): ReferenceFile[] {
@@ -112,9 +115,21 @@ export function readReference(files: readonly ReferenceFile[], path: string, off
 		const more = entries.length > MAX_ENTRIES ? `\n… and ${entries.length - MAX_ENTRIES} more` : "";
 		return { text: entries.length === 0 ? `${real} is empty.` : shown.join("\n") + more };
 	}
-	const bytes = readFileSync(real);
-	if (bytes.subarray(0, 8000).includes(0)) return { text: `${real} is not a text file (${size(info.size)}), so it cannot be read here.`, isError: true };
-	const lines = bytes.toString("utf8").split("\n");
+	let content: string;
+	const kind = extname(real).toLowerCase();
+	if (DOCUMENTS.has(kind)) {
+		// Word, RTF and OpenDocument files are read as their text. textutil ships with macOS.
+		const converted = spawnSync("/usr/bin/textutil", ["-convert", "txt", "-stdout", real], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 20_000 });
+		if (converted.status !== 0 || typeof converted.stdout !== "string") return { text: `${real} could not be read as a document. It may be damaged or password-protected.`, isError: true };
+		content = converted.stdout;
+	} else if (kind === ".pdf") {
+		return { text: `${real} is a PDF, which cannot be read here yet. Ask the person to attach it to the conversation instead.`, isError: true };
+	} else {
+		const bytes = readFileSync(real);
+		if (bytes.subarray(0, 8000).includes(0)) return { text: `${real} is not a text file (${size(info.size)}), so it cannot be read here.`, isError: true };
+		content = bytes.toString("utf8");
+	}
+	const lines = content.split("\n");
 	const start = Math.max(1, Math.floor(offset ?? 1));
 	const count = Math.min(MAX_LINES, Math.max(1, Math.floor(limit ?? MAX_LINES)));
 	if (start > lines.length) return { text: `${real} has ${lines.length} lines; there is nothing at line ${start}.`, isError: true };
