@@ -133,9 +133,12 @@ export class Providers {
 	readonly #endpointsPath: string;
 	#endpoints: EndpointConfig[];
 	readonly #builtinIds: Set<string>;
+	readonly #deviceId: () => string;
 
-	constructor(home: string, credentials: CredentialStore) {
+	/** `deviceId` returns this installation's stable UUID; some sign-ins (ChatGPT) identify the app by it. */
+	constructor(home: string, credentials: CredentialStore, deviceId: () => string) {
 		this.#credentials = credentials;
+		this.#deviceId = deviceId;
 		this.models = builtinModels({ credentials, identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } } });
 		this.#builtinIds = new Set(this.models.getProviders().map((p) => p.id));
 		this.models.setProvider(demoProvider());
@@ -198,7 +201,7 @@ export class Providers {
 	async login(providerId: string, interaction: AuthInteraction): Promise<void> {
 		const provider = this.models.getProvider(providerId);
 		if (provider?.auth.oauth === undefined) throw new Error(`${providerId} has no sign-in flow`);
-		await this.models.login(providerId, "oauth", interaction);
+		await this.models.login(providerId, "oauth", interaction, { getDeviceId: this.#deviceId, agentName: "pi2" });
 	}
 
 	// ---- The user's own endpoints

@@ -3,6 +3,7 @@
 // { id, error }; the methods are the keys of `handlers` below. The engine also pushes { event, ... } messages:
 // "library", "providers", "conversation" (for opened conversations) and "auth" (during a sign-in).
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
@@ -92,7 +93,7 @@ writeFileSync(runningMarker, String(Date.now()));
 // ---- Models, tools, harness
 
 const credentials = new KeychainCredentialStore(home);
-const providers = new Providers(home, credentials);
+const providers = new Providers(home, credentials, () => deviceId());
 const mcp = new McpServers(home, credentials);
 const inbox = new Inbox();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
@@ -164,7 +165,7 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean } = (() => {
+const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean; deviceId?: string } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -172,6 +173,15 @@ const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: num
 	}
 })();
 const saveSettings = () => writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"));
+
+/** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
+function deviceId(): string {
+	if (settings.deviceId === undefined) {
+		settings.deviceId = randomUUID();
+		saveSettings();
+	}
+	return settings.deviceId;
+}
 
 async function conversation(id: unknown): Promise<Conversation> {
 	const found = typeof id === "number" ? await harness.conversation(id as ConversationId, context) : undefined;
