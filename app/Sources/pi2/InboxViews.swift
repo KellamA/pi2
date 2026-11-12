@@ -93,34 +93,3 @@ struct InboxView: View {
         .navigationSubtitle(engine.inbox.isEmpty ? "" : "\(engine.inbox.count) waiting")
     }
 }
-
-/// A subagent's own conversation, opened from the delegation card that started it.
-struct SubagentSheet: View {
-    let engine: EngineClient
-    let id: Int
-    let name: String
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        let data = engine.open[id] ?? ConversationData()
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.headline)
-                    Text("Subagent transcript").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if data.state?.busy == true {
-                    ProgressView().controlSize(.small)
-                    Button("Stop") { engine.perform("abort", ["id": id]) }
-                }
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }
-            .padding(16)
-            Divider()
-            TranscriptView(engine: engine, conversationID: id, items: data.items, state: data.state)
-        }
-        .frame(width: 760, height: 560)
-        .onAppear { engine.openConversation(id) }
-    }
-}

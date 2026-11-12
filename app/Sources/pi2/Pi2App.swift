@@ -16,6 +16,8 @@ final class AppModel {
     let engine = EngineClient()
     var selection: Selection?
     var showingPalette = false
+    /// Conversations whose sub-chats are folded away in the sidebar.
+    var collapsed: Set<Int> = []
 
     init() {
         engine.onNavigate = { [weak self] id in self?.selection = .conversation(id) }
@@ -208,16 +210,20 @@ struct RootView: View {
                 .interactiveDismissDisabled()
         }
         .onChange(of: model.selection) { _, selection in
-            if case .conversation(let id) = selection { engine.openConversation(id) }
+            if case .conversation(let id) = selection {
+                engine.openConversation(id)
+                // Showing a sub-chat unfolds its parent, so the selection is visible in the sidebar.
+                if let parent = engine.conversations.first(where: { $0.id == id })?.parent { model.collapsed.remove(parent) }
+            }
         }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
             // On launch, land on the most recent conversation.
-            if loaded, model.selection == nil, let first = engine.conversations.first { model.selection = .conversation(first.id) }
+            if loaded, model.selection == nil, let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
         }
         .onChange(of: engine.conversations) { _, list in
             // The conversation on screen was deleted: move to the next one.
             if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }) {
-                model.selection = list.first.map { .conversation($0.id) }
+                model.selection = list.first { $0.parent == nil }.map { .conversation($0.id) }
             }
         }
         .confirmationDialog(
@@ -326,28 +332,15 @@ struct SidebarView: View {
             }
 
             Section("Conversations") {
-                ForEach(engine.conversations) { conversation in
-                    HStack(spacing: 8) {
-                        if conversation.busy {
-                            ProgressView().controlSize(.small)
-                                .frame(width: 16)
-                                .accessibilityLabel("Working")
-                        } else {
-                            AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
+                ForEach(engine.rootConversations) { conversation in
+                    let subChats = engine.subChats(of: conversation.id)
+                    conversationRow(conversation, subChats: subChats.count)
+                    // An agent's sub-chats sit under the conversation that opened them, like files in a folder.
+                    if !model.collapsed.contains(conversation.id) {
+                        ForEach(subChats) { subChat in
+                            conversationRow(subChat, subChats: 0)
+                                .padding(.leading, 18)
                         }
-                        Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
-                            .lineLimit(1)
-                            .foregroundStyle(conversation.title.isEmpty ? .secondary : .primary)
-                        Spacer(minLength: 0)
-                        if engine.inbox.contains(where: { $0.rootConversationId == conversation.id }) {
-                            Circle().fill(.orange).frame(width: 8, height: 8)
-                                .accessibilityLabel("Needs you")
-                        }
-                    }
-                    .tag(Selection.conversation(conversation.id))
-                    .contextMenu {
-                        Button("Rename…") { model.beginRename(conversation) }
-                        Button("Delete", role: .destructive) { model.delete(conversation) }
                     }
                 }
             }
@@ -378,6 +371,50 @@ struct SidebarView: View {
                 model.renaming = nil
             }
             Button("Cancel", role: .cancel) { model.renaming = nil }
+        }
+    }
+
+    private func conversationRow(_ conversation: ConversationSummary, subChats: Int) -> some View {
+        HStack(spacing: 8) {
+            if conversation.busy {
+                ProgressView().controlSize(.small)
+                    .frame(width: 16)
+                    .accessibilityLabel("Working")
+            } else {
+                AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
+            }
+            Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
+                .lineLimit(1)
+                .foregroundStyle(conversation.title.isEmpty ? .secondary : .primary)
+            Spacer(minLength: 0)
+            let needsYou = conversation.parent == nil
+                ? engine.inbox.contains { $0.rootConversationId == conversation.id }
+                : engine.inbox.contains { $0.conversationId == conversation.id }
+            if needsYou {
+                Circle().fill(.orange).frame(width: 8, height: 8)
+                    .accessibilityLabel("Needs you")
+            }
+            if subChats > 0 {
+                let collapsed = model.collapsed.contains(conversation.id)
+                Button {
+                    if collapsed { model.collapsed.remove(conversation.id) } else { model.collapsed.insert(conversation.id) }
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("\(subChats)").font(.caption)
+                        Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(collapsed ? "Show \(subChats) sub-chat\(subChats == 1 ? "" : "s")" : "Hide sub-chats")
+                .accessibilityLabel(collapsed ? "Show \(subChats) sub-chats" : "Hide \(subChats) sub-chats")
+            }
+        }
+        .tag(Selection.conversation(conversation.id))
+        .contextMenu {
+            Button("Rename…") { model.beginRename(conversation) }
+            Button("Delete", role: .destructive) { model.delete(conversation) }
         }
     }
 

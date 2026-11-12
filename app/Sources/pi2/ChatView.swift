@@ -11,9 +11,16 @@ struct ChatView: View {
     private var data: ConversationData { engine.open[id] ?? ConversationData() }
     private var state: ConversationState? { data.state }
     private var busy: Bool { state?.busy ?? false }
+    private var summary: ConversationSummary? { engine.conversations.first { $0.id == id } }
+    private var parent: ConversationSummary? { summary?.parent.flatMap { parent in engine.conversations.first { $0.id == parent } } }
     private var title: String {
-        let title = engine.conversations.first { $0.id == id }?.title ?? ""
+        let title = summary?.title ?? ""
         return title.isEmpty ? "New conversation" : title
+    }
+    private var subtitle: String {
+        let agent = engine.agent(state?.agent.agentId)?.name ?? ""
+        guard let parent else { return agent }
+        return "\(agent) · sub-chat of “\(parent.title.isEmpty ? "New conversation" : parent.title)”"
     }
 
     var body: some View {
@@ -52,9 +59,14 @@ struct ChatView: View {
             composer
         }
         .navigationTitle(title)
-        .navigationSubtitle(engine.agent(state?.agent.agentId)?.name ?? "")
+        .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItemGroup {
+                if let parent {
+                    Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parent.id) }
+                        .labelStyle(.titleAndIcon)
+                        .help("Go to the conversation whose agent opened this sub-chat")
+                }
                 ContextMeter(engine: engine, id: id, state: state)
                 ModelMenu(engine: engine, id: id, agent: state?.agent)
                 ToolsMenu(engine: engine, id: id, agent: state?.agent)
@@ -105,7 +117,7 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField(busy ? (steer ? "Steer the current work…" : "Queue a follow-up…") : "Message", text: $draft, axis: .vertical)
+            TextField(busy ? (steer ? "Steer the current work…" : "Queue a follow-up…") : (parent == nil ? "Message" : "Message this subagent directly"), text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.body)
                 .lineLimit(1...8)
@@ -519,7 +531,6 @@ struct ToolCard: View {
     /// Whether the conversation has a run going; a call without a result is only "running" while it does.
     let running: Bool
     @State private var expandedChoice: Bool?
-    @State private var showingSubagent = false
 
     /// The approval or question this call is waiting on, if any.
     private var pending: InboxItem? {
@@ -547,7 +558,11 @@ struct ToolCard: View {
 
     private var title: String {
         switch call.name {
-        case "delegate": return "Delegate to \(call.arguments["agent"]?.stringValue ?? "agent")"
+        case "delegate":
+            // A call that continues a sub-chat may name only its number, so fall back to that chat's agent.
+            let named = call.arguments["agent"]?.stringValue ?? ""
+            let name = named.isEmpty ? (subagent?.name ?? "agent") : named
+            return call.arguments["chat"]?.intValue == nil ? "Delegate to \(name)" : "Continue with \(name)"
         case "ask_user": return "Question"
         case "codemode": return "Script"
         default:
@@ -611,12 +626,12 @@ struct ToolCard: View {
             }
             if let subagent {
                 Divider()
-                Button("Open \(subagent.name)’s Transcript", systemImage: "arrow.up.forward.square") { showingSubagent = true }
-                    .buttonStyle(.link)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .sheet(isPresented: $showingSubagent) {
-                        SubagentSheet(engine: engine, id: subagent.id, name: subagent.name)
-                    }
+                Button("Open \(subagent.name)’s Sub-chat", systemImage: "arrow.turn.down.right") {
+                    engine.openConversation(subagent.id)
+                    engine.onNavigate(subagent.id)
+                }
+                .buttonStyle(.link)
+                .padding(.horizontal, 12).padding(.vertical, 8)
             }
 
             if expanded && pending == nil {

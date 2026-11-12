@@ -27,7 +27,7 @@ function startEngine(): ChildProcess {
 class Client {
 	socket!: Socket;
 	conversations = new Map<number, Conv>();
-	library: { id: number; title: string; busy: boolean }[] = [];
+	library: { id: number; title: string; busy: boolean; parent: number | null }[] = [];
 	agents: { id: string; name: string; access: string; delegates: string[] }[] = [];
 	inbox: InboxItem[] = [];
 	activity: { conversationId: number; rootConversationId: number; status: string }[] = [];
@@ -331,12 +331,32 @@ try {
 	assert.ok(handoff.text.includes('You said: "say hi to the team"'), "the subagent's answer comes back");
 	const childId = handoff.details?.conversationId as number;
 	assert.equal(typeof childId, "number", "the call's details name the subagent's conversation");
-	assert.ok(!client.library.some((x) => x.id === childId), "subagent conversations stay out of the sidebar");
+	assert.equal(client.library.find((x) => x.id === childId)?.parent, m, "the sub-chat is listed under the conversation that started it");
+	assert.ok(handoff.text.includes(`chat: ${childId}`), "the agent is told how to continue the sub-chat");
 	await client.call("conversation.open", { id: childId });
 	const child = await client.until("child transcript", () => client.conversations.get(childId));
 	assert.equal(child.state.agent.agentId, "scout");
 	assert.equal(child.state.agent.parent, m);
 	assert.equal(child.items[0]!.text, "say hi to the team");
+	// Continue the same sub-chat instead of opening a new one.
+	const subChats = () => client.library.filter((x) => x.parent === m).length;
+	assert.equal(subChats(), 1);
+	await client.call("submit", { id: m, text: `/continue ${childId}: and now say bye` });
+	await client.until("continued", () => {
+		const v = client.conversations.get(m)!;
+		return !v.state.busy && toolResults(m).length === 2;
+	});
+	assert.equal(toolResults(m)[1]!.isError, false, toolResults(m)[1]!.text);
+	assert.ok(toolResults(m)[1]!.text.includes('You said: "and now say bye"'));
+	assert.equal(subChats(), 1, "no second sub-chat was opened");
+	await client.until("sub-chat has both exchanges", () => client.conversations.get(childId)!.items.filter((i) => i.kind === "user").length === 2);
+	await client.call("submit", { id: m, text: "/continue 999999: nothing there" });
+	await client.until("bad continue refused", () => !client.conversations.get(m)!.state.busy && toolResults(m).length === 3);
+	assert.equal(toolResults(m)[2]!.isError, true);
+	await client.call("submit", { id: m, text: "/delegate Scout: a second piece of work" });
+	await client.until("second sub-chat", () => subChats() === 2 && !client.conversations.get(m)!.state.busy);
+	step("sub-chats: listed under their parent, continued by number, and a new one for new work");
+
 	await client.call("submit", { id: f, text: "/delegate Scout: not allowed" });
 	await settled(f, 6);
 	assert.equal(toolResults(f)[5]!.isError, true, "Forge has no agents to delegate to");

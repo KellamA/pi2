@@ -71,6 +71,11 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/ask ")) {
 			return fauxAssistantMessage([fauxText("I need to check something with you."), fauxToolCall("ask_user", { question: prompt.slice(5) })], { stopReason: "toolUse" });
 		}
+		if (prompt.startsWith("/continue ")) {
+			// "/continue <sub-chat number>: <task>"
+			const [chat, ...task] = prompt.slice(10).split(":");
+			return fauxAssistantMessage([fauxText("Carrying on in that sub-chat."), fauxToolCall("delegate", { agent: "", chat: Number(chat), task: task.join(":").trim() })], { stopReason: "toolUse" });
+		}
 		if (prompt.startsWith("/delegate ")) {
 			const [agent, ...task] = prompt.slice(10).split(":");
 			return fauxAssistantMessage([fauxText(`Handing that to ${agent!.trim()}.`), fauxToolCall("delegate", { agent: agent!.trim(), task: task.join(":").trim() })], { stopReason: "toolUse" });

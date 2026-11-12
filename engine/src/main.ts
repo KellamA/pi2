@@ -109,6 +109,23 @@ const pi2 = pi2Extension({
 			if (!meta.autoApprove?.includes(tool)) meta.autoApprove = [...(meta.autoApprove ?? []), tool];
 		}),
 	agentChange: (agent, options) => agentChange(agent, options),
+	continueChat: async (id, content, requestId, callerContext) => {
+		const conv = await harness.conversation(id as unknown as ConversationId, context);
+		if (conv === undefined) return { reason: "the sub-chat no longer exists" };
+		const submission = await conv.submit({ type: "input", content, requestId }, context);
+		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
+		// The sub-chat was created by an earlier call, so this call does not own it: stop it by hand if the caller stops.
+		const stop = () => void conv.abort(context).catch(() => {});
+		callerContext.abortSignal?.addEventListener("abort", stop, { once: true });
+		try {
+			const settled = await submission.wait(callerContext);
+			if (settled.status !== "done" || settled.type !== "input") return { reason: "reason" in settled && settled.reason !== undefined ? String(settled.reason) : "no answer" };
+			const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+			return { answer: textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content) };
+		} finally {
+			callerContext.abortSignal?.removeEventListener("abort", stop);
+		}
+	},
 	answerText: async (id, entryId) => {
 		const conv = await harness.conversation(id, context);
 		const entry = await conv?.commit((tx) => tx.entry(AssistantEntry, entryId as EntryId), context);
@@ -334,11 +351,23 @@ function broadcast(message: unknown): void {
 
 library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
 let busyConversations = new Set<number>();
+/** Every conversation with live work, sub-chats included. */
+let working = new Set<number>();
 
 function libraryEvent() {
 	const conversations = Object.entries(library.conversations)
-		.filter(([, meta]) => meta.archived !== true && meta.parent === undefined)
-		.map(([id, meta]) => ({ id: Number(id), title: meta.title, updatedAt: meta.updatedAt, busy: busyConversations.has(Number(id)), agentId: meta.agentId ?? null }))
+		// Sub-chats are listed too, pointing at their parent, unless either of them was deleted.
+		.filter(([, meta]) => meta.archived !== true && (meta.parent === undefined || library.conversations[String(meta.parent)]?.archived !== true))
+		.map(([id, meta]) => ({
+			id: Number(id),
+			title: meta.title,
+			createdAt: meta.createdAt,
+			updatedAt: meta.updatedAt,
+			// A conversation shows as working while it or any of its sub-chats is; a sub-chat only for itself.
+			busy: meta.parent === undefined ? busyConversations.has(Number(id)) : working.has(Number(id)),
+			agentId: meta.agentId ?? null,
+			parent: meta.parent ?? null,
+		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 	return { event: "library", conversations };
 }
@@ -849,7 +878,7 @@ const graphWatch = await harness.watchTaskGraph(context);
 type Graph = { tasks: Record<string, { conversationId?: unknown }> };
 const rootOf = (id: number): number => library.conversations[String(id)]?.parent ?? id;
 const conversationsWithWork = (graph: Graph) => new Set(Object.values(graph.tasks).map((task) => task.conversationId as number));
-let working = conversationsWithWork(graphWatch.value as never);
+working = conversationsWithWork(graphWatch.value as never);
 /** When each conversation's current work was first seen, for "running for…" in the app. */
 const since = new Map<number, number>();
 const refreshBusy = () => {
@@ -890,10 +919,10 @@ const recoveryEvent = () => ({ event: "recovery", recovery });
 
 graphWatch.start(async (call) => {
 	if (call.kind !== "value") return;
-	const before = busyConversations;
+	const before = working;
 	working = conversationsWithWork(call.value as never);
 	refreshBusy();
-	const changed = before.size !== busyConversations.size || [...busyConversations].some((id) => !before.has(id));
+	const changed = before.size !== working.size || [...working].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
 	broadcast(activityEvent());
 	scheduleUsageRefresh();

@@ -140,6 +140,14 @@ final class EngineClient {
         return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
     }
 
+    /// Conversations that are not sub-chats, newest first.
+    var rootConversations: [ConversationSummary] { conversations.filter { $0.parent == nil } }
+
+    /// The sub-chats an agent opened from a conversation, oldest first.
+    func subChats(of id: Int) -> [ConversationSummary] {
+        conversations.filter { $0.parent == id }.sorted { ($0.createdAt ?? 0) < ($1.createdAt ?? 0) }
+    }
+
     func agent(_ id: String?) -> AgentProfile? {
         agents.first { $0.id == id }
     }

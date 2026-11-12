@@ -70,6 +70,9 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let updatedAt: Double
     let busy: Bool
     let agentId: String?
+    let createdAt: Double?
+    /// Set for a sub-chat: the conversation whose agent opened it.
+    let parent: Int?
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {

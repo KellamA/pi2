@@ -12,7 +12,8 @@ import {
 	ToolTask,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import { obj, str } from "@earendil-works/pi-schema";
+import { int, obj, opt, str } from "@earendil-works/pi-schema";
+import type { Context } from "@earendil-works/chord/context";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
@@ -28,6 +29,11 @@ export type Host = {
 	/** How a conversation of `agent` is configured; `delegate` false leaves the delegation tool out. */
 	agentChange(agent: AgentProfile, options: { delegate: boolean }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
+	/**
+	 * Send a message to a sub-chat that an earlier call created, and wait for its answer. Stopping the caller stops
+	 * the sub-chat's run too. Resolves with the answer, or `undefined` with a reason when there was none.
+	 */
+	continueChat(conversationId: number, content: string, requestId: string, context: Context): Promise<{ answer: string } | { reason: string }>;
 };
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -64,10 +70,25 @@ export function pi2Extension(host: Host): Extension {
 
 	const delegate = defineTool({
 		name: "delegate",
-		description: "Hand a self-contained task to another agent and get its answer back. Name one of the agents listed in the <agents> section, and write the task so it stands on its own: the other agent sees none of this conversation.",
-		parameters: obj({ agent: str(), task: str() }),
+		description:
+			"Hand a self-contained task to another agent and get its answer back. Name one of the agents listed in the <agents> section, and write the task so it stands on its own: the other agent sees none of this conversation. " +
+			"Each call opens a sub-chat the person can watch. To carry on an earlier sub-chat instead of starting a new one, pass its number as `chat`; that agent then still remembers what it did there.",
+		parameters: obj({ agent: str(), task: str(), chat: opt(int({ description: "Number of an earlier sub-chat of this conversation to continue" })) }),
 		replay: "safe", // a rerun after a crash finds the same child conversation and submission
 		execute: async (args, api, context) => {
+			const parent = api.conversationId as unknown as number;
+			const footer = (id: number, name: string) => `\n\n(Sub-chat ${id} with ${name}. To continue it, call delegate again with chat: ${id}.)`;
+			if (args.chat !== undefined) {
+				const meta = host.meta(args.chat as unknown as ConversationId);
+				const agent = host.agent(meta?.agentId);
+				if (meta === undefined || meta.parent !== parent || meta.archived === true || agent === undefined) {
+					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
+				}
+				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
+				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
+				if ("reason" in result) return { output: text(`${agent.name} did not finish the task (${result.reason}).`), isError: true };
+				return { output: text(result.answer + footer(args.chat, agent.name)) };
+			}
 			const allowed = delegatesOf(host, api.conversationId);
 			const target = allowed.find((a) => a.name.toLowerCase() === args.agent.trim().toLowerCase() || a.id === args.agent.trim());
 			if (target === undefined) {
@@ -75,7 +96,6 @@ export function pi2Extension(host: Host): Extension {
 				return { output: text(names === "" ? "This conversation has no agents to delegate to." : `Unknown agent "${args.agent}". Available: ${names}.`), isError: true };
 			}
 			const change = await host.agentChange(target, { delegate: false });
-			const parent = api.conversationId as unknown as number;
 			const child = await api.commit(async (tx: Tx) => {
 				const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
 				if (existing !== undefined) return existing.id;
@@ -101,7 +121,7 @@ export function pi2Extension(host: Host): Extension {
 				const why = "reason" in settled && settled.reason !== undefined ? ` (${String(settled.reason)})` : "";
 				return { output: text(`${target.name} did not finish the task${why}.`), isError: true };
 			}
-			return { output: text(await host.answerText(child, settled.answer)) };
+			return { output: text((await host.answerText(child, settled.answer)) + footer(child as unknown as number, target.name)) };
 		},
 	});
 
@@ -113,7 +133,11 @@ export function pi2Extension(host: Host): Extension {
 				const offered = input.agent.tools.some((tool) => tool.name === "delegate");
 				const agents = offered ? delegatesOf(host, input.conversationId) : [];
 				if (agents.length === 0) return undefined;
-				return ["You can hand work to these agents with the delegate tool:", ...agents.map((a) => `- ${a.name}: ${a.description}`)].join("\n");
+				return [
+					"You can hand work to these agents with the delegate tool:",
+					...agents.map((a) => `- ${a.name}: ${a.description}`),
+					"Each delegation opens a sub-chat under this conversation. Start a new one for a new piece of work; continue an existing one (pass its number as `chat`) when the work builds on what that agent already did.",
+				].join("\n");
 			}),
 		],
 		hooks: [

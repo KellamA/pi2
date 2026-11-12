@@ -38,7 +38,7 @@ struct PaletteView: View {
             result.append(Entry(id: "agent-\(agent.id)", icon: "person.crop.circle", title: "Edit agent: \(agent.name)", detail: "Agent") { model.selection = .agent(agent.id) })
         }
         for conversation in engine.conversations where matches(conversation.title) {
-            let agent = engine.agent(conversation.agentId)?.name ?? ""
+            let agent = (engine.agent(conversation.agentId)?.name ?? "") + (conversation.parent == nil ? "" : " · sub-chat")
             result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: conversation.busy ? "\(agent) · working" : agent) {
                 model.selection = .conversation(conversation.id)
             })
