@@ -16,12 +16,14 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { isAttachmentBlock } from "./attachments.ts";
 
 export const DEMO_PROVIDER = "demo";
 export const DEMO_MODEL = "demo-1";
 
 export type EndpointApi = "openai-completions" | "openai-responses" | "anthropic-messages";
-export type EndpointModel = { id: string; name?: string; contextWindow?: number; reasoning?: boolean };
+/** `vision`: the model takes pictures. Off unless the person says so, since a server cannot be asked. */
+export type EndpointModel = { id: string; name?: string; contextWindow?: number; reasoning?: boolean; vision?: boolean };
 export type EndpointConfig = { id: string; name: string; baseUrl: string; api: EndpointApi; models: EndpointModel[] };
 
 export type ProviderInfo = {
@@ -43,6 +45,8 @@ export type ModelInfo = {
 	name: string;
 	thinkingLevels: string[];
 	contextWindow: number;
+	/** Whether the model can be sent pictures. */
+	vision: boolean;
 	/** Left out of the model pickers by the person's choice in settings. */
 	hidden?: boolean;
 };
@@ -103,7 +107,10 @@ function demoProvider(): Provider {
 			const seen = pictures === 0 ? "" : ` I can see ${pictures} picture${pictures === 1 ? "" : "s"}.`;
 			return fauxAssistantMessage(last.isError ? "The tool reported an error; its output is above." : `Done. The tool returned: ${textOf(last.content).slice(0, 200)}${seen}`);
 		}
-		const prompt = textOf(last?.content).trim();
+		// What the person typed, apart from what they attached: attached texts are blocks of their own, after it.
+		const blocks: readonly { type?: string; text?: unknown }[] = Array.isArray(last?.content) ? last.content : [];
+		const attached = (block: { type?: string; text?: unknown }) => block?.type === "text" && typeof block.text === "string" && isAttachmentBlock(block.text);
+		const prompt = (typeof last?.content === "string" ? last.content : textOf(blocks.filter((block) => !attached(block)))).trim();
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
@@ -137,8 +144,12 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/read ")) {
 			return fauxAssistantMessage([fauxText("Reading that file."), fauxToolCall("read", { path: prompt.slice(6).trim() })], { stopReason: "toolUse" });
 		}
+		// Says what came with the message, so it is visible that attachments reach the model.
+		const pictures = blocks.filter((block) => block?.type === "image").length;
+		const files = blocks.filter(attached).length;
+		const came = [pictures === 0 ? "" : `${pictures} picture${pictures === 1 ? "" : "s"}`, files === 0 ? "" : `${files} attached file${files === 1 ? "" : "s"}`].filter((part) => part !== "");
 		return fauxAssistantMessage(
-			`You said: "${prompt}". I am the demo model, a scripted stand-in with no intelligence behind it. ` +
+			`You said: "${prompt}". ${came.length === 0 ? "" : `With it came ${came.join(" and ")}. `}I am the demo model, a scripted stand-in with no intelligence behind it. ` +
 				"Connect a real provider in Settings, then pick its model from the toolbar. " +
 				"Until then you can try `/bash <command>`, `/read <path>`, `/ask <question>` or `/delegate <agent>: <task>` " +
 				"to see tool calls. One, two, three, four, five. Done.",
@@ -162,7 +173,8 @@ function endpointProvider(config: EndpointConfig): Provider {
 			provider: config.id,
 			baseUrl: config.baseUrl,
 			reasoning: m.reasoning ?? false,
-			input: ["text"],
+			// Pictures (attached, or screenshots from computer use) are only sent to a model the person marked as seeing them.
+			input: m.vision === true ? ["text", "image"] : ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
 			maxTokens: Math.min(16_384, Math.floor(contextWindow / 4)),
@@ -251,6 +263,7 @@ export class Providers {
 			name: model.name,
 			thinkingLevels: model.reasoning ? getSupportedThinkingLevels(model) : [],
 			contextWindow: model.contextWindow,
+			vision: model.input.includes("image"),
 		}));
 	}
 

@@ -371,6 +371,128 @@ try {
 	assert.equal(toolResults(f)[5]!.isError, true, "Forge has no agents to delegate to");
 	step("delegation: the subagent runs as its own agent and its answer returns; agents without delegates cannot");
 
+	// ---- Attachments: pictures and files sent with a message
+	{
+		const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+		const picture = { kind: "image", name: "shot.png", mimeType: "image/png", data: TINY_PNG };
+		const notes = { kind: "text", name: "notes.md", text: "# Notes\nThe launch code is 7421.\n" };
+		const answerOf = (id: number) => client.conversations.get(id)!.items.findLast((i) => i.kind === "assistant")!.text;
+		const titleOf = (id: number) => client.library.find((x) => x.id === id)?.title;
+
+		// A picture and a text file reach the model; the transcript shows what was typed and names what came with it.
+		const { id: att } = await client.call("conversation.create", { agentId: "atlas" });
+		await client.call("conversation.open", { id: att });
+		await client.call("submit", { id: att, text: "what is in these?", attachments: [notes, picture] });
+		const sentWith = (await client.idle(att)).items[0] as any;
+		assert.equal(sentWith.kind, "user");
+		assert.equal(sentWith.text, "what is in these?", "the message's text is what was typed, without the file's contents");
+		assert.deepEqual(sentWith.attachments, [
+			{ name: "notes.md", kind: "text", size: Buffer.byteLength(notes.text) },
+			{ name: "shot.png", kind: "image", size: Buffer.from(TINY_PNG, "base64").length },
+		]);
+		assert.equal(sentWith.images, 1);
+		assert.match(answerOf(att), /^You said: "what is in these\?"\. With it came 1 picture and 1 attached file\./, "both reached the model, apart from the typed text");
+		assert.deepEqual(await client.call("conversation.image", { id: att, entryId: sentWith.id, index: 0 }), { data: TINY_PNG, mimeType: "image/png" });
+		await assert.rejects(client.call("conversation.image", { id: att, entryId: sentWith.id, index: 1 }), /no such picture/);
+		assert.equal(titleOf(att), "what is in these?");
+		assert.ok((await client.call("search", { query: "launch code is 7421" })).results.some((r: any) => r.conversationId === att), "an attached text can be searched for");
+		const attachedLine = `*Attached: notes.md (text, ${Buffer.byteLength(notes.text)} bytes); shot.png (picture, ${Buffer.from(TINY_PNG, "base64").length} bytes)*`;
+		assert.ok(((await client.call("conversation.export", { id: att, format: "markdown" })).text as string).includes(`## You\n\nwhat is in these?\n\n${attachedLine}`), "an export names the attachments");
+		assert.equal(JSON.parse((await client.call("conversation.export", { id: att, format: "json" })).text).items[0].attachments.length, 2);
+
+		// Attachments can be the whole message; the conversation is then named after the first of them.
+		const { id: only } = await client.call("conversation.create", { agentId: "atlas" });
+		await client.call("conversation.open", { id: only });
+		await client.call("submit", { id: only, text: " \n", attachments: [{ ...picture, name: "Screenshot 2026-11-12.png" }, picture] });
+		const alone = (await client.idle(only)).items[0] as any;
+		assert.ok(alone.text === "" && alone.images === 2 && alone.attachments.length === 2);
+		assert.match(answerOf(only), /^You said: ""\. With it came 2 pictures\./);
+		assert.deepEqual(await client.call("conversation.image", { id: only, entryId: alone.id, index: 1 }), { data: TINY_PNG, mimeType: "image/png" });
+		assert.equal(titleOf(only), "Screenshot 2026-11-12.png");
+
+		// Sent while the agent is busy, they wait in the queue with the message and can be withdrawn.
+		await client.call("submit", { id: only, text: "keep going" });
+		await client.until("busy with the second message", () => client.conversations.get(only)!.state.busy);
+		const plain = client.conversations.get(only)!.items.find((i) => i.kind === "user" && i.text === "keep going") as any;
+		assert.deepEqual([plain.attachments, plain.images], [[], 0], "a message without attachments says so");
+		await client.call("submit", { id: only, attachments: [notes], mode: "queue" });
+		const waiting = (await client.until("queued attachments", () => client.conversations.get(only)!.state.queued[0])) as any;
+		assert.ok(waiting.text === "" && waiting.attachments.length === 1 && waiting.attachments[0].name === "notes.md");
+		await client.call("withdraw", { submissionId: waiting.id });
+		await client.until("queue emptied again", () => client.conversations.get(only)!.state.queued.length === 0);
+		await client.call("abort", { id: only });
+		await client.until("stopped again", () => !client.conversations.get(only)!.state.busy);
+
+		// The limits, each refused with what is wrong and what to do; nothing of a refused message is kept.
+		const refusedWith = (attachments: unknown, text: string | null = "x") => client.call("submit", { id: att, ...(text === null ? {} : { text }), attachments });
+		const sizeBefore = client.conversations.get(att)!.items.length;
+		await assert.rejects(refusedWith(Array.from({ length: 11 }, () => picture)), /at most 10 attachments; this one has 11/);
+		const tooBig = Buffer.concat([Buffer.from(TINY_PNG, "base64"), Buffer.alloc(5 * 1024 * 1024)]).toString("base64");
+		await assert.rejects(refusedWith([{ ...picture, data: tooBig }]), /“shot\.png” is just over 5 MB; a picture can be at most 5 MB\. Scale it down/);
+		const wayTooBig = Buffer.concat([Buffer.from(TINY_PNG, "base64"), Buffer.alloc(7 * 1024 * 1024)]).toString("base64");
+		await assert.rejects(refusedWith([{ ...picture, data: wayTooBig }]), /“shot\.png” is 7\.0 MB; a picture can be at most 5 MB/);
+		await assert.rejects(refusedWith([{ ...notes, text: "x".repeat(400_001) }]), /“notes\.md” has 400,001 characters; one attached text can have at most 400,000/);
+		await assert.rejects(refusedWith(Array.from({ length: 4 }, () => ({ ...notes, text: "x".repeat(400_000) }))), /add up to 1,600,000 characters; a message can carry at most 1,500,000/);
+		await assert.rejects(refusedWith([{ ...picture, mimeType: "image/tiff" }]), /image\/tiff, which cannot be sent as a picture\. Use PNG, JPEG, GIF or WebP/);
+		await assert.rejects(refusedWith([{ ...picture, mimeType: "constructor" }]), /constructor, which cannot be sent as a picture/);
+		await assert.rejects(refusedWith([{ ...picture, mimeType: "image/jpeg" }]), /is not a JPEG picture/);
+		await assert.rejects(refusedWith([{ ...picture, data: "not base64!" }]), /did not arrive whole/);
+		await assert.rejects(refusedWith([{ ...notes, text: " \n" }]), /has no text in it/);
+		await assert.rejects(refusedWith([{ kind: "video", name: "clip.mov" }]), /Unknown kind of attachment/);
+		await assert.rejects(refusedWith([], "  "), /The message is empty/);
+		await assert.rejects(refusedWith([], null), /Missing text/);
+		await sleep(300);
+		assert.equal(client.conversations.get(att)!.items.length, sizeBefore, "a refused message leaves nothing behind");
+
+		// A model that cannot see pictures is not sent any: the message is refused while it can still be changed.
+		assert.deepEqual(["demo-1", "demo-text"].map((id) => (client.models.find((m) => m.provider === "demo" && m.id === id) as any)?.vision), [true, false]);
+		const { id: textOnly } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-text" } });
+		await client.call("conversation.open", { id: textOnly });
+		await assert.rejects(client.call("submit", { id: textOnly, text: "look at this", attachments: [notes, picture] }), /^Error: Demo model \(text only\) cannot see pictures\. Choose a model that can, or remove them\.$/);
+		assert.equal(titleOf(textOnly), "", "the refused message did not name the conversation");
+		await client.call("submit", { id: textOnly, text: "read this", attachments: [notes] });
+		await client.idle(textOnly);
+		assert.match(answerOf(textOnly), /With it came 1 attached file\./, "an attached text is fine for it");
+
+		// A model on the person's own endpoint sees pictures once it is marked as able to. A stand-in server records
+		// what it is sent.
+		let lastBody = "";
+		const eyes = createServer((request, response) => {
+			let body = "";
+			request.setEncoding("utf8").on("data", (chunk: string) => (body += chunk)).on("end", () => {
+				lastBody = body;
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				const choice = (delta: object, finish: string | null) => ({ id: "c1", object: "chat.completion.chunk", created: 1, model: "sees", choices: [{ index: 0, delta, finish_reason: finish }] });
+				response.write(`data: ${JSON.stringify(choice({ role: "assistant", content: "I see it." }, null))}\n\n`);
+				response.write(`data: ${JSON.stringify(choice({}, "stop"))}\n\n`);
+				response.end("data: [DONE]\n\n");
+			});
+		});
+		await new Promise<void>((resolve) => eyes.listen(0, "127.0.0.1", resolve));
+		try {
+			const eyesUrl = `http://127.0.0.1:${(eyes.address() as { port: number }).port}/v1`;
+			const { id: visionBox } = await client.call("endpoints.save", { name: "Vision Box", baseUrl: eyesUrl, api: "openai-completions", models: [{ id: "sees", vision: true }, { id: "reads" }] });
+			await client.until("vision endpoint offered", () => client.models.some((m) => m.provider === visionBox));
+			assert.deepEqual(["sees", "reads"].map((id) => (client.models.find((m) => m.provider === visionBox && m.id === id) as any)?.vision), [true, false]);
+			const { id: reads } = await client.call("conversation.create", { agentId: "atlas", model: { provider: visionBox, modelId: "reads" } });
+			await assert.rejects(client.call("submit", { id: reads, text: "look", attachments: [picture] }), /reads cannot see pictures/);
+			const { id: sees } = await client.call("conversation.create", { agentId: "atlas", model: { provider: visionBox, modelId: "sees" } });
+			await client.call("conversation.open", { id: sees });
+			await client.call("submit", { id: sees, text: "look", attachments: [notes, picture] });
+			assert.equal((await client.idle(sees)).state.failure, null);
+			assert.equal(answerOf(sees), "I see it.");
+			const sentToServer = JSON.parse(lastBody).messages.findLast((message: any) => message.role === "user").content as any[];
+			assert.ok(Array.isArray(sentToServer), "the message goes out as parts");
+			assert.ok(sentToServer.some((part) => part.type === "image_url" && String(part.image_url?.url).endsWith(TINY_PNG)), "the picture is sent to the endpoint");
+			assert.ok(sentToServer.some((part) => part.type === "text" && String(part.text).startsWith("Attached file: notes.md\n\n# Notes")), "and the attached text, under a line naming it");
+			await client.call("endpoints.remove", { id: visionBox });
+			await client.until("vision endpoint gone", () => !client.providers.some((p) => p.id === visionBox));
+		} finally {
+			eyes.close();
+		}
+		step("attachments: pictures and files reach the model and show in the transcript; limits and text-only models refuse plainly; an endpoint model marked as seeing pictures gets them");
+	}
+
 	// ---- Editing agents
 	await assert.rejects(client.call("agents.save", { agent: { name: "Atlas" } }), /already an agent/);
 	const { id: custom } = await client.call("agents.save", { agent: { name: "Quill", description: "Writer", access: "read", delegates: ["scout"] } });

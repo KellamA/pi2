@@ -30,6 +30,7 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
@@ -258,7 +259,7 @@ function imagesOf(content: unknown): { data: string; mimeType: string }[] {
 
 type ToolCall = { callId: string; name: string; arguments: unknown };
 type Item =
-	| { id: number; kind: "user"; text: string }
+	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
 	| { id: number; kind: "marker"; text: string };
@@ -288,8 +289,12 @@ function toItem(entry: EntryRecord): Item | undefined {
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
-		case "user":
-			return { id, kind: "user", text: textOf(message.content) };
+		case "user": {
+			// A message sent with attachments recorded what the person typed apart from the files' contents. Its pictures
+			// are counted, as a tool result's are, and fetched one at a time.
+			const own = readUserEntryData(entry);
+			return { id, kind: "user", text: own?.text ?? textOf(message.content), attachments: own?.attachments ?? [], images: imagesOf(message.content).length };
+		}
 		case "assistant":
 			return { id, kind: "assistant", ...assistantParts(message), stop: message.stopReason ?? "stop", error: message.errorMessage ?? null, model: message.model ?? null };
 		case "toolResult":
@@ -354,7 +359,7 @@ function contextOf(view: ConversationView, model: ModelRef | undefined) {
 function stateOf(view: ConversationView, meta: Meta | undefined) {
 	const live = (view.docs["pi.live"] ?? {}) as LiveDocShape;
 	const agent = (view.docs["pi.agent"] ?? {}) as { model?: ModelRef; thinkingLevel?: string; cwd?: string };
-	const inbox = (view.docs["pi.inbox"] ?? {}) as { items?: { id: number; mode: string; content?: unknown }[] };
+	const inbox = (view.docs["pi.inbox"] ?? {}) as { items?: { id: number; mode: string; content?: unknown; entry?: { kind?: unknown; data?: unknown } }[] };
 	const partial = live.generation?.message;
 	return {
 		busy: live.run !== undefined,
@@ -367,7 +372,12 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		context: contextOf(view, agent.model),
 		compacting: (live.compactions ?? []).length > 0,
 		compactionError: live.compactionFailure?.error ?? null,
-		queued: (inbox.items ?? []).filter((item) => item.mode !== "write").map((item) => ({ id: item.id, mode: item.mode, text: textOf(item.content) })),
+		queued: (inbox.items ?? [])
+			.filter((item) => item.mode !== "write")
+			.map((item) => {
+				const own = readUserEntryData(item.entry);
+				return { id: item.id, mode: item.mode, text: own?.text ?? textOf(item.content), attachments: own?.attachments ?? [] };
+			}),
 		agent: {
 			model: agent.model ?? null,
 			thinkingLevel: agent.thinkingLevel ?? null,
@@ -587,7 +597,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				for (const entry of batch.items) {
 					const message = entry.model?.[0] as { role?: string; content?: unknown } | undefined;
 					if (message?.role !== "user" && message?.role !== "assistant") continue;
-					const body = textOf(message.content);
+					const body = textOf(message.content, false);
 					const at = body.toLowerCase().indexOf(query);
 					if (at === -1) continue;
 					const start = Math.max(0, at - 40);
@@ -655,7 +665,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await mcp.reconnect(text(params, "id"));
 		return {};
 	},
-	/** One picture from a tool result, such as a screenshot the agent took. */
+	/** One picture of an entry: a screenshot in a tool result, or a picture the person attached to a message. */
 	"conversation.image": async (params) => {
 		const conv = await conversation(params.id);
 		const entryId = params.entryId;
@@ -687,8 +697,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
 		const lines: string[] = [`# ${meta?.title || "Conversation"}`, ""];
 		for (const item of items) {
-			if (item.kind === "user") lines.push("## You", "", item.text, "");
-			else if (item.kind === "marker") lines.push(`*${item.text}*`, "");
+			if (item.kind === "user") {
+				lines.push("## You", "", item.text, "");
+				const attached = describeAttachments(item.attachments, item.images);
+				if (attached !== undefined) lines.push(`*${attached}*`, "");
+			} else if (item.kind === "marker") lines.push(`*${item.text}*`, "");
 			else if (item.kind === "assistant") {
 				lines.push(`## ${agentName}${item.stop === "aborted" || item.stop === "error" ? " (interrupted)" : ""}`, "");
 				if (item.text !== "") lines.push(item.text, "");
@@ -745,15 +758,25 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	submit: async (params) => {
 		const conv = await conversation(params.id);
-		const content = text(params, "text");
-		if (content.trim() === "") throw new Error("The message is empty");
+		const attachments = validateAttachments(params.attachments);
+		// Attachments can be the whole message.
+		const content = attachments.length > 0 && params.text === undefined ? "" : text(params, "text");
+		if (content.trim() === "" && attachments.length === 0) throw new Error("The message is empty");
+		if (attachments.some((attachment) => attachment.kind === "image")) {
+			// Refused here, while the person can still change the model or the message. Sent anyway, the pictures would
+			// be swapped for a note that they were left out, and the model would answer without having seen them.
+			const ref = (await harness.snapshot(AgentDoc, conv.id, context))?.model;
+			const model = ref === undefined ? undefined : providers.models.getModel(ref.provider, ref.modelId);
+			if (model !== undefined && !model.input.includes("image")) throw new Error(`${model.name} cannot see pictures. Choose a model that can, or remove them.`);
+		}
 		if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
 		// The agent's settings may have changed since this conversation was set up.
 		await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
 		const submission = await conv.submit(
 			{
 				type: "input",
-				content,
+				// With attachments the model is sent content blocks, and the entry records what the transcript shows.
+				...(attachments.length === 0 ? { content } : { content: userContent(content, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(content, attachments) } }),
 				whenBusy: params.mode === "steer" ? "steer" : "followUp",
 				...(typeof params.requestId === "string" ? { requestId: params.requestId } : {}),
 			},
@@ -761,7 +784,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		);
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
-			if (meta.title === "") meta.title = content.trim().split("\n")[0]!.slice(0, 60);
+			// A message that is only attachments is titled after the first of them.
+			if (meta.title === "") meta.title = (content.trim().split("\n")[0] || attachments[0]?.name || "").slice(0, 60);
 		});
 		return { submissionId: submission.id };
 	},
@@ -1229,13 +1253,22 @@ const server = createServer((socket) => {
 	send(client, usageSummary);
 	send(client, mcpEvent());
 	void providersEvent().then((event) => send(client, event));
-	let buffer = "";
+	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line
+	// are kept apart and joined once, at its end: searching one growing string for the line break would copy all of it
+	// again for every chunk, seconds of work during which nothing else is answered.
+	const unfinished: string[] = [];
 	socket.setEncoding("utf8");
 	socket.on("data", (chunk: string) => {
-		buffer += chunk;
-		for (let newline = buffer.indexOf("\n"); newline !== -1; newline = buffer.indexOf("\n")) {
-			const line = buffer.slice(0, newline);
-			buffer = buffer.slice(newline + 1);
+		let start = 0;
+		for (let newline = chunk.indexOf("\n"); ; newline = chunk.indexOf("\n", start)) {
+			if (newline === -1) {
+				if (start < chunk.length) unfinished.push(chunk.slice(start));
+				break;
+			}
+			unfinished.push(chunk.slice(start, newline));
+			const line = unfinished.join("");
+			unfinished.length = 0;
+			start = newline + 1;
 			if (line.trim() === "") continue;
 			let request: { id?: unknown; method?: unknown; params?: Params };
 			try {

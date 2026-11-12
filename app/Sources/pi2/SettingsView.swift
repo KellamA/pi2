@@ -102,6 +102,7 @@ struct ProvidersSettings: View {
     @State private var search = ""
     @State private var keyTarget: ProviderInfo?
     @State private var addingEndpoint = false
+    @State private var editingEndpoint: ProviderInfo?
     @State private var modelsTarget: ProviderInfo?
 
     /// How many of a provider's models the pickers offer, and the button that changes it.
@@ -160,6 +161,8 @@ struct ProvidersSettings: View {
                         }
                         Spacer()
                         modelsButton(provider)
+                        Button("Edit…") { editingEndpoint = provider }
+                            .help("Change this endpoint's address or models, or say which of its models can see pictures")
                         Button("Remove", role: .destructive) { engine.perform("endpoints.remove", ["id": provider.id]) }
                     }
                 }
@@ -198,6 +201,9 @@ struct ProvidersSettings: View {
         }
         .sheet(isPresented: $addingEndpoint) {
             EndpointSheet(engine: engine)
+        }
+        .sheet(item: $editingEndpoint) { provider in
+            EndpointSheet(engine: engine, existing: provider.endpoint)
         }
         .sheet(isPresented: Binding(get: { engine.signIn != nil }, set: { if !$0 { engine.cancelSignIn() } })) {
             SignInSheet(engine: engine)
@@ -326,12 +332,16 @@ struct KeySheet: View {
 
 struct EndpointSheet: View {
     let engine: EngineClient
+    /// The endpoint being changed; nil when adding one.
+    var existing: EndpointConfig?
     @State private var name = ""
     @State private var baseUrl = ""
     @State private var api = "openai-completions"
     @State private var key = ""
     @State private var found: [String] = []
     @State private var chosen: Set<String> = []
+    /// The chosen models the person says can see pictures. A server cannot be asked, so it is theirs to say.
+    @State private var vision: Set<String> = []
     @State private var manualModel = ""
     @State private var error: String?
     @State private var working = false
@@ -366,7 +376,7 @@ struct EndpointSheet: View {
                         Text("OpenAI responses").tag("openai-responses")
                         Text("Anthropic messages").tag("anthropic-messages")
                     }
-                    SecureField("API key", text: $key, prompt: Text("Optional"))
+                    SecureField("API key", text: $key, prompt: Text(existing == nil ? "Optional" : "Leave empty to keep the one saved"))
                 }
                 Section("Models") {
                     ForEach(found, id: \.self) { model in
@@ -383,6 +393,20 @@ struct EndpointSheet: View {
                     Button(fetching ? "Asking the server…" : "Fetch Models From Server") { fetch() }
                         .disabled(baseUrl.isEmpty || working)
                 }
+                if !chosen.isEmpty {
+                    Section {
+                        ForEach(found.filter { chosen.contains($0) }, id: \.self) { model in
+                            Toggle(model, isOn: Binding(
+                                get: { vision.contains(model) },
+                                set: { sees in if sees { vision.insert(model) } else { vision.remove(model) } }
+                            ))
+                        }
+                    } header: {
+                        Text("Can see pictures")
+                    } footer: {
+                        Text("Switch on the models that take pictures, such as LLaVA, Llama Vision or Qwen-VL. Pictures you attach and screenshots from computer use are sent only to those; pi² cannot ask the server which they are. A model that cannot see pictures, switched on here, will answer with an error or ignore them.").formFooter()
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -392,13 +416,22 @@ struct EndpointSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Add Endpoint") { save() }
+                Button(existing == nil ? "Add Endpoint" : "Save") { save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.isEmpty || baseUrl.isEmpty || chosen.isEmpty || working)
             }
             .padding(20)
         }
-        .frame(width: 520, height: 560)
+        .frame(width: 520, height: 600)
+        .onAppear {
+            guard let existing else { return }
+            name = existing.name
+            baseUrl = existing.baseUrl
+            api = existing.api
+            found = existing.models.map(\.id)
+            chosen = Set(found)
+            vision = Set(existing.models.filter { $0.vision == true }.map(\.id))
+        }
     }
 
     private func addManual() {
@@ -435,10 +468,14 @@ struct EndpointSheet: View {
         Task {
             defer { working = false }
             do {
-                var params: [String: Any] = [
-                    "name": name, "baseUrl": baseUrl, "api": api,
-                    "models": found.filter(chosen.contains).map { ["id": $0] },
-                ]
+                // What an endpoint already says about a model (its name, its context size) is kept when it is saved again.
+                let models = found.filter { chosen.contains($0) }.map { id in
+                    var model = existing?.models.first { $0.id == id } ?? EndpointModel(id: id)
+                    model.vision = vision.contains(id)
+                    return model.payload
+                }
+                var params: [String: Any] = ["name": name, "baseUrl": baseUrl, "api": api, "models": models]
+                if let existing { params["id"] = existing.id }
                 if !key.isEmpty { params["key"] = key }
                 try await engine.call("endpoints.save", params)
                 dismiss()
