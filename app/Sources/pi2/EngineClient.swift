@@ -44,6 +44,8 @@ final class EngineClient {
     var onNavigate: (Int) -> Void = { _ in }
     var signIn: SignInFlow?
     var lastError: String?
+    /// Does what agents ask of other apps' windows; the app holds the macOS permissions for it.
+    let computer = ComputerSession()
 
     private let home: URL
     private var connection: NWConnection?
@@ -203,6 +205,8 @@ final class EngineClient {
                 case .ready:
                     self.status = .connected
                     self.receive(on: connection)
+                    // Offer this app as the one that sees and works other apps for agents.
+                    Task { _ = try? await self.call("computer.register") }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.perform("conversation.open", ["id": id]) }
                 case .waiting(let error), .failed(let error):
@@ -311,6 +315,8 @@ final class EngineClient {
                 open[event.id] = data
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
+            case "computer":
+                computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
                 if let error = envelope.error {

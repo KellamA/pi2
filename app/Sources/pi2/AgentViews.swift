@@ -227,6 +227,11 @@ struct AgentEditor: View {
                     Text("Scripts let the model chain many tool calls in one step. MCP servers add tools from other apps and services.")
                 }
 
+                ComputerUseSection(settings: Binding(
+                    get: { agent.computer ?? ComputerSettings() },
+                    set: { draft.wrappedValue.computer = $0 }
+                ))
+
                 Section {
                     let others = engine.agents.filter { $0.id != agentID }
                     if others.isEmpty { Text("There are no other agents yet.").foregroundStyle(.secondary) }

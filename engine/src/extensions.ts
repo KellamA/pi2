@@ -7,13 +7,15 @@ import {
 	defineExtension,
 	defineTool,
 	type Extension,
+	GenerationTask,
 	hook,
 	section,
 	ToolTask,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import { int, obj, opt, str } from "@earendil-works/pi-schema";
+import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord/context";
+import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
@@ -22,6 +24,7 @@ const GATED = new Set(["bash", "write", "edit"]);
 
 export type Host = {
 	inbox: Inbox;
+	computer: ComputerHost;
 	/** Whether a tool outside the built-in set changes things, and so needs approval under "ask". */
 	changesThings(tool: string): boolean;
 	meta(conversationId: ConversationId): Meta | undefined;
@@ -145,10 +148,102 @@ export function pi2Extension(host: Host): Extension {
 		},
 	});
 
+	/** The computer-use settings of the agent a conversation belongs to. */
+	const computerOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.computer;
+	const agentNameOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.name ?? "An agent";
+
+	type ComputerArgs = { action: string; app?: string; element?: number; x?: number; y?: number; text?: string; dy?: number; count?: number; path?: string };
+
+	/** Why a computer call cannot run, or undefined when it can. Checked before asking the person and again before acting. */
+	const refusal = (conversationId: ConversationId, args: ComputerArgs): string | undefined => {
+		const settings = computerOf(conversationId);
+		if (settings?.enabled !== true) return "Computer use is turned off for this agent.";
+		const action = args.action.trim();
+		if (!(ACTIONS as readonly string[]).includes(action)) return `Unknown action "${args.action}". Use one of: ${ACTIONS.join(", ")}.`;
+		if (action === "list_apps") return undefined;
+		if (args.app === undefined || args.app.trim() === "") return `${action} needs \`app\`, a bundle ID from list_apps.`;
+		if (!settings.apps.includes(args.app)) return `You may not use ${args.app}. Apps you may use: ${settings.apps.join(", ") || "none; the person adds them in this agent's settings"}.`;
+		if (isNever(args.app)) return `${args.app} cannot be used by an agent.`;
+		if (!LOOKING.has(action) && action !== "open_app" && isViewOnly(args.app)) return `${args.app} can only be looked at, not controlled.`;
+		if (action === "click" && args.element === undefined && (args.x === undefined || args.y === undefined)) return "click needs `element`, or both `x` and `y`.";
+		if ((action === "type" || action === "key") && (args.text === undefined || args.text === "")) return `${action} needs \`text\`.`;
+		if (action === "scroll" && (args.dy === undefined || args.dy === 0)) return "scroll needs `dy`: pages to scroll, positive for down.";
+		if (action === "menu" && (args.path === undefined || args.path.trim() === "")) return 'menu needs `path`, such as "File > Save".';
+		return undefined;
+	};
+
+	/** The request the app is sent: only the fields the action uses. */
+	const requestOf = (args: ComputerArgs) => ({
+		...(args.app !== undefined ? { app: args.app } : {}),
+		...(args.element !== undefined ? { element: args.element } : {}),
+		...(args.x !== undefined ? { x: args.x } : {}),
+		...(args.y !== undefined ? { y: args.y } : {}),
+		...(args.text !== undefined ? { text: args.text } : {}),
+		...(args.dy !== undefined ? { dy: args.dy } : {}),
+		...(args.count !== undefined ? { count: args.count } : {}),
+		...(args.path !== undefined ? { path: args.path } : {}),
+	});
+
+	const computerTool = defineTool({
+		name: "computer",
+		description:
+			"Use an app on the person's Mac, one window at a time, in the background. `app` is a bundle ID from list_apps. Every action answers with the window as it is afterwards. Actions:\n" +
+			"- list_apps: the apps you may use, and which are running.\n" +
+			"- open_app: start `app`, or bring its window back if it has none.\n" +
+			"- screenshot: see `app`'s front window. Returns a numbered list of its controls and, if you can see images, a picture.\n" +
+			"- click: a control by its `element` number from the latest screenshot of that app, or the point `x`,`y` in that screenshot's pixels. `count`: 2 for a double-click.\n" +
+			"- type: `text` into `element`, or where the cursor is. It is inserted at the cursor; it does not replace what is there.\n" +
+			'- key: press `text`, a key or combination: "return", "tab", "escape", "delete", "up", "cmd+s", "shift+cmd+z".\n' +
+			"- scroll: `dy` pages, positive for down, in `element` or at `x`,`y`, or the window's main scrolling area.\n" +
+			'- menu: choose a menu bar item by `path`, such as "File > Export…".',
+		parameters: obj({
+			action: str({ description: `One of: ${ACTIONS.join(", ")}` }),
+			app: opt(str({ description: "Bundle ID of the app, from list_apps" })),
+			element: opt(int({ description: "A control's number from the latest screenshot of this app" })),
+			x: opt(num({ description: "Horizontal position, in pixels of the latest screenshot" })),
+			y: opt(num({ description: "Vertical position, in pixels of the latest screenshot" })),
+			text: opt(str({ description: "Text to type, or the key combination to press" })),
+			dy: opt(int({ description: "Pages to scroll; positive scrolls down" })),
+			count: opt(int({ description: "Number of clicks: 1 or 2" })),
+			path: opt(str({ description: "Menu path, items separated by >" })),
+		}),
+		// A click or keystroke cut off by a crash is not repeated: it may already have happened. The agent is told.
+		replay: "unsafe",
+		// One action at a time: each depends on the window the last one left.
+		executionMode: "sequential",
+		execute: async (args, api, context) => {
+			const refused = refusal(api.conversationId, args);
+			if (refused !== undefined) return { output: text(refused), isError: true };
+			// A model that cannot see images gets the list of controls and the window's text, and no picture is taken.
+			const ref = (await api.agent(context)).model;
+			const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
+			const reply = await host.computer.perform(
+				{
+					action: args.action.trim() as (typeof ACTIONS)[number],
+					conversationId: api.conversationId as unknown as number,
+					agentName: agentNameOf(api.conversationId),
+					image: model?.input.includes("image") ?? true,
+					...(args.action.trim() === "list_apps" ? { apps: computerOf(api.conversationId)?.apps ?? [] } : {}),
+					...requestOf(args),
+				},
+				context,
+			);
+			// The short line is what the person reads on the call's card.
+			if (reply.summary !== undefined) await api.details({ summary: reply.summary }, context);
+			const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: reply.text }];
+			if (reply.image !== undefined) content.push({ type: "image", data: reply.image.data, mimeType: reply.image.mimeType });
+			return { output: content, ...(reply.ok ? {} : { isError: true }) };
+		},
+	});
+
 	return defineExtension({
 		name: "pi2",
-		tools: [askUser, delegate, readReferenceTool],
+		tools: [askUser, delegate, readReferenceTool, computerTool],
 		sections: [
+			section("computer_use", (input) => {
+				if (!input.agent.tools.some((tool) => tool.name === "computer")) return undefined;
+				return describeComputer(computerOf(input.conversationId));
+			}),
 			section("reference_files", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "read_reference")) return undefined;
 				return describeReferenceFiles(filesOf(input.conversationId));
@@ -165,11 +260,35 @@ export function pi2Extension(host: Host): Extension {
 			}),
 		],
 		hooks: [
+			// Screenshots go stale; only the newest are sent to the model, whatever the transcript holds.
+			hook(GenerationTask, {
+				beforeRequest: (request) => ({ messages: pruneScreenshots(request.messages) }),
+			}),
 			hook(ToolTask, {
 				beforeTool: async (call, api, context) => {
 					const meta = host.meta(api.conversationId);
-					if (meta?.access !== "ask" || !(GATED.has(call.name) || host.changesThings(call.name))) return undefined;
-					if (meta.autoApprove?.includes(call.name)) return undefined;
+					const isComputer = call.name === "computer";
+					const args = call.arguments as ComputerArgs;
+					let description: string | null = null;
+					if (isComputer) {
+						// Computer use has its own rule: whatever changes something asks, app by app, whatever the file access.
+						// A call that cannot run anyway is not worth a question; the tool explains why itself.
+						if (typeof args.action !== "string" || refusal(api.conversationId, args) !== undefined) return undefined;
+						if (computerOf(api.conversationId)?.ask === false || LOOKING.has(args.action.trim())) return undefined;
+					} else if (meta?.access !== "ask" || !(GATED.has(call.name) || host.changesThings(call.name))) {
+						return undefined;
+					}
+					const key = isComputer ? `computer:${args.app ?? ""}` : call.name;
+					if (meta?.autoApprove?.includes(key)) return undefined;
+					if (isComputer) {
+						// Ask the app what the action would act on, so the person approves "the Send button", not "control 12".
+						const described = await host.computer.perform(
+							{ action: "describe", of: args.action.trim(), conversationId: api.conversationId as unknown as number, agentName: agentNameOf(api.conversationId), ...requestOf(args) },
+							context,
+							5_000,
+						);
+						description = described.ok && described.text.trim() !== "" ? described.text.trim() : plainDescription(args);
+					}
 					const decision = await host.inbox.ask(
 						{
 							id: String(api.taskId),
@@ -178,12 +297,12 @@ export function pi2Extension(host: Host): Extension {
 							callId: call.id,
 							tool: call.name,
 							arguments: call.arguments,
-							question: null,
+							question: description,
 							createdAt: Date.now(),
 						},
 						context,
 					);
-					if (decision === "always") await host.allowAlways(api.conversationId, call.name);
+					if (decision === "always") await host.allowAlways(api.conversationId, key);
 					return decision === "deny" ? { block: "The person declined this action. Do not retry it; ask what they would like instead." } : undefined;
 				},
 			}),

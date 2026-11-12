@@ -33,6 +33,7 @@ import { createBackup, restoreBackup } from "./backup.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
 import { McpServers } from "./mcp.ts";
+import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
@@ -97,11 +98,13 @@ const credentials = new KeychainCredentialStore(home);
 const providers = new Providers(home, credentials, () => deviceId());
 const mcp = new McpServers(home, credentials);
 const inbox = new Inbox();
+const computer = new ComputerHost();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
 let agents: Record<string, AgentProfile> = {};
 
 const pi2 = pi2Extension({
 	inbox,
+	computer,
 	changesThings: (name) => mcp.changesThings(name),
 	meta: (id) => library.conversations[String(id)],
 	agent: (id) => (id === undefined ? undefined : agents[id]),
@@ -151,7 +154,8 @@ function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undef
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
-	return [...files, ...reference, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+	const screen = agent?.computer?.enabled === true ? ["computer"] : [];
+	return [...files, ...reference, ...screen, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -218,17 +222,22 @@ async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promi
 
 // ---- What the app is sent
 
-function textOf(content: unknown): string {
+function textOf(content: unknown, markImages = true): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
-	return content.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : block?.type === "image" ? "[image]" : "")).join("");
+	return content.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : block?.type === "image" && markImages ? "[image]" : "")).join("");
+}
+
+function imagesOf(content: unknown): { data: string; mimeType: string }[] {
+	if (!Array.isArray(content)) return [];
+	return content.flatMap((block) => (block?.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string" ? [{ data: block.data, mimeType: block.mimeType }] : []));
 }
 
 type ToolCall = { callId: string; name: string; arguments: unknown };
 type Item =
 	| { id: number; kind: "user"; text: string }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
-	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown }
+	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
 	| { id: number; kind: "marker"; text: string };
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -261,7 +270,8 @@ function toItem(entry: EntryRecord): Item | undefined {
 		case "assistant":
 			return { id, kind: "assistant", ...assistantParts(message), stop: message.stopReason ?? "stop", error: message.errorMessage ?? null, model: message.model ?? null };
 		case "toolResult":
-			return { id, kind: "tool", callId: String(message.toolCallId), name: String(message.toolName), text: textOf(message.content), isError: message.isError === true, details: detailsOf(entry) };
+			// Pictures are not sent with the transcript: the app is told how many there are and fetches one when it shows it.
+			return { id, kind: "tool", callId: String(message.toolCallId), name: String(message.toolName), text: textOf(message.content, false), isError: message.isError === true, details: detailsOf(entry), images: imagesOf(message.content).length };
 		default:
 			return undefined;
 	}
@@ -351,6 +361,9 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 type Subscription = { push: () => void; stop: () => Promise<unknown> };
 type Client = { socket: Socket; subscriptions: Map<number, Subscription> };
 const clients = new Set<Client>();
+/** Clients that registered as the computer host; the host object is kept per client so the right one is dropped. */
+const computerClients = new Set<Client>();
+const computerHostOf = new WeakMap<Client, { send: (message: unknown) => void }>();
 const pendingPrompts = new Map<string, (answer: string) => void>();
 const logins = new Map<string, AbortController>();
 let nextLocalId = 1;
@@ -588,6 +601,25 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		void announceProviders().catch((error) => log("announcing providers failed:", error));
 		return { hidden };
 	},
+	/** The app offers to do computer actions for agents; only one app does at a time, the latest to ask. */
+	"computer.register": async (_params, client) => {
+		// The same connection offering twice is still one host.
+		const host = computerHostOf.get(client) ?? { send: (message: unknown) => send(client, message) };
+		computerHostOf.set(client, host);
+		computer.register(host);
+		computerClients.add(client);
+		return {};
+	},
+	"computer.result": async (params) => {
+		const image = params.image as { data?: unknown; mimeType?: unknown } | undefined;
+		const answered = computer.answer(text(params, "requestId"), {
+			ok: params.ok === true,
+			text: typeof params.text === "string" ? params.text : "",
+			...(typeof params.summary === "string" && params.summary !== "" ? { summary: params.summary } : {}),
+			...(image !== undefined && typeof image.data === "string" && typeof image.mimeType === "string" ? { image: { data: image.data, mimeType: image.mimeType } } : {}),
+		});
+		return { answered };
+	},
 	"mcp.save": async (params) => {
 		const saved = await mcp.save(params as never);
 		return { id: saved.id };
@@ -599,6 +631,17 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"mcp.reconnect": async (params) => {
 		await mcp.reconnect(text(params, "id"));
 		return {};
+	},
+	/** One picture from a tool result, such as a screenshot the agent took. */
+	"conversation.image": async (params) => {
+		const conv = await conversation(params.id);
+		const entryId = params.entryId;
+		if (typeof entryId !== "number") throw new Error("entryId must be a number");
+		const page = await conv.entries({ minEntryId: entryId as never, maxEntryId: entryId as never }, 1, undefined, context);
+		const message = page.items[0]?.model?.[0] as { content?: unknown } | undefined;
+		const image = imagesOf(message?.content)[typeof params.index === "number" ? params.index : 0];
+		if (image === undefined) throw new Error("That entry has no such picture");
+		return image;
 	},
 	"conversation.export": async (params) => {
 		const conv = await conversation(params.id);
@@ -743,6 +786,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			codeMode: input.codeMode ?? previous?.codeMode ?? false,
 			mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
 			files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
+			computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
@@ -1187,6 +1231,7 @@ const server = createServer((socket) => {
 	});
 	const drop = () => {
 		if (!clients.delete(client)) return;
+		if (computerClients.delete(client)) computer.unregister(computerHostOf.get(client));
 		for (const subscription of client.subscriptions.values()) void subscription.stop();
 	};
 	socket.on("close", drop);

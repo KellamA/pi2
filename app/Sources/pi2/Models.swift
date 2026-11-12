@@ -106,6 +106,8 @@ struct Item: Codable, Identifiable, Equatable {
     var name: String?
     var isError: Bool?
     var details: JSONValue?
+    /// How many pictures a tool result holds; they are fetched when shown, not sent with the transcript.
+    var images: Int?
 }
 
 struct PartialAnswer: Codable, Equatable {
@@ -163,6 +165,13 @@ struct AgentInfo: Codable, Equatable {
     let parent: Int?
 }
 
+/// Whether an agent may use apps on this Mac: which ones, and whether it asks before acting.
+struct ComputerSettings: Codable, Equatable {
+    var enabled = false
+    var apps: [String] = []
+    var ask = true
+}
+
 /// A file or folder an agent may always read, with a note on what it is for.
 struct ReferenceFile: Codable, Equatable, Identifiable {
     var path: String
@@ -187,6 +196,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var mcpServers: [String]?
     /// Files and folders every conversation of the agent may read.
     var files: [ReferenceFile]?
+    /// Whether the agent may use apps on this Mac, and which.
+    var computer: ComputerSettings?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -202,6 +213,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "codeMode": codeMode ?? false,
             "mcpServers": mcpServers ?? [],
             "files": (files ?? []).map { ["path": $0.path, "note": $0.note] },
+            "computer": ["enabled": computer?.enabled ?? false, "apps": computer?.apps ?? [], "ask": computer?.ask ?? true],
         ]
     }
 }

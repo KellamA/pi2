@@ -16,7 +16,7 @@ MODE="${1:-dev}"
 CONFIG=debug
 [[ "$MODE" == release ]] && CONFIG=release
 
-swift build -c "$CONFIG"
+swift build -c "$CONFIG" --product pi2
 APP="build/pi².app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

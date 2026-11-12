@@ -86,14 +86,22 @@ function textOf(content: unknown): string {
 
 /** A scripted stand-in model so the app works before any provider is connected. `/bash` and `/read` make it call tools. */
 function demoProvider(): Provider {
-	const faux = fauxProvider({ provider: DEMO_PROVIDER, models: [{ id: DEMO_MODEL, name: "Demo model (scripted)" }], tokensPerSecond: 20 });
+	// Tests add a second demo model that cannot see images, to check what such a model is given.
+	const textOnly = process.env.PI2_DEMO_TEXT_MODEL === "1" ? [{ id: "demo-text", name: "Demo model (text only)", input: ["text" as const] }] : [];
+	const faux = fauxProvider({ provider: DEMO_PROVIDER, models: [{ id: DEMO_MODEL, name: "Demo model (scripted)" }, ...textOnly], tokensPerSecond: 20 });
 	const step = (request: { messages: readonly unknown[] }) => {
 		// The newest thing to answer. A tool or prompt change can add a system message after it, so skip those.
 		const last = (request.messages as readonly { role?: string; content?: unknown; isError?: boolean }[]).findLast(
 			(message) => message.role === "user" || message.role === "toolResult",
 		);
 		if (last?.role === "toolResult") {
-			return fauxAssistantMessage(last.isError ? "The tool reported an error; its output is above." : `Done. The tool returned: ${textOf(last.content).slice(0, 200)}`);
+			// Says how many pictures it was sent, so it is visible that old screenshots are left out.
+			const pictures = (request.messages as readonly { content?: unknown }[]).reduce(
+				(count, message) => count + (Array.isArray(message.content) ? message.content.filter((block) => block?.type === "image").length : 0),
+				0,
+			);
+			const seen = pictures === 0 ? "" : ` I can see ${pictures} picture${pictures === 1 ? "" : "s"}.`;
+			return fauxAssistantMessage(last.isError ? "The tool reported an error; its output is above." : `Done. The tool returned: ${textOf(last.content).slice(0, 200)}${seen}`);
 		}
 		const prompt = textOf(last?.content).trim();
 		if (prompt.startsWith("/bash ")) {
@@ -106,6 +114,10 @@ function demoProvider(): Provider {
 			// "/continue <sub-chat number>: <task>"
 			const [chat, ...task] = prompt.slice(10).split(":");
 			return fauxAssistantMessage([fauxText("Carrying on in that sub-chat."), fauxToolCall("delegate", { agent: "", chat: Number(chat), task: task.join(":").trim() })], { stopReason: "toolUse" });
+		}
+		if (prompt.startsWith("/computer ")) {
+			// "/computer {json arguments}"
+			return fauxAssistantMessage([fauxText("Using the computer."), fauxToolCall("computer", JSON.parse(prompt.slice(10)))], { stopReason: "toolUse" });
 		}
 		if (prompt.startsWith("/ref ")) {
 			return fauxAssistantMessage([fauxText("Opening that reference file."), fauxToolCall("read_reference", { path: prompt.slice(5).trim() })], { stopReason: "toolUse" });

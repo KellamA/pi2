@@ -1,3 +1,4 @@
+import ComputerKit
 import SwiftUI
 
 struct ChatView: View {
@@ -665,6 +666,12 @@ struct ToolCard: View {
 
     /// The detail shown after the tag; for an MCP tool, which of the server's tools it was.
     private var detail: String {
+        if call.name == "computer" {
+            // The app says what it did ("Clicked “Send” in Mail"); until then, what was asked.
+            if let summary = (result?.details ?? live?.details)?["summary"]?.stringValue { return summary }
+            let action = (call.arguments["action"]?.stringValue ?? "").replacingOccurrences(of: "_", with: " ")
+            return call.arguments["app"]?.stringValue.map { "\(action) · \(ComputerController.name(of: $0))" } ?? action
+        }
         if call.name.hasPrefix("mcp__"), title.contains(": ") {
             let tool = title.components(separatedBy: ": ").last ?? ""
             return call.summary.isEmpty ? tool : "\(tool) \(call.summary)"
@@ -691,7 +698,7 @@ struct ToolCard: View {
                 HStack(spacing: 8) {
                     Tag(tagText, tone)
                     Text(detail)
-                        .font(Theme.mono)
+                        .font(call.name == "computer" ? .system(size: 12.5) : Theme.mono)
                         .foregroundStyle(Theme.tx)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -716,6 +723,10 @@ struct ToolCard: View {
 
             if expanded {
                 Rectangle().fill(Theme.line).frame(height: 1)
+                if let result, (result.images ?? 0) > 0 {
+                    ScreenshotView(engine: engine, conversationID: conversationID, entryID: result.id)
+                        .padding(.horizontal, 11).padding(.top, 9)
+                }
                 ScrollView {
                     Text(output.isEmpty ? (isRunning ? "Running…" : "(no output)") : output)
                         .font(Theme.mono)
@@ -917,6 +928,10 @@ struct AgentIntro: View {
         let delegates = (profile?.delegates ?? []).compactMap { engine.agent($0)?.name }
         if !delegates.isEmpty, !isSubChat { facts.append(("person.2", "Can hand work to \(ListFormatter.localizedString(byJoining: delegates))")) }
         if let files = profile?.files, !files.isEmpty { facts.append(("books.vertical", "\(files.count) reference file\(files.count == 1 ? "" : "s") at hand")) }
+        if let computer = profile?.computer, computer.enabled {
+            let apps = computer.apps.map(ComputerController.name(of:))
+            facts.append(("macwindow.on.rectangle", apps.isEmpty ? "Computer use is on, with no apps chosen yet" : "Can use \(ListFormatter.localizedString(byJoining: apps)) on this Mac"))
+        }
         return facts
     }
 

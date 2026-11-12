@@ -22,7 +22,7 @@ type State = { usage: { cost: number; tokens: number }; context: { used: number;
 type Conv = { items: Item[]; state: State };
 
 function startEngine(): ChildProcess {
-	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5" }, stdio: ["ignore", "ignore", "inherit"] });
+	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5", PI2_DEMO_TEXT_MODEL: "1" }, stdio: ["ignore", "ignore", "inherit"] });
 }
 
 class Client {
@@ -38,6 +38,9 @@ class Client {
 	mcp: { id: string; status: string; error: string | null; tools: { name: string; toolName: string; readOnly: boolean }[] }[] = [];
 	providers: { id: string; kind: string; status: unknown; oauth: { subscription: boolean } | null }[] = [];
 	models: { provider: string; id: string }[] = [];
+	/** As the app does for computer use: what the engine asked this client to do on screen, and how it answers. */
+	computerRequests: any[] = [];
+	computerReply: ((request: any) => Record<string, unknown> | undefined) | undefined;
 	#nextId = 1;
 	#replies = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 	#wake: (() => void) | undefined;
@@ -80,6 +83,10 @@ class Client {
 		else if (message.event === "providers") {
 			this.providers = message.providers;
 			this.models = message.models;
+		} else if (message.event === "computer") {
+			this.computerRequests.push(message);
+			const reply = this.computerReply?.(message);
+			if (reply !== undefined) void this.call("computer.result", { requestId: message.requestId, ...reply }).catch(() => {});
 		} else if (message.event === "conversation") {
 			const conv: Conv = this.conversations.get(message.id) ?? { items: [], state: message.state };
 			if (message.reset) conv.items = [];
@@ -400,6 +407,105 @@ try {
 	writeFileSync(join(refs, "brief.md"), "The launch moved to the 21st.\n");
 	assert.match((await openRef("brief.md", 6)).text, /moved to the 21st/, "an edited file is read fresh");
 	step("reference files: read and listed on demand with tools off, re-read after an edit, nothing outside them");
+
+	// ---- Computer use: the engine decides and asks; a fake app stands in for the screen
+	const NOTES = "com.example.notes";
+	const MAIL = "com.example.mail";
+	const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: ["com.apple.Terminal"] } } }), /cannot be given/);
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, "com.apple.Safari"] } } });
+	await client.until("computer use saved", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === true);
+	assert.equal((client.agents.find((x) => x.id === custom) as any).computer.ask, true, "asking first is the default");
+	const { id: k } = await client.call("conversation.create", { agentId: custom });
+	await client.call("conversation.open", { id: k });
+	let computerCalls = 0;
+	const use = async (args: Record<string, unknown>, wait = true) => {
+		await client.call("submit", { id: k, text: `/computer ${JSON.stringify(args)}` });
+		computerCalls++;
+		if (!wait) return undefined as any;
+		await settled(k, computerCalls);
+		return toolResults(k)[computerCalls - 1]! as any;
+	};
+	const sentToApp = (action: string, app?: string) => client.computerRequests.filter((r) => r.action === action && (app === undefined || r.app === app));
+	const lastAnswer = () => client.conversations.get(k)!.items.findLast((i) => i.kind === "assistant")!.text;
+
+	const noApp = await use({ action: "list_apps" });
+	assert.ok(noApp.isError && /not open/.test(noApp.text), "with no app connected there is no screen to use");
+
+	client.computerReply = (request) => {
+		if (request.action === "describe") return { ok: true, text: `Click the “New Note” button in ${request.app === MAIL ? "Mail" : "Notes"}` };
+		if (request.action === "screenshot") return { ok: true, text: "Notes, window “All Notes”\n[1] button “New Note”", summary: "Looked at Notes", ...(request.image ? { image: { data: PNG, mimeType: "image/png" } } : {}) };
+		if (request.action === "click") return { ok: true, text: "Clicked “New Note”.", summary: "Clicked “New Note”" };
+		return { ok: true, text: "ok" };
+	};
+	await client.call("computer.register");
+
+	const shot = await use({ action: "screenshot", app: NOTES });
+	assert.ok(!shot.isError && shot.text.includes("[1] button") && !shot.text.includes("[image]"));
+	assert.equal(shot.images, 1, "the transcript says there is a picture without carrying it");
+	assert.equal(shot.details?.summary, "Looked at Notes");
+	assert.equal(client.inbox.length, 0, "looking is never asked about");
+	const sent = sentToApp("screenshot").at(-1);
+	assert.ok(sent.image === true && sent.conversationId === k && sent.agentName === "Quill");
+	assert.deepEqual(await client.call("conversation.image", { id: k, entryId: shot.id, index: 0 }), { data: PNG, mimeType: "image/png" });
+	assert.match(lastAnswer(), /I can see 1 picture\./, "the screenshot reaches the model as an image");
+
+	await use({ action: "click", app: NOTES, element: 1 }, false);
+	const approval = await client.until("approval for the click", () => client.inbox.find((i) => i.tool === "computer"));
+	assert.equal(approval.question, "Click the “New Note” button in Notes", "the approval says what will be clicked, in words");
+	assert.equal(sentToApp("click").length, 0, "nothing is clicked while the question is open");
+	await client.call("inbox.decide", { id: approval.id, decision: "always" });
+	await settled(k, computerCalls);
+	assert.equal(toolResults(k).at(-1)!.isError, false);
+	assert.equal(sentToApp("click", NOTES).length, 1);
+	await use({ action: "click", app: NOTES, element: 1 });
+	assert.ok(client.inbox.length === 0 && sentToApp("click", NOTES).length === 2, "“always” covers that app for the rest of the conversation");
+
+	const viewOnly = await use({ action: "click", app: "com.apple.Safari", x: 10, y: 10 });
+	assert.ok(viewOnly.isError && /only be looked at/.test(viewOnly.text));
+	const notAllowed = await use({ action: "screenshot", app: MAIL });
+	assert.ok(notAllowed.isError && /may not use/.test(notAllowed.text));
+	const incomplete = await use({ action: "click", app: NOTES });
+	assert.ok(incomplete.isError && /needs `element`/.test(incomplete.text));
+	assert.equal(client.inbox.length, 0, "a call that cannot run is refused without bothering the person");
+
+	// Another app is asked about separately, and a refusal is final.
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, MAIL, "com.apple.Safari"] } } });
+	await client.until("mail added", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(MAIL));
+	await use({ action: "click", app: MAIL, element: 1 }, false);
+	const second = await client.until("approval for the other app", () => client.inbox.find((i) => i.tool === "computer"));
+	assert.match(second.question!, /in Mail$/);
+	await client.call("inbox.decide", { id: second.id, decision: "deny" });
+	await settled(k, computerCalls);
+	assert.ok(toolResults(k).at(-1)!.isError && sentToApp("click", MAIL).length === 0, "a denied action never reaches the app");
+
+	// Only the newest screenshots are sent to the model; the transcript keeps them all.
+	for (let i = 0; i < 3; i++) await use({ action: "screenshot", app: NOTES });
+	assert.match(lastAnswer(), /I can see 2 pictures\./);
+	assert.equal(toolResults(k).filter((r: any) => r.images === 1).length, 4);
+
+	// A model that cannot see images is given the list of controls and no picture is taken.
+	await client.call("conversation.configure", { id: k, model: { provider: "demo", modelId: "demo-text" } });
+	await client.until("text-only model", () => client.conversations.get(k)!.state.agent.model?.modelId === "demo-text");
+	const blind = await use({ action: "screenshot", app: NOTES });
+	assert.ok(sentToApp("screenshot").at(-1).image === false && blind.images === 0 && blind.text.includes("[1] button"));
+	await client.call("conversation.configure", { id: k, model: { provider: "demo", modelId: "demo-1" } });
+	await client.until("back to the demo model", () => client.conversations.get(k)!.state.agent.model?.modelId === "demo-1");
+
+	// The app going away in the middle of an action ends the call instead of leaving it hanging.
+	const app = await Client.attach();
+	await app.call("computer.register");
+	await use({ action: "click", app: NOTES, element: 1 }, false);
+	await app.until("the second app is asked", () => app.computerRequests.some((r) => r.action === "click"));
+	app.socket.destroy();
+	await settled(k, computerCalls);
+	assert.ok(toolResults(k).at(-1)!.isError && /closed before/.test(toolResults(k).at(-1)!.text));
+	assert.equal((await use({ action: "list_apps" })).text, "ok", "the app that was there before takes over again");
+	assert.deepEqual(sentToApp("list_apps").at(-1).apps, [NOTES, MAIL, "com.apple.Safari"], "the app is told which apps to list");
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: false, apps: [NOTES] } } });
+	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
+	assert.match((await use({ action: "list_apps" })).text, /turned off/);
+	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing");
 
 	// ---- Schedules
 	const { nextRun } = await import("../src/schedules.ts");

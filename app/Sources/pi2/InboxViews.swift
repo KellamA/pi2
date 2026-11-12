@@ -1,3 +1,4 @@
+import ComputerKit
 import SwiftUI
 
 /// One thing waiting on the person, with the controls to answer it. Used in the transcript, the inbox, and above the
@@ -11,10 +12,15 @@ struct InboxCard: View {
 
     private var agent: AgentProfile? { engine.agents.first { $0.name == item.agentName } }
     private var isApproval: Bool { item.kind == "approval" }
+    /// For a computer action: the app it is for.
+    private var targetApp: String? {
+        item.tool == "computer" ? item.arguments["app"]?.stringValue.map(ComputerController.name(of:)) : nil
+    }
 
     /// "Atlas wants to run a command", in the words of what the tool does.
     private var request: String {
         let who = item.agentName ?? "The agent"
+        if let targetApp { return "\(who) wants to use \(targetApp)" }
         return switch item.tool {
         case "bash": "\(who) wants to run a command"
         case "write": "\(who) wants to write a file"
@@ -36,8 +42,9 @@ struct InboxCard: View {
                 Text("waits for you · survives restarts").font(.system(size: 11)).foregroundStyle(Theme.tx3)
             }
             if isApproval {
-                Text(item.call.summary)
-                    .font(Theme.mono)
+                // A computer action is described in words by the app that will do it; a command is shown as written.
+                Text(targetApp != nil ? (item.question ?? item.call.summary) : item.call.summary)
+                    .font(targetApp != nil ? .system(size: 13) : Theme.mono)
                     .foregroundStyle(Theme.tx)
                     .textSelection(.enabled)
                     .lineLimit(6)
@@ -47,9 +54,9 @@ struct InboxCard: View {
                 HStack(spacing: 8) {
                     Button("Allow Once") { decide("once") }
                         .buttonStyle(.piPrimary)
-                    Button("Always Allow \(item.tool) Here") { decide("always") }
+                    Button(targetApp.map { "Always Allow in \($0)" } ?? "Always Allow \(item.tool) Here") { decide("always") }
                         .buttonStyle(.piSecondary)
-                        .help("Stop asking about \(item.tool) in this conversation")
+                        .help(targetApp.map { "Stop asking about \($0) for the rest of this conversation" } ?? "Stop asking about \(item.tool) in this conversation")
                     Button("Deny") { decide("deny") }
                         .buttonStyle(.piDanger)
                 }
