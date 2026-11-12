@@ -12,6 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
 	type AgentChange,
+	AgentDoc,
 	AssistantEntry,
 	type Conversation,
 	type ConversationId,
@@ -116,6 +117,7 @@ const pi2 = pi2Extension({
 	continueChat: async (id, content, requestId, callerContext) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
 		if (conv === undefined) return { reason: "the sub-chat no longer exists" };
+		await syncTools(conv).catch(() => {});
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
 		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
 		// The sub-chat was created by an earlier call, so this call does not own it: stop it by hand if the caller stops.
@@ -211,6 +213,27 @@ async function conversation(id: unknown): Promise<Conversation> {
 	const found = typeof id === "number" ? await harness.conversation(id as ConversationId, context) : undefined;
 	if (found === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
 	return found;
+}
+
+/**
+ * Bring a conversation's tools in line with what its agent may do now. A conversation's tools are fixed when it is
+ * set up, so without this an ability switched on in the agent's settings (handing work on, reference files, computer
+ * use, scripts, MCP servers) would only reach conversations started afterwards, and one switched off would linger.
+ * The conversation's own tool access is kept. Does nothing when they already match.
+ */
+async function syncTools(conv: Conversation): Promise<void> {
+	const id = conv.id as unknown as number;
+	const meta = library.conversations[String(id)];
+	const own = agents[meta?.agentId ?? ""];
+	// A conversation whose agent was deleted keeps the setup it has.
+	if (meta === undefined || own === undefined) return;
+	const delegate = meta.parent === undefined && own.delegates.some((other) => agents[other] !== undefined);
+	const wanted = toolsFor(meta.access, delegate, own);
+	const names = wanted.map((t) => t!.name);
+	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
+	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
+	await conv.configure({ tools: wanted }, context);
+	for (const client of clients) client.subscriptions.get(id)?.push();
 }
 
 async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promise<void> {
@@ -725,6 +748,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const content = text(params, "text");
 		if (content.trim() === "") throw new Error("The message is empty");
 		if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
+		// The agent's settings may have changed since this conversation was set up.
+		await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
 		const submission = await conv.submit(
 			{
 				type: "input",
@@ -790,6 +815,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
+		// The agent's conversations pick up what it may now do at their next message; see syncTools.
 		return { id };
 	},
 	"agents.delete": async (params) => {

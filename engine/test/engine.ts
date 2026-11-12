@@ -14,7 +14,8 @@ const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
 const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
-const KEYCHAIN_SERVICE = "dev.pi2.credentials.test";
+// Overridable so two copies of the suite can run at once without sharing Keychain items.
+const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 
 type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
 type InboxItem = { id: string; kind: string; conversationId: number; rootConversationId: number; tool: string; question: string | null; agentName: string | null; callId: string };
@@ -381,6 +382,25 @@ try {
 	assert.deepEqual(client.agents.find((x) => x.id === "atlas")!.delegates, ["forge"], "deleted agents leave other agents' lists");
 	step("create, edit and delete agents");
 
+	// An ability switched on in the agent's settings reaches a conversation that already exists, at its next message.
+	const { id: late } = await client.call("conversation.create", { agentId: custom });
+	await client.call("conversation.open", { id: late });
+	await client.call("submit", { id: late, text: "hello" });
+	await client.idle(late);
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", delegates: ["forge"] } });
+	await client.until("hand-off switched on", () => client.agents.find((x) => x.id === custom)?.delegates.includes("forge"));
+	await client.call("submit", { id: late, text: "/delegate Forge: say hello" });
+	await settled(late, 1);
+	assert.equal(toolResults(late)[0]!.isError, false, "the conversation was given the hand-off tool");
+	assert.ok(client.library.some((c) => c.parent === late), "and the sub-chat was opened");
+	// And one switched off is taken away again.
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", delegates: [] } });
+	await client.until("hand-off switched off", () => client.agents.find((x) => x.id === custom)?.delegates.length === 0);
+	await client.call("submit", { id: late, text: "/delegate Forge: say hello again" });
+	await settled(late, 2);
+	assert.equal(toolResults(late)[1]!.isError, true, "without the setting the hand-off is refused");
+	step("changing what an agent may do reaches its existing conversations");
+
 	// ---- Reference files: read on demand, whatever the tool access, and nothing outside them
 	const refs = join(home, "refs");
 	mkdirSync(join(refs, "guides"), { recursive: true });
@@ -504,7 +524,7 @@ try {
 	assert.deepEqual(sentToApp("list_apps").at(-1).apps, [NOTES, MAIL, "com.apple.Safari"], "the app is told which apps to list");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: false, apps: [NOTES] } } });
 	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
-	assert.match((await use({ action: "list_apps" })).text, /turned off/);
+	assert.equal((await use({ action: "list_apps" })).isError, true, "switched off, the tool is taken away from the conversation");
 	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing");
 
 	// ---- Schedules

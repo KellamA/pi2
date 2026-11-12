@@ -8,7 +8,7 @@ An agent with computer use on can see and work the apps you choose, one window a
 
 1. Open an agent and scroll to **Computer use**. Switch it on and add the apps it may use.
 2. Press **Grant…** next to Accessibility. macOS opens System Settings; switch pi² on there. Do the same for Screen Recording if you want the agent to get pictures. Reopen pi² afterwards.
-3. Start a new conversation with that agent. Conversations that already exist do not get the tool.
+3. Ask the agent to do something in one of those apps. Conversations it already has pick up the change at their next message.
 
 Start with something harmless, such as TextEdit.
 

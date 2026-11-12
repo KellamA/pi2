@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { Credential } from "@earendil-works/pi-ai";
 import { KeychainCredentialStore } from "../src/credentials.ts";
 
-const SERVICE = "dev.pi2.credentials.test";
+const SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 const home = mkdtempSync(join(tmpdir(), "pi2-credentials-test-"));
 const store = new KeychainCredentialStore(home, SERVICE);
 // Unique to this run, so a second run at the same time (or the app's own tests) is left alone.

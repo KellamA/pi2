@@ -266,7 +266,9 @@ struct AgentEditor: View {
                     .disabled(engine.agents.count <= 1)
                 if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
                 Spacer()
-                Text("Changes apply to new conversations.").font(.caption).foregroundStyle(.secondary)
+                Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2).multilineTextAlignment(.trailing)
                 Button("Revert") { load(); error = nil }
                     .buttonStyle(.piSecondary)
                     .disabled(!changed)

@@ -16,6 +16,8 @@ What changed in each version, newest first.
 - Usage names models as "Provider · Model".
 
 ### Fixed
+- Switching on hand-offs, reference files, computer use or extra tools for an agent did nothing in conversations it already had. They now pick up the change at their next message, and lose an ability that was switched off.
+- The app did not build with Xcode 26 (Swift 6.3).
 - An endpoint saved without a key, the usual case for Ollama and LM Studio, failed with "No API key for provider".
 - Signing in with a subscription could fail with "The stored credential is unreadable": long sign-in credentials were cut off when saved to the Keychain.
 - Signing in with ChatGPT failed with "requires a device ID".
