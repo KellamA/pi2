@@ -6,6 +6,7 @@ What changed in each version, newest first.
 
 ### Added
 - **Computer use.** An agent can see and work the apps you choose, one window at a time, in the background, asking before it acts. See [docs/computer-use.md](docs/computer-use.md).
+- **Pictures and files in chats.** Paste, drop or attach pictures, text and code files, PDFs and Word documents. A model on your own endpoint can be marked as able to see pictures. See [docs/attachments.md](docs/attachments.md).
 - **Sub-chats.** Each handoff to another agent opens a chat under the conversation that started it. An agent can continue an earlier sub-chat instead of starting a new one.
 - **Reference files.** Files and folders an agent can always read, opened on demand.
 - **Model picker per provider.** Choose which models show in the menus; "Newest Only" keeps one of each family.

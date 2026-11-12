@@ -36,7 +36,7 @@ To sign and notarize a release build, set `SIGN_IDENTITY` (a Developer ID Applic
 cd engine && npm test
 ```
 
-The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, tools, approvals, delegation and sub-chats, reference files, computer use (with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore.
+The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, pictures and files in messages, tools, approvals, delegation and sub-chats, reference files, computer use (with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore.
 
 ```bash
 cd engine && npm run check

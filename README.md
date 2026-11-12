@@ -80,6 +80,7 @@ Usage is counted by model, agent and conversation. Models you pay for by use sho
 
 ### And the rest
 
+- **Pictures and files in chats**: paste a screenshot, drop in files, or attach PDFs and Word documents. [What can be attached](docs/attachments.md).
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent.
 - **Scripts**: let a model chain many tool calls in one step.
@@ -151,6 +152,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 
 - [Architecture](docs/architecture.md): how the app and the engine fit together, where data lives, known limits.
 - [Computer use](docs/computer-use.md): how it works, what it will not do, how to try it safely.
+- [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)
