@@ -23,12 +23,13 @@ struct UsageView: View {
                     })
                     days(usage)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Conversations that used the most").font(.headline)
+                        Text("Conversations that used the most").font(.system(size: 13, weight: .semibold))
                         if usage.conversations.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
                         ForEach(usage.conversations) { row in
                             HStack {
                                 Button(row.title.isEmpty ? "New conversation" : row.title) { model.selection = .conversation(row.id) }
-                                    .buttonStyle(.link)
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Theme.acc)
                                     .lineLimit(1)
                                 Spacer()
                                 Text(Formats.usage(tokens: row.tokens, cost: row.cost)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
@@ -38,33 +39,33 @@ struct UsageView: View {
                     Text("Cost is an estimate for models you pay for by use, such as an API key. Models used through a subscription sign-in, and local models, count tokens only and do not count towards the budget.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                .padding(20)
+                .padding(.horizontal, 28).padding(.vertical, 22)
                 .frame(maxWidth: 800, alignment: .leading)
                 .frame(maxWidth: .infinity)
             } else {
                 ProgressView().padding(40)
             }
         }
+        .background(Theme.window)
         .navigationTitle("Usage")
         .onAppear { budgetText = engine.usage?.budget.daily.map { String(format: "%.2f", $0) } ?? "" }
     }
 
     private func tile(_ title: String, _ value: String, _ detail: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            Text(value).font(.title2.weight(.semibold).monospacedDigit())
-            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(title).sectionLabel()
+            Text(value).font(.system(size: 22, weight: .semibold).monospacedDigit()).tracking(-0.3)
+            Text(detail).font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.background.secondary, in: .rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .panel()
         .accessibilityElement(children: .combine)
     }
 
     private func budget(_ usage: UsageSummary) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Daily budget").font(.headline)
+            Text("Daily budget").font(.system(size: 13, weight: .semibold))
             HStack {
                 Text("$")
                 TextField("No limit", text: $budgetText)
@@ -83,12 +84,12 @@ struct UsageView: View {
             }
             if let daily = usage.budget.daily {
                 ProgressView(value: min(usage.today.cost, daily), total: daily)
-                    .tint(usage.overBudget ? .red : .piAccent)
+                    .tint(usage.overBudget ? Theme.bad : Theme.acc)
                 Text(usage.overBudget
                     ? "Today's budget is used up. New messages and scheduled runs wait until you raise it or tomorrow comes. Work already running carries on."
                     : "\(usage.today.costText) of \(Formats.cost(daily)) used today.")
                     .font(.callout)
-                    .foregroundStyle(usage.overBudget ? .red : .secondary)
+                    .foregroundStyle(usage.overBudget ? Theme.bad : Theme.tx2)
             } else {
                 Text("With a limit, new messages and scheduled runs are held once the day's spend reaches it.").font(.callout).foregroundStyle(.secondary)
             }
@@ -107,15 +108,18 @@ struct UsageView: View {
     private func bars(_ title: String, _ rows: [(name: String, value: Int, detail: String, color: Color)]) -> some View {
         let most = max(rows.map(\.value).max() ?? 1, 1)
         return VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
+            Text(title).font(.system(size: 13, weight: .semibold))
             if rows.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 10) {
                     Text(row.name).lineLimit(1).frame(width: 190, alignment: .leading)
                     GeometryReader { geometry in
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(row.color.gradient)
-                            .frame(width: max(3, geometry.size.width * CGFloat(row.value) / CGFloat(most)))
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 5).fill(Theme.line)
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(row.color)
+                                .frame(width: max(4, geometry.size.width * CGFloat(row.value) / CGFloat(most)))
+                        }
                     }
                     .frame(height: 10)
                     Text(row.detail).font(.callout.monospacedDigit()).foregroundStyle(.secondary).frame(width: 130, alignment: .trailing)
@@ -128,12 +132,12 @@ struct UsageView: View {
     private func days(_ usage: UsageSummary) -> some View {
         let most = max(usage.days.map(\.tokens).max() ?? 1, 1)
         return VStack(alignment: .leading, spacing: 8) {
-            Text("Last 14 days").font(.headline)
+            Text("Last 14 days").font(.system(size: 13, weight: .semibold))
             HStack(alignment: .bottom, spacing: 6) {
                 ForEach(usage.days) { day in
                     VStack(spacing: 4) {
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.piAccent.gradient)
+                            .fill(LinearGradient(colors: [Theme.acc, Theme.acc.opacity(0.55)], startPoint: .top, endPoint: .bottom))
                             .frame(width: 22, height: max(3, 80 * CGFloat(day.tokens) / CGFloat(most)))
                         Text(String(day.day.suffix(2))).font(.caption2).foregroundStyle(.secondary)
                     }

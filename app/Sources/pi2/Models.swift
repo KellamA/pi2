@@ -163,7 +163,6 @@ struct AgentInfo: Codable, Equatable {
     let parent: Int?
 }
 
-/// A saved setup that conversations start from.
 /// A file or folder an agent may always read, with a note on what it is for.
 struct ReferenceFile: Codable, Equatable, Identifiable {
     var path: String
@@ -171,6 +170,7 @@ struct ReferenceFile: Codable, Equatable, Identifiable {
     var id: String { path }
 }
 
+/// A saved setup that conversations start from.
 struct AgentProfile: Codable, Equatable, Identifiable {
     var id: String
     var name: String

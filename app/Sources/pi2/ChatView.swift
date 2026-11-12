@@ -25,39 +25,47 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TranscriptView(engine: engine, conversationID: id, items: data.items, state: state)
+            if let state, data.items.isEmpty, !busy, state.partial == nil {
+                AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil)
+            } else {
+                TranscriptView(engine: engine, conversationID: id, items: data.items, state: state)
+            }
             // A subagent of this conversation is waiting on the person.
             ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in
                 InboxCard(engine: engine, item: item, showsSource: true)
-                    .padding(.horizontal, 20).padding(.top, 8)
+                    .padding(.horizontal, 28).padding(.top, 8)
             }
             if state?.compacting == true {
-                banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: .secondary)
+                banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: Theme.acc)
             }
             if let error = state?.compactionError, state?.compacting != true {
-                banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: .orange)
+                banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: Theme.warn)
             }
             if let retry = state?.retry {
-                banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: .orange)
+                banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: Theme.warn)
             }
             if let failure = state?.failure, !busy {
-                HStack {
-                    Label(failure.message, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(failure.reason == "aborted" ? Color.secondary : Color.red)
-                        .lineLimit(3)
+                let stopped = failure.reason == "aborted"
+                HStack(spacing: 10) {
+                    Image(systemName: stopped ? "stop.circle" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(stopped ? Theme.tx2 : Theme.bad)
+                    Text(failure.message).foregroundStyle(stopped ? Theme.tx2 : Theme.tx).lineLimit(3)
                     Spacer()
                     if failure.reason != "nothing_to_answer" {
-                        Button("Continue") { engine.perform("continue", ["id": id]) }
+                        Button("Continue", systemImage: "play.fill") { engine.perform("continue", ["id": id]) }
+                            .buttonStyle(.piSecondary)
                             .help("Resume the run from where it stopped, without typing a new message")
                     }
                 }
-                .font(.callout)
-                .padding(.horizontal, 20).padding(.vertical, 8)
-                .background(.quaternary.opacity(0.5))
+                .font(.system(size: 12.5))
+                .padding(.horizontal, 12).padding(.vertical, 9)
+                .panel(fill: stopped ? Theme.panel : Theme.bad.opacity(0.08), border: stopped ? Theme.line : Theme.bad.opacity(0.35))
+                .padding(.horizontal, 28).padding(.top, 8)
             }
             queue
             composer
         }
+        .background(Theme.window)
         .navigationTitle(title)
         .navigationSubtitle(subtitle)
         .toolbar {
@@ -80,12 +88,13 @@ struct ChatView: View {
 
     private func banner(_ text: String, systemImage: String, color: Color) -> some View {
         Label(text, systemImage: systemImage)
-            .font(.callout)
+            .font(.system(size: 12.5))
             .foregroundStyle(color)
             .lineLimit(3)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20).padding(.vertical, 8)
-            .background(color.opacity(0.1))
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .panel(fill: color.opacity(0.08), border: color.opacity(0.3))
+            .padding(.horizontal, 28).padding(.top, 8)
     }
 
     @ViewBuilder
@@ -95,61 +104,81 @@ struct ChatView: View {
                 HStack(spacing: 6) {
                     ForEach(queued) { item in
                         HStack(spacing: 6) {
-                            Text(item.mode == "steer" ? "Steering" : "Queued").foregroundStyle(.secondary)
+                            Text(item.mode == "steer" ? "Steering" : "Queued").foregroundStyle(Theme.tx3)
                             Text(item.text).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
                             Button("Remove", systemImage: "xmark") {
                                 engine.perform("withdraw", ["submissionId": item.id])
                             }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.borderless)
+                            .foregroundStyle(Theme.tx3)
                             .help("Remove this message before it is sent to the model")
                         }
-                        .font(.callout)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.quaternary, in: .capsule)
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .panel(radius: 8, fill: Theme.card, border: Theme.line2)
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 28)
             }
             .padding(.top, 8)
         }
     }
 
+    private var agentName: String { engine.agent(state?.agent.agentId)?.name ?? "the agent" }
+
+    private var placeholder: String {
+        if busy { return steer ? "Steer \(agentName) while it works…" : "Queue a follow-up for \(agentName)…" }
+        return parent == nil ? "Message \(agentName)…" : "Message \(agentName) directly…"
+    }
+
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TextField(busy ? (steer ? "Steer the current work…" : "Queue a follow-up…") : (parent == nil ? "Message" : "Message this subagent directly"), text: $draft, axis: .vertical)
+        VStack(alignment: .leading, spacing: 10) {
+            TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.body)
-                .lineLimit(1...8)
+                .font(.system(size: 13.5))
+                .lineLimit(1...10)
                 .focused($composerFocused)
                 .onSubmit(send)
                 .accessibilityIdentifier("composer")
+                .padding(.horizontal, 2).padding(.top, 2)
             HStack(spacing: 8) {
-                if busy {
-                    Picker("While working", selection: $steer) {
-                        Text("Steer").tag(true)
-                        Text("Queue").tag(false)
+                if let agent = engine.agent(state?.agent.agentId) {
+                    HStack(spacing: 6) {
+                        AgentAvatar(agent: agent, size: 16)
+                        Text(agent.name).foregroundStyle(Theme.tx2)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("Steer: the message joins the current work after its next step. Queue: it starts a new run when this one answers.")
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Theme.card, in: .rect(cornerRadius: 7))
+                    .help("You are talking to \(agent.name)")
                 }
                 Spacer()
                 if busy {
+                    SteerQueuePicker(steer: $steer)
                     Button("Stop", systemImage: "stop.fill") { engine.perform("abort", ["id": id]) }
+                        .buttonStyle(.piDanger)
                         .help("Stop the run and everything it started (⌘.)")
                 }
-                Button("Send", systemImage: "arrow.up") { send() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canSend)
-                    .keyboardShortcut(.return, modifiers: .command)
+                Button { send() } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Theme.onAcc)
+                        .frame(width: 28, height: 28)
+                        .background(Theme.acc, in: .circle)
+                }
+                .buttonStyle(.plain)
+                .opacity(canSend ? 1 : 0.35)
+                .disabled(!canSend)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Send (Return)")
+                .accessibilityLabel("Send")
             }
         }
         .padding(12)
-        .background(.background.secondary, in: .rect(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator))
-        .padding(.horizontal, 20).padding(.vertical, 12)
+        .panel(radius: 14, border: composerFocused ? Theme.acc.opacity(0.55) : Theme.line2)
+        .animation(.easeOut(duration: 0.15), value: composerFocused)
+        .padding(.horizontal, 28).padding(.top, 10).padding(.bottom, 18)
     }
 
     private var canSend: Bool {
@@ -400,11 +429,14 @@ struct TranscriptView: View {
                 ForEach(items.filter { $0.kind != "tool" }) { item in
                     switch item.kind {
                     case "user":
-                        Text(item.text)
-                            .textSelection(.enabled)
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(.quaternary, in: .rect(cornerRadius: 12))
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        HStack {
+                            Spacer(minLength: 120)
+                            Text(item.text)
+                                .textSelection(.enabled)
+                                .lineSpacing(2)
+                                .padding(.horizontal, 13).padding(.vertical, 9)
+                                .background(Theme.card2, in: UnevenRoundedRectangle(topLeadingRadius: 14, bottomLeadingRadius: 14, bottomTrailingRadius: 4, topTrailingRadius: 14, style: .continuous))
+                        }
                     case "assistant":
                         AssistantRow(engine: engine, conversationID: conversationID, item: item, results: results, live: live, running: state?.busy ?? false)
                             .contextMenu {
@@ -415,29 +447,33 @@ struct TranscriptView: View {
                                 }
                             }
                     default:
-                        HStack {
-                            VStack { Divider() }
-                            Text(item.text).font(.caption).foregroundStyle(.secondary)
-                            VStack { Divider() }
+                        HStack(spacing: 10) {
+                            Rectangle().fill(Theme.line).frame(height: 1)
+                            Text(item.text).font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
+                            Rectangle().fill(Theme.line).frame(height: 1)
                         }
                     }
                 }
                 if let partial = state?.partial {
                     VStack(alignment: .leading, spacing: 8) {
                         if !partial.thinking.isEmpty { ThinkingView(text: partial.thinking, streaming: partial.text.isEmpty) }
-                        if !partial.text.isEmpty { MessageText(text: partial.text + " ▍") }
+                        if !partial.text.isEmpty { MessageText(text: partial.text, streaming: true) }
                         ForEach(partial.toolCalls) { call in
-                            Label("Preparing \(call.name)…", systemImage: "hammer").font(.callout).foregroundStyle(.secondary)
+                            HStack(spacing: 8) {
+                                Spinner()
+                                Text("Preparing \(call.name)…").foregroundStyle(Theme.tx2)
+                            }
+                            .font(.system(size: 12.5))
                         }
-                        if partial.text.isEmpty && partial.thinking.isEmpty && partial.toolCalls.isEmpty { ProgressView().controlSize(.small) }
+                        if partial.text.isEmpty && partial.thinking.isEmpty && partial.toolCalls.isEmpty { ThinkingDots() }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else if state?.busy == true, state?.tools.isEmpty ?? true, state?.retry == nil {
-                    ProgressView().controlSize(.small)
+                    ThinkingDots()
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 860)
+            .padding(.horizontal, 28).padding(.vertical, 22)
+            .frame(maxWidth: 880)
             .frame(maxWidth: .infinity)
             Color.clear.frame(height: 1).id("bottom")
         }
@@ -494,21 +530,21 @@ struct AssistantRow: View {
         VStack(alignment: .leading, spacing: 8) {
             if interrupted {
                 Label(item.stop == "error" ? "This attempt failed" : "Interrupted — kept in the transcript", systemImage: "bolt.slash")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.warn)
             }
             if let thinking = item.thinking, !thinking.isEmpty { ThinkingView(text: thinking, streaming: false) }
             if !item.text.isEmpty {
                 MessageText(text: item.text)
-                    .foregroundStyle(interrupted ? .secondary : .primary)
+                    .foregroundStyle(interrupted ? Theme.tx2 : Theme.tx)
             }
             if let error = item.error, !error.isEmpty {
-                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                Text(error).font(.system(size: 12.5)).foregroundStyle(Theme.bad).textSelection(.enabled)
             }
             ForEach(item.toolCalls ?? []) { call in
                 ToolCard(engine: engine, conversationID: conversationID, call: call, result: results[call.callId], live: live[call.callId], running: running)
             }
             if item.stop == "length" {
-                Text("The answer was cut off at the model's output limit.").font(.caption).foregroundStyle(.secondary)
+                Text("The answer was cut off at the model's output limit.").font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -523,12 +559,18 @@ struct ThinkingView: View {
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             Text(text)
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 12.5)).foregroundStyle(Theme.tx2)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 10)
+                .overlay(alignment: .leading) { Rectangle().fill(Theme.acc.opacity(0.4)).frame(width: 2) }
                 .padding(.top, 4)
         } label: {
-            Label(streaming ? "Thinking…" : "Thought", systemImage: "brain").font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                if streaming { Spinner() } else { Image(systemName: "sparkle").foregroundStyle(Theme.acc) }
+                Text(streaming ? "Thinking…" : "Thought").foregroundStyle(Theme.tx2)
+            }
+            .font(.system(size: 12.5))
         }
     }
 }
@@ -599,75 +641,187 @@ struct ToolCard: View {
         }
     }
 
+    /// The short name on the card's tag.
+    private var tagText: String {
+        switch call.name {
+        case "ask_user": "question"
+        case "read_reference": "reference"
+        case "codemode": "script"
+        default:
+            if let server = engine.mcpServers.first(where: { $0.tools.contains { $0.toolName == call.name } }) {
+                server.name
+            } else {
+                call.name
+            }
+        }
+    }
+
+    private var tone: Tag.Tone {
+        if pending != nil { return .warn }
+        if isRunning { return .acc }
+        if result == nil { return .neutral }
+        return isError ? .bad : .ok
+    }
+
+    /// The detail shown after the tag; for an MCP tool, which of the server's tools it was.
+    private var detail: String {
+        if call.name.hasPrefix("mcp__"), title.contains(": ") {
+            let tool = title.components(separatedBy: ": ").last ?? ""
+            return call.summary.isEmpty ? tool : "\(tool) \(call.summary)"
+        }
+        return call.summary
+    }
+
     var body: some View {
+        if let pending {
+            // Waiting on the person: the approval or question is the whole card.
+            InboxCard(engine: engine, item: pending, showsSource: false)
+        } else if call.name == "delegate" {
+            SubagentCard(engine: engine, call: call, subagent: subagent, title: title, output: output, isRunning: isRunning, isError: isError, finished: result != nil)
+        } else {
+            card
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                expandedChoice = !expanded
+                withAnimation(.snappy(duration: 0.2)) { expandedChoice = !expanded }
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: icon).foregroundStyle(.secondary).frame(width: 16)
-                    Text(title).font(.callout.weight(.medium))
-                    Text(call.summary)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    Tag(tagText, tone)
+                    Text(detail)
+                        .font(Theme.mono)
+                        .foregroundStyle(Theme.tx)
                         .lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    if pending != nil {
-                        Text("Waiting for you").font(.caption.weight(.medium)).foregroundStyle(.orange)
-                    } else if isRunning {
-                        ProgressView().controlSize(.small)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if isRunning {
+                        Spinner()
                     } else if result == nil {
-                        Text("no result").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Image(systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(isError ? .red : .green)
-                            .accessibilityLabel(isError ? "Failed" : "Succeeded")
+                        Text("no result").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                    } else if isError {
+                        Text("failed").font(.system(size: 11)).foregroundStyle(Theme.bad)
                     }
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.tx3)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                 }
-                .padding(.horizontal, 12).padding(.vertical, 8)
+                .padding(.horizontal, 11).padding(.vertical, 7)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(call.name) \(call.summary)")
+            .help(title)
+            .accessibilityLabel("\(title) \(call.summary)")
 
-            if let pending {
-                Divider()
-                InboxCard(engine: engine, item: pending, showsSource: false, framed: false)
-                    .padding(12)
-            }
-            if let subagent {
-                Divider()
-                Button("Open \(subagent.name)’s Sub-chat", systemImage: "arrow.turn.down.right") {
-                    engine.openConversation(subagent.id)
-                    engine.onNavigate(subagent.id)
-                }
-                .buttonStyle(.link)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-            }
-
-            if expanded && pending == nil {
-                Divider()
+            if expanded {
+                Rectangle().fill(Theme.line).frame(height: 1)
                 ScrollView {
                     Text(output.isEmpty ? (isRunning ? "Running…" : "(no output)") : output)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(isError ? .red : .secondary)
+                        .font(Theme.mono)
+                        .foregroundStyle(isError ? Theme.bad : Theme.tx2)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                        .padding(.horizontal, 11).padding(.vertical, 8)
                 }
                 .frame(maxHeight: 260)
                 .defaultScrollAnchor(.bottom)
             }
         }
-        .background(.background.secondary, in: .rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .panel()
+    }
+}
+
+/// A delegation: the subagent as a character in the conversation, with its model, what it was asked, and a way in.
+struct SubagentCard: View {
+    let engine: EngineClient
+    let call: ToolCall
+    let subagent: (id: Int, name: String)?
+    let title: String
+    let output: String
+    let isRunning: Bool
+    let isError: Bool
+    let finished: Bool
+    @State private var expanded = false
+
+    private var profile: AgentProfile? {
+        let name = subagent?.name ?? call.arguments["agent"]?.stringValue ?? ""
+        return engine.agents.first { $0.name.caseInsensitiveCompare(name) == .orderedSame || $0.id == name }
+    }
+    private var task: String { call.arguments["task"]?.stringValue ?? "" }
+    /// The answer without the footer the engine adds for the model.
+    private var answer: String {
+        output.components(separatedBy: "\n\n(Sub-chat ").first ?? output
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                AgentAvatar(agent: profile, size: 20)
+                Text(profile?.name ?? subagent?.name ?? "Subagent").font(.system(size: 13, weight: .semibold))
+                Tag(call.arguments["chat"]?.intValue == nil ? "subagent · \(engine.shortModelName(profile?.model))" : "continued · \(engine.shortModelName(profile?.model))")
+                Spacer(minLength: 6)
+                if isRunning {
+                    Spinner()
+                    Text("working").font(.system(size: 11.5)).foregroundStyle(Theme.tx2)
+                } else if isError {
+                    Text("did not finish").font(.system(size: 11.5)).foregroundStyle(Theme.bad)
+                } else if finished {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.ok)
+                        .accessibilityLabel("Finished")
+                }
+                if let subagent {
+                    Button {
+                        engine.openConversation(subagent.id)
+                        engine.onNavigate(subagent.id)
+                    } label: {
+                        Label("Open", systemImage: "arrow.up.right").labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Theme.acc)
+                    .help("Open \(subagent.name)’s sub-chat")
+                    .accessibilityLabel("Open \(subagent.name)’s Sub-chat")
+                }
+            }
+            if !task.isEmpty {
+                Text(task).foregroundStyle(Theme.tx2).lineLimit(expanded ? nil : 2)
+            }
+            if finished, !answer.isEmpty {
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "arrow.turn.down.right").font(.system(size: 10)).foregroundStyle(Theme.tx3)
+                        Text(answer)
+                            .foregroundStyle(isError ? Theme.bad : Theme.tx)
+                            .lineLimit(expanded ? nil : 2)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help(expanded ? "Show less" : "Show the whole answer")
+                .textSelection(.enabled)
+            }
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(Theme.panel)
+        .overlay(alignment: .leading) { Rectangle().fill(AgentColor.color(profile?.color)).frame(width: 3) }
+        .clipShape(.rect(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
     }
 }
 
 /// Assistant text: inline Markdown, with fenced code blocks set apart.
 struct MessageText: View {
     let text: String
+    /// Whether more text is still arriving; shows the caret at the end.
+    var streaming = false
 
     private var segments: [(code: Bool, text: String)] {
         var result: [(Bool, String)] = []
@@ -690,23 +844,109 @@ struct MessageText: View {
             ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 if segment.code {
                     Text(segment.text)
-                        .font(.system(.callout, design: .monospaced))
+                        .font(Theme.mono)
+                        .foregroundStyle(Theme.tx)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(.background.secondary, in: .rect(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .panel(radius: 8)
                 } else {
                     Text(markdown(segment.text))
                         .textSelection(.enabled)
-                        .lineSpacing(3)
+                        .lineSpacing(3.5)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            if streaming { Caret() }
         }
     }
 
     private func markdown(_ source: String) -> AttributedString {
         (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+    }
+}
+
+/// Steer or queue, as two segments in the accent style.
+struct SteerQueuePicker: View {
+    @Binding var steer: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment("Steer", on: steer) { steer = true }
+            Rectangle().fill(Theme.line2).frame(width: 1)
+            segment("Queue", on: !steer) { steer = false }
+        }
+        .fixedSize()
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Theme.line2))
+        .clipShape(.rect(cornerRadius: 7))
+        .help("Steer: the message joins the current work after its next step. Queue: it starts a new run when this one answers.")
+    }
+
+    private func segment(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: on ? .semibold : .regular))
+                .foregroundStyle(on ? Theme.acc : Theme.tx2)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(on ? Theme.acc.opacity(0.14) : .clear)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// An empty conversation: who you are talking to and what they can do, before the first message.
+struct AgentIntro: View {
+    let engine: EngineClient
+    let agent: AgentInfo
+    let isSubChat: Bool
+
+    private var profile: AgentProfile? { engine.agent(agent.agentId) }
+    private var folder: String? { agent.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } }
+
+    private var facts: [(icon: String, text: String)] {
+        var facts: [(String, String)] = []
+        facts.append(("cpu", engine.allModels.first { $0.ref == agent.model }?.name ?? agent.model?.modelId ?? "App default model"))
+        switch agent.access {
+        case "read": facts.append(("doc.text.magnifyingglass", "Can read files in \(folder ?? "its scratch folder")"))
+        case "ask": facts.append(("hand.raised", "Asks before changing anything in \(folder ?? "its scratch folder")"))
+        case "full": facts.append(("bolt", "Full access to \(folder ?? "its scratch folder")"))
+        default: facts.append(("bubble.left", "Tools off: it can talk, not act"))
+        }
+        let delegates = (profile?.delegates ?? []).compactMap { engine.agent($0)?.name }
+        if !delegates.isEmpty, !isSubChat { facts.append(("person.2", "Can hand work to \(ListFormatter.localizedString(byJoining: delegates))")) }
+        if let files = profile?.files, !files.isEmpty { facts.append(("books.vertical", "\(files.count) reference file\(files.count == 1 ? "" : "s") at hand")) }
+        return facts
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Spacer(minLength: 0)
+            AgentAvatar(agent: profile, size: 52)
+                .shadow(color: AgentColor.color(profile?.color).opacity(0.45), radius: 18, y: 4)
+            VStack(spacing: 4) {
+                Text(profile?.name ?? "New conversation").font(.system(size: 20, weight: .semibold)).tracking(-0.2)
+                if let description = profile?.description, !description.isEmpty {
+                    Text(description).foregroundStyle(Theme.tx2).multilineTextAlignment(.center)
+                }
+            }
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(facts, id: \.text) { fact in
+                    HStack(spacing: 9) {
+                        Image(systemName: fact.icon).foregroundStyle(Theme.acc).frame(width: 16)
+                        Text(fact.text).foregroundStyle(Theme.tx2)
+                    }
+                }
+            }
+            .font(.system(size: 12.5))
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .panel(radius: 12)
+            Text("Change the model and tools from the toolbar.")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+            Spacer(minLength: 0)
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

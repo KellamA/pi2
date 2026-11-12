@@ -80,9 +80,6 @@ final class AppModel {
     }
 }
 
-extension Color {
-    static let piAccent = Color(red: 0.49, green: 0.47, blue: 0.96)
-}
 
 @main
 struct Pi2App: App {
@@ -156,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        AppAppearance.apply()
         NSApp.activate()
     }
 
@@ -192,15 +190,7 @@ struct RootView: View {
                 ChatView(engine: engine, id: id)
                     .id(id)
             case nil:
-                ContentUnavailableView {
-                    Label("No conversation selected", systemImage: "bubble.left.and.bubble.right")
-                } description: {
-                    Text("Start a new conversation, or pick one from the sidebar.")
-                } actions: {
-                    Button("New Conversation") { model.newConversation() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(engine.status != .connected)
-                }
+                WelcomeView(model: model)
             }
         }
         .background(WindowOpener(model: model))
@@ -249,89 +239,48 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $model.selection) {
-            Label {
-                HStack {
-                    Text("Inbox")
-                    Spacer()
-                    if !engine.inbox.isEmpty {
-                        Text("\(engine.inbox.count)")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 7).padding(.vertical, 1)
-                            .background(.orange, in: .capsule)
-                            .foregroundStyle(.white)
-                            .accessibilityLabel("\(engine.inbox.count) waiting")
-                    }
+            navRow("Inbox", icon: engine.inbox.isEmpty ? "tray" : "tray.full", tag: .inbox) {
+                if !engine.inbox.isEmpty {
+                    Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
                 }
-            } icon: {
-                Image(systemName: engine.inbox.isEmpty ? "tray" : "tray.full")
             }
-            .tag(Selection.inbox)
-
-            Label {
-                HStack {
-                    Text("Activity")
-                    Spacer()
-                    if engine.recovery != nil {
-                        Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(.green)
-                            .help("The engine restarted after stopping unexpectedly")
-                            .accessibilityLabel("Engine restarted")
-                    }
-                    if !engine.activity.isEmpty {
-                        Text("\(engine.activity.count)")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 7).padding(.vertical, 1)
-                            .background(.quaternary, in: .capsule)
-                            .accessibilityLabel("\(engine.activity.count) running")
-                    }
+            navRow("Activity", icon: "waveform.path.ecg", tag: .activity) {
+                if engine.recovery != nil {
+                    Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
+                        .help("The engine restarted after stopping unexpectedly")
+                        .accessibilityLabel("Engine restarted")
                 }
-            } icon: {
-                Image(systemName: "waveform.path.ecg")
-            }
-            .tag(Selection.activity)
-
-            Label {
-                HStack {
-                    Text("Usage")
-                    Spacer()
-                    if engine.usage?.overBudget == true {
-                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
-                            .accessibilityLabel("Over budget")
-                    } else if let today = engine.usage?.today, today.cost > 0 {
-                        Text(today.costText).font(.caption).foregroundStyle(.secondary)
-                    }
+                if !engine.activity.isEmpty {
+                    Tag("\(engine.activity.count) running", .acc)
                 }
-            } icon: {
-                Image(systemName: "chart.bar")
             }
-            .tag(Selection.usage)
+            navRow("Usage", icon: "chart.bar", tag: .usage) {
+                if engine.usage?.overBudget == true {
+                    Tag("over budget", .bad)
+                }
+            }
 
             Section {
                 ForEach(engine.agents) { agent in
-                    HStack(spacing: 8) {
-                        AgentAvatar(agent: agent)
-                        Text(agent.name).lineLimit(1)
-                        Spacer()
-                        Button("New conversation with \(agent.name)", systemImage: "plus.bubble") {
-                            model.newConversation(agentId: agent.id)
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .help("New conversation with \(agent.name)")
-                    }
-                    .tag(Selection.agent(agent.id))
+                    AgentRow(model: model, agent: agent)
+                        .tag(Selection.agent(agent.id))
                 }
             } header: {
                 HStack {
-                    Text("Agents")
+                    Text("Agents").sectionLabel()
                     Spacer()
                     Button("New Agent", systemImage: "plus") { model.newAgent() }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
+                        .foregroundStyle(Theme.tx3)
                         .help("New agent (⇧⌘N)")
                 }
             }
 
-            Section("Conversations") {
+            Section {
+                if engine.rootConversations.isEmpty && engine.hasLoadedLibrary {
+                    Text("No conversations yet").font(.callout).foregroundStyle(Theme.tx3)
+                }
                 ForEach(engine.rootConversations) { conversation in
                     let subChats = engine.subChats(of: conversation.id)
                     conversationRow(conversation, subChats: subChats.count)
@@ -339,23 +288,55 @@ struct SidebarView: View {
                     if !model.collapsed.contains(conversation.id) {
                         ForEach(subChats) { subChat in
                             conversationRow(subChat, subChats: 0)
-                                .padding(.leading, 18)
+                                .padding(.leading, 16)
                         }
                     }
                 }
+            } header: {
+                Text("Conversations").sectionLabel()
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 6) {
-                Circle().fill(statusColor).frame(width: 8, height: 8)
-                Text(statusText).font(.callout).foregroundStyle(.secondary)
+        .scrollContentBackground(.hidden)
+        .background(Theme.side)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Button { model.showingPalette = true } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 11))
+                    Text("Search or run a command")
+                    Spacer(minLength: 4)
+                    Text("⌘K").font(.system(size: 11))
+                }
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.tx3)
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(Theme.window.opacity(0.6), in: .rect(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line))
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help("Search conversations and run commands (⌘K)")
+            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
+            .background(Theme.side)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 7) {
+                Dot(color: statusColor)
+                Text(statusText).foregroundStyle(Theme.tx2)
                 Spacer()
+                if let today = engine.usage?.today, today.cost > 0 {
+                    Text("\(today.costText) today").foregroundStyle(Theme.tx3)
+                        .help("Spent today on models paid for by use")
+                }
                 SettingsLink { Image(systemName: "gearshape") }
                     .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.tx3)
                     .help("Settings")
             }
+            .font(.system(size: 12))
             .accessibilityElement(children: .contain)
             .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Theme.side)
+            .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
         }
         .toolbar {
             ToolbarItem {
@@ -374,36 +355,46 @@ struct SidebarView: View {
         }
     }
 
+    private func navRow<Trailing: View>(_ title: String, icon: String, tag: Selection, @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundStyle(Theme.tx2).frame(width: 20)
+            Text(title)
+            Spacer(minLength: 4)
+            trailing()
+        }
+        .tag(tag)
+    }
+
     private func conversationRow(_ conversation: ConversationSummary, subChats: Int) -> some View {
         HStack(spacing: 8) {
             if conversation.busy {
-                ProgressView().controlSize(.small)
-                    .frame(width: 16)
-                    .accessibilityLabel("Working")
+                Spinner().frame(width: 16)
             } else {
                 AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
             }
             Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
                 .lineLimit(1)
-                .foregroundStyle(conversation.title.isEmpty ? .secondary : .primary)
+                .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
             Spacer(minLength: 0)
             let needsYou = conversation.parent == nil
                 ? engine.inbox.contains { $0.rootConversationId == conversation.id }
                 : engine.inbox.contains { $0.conversationId == conversation.id }
             if needsYou {
-                Circle().fill(.orange).frame(width: 8, height: 8)
-                    .accessibilityLabel("Needs you")
+                Tag("needs you", .warn).accessibilityLabel("Needs you")
             }
             if subChats > 0 {
                 let collapsed = model.collapsed.contains(conversation.id)
                 Button {
-                    if collapsed { model.collapsed.remove(conversation.id) } else { model.collapsed.insert(conversation.id) }
+                    withAnimation(.snappy(duration: 0.2)) {
+                        if collapsed { model.collapsed.remove(conversation.id) } else { model.collapsed.insert(conversation.id) }
+                    }
                 } label: {
                     HStack(spacing: 2) {
-                        Text("\(subChats)").font(.caption)
-                        Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.caption2)
+                        Text("\(subChats)").font(.system(size: 10.5, weight: .medium))
+                        Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .bold))
+                            .rotationEffect(.degrees(collapsed ? 0 : 90))
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.tx3)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
@@ -428,10 +419,53 @@ struct SidebarView: View {
 
     private var statusColor: Color {
         switch engine.status {
-        case .connecting: .gray
-        case .connected: .green
-        case .restarting: .orange
+        case .connecting: Theme.tx3
+        case .connected: Theme.ok
+        case .restarting: Theme.warn
         }
+    }
+}
+
+/// An agent in the sidebar: its avatar and name, the model it runs, and a quick way to start a conversation with it.
+private struct AgentRow: View {
+    let model: AppModel
+    let agent: AgentProfile
+    @State private var hovering = false
+    private var engine: EngineClient { model.engine }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            AgentAvatar(agent: agent, size: 20)
+            Text(agent.name).lineLimit(1)
+            Spacer(minLength: 4)
+            if hovering {
+                Button("New conversation with \(agent.name)", systemImage: "plus.bubble") {
+                    model.newConversation(agentId: agent.id)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.tx2)
+                .help("New conversation with \(agent.name)")
+            } else {
+                Text(engine.shortModelName(agent.model)).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
+                    // Kept for VoiceOver and keyboard users, who never hover.
+                    .accessibilityAction(named: "New conversation with \(agent.name)") { model.newConversation(agentId: agent.id) }
+            }
+        }
+        .onHover { hovering = $0 }
+    }
+}
+
+extension EngineClient {
+    /// A model's name as the sidebar shows it: "Opus 5.5" rather than "Claude Opus 5.5". Nil means the app default.
+    func shortModelName(_ ref: ModelRef?) -> String {
+        guard let ref = ref ?? defaultModel else { return "" }
+        let name = allModels.first { $0.ref == ref }?.name ?? ref.modelId
+        for prefix in ["Claude ", "Demo model "] where name.hasPrefix(prefix) {
+            let rest = String(name.dropFirst(prefix.count))
+            return rest.isEmpty ? name : rest.trimmingCharacters(in: CharacterSet(charactersIn: "()"))
+        }
+        return name
     }
 }
 
@@ -491,6 +525,72 @@ struct ConversationCommands: View {
             .disabled(state?.busy != true)
         Button("Continue") { if let id { engine.perform("continue", ["id": id]) } }
             .disabled(state?.failure == nil || state?.busy == true)
+    }
+}
+
+/// What the window shows with nothing selected: the pi² mark and the agents to start with.
+struct WelcomeView: View {
+    let model: AppModel
+    private var engine: EngineClient { model.engine }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            PiMark(size: 64)
+            VStack(spacing: 6) {
+                Text("What should we work on?").font(.system(size: 22, weight: .semibold)).tracking(-0.3)
+                Text("Pick an agent to start a conversation. Each one has its own model, instructions and tools.")
+                    .foregroundStyle(Theme.tx2)
+                    .multilineTextAlignment(.center)
+            }
+            HStack(spacing: 10) {
+                ForEach(engine.agents.prefix(4)) { agent in
+                    Button { model.newConversation(agentId: agent.id) } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                AgentAvatar(agent: agent, size: 24)
+                                Text(agent.name).font(.system(size: 13, weight: .semibold))
+                                Spacer(minLength: 0)
+                                Text(engine.shortModelName(agent.model)).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
+                            }
+                            Text(agent.description.isEmpty ? "No description yet." : agent.description)
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.tx2)
+                                .lineLimit(3)
+                                .multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
+                        }
+                        .padding(12)
+                        .frame(width: 190, alignment: .leading)
+                        .panel(radius: 12)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(LiftButtonStyle())
+                    .disabled(engine.status != .connected)
+                    .help("New conversation with \(agent.name)")
+                }
+            }
+            Text("⌘N starts a conversation with the agent you used last · ⌘K finds anything")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.tx3)
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.window)
+    }
+}
+
+/// A card that lifts slightly under the pointer.
+struct LiftButtonStyle: ButtonStyle {
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(hovering ? Theme.acc.opacity(0.5) : .clear))
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .offset(y: hovering ? -2 : 0)
+            .shadow(color: .black.opacity(hovering ? 0.25 : 0), radius: 10, y: 6)
+            .animation(.snappy(duration: 0.18), value: hovering)
+            .onHover { hovering = $0 }
     }
 }
 

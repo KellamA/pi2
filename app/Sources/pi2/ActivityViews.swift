@@ -14,10 +14,11 @@ struct ActivityView: View {
                 running
                 scheduled
             }
-            .padding(20)
+            .padding(.horizontal, 28).padding(.vertical, 22)
             .frame(maxWidth: 800, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+        .background(Theme.window)
         .navigationTitle("Activity")
         .navigationSubtitle(engine.activity.isEmpty ? "Nothing running" : "\(engine.activity.count) running")
         .toolbar {
@@ -48,15 +49,14 @@ struct ActivityView: View {
                     Button(conversation.title.isEmpty ? "New conversation" : conversation.title) {
                         model.selection = .conversation(conversation.id)
                     }
-                    .buttonStyle(.link)
+                    .buttonStyle(.plain).foregroundStyle(Theme.acc)
                 }
             }
             Button("Dismiss") { engine.perform("recovery.dismiss") }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.green.opacity(0.1), in: .rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.green.opacity(0.35)))
+        .panel(fill: Theme.ok.opacity(0.08), border: Theme.ok.opacity(0.35))
     }
 
     /// Conversations in the sidebar that are working, plus any subagent whose parent is not itself listed.
@@ -101,7 +101,7 @@ struct ActivityView: View {
                     }
                     Spacer()
                     if let last = schedule.lastConversationId, engine.conversations.contains(where: { $0.id == last }) {
-                        Button("Last Run") { model.selection = .conversation(last) }.buttonStyle(.link)
+                        Button("Last Run") { model.selection = .conversation(last) }.buttonStyle(.plain).foregroundStyle(Theme.acc)
                     }
                     Button("Run Now") { engine.perform("schedules.runNow", ["id": schedule.id]) }
                     Button("Edit…") { editing = schedule }
@@ -110,8 +110,7 @@ struct ActivityView: View {
                         .help("Delete this schedule")
                 }
                 .padding(10)
-                .background(.background.secondary, in: .rect(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+                .panel()
                 .opacity(schedule.enabled ? 1 : 0.6)
             }
         }
@@ -133,31 +132,33 @@ private struct RunRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            if indented { Image(systemName: "arrow.turn.down.right").foregroundStyle(.tertiary) }
+            if indented { Image(systemName: "arrow.turn.down.right").foregroundStyle(Theme.tx3) }
             AgentAvatar(agent: engine.agent(run.agentId), size: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
-                Text(engine.agent(run.agentId)?.name ?? "Agent").font(.caption).foregroundStyle(.secondary)
+                Text(engine.agent(run.agentId)?.name ?? "Agent").font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
             }
             Spacer()
             if run.status == "waiting" {
-                Text("Waiting for you").font(.caption.weight(.medium)).foregroundStyle(.orange)
+                Tag("waiting for you", .warn)
             } else {
-                ProgressView().controlSize(.small)
+                Tag("running", .acc)
+                Spinner()
             }
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                Text(elapsed(until: context.date)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                Text(elapsed(until: context.date)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.tx2)
                     .frame(minWidth: 52, alignment: .trailing)
             }
             Button("Open") { model.selection = .conversation(run.rootConversationId) }
+                .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
             Button("Stop", systemImage: "stop.fill") { engine.perform("abort", ["id": run.conversationId]) }
                 .labelStyle(.iconOnly)
+                .buttonStyle(PiButtonStyle(kind: .danger, compact: true))
                 .help("Stop this run")
         }
         .padding(10)
         .padding(.leading, indented ? 18 : 0)
-        .background(.background.secondary, in: .rect(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .panel()
     }
 
     private func elapsed(until now: Date) -> String {

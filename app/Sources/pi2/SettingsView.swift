@@ -20,10 +20,19 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @AppStorage(Notifier.defaultsKey) private var notify = false
+    @AppStorage(AppAppearance.key) private var appearance = AppAppearance.dark.rawValue
     @State private var denied = false
 
     var body: some View {
         Form {
+            Section {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                .onChange(of: appearance) { _, value in AppAppearance.apply(AppAppearance(rawValue: value) ?? .dark) }
+            } footer: {
+                Text("pi² is designed dark first. Light follows the same palette.")
+            }
             Section {
                 Toggle("Notify me when an agent needs me", isOn: $notify)
                     .onChange(of: notify) { _, on in

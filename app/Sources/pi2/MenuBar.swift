@@ -37,7 +37,7 @@ struct MenuBarView: View {
                         AgentAvatar(agent: engine.agent(run.agentId), size: 16)
                         Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
                         Spacer()
-                        Text(run.status == "waiting" ? "waiting" : "working").font(.caption).foregroundStyle(run.status == "waiting" ? .orange : .secondary)
+                        Text(run.status == "waiting" ? "waiting" : "working").font(.caption).foregroundStyle(run.status == "waiting" ? Theme.warn : Theme.tx2)
                     }
                     .contentShape(.rect)
                 }
@@ -59,7 +59,7 @@ struct MenuBarView: View {
                 Button("Open pi²") { show(nil) }
                 Button("Quick Ask") { QuickAsk.shared.show(model: model) }
                 Spacer()
-                Circle().fill(engine.status == .connected ? Color.green : .orange).frame(width: 8, height: 8)
+                Circle().fill(engine.status == .connected ? Theme.ok : Theme.warn).frame(width: 8, height: 8)
                     .accessibilityLabel(engine.status == .connected ? "Engine running" : "Engine not running")
                 Button("Quit") { NSApp.terminate(nil) }
             }

@@ -3,17 +3,19 @@ import SwiftUI
 enum AgentColor {
     static let names = ["violet", "blue", "teal", "green", "yellow", "orange", "pink", "gray"]
 
+    /// Soft pastels with dark lettering, so agents read as characters rather than warning lights.
     static func color(_ name: String?) -> Color {
-        switch name {
-        case "blue": .blue
-        case "teal": .teal
-        case "green": .green
-        case "yellow": .yellow
-        case "orange": .orange
-        case "pink": .pink
-        case "gray": .gray
-        default: .piAccent
+        let hex: UInt32 = switch name {
+        case "blue": 0x9FC5FF
+        case "teal": 0x7FD8C4
+        case "green": 0xA8E39A
+        case "yellow": 0xF5D77A
+        case "orange": 0xFFB37A
+        case "pink": 0xFFA8C8
+        case "gray": 0xC3C5D0
+        default: 0xB9A6FF
         }
+        return Color(nsColor: Theme.rgb(hex))
     }
 }
 
@@ -22,13 +24,13 @@ struct AgentAvatar: View {
     var size: CGFloat = 20
 
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.3)
-            .fill(AgentColor.color(agent?.color).gradient)
+        RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
+            .fill(AgentColor.color(agent?.color))
             .frame(width: size, height: size)
             .overlay {
                 Text(String(agent?.name.prefix(1) ?? "?").uppercased())
-                    .font(.system(size: size * 0.55, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+                    .font(.system(size: size * 0.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(nsColor: Theme.rgb(0x15161C)))
             }
             .accessibilityHidden(true)
     }
@@ -55,6 +57,7 @@ struct AgentEditor: View {
                 ContentUnavailableView("Agent not found", systemImage: "person.crop.circle.badge.questionmark")
             }
         }
+        .background(Theme.window)
         .navigationTitle(saved?.name ?? "Agent")
         .navigationSubtitle("Agent")
         .toolbar {
@@ -249,17 +252,21 @@ struct AgentEditor: View {
                 }
             }
             .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
 
-            Divider()
+            Rectangle().fill(Theme.line).frame(height: 1)
             HStack {
-                Button("Delete Agent…", role: .destructive) { confirmingDelete = true }
+                Button("Delete Agent…") { confirmingDelete = true }
+                    .buttonStyle(.piDanger)
                     .disabled(engine.agents.count <= 1)
                 if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
                 Spacer()
                 Text("Changes apply to new conversations.").font(.caption).foregroundStyle(.secondary)
-                Button("Revert") { load(); error = nil }.disabled(!changed)
+                Button("Revert") { load(); error = nil }
+                    .buttonStyle(.piSecondary)
+                    .disabled(!changed)
                 Button("Save") { save() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.piPrimary)
                     .keyboardShortcut("s")
                     .disabled(!changed || agent.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
