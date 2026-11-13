@@ -114,7 +114,11 @@ export const knowledge: Feature = (host, engine) => {
 
 	const agentOf = (conversationId: unknown) => host.meta(conversationId as never)?.agentId;
 	const enabledFor = (agentId: string | undefined) => agentId !== undefined && memory[agentId]?.enabled === true;
-	const record = (agents: Record<string, AgentMemory>, id: string) => (agents[id] ??= { enabled: false, notes: [], next: 1 });
+	const record = (agents: Record<string, AgentMemory>, id: string) => {
+		agents[id] ??= { enabled: false, notes: [], next: 1 };
+		// Read back: only the document's own copy of a new entry records changes.
+		return agents[id]!;
+	};
 
 	const remember = defineTool({
 		name: "remember",
