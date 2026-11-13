@@ -1,9 +1,18 @@
 import ComputerKit
 import SwiftUI
+import WebKit
 
 struct ChatView: View {
     let engine: EngineClient
     let id: Int
+    /// Whether this is the conversation with the person's attention: the only one, or the focused one of several
+    /// panes. Only that one takes the keyboard and ⌘Return.
+    var active = true
+    /// Goes up when the person moves here with the keyboard, so the message field takes it.
+    var focusRequest = 0
+    /// Called when the message field takes the keyboard while this is not the active pane.
+    var onFocus: () -> Void = {}
+    @Environment(\.inSplitPane) private var inSplitPane
 
     @State private var draft = ""
     @State private var steer = true
@@ -19,28 +28,23 @@ struct ChatView: View {
     private var parent: ConversationSummary? { summary?.parent.flatMap { parent in engine.conversations.first { $0.id == parent } } }
     /// The conversation, or the one it is a sub-chat of, is in the Archive: it can be read but not continued.
     private var archived: Bool { state?.archived == true || engine.archived.contains { $0.id == id } }
-    private var title: String {
-        // One that is archived is not in the sidebar's list; its title comes with its state.
-        let title = summary?.title ?? engine.archived.first { $0.id == id }?.title ?? state?.title ?? ""
-        return title.isEmpty ? "New conversation" : title
-    }
-    private var subtitle: String {
-        let agent = engine.agent(state?.agent.agentId)?.name ?? ""
-        guard let parent else { return agent }
-        return "\(agent) · sub-chat of “\(parent.title.isEmpty ? "New conversation" : parent.title)”"
-    }
+    /// The room either side, less in a pane.
+    private var inset: CGFloat { inSplitPane ? 12 : 28 }
 
     var body: some View {
         VStack(spacing: 0) {
             if let state, data.items.isEmpty, !busy, state.partial == nil {
                 AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions)
+                    // In a short pane the introduction gives way, so the message field stays in view.
+                    .frame(minHeight: 0)
+                    .clipped()
             } else {
                 ConversationTranscript(engine: engine, conversationID: id, items: data.items, state: state)
             }
             // A subagent of this conversation is waiting on the person.
             ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in
                 InboxCard(engine: engine, item: item, showsSource: true)
-                    .padding(.horizontal, 28).padding(.top, 8)
+                    .padding(.horizontal, inset).padding(.top, 8)
             }
             if state?.compacting == true {
                 banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: Theme.acc)
@@ -68,7 +72,7 @@ struct ChatView: View {
                 .font(.system(size: 12.5))
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .panel(fill: stopped ? Theme.panel : Theme.bad.opacity(0.08), border: stopped ? Theme.line : Theme.bad.opacity(0.35))
-                .padding(.horizontal, 28).padding(.top, 8)
+                .padding(.horizontal, inset).padding(.top, 8)
             }
             PlanStrip(engine: engine, id: id, state: state)
             if archived {
@@ -86,27 +90,32 @@ struct ChatView: View {
             return true
         }
         .overlay { if dropTargeted { DropHighlight() } }
-        .navigationTitle(title)
-        .navigationSubtitle(subtitle)
-        .toolbar {
-            ToolbarItemGroup {
-                // The sidebar's list knows a sub-chat's parent; for a sub-chat of an archived conversation, its state does.
-                if let parentID = parent?.id ?? state?.agent.parent {
-                    Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parentID) }
-                        .labelStyle(.titleAndIcon)
-                        .help("Go to the conversation whose agent opened this sub-chat")
-                }
-                if engine.agent(state?.agent.agentId)?.browser?.enabled == true { BrowserButton(engine: engine, conversationID: id) }
-                if let branch = engine.branches[id] { BranchMenu(engine: engine, id: id, status: branch) }
-                ContextMeter(engine: engine, id: id, state: state)
-                ModelMenu(engine: engine, id: id, agent: state?.agent)
-                ToolsMenu(engine: engine, id: id, agent: state?.agent)
-            }
-        }
+        // The window's title and toolbar are WorkspaceView's: they follow whichever conversation is active.
         .onAppear {
             engine.openConversation(id)
-            composerFocused = true
+            if active { composerFocused = true }
         }
+        .onChange(of: focusRequest) { if active { composerFocused = true } }
+        // Moving to another pane takes the keyboard along, so typing never goes to a pane the person has left. A click
+        // on the conversation page leaves the keyboard with the page, where it can copy what was selected.
+        .onChange(of: active) { _, active in
+            if !active {
+                composerFocused = false
+            } else if !Self.pageHasKeyboard {
+                composerFocused = true
+            }
+        }
+        .onChange(of: composerFocused) { _, focused in if focused && !active { onFocus() } }
+    }
+
+    /// Whether a conversation page (a web view) has the keyboard in the key window.
+    private static var pageHasKeyboard: Bool {
+        var view = NSApp.keyWindow?.firstResponder as? NSView
+        while let current = view {
+            if current is WKWebView { return true }
+            view = current.superview
+        }
+        return false
     }
 
     /// In place of the message field for an archived conversation: what it is, and the way back.
@@ -128,7 +137,7 @@ struct ChatView: View {
         .font(.system(size: 12.5))
         .padding(.horizontal, 12).padding(.vertical, 9)
         .panel()
-        .padding(.horizontal, 28).padding(.vertical, 12)
+        .padding(.horizontal, inset).padding(.vertical, 12)
     }
 
     private func banner(_ text: String, systemImage: String, color: Color) -> some View {
@@ -139,7 +148,7 @@ struct ChatView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .panel(fill: color.opacity(0.08), border: color.opacity(0.3))
-            .padding(.horizontal, 28).padding(.top, 8)
+            .padding(.horizontal, inset).padding(.top, 8)
     }
 
     @ViewBuilder
@@ -164,7 +173,7 @@ struct ChatView: View {
                         .panel(radius: 8, fill: Theme.card, border: Theme.line2)
                     }
                 }
-                .padding(.horizontal, 28)
+                .padding(.horizontal, inset)
             }
             .padding(.top, 8)
         }
@@ -233,7 +242,7 @@ struct ChatView: View {
                 .buttonStyle(.plain)
                 .opacity(canSend ? 1 : 0.35)
                 .disabled(!canSend)
-                .keyboardShortcut(.return, modifiers: .command)
+                .keyboardShortcut(active ? KeyboardShortcut(.return, modifiers: .command) : nil)
                 .help("Send (Return)")
                 .accessibilityLabel("Send")
             }
@@ -241,7 +250,7 @@ struct ChatView: View {
         .padding(12)
         .panel(radius: 14, border: composerFocused ? Theme.acc.opacity(0.55) : Theme.line2)
         .animation(.easeOut(duration: 0.15), value: composerFocused)
-        .padding(.horizontal, 28).padding(.top, 10).padding(.bottom, 18)
+        .padding(.horizontal, inset).padding(.top, 10).padding(.bottom, 18)
     }
 
     private var canSend: Bool {

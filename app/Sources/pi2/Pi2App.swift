@@ -41,7 +41,13 @@ extension Selection {
 @Observable
 final class AppModel {
     let engine = EngineClient()
-    var selection: Selection?
+    /// The panes the conversation area is split into.
+    let workspace = Workspace()
+    var selection: Selection? {
+        // A conversation chosen anywhere (the sidebar, the palette, a notification) goes to the pane that has it, or
+        // else the focused pane.
+        didSet { if case .conversation(let id) = selection, selection != oldValue { workspace.show(id) } }
+    }
     var showingPalette = false
     /// Conversations whose sub-chats are folded away in the sidebar.
     var collapsed: Set<Int> = []
@@ -206,6 +212,8 @@ struct Pi2App: App {
                 Button("Show Usage") { model.selection = .usage }
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("Show Archive") { model.selection = .archive }
+                Divider()
+                PaneCommands(model: model)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -270,30 +278,42 @@ struct RootView: View {
     @Bindable var model: AppModel
     private var engine: EngineClient { model.engine }
 
+    /// Whether the detail shows conversations: one is selected, or the focused pane of several is empty.
+    private var showsWorkspace: Bool {
+        switch model.selection {
+        case .conversation: true
+        case nil: model.workspace.isSplit
+        default: false
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
-            switch model.selection {
-            case .inbox:
-                InboxView(model: model)
-            case .activity:
-                ActivityView(model: model)
-            case .usage:
-                UsageView(model: model)
-            case .archive:
-                ArchiveView(model: model)
-            case .branches:
-                BranchesView(model: model)
-            case .agent(let id):
-                AgentEditor(model: model, agentID: id)
-                    .id(id)
-            case .conversation(let id):
-                ChatView(engine: engine, id: id)
-                    .id(id)
-            case nil:
-                WelcomeView(model: model)
+            // One branch for every way the conversation area shows, so moving between panes, or to an empty one, keeps
+            // the panes' pages loaded.
+            if showsWorkspace {
+                WorkspaceView(model: model)
+            } else {
+                switch model.selection {
+                case .inbox:
+                    InboxView(model: model)
+                case .activity:
+                    ActivityView(model: model)
+                case .usage:
+                    UsageView(model: model)
+                case .archive:
+                    ArchiveView(model: model)
+                case .branches:
+                    BranchesView(model: model)
+                case .agent(let id):
+                    AgentEditor(model: model, agentID: id)
+                        .id(id)
+                case .conversation, nil:
+                    WelcomeView(model: model)
+                }
             }
         }
         .background(WindowOpener(model: model))
@@ -311,17 +331,29 @@ struct RootView: View {
             }
         }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
-            guard loaded, model.selection == nil else { return }
+            guard loaded else { return }
+            // Panes kept from last time that show conversations since deleted are emptied.
+            model.workspace.forget { id in !engine.conversations.contains { $0.id == id } && !model.isArchived(id) }
+            guard model.selection == nil else { return }
             #if DEBUG
             if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations) {
                 model.selection = asked
                 return
             }
             #endif
+            // Split into panes last time: come back to the same panes.
+            if model.workspace.isSplit {
+                model.selection = model.workspace.focusedConversation.map { .conversation($0) }
+                return
+            }
             // On launch, land on the most recent conversation.
             if let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
         }
         .onChange(of: engine.conversations) { _, list in
+            // Panes showing a deleted conversation are emptied; the focused one moves on below.
+            if engine.hasLoadedLibrary {
+                model.workspace.forget { id in id != model.selectedConversationID && !list.contains { $0.id == id } && !model.isArchived(id) }
+            }
             // The conversation on screen was deleted: move to the next one. An archived one may stay on screen: it can
             // still be read.
             if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }), !model.isArchived(id) {
@@ -568,8 +600,19 @@ struct SidebarView: View {
             }
         }
         .tag(Selection.conversation(conversation.id))
+        // Dropped on a pane, the conversation shows there.
+        .draggable(ConversationDrag(id: conversation.id)) {
+            Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left")
+                .padding(6)
+        }
         .contextMenu {
             Button("Rename…") { model.beginRename(conversation) }
+            if model.workspace.canSplit {
+                Button("Open in New Pane") {
+                    model.splitPane(.row)
+                    model.put(conversation.id, in: model.workspace.focused)
+                }
+            }
             // A sub-chat is archived with the conversation it belongs to.
             if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
             Button("Delete", role: .destructive) { model.delete(conversation) }
