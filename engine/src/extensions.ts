@@ -2,19 +2,35 @@
 
 import {
 	type AgentChange,
+	AgentDoc,
 	configure,
 	type ConversationId,
 	defineExtension,
 	defineTool,
+	type DocumentReader,
 	type Extension,
 	GenerationTask,
 	hook,
+	type HookApi,
 	section,
+	type ToolHookCall,
 	ToolTask,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
+import { bool, int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord/context";
+import {
+	BROWSER_ACTIONS,
+	type BrowserAction,
+	type BrowserHost,
+	type BrowserRequest,
+	checkAddress,
+	describeBrowser,
+	plainBrowserDescription,
+	searchAddress,
+	UNASKED,
+	uploadable,
+} from "./browser.ts";
 import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
@@ -25,6 +41,9 @@ const GATED = new Set(["bash", "write", "edit"]);
 export type Host = {
 	inbox: Inbox;
 	computer: ComputerHost;
+	browser: BrowserHost;
+	/** The folder a conversation works in when none was chosen for it. */
+	scratchFolder(): string;
 	/** Whether a tool outside the built-in set changes things, and so needs approval under "ask". */
 	changesThings(tool: string): boolean;
 	meta(conversationId: ConversationId): Meta | undefined;
@@ -41,6 +60,9 @@ export type Host = {
 };
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
+
+/** What the model is told when the person says no. */
+const DECLINED = "The person declined this action. Do not retry it; ask what they would like instead.";
 
 /** The agents a conversation may delegate to, from its own agent's list. */
 function delegatesOf(host: Host, conversationId: ConversationId): AgentProfile[] {
@@ -236,13 +258,198 @@ export function pi2Extension(host: Host): Extension {
 		},
 	});
 
+	/** The browser settings of the agent a conversation belongs to. */
+	const browserOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.browser;
+
+	type BrowserArgs = { action: string; url?: string; query?: string; element?: number; text?: string; submit?: boolean; option?: string; dy?: number; path?: string; offset?: number };
+
+	/**
+	 * What a browser call asks of the app, or why it cannot run. Checked before asking the person and again before
+	 * acting. The address, the search and the file to upload are settled here, so the app is only ever sent a public
+	 * http(s) address and a file the agent may use.
+	 */
+	const prepareBrowser = async (api: DocumentReader & { conversationId: ConversationId }, args: BrowserArgs, context: Context): Promise<{ request: BrowserRequest } | { refused: string }> => {
+		if (browserOf(api.conversationId)?.enabled !== true) return { refused: "The browser is turned off for this agent." };
+		const action = args.action.trim() as BrowserAction;
+		if (!BROWSER_ACTIONS.includes(action)) return { refused: `Unknown action "${args.action}". Use one of: ${BROWSER_ACTIONS.join(", ")}.` };
+		if ((action === "click" || action === "type" || action === "select" || action === "upload") && args.element === undefined) {
+			return { refused: `${action} needs \`element\`, a number from the latest view of the page.` };
+		}
+		switch (action) {
+			case "open": {
+				const checked = checkAddress(args.url ?? "");
+				return "refused" in checked ? checked : { request: { action, url: checked.url } };
+			}
+			case "search": {
+				const query = (args.query ?? "").trim();
+				return query === "" ? { refused: "search needs `query`, the words to search for." } : { request: { action, query, url: searchAddress(query) } };
+			}
+			case "read":
+				if (args.offset !== undefined && args.offset < 0) return { refused: "`offset` cannot be negative." };
+				return { request: { action, ...(args.offset !== undefined && args.offset > 0 ? { offset: args.offset } : {}) } };
+			case "screenshot":
+			case "back":
+				return { request: { action } };
+			case "scroll":
+				if (args.dy === undefined || args.dy === 0) return { refused: "scroll needs `dy`: pages to scroll, positive for down." };
+				return { request: { action, dy: args.dy } };
+			case "click":
+				return { request: { action, element: args.element! } };
+			case "type":
+				if (args.text === undefined) return { refused: "type needs `text`. An empty text clears the field." };
+				return { request: { action, element: args.element!, text: args.text, ...(args.submit === true ? { submit: true } : {}) } };
+			case "select":
+				if (args.option === undefined || args.option.trim() === "") return { refused: "select needs `option`, the choice to pick, as the page words it." };
+				return { request: { action, element: args.element!, option: args.option } };
+			case "upload": {
+				// The conversation's folder counts only when the conversation may read files there: with tools off, an
+				// agent that cannot open a file should not be able to send it to a website either.
+				const reads = host.meta(api.conversationId)?.access !== "none";
+				const folder = reads ? ((await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? host.scratchFolder()) : undefined;
+				const file = uploadable(args.path ?? "", folder, filesOf(api.conversationId));
+				return "refused" in file ? file : { request: { action, element: args.element!, path: file.path } };
+			}
+		}
+	};
+
+	/**
+	 * What the approval step settled about a call, for the tool to act on: the description the app gave, which the action
+	 * must still match when it runs, or the app's reason why it cannot be done at all. Kept by call, in memory: after a
+	 * restart the hook runs again before the tool does.
+	 */
+	const browserVerdicts = new Map<string, { expect: string } | { refuse: string }>();
+	const settleBrowser = (callId: string, verdict: { expect: string } | { refuse: string }) => {
+		browserVerdicts.set(callId, verdict);
+		// A call stopped between the question and the action leaves its verdict behind; do not let those pile up.
+		if (browserVerdicts.size > 200) browserVerdicts.delete(browserVerdicts.keys().next().value!);
+	};
+
+	const browserTool = defineTool({
+		name: "browser",
+		description:
+			"Browse the web in pi²'s own browser, which the person can watch and use too. Every action answers with the page as it is afterwards: its title and address, a numbered list of what can be acted on, and its text, where [n] marks where each of those sits. `element` is always a number from the latest view. Actions:\n" +
+			"- open: go to `url`.\n" +
+			"- search: search the web for `query`; the results come back as a page.\n" +
+			"- read: the current page again, as it is now. A long page comes in parts; `offset` starts further in.\n" +
+			"- screenshot: a picture of the page as it looks, if you can see images.\n" +
+			"- click: a link, button, checkbox or other `element`.\n" +
+			"- type: put `text` into the field `element`, replacing what it holds. `submit`: true presses Return afterwards. Password fields are refused: the person signs in themselves.\n" +
+			"- select: pick `option` in the drop-down list `element`, by the words the page shows for it.\n" +
+			"- scroll: `dy` pages, positive for down. Reading does not need it; use it for pages that load more as they are scrolled.\n" +
+			"- back: return to the page before.\n" +
+			"- upload: choose the file at `path` in the file input `element`. Only a file in this conversation's folder or one of your reference files.",
+		parameters: obj({
+			action: str({ description: `One of: ${BROWSER_ACTIONS.join(", ")}` }),
+			url: opt(str({ description: "The address to open; http or https" })),
+			query: opt(str({ description: "What to search the web for" })),
+			element: opt(int({ description: "A number from the latest view of the page" })),
+			text: opt(str({ description: "Text to put into the field" })),
+			submit: opt(bool({ description: "Press Return after typing" })),
+			option: opt(str({ description: "The choice to pick in a drop-down list" })),
+			dy: opt(int({ description: "Pages to scroll; positive scrolls down" })),
+			path: opt(str({ description: "Full path of the file to upload" })),
+			offset: opt(int({ description: "For read: the character of the page's text to start at" })),
+		}),
+		// A click or a submitted form cut off by a crash is not repeated: it may already have happened. The agent is told.
+		replay: "unsafe",
+		// One action at a time: each depends on the page the last one left.
+		executionMode: "sequential",
+		execute: async (args, api, context) => {
+			const verdict = browserVerdicts.get(api.callId);
+			browserVerdicts.delete(api.callId);
+			const prepared = await prepareBrowser(api, args, context);
+			if ("refused" in prepared) return { output: text(prepared.refused), isError: true };
+			if (verdict !== undefined && "refuse" in verdict) return { output: text(verdict.refuse), isError: true };
+			const request = prepared.request;
+			let note = "";
+			if (request.action === "screenshot") {
+				// A model that cannot see images is given the page as text instead, and no picture is taken.
+				const ref = (await api.agent(context)).model;
+				const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
+				if (model !== undefined && !model.input.includes("image")) {
+					request.action = "read";
+					note = "Your model cannot see pictures, so here is the page as text instead.\n\n";
+				}
+			}
+			const reply = await host.browser.perform(
+				{ ...request, ...(verdict !== undefined ? { expect: verdict.expect } : {}), conversationId: api.conversationId as unknown as number, agentName: agentNameOf(api.conversationId) },
+				context,
+				// Loading a slow page is given longer than a click in a window.
+				90_000,
+			);
+			// The short line is what the person reads on the call's card.
+			if (reply.summary !== undefined) await api.details({ summary: reply.summary }, context);
+			const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: note + reply.text }];
+			if (reply.image !== undefined) content.push({ type: "image", data: reply.image.data, mimeType: reply.image.mimeType });
+			return { output: content, ...(reply.ok ? {} : { isError: true }) };
+		},
+	});
+
+	/**
+	 * The browser's own rule for asking first: by what an action would do, site by site, whatever the file access.
+	 * Looking and moving between pages are never asked about, and neither is following a plain link, which only goes
+	 * where opening its address would.
+	 */
+	const approveBrowser = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> => {
+		const args = call.arguments as BrowserArgs;
+		browserVerdicts.delete(call.id);
+		if (typeof args.action !== "string") return undefined;
+		const action = args.action.trim();
+		if (UNASKED.has(action) || browserOf(api.conversationId)?.ask === false) return undefined;
+		// A call that cannot run anyway is not worth a question; the tool explains why itself.
+		const prepared = await prepareBrowser(api, args, context);
+		if ("refused" in prepared) return undefined;
+		const conversationId = api.conversationId as unknown as number;
+		// Ask the app what the action would do, so the person approves "Click “Submit” on example.com", not "element 12".
+		const described = await host.browser.perform({ ...prepared.request, action: "describe", of: action, conversationId, agentName: agentNameOf(api.conversationId) }, context, 5_000);
+		let description = plainBrowserDescription(args);
+		let site = "";
+		if (described.ok) {
+			site = described.host ?? "";
+			if (described.text.trim() !== "") {
+				description = described.text.trim();
+				// The action is done only if this is still what it would do when it runs.
+				settleBrowser(call.id, { expect: described.text });
+				if (action === "click" && described.navigates === true) return undefined;
+			}
+		} else if (described.unreachable !== true || !host.browser.available) {
+			// The app says it cannot be done (no such element, a password field), or there is no app. Nothing is asked,
+			// and the tool answers with the reason instead of trying.
+			settleBrowser(call.id, { refuse: described.text.trim() === "" ? "The browser could not do that." : described.text });
+			return undefined;
+		}
+		const key = site === "" ? undefined : `browser:${site}`;
+		if (key !== undefined && host.meta(api.conversationId)?.autoApprove?.includes(key)) return undefined;
+		const decision = await host.inbox.ask(
+			{
+				id: String(api.taskId),
+				kind: "approval",
+				conversationId,
+				callId: call.id,
+				tool: call.name,
+				arguments: call.arguments,
+				question: description,
+				...(site === "" ? {} : { site }),
+				createdAt: Date.now(),
+			},
+			context,
+		);
+		// Without a site to name there is nothing for "always" to cover, so it allows this once.
+		if (decision === "always" && key !== undefined) await host.allowAlways(api.conversationId, key);
+		return decision === "deny" ? { block: DECLINED } : undefined;
+	};
+
 	return defineExtension({
 		name: "pi2",
-		tools: [askUser, delegate, readReferenceTool, computerTool],
+		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool],
 		sections: [
 			section("computer_use", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "computer")) return undefined;
 				return describeComputer(computerOf(input.conversationId));
+			}),
+			section("browser", (input) => {
+				if (!input.agent.tools.some((tool) => tool.name === "browser")) return undefined;
+				return describeBrowser(browserOf(input.conversationId));
 			}),
 			section("reference_files", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "read_reference")) return undefined;
@@ -266,6 +473,7 @@ export function pi2Extension(host: Host): Extension {
 			}),
 			hook(ToolTask, {
 				beforeTool: async (call, api, context) => {
+					if (call.name === "browser") return approveBrowser(call, api, context);
 					const meta = host.meta(api.conversationId);
 					const isComputer = call.name === "computer";
 					const args = call.arguments as ComputerArgs;
@@ -303,7 +511,7 @@ export function pi2Extension(host: Host): Extension {
 						context,
 					);
 					if (decision === "always") await host.allowAlways(api.conversationId, key);
-					return decision === "deny" ? { block: "The person declined this action. Do not retry it; ask what they would like instead." } : undefined;
+					return decision === "deny" ? { block: DECLINED } : undefined;
 				},
 			}),
 		],

@@ -42,6 +42,9 @@ class Client {
 	/** As the app does for computer use: what the engine asked this client to do on screen, and how it answers. */
 	computerRequests: any[] = [];
 	computerReply: ((request: any) => Record<string, unknown> | undefined) | undefined;
+	/** The same for the browser: what the engine asked this client to do in a web page, and how it answers. */
+	browserRequests: any[] = [];
+	browserReply: ((request: any) => Record<string, unknown> | undefined) | undefined;
 	#nextId = 1;
 	#replies = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 	#wake: (() => void) | undefined;
@@ -88,6 +91,10 @@ class Client {
 			this.computerRequests.push(message);
 			const reply = this.computerReply?.(message);
 			if (reply !== undefined) void this.call("computer.result", { requestId: message.requestId, ...reply }).catch(() => {});
+		} else if (message.event === "browser") {
+			this.browserRequests.push(message);
+			const reply = this.browserReply?.(message);
+			if (reply !== undefined) void this.call("browser.result", { requestId: message.requestId, ...reply }).catch(() => {});
 		} else if (message.event === "conversation") {
 			const conv: Conv = this.conversations.get(message.id) ?? { items: [], state: message.state };
 			if (message.reset) conv.items = [];
@@ -526,6 +533,162 @@ try {
 	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
 	assert.equal((await use({ action: "list_apps" })).isError, true, "switched off, the tool is taken away from the conversation");
 	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing");
+
+	// ---- The browser: the engine decides what may be opened and asks before acting; a fake app stands in for the pages
+	const { checkAddress } = await import("../src/browser.ts");
+	const notOpened = [
+		"file:///etc/passwd", "javascript:alert(1)", "data:text/html,<p>hi", "about:blank", "ftp://example.com/x", "https://user:pw@example.com/",
+		"http://localhost:3000/", "localhost:3000", "http://app.localhost/", "http://127.0.0.1/", "http://127.1/", "http://2130706433/", "http://0x7f.0.0.1/",
+		"http://10.1.2.3/", "http://172.16.0.1/", "http://172.31.255.255/", "http://192.168.1.1/admin", "http://169.254.169.254/latest/meta-data/", "http://0.0.0.0:8000/",
+		"http://100.64.0.1/", "http://[::1]:8080/", "http://[fd12:3456::1]/", "http://[fe80::1]/", "http://[::ffff:192.168.0.1]/", "http://printer.local/", "http://router/",
+	];
+	for (const address of notOpened) assert.ok("refused" in checkAddress(address), `${address} must not be opened`);
+	for (const address of ["https://example.com/jobs?q=1", "http://172.32.0.1/", "http://11.0.0.1/", "https://[2606:4700::1111]/", "https://local.example.com/"]) {
+		assert.ok("url" in checkAddress(address), `${address} is a public address`);
+	}
+	assert.deepEqual(checkAddress("example.com:8080/a b"), { url: "https://example.com:8080/a%20b", host: "example.com" }, "an address without its scheme means https");
+
+	assert.equal((client.agents.find((x) => x.id === custom) as any).browser?.enabled, false, "the browser is off unless it is switched on");
+	const { id: w } = await client.call("conversation.create", { agentId: custom });
+	await client.call("conversation.open", { id: w });
+	let browserCalls = 0;
+	const browse = async (args: Record<string, unknown>, wait = true) => {
+		await client.call("submit", { id: w, text: `/browser ${JSON.stringify(args)}` });
+		browserCalls++;
+		if (!wait) return undefined as any;
+		await settled(w, browserCalls);
+		return toolResults(w)[browserCalls - 1]! as any;
+	};
+	const toPage = (action: string, of?: string) => client.browserRequests.filter((r) => r.action === action && (of === undefined || r.of === of));
+	const browserAsk = () => client.inbox.find((i) => i.tool === "browser") as (InboxItem & { site?: string }) | undefined;
+	assert.equal((await browse({ action: "open", url: "https://example.com/" })).isError, true, "off by default: the conversation has no browser tool");
+
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", browser: { enabled: true } } });
+	await client.until("browser switched on", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.enabled === true);
+	assert.equal((client.agents.find((x) => x.id === custom) as any).browser.ask, true, "asking first is the default");
+	const noBrowser = await browse({ action: "open", url: "https://example.com/" });
+	assert.ok(noBrowser.isError && /not open/.test(noBrowser.text), "with no app connected there is no browser to use");
+
+	// The stand-in page: element 1 is a plain link, 3 a password field, 9 does not exist, everything else a button or a field.
+	let site = "jobs.example.com";
+	client.browserReply = (request) => {
+		if (request.action === "describe") {
+			if (request.element === 9) return { ok: false, text: "There is no element 9 on the page." };
+			if (request.of === "click" && request.element === 1) return { ok: true, text: `Follow the link “Careers” to https://${site}/careers`, host: site, navigates: true };
+			if (request.of === "click") return { ok: true, text: `Click “Submit application” on ${site}`, host: site };
+			if (request.of === "type" && request.element === 3) return { ok: false, text: "That is a password field. pi² does not type passwords." };
+			if (request.of === "type") return { ok: true, text: `Type “${request.text}” into the “Email” field on ${site}`, host: site };
+			return { ok: true, text: `Upload ${request.path} to “Résumé” on ${site}`, host: site };
+		}
+		if (request.action === "screenshot") return { ok: true, text: "pic", summary: `Took a picture of ${site}`, image: { data: PNG, mimeType: "image/png" } };
+		return { ok: true, text: `page:${request.action}`, summary: `${request.action} on ${site}` };
+	};
+	await client.call("browser.register");
+
+	for (const url of ["file:///etc/passwd", "http://192.168.1.1/admin"]) {
+		const refusedAddress = await browse({ action: "open", url });
+		assert.ok(refusedAddress.isError && /http and https|off limits/.test(refusedAddress.text), `${url} is refused: ${refusedAddress.text}`);
+	}
+	assert.equal(toPage("open").length, 0, "a refused address never reaches the app");
+
+	const opened = await browse({ action: "open", url: "example.com/jobs" });
+	assert.ok(!opened.isError && opened.text === "page:open" && opened.details?.summary === "open on jobs.example.com");
+	const openRequest = toPage("open").at(-1);
+	assert.ok(openRequest.url === "https://example.com/jobs" && openRequest.conversationId === w && openRequest.agentName === "Quill");
+	await browse({ action: "search", query: "swift jobs & more" });
+	assert.equal(toPage("search").at(-1).url, "https://html.duckduckgo.com/html/?q=swift%20jobs%20%26%20more", "a search is the results page of a search engine");
+	await browse({ action: "read", offset: 8000 });
+	assert.equal(toPage("read").at(-1).offset, 8000);
+	assert.ok(client.inbox.length === 0 && toPage("describe").length === 0, "opening, searching and reading are not asked about");
+
+	// A plain link is followed without asking; the app is told what it described, and does only that.
+	assert.equal((await browse({ action: "click", element: 1 })).isError, false);
+	assert.equal(client.inbox.length, 0, "following a plain link is not asked about");
+	assert.equal(toPage("click").at(-1).expect, "Follow the link “Careers” to https://jobs.example.com/careers");
+
+	// A button waits, with the app's words for it, and "always" covers that site.
+	await browse({ action: "click", element: 2 }, false);
+	const press = await client.until("approval for the button", browserAsk);
+	assert.equal(press.question, "Click “Submit application” on jobs.example.com", "the approval says what will be clicked, and where");
+	assert.equal(press.site, "jobs.example.com");
+	assert.equal(toPage("click").length, 1, "nothing is clicked while the question is open");
+	await client.call("inbox.decide", { id: press.id, decision: "always" });
+	await settled(w, browserCalls);
+	assert.ok(!toolResults(w).at(-1)!.isError && toPage("click").length === 2 && toPage("click").at(-1).expect === press.question);
+	await browse({ action: "type", element: 4, text: "quill@example.com", submit: true });
+	assert.ok(client.inbox.length === 0 && toPage("type").length === 1 && toPage("type").at(-1).submit === true, "“always” covers that site for the rest of the conversation");
+
+	// Another site is asked about separately, and a refusal is final.
+	site = "other.example.org";
+	await browse({ action: "click", element: 2 }, false);
+	const elsewhere = await client.until("approval on the other site", browserAsk);
+	assert.match(elsewhere.question!, /on other\.example\.org$/);
+	await client.call("inbox.decide", { id: elsewhere.id, decision: "deny" });
+	await settled(w, browserCalls);
+	assert.ok(toolResults(w).at(-1)!.isError && /declined/.test(toolResults(w).at(-1)!.text) && toPage("click").length === 2, "a denied action never reaches the app");
+
+	// What the app says cannot be done is not asked about and not attempted.
+	const secret = await browse({ action: "type", element: 3, text: "hunter2" });
+	assert.ok(secret.isError && /password field/.test(secret.text) && toPage("type").length === 1, "a password field is never typed into");
+	const missing = await browse({ action: "click", element: 9 });
+	assert.ok(missing.isError && /no element 9/.test(missing.text) && toPage("click").length === 2);
+	assert.equal((await browse({ action: "select", element: 5 })).isError, true, "a call with something missing is refused");
+	assert.equal(client.inbox.length, 0, "a call that cannot run is refused without bothering the person");
+
+	// Uploads: only a reference file, or a file in the conversation's folder once the conversation may read files there.
+	writeFileSync(join(workdir, "cv.txt"), "Quill's CV");
+	const outside = await browse({ action: "upload", element: 6, path: join(home, "secret.txt") });
+	assert.ok(outside.isError && /cannot be uploaded/.test(outside.text), outside.text);
+	assert.equal((await browse({ action: "upload", element: 6, path: join(workdir, "cv.txt") })).isError, true, "with tools off the conversation's folder is not open to it either");
+	assert.ok(client.inbox.length === 0 && toPage("describe", "upload").length === 0 && toPage("upload").length === 0, "a file it may not use is refused before anyone is asked");
+	await browse({ action: "upload", element: 6, path: join(refs, "brief.md") }, false);
+	const handIn = await client.until("approval for the upload", browserAsk);
+	assert.ok(handIn.question!.includes(realpathSync(join(refs, "brief.md"))), "the approval names the file");
+	await client.call("inbox.decide", { id: handIn.id, decision: "once" });
+	await settled(w, browserCalls);
+	assert.equal(toPage("upload").at(-1).path, realpathSync(join(refs, "brief.md")), "a reference file may be uploaded");
+	await client.call("conversation.configure", { id: w, access: "read", cwd: workdir });
+	await client.until("read access", () => client.conversations.get(w)!.state.agent.access === "read");
+	await browse({ action: "upload", element: 6, path: "cv.txt" }, false);
+	await client.call("inbox.decide", { id: (await client.until("approval for the second upload", browserAsk)).id, decision: "once" });
+	await settled(w, browserCalls);
+	assert.equal(toPage("upload").at(-1).path, join(workdir, "cv.txt"), "and so may a file in the folder the conversation reads");
+	assert.equal((await browse({ action: "upload", element: 6, path: "../../etc/hosts" })).isError, true, "but nothing reached by climbing out of it");
+
+	// Screenshots reach the model as pictures, and only the newest are sent.
+	const lastSaid = () => client.conversations.get(w)!.items.findLast((i) => i.kind === "assistant")!.text;
+	const picture = await browse({ action: "screenshot" });
+	assert.ok(picture.images === 1 && picture.details?.summary === "Took a picture of other.example.org");
+	assert.match(lastSaid(), /I can see 1 picture\./);
+	for (let i = 0; i < 2; i++) await browse({ action: "screenshot" });
+	assert.match(lastSaid(), /I can see 2 pictures\./, "old pictures of pages are left out of what the model is sent");
+	await client.call("conversation.configure", { id: w, model: { provider: "demo", modelId: "demo-text" } });
+	await client.until("text-only model", () => client.conversations.get(w)!.state.agent.model?.modelId === "demo-text");
+	const asText = await browse({ action: "screenshot" });
+	assert.ok(toPage("screenshot").length === 3 && toPage("read").length === 2 && asText.images === 0 && /cannot see pictures/.test(asText.text), "a model that cannot see is given the page as text");
+	await client.call("conversation.configure", { id: w, model: { provider: "demo", modelId: "demo-1" } });
+	await client.until("back to the demo model", () => client.conversations.get(w)!.state.agent.model?.modelId === "demo-1");
+
+	// The app going away in the middle of an action ends the call instead of leaving it hanging.
+	const pages = await Client.attach();
+	await pages.call("browser.register");
+	await browse({ action: "open", url: "https://example.com/slow" }, false);
+	await pages.until("the second app is asked", () => pages.browserRequests.some((r) => r.action === "open"));
+	pages.socket.destroy();
+	await settled(w, browserCalls);
+	assert.ok(toolResults(w).at(-1)!.isError && /closed before/.test(toolResults(w).at(-1)!.text));
+	assert.equal((await browse({ action: "back" })).text, "page:back", "the app that was there before takes over again");
+
+	// With asking switched off nothing waits, and the app is not asked to describe anything.
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", browser: { enabled: true, ask: false } } });
+	await client.until("asking off", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.ask === false);
+	const described = toPage("describe").length;
+	assert.equal((await browse({ action: "click", element: 2 })).isError, false);
+	assert.ok(client.inbox.length === 0 && toPage("describe").length === described && toPage("click").at(-1).expect === undefined);
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", browser: { enabled: false } } });
+	await client.until("browser off", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.enabled === false);
+	assert.equal((await browse({ action: "read" })).isError, true, "switched off, the tool is taken away from the conversation");
+	step("browser: public http(s) pages only; looks and follows links without asking; asks before buttons, typing and uploads, site by site; uploads only what it may read; survives the app closing");
 
 	// ---- Schedules
 	const { nextRun } = await import("../src/schedules.ts");

@@ -119,6 +119,10 @@ function demoProvider(): Provider {
 			// "/computer {json arguments}"
 			return fauxAssistantMessage([fauxText("Using the computer."), fauxToolCall("computer", JSON.parse(prompt.slice(10)))], { stopReason: "toolUse" });
 		}
+		if (prompt.startsWith("/browser ")) {
+			// "/browser {json arguments}"
+			return fauxAssistantMessage([fauxText("Using the browser."), fauxToolCall("browser", JSON.parse(prompt.slice(9)))], { stopReason: "toolUse" });
+		}
 		if (prompt.startsWith("/ref ")) {
 			return fauxAssistantMessage([fauxText("Opening that reference file."), fauxToolCall("read_reference", { path: prompt.slice(5).trim() })], { stopReason: "toolUse" });
 		}

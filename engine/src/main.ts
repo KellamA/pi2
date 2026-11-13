@@ -31,6 +31,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { createBackup, restoreBackup } from "./backup.ts";
+import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { pi2Extension } from "./extensions.ts";
 import { McpServers } from "./mcp.ts";
@@ -100,12 +101,15 @@ const providers = new Providers(home, credentials, () => deviceId());
 const mcp = new McpServers(home, credentials);
 const inbox = new Inbox();
 const computer = new ComputerHost();
+const browser = new BrowserHost();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
 let agents: Record<string, AgentProfile> = {};
 
 const pi2 = pi2Extension({
 	inbox,
 	computer,
+	browser,
+	scratchFolder: () => workspace,
 	changesThings: (name) => mcp.changesThings(name),
 	meta: (id) => library.conversations[String(id)],
 	agent: (id) => (id === undefined ? undefined : agents[id]),
@@ -157,7 +161,8 @@ function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undef
 	// Reference files can be read whatever the access level: the person chose them for this agent.
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
 	const screen = agent?.computer?.enabled === true ? ["computer"] : [];
-	return [...files, ...reference, ...screen, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+	const web = agent?.browser?.enabled === true ? ["browser"] : [];
+	return [...files, ...reference, ...screen, ...web, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -387,6 +392,9 @@ const clients = new Set<Client>();
 /** Clients that registered as the computer host; the host object is kept per client so the right one is dropped. */
 const computerClients = new Set<Client>();
 const computerHostOf = new WeakMap<Client, { send: (message: unknown) => void }>();
+/** The same for the browser: the app holds the web views, and offers to work them for agents. */
+const browserClients = new Set<Client>();
+const browserHostOf = new WeakMap<Client, { send: (message: unknown) => void }>();
 const pendingPrompts = new Map<string, (answer: string) => void>();
 const logins = new Map<string, AbortController>();
 let nextLocalId = 1;
@@ -643,6 +651,26 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		});
 		return { answered };
 	},
+	/** The app offers its browser to agents; as with the computer, the latest app to ask does the work. */
+	"browser.register": async (_params, client) => {
+		const host = browserHostOf.get(client) ?? { send: (message: unknown) => send(client, message) };
+		browserHostOf.set(client, host);
+		browser.register(host);
+		browserClients.add(client);
+		return {};
+	},
+	"browser.result": async (params) => {
+		const image = params.image as { data?: unknown; mimeType?: unknown } | undefined;
+		const answered = browser.answer(text(params, "requestId"), {
+			ok: params.ok === true,
+			text: typeof params.text === "string" ? params.text : "",
+			...(typeof params.summary === "string" && params.summary !== "" ? { summary: params.summary } : {}),
+			...(image !== undefined && typeof image.data === "string" && typeof image.mimeType === "string" ? { image: { data: image.data, mimeType: image.mimeType } } : {}),
+			...(typeof params.host === "string" ? { host: params.host } : {}),
+			...(params.navigates === true ? { navigates: true } : {}),
+		});
+		return { answered };
+	},
 	"mcp.save": async (params) => {
 		const saved = await mcp.save(params as never);
 		return { id: saved.id };
@@ -812,6 +840,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
 			files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
 			computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
+			browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
@@ -1258,6 +1287,7 @@ const server = createServer((socket) => {
 	const drop = () => {
 		if (!clients.delete(client)) return;
 		if (computerClients.delete(client)) computer.unregister(computerHostOf.get(client));
+		if (browserClients.delete(client)) browser.unregister(browserHostOf.get(client));
 		for (const subscription of client.subscriptions.values()) void subscription.stop();
 	};
 	socket.on("close", drop);
