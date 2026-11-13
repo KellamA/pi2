@@ -352,7 +352,7 @@ struct BranchesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                if groups.isEmpty {
+                if groups.isEmpty && engine.leftBehind.isEmpty {
                     Text("No conversation is working in a git repository. Choose a folder in one from a conversation’s tools menu, and its branch shows here and next to it in the sidebar.")
                         .foregroundStyle(.secondary)
                 }
@@ -368,6 +368,7 @@ struct BranchesView: View {
                         ForEach(group.rows) { row in rowView(row) }
                     }
                 }
+                if !engine.leftBehind.isEmpty { leftBehindSection }
                 legend
             }
             .padding(.horizontal, 28).padding(.vertical, 22)
@@ -434,6 +435,72 @@ struct BranchesView: View {
         .padding(10)
         .panel()
         .help(row.status.help)
+    }
+
+    /// Worktrees whose conversations were archived or deleted. They stay on disk, with any work in them, until removed.
+    private var leftBehindSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "tray").foregroundStyle(Theme.tx3)
+                Text("Left Behind").font(.headline)
+                Spacer()
+                let count = engine.leftBehind.count
+                Text("\(count) worktree\(count == 1 ? "" : "s")").font(.caption).foregroundStyle(Theme.tx3)
+            }
+            Text("Worktrees of conversations that were archived or deleted. They stay on disk, with any work in them, until you remove them. Removing one keeps its branch unless you choose otherwise.")
+                .font(.callout).foregroundStyle(Theme.tx2)
+            ForEach(engine.leftBehind) { item in leftBehindRow(item) }
+        }
+    }
+
+    private func leftBehindRow(_ item: LeftBehindWorktree) -> some View {
+        let archived = item.reason == "archived"
+        let title = item.title.isEmpty ? "New conversation" : item.title
+        return HStack(spacing: 10) {
+            Image(systemName: archived ? "archivebox" : "trash")
+                .foregroundStyle(Theme.tx3)
+                .frame(width: 20)
+                .help(archived ? "Its conversation is in the Archive" : "Its conversation was deleted")
+            VStack(alignment: .leading, spacing: 3) {
+                if archived {
+                    Button(title) { model.selection = .conversation(item.id) }
+                        .buttonStyle(.plain)
+                        .lineLimit(1)
+                } else {
+                    Text(title).lineLimit(1).foregroundStyle(Theme.tx2)
+                }
+                HStack(spacing: 6) {
+                    BranchIcon(status: item.status, size: 10)
+                    Text(item.status.name).font(Theme.mono).lineLimit(1).truncationMode(.middle)
+                    Text("· \(item.status.repo) · \(archived ? "archived" : "deleted")").font(.caption).foregroundStyle(Theme.tx3)
+                }
+                .foregroundStyle(Theme.tx2)
+            }
+            Spacer(minLength: 8)
+            Tag(item.status.stateTitle, item.status.tone).help(item.status.facts.joined(separator: "\n"))
+            Button("Remove…") { WorktreeDialogs.shared.remove(item.id, status: item.status) }
+                .buttonStyle(.piSecondary)
+                .help("Remove this worktree’s folder; you can keep or delete its branch")
+            Menu {
+                if archived { Button("Open Conversation") { model.selection = .conversation(item.id) } }
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.status.root)]) }
+                    .disabled(item.status.state == "missing")
+                if let branch = item.status.branch {
+                    Button("Copy Branch Name") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(branch, forType: .string)
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .padding(10)
+        .panel()
+        .help(([item.status.name, item.status.root] + item.status.facts).joined(separator: "\n"))
     }
 
     private var legend: some View {

@@ -76,6 +76,18 @@ export type BranchInfo = {
 	state: BranchState;
 };
 
+/**
+ * A worktree pi² made for a conversation that is no longer in the sidebar: archived or deleted, or a sub-chat of one
+ * that is. It stays on disk until the person removes it, so the Branches page lists it.
+ */
+export type LeftBehind = {
+	id: number;
+	title: string;
+	/** "archived" can be restored, so its worktree may still be wanted; "deleted" will not come back. */
+	reason: "archived" | "deleted";
+	status: BranchInfo;
+};
+
 const POLL_MS = 5_000;
 /** How long a conversation's folder is remembered before it is read again; changes made through the app count at once. */
 const FOLDER_TTL_MS = 30_000;
@@ -267,13 +279,14 @@ export const worktrees: Feature = (_host, engine) => {
 	/** Each listed conversation's folder, with when it was read. */
 	const folders = new Map<number, { cwd: string | null; at: number }>();
 	let last: Record<string, BranchInfo> = {};
-	let lastJSON = "{}";
+	let leftBehind: LeftBehind[] = [];
+	let lastJSON = "";
 	let ticking = false;
 	let gitMissing = false;
 	/** Conversations whose worktree is being made or removed right now. */
 	const changing = new Set<number>();
 
-	const event = () => ({ event: "branches", conversations: last });
+	const event = () => ({ event: "branches", conversations: last, leftBehind });
 
 	async function save(edit: (doc: Record<string, Worktree>) => void): Promise<void> {
 		await engine.harness().commit(async (tx) => edit((await tx.doc(Worktrees)).conversations), engine.context());
@@ -289,16 +302,25 @@ export const worktrees: Feature = (_host, engine) => {
 		return cwd;
 	}
 
+	/** Why a conversation is out of the sidebar, or undefined when the sidebar lists it. */
+	function away(id: string | number): LeftBehind["reason"] | undefined {
+		const all = engine.library().conversations;
+		const own = (key: string | number | undefined): LeftBehind["reason"] | undefined => {
+			if (key === undefined) return undefined;
+			const meta = all[String(key)];
+			// Gone from the library altogether counts as deleted.
+			if (meta === undefined || meta.deleted === true) return "deleted";
+			return meta.archivedAt !== undefined || meta.archived !== undefined ? "archived" : undefined;
+		};
+		const reasons = [own(id), own(all[String(id)]?.parent)];
+		return reasons.includes("deleted") ? "deleted" : reasons.includes("archived") ? "archived" : undefined;
+	}
+
 	/** The conversations the sidebar lists: not archived or deleted, nor a sub-chat of one that is. */
 	function listed(): number[] {
-		const all = engine.library().conversations;
-		const away = (id: string | number | undefined) => {
-			const meta = id === undefined ? undefined : all[String(id)];
-			return meta !== undefined && (meta.deleted === true || meta.archivedAt !== undefined || meta.archived !== undefined);
-		};
-		return Object.entries(all)
-			.filter(([id, meta]) => !away(id) && !away(meta.parent))
-			.map(([id]) => Number(id));
+		return Object.keys(engine.library().conversations)
+			.filter((id) => away(id) === undefined)
+			.map(Number);
 	}
 
 	async function refresh(): Promise<void> {
@@ -319,8 +341,18 @@ export const worktrees: Feature = (_host, engine) => {
 				const info = await byFolder.get(key)!;
 				if (info !== undefined) next[String(id)] = info;
 			}
-			const json = JSON.stringify(next);
+			// Worktrees of conversations put away: still on disk until the person removes them.
+			const behind: LeftBehind[] = [];
+			for (const [key, own] of Object.entries(mine)) {
+				const reason = away(key);
+				if (reason === undefined) continue;
+				const status = await inspect(own.path, own);
+				if (status !== undefined) behind.push({ id: Number(key), title: engine.library().conversations[key]?.title ?? "", reason, status });
+			}
+			behind.sort((a, b) => (mine[String(b.id)]?.createdAt ?? 0) - (mine[String(a.id)]?.createdAt ?? 0));
+			const json = JSON.stringify([next, behind]);
 			last = next;
+			leftBehind = behind;
 			if (json !== lastJSON) {
 				lastJSON = json;
 				engine.broadcast(event());

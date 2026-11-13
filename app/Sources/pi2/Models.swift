@@ -101,6 +101,19 @@ struct BranchStatus: Codable, Equatable {
     let operation: String?
     /// "conflict", "changes", "detached", "merged", "ahead", "behind", "clean" or "missing".
     let state: String
+
+    /// Whether removing the worktree would lose uncommitted work.
+    var isDirty: Bool { changes > 0 || conflicts > 0 }
+}
+
+/// A worktree pi² made for a conversation that was archived or deleted since: still on disk until it is removed.
+/// Listed on the Branches page.
+struct LeftBehindWorktree: Codable, Identifiable, Equatable {
+    let id: Int
+    let title: String
+    /// "archived" (it can be restored, and may still want its worktree) or "deleted".
+    let reason: String
+    let status: BranchStatus
 }
 
 /// A conversation in the Archive: out of the sidebar, still readable and searchable, and restorable.

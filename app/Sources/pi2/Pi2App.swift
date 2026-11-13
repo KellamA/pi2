@@ -116,12 +116,33 @@ final class AppModel {
         deleting = PendingDelete(id: id, title: title)
     }
 
-    func confirmDelete() {
+    /// Deletes the conversation being asked about. With `removingWorktree`, its worktree goes too (its branch is kept);
+    /// only offered when the worktree has nothing uncommitted. The conversation is deleted first, which stops its agent,
+    /// since a worktree cannot be removed while its agent works.
+    func confirmDelete(removingWorktree: Bool = false) {
         if let deleting {
             if selectedConversationID == deleting.id { selection = nextAfter(deleting.id) }
-            engine.perform("conversation.delete", ["id": deleting.id])
+            let id = deleting.id
+            if removingWorktree {
+                Task {
+                    do {
+                        _ = try await engine.call("conversation.delete", ["id": id])
+                        _ = try await engine.call("worktree.remove", ["id": id, "force": false, "deleteBranch": false])
+                    } catch {
+                        engine.lastError = error.localizedDescription
+                    }
+                }
+            } else {
+                engine.perform("conversation.delete", ["id": id])
+            }
         }
         deleting = nil
+    }
+
+    /// The worktree pi² made for a conversation, whether it is in the sidebar or the Archive.
+    func ownWorktree(_ id: Int) -> BranchStatus? {
+        if let status = engine.branches[id], status.managed { return status }
+        return engine.leftBehind.first { $0.id == id }?.status
     }
 
     /// Puts a conversation in the Archive. The window moves on to the next conversation, as it would in a mail app.
@@ -343,10 +364,25 @@ struct RootView: View {
             "Delete “\(model.deleting.map { $0.title.isEmpty ? "New conversation" : $0.title } ?? "")”?",
             isPresented: Binding(get: { model.deleting != nil }, set: { if !$0 { model.deleting = nil } })
         ) {
-            Button("Delete", role: .destructive) { model.confirmDelete() }
+            let worktree = model.deleting.flatMap { model.ownWorktree($0.id) }
+            if let worktree, !worktree.isDirty {
+                Button("Delete and Remove Worktree", role: .destructive) { model.confirmDelete(removingWorktree: true) }
+                Button("Delete, Keep Worktree") { model.confirmDelete() }
+            } else {
+                Button("Delete", role: .destructive) { model.confirmDelete() }
+            }
             Button("Cancel", role: .cancel) { model.deleting = nil }
         } message: {
-            Text("Any work it is doing is stopped, and pi² will not show it again or bring it back. Its text stays in pi²’s data on this Mac. To put it away but keep it, archive it instead.")
+            let worktree = model.deleting.flatMap { model.ownWorktree($0.id) }
+            let base = "Any work it is doing is stopped, and pi² will not show it again or bring it back. Its text stays in pi²’s data on this Mac. To put it away but keep it, archive it instead."
+            if let worktree {
+                let branch = worktree.branch.map { "Its branch \($0)" } ?? "Its commits"
+                Text(worktree.isDirty
+                    ? "\(base)\n\nIts worktree of \(worktree.repo) has uncommitted changes, so it is kept. Branches lists it under Left Behind, where it can be removed later."
+                    : "\(base)\n\nIts worktree of \(worktree.repo) can be removed with it. \(branch) stay\(worktree.branch == nil ? "" : "s") in the repository either way.")
+            } else {
+                Text(base)
+            }
         }
         .alert("Something went wrong", isPresented: Binding(get: { engine.lastError != nil }, set: { if !$0 { engine.lastError = nil } })) {
             Button("OK") { engine.lastError = nil }
@@ -390,7 +426,7 @@ struct SidebarView: View {
                 }
             }
 
-            if !engine.branches.isEmpty || model.selection == .branches {
+            if !engine.branches.isEmpty || !engine.leftBehind.isEmpty || model.selection == .branches {
                 navRow("Branches", icon: "arrow.triangle.branch", tag: .branches) {
                     let worktrees = engine.branches.values.filter(\.managed).count
                     if engine.branches.values.contains(where: { $0.state == "conflict" }) {

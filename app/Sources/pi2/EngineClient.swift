@@ -53,6 +53,8 @@ final class EngineClient {
     private(set) var mcpServers: [McpServer] = []
     /// The branch each conversation's folder is on, for conversations working in a git repository.
     private(set) var branches: [Int: BranchStatus] = [:]
+    /// Worktrees of conversations that were archived or deleted, newest first.
+    private(set) var leftBehind: [LeftBehindWorktree] = []
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     var signIn: SignInFlow?
@@ -291,7 +293,10 @@ final class EngineClient {
         let autoArchiveDays: Int?
     }
     private struct AgentsEvent: Decodable { let agents: [AgentProfile] }
-    private struct BranchesEvent: Decodable { let conversations: [String: BranchStatus] }
+    private struct BranchesEvent: Decodable {
+        let conversations: [String: BranchStatus]
+        let leftBehind: [LeftBehindWorktree]?
+    }
     private struct InboxEvent: Decodable { let items: [InboxItem] }
     private struct ActivityEvent: Decodable { let runs: [ActivityRun] }
     private struct SchedulesEvent: Decodable { let schedules: [Schedule] }
@@ -345,6 +350,7 @@ final class EngineClient {
             case "branches":
                 let event = try decoder.decode(BranchesEvent.self, from: line)
                 branches = Dictionary(uniqueKeysWithValues: event.conversations.compactMap { key, value in Int(key).map { ($0, value) } })
+                leftBehind = event.leftBehind ?? []
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 providers = event.providers
