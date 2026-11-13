@@ -589,9 +589,9 @@ struct ConversationCommands: View {
             .disabled(id == nil)
         Divider()
         Menu("Model") {
-            ForEach(Dictionary(grouping: engine.models, by: \.providerName).sorted { $0.key < $1.key }, id: \.key) { group in
-                Menu(group.key) {
-                    ForEach(group.value) { item in
+            ForEach(engine.modelGroups, id: \.provider) { group in
+                Menu(group.name) {
+                    ForEach(group.models, id: \.ref) { item in
                         Button(item.name) {
                             if let id { engine.configure(id, ["model": ["provider": item.provider, "modelId": item.id]]) }
                         }

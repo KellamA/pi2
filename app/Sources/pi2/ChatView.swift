@@ -324,15 +324,9 @@ struct ModelMenu: View {
         return engine.allModels.first { $0.ref == ref }
     }
 
-    private var groups: [(provider: String, name: String, models: [ModelInfo])] {
-        Dictionary(grouping: engine.models, by: \.provider)
-            .map { (provider: $0.key, name: $0.value[0].providerName, models: $0.value) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
     var body: some View {
         Menu {
-            ForEach(groups, id: \.provider) { group in
+            ForEach(engine.modelGroups, id: \.provider) { group in
                 if group.models.count > 12 {
                     Menu(group.name) { modelButtons(group.models) }
                 } else {
@@ -368,7 +362,7 @@ struct ModelMenu: View {
 
     @ViewBuilder
     private func modelButtons(_ models: [ModelInfo]) -> some View {
-        ForEach(models) { model in
+        ForEach(models, id: \.ref) { model in
             Button {
                 engine.configure(id, ["model": ["provider": model.provider, "modelId": model.id]])
             } label: {
