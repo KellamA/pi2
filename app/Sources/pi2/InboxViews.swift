@@ -95,16 +95,24 @@ struct InboxCard: View {
                     .background(Color.black.opacity(0.12), in: .rect(cornerRadius: 7))
                     .accessibilityLabel("The text to be typed")
                 }
-                HStack(spacing: 8) {
-                    Button("Allow Once") { decide("once") }
-                        .buttonStyle(.piPrimary)
-                    if let always {
-                        Button(always.title) { decide("always") }
-                            .buttonStyle(.piSecondary)
-                            .help(always.help)
+                // Four choices do not fit a narrow card, such as the menu bar's, on one line; they wrap to two.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        onceButton
+                        ruleButton
+                        alwaysButton
+                        denyButton
                     }
-                    Button("Deny") { decide("deny") }
-                        .buttonStyle(.piDanger)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            onceButton
+                            ruleButton
+                        }
+                        HStack(spacing: 8) {
+                            alwaysButton
+                            denyButton
+                        }
+                    }
                 }
             } else {
                 Text(item.question ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -124,6 +132,39 @@ struct InboxCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 13).padding(.vertical, 11)
         .panel(fill: isApproval ? Theme.warn.opacity(0.10) : Theme.panel, border: isApproval ? Theme.warn.opacity(0.4) : Theme.line2)
+    }
+
+    private var onceButton: some View {
+        Button("Allow Once") { decide("once") }
+            .buttonStyle(.piPrimary)
+    }
+
+    @ViewBuilder
+    private var alwaysButton: some View {
+        if let always {
+            Button(always.title) { decide("always") }
+                .buttonStyle(.piSecondary)
+                .help(always.help)
+        }
+    }
+
+    /// For a command the engine can make a rule of: allow commands that start with the same words, in this folder, from
+    /// now on. The engine makes the rule it offered; only the choice is sent.
+    @ViewBuilder
+    private var ruleButton: some View {
+        if item.tool == "bash", let rule = item.rule, !rule.words.isEmpty {
+            let who = item.agentName ?? "This agent"
+            Button { decide("rule") } label: {
+                Text("Always Allow \(Text(rule.command).font(.system(size: 12, design: .monospaced))) Here")
+            }
+            .buttonStyle(.piSecondary)
+            .help("\(who) may then run commands that start with “\(rule.command)” in \(engine.folderName(rule.folder)) without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent’s settings.")
+        }
+    }
+
+    private var denyButton: some View {
+        Button("Deny") { decide("deny") }
+            .buttonStyle(.piDanger)
     }
 
     private func decide(_ decision: String) {

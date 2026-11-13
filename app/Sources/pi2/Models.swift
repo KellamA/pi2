@@ -188,6 +188,15 @@ struct ReferenceFile: Codable, Equatable, Identifiable {
     var id: String { path }
 }
 
+/// Shell commands an agent may run without asking, in one folder: those that start with `words`.
+struct CommandRule: Codable, Equatable, Identifiable {
+    let folder: String
+    let words: [String]
+    let createdAt: Double
+    var id: String { folder + "\n" + command }
+    var command: String { words.joined(separator: " ") }
+}
+
 /// A saved setup that conversations start from.
 struct AgentProfile: Codable, Equatable, Identifiable {
     var id: String
@@ -209,6 +218,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var computer: ComputerSettings?
     /// Whether the agent may browse the web in pi²'s own browser.
     var browser: BrowserSettings?
+    /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
+    var commandRules: [CommandRule]?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -241,6 +252,8 @@ struct InboxItem: Codable, Equatable, Identifiable {
     let question: String?
     /// For a browser action: the site it would act on, which is what "always allow" then covers.
     var site: String? = nil
+    /// For a command: the rule the engine offers to make of it. Answering "rule" makes this rule; nothing else is sent.
+    var rule: RuleOffer? = nil
     let title: String
     let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
@@ -248,6 +261,13 @@ struct InboxItem: Codable, Equatable, Identifiable {
     let rootTitle: String
 
     var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
+}
+
+/// The rule an approval for a command offers: commands that start with `words`, in `folder`.
+struct RuleOffer: Codable, Equatable {
+    let words: [String]
+    let folder: String
+    var command: String { words.joined(separator: " ") }
 }
 
 /// A conversation with work in flight, as the Activity view lists it.

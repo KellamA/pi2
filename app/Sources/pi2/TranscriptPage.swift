@@ -71,8 +71,9 @@ enum TranscriptAction: Equatable {
             guard let url = Self.link(body["url"]) else { return nil }
             self = .openLink(url)
         case "decide":
+            // "rule" carries no words: the engine makes the rule it offered with the approval.
             guard let id = Self.identifier(body["inbox"]), let decision = body["decision"] as? String,
-                  ["once", "always", "deny"].contains(decision) else { return nil }
+                  ["once", "always", "rule", "deny"].contains(decision) else { return nil }
             self = .decide(inbox: id, decision: decision)
         case "answer":
             guard let id = Self.identifier(body["inbox"]), let text = body["text"] as? String,

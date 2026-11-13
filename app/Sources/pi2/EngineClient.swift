@@ -164,6 +164,14 @@ final class EngineClient {
         agents.first { $0.id == id }
     }
 
+    /// A folder as the person reads it: abbreviated with ~, or named when it is the folder conversations work in when
+    /// none was chosen.
+    func folderName(_ path: String) -> String {
+        let scratch = home.appendingPathComponent("workspace", isDirectory: true).standardizedFileURL.path
+        if URL(fileURLWithPath: path).standardizedFileURL.path == scratch { return "pi²’s scratch folder" }
+        return (path as NSString).abbreviatingWithTildeInPath
+    }
+
     // MARK: - Sign-in
 
     func startSignIn(_ provider: ProviderInfo) {

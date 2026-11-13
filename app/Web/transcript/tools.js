@@ -298,9 +298,10 @@
 	 * "failed", or "none" (no result and none coming: the run stopped first). `names` carries what only the app knows:
 	 * `mcp` (tool name to "Server: tool") and `apps` (bundle ID to app name).
 	 *
-	 * Returns `{ glyph, label, stats, title, detail }`: `label` is a list of `{text, style}` pieces for the one line,
-	 * `stats` a short figure after it, `title` the line as plain text for tooltips and VoiceOver, and `detail` what the
-	 * chevron opens (see `detailFor`).
+	 * Returns `{ glyph, label, stats, title, note }`: `label` is a list of `{text, style}` pieces for the one line,
+	 * `stats` a short figure after it, `title` the line as plain text for tooltips and VoiceOver, and `note` pieces for
+	 * a quiet remark after it (which rule let a command run without asking), empty when there is none. What the chevron
+	 * opens is `detailFor`'s.
 	 */
 	function describe(call, status, result, live, names = {}) {
 		const args = isObject(call.arguments) ? call.arguments : {};
@@ -434,8 +435,32 @@
 				if (active) label.push(t(ELLIPSIS));
 			}
 		}
-		const title = label.map((piece) => piece.text).join("") + (stats ? " " + stats : "");
-		return { glyph, label, stats, title };
+		const note = ruleNote(details);
+		const title = label.map((piece) => piece.text).join("") + (stats ? " " + stats : "") + (note.length > 0 ? " (" + note.map((piece) => piece.text).join("") + ")" : "");
+		return { glyph, label, stats, title, note };
+	}
+
+	/**
+	 * For a command that ran without asking because of the person's rules (the engine lists them in `details.allowedBy`):
+	 * which rules, so the row does not look as if nothing checked it. Empty otherwise.
+	 */
+	/** The rule an approval for a command offers to make (`pending.rule`), as `{ words, command }`, or null. */
+	function ruleOffer(pending) {
+		if (!isObject(pending) || pending.tool !== "bash" || !isObject(pending.rule) || !Array.isArray(pending.rule.words)) return null;
+		const words = pending.rule.words;
+		if (words.length === 0 || !words.every((word) => typeof word === "string" && word !== "")) return null;
+		return { words, command: words.join(" ") };
+	}
+
+	function ruleNote(details) {
+		const rules = isObject(details) && Array.isArray(details.allowedBy) ? details.allowedBy.filter((rule) => typeof rule === "string" && rule !== "") : [];
+		if (rules.length === 0) return [];
+		const pieces = [t(rules.length === 1 ? "allowed by your rule for " : "allowed by your rules for ")];
+		rules.forEach((rule, index) => {
+			if (index > 0) pieces.push(t(index === rules.length - 1 ? " and " : ", "));
+			pieces.push(code(rule));
+		});
+		return pieces;
 	}
 
 	/**
@@ -567,6 +592,7 @@
 		editDiff,
 		diffText,
 		describe,
+		ruleOffer,
 		detailFor,
 		subagentAnswer,
 		folded,

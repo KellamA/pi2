@@ -19,6 +19,8 @@
 	const char = String.fromCharCode;
 	const ELLIPSIS = char(0x2026);
 	const RSQUO = char(0x2019);
+	const LDQUO = char(0x201c);
+	const RDQUO = char(0x201d);
 
 	// MARK: - Bridge
 
@@ -701,6 +703,13 @@
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(statsElement(info.stats));
 		}
+		if (info.note.length > 0) {
+			// Which of the person's rules let a command run without asking. Shown, not copied: it is about the run, not its text.
+			const note = labelPieces(info.note);
+			note.className = "tool-label tool-note";
+			note.setAttribute("data-nocopy", "");
+			head.appendChild(note);
+		}
 		if (status === "failed") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status failed", "Failed"));
@@ -997,12 +1006,23 @@
 			};
 			const once = button("btn primary", null, "Allow Once");
 			once.addEventListener("click", () => decide("once"));
+			choices.append(once);
+			const rule = T.ruleOffer(pending);
+			if (rule) {
+				// Only the choice goes back: the engine makes the rule it offered, whatever this page shows.
+				const allowRule = button("btn", null, "Always Allow ");
+				allowRule.appendChild(el("code", "", rule.command));
+				allowRule.appendChild(document.createTextNode(" Here"));
+				allowRule.title = `${who} may then run commands that start with ${LDQUO}${rule.command}${RDQUO} in this folder without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent${RSQUO}s settings.`;
+				allowRule.addEventListener("click", () => decide("rule"));
+				choices.append(allowRule);
+			}
 			const always = button("btn", null, app ? `Always Allow in ${app}` : `Always Allow ${str(pending.tool)} Here`);
 			always.title = app ? `Stop asking about ${app} for the rest of this conversation` : `Stop asking about ${str(pending.tool)} in this conversation`;
 			always.addEventListener("click", () => decide("always"));
 			const deny = button("btn danger", null, "Deny");
 			deny.addEventListener("click", () => decide("deny"));
-			choices.append(once, always, deny);
+			choices.append(always, deny);
 			card.appendChild(choices);
 		} else {
 			card.appendChild(el("p", "card-question", str(pending.question)));
