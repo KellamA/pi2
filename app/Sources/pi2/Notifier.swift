@@ -18,8 +18,12 @@ final class Notifier {
         guard enabled, !NSApp.isActive else { return }
         let content = UNMutableNotificationContent()
         content.title = item.kind == "approval" ? "\(item.agentName ?? "An agent") needs approval" : "\(item.agentName ?? "An agent") has a question"
-        // A browser action comes described in words; other calls are shown as they were written.
-        let asked = item.tool == "browser" ? (item.question ?? "An action on a web page") : "\(item.tool): \(item.call.summary)"
+        // A browser action and a schedule come described in words; other calls are shown as they were written.
+        let asked = switch item.tool {
+        case "browser": item.question ?? "An action on a web page"
+        case "schedule_task": item.question ?? "A new schedule"
+        default: "\(item.tool): \(item.call.summary)"
+        }
         content.body = item.kind == "approval" ? asked : (item.question ?? "")
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: item.id, content: content, trigger: nil))

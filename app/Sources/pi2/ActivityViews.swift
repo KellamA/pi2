@@ -99,6 +99,7 @@ struct ActivityView: View {
                         Text(schedule.title)
                         Text(detail(schedule)).font(.caption).foregroundStyle(.secondary)
                     }
+                    .help(origin(schedule))
                     Spacer()
                     if let last = schedule.lastConversationId, engine.conversations.contains(where: { $0.id == last }) {
                         Button("Last Run") { model.selection = .conversation(last) }.buttonStyle(.plain).foregroundStyle(Theme.acc)
@@ -118,9 +119,19 @@ struct ActivityView: View {
 
     private func detail(_ schedule: Schedule) -> String {
         let agent = engine.agent(schedule.agentId)?.name ?? "Unknown agent"
-        guard schedule.enabled, let next = schedule.nextRunAt else { return "\(agent) · \(schedule.repeat.summary) · off" }
+        // The person approved an agent's schedule once, perhaps long ago; this tells it apart from the ones they made.
+        let setBy = schedule.createdBy.map { " · set by \(engine.agent($0.agentId)?.name ?? "a deleted agent")" } ?? ""
+        guard schedule.enabled, let next = schedule.nextRunAt else { return "\(agent) · \(schedule.repeat.summary) · off\(setBy)" }
         let when = Date(timeIntervalSince1970: next / 1000).formatted(date: .abbreviated, time: .shortened)
-        return "\(agent) · \(schedule.repeat.summary) · next \(when)"
+        return "\(agent) · \(schedule.repeat.summary) · next \(when)\(setBy)"
+    }
+
+    /// Where an agent's schedule came from, for the row's tooltip.
+    private func origin(_ schedule: Schedule) -> String {
+        guard let createdBy = schedule.createdBy else { return "You made this schedule" }
+        let agent = engine.agent(createdBy.agentId)?.name ?? "An agent that has since been deleted"
+        let title = engine.conversations.first { $0.id == createdBy.conversationId }?.title ?? ""
+        return title.isEmpty ? "\(agent) set this schedule, and you approved it" : "\(agent) set this schedule in “\(title)”, and you approved it"
     }
 }
 
