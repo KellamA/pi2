@@ -75,6 +75,34 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let parent: Int?
 }
 
+/// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
+/// the conversation's toolbar and the Branches page; see BranchViews.swift.
+struct BranchStatus: Codable, Equatable {
+    /// The repository's name.
+    let repo: String
+    /// The top of the checkout the conversation works in.
+    let root: String
+    /// Nil when HEAD is detached.
+    let branch: String?
+    let head: String?
+    /// A linked worktree rather than the repository's main checkout.
+    let worktree: Bool
+    /// A worktree pi² made for this conversation, which it can remove.
+    let managed: Bool
+    let upstream: String?
+    let ahead: Int
+    let behind: Int
+    let base: String?
+    /// Commits not on `base` yet.
+    let unmerged: Int?
+    let changes: Int
+    let conflicts: Int
+    /// A merge, rebase, cherry-pick or revert that stopped half way.
+    let operation: String?
+    /// "conflict", "changes", "detached", "merged", "ahead", "behind", "clean" or "missing".
+    let state: String
+}
+
 /// A conversation in the Archive: out of the sidebar, still readable and searchable, and restorable.
 struct ArchivedConversation: Codable, Identifiable, Equatable {
     let id: Int
@@ -225,6 +253,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var instructions: String
     var access: String
     var cwd: String?
+    /// Whether each conversation the person starts gets a git worktree of its own, made from `cwd`.
+    var worktree: Bool?
     var delegates: [String]
     var maxTurns: Int?
     var codeMode: Bool?
@@ -249,6 +279,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "thinkingLevel": thinkingLevel as Any? ?? NSNull(),
             "instructions": instructions, "access": access,
             "cwd": cwd as Any? ?? NSNull(),
+            "worktree": worktree ?? false,
             "delegates": delegates,
             "maxTurns": maxTurns as Any? ?? NSNull(),
             "codeMode": codeMode ?? false,

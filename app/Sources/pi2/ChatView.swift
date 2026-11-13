@@ -97,6 +97,7 @@ struct ChatView: View {
                         .help("Go to the conversation whose agent opened this sub-chat")
                 }
                 if engine.agent(state?.agent.agentId)?.browser?.enabled == true { BrowserButton(engine: engine, conversationID: id) }
+                if let branch = engine.branches[id] { BranchMenu(engine: engine, id: id, status: branch) }
                 ContextMeter(engine: engine, id: id, state: state)
                 ModelMenu(engine: engine, id: id, agent: state?.agent)
                 ToolsMenu(engine: engine, id: id, agent: state?.agent)
@@ -399,6 +400,14 @@ struct ToolsMenu: View {
                 Text("Folder: \(cwd)")
             }
             Button("Choose Folder…") { engine.chooseFolder(for: id) }
+            if let branch = engine.branches[id] {
+                if branch.managed {
+                    Button("Remove Worktree…") { WorktreeDialogs.shared.remove(id, status: branch) }
+                } else {
+                    Button("New Worktree…") { WorktreeDialogs.shared.create(id, engine: engine) }
+                        .help("Move this conversation into a checkout of its own on a new branch")
+                }
+            }
         } label: {
             Label(label, systemImage: access == "none" ? "wrench.and.screwdriver" : "wrench.and.screwdriver.fill")
                 .labelStyle(.titleAndIcon)

@@ -6,13 +6,14 @@ enum Selection: Hashable {
     case activity
     case usage
     case archive
+    case branches
     case agent(String)
     case conversation(Int)
 }
 
 #if DEBUG
 extension Selection {
-    /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "agent:<id>", or
+    /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
     /// a conversation's number or title. For taking pictures of the app; see docs/development.md.
     init?(launch value: String?, conversations: [ConversationSummary]) {
         guard let value, !value.isEmpty else { return nil }
@@ -21,6 +22,7 @@ extension Selection {
         case "activity": self = .activity
         case "usage": self = .usage
         case "archive": self = .archive
+        case "branches": self = .branches
         default:
             if value.hasPrefix("agent:") {
                 self = .agent(String(value.dropFirst("agent:".count)))
@@ -261,6 +263,8 @@ struct RootView: View {
                 UsageView(model: model)
             case .archive:
                 ArchiveView(model: model)
+            case .branches:
+                BranchesView(model: model)
             case .agent(let id):
                 AgentEditor(model: model, agentID: id)
                     .id(id)
@@ -272,6 +276,7 @@ struct RootView: View {
             }
         }
         .background(WindowOpener(model: model))
+        .worktreeDialogs(engine: engine)
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
         .sheet(isPresented: Binding(get: { engine.onboarded == false }, set: { _ in })) {
             OnboardingView(model: model)
@@ -350,6 +355,19 @@ struct SidebarView: View {
                 if !engine.archived.isEmpty {
                     Text("\(engine.archived.count)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
                         .accessibilityLabel("\(engine.archived.count) archived")
+                }
+            }
+
+            if !engine.branches.isEmpty || model.selection == .branches {
+                navRow("Branches", icon: "arrow.triangle.branch", tag: .branches) {
+                    let worktrees = engine.branches.values.filter(\.managed).count
+                    if engine.branches.values.contains(where: { $0.state == "conflict" }) {
+                        Tag("conflict", .bad)
+                    } else if worktrees > 0 {
+                        Text("\(worktrees)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
+                            .help("\(worktrees) conversation\(worktrees == 1 ? "" : "s") in a worktree of its own")
+                            .accessibilityLabel("\(worktrees) worktrees")
+                    }
                 }
             }
 
@@ -486,6 +504,12 @@ struct SidebarView: View {
                 : engine.inbox.contains { $0.conversationId == conversation.id }
             if needsYou {
                 Tag("needs you", .warn).accessibilityLabel("Needs you")
+            }
+            // Which branch the conversation's folder is on, coloured by how it stands. A sub-chat in the same checkout
+            // as its parent leaves it to the parent's row.
+            if let branch = engine.branches[conversation.id],
+               conversation.parent.flatMap({ engine.branches[$0]?.root }) != branch.root {
+                BranchBadge(engine: engine, conversationID: conversation.id, status: branch)
             }
             if subChats > 0 {
                 let collapsed = model.collapsed.contains(conversation.id)

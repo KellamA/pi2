@@ -109,6 +109,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **MCP servers**: add tools from other apps and services, per agent.
 - **Scripts**: let a model chain many tool calls in one step.
 - **Archive**: put a conversation away without losing it. It leaves the sidebar, stays readable and searchable, and can be restored; pi² can archive what has gone unused for a while on its own. [How the Archive works](docs/archive.md).
+- **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).
 - **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.
 - **Command palette** (⌘K) and **Quick Ask** from anywhere (⌃⌥Space).
 - **Backup and restore** of everything except your keys.
@@ -184,6 +185,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md).
 - [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
+- [Worktrees and branches](docs/worktrees.md): working on one repository in parallel, and what the branch colours mean.
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Releasing](docs/releasing.md): signed downloads, updates, and what to set up before the first release.
 - [Changelog](CHANGELOG.md)

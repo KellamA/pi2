@@ -16,6 +16,7 @@ import { limits } from "./limits.ts";
 import { look } from "./look.ts";
 import { plan } from "./plan.ts";
 import { selfSchedule } from "./selfschedule.ts";
+import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
 export type Engine = {
@@ -30,6 +31,10 @@ export type Engine = {
 	library(): { conversations: Record<string, Meta> };
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
+	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
+	busy(id: number): boolean;
+	/** How many apps are connected. */
+	apps(): number;
 };
 
 export type FeatureParts = {
@@ -49,8 +54,12 @@ export type FeatureParts = {
 	greeting?(): unknown[];
 	/** A provider was signed in or out, or its key or endpoint changed. */
 	providersChanged?(): void;
+	/** The person started a conversation from `agent` (not a sub-chat, fork or scheduled run). */
+	created?(id: number, agent: AgentProfile): Promise<void>;
+	/** A conversation's folder was changed by the person. */
+	folderChanged?(id: number): void;
 };
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule];
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees];

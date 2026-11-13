@@ -37,6 +37,7 @@ import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
+import { inRepository } from "./worktrees.ts";
 import { preparePlan } from "./plan.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
@@ -176,6 +177,8 @@ const engine: Engine = {
 	agents: () => agents,
 	library: () => library,
 	providers: () => providers,
+	busy: (id) => working.has(id),
+	apps: () => clients.size,
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
 const pi2 = pi2Extension(host);
@@ -660,6 +663,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		);
 		settings.lastAgent = agent.id;
 		saveSettings();
+		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id };
 	},
 	"conversation.open": async (params, client) => {
@@ -918,6 +922,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			const cwd = params.cwd === null ? null : text(params, "cwd");
 			if (cwd !== null && !(existsSync(cwd) && statSync(cwd).isDirectory())) throw new Error(`Not a folder: ${cwd}`);
 			await conv.configure({ cwd }, context);
+			for (const feature of host.features) feature.folderChanged?.(id);
 		}
 		if (params.access !== undefined) {
 			const access = params.access as Access;
@@ -988,6 +993,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (input === undefined || name === "") throw new Error("Give the agent a name");
 		if (input.access !== undefined && !ACCESS_LEVELS.includes(input.access)) throw new Error(`Unknown access level: ${String(input.access)}`);
 		if (typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
+		if (input.worktree !== undefined && typeof input.worktree !== "boolean") throw new Error("worktree must be true or false");
 		if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
 		const taken = Object.values(agents).some((other) => other.id !== input.id && other.name.toLowerCase() === name.toLowerCase());
 		if (taken) throw new Error(`There is already an agent called ${name}`);
@@ -1009,6 +1015,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			instructions: input.instructions ?? previous?.instructions ?? "",
 			access: input.access ?? previous?.access ?? "none",
 			cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
+			worktree: input.worktree ?? previous?.worktree ?? false,
 			delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
 			maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
 			codeMode: input.codeMode ?? previous?.codeMode ?? false,
@@ -1019,6 +1026,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
+		if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
+			throw new Error("To give each conversation its own worktree, choose a folder in a git repository for the agent");
+		}
 		await harness.commit(async (tx) => {
 			const doc = await tx.doc(Agents);
 			// Rules are kept as they are now, whatever the app sent: they change only through their own requests.

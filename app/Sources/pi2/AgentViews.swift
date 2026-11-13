@@ -213,9 +213,14 @@ struct AgentEditor: View {
                             Button("Choose…") {
                                 if let folder = EngineClient.pickFolder() { draft.wrappedValue.cwd = folder }
                             }
-                            if agent.cwd != nil { Button("Clear") { draft.wrappedValue.cwd = nil } }
+                            if agent.cwd != nil { Button("Clear") { draft.wrappedValue.cwd = nil; draft.wrappedValue.worktree = false } }
                         }
                     }
+                    Toggle(isOn: Binding(get: { agent.worktree ?? false }, set: { draft.wrappedValue.worktree = $0 })) {
+                        Text("Give each conversation its own worktree")
+                        Text("Each new conversation works on a branch of its own in a separate checkout of the folder’s git repository, so several can change it at once.")
+                    }
+                    .disabled(agent.cwd == nil && agent.worktree != true)
                     TextField("Turn limit per run", text: $turnsText, prompt: Text("No limit"))
                         .onChange(of: turnsText) { _, value in
                             draft.wrappedValue.maxTurns = Int(value.trimmingCharacters(in: .whitespaces)).flatMap { $0 >= 1 ? $0 : nil }

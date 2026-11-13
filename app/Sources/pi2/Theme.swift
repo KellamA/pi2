@@ -20,6 +20,10 @@ enum Theme {
     static let ok = dynamic(dark: 0x4CC38A, light: 0x1D9A60)
     static let warn = dynamic(dark: 0xF0B24A, light: 0xB87507)
     static let bad = dynamic(dark: 0xF2647A, light: 0xD3384F)
+    /// A branch with commits of its own not yet pushed or merged.
+    static let ahead = dynamic(dark: 0x5BA8FF, light: 0x1F6FDB)
+    /// A branch whose work is merged, as code hosts show it.
+    static let merged = dynamic(dark: 0xB48CFF, light: 0x8250DF)
     /// Text on an accent-filled button.
     static let onAcc = dynamic(dark: 0x10112A, light: 0xFFFFFF)
 
@@ -79,7 +83,7 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
 /// A small tinted label: a tool's name, a status, a count.
 struct Tag: View {
-    enum Tone { case neutral, acc, ok, warn, bad }
+    enum Tone { case neutral, acc, ok, warn, bad, ahead, merged }
     let text: String
     var tone: Tone = .neutral
 
@@ -95,6 +99,8 @@ struct Tag: View {
         case .ok: Theme.ok
         case .warn: Theme.warn
         case .bad: Theme.bad
+        case .ahead: Theme.ahead
+        case .merged: Theme.merged
         }
     }
 
