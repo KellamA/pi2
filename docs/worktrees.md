@@ -35,7 +35,16 @@ Choose **Remove Worktree…** from the same places. The conversation goes back t
 - **Remove Worktree and Branch** deletes the branch too, but only if everything on it is merged. A branch with unmerged commits is kept, and pi² says so.
 - A worktree with uncommitted changes can only be removed by discarding them (**Remove and Discard Changes**). Commit them first to keep them.
 
-A worktree cannot be removed while its agent is working. Archiving or deleting a conversation leaves its worktree where it is; `git worktree list` in the repository shows it, and `git worktree remove` removes it.
+A worktree cannot be removed while its agent is working.
+
+## Worktrees left behind
+
+Archiving or deleting a conversation leaves its worktree where it is, with any work in it: an archived conversation can be restored and carry on there.
+
+- When you delete a conversation whose worktree has nothing uncommitted, pi² offers **Delete and Remove Worktree**. The branch is kept. A worktree with uncommitted changes is always kept.
+- **Branches** lists every worktree whose conversation was archived or deleted under **Left Behind**, with how its branch stands. **Remove…** asks the same questions as removing any other worktree: keep the branch or delete it too (only if merged), or discard uncommitted changes.
+
+Removing the worktree of an archived conversation moves it back to the folder it worked in before, so if you restore it, it carries on there.
 
 If a worktree's folder is deleted by hand, its icon turns grey and says it is missing. Removing it then lets git forget it.
 

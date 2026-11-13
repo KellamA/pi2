@@ -234,6 +234,28 @@ try {
 	const again = await Client.attach();
 	await again.until("worktree remembered", () => again.branch(c)?.managed === true);
 	step("after a restart the worktree is still known as the conversation's own");
+
+	// Archived or deleted, its worktree stays on disk and is listed as left behind, where it can be removed.
+	const behind = (id: number) => again.events.branches?.leftBehind?.find((w: Event) => w.id === id);
+	await again.call("conversation.archive", { id: c });
+	await again.call("branches.refresh");
+	let left = await again.until("archived worktree left behind", () => behind(c));
+	assert.equal(left.reason, "archived");
+	assert.equal(left.status.managed, true);
+	assert.equal(left.status.state, "clean");
+	assert.equal(again.branch(c), undefined, "an archived conversation is not among the sidebar's branches");
+	await again.call("conversation.unarchive", { id: c });
+	await again.call("branches.refresh");
+	await again.until("restored with its worktree", () => again.branch(c)?.managed === true && behind(c) === undefined);
+	await again.call("conversation.delete", { id: c });
+	await again.call("branches.refresh");
+	left = await again.until("deleted worktree left behind", () => behind(c)?.reason === "deleted" && behind(c));
+	assert.ok(existsSync(left.status.root), "deleting the conversation leaves its worktree on disk");
+	await again.call("worktree.remove", { id: c });
+	await again.until("no longer left behind", () => behind(c) === undefined);
+	assert.equal(existsSync(left.status.root), false, "removing it deletes the worktree's folder");
+	assert.ok(run(project, "branch").includes(left.status.branch), "and keeps its branch");
+	step("an archived or deleted conversation's worktree is listed as left behind, and can be removed");
 	console.log("PASS");
 } finally {
 	engine.kill("SIGTERM");

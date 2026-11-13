@@ -7,6 +7,7 @@ What changed in each version, newest first.
 ### Added
 - **Worktrees.** A conversation in a git repository can move into a worktree of its own, on a new branch, so several agents can change one project at once. An agent can be set to start every conversation in one. Removing a worktree takes the conversation back to where it was and keeps a branch with unmerged work. See [docs/worktrees.md](docs/worktrees.md).
 - **Branch tracker.** Each conversation working in a git repository shows its branch next to it in the sidebar and in its toolbar: a plain icon for the main checkout, a boxed one for a worktree, coloured by how the branch stands (changes, commits to push or merge, merged, conflicts). Branches in the sidebar lists them all by repository.
+- **Worktrees left behind.** Deleting a conversation offers to remove its worktree too, when nothing in it is uncommitted. Branches lists the worktrees of archived and deleted conversations under Left Behind, each with a Remove button.
 
 ## 0.6.0
 
