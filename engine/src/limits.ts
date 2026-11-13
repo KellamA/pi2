@@ -540,7 +540,8 @@ export function observed(provider: Provider, observers: Observers): Provider {
 
 // ---- The tracker
 
-const MIN_INTERVAL_MS = Number(process.env.PI2_LIMITS_MIN_INTERVAL_MS ?? 60_000);
+/** The least time between two requests to one provider's usage address. Shorter only in tests. */
+const MIN_INTERVAL_MS = ((value) => (Number.isFinite(value) && value >= 0 ? value : 60_000))(Number(process.env.PI2_LIMITS_MIN_INTERVAL_MS ?? 60_000));
 /** How long a usage address has to answer. */
 const FETCH_TIMEOUT_MS = 6_000;
 /** Renewing a token is pi-ai's work and has its own limit; this only stops waiting for it. */
@@ -610,11 +611,15 @@ async function askUsage(engine: Engine, id: string, address: UsageAddress): Prom
 			redirect: "error",
 			signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 		});
-		if (response.status === 429) throw new LimitsError(`${address.name} asked pi² to check less often. It will try again later.`, retryAfterMs(response.headers.get("retry-after")));
-		if (response.status === 401 || response.status === 403) {
-			throw new LimitsError(`${address.name} did not accept the sign-in (${response.status}). Signing in again in Settings › Providers may fix it.`);
+		if (!response.ok) {
+			// What a refusal says is not needed (and could quote the request): let the connection go.
+			void response.body?.cancel().catch(() => {});
+			if (response.status === 429) throw new LimitsError(`${address.name} asked pi² to check less often. It will try again later.`, retryAfterMs(response.headers.get("retry-after")));
+			if (response.status === 401 || response.status === 403) {
+				throw new LimitsError(`${address.name} did not accept the sign-in (${response.status}). Signing in again in Settings › Providers may fix it.`);
+			}
+			throw new LimitsError(`${address.name} answered ${response.status}.`);
 		}
-		if (!response.ok) throw new LimitsError(`${address.name} answered ${response.status}.`);
 		body = await response.text();
 	} catch (error) {
 		if (error instanceof LimitsError) throw error;
@@ -730,8 +735,10 @@ class LimitsTracker {
 
 	/** What an answer to a request said, if anything. A run on a subscription also leads to asking, once it is over. */
 	#answered(id: string, reading: Reading | undefined): void {
+		// Only for a subscription sign-in: the same provider used with a key has no plan windows to show.
+		if (!this.#signedIn.includes(id)) return;
 		if (reading !== undefined) this.#record(id, reading, "responses");
-		if (!this.#signedIn.includes(id) || SOURCES[id]?.usage === undefined) return;
+		if (SOURCES[id]?.usage === undefined) return;
 		const state = this.#state(id);
 		clearTimeout(state.afterRun);
 		state.afterRun = setTimeout(() => {

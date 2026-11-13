@@ -997,6 +997,32 @@ try {
 		});
 		await new Promise<void>((resolve) => standIn.listen(0, "127.0.0.1", resolve));
 		const standInUrl = `http://127.0.0.1:${(standIn.address() as { port: number }).port}`;
+		// Copilot reports only in the headers of its answers. Its sign-in names the address to send requests to, and
+		// pi-ai always uses https for it: a stand-in over TLS, with a certificate made here that only the second engine
+		// trusts.
+		const { createServer: createTlsServer } = await import("node:https");
+		const { GITHUB_COPILOT_MODELS } = await import("@earendil-works/pi-ai/providers/github-copilot.models");
+		const copilotModel = Object.values(GITHUB_COPILOT_MODELS).find((model: any) => model.api === "openai-completions")!.id;
+		execFileSync("/usr/bin/openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(limitsHome, "key.pem"), "-out", join(limitsHome, "cert.pem"), "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+		let copilotAuthorization: string | undefined;
+		const copilotStandIn = createTlsServer({ key: readFileSync(join(limitsHome, "key.pem")), cert: readFileSync(join(limitsHome, "cert.pem")) }, (request, response) => {
+			if (request.method !== "POST" || !request.url?.endsWith("/chat/completions")) return void response.writeHead(404).end();
+			copilotAuthorization = request.headers.authorization;
+			request.resume().on("end", () => {
+				response.writeHead(200, {
+					"content-type": "text/event-stream",
+					"x-quota-snapshot-premium_interactions": `ent=300&ov=0.0&ovPerm=false&rem=62.5&rst=${encodeURIComponent(new Date(weekReset).toISOString())}`,
+					"x-quota-snapshot-chat": "ent=-1&ov=0.0&ovPerm=false&rem=100.0&totRem=-1",
+				});
+				const chunk = (delta: object, finish: string | null) =>
+					response.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: copilotModel, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+				chunk({ role: "assistant", content: "Hello from the Copilot stand-in." }, null);
+				chunk({}, "stop");
+				response.end("data: [DONE]\n\n");
+			});
+		});
+		await new Promise<void>((resolve) => copilotStandIn.listen(0, "127.0.0.1", resolve));
+		const copilotToken = `tid=limits-test;exp=9999999999;proxy-ep=127.0.0.1:${(copilotStandIn.address() as { port: number }).port};`;
 		let log = "";
 		const startLimitsEngine = () => {
 			const child = spawn(process.execPath, [main], {
@@ -1008,6 +1034,7 @@ try {
 					PI2_LIMITS_CODEX_URL: `${standInUrl}/backend-api/wham/usage`,
 					PI2_LIMITS_KIMI_URL: `${standInUrl}/coding/v1/usages`,
 					PI2_LIMITS_MIN_INTERVAL_MS: "1500",
+					NODE_EXTRA_CA_CERTS: join(limitsHome, "cert.pem"),
 				},
 				stdio: ["ignore", "ignore", "pipe"],
 			});
@@ -1042,6 +1069,7 @@ try {
 		try {
 			await store.modify("anthropic", async () => ({ type: "oauth", access: claudeToken, refresh: "limits-test-refresh-a", expires: notDue }));
 			await store.modify("openai-codex", async () => ({ type: "oauth", access: codexToken, refresh: "limits-test-refresh-c", expires: notDue, accountId: "acct-limits-test" }));
+			await store.modify("github-copilot", async () => ({ type: "oauth", access: copilotToken, refresh: "limits-test-refresh-g", expires: notDue, availableModelIds: [copilotModel] }));
 			limitsEngine = startLimitsEngine();
 			let watcher = await attachLimits();
 			const limitsOf = (id: string): any => watcher.events.limits?.providers?.find((p: any) => p.id === id);
@@ -1054,17 +1082,31 @@ try {
 			assert.equal(claude.windows[0].resetsAt, Date.parse(new Date(fiveReset).toISOString()));
 			const codex = limitsOf("openai-codex");
 			assert.deepEqual([codex.name, codex.plan, codex.windows.length], ["OpenAI Codex", "Plus", 3]);
-			assert.deepEqual(watcher.events.limits.providers.map((p: any) => p.id).sort(), ["anthropic", "openai-codex"], "only the signed-in subscriptions");
+			assert.deepEqual(watcher.events.limits.providers.map((p: any) => p.id).sort(), ["anthropic", "github-copilot", "openai-codex"], "only the signed-in subscriptions");
 			assert.equal(seen.anthropic!.authorization, `Bearer ${claudeToken}`);
 			assert.equal(seen.anthropic!["anthropic-beta"], "oauth-2025-04-20");
 			assert.equal(seen.codex!.authorization, `Bearer ${codexToken}`);
 			assert.equal(seen.codex!["chatgpt-account-id"], "acct-limits-test");
 
+			// Copilot has nothing to show until a request on it has been answered; then its premium requests show,
+			// read from that answer's headers on the way through, and the answer itself is unchanged.
+			assert.deepEqual([limitsOf("github-copilot").reports, limitsOf("github-copilot").windows], ["responses", []]);
+			const { id: onCopilot } = await watcher.call("conversation.create");
+			await watcher.call("conversation.configure", { id: onCopilot, model: { provider: "github-copilot", modelId: copilotModel } });
+			await watcher.call("conversation.open", { id: onCopilot });
+			await watcher.call("submit", { id: onCopilot, text: "hello" });
+			const copilotAnswer = await watcher.idle(onCopilot);
+			assert.ok(copilotAnswer.items.some((i) => i.kind === "assistant" && i.text.includes("Hello from the Copilot stand-in.")), JSON.stringify(copilotAnswer.items));
+			assert.equal(copilotAuthorization, `Bearer ${copilotToken}`);
+			await watcher.until("copilot read from its answer", () => limitsOf("github-copilot")?.windows.length > 0);
+			assert.deepEqual(rows(limitsOf("github-copilot")), [["premium", "Premium requests", 37.5]]);
+			assert.equal(limitsOf("github-copilot").source, "responses");
+
 			// Asked again at once: within the minimum interval nothing is sent.
 			const firstHits = { ...hits };
 			let answer = await watcher.call("limits.refresh");
 			assert.deepEqual(hits, firstHits, "no second request within the interval");
-			assert.equal(answer.providers.length, 2);
+			assert.equal(answer.providers.length, 3);
 			await assert.rejects(watcher.call("limits.refresh", { id: "xai" }), /not signed in/);
 
 			// An answer that cannot be read: said plainly, with when, and the last good figures kept.
@@ -1097,7 +1139,7 @@ try {
 
 			// Signing out takes a subscription off the list.
 			await watcher.call("providers.logout", { id: "openai-codex" });
-			await watcher.until("signed out", () => watcher.events.limits.providers.length === 1 && limitsOf("anthropic") !== undefined);
+			await watcher.until("signed out", () => watcher.events.limits.providers.length === 2 && limitsOf("openai-codex") === undefined);
 
 			// After a restart the last good reading is there at once, and a recent one is not asked for again.
 			await watcher.until("readings saved", () => existsSync(join(limitsHome, "limits.json")) && !readFileSync(join(limitsHome, "limits.json"), "utf8").includes("openai-codex"));
@@ -1107,22 +1149,24 @@ try {
 			const beforeRestart = hits.anthropic;
 			limitsEngine = startLimitsEngine();
 			watcher = await attachLimits();
-			await watcher.until("reading kept across a restart", () => limitsOf("anthropic")?.windows[0]?.usedPercent === 47, 20_000);
+			await watcher.until("readings kept across a restart", () => limitsOf("anthropic")?.windows[0]?.usedPercent === 47 && limitsOf("github-copilot")?.windows[0]?.usedPercent === 37.5, 20_000);
 			assert.equal(hits.anthropic, beforeRestart);
 
 			// No token on disk or in the log.
-			for (const secret of [claudeToken, codexToken, "limits-test-refresh"]) {
+			for (const secret of [claudeToken, codexToken, "tid=limits-test", "limits-test-refresh"]) {
 				assert.ok(!log.includes(secret), "no token in the engine's log");
 				const leaked = readdirSync(limitsHome).filter((name) => statSync(join(limitsHome, name)).isFile() && readFileSync(join(limitsHome, name)).includes(secret));
 				assert.deepEqual(leaked, [], "no token on disk");
 			}
-			step("limits: each subscription's windows from its usage address and its answers' headers; at most once a minute, longer after a 429; unreadable or silent answers said plainly with the last good figures kept; sign-out, restart, no token on disk or in the log");
+			step("limits: each subscription's windows from its usage address or from its answers' headers on a real request; at most once a minute, longer after a 429; unreadable or silent answers said plainly with the last good figures kept; sign-out, restart, no token on disk or in the log");
 		} finally {
 			limitsEngine?.kill("SIGTERM");
 			standIn.closeAllConnections();
 			standIn.close();
+			copilotStandIn.closeAllConnections();
+			copilotStandIn.close();
 			await sleep(400);
-			for (const id of ["anthropic", "openai-codex"]) await store.delete(id).catch(() => {});
+			for (const id of ["anthropic", "openai-codex", "github-copilot"]) await store.delete(id).catch(() => {});
 			rmSync(limitsHome, { recursive: true, force: true });
 		}
 	}
