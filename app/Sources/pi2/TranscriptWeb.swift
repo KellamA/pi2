@@ -147,10 +147,14 @@ final class TranscriptBridge {
         case .answer(let id, let text):
             guard inbox.contains(where: { $0.id == id && $0.kind != "approval" }) else { return }
             engine.perform("inbox.answer", ["id": id, "text": text])
-        case .openChat(let id):
+        case .openChat(let id, let beside):
             guard subChats.contains(id) else { return }
             engine.openConversation(id)
-            engine.onNavigate(id)
+            if beside {
+                engine.onOpenBeside(id, conversationID)
+            } else {
+                engine.onNavigate(id)
+            }
         case .fork(let entry):
             guard items.contains(where: { $0.id == entry && $0.kind == "assistant" }) else { return }
             engine.fork(conversationID, at: entry)

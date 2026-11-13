@@ -54,6 +54,7 @@ final class AppModel {
 
     init() {
         engine.onNavigate = { [weak self] id in self?.selection = .conversation(id) }
+        engine.onOpenBeside = { [weak self] id, beside in self?.openBeside(id, beside: beside) }
     }
 
     /// The conversation whose rename prompt is showing.

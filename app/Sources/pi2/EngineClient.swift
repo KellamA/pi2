@@ -55,6 +55,8 @@ final class EngineClient {
     private(set) var branches: [Int: BranchStatus] = [:]
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
+    /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
+    var onOpenBeside: (_ id: Int, _ beside: Int) -> Void = { id, _ in }
     var signIn: SignInFlow?
     var lastError: String?
     /// The latest event of each kind that a feature in a file of its own reads ("limits", "memory"), as sent.

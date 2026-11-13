@@ -28,7 +28,7 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 - The person's messages sit right, in a rounded box, with their pictures and files above. Pictures are fetched when they scroll into view, and open larger in an overlay.
 - Answers are plain prose with full Markdown: headings, emphasis, strikethrough, code, fenced code blocks with a language and a Copy button, nested and task lists, tables, quotes, rules and links. Raw HTML is shown as the text it is.
 - Tool calls are one-line rows: "Ran `npm test`", "Read session.ts", "Edited session.ts +6 −2". A chevron opens the detail: a command and its output, a diff, a file's text, a screenshot. Running rows show a spinner and a present-tense line; a failed row is red and starts open. A call with no result after its run stopped says "No result".
-- A hand-off names the agent and the task, shows the answer folded to two lines, and has an Open button for the sub-chat.
+- A hand-off names the agent and the task, shows the answer folded to two lines, and has two buttons for the sub-chat: Open shows it in place of the conversation, and Beside splits the pane and shows it next to the conversation.
 - An approval or a question waiting on the person is a card at the call, with the Inbox's words and buttons. An edit's card also shows the change.
 - Thinking is a "Thinking…" line while it streams and a "Thought" row afterwards.
 - Hovering over the end of a turn shows Copy (the turn's Markdown) and Fork from here; hovering over a message of the person's shows Copy.
@@ -63,7 +63,7 @@ The page posts to the `pi2` message handler. `TranscriptAction` checks every mes
 | `{type: "openLink", url}` | http or https with a host, or mailto | The default browser or mail app. |
 | `{type: "decide", inbox, decision}` | decision is `once`, `always` or `deny`; the approval is waiting in this conversation | `inbox.decide` |
 | `{type: "answer", inbox, text}` | text not blank, at most 100,000 characters; the question is waiting in this conversation | `inbox.answer` |
-| `{type: "openChat", id}` | a whole number; a sub-chat one of this conversation's hand-offs opened | `openConversation` and `onNavigate` |
+| `{type: "openChat", id, beside}` | a whole number; a sub-chat one of this conversation's hand-offs opened. `beside` is optional, true or absent | `openConversation`, then `onOpenBeside` (a pane beside this one) or `onNavigate` |
 | `{type: "fork", entry}` | a whole number; an answer in this conversation | `engine.fork` |
 | `{type: "image", entry, index}` | whole numbers; the entry holds that many pictures | `conversation.image`, then an `image` message back |
 

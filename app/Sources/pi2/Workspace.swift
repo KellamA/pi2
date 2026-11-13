@@ -341,6 +341,23 @@ extension AppModel {
         selection = workspace.focusedConversation.map { .conversation($0) }
     }
 
+    /// Shows a conversation in a pane next to another one's, as a sub-chat beside the conversation that opened it. The
+    /// other's pane splits to the right, or down where it is already narrower than it is tall. A conversation already
+    /// in a pane is moved to; with no room for another pane it shows in place instead.
+    func openBeside(_ conversation: Int, beside other: Int) {
+        if let pane = workspace.panes.first(where: { $0.conversation == conversation }) {
+            focusPane(pane.id)
+            return
+        }
+        let pane = workspace.panes.first { $0.conversation == other }?.id ?? workspace.focused
+        let tall = workspace.frames[pane].map { $0.width < $0.height } ?? false
+        guard let new = workspace.split(pane, tall ? .column : .row) else {
+            selection = .conversation(conversation)
+            return
+        }
+        put(conversation, in: new)
+    }
+
     /// Starts a conversation in a given pane.
     func newConversation(agentId: String?, in pane: UUID) {
         focusPane(pane)
