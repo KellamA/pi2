@@ -912,6 +912,18 @@ ul.plan .muted {
 	cursor: pointer;
 }
 
+/* The sub-chat's Open and Beside, together at the end of the hand-off's line. */
+.chat-actions {
+	display: flex;
+	flex: none;
+	gap: 2px;
+	margin-left: auto;
+}
+
+.chat-actions .link-button {
+	margin-left: 0;
+}
+
 .link-button:hover {
 	background: color-mix(in srgb, var(--acc) 14%, transparent);
 }

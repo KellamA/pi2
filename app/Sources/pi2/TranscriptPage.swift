@@ -52,7 +52,8 @@ enum TranscriptAction: Equatable {
     case openLink(URL)
     case decide(inbox: String, decision: String)
     case answer(inbox: String, text: String)
-    case openChat(Int)
+    /// A sub-chat to show: in place of this conversation, or `beside` it in a pane of its own.
+    case openChat(Int, beside: Bool)
     case fork(entry: Int)
     case picture(entry: Int, index: Int)
 
@@ -81,7 +82,7 @@ enum TranscriptAction: Equatable {
             self = .answer(inbox: id, text: text)
         case "openChat":
             guard let id = Self.integer(body["id"]) else { return nil }
-            self = .openChat(id)
+            self = .openChat(id, beside: body["beside"] as? Bool == true)
         case "fork":
             guard let entry = Self.integer(body["entry"]) else { return nil }
             self = .fork(entry: entry)

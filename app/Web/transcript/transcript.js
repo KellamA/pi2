@@ -197,6 +197,7 @@
 		],
 		check: ["M3 8.6l3 3 7-7.2"],
 		open: ["M5.5 10.5l6-6", "M6.5 4.5h5v5"],
+		beside: ["M2.5 3h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z", "M8 3v10"],
 		down: ["M8 3v10", "M4 9l4 4 4-4"],
 		reply: ["M3 2.5v5a2 2 0 0 0 2 2h8.5", "M10.5 6.5l3 3-3 3"],
 		close: ["M4 4l8 8", "M12 4l-8 8"],
@@ -923,6 +924,8 @@
 			head.appendChild(done);
 		}
 		if (info.chat !== null) {
+			// Open shows the sub-chat in place of this conversation; Beside splits the pane and shows the two side by side.
+			const actions = el("span", "chat-actions");
 			const open = button("link-button", `Open ${who}${RSQUO}s sub-chat`, "Open");
 			open.title = `Open ${who}${RSQUO}s sub-chat`;
 			open.appendChild(glyph("open", "open-glyph"));
@@ -930,7 +933,16 @@
 				event.stopPropagation();
 				post({ type: "openChat", id: info.chat });
 			});
-			head.appendChild(open);
+			actions.appendChild(open);
+			const beside = button("link-button", `Open ${who}${RSQUO}s sub-chat in a pane beside this one`, "Beside");
+			beside.title = `Open ${who}${RSQUO}s sub-chat in a pane beside this one`;
+			beside.appendChild(glyph("beside", "open-glyph"));
+			beside.addEventListener("click", (event) => {
+				event.stopPropagation();
+				post({ type: "openChat", id: info.chat, beside: true });
+			});
+			actions.appendChild(beside);
+			head.appendChild(actions);
 		}
 		row.appendChild(head);
 
