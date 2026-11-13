@@ -52,6 +52,7 @@ struct GeneralSettings: View {
                 Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.").formFooter()
             }
             BackgroundSettings()
+            UpdateSettings()
         }
         .formStyle(.grouped)
     }
@@ -73,7 +74,7 @@ struct BackgroundSettings: View {
         } header: {
             Text("In the background")
         } footer: {
-            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on.\(EngineClient.isSelfContained ? " The login item points at this copy of the app; turn it off and on again after moving the app." : " This development build runs the engine from its source folder, so that folder must stay where it is.")").formFooter()
+            Text("Closing the window always leaves pi² in the menu bar with agents running. These settings cover quitting the app and restarting the Mac, so schedules and long runs carry on.\(EngineClient.isSelfContained ? " If you move the app or it updates, the engine and the login item follow it the next time pi² opens." : " This development build runs the engine from its source folder, so that folder must stay where it is.")").formFooter()
         }
     }
 

@@ -257,6 +257,32 @@ enum EngineLoginItem {
     }
     static var installed: Bool { FileManager.default.fileExists(atPath: plistURL.path) }
 
+    /// What the installed login item runs, and for which data folder.
+    struct Item {
+        let arguments: [String]
+        let home: String?
+
+        /// Whether it starts the engine for this data folder. A copy of pi² on a data folder of its own (a test copy,
+        /// say) must leave another folder's login item alone.
+        func serves(home other: String) -> Bool {
+            guard let home else { return false }
+            return URL(fileURLWithPath: home).standardizedFileURL.path == URL(fileURLWithPath: other).standardizedFileURL.path
+        }
+    }
+
+    static var current: Item? {
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
+        let environment = plist["EnvironmentVariables"] as? [String: String]
+        return Item(arguments: plist["ProgramArguments"] as? [String] ?? [], home: environment?["PI2_HOME"])
+    }
+
+    /// Starts the engine through launchd, if it is not running already. False if launchd does not have the item.
+    static func start() -> Bool {
+        (try? launchctl(["kickstart", "gui/\(getuid())/\(label)"])) == 0
+    }
+
     static func install(node: String, main: String, home: String) throws {
         let plist: [String: Any] = [
             "Label": label,
@@ -275,15 +301,18 @@ enum EngineLoginItem {
     }
 
     static func remove() {
-        try? launchctl(["bootout", "gui/\(getuid())/\(label)"])
+        _ = try? launchctl(["bootout", "gui/\(getuid())/\(label)"])
         try? FileManager.default.removeItem(at: plistURL)
     }
 
-    private static func launchctl(_ arguments: [String]) throws {
+    @discardableResult
+    private static func launchctl(_ arguments: [String]) throws -> Int32 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         process.arguments = arguments
+        process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
+        return process.terminationStatus
     }
 }

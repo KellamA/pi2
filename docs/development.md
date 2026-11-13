@@ -28,7 +28,7 @@ For an app that carries its own Node and engine and can be moved:
 ./app/build.sh release
 ```
 
-To sign and notarize a release build, set `SIGN_IDENTITY` (a Developer ID Application identity) and optionally `NOTARY_PROFILE` (a `notarytool` keychain profile) first. That path is written but has not been exercised.
+Signed builds, the update feed and the release workflow are described in [releasing.md](releasing.md).
 
 ## Tests
 

@@ -151,11 +151,15 @@ struct Pi2App: App {
                 .onAppear {
                     delegate.engine = model.engine
                     model.engine.start()
+                    Updates.shared.start(engine: model.engine)
                     QuickAsk.shared.install(model: model)
                 }
         }
         .defaultSize(width: 1120, height: 740)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesButton()
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Conversation") { model.newConversation() }
                     .keyboardShortcut("n")
@@ -231,8 +235,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Quitting stops the engine cleanly unless the person asked for agents to keep running.
-        let keep = UserDefaults.standard.bool(forKey: BackgroundSettings.keepEngineKey) || EngineLoginItem.installed
-        if !keep { MainActor.assumeIsolated { engine?.stopEngine() } }
+        MainActor.assumeIsolated {
+            let loginItem = engine.map { EngineLoginItem.current?.serves(home: $0.dataFolder.path) == true } ?? false
+            let keep = UserDefaults.standard.bool(forKey: BackgroundSettings.keepEngineKey) || loginItem
+            if !keep { engine?.stopEngine() }
+        }
     }
 }
 

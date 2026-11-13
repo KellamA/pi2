@@ -118,7 +118,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 
 ## Install
 
-There is no download yet. pi² builds from source in a couple of minutes.
+There is no download yet: signed releases are set up but none has been published ([how releases are made](docs/releasing.md)). Until then, pi² builds from source in a couple of minutes.
 
 You need macOS 15 or later, Xcode's command line tools, and Node 26 or later.
 
@@ -159,7 +159,7 @@ pi² is early. Read this before you rely on it.
 - The engine has an end-to-end test suite that runs on every change, and the transcript page has tests of its own. The rest of the app has no automated tests; it is checked by hand.
 - Subscription sign-in and computer use are the newest parts and have had the least real use.
 - A few things are built but have had little or no testing: Quick Ask and its global shortcut, the menu bar panel, notifications, and starting the engine at login.
-- Builds are not signed or notarized, so there is no ready-made download.
+- Releases are set up to be signed, notarized and updated in place, but none has been published yet. Updating has only been tried against a test feed on this Mac.
 
 Known limits are listed in [docs/architecture.md](docs/architecture.md#known-limits).
 
@@ -168,6 +168,7 @@ Known limits are listed in [docs/architecture.md](docs/architecture.md#known-lim
 - Conversations, agents and settings stay on your Mac, in `~/Library/Application Support/pi2`.
 - Keys and sign-ins are stored in the macOS Keychain, never in pi²'s files.
 - pi² sends nothing anywhere on its own. Your messages go to the model providers and MCP servers you connect, and nowhere else.
+- The one exception is checking for updates, in a downloaded copy, and only once you agree: pi² asks GitHub for the newest release, sending its version and the macOS version. Settings › General turns it off.
 - With "Full access", an agent runs commands without asking. Tools work inside the conversation's folder.
 - Whether a subscription may be used from another app is up to each provider's terms.
 
@@ -184,6 +185,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
 - [Development](docs/development.md): building, testing, and the layout of the code.
+- [Releasing](docs/releasing.md): signed downloads, updates, and what to set up before the first release.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)
 
