@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test --test-reporter=spec test/credentials.ts test/look.ts test/documents.ts test/rules.ts test/socket.ts test/worktrees.ts test/engine.ts",
+    "test": "node --test --test-reporter=spec test/credentials.ts test/exec.ts test/look.ts test/documents.ts test/rules.ts test/socket.ts test/worktrees.ts test/engine.ts",
     "test:engine": "node test/engine.ts",
     "test:look": "node test/look.ts",
     "test:documents": "node test/documents.ts",
@@ -13,7 +13,8 @@
     "test:worktrees": "node test/worktrees.ts",
     "test:browser": "node test/browser.ts",
     "start": "node src/main.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "postinstall": "node scripts/patch-dependencies.ts"
   },
   "keywords": [],
   "author": "",
