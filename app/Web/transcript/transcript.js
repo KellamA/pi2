@@ -573,6 +573,8 @@
 			parts.push({ key: "working", sig: "w", build: workingRow });
 		}
 		reconcile(row, parts);
+		// Spaced as the answer will be once it is committed, so nothing shifts when it is.
+		row.classList.toggle("starts-with-tools", partial.text === "" && partial.thinking.trim() === "" && partial.toolCalls.length > 0);
 	}
 
 	/** The pulsing dot that marks where streaming text has got to, at the end of its last line. */
@@ -976,10 +978,13 @@
 			// A computer action is described in words by the app that will do it; a command is shown as written.
 			const summary = app ? str(pending.question) || T.callSummary(args) : T.callSummary(args);
 			card.appendChild(el(app ? "p" : "pre", app ? "card-summary words" : "card-summary", summary));
-			if (pending.tool === "edit") {
-				const diff = T.diffFromEdits(args);
-				if (diff.lines.length > 0) card.appendChild(diffElement(diff)).classList.add("card-diff");
+			// What a file will become, so the decision can be made from the card.
+			let change = null;
+			if (pending.tool === "edit") change = T.diffFromEdits(args);
+			if (pending.tool === "write" && typeof args.content === "string") {
+				change = { lines: args.content.replace(/\n$/, "").split("\n").map((text) => ({ kind: "add", number: null, text })) };
 			}
+			if (change && change.lines.length > 0) card.appendChild(diffElement(change)).classList.add("card-diff");
 			const choices = el("div", "card-buttons");
 			choices.setAttribute("data-nocopy", "");
 			const decide = (decision) => {
