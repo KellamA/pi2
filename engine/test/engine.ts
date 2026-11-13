@@ -14,6 +14,8 @@ const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
 const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
+// The demo model types slowly for people; every engine this test starts makes it fast.
+process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 // Overridable so two copies of the suite can run at once without sharing Keychain items.
 const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 
@@ -245,7 +247,7 @@ try {
 	step("full access: bash runs in the conversation's folder, result linked to its call");
 
 	// ---- Queue while busy, withdraw, stop
-	await client.call("submit", { id: b, text: "first" });
+	await client.call("submit", { id: b, text: "/slow first" });
 	await client.until("busy", () => client.conversations.get(b)!.state.busy);
 	await client.call("submit", { id: b, text: "queued follow-up", mode: "queue" });
 	const queued = await client.until("queued item", () => client.conversations.get(b)!.state.queued[0]);
@@ -260,7 +262,7 @@ try {
 	// ---- Crash mid-answer, resume from storage
 	const { id: c } = await client.call("conversation.create");
 	await client.call("conversation.open", { id: c });
-	await client.call("submit", { id: c, text: "survive this", requestId: "crash-1" });
+	await client.call("submit", { id: c, text: "/slow survive this", requestId: "crash-1" });
 	await client.until("partial answer", () => (client.conversations.get(c)?.state.partial?.text.length ?? 0) > 40);
 	await sleep(1200); // let the deferred partial reach storage
 	engine.kill("SIGKILL");
@@ -443,9 +445,9 @@ try {
 		assert.equal(titleOf(only), "Screenshot 2026-11-12.png");
 
 		// Sent while the agent is busy, they wait in the queue with the message and can be withdrawn.
-		await client.call("submit", { id: only, text: "keep going" });
+		await client.call("submit", { id: only, text: "/slow keep going" });
 		await client.until("busy with the second message", () => client.conversations.get(only)!.state.busy);
-		const plain = client.conversations.get(only)!.items.find((i) => i.kind === "user" && i.text === "keep going") as any;
+		const plain = client.conversations.get(only)!.items.find((i) => i.kind === "user" && i.text === "/slow keep going") as any;
 		assert.deepEqual([plain.attachments, plain.images], [[], 0], "a message without attachments says so");
 		await client.call("submit", { id: only, attachments: [notes], mode: "queue" });
 		const waiting = (await client.until("queued attachments", () => client.conversations.get(only)!.state.queued[0])) as any;

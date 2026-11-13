@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node test/credentials.ts && node test/look.ts && node test/documents.ts && node test/rules.ts && node test/socket.ts && node test/worktrees.ts && node test/engine.ts",
+    "test": "node --test --test-reporter=spec test/credentials.ts test/look.ts test/documents.ts test/rules.ts test/socket.ts test/worktrees.ts test/engine.ts",
+    "test:engine": "node test/engine.ts",
     "test:look": "node test/look.ts",
     "test:documents": "node test/documents.ts",
     "test:rules": "node test/rules.ts",

@@ -19,6 +19,8 @@ const home = mkdtempSync(join(tmpdir(), "pi2-wt-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-wt-repos-")));
 const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
+// The demo model types slowly for people; every engine this test starts makes it fast.
+process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 
 const run = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 function repo(name: string): string {

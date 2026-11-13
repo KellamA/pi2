@@ -28,6 +28,8 @@ if (!existsSync(probePath)) {
 const home = mkdtempSync(join(tmpdir(), "pi2-browser-test-"));
 const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
+// The demo model types slowly for people; every engine this test starts makes it fast.
+process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 
 type Item = { id: number; kind: string; text: string; isError?: boolean };
