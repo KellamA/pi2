@@ -26,6 +26,13 @@ final class EngineClient {
     private(set) var allModels: [ModelInfo] = []
     /// The models the pickers offer.
     var models: [ModelInfo] { allModels.filter { $0.hidden != true } }
+    /// The models the pickers offer, by provider in name order. Two providers can offer a model with the same id,
+    /// so a list that mixes providers identifies its rows by `ModelInfo.ref`, never by `id`.
+    var modelGroups: [(provider: String, name: String, models: [ModelInfo])] {
+        Dictionary(grouping: models, by: \.provider)
+            .map { (provider: $0.key, name: $0.value[0].providerName, models: $0.value) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
     private(set) var defaultModel: ModelRef?
     /// Whether the first-run welcome has been completed for this data folder. Nil until the engine has said.
     private(set) var onboarded: Bool?

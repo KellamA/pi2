@@ -118,13 +118,31 @@ struct AgentEditor: View {
                 }
 
                 Section("Model") {
-                    Picker("Model", selection: draft.model) {
+                    Picker(selection: draft.model) {
                         Text("App default").tag(ModelRef?.none)
                         if let ref = agent.model, chosenModel == nil {
                             Text("\(ref.modelId) (not connected)").tag(ModelRef?.some(ref))
+                        } else if let chosenModel, chosenModel.hidden == true {
+                            // Hidden in Settings after this agent chose it: it keeps working, so it stays selectable here.
+                            Text("\(chosenModel.providerName) · \(chosenModel.name) (hidden)").tag(ModelRef?.some(chosenModel.ref))
                         }
-                        ForEach(engine.models) { item in
-                            Text("\(item.providerName) · \(item.name)").tag(ModelRef?.some(item.ref))
+                        ForEach(engine.modelGroups, id: \.provider) { group in
+                            Section(group.name) {
+                                ForEach(group.models, id: \.ref) { item in
+                                    Text(item.name).tag(ModelRef?.some(item.ref))
+                                }
+                            }
+                        }
+                    } label: {
+                        Text("Model")
+                    } currentValueLabel: {
+                        // The menu groups models under their provider; closed, the provider has to be named.
+                        if let chosenModel {
+                            Text("\(chosenModel.providerName) · \(chosenModel.name)\(chosenModel.hidden == true ? " (hidden)" : "")")
+                        } else if let ref = agent.model {
+                            Text("\(ref.modelId) (not connected)")
+                        } else {
+                            Text("App default")
                         }
                     }
                     if let levels = chosenModel?.thinkingLevels, !levels.isEmpty {
