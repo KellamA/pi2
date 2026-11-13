@@ -23,6 +23,7 @@ What changed in each version, newest first.
 - **A new look.** A dark-first palette, with light and match-system in Settings › General.
 
 ### Changed
+- pi² is now released under the MIT license.
 - Reference files can be Word, RTF and OpenDocument files; the agent is given their text.
 - Usage from a subscription sign-in, or from a local model, counts tokens only. It shows no cost and does not count toward the daily budget.
 - Usage names models as "Provider · Model".

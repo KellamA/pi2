@@ -189,6 +189,10 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 
 Bug reports and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## License
+
+[MIT](LICENSE). The pi libraries it is built on are MIT licensed too.
+
 ## Acknowledgements
 
 pi² is a front end for [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable) and the rest of the [pi](https://github.com/earendil-works/pi) libraries by Earendil Works, which do the hard part: durable runs, providers, tools and MCP.
