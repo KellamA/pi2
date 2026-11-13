@@ -17,7 +17,7 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 
 ## How they talk
 
-The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line.
+The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line. macOS limits a socket's path to 103 bytes, so when the data folder's path is too long for that (only possible with `PI2_HOME`), the app and the engine both reach the socket through a short link to the data folder in `/tmp/pi2-<uid>/` (`engine/src/socket.ts` and `app/Sources/pi2/EngineSocket.swift` work it out the same way).
 
 - The app sends requests: `{"id": 1, "method": "submit", "params": {…}}`. The engine answers `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`.
 - The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`, `browser`.

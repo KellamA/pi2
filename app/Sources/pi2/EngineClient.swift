@@ -226,7 +226,14 @@ final class EngineClient {
     }
 
     private func connect() {
-        let socketPath = home.appendingPathComponent("engine.sock").path
+        let socketPath: String
+        do {
+            socketPath = try EngineSocket.path(for: home)
+        } catch {
+            // Nothing to connect to, and retrying would not change that.
+            lastError = "Cannot reach the engine for the data folder \(home.path): \(error.localizedDescription)"
+            return
+        }
         let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
         self.connection = connection
         buffer.removeAll()
