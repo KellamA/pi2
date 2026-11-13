@@ -65,6 +65,27 @@ struct LimitsSection: View {
                 Text("How much of each subscription's allowance is used, as the provider reports it. Windows above 80% are marked.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            // Each time Usage opens, figures more than an hour old are checked again without waiting for Check Now.
+            .onAppear { refreshStale(providers) }
+        }
+    }
+
+    /// How old a subscription's figures can be when Usage opens before they are checked again.
+    static let staleAfter: TimeInterval = 60 * 60
+
+    /// The subscriptions pi² can ask whose last check, good or failed, was more than `staleAfter` ago, or never happened.
+    static func stale(_ providers: [PlanLimits.Provider], now: Date = .now) -> [String] {
+        providers.filter { provider in
+            guard provider.reports == "usage", provider.refreshing != true else { return false }
+            guard let last = [provider.fetchedAt, provider.errorAt].compactMap({ $0 }).max() else { return true }
+            return now.timeIntervalSince(LimitsFormat.date(last)) > staleAfter
+        }.map(\.id)
+    }
+
+    /// Asks about each stale subscription. A failure shows on its card, so it is not reported again here.
+    private func refreshStale(_ providers: [PlanLimits.Provider]) {
+        for id in Self.stale(providers) where !asking.contains(id) {
+            refresh(id, quietly: true)
         }
     }
 
@@ -186,14 +207,14 @@ struct LimitsSection: View {
         return "Checked \(LimitsFormat.exact(date)), \(how)."
     }
 
-    private func refresh(_ id: String) {
+    private func refresh(_ id: String, quietly: Bool = false) {
         asking.insert(id)
         Task {
             defer { asking.remove(id) }
             do {
                 _ = try await engine.call("limits.refresh", ["id": id])
             } catch {
-                engine.lastError = error.localizedDescription
+                if !quietly { engine.lastError = error.localizedDescription }
             }
         }
     }

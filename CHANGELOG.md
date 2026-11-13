@@ -11,6 +11,9 @@ What changed in each version, newest first.
 - **Split panes.** The conversation area splits into up to 16 panes, each with its own conversation. Ready-made layouts (two, three even or one big with two half-size, grids up to four by four) are in the toolbar's Layout button and View › Layout; Split Right (⌘D) and Split Down (⇧⌘D) make any arrangement in between. Dividers drag to any size, and double-clicking one evens it out. The focused pane's conversation is the one the title, toolbar, sidebar and Conversation menu follow; ⌘] and ⌘[ move between panes and ⌃⌘W closes one. A conversation can be dragged in from the sidebar, and the layout is kept between launches.
 - **Sub-chats beside their conversation.** A hand-off in the transcript has a Beside button next to Open: it splits the pane and shows the sub-chat next to the conversation that opened it, so you can watch both. A sub-chat already on screen is moved to instead.
 
+### Changed
+- **Plan limits stay current.** Opening Usage checks again any signed-in subscription whose figures are more than an hour old, without waiting for Check Now.
+
 ### Fixed
 - After saving one of the starter agents, Save and Revert stayed lit and New Conversation stayed off, because saving fills in settings the starters were made without. The agent page now compares an agent as it would be saved.
 
