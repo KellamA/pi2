@@ -145,3 +145,13 @@ test("hostile arguments never break a summary", () => {
 		}
 	}
 });
+
+test("an answer folded onto one line drops block marks and keeps the words", () => {
+	assert.equal(
+		T.folded("Per seat:\n\n- **Northwind** — $15\n- Lattice — $17\n\nAll three raised prices."),
+		"Per seat: **Northwind** — $15 · Lattice — $17 All three raised prices.",
+	);
+	assert.equal(T.folded("## Fixed\n\n> quoted\n\n1. one\n2. two\n- [x] done"), "Fixed quoted one · two · done");
+	assert.equal(T.folded("Run:\n```sh\nnpm test\n```\n---\n| a | b |\n| --- | :-: |\n| 1 | 2 |"), "Run: npm test a, b 1, 2");
+	assert.equal(T.folded(""), "");
+});

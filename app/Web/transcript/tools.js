@@ -75,6 +75,29 @@
 	const oneLine = (text) => text.replace(/\s*\n\s*/g, " ").trim();
 
 	/**
+	 * Markdown folded onto one line for a short preview: the marks that start a heading, a quote, a list item or a
+	 * fence are dropped, list items are set apart by a middle dot, and what formats words within a line is kept.
+	 */
+	function folded(text) {
+		const parts = [];
+		for (const raw of String(text).split("\n")) {
+			if (/^\s*(?:```|~~~)/.test(raw) || /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/.test(raw) || /^\s*(?:[-*_]\s*){3,}$/.test(raw)) continue;
+			const item = /^\s*(?:[-*+]|\d{1,9}[.)])\s+(?:\[[ xX]\]\s+)?/.exec(raw);
+			let line = item ? raw.slice(item[0].length) : raw.replace(/^\s*(?:#{1,6}\s+|(?:>\s?)+)/, "");
+			if (/^\s*\|.*\|\s*$/.test(line)) line = line.trim().slice(1, -1).split("|").map((cell) => cell.trim()).join(", ");
+			line = line.trim();
+			if (line === "") continue;
+			parts.push({ line, item: item !== null });
+		}
+		let out = "";
+		parts.forEach((part, index) => {
+			if (index > 0) out += part.item && parts[index - 1].item ? " \u00b7 " : " ";
+			out += part.line;
+		});
+		return out;
+	}
+
+	/**
 	 * The one line worth showing for a call's arguments: the command, path, query or the like when there is one,
 	 * otherwise its fields as "name: value" pairs.
 	 */
@@ -535,6 +558,7 @@
 		describe,
 		detailFor,
 		subagentAnswer,
+		folded,
 		delegation,
 		formatBytes,
 		prettyJSON,

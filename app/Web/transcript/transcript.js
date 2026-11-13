@@ -937,7 +937,7 @@
 			words.replaceChildren();
 			// Folded, the answer reads as one run of text; opened, it keeps its own lines and formatting.
 			if (value) words.appendChild(MD.render(document, answer));
-			else words.textContent = answer.replace(/\s*\n+\s*/g, " ");
+			else MD.renderInline(document, MD.parseInline(T.folded(answer)), words);
 		};
 		apply(opened.get(key) ?? false);
 		const toggleOpen = (event) => {

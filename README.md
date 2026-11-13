@@ -84,6 +84,12 @@ For a subscription you are signed in to, Usage also shows the plan's own limits 
 
 <p align="center"><img src="docs/images/usage.png" alt="Usage by model and by agent" width="820"></p>
 
+### Read it like a document
+
+The conversation is one page, laid out the way Claude Code lays out a session: your messages on the right, the agent's answer as plain text with full Markdown (headings, lists, tables, code with a Copy button), and each tool step as one quiet line such as "Ran `npm test`" or "Edited session.ts +3 −2" that opens to the command's output or the change. Approvals and questions appear where the agent stopped, and hand-offs show the other agent's answer.
+
+Because it is one page, a selection runs across everything: drag from a paragraph through tool steps and a code block, press ⌘C, and what you paste is clean text. ⌘A then ⌘C copies the whole conversation. [How the transcript is built](docs/transcript.md).
+
 ### And the rest
 
 - **Project instructions**: a folder's `AGENTS.md` or `CLAUDE.md` is given to any agent working in it.
@@ -141,7 +147,7 @@ That is a development build: it runs the engine from the `engine` folder, so kee
 pi² is early. Read this before you rely on it.
 
 - pi durable, the library underneath, is marked experimental. pi² pins one exact version.
-- The engine has an end-to-end test suite that runs on every change. The app has no automated tests; it is checked by hand.
+- The engine has an end-to-end test suite that runs on every change, and the transcript page has tests of its own. The rest of the app has no automated tests; it is checked by hand.
 - Subscription sign-in and computer use are the newest parts and have had the least real use.
 - A few things are built but have had little or no testing: Quick Ask and its global shortcut, the menu bar panel, notifications, and starting the engine at login.
 - Builds are not signed or notarized, so there is no ready-made download.
@@ -164,6 +170,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Computer use](docs/computer-use.md): how it works, what it will not do, how to try it safely.
 - [Browser](docs/browser.md): the agents' own browser, what it asks about, and what it will not do.
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
+- [Transcript](docs/transcript.md): how the conversation page is built, and how it is kept from running anything a model writes.
 - [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md).
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Changelog](CHANGELOG.md)

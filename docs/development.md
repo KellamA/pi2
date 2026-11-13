@@ -54,11 +54,22 @@ cd app && swift build --product pi2-browser-probe && .build/debug/pi2-browser-pr
 
 With the probe built, `cd engine && npm run test:browser` runs a real engine against it, to check that the two agree. See [browser.md](browser.md).
 
-The rest of the app has no automated tests. To try a change without touching your own data, run a copy on a throwaway folder:
+The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page.
+
+```bash
+cd app/Web && node --test test/
+```
+
+See [transcript.md](transcript.md). The rest of the app has no automated tests. To try a change without touching your own data, run a copy on a throwaway folder:
 
 ```bash
 open -n "app/build/pi².app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.test
 ```
+
+A development build (not a release build) also reads two variables that help when taking pictures of the app or checking it by script:
+
+- `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `agent:<id>`, or a conversation's number or title.
+- `PI2_DRAW_WHEN_HIDDEN=1` keeps the transcript drawing while the window is covered or the screen is locked. WebKit normally stops drawing a page nobody can see, which leaves it blank in a window capture. This uses a WebKit switch that is not public, which is why it is left out of release builds.
 
 The scripted demo model answers `/bash <command>`, `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider.
 
@@ -69,6 +80,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `engine/src` is the engine; `engine/test` its tests.
 - `app/Sources/pi2` is the app. `Theme.swift` holds the palette and the shared pieces (tags, buttons, panels); `EngineClient.swift` is the connection to the engine; the rest is one file per area.
 - `app/Sources/ComputerKit` is the part of computer use that touches the screen. See [computer-use.md](computer-use.md).
+- `app/Web/transcript` is the conversation page the app shows in a web view; `app/Web/test` its tests. See [transcript.md](transcript.md).
 - `app/Sources/BrowserKit` is pi²'s own browser: everything that touches a web page. See [browser.md](browser.md).
 
 ## Conventions

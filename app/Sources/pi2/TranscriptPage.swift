@@ -155,9 +155,22 @@ final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate 
         allowsMagnification = false
         #if DEBUG
         isInspectable = true
+        if ProcessInfo.processInfo.environment["PI2_DRAW_WHEN_HIDDEN"] != nil { drawWhenHidden() }
         #endif
         load()
     }
+
+    #if DEBUG
+    /// WebKit stops drawing a page nobody can see: one in a covered window, or behind a locked screen. For taking
+    /// pictures of the app in those conditions (docs/development.md), a development build can be told to keep drawing.
+    /// It uses a WebKit switch that is not public, so it is never compiled into a release build.
+    private func drawWhenHidden() {
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard responds(to: selector), let method = method(for: selector) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(method, to: Setter.self)(self, selector, false)
+    }
+    #endif
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used") }

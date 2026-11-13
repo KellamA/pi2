@@ -5,6 +5,7 @@ What changed in each version, newest first.
 ## 0.6.0
 
 ### Added
+- **A new transcript.** The conversation is one page in the style of Claude Code: answers as plain text with full Markdown, tool steps as single lines that open to their output or diff, approvals and questions where the agent stopped. A selection runs across prose, code and tool steps and copies as clean text. See [docs/transcript.md](docs/transcript.md).
 - **Computer use.** An agent can see and work the apps you choose, one window at a time, in the background, asking before it acts. See [docs/computer-use.md](docs/computer-use.md).
 - **A browser of the agents' own.** An agent can open pages, search, read, click, type and upload in pi²'s own browser, which keeps its sign-ins apart from Safari and Chrome. You can watch and take over in the Browser window. See [docs/browser.md](docs/browser.md).
 - **Plan limits.** For a subscription you are signed in to, Usage shows how much of each of the provider's windows is used (for example 5-hour and weekly) and when it resets, for Anthropic, OpenAI Codex, GitHub Copilot and Kimi. These come from interfaces the providers do not document; see [docs/limits.md](docs/limits.md).

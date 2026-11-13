@@ -9,6 +9,29 @@ enum Selection: Hashable {
     case conversation(Int)
 }
 
+#if DEBUG
+extension Selection {
+    /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "agent:<id>", or
+    /// a conversation's number or title. For taking pictures of the app; see docs/development.md.
+    init?(launch value: String?, conversations: [ConversationSummary]) {
+        guard let value, !value.isEmpty else { return nil }
+        switch value {
+        case "inbox": self = .inbox
+        case "activity": self = .activity
+        case "usage": self = .usage
+        default:
+            if value.hasPrefix("agent:") {
+                self = .agent(String(value.dropFirst("agent:".count)))
+            } else if let found = conversations.first(where: { String($0.id) == value || $0.title == value }) {
+                self = .conversation(found.id)
+            } else {
+                return nil
+            }
+        }
+    }
+}
+#endif
+
 /// App-level UI state.
 @MainActor
 @Observable
@@ -218,8 +241,15 @@ struct RootView: View {
             }
         }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
+            guard loaded, model.selection == nil else { return }
+            #if DEBUG
+            if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations) {
+                model.selection = asked
+                return
+            }
+            #endif
             // On launch, land on the most recent conversation.
-            if loaded, model.selection == nil, let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
+            if let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
         }
         .onChange(of: engine.conversations) { _, list in
             // The conversation on screen was deleted: move to the next one.
