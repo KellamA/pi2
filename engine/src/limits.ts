@@ -217,8 +217,8 @@ export function anthropicFromUsage(body: unknown): Reading | undefined {
 		const scope = ANTHROPIC_SCOPES[match[2]!] ?? words(match[2]!);
 		add(key, `${match[1] === "five_hour" ? "5-hour window" : "This week"} (${scope})`, false);
 	}
-	// Both main windows there but empty (null): an answer, with nothing to show.
-	if (windows.length === 0) return "five_hour" in data && "seven_day" in data ? { plan: null, windows: [] } : undefined;
+	// Both main windows there but null: an answer, with nothing to show. Anything else without a window is unreadable.
+	if (windows.length === 0) return data.five_hour === null && data.seven_day === null ? { plan: null, windows: [] } : undefined;
 	return { plan: null, windows };
 }
 
@@ -666,7 +666,7 @@ class LimitsTracker {
 				}),
 			);
 		}
-		setTimeout(() => void this.#start(), 1_500).unref();
+		void this.#start().catch((error) => engine.log("limits: first look failed:", error instanceof Error ? error.name : "error"));
 	}
 
 	event(): { event: "limits"; providers: ProviderLimits[] } {
@@ -819,7 +819,12 @@ class LimitsTracker {
 	#broadcastNow(): void {
 		clearTimeout(this.#broadcastTimer);
 		this.#broadcastTimer = undefined;
-		this.#engine.broadcast(this.event());
+		try {
+			this.#engine.broadcast(this.event());
+		} catch {
+			// While the engine is still starting there is no one to send to yet (and no list of them); an app that
+			// connects later is sent the current state anyway.
+		}
 	}
 
 	#load(): void {

@@ -835,6 +835,296 @@ try {
 
 	{
 		// limits (engine/src/limits.ts)
+		const L = await import("../src/limits.ts");
+		const { KeychainCredentialStore } = await import("../src/credentials.ts");
+		const fiveReset = Date.now() + 2 * 3_600_000;
+		const weekReset = Date.now() + 80 * 3_600_000;
+		const unix = (ms: number) => Math.floor(ms / 1000);
+		const rows = (reading: { windows: { id: string; label: string; usedPercent: number }[] } | undefined) => reading?.windows.map((w) => [w.id, w.label, w.usedPercent]);
+
+		// Anthropic's headers on answers to subscription requests, as captured in public write-ups: fractions, Unix seconds.
+		let reading = L.anthropicFromHeaders({
+			"anthropic-ratelimit-unified-5h-utilization": "0.26",
+			"anthropic-ratelimit-unified-5h-reset": String(unix(fiveReset)),
+			"anthropic-ratelimit-unified-7d-utilization": "0.19",
+			"anthropic-ratelimit-unified-7d-reset": String(unix(weekReset)),
+			"anthropic-ratelimit-unified-representative-claim": "five_hour",
+			"anthropic-ratelimit-unified-status": "allowed",
+		});
+		assert.deepEqual(rows(reading), [["five_hour", "5-hour window", 26], ["seven_day", "This week", 19]]);
+		assert.equal(reading?.windows[0]!.resetsAt, unix(fiveReset) * 1000);
+		assert.equal(L.anthropicFromHeaders({ "anthropic-ratelimit-requests-remaining": "40" }), undefined, "an API key's per-minute headers are not a subscription's windows");
+		assert.equal(L.anthropicFromHeaders({ "anthropic-ratelimit-unified-5h-utilization": "47" }), undefined, "a value that is not a fraction is not guessed at");
+		assert.equal(L.anthropicFromHeaders({ "Anthropic-Ratelimit-Unified-7d-Utilization": "1.0" })?.windows[0]!.usedPercent, 100, "any case of header name; a full window reads 100");
+
+		// Anthropic's usage address: percentages and ISO times; a narrower window only when it is running.
+		reading = L.anthropicFromUsage({
+			five_hour: { utilization: 47.0, resets_at: new Date(fiveReset).toISOString() },
+			seven_day: { utilization: 97.055, resets_at: new Date(weekReset).toISOString() },
+			seven_day_opus: { utilization: 12, resets_at: new Date(weekReset).toISOString() },
+			seven_day_sonnet: null,
+			seven_day_oauth_apps: { utilization: 0, resets_at: null },
+			extra_usage: { is_enabled: false, monthly_limit: null, used_credits: null, utilization: null },
+			something_new: [1, 2],
+		});
+		assert.deepEqual(rows(reading), [["five_hour", "5-hour window", 47], ["seven_day", "This week", 97.1], ["seven_day_opus", "This week (Opus)", 12]]);
+		assert.deepEqual(L.anthropicFromUsage({ five_hour: null, seven_day: null }), { plan: null, windows: [] }, "both windows null is an answer with nothing to show");
+		for (const broken of [null, "<html>", 42, [], {}, { five_hour: "full", seven_day: 3 }, { five_hour: { utilization: "lots" } }, { five_hour: { utilization: -5 }, seven_day: { utilization: 9000 } }]) {
+			assert.equal(L.anthropicFromUsage(broken), undefined, `unreadable: ${JSON.stringify(broken)}`);
+		}
+
+		// Codex's usage address, shaped as in the open-source Codex client's own tests.
+		const codexAnswer = {
+			account_id: "account-123",
+			user_id: "user-123",
+			plan_type: "plus",
+			rate_limit: {
+				allowed: true,
+				limit_reached: false,
+				primary_window: { used_percent: 42, limit_window_seconds: 18000, reset_after_seconds: 7200, reset_at: unix(fiveReset) },
+				secondary_window: { used_percent: 5, limit_window_seconds: 604800, reset_after_seconds: 288000, reset_at: unix(weekReset) },
+			},
+			additional_rate_limits: [{ limit_name: "GPT-5.3-Codex-Spark", metered_feature: "codex_other", rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: 88, limit_window_seconds: 18000, reset_after_seconds: 600, reset_at: unix(fiveReset) } } }],
+			credits: null,
+			spend_control: { reached: false },
+		};
+		reading = L.codexFromUsage(codexAnswer);
+		assert.equal(reading?.plan, "Plus");
+		assert.deepEqual(rows(reading), [["codex.primary", "5-hour window", 42], ["codex.secondary", "This week", 5], ["codex_other.primary", "5-hour window (GPT-5.3-Codex-Spark)", 88]]);
+		assert.equal(reading?.windows[1]!.resetsAt, unix(weekReset) * 1000);
+		assert.deepEqual(L.codexFromUsage({ plan_type: "free", rate_limit: null }), { plan: "Free", windows: [] });
+		assert.equal(L.codexFromUsage({ rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 18000, reset_after_seconds: 600 } } }, 1_000_000)?.windows[0]!.resetsAt, 1_600_000, "without reset_at, the reset is counted from reset_after_seconds");
+		for (const broken of [null, {}, { plan_type: "pro" }, { rate_limit: "full" }, { rate_limit: { primary_window: { used_percent: "x" } } }, { rate_limit: { primary_window: { used_percent: -3 } } }]) {
+			assert.equal(L.codexFromUsage(broken), undefined, `unreadable: ${JSON.stringify(broken)}`);
+		}
+
+		// Codex's headers (over HTTP) and its rate-limit event (over a WebSocket), as the Codex client parses them.
+		reading = L.codexFromHeaders({
+			"x-codex-primary-used-percent": "12.5",
+			"x-codex-primary-window-minutes": "300",
+			"x-codex-primary-reset-at": String(unix(fiveReset)),
+			"x-codex-secondary-used-percent": "3",
+			"x-codex-secondary-window-minutes": "10080",
+			"x-codex-bengalfox-primary-used-percent": "80",
+			"x-codex-bengalfox-primary-window-minutes": "300",
+			"x-codex-bengalfox-limit-name": "gpt-5.2-codex-sonic",
+			"x-codex-other-primary-used-percent": "0",
+		});
+		assert.deepEqual(rows(reading), [["codex.primary", "5-hour window", 12.5], ["codex.secondary", "This week", 3], ["codex_bengalfox.primary", "5-hour window (gpt-5.2-codex-sonic)", 80]]);
+		assert.equal(L.codexFromHeaders({ "x-codex-primary-used-percent": "NaN" }), undefined);
+		reading = L.codexFromEvent({ type: "codex.rate_limits", plan_type: "pro", rate_limits: { allowed: true, limit_reached: false, primary: { used_percent: 42, window_minutes: 300, reset_at: unix(fiveReset) }, secondary: null }, credits: { has_credits: true, unlimited: false, balance: "123" } });
+		assert.deepEqual([reading?.plan, reading?.windows.map((w) => [w.id, w.usedPercent, w.resetsAt])], ["Pro", [["codex.primary", 42, unix(fiveReset) * 1000]]]);
+		assert.equal(L.codexFromEvent({ type: "response.output_text.delta", delta: "hi" }), undefined);
+		assert.equal(L.codexAccount(`h.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-9" } })).toString("base64url")}.s`), "acct-9");
+		assert.equal(L.codexAccount("not-a-token"), undefined);
+
+		// Copilot's quota headers, in the form VS Code's Copilot Chat reads them.
+		reading = L.copilotFromHeaders({
+			"x-quota-snapshot-chat": "ent=-1&ov=0.0&ovPerm=false&rem=100.0&rst=2026-12-01T00%3A00%3A00Z&totRem=-1",
+			"x-quota-snapshot-premium_interactions": `ent=300&ov=0.0&ovPerm=false&rem=62.5&rst=${encodeURIComponent(new Date(weekReset).toISOString())}`,
+			"x-quota-snapshot-completions": "ent=-1&rem=100",
+		});
+		assert.deepEqual(rows(reading), [["premium", "Premium requests", 37.5]]);
+		assert.deepEqual(L.copilotFromHeaders({ "x-quota-snapshot-premium_interactions": "ent=-1&rem=100" }), { plan: null, windows: [], note: "No limit on this plan." });
+		assert.equal(L.copilotFromHeaders({ "x-quota-snapshot-premium_interactions": "garbage" }), undefined);
+
+		// Kimi's usage address, the least certain shape: counts as strings, a rolling window and a weekly allowance.
+		reading = L.kimiFromUsage({
+			user: { membership: { level: "LEVEL_INTERMEDIATE" } },
+			usage: { limit: "100", used: "37", remaining: "63", resetTime: new Date(weekReset).toISOString() },
+			limits: [{ window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" }, detail: { limit: "100", remaining: "80", resetTime: new Date(fiveReset).toISOString() } }],
+		});
+		assert.deepEqual([reading?.plan, rows(reading)], ["Intermediate", [["five_hour", "5-hour window", 20], ["seven_day", "This week", 37]]]);
+		assert.equal(L.kimiFromUsage({ usage: { limit: 0, used: 5 } }), undefined);
+
+		// The wrapper on a subscription provider: the observer hears every answer, the caller's own callbacks still
+		// run, `this` is the provider's own, and an observer that throws does not fail the request.
+		const heard: string[] = [];
+		const callerHeard: string[] = [];
+		const fake: any = {
+			id: "fake",
+			stream: (_model: unknown, _context: unknown, options: any) => {
+				void options.onResponse({ status: 200, headers: { "x-test": "1" } }, {});
+				void options.onProviderStreamEvent?.({ type: "codex.rate_limits" }, {});
+				return "streamed";
+			},
+			streamSimple(this: unknown, _model: unknown, _context: unknown, options: any) {
+				void options.onResponse({ status: 200, headers: { "x-test": "2" } }, {});
+				return this === fake ? "simple" : "lost this";
+			},
+		};
+		const wrapped: any = L.observed(fake, { onResponse: (headers) => heard.push(`headers ${headers["x-test"]}`), onEvent: (event: any) => heard.push(`event ${event.type}`) });
+		assert.equal(wrapped.stream({}, {}, { onResponse: () => callerHeard.push("caller") }), "streamed");
+		assert.equal(wrapped.streamSimple({}, {}, undefined), "simple");
+		assert.equal(wrapped.id, "fake");
+		await sleep(10);
+		assert.deepEqual(heard, ["headers 1", "event codex.rate_limits", "headers 2"]);
+		assert.deepEqual(callerHeard, ["caller"]);
+		const throwing: any = L.observed(fake, { onResponse: () => { throw new Error("observer failed"); } });
+		assert.equal(throwing.stream({}, {}, {}), "streamed");
+		await sleep(10);
+
+		// End to end: a second engine on its own data folder and Keychain service, with two subscription sign-ins
+		// stored there as pi-ai stores them, not due for renewal (so no real sign-in server is called), and a local
+		// stand-in for each usage address.
+		const limitsHome = mkdtempSync(join(tmpdir(), "pi2-limits-"));
+		const store = new KeychainCredentialStore(limitsHome, `${KEYCHAIN_SERVICE}.limits`);
+		const claudeToken = "sk-ant-oat01-limits-test-not-a-real-token";
+		const codexToken = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-limits-test" } })).toString("base64url")}.not-signed`;
+		const notDue = Date.now() + 30 * 86_400_000;
+		let anthropicMode: "ok" | "garbage" | "busy" = "ok";
+		let codexMode: "ok" | "silent" = "ok";
+		const hits = { anthropic: 0, codex: 0 };
+		const seen: Record<string, Record<string, unknown>> = {};
+		const json = { "content-type": "application/json" };
+		const standIn = createServer((request, response) => {
+			if (request.url === "/api/oauth/usage") {
+				hits.anthropic++;
+				seen.anthropic = request.headers;
+				if (anthropicMode === "busy") return void response.writeHead(429, { ...json, "retry-after": "1" }).end(JSON.stringify({ type: "error", error: { type: "rate_limit_error" } }));
+				if (anthropicMode === "garbage") return void response.writeHead(200, { "content-type": "text/html" }).end("<html>Down for maintenance</html>");
+				return void response
+					.writeHead(200, json)
+					.end(JSON.stringify({ five_hour: { utilization: 47, resets_at: new Date(fiveReset).toISOString() }, seven_day: { utilization: 12.5, resets_at: new Date(weekReset).toISOString() }, seven_day_opus: null }));
+			}
+			if (request.url === "/backend-api/wham/usage") {
+				hits.codex++;
+				seen.codex = request.headers;
+				if (codexMode === "silent") return; // never answers
+				return void response.writeHead(200, json).end(JSON.stringify(codexAnswer));
+			}
+			response.writeHead(404).end();
+		});
+		await new Promise<void>((resolve) => standIn.listen(0, "127.0.0.1", resolve));
+		const standInUrl = `http://127.0.0.1:${(standIn.address() as { port: number }).port}`;
+		let log = "";
+		const startLimitsEngine = () => {
+			const child = spawn(process.execPath, [main], {
+				env: {
+					...process.env,
+					PI2_HOME: limitsHome,
+					PI2_KEYCHAIN_SERVICE: `${KEYCHAIN_SERVICE}.limits`,
+					PI2_LIMITS_ANTHROPIC_URL: `${standInUrl}/api/oauth/usage`,
+					PI2_LIMITS_CODEX_URL: `${standInUrl}/backend-api/wham/usage`,
+					PI2_LIMITS_KIMI_URL: `${standInUrl}/coding/v1/usages`,
+					PI2_LIMITS_MIN_INTERVAL_MS: "1500",
+				},
+				stdio: ["ignore", "ignore", "pipe"],
+			});
+			child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (log += chunk));
+			return child;
+		};
+		const attachLimits = async () => {
+			const watcher = new Client();
+			const path = join(limitsHome, "engine.sock");
+			for (let attempt = 0; ; attempt++) {
+				try {
+					if (!existsSync(path)) throw new Error("no socket yet");
+					watcher.socket = connect(path);
+					await new Promise<void>((resolve, reject) => watcher.socket.once("connect", resolve).once("error", reject));
+					break;
+				} catch (error) {
+					if (attempt >= 300) throw error;
+					await sleep(50);
+				}
+			}
+			let buffer = "";
+			watcher.socket.setEncoding("utf8").on("data", (chunk: string) => {
+				buffer += chunk;
+				const lines = buffer.split("\n");
+				buffer = lines.pop()!;
+				for (const line of lines) watcher.receive(JSON.parse(line));
+			});
+			watcher.socket.on("error", () => {});
+			return watcher;
+		};
+		let limitsEngine: ChildProcess | undefined;
+		try {
+			await store.modify("anthropic", async () => ({ type: "oauth", access: claudeToken, refresh: "limits-test-refresh-a", expires: notDue }));
+			await store.modify("openai-codex", async () => ({ type: "oauth", access: codexToken, refresh: "limits-test-refresh-c", expires: notDue, accountId: "acct-limits-test" }));
+			limitsEngine = startLimitsEngine();
+			let watcher = await attachLimits();
+			const limitsOf = (id: string): any => watcher.events.limits?.providers?.find((p: any) => p.id === id);
+			await watcher.until("limits sent on connecting", () => watcher.events.limits !== undefined);
+			// Both signed-in subscriptions are asked at start.
+			await watcher.until("both read", () => limitsOf("anthropic")?.windows.length > 0 && limitsOf("openai-codex")?.windows.length > 0, 20_000);
+			const claude = limitsOf("anthropic");
+			assert.deepEqual(rows(claude), [["five_hour", "5-hour window", 47], ["seven_day", "This week", 12.5]]);
+			assert.deepEqual([claude.name, claude.plan, claude.reports, claude.source, claude.error], ["Anthropic", null, "usage", "usage", null]);
+			assert.equal(claude.windows[0].resetsAt, Date.parse(new Date(fiveReset).toISOString()));
+			const codex = limitsOf("openai-codex");
+			assert.deepEqual([codex.name, codex.plan, codex.windows.length], ["OpenAI Codex", "Plus", 3]);
+			assert.deepEqual(watcher.events.limits.providers.map((p: any) => p.id).sort(), ["anthropic", "openai-codex"], "only the signed-in subscriptions");
+			assert.equal(seen.anthropic!.authorization, `Bearer ${claudeToken}`);
+			assert.equal(seen.anthropic!["anthropic-beta"], "oauth-2025-04-20");
+			assert.equal(seen.codex!.authorization, `Bearer ${codexToken}`);
+			assert.equal(seen.codex!["chatgpt-account-id"], "acct-limits-test");
+
+			// Asked again at once: within the minimum interval nothing is sent.
+			const firstHits = { ...hits };
+			let answer = await watcher.call("limits.refresh");
+			assert.deepEqual(hits, firstHits, "no second request within the interval");
+			assert.equal(answer.providers.length, 2);
+			await assert.rejects(watcher.call("limits.refresh", { id: "xai" }), /not signed in/);
+
+			// An answer that cannot be read: said plainly, with when, and the last good figures kept.
+			await sleep(1600);
+			anthropicMode = "garbage";
+			answer = await watcher.call("limits.refresh", { id: "anthropic" });
+			let now = answer.providers.find((p: any) => p.id === "anthropic");
+			assert.equal(now.error, "Could not read the limits");
+			assert.ok(now.errorAt >= now.fetchedAt);
+			assert.equal(now.windows[0].usedPercent, 47, "the last good reading stays");
+
+			// Too many requests: said plainly, and the address is left alone for minutes, whatever it said.
+			await sleep(1600);
+			anthropicMode = "busy";
+			answer = await watcher.call("limits.refresh", { id: "anthropic" });
+			assert.match(answer.providers.find((p: any) => p.id === "anthropic").error, /check less often/);
+			const busyHits = hits.anthropic;
+			await sleep(1600);
+			await watcher.call("limits.refresh", { id: "anthropic" });
+			assert.equal(hits.anthropic, busyHits, "not asked again soon after a 429");
+
+			// An address that never answers is given up on after a few seconds.
+			codexMode = "silent";
+			const asked = Date.now();
+			answer = await watcher.call("limits.refresh", { id: "openai-codex" });
+			now = answer.providers.find((p: any) => p.id === "openai-codex");
+			assert.match(now.error, /did not answer within 6 seconds/);
+			assert.ok(Date.now() - asked < 12_000);
+			assert.equal(now.windows.length, 3);
+
+			// Signing out takes a subscription off the list.
+			await watcher.call("providers.logout", { id: "openai-codex" });
+			await watcher.until("signed out", () => watcher.events.limits.providers.length === 1 && limitsOf("anthropic") !== undefined);
+
+			// After a restart the last good reading is there at once, and a recent one is not asked for again.
+			await watcher.until("readings saved", () => existsSync(join(limitsHome, "limits.json")) && !readFileSync(join(limitsHome, "limits.json"), "utf8").includes("openai-codex"));
+			limitsEngine.kill("SIGTERM");
+			await new Promise((resolve) => limitsEngine!.once("exit", resolve));
+			anthropicMode = "ok";
+			const beforeRestart = hits.anthropic;
+			limitsEngine = startLimitsEngine();
+			watcher = await attachLimits();
+			await watcher.until("reading kept across a restart", () => limitsOf("anthropic")?.windows[0]?.usedPercent === 47, 20_000);
+			assert.equal(hits.anthropic, beforeRestart);
+
+			// No token on disk or in the log.
+			for (const secret of [claudeToken, codexToken, "limits-test-refresh"]) {
+				assert.ok(!log.includes(secret), "no token in the engine's log");
+				const leaked = readdirSync(limitsHome).filter((name) => statSync(join(limitsHome, name)).isFile() && readFileSync(join(limitsHome, name)).includes(secret));
+				assert.deepEqual(leaked, [], "no token on disk");
+			}
+			step("limits: each subscription's windows from its usage address and its answers' headers; at most once a minute, longer after a 429; unreadable or silent answers said plainly with the last good figures kept; sign-out, restart, no token on disk or in the log");
+		} finally {
+			limitsEngine?.kill("SIGTERM");
+			standIn.closeAllConnections();
+			standIn.close();
+			await sleep(400);
+			for (const id of ["anthropic", "openai-codex"]) await store.delete(id).catch(() => {});
+			rmSync(limitsHome, { recursive: true, force: true });
+		}
 	}
 
 	// ---- Schedules
