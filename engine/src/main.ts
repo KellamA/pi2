@@ -42,6 +42,7 @@ import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
+import { validateScheduleSettings } from "./selfschedule.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -889,6 +890,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
 			computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
 			browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
+			schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
@@ -933,6 +935,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			lastConversationId: previous?.lastConversationId ?? null,
 			pending: previous?.pending ?? null,
 			createdAt: previous?.createdAt ?? now,
+			// Who made it is kept through the person's edits; the app cannot set it.
+			...(previous?.createdBy !== undefined ? { createdBy: previous.createdBy } : {}),
 		};
 		await harness.commit(async (tx) => void ((await tx.doc(Schedules)).schedules[id] = schedule), context);
 		return { id };

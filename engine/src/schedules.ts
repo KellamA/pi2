@@ -24,6 +24,8 @@ export type Schedule = {
 	/** A run whose conversation exists but whose prompt may not have been submitted yet; finished on the next start. */
 	pending: { conversationId: number; runAt: number } | null;
 	createdAt: number;
+	/** Set when an agent made it (with the person's approval), from that conversation; absent when the person made it. */
+	createdBy?: { agentId: string; conversationId: number };
 };
 
 export const Schedules = defineDoc<{ schedules: Record<string, Schedule> }>({

@@ -1481,6 +1481,183 @@ try {
 		}
 	}
 
+	{
+		// selfschedule (engine/src/selfschedule.ts)
+		const { checkWords, describeScheduling, MAX_AGENT_SCHEDULES, readLocalTime, resolveTiming } = await import("../src/selfschedule.ts");
+		const monday = new Date(2026, 10, 9, 8, 30).getTime(); // a Monday morning, local time
+		const section = describeScheduling(monday);
+		assert.ok(section.includes("Today is Monday 9 November 2026 (2026-11-09)") && section.includes(Intl.DateTimeFormat().resolvedOptions().timeZone), "the prompt gives the date and the time zone");
+		assert.ok(!section.includes("08:30"), "but not the clock, which would change the prompt at every message");
+		assert.equal(readLocalTime("2026-11-10 07:05"), new Date(2026, 10, 10, 7, 5).getTime());
+		assert.equal(readLocalTime("2026-11-31 07:05"), undefined, "a day that does not exist is refused");
+		assert.equal(readLocalTime("2026-11-10T07:05Z"), undefined, "so is a time zone: times are the Mac's");
+		assert.deepEqual(resolveTiming({ repeat: "Weekly", weekday: "fri", time: "9:00" }, monday), { kind: "weekly", weekday: 5, hour: 9, minute: 0 });
+		assert.deepEqual(resolveTiming({ repeat: "once", in_minutes: 120 }, monday), { kind: "once", at: monday + 120 * 60_000 });
+		assert.match(resolveTiming({ repeat: "once", at: "2026-11-09 08:00" }, monday) as string, /already passed: it is now 2026-11-09 08:30/);
+		assert.match(resolveTiming({ repeat: "once", at: "2026-11-09 09:00", in_minutes: 5 }, monday) as string, /not both/);
+		assert.match(resolveTiming({ repeat: "daily", time: "7am" }, monday) as string, /HH:MM on the 24-hour clock/);
+		assert.match(checkWords("Long", "p".repeat(2001)) as string, /2001 characters; the most is 2000/);
+		assert.deepEqual(checkWords("  Morning\n brief ", " Do it. "), { title: "Morning brief", prompt: "Do it." });
+
+		const results = (id: number) => client.conversations.get(id)!.items.filter((i) => i.kind === "tool");
+		const asked = (id: number) => client.inbox.find((i) => i.conversationId === id && i.tool === "schedule_task");
+		/** Have the agent call a tool; when `decide` is given, wait for the approval and answer it. Resolves with the result. */
+		const use = async (id: number, name: string, args: unknown, decide?: (ask: InboxItem) => string) => {
+			const before = results(id).length;
+			await client.call("submit", { id, text: `/tool ${name} ${JSON.stringify(args)}` });
+			if (decide !== undefined) {
+				const ask = await client.until(`${name} asks first`, () => asked(id));
+				await client.call("inbox.decide", { id: ask.id, decision: decide(ask) });
+			}
+			await client.until(`${name} answered`, () => !client.conversations.get(id)!.state.busy && results(id).length === before + 1);
+			return results(id).at(-1)!;
+		};
+		const schedulesOf = (agentId: string) => (client.schedules as any[]).filter((s) => s.agentId === agentId);
+		const stamp = (ms: number) => {
+			const d = new Date(ms);
+			const two = (n: number) => String(n).padStart(2, "0");
+			return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+		};
+		const brief = { title: "Morning news brief", prompt: "Sum up the news.", repeat: "daily", time: "07:00" };
+
+		// Off by default: no tools.
+		const { id: herald } = await client.call("agents.save", { agent: { name: "Herald", access: "none" } });
+		await client.until("herald saved", () => client.agents.some((x) => x.id === herald));
+		assert.deepEqual((client.agents.find((x) => x.id === herald) as any).schedule, { enabled: false });
+		const { id: h } = await client.call("conversation.create", { agentId: herald });
+		await client.call("conversation.open", { id: h });
+		let answer = await use(h, "schedule_task", brief);
+		assert.ok(answer.isError && /not available/.test(answer.text), `switched off, the tool is not offered: ${answer.text}`);
+		assert.equal(asked(h), undefined);
+		assert.equal(schedulesOf(herald).length, 0);
+		step("selfschedule: off by default, no tools; times are read as the Mac's local time and refused plainly");
+
+		// On: every new schedule asks first. Deny makes nothing; allow makes it, marked with who set it.
+		await client.call("agents.save", { agent: { id: herald, name: "Herald", schedule: { enabled: true } } });
+		await client.until("scheduling on", () => (client.agents.find((x) => x.id === herald) as any)?.schedule?.enabled === true);
+		answer = await use(h, "schedule_task", brief, (ask) => {
+			assert.equal(ask.kind, "approval");
+			assert.match(ask.question!, /^Herald wants to schedule “Morning news brief”: every day at 07:00, first run \w+day \d+ \w+( \d{4})? at 07:00 — Sum up the news\.$/);
+			assert.match((ask as any).when, /^Every day at 07:00, first run /);
+			assert.equal(schedulesOf(herald).length, 0, "nothing is made before the decision");
+			return "deny";
+		});
+		assert.ok(answer.isError && /declined/.test(answer.text), answer.text);
+		assert.equal(schedulesOf(herald).length, 0, "deny makes nothing");
+		answer = await use(h, "schedule_task", brief, () => "once");
+		assert.ok(!answer.isError && /^Scheduled “Morning news brief” \(s\w+\): every day at 07:00\. The first run is at \d{4}-\d\d-\d\d 07:00 /.test(answer.text), answer.text);
+		const made = await client.until("schedule made", () => schedulesOf(herald)[0]);
+		assert.deepEqual(made.createdBy, { agentId: herald, conversationId: h });
+		assert.deepEqual([made.title, made.prompt, made.enabled, made.repeat], ["Morning news brief", "Sum up the news.", true, { kind: "daily", hour: 7, minute: 0 }]);
+		assert.ok(new Date(made.nextRunAt).getHours() === 7 && made.nextRunAt > Date.now() && made.nextRunAt <= Date.now() + 86_400_000);
+		assert.deepEqual(answer.details, { id: made.id, title: "Morning news brief", when: "every day at 07:00" });
+		// "Always" is not offered for this tool; an app that sends it gets once, and the next schedule is asked about again.
+		answer = await use(h, "schedule_task", { title: "Hourly check", prompt: "Check the build.", repeat: "interval", minutes: 60 }, () => "always");
+		assert.equal(answer.isError, false, answer.text);
+		answer = await use(h, "schedule_task", { title: "Lunch", prompt: "Lunch time.", repeat: "once", in_minutes: 90 }, () => "deny");
+		assert.ok(answer.isError && /declined/.test(answer.text), "after an “always”, the next schedule still asks");
+		// Killed while the question waits: asked again, about the same schedule at the same time, and made once.
+		await client.call("submit", { id: h, text: `/tool schedule_task ${JSON.stringify({ title: "Wrap-up", prompt: "Sum up the day.", repeat: "once", in_minutes: 600 })}` });
+		const beforeCrash = await client.until("approval before the crash", () => asked(h));
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		engine = startEngine();
+		client = await Client.attach();
+		await client.call("conversation.open", { id: h });
+		const afterCrash = await client.until("asked again after the restart", () => asked(h));
+		assert.equal(afterCrash.question, beforeCrash.question, "the same schedule, at the same time");
+		await client.call("inbox.decide", { id: afterCrash.id, decision: "once" });
+		await client.until("made after the restart", () => !client.conversations.get(h)!.state.busy && schedulesOf(herald).some((s) => s.title === "Wrap-up"));
+		await sleep(400);
+		assert.equal(schedulesOf(herald).filter((s) => s.title === "Wrap-up").length, 1, "and only once");
+		step("selfschedule: each new schedule asks first, allow once or deny, never always; deny makes nothing; allow makes it with createdBy; asked again after kill -9");
+
+		// List: this agent's schedules, saying who set each. Cancel: only its own.
+		const { id: weekly } = await client.call("schedules.save", { schedule: { title: "Weekly report", agentId: herald, prompt: "Report on the week.", repeat: { kind: "weekly", weekday: 1, hour: 9, minute: 0 } } });
+		const { id: atlasOnly } = await client.call("schedules.save", { schedule: { title: "Atlas only", agentId: "atlas", prompt: "x", repeat: { kind: "daily", hour: 6, minute: 0 } } });
+		await client.until("the person's schedules", () => client.schedules.some((s) => s.id === weekly) && client.schedules.some((s) => s.id === atlasOnly));
+		answer = await use(h, "list_schedules", {});
+		assert.equal(answer.isError, false, answer.text);
+		assert.match(answer.text, /^It is now \w+day \d+ \w+ at \d\d:\d\d \(\d{4}-\d\d-\d\d \d\d:\d\d, /);
+		assert.match(answer.text, new RegExp(`- ${made.id}: “Morning news brief”, every day at 07:00; next run \\d{4}-\\d\\d-\\d\\d 07:00 \\(\\w+day\\); set by you\\.`));
+		assert.match(answer.text, /“Weekly report”, every Monday at 09:00; next run [^;]+; set by the person, so you cannot cancel it\./);
+		assert.ok(!answer.text.includes("Atlas only"), "another agent's schedules are not listed");
+		assert.match(answer.text, /You set 3 of the 20 schedules you may have/);
+		answer = await use(h, "cancel_schedule", { id: weekly });
+		assert.ok(answer.isError && /set by the person, not by you/.test(answer.text), answer.text);
+		answer = await use(h, "cancel_schedule", { id: atlasOnly });
+		assert.ok(answer.isError && /no schedule \S+ of yours/.test(answer.text), `nor another agent's: ${answer.text}`);
+		assert.ok(client.schedules.some((s) => s.id === weekly) && client.schedules.some((s) => s.id === atlasOnly), "both stay");
+		answer = await use(h, "cancel_schedule", { id: made.id });
+		assert.ok(!answer.isError && answer.text.startsWith("Cancelled “Morning news brief”"), answer.text);
+		await client.until("cancelled", () => !client.schedules.some((s) => s.id === made.id));
+		assert.equal(asked(h), undefined, "listing and cancelling ask nothing");
+		await client.call("schedules.delete", { id: atlasOnly });
+		step("selfschedule: list shows this agent's schedules and who set them; cancel removes only its own");
+
+		// Limits, refused before anything is asked.
+		for (const [what, args, message] of [
+			["too often", { title: "Spam", prompt: "x", repeat: "interval", minutes: 5 }, /at most every 15 minutes, so 5 is too often/],
+			["a long title", { title: "t".repeat(81), prompt: "x", repeat: "daily", time: "08:00" }, /81 characters; keep it to 80/],
+			["a time gone by", { title: "Late", prompt: "x", repeat: "once", at: "2020-01-01 09:00" }, /already passed/],
+		] as const) {
+			answer = await use(h, "schedule_task", args);
+			assert.ok(answer.isError && message.test(answer.text), `${what}: ${answer.text}`);
+		}
+		// The cap, through a script: each of its calls asks too, and the one over the cap is refused without asking.
+		const { id: ledger } = await client.call("agents.save", { agent: { name: "Ledger", access: "none", codeMode: true, schedule: { enabled: true } } });
+		await client.until("ledger saved", () => client.agents.some((x) => x.id === ledger));
+		const { id: l } = await client.call("conversation.create", { agentId: ledger });
+		await client.call("conversation.open", { id: l });
+		const script = "for (let i = 1; i <= 21; i++) { try { await tools.schedule_task({ title: 'Check ' + i, prompt: 'Check ' + i, repeat: 'interval', minutes: 60 }); } catch (e) { console.log(i + ': ' + e.message); } }";
+		await client.call("submit", { id: l, text: `/code ${script}` });
+		for (let n = 1; n <= MAX_AGENT_SCHEDULES; n++) {
+			const ask = await client.until(`the script's call ${n} asks`, () => asked(l));
+			await client.call("inbox.decide", { id: ask.id, decision: "once" });
+			await client.until(`call ${n} answered`, () => asked(l)?.id !== ask.id);
+		}
+		await client.until("script finished", () => !client.conversations.get(l)!.state.busy && results(l).length === 1);
+		assert.equal(schedulesOf(ledger).length, MAX_AGENT_SCHEDULES);
+		assert.ok(schedulesOf(ledger).every((s) => s.createdBy?.agentId === ledger));
+		assert.match(results(l)[0]!.text, /21: You already have 20 schedules that you set, the most there can be/);
+		assert.equal(asked(l), undefined);
+		for (const s of schedulesOf(ledger)) await client.call("schedules.delete", { id: s.id });
+		step("selfschedule: too often, too long, already passed and over the cap are refused without asking; a script's calls ask too");
+
+		// It fires: a new conversation with the agent and the prompt. That run's own schedule_task waits for the person.
+		const inner = { title: "Again", prompt: "x", repeat: "once", in_minutes: 30 };
+		answer = await use(h, "schedule_task", { title: "Fire soon", prompt: `/tool schedule_task ${JSON.stringify(inner)}`, repeat: "once", at: stamp(Date.now() + 10_000) }, () => "once");
+		assert.equal(answer.isError, false, answer.text);
+		const fired = await client.until("the schedule fires", () => client.library.find((c) => c.title === "Fire soon"), 30_000);
+		await client.call("conversation.open", { id: fired.id });
+		const nested = await client.until("the scheduled run asks before scheduling", () => asked(fired.id));
+		assert.match(nested.question!, /^Herald wants to schedule “Again”: once, on /);
+		assert.equal(client.conversations.get(fired.id)!.state.agent.agentId, herald);
+		await sleep(400);
+		assert.ok(!schedulesOf(herald).some((s) => s.title === "Again"), "nothing is made while no one has answered");
+		await client.call("inbox.decide", { id: nested.id, decision: "deny" });
+		await client.until("scheduled run finished", () => !client.conversations.get(fired.id)!.state.busy && results(fired.id).length === 1);
+		const ran = schedulesOf(herald).find((s) => s.title === "Fire soon");
+		assert.deepEqual([ran.lastConversationId, ran.enabled, ran.nextRunAt], [fired.id, false, null], "a one-off turns itself off after its run");
+		step("selfschedule: an agent's schedule fires and starts a conversation; that run's own schedule_task waits in the Inbox");
+
+		// The person's edits keep who set it, and the app cannot claim an agent did. Switching off takes the tools away.
+		const hourly = schedulesOf(herald).find((s) => s.title === "Hourly check");
+		await client.call("schedules.save", { schedule: { id: hourly.id, title: "Hourly build check", agentId: herald, prompt: hourly.prompt, repeat: hourly.repeat, enabled: true } });
+		await client.until("edited", () => schedulesOf(herald).find((s) => s.id === hourly.id)?.title === "Hourly build check");
+		assert.deepEqual(schedulesOf(herald).find((s) => s.id === hourly.id).createdBy, { agentId: herald, conversationId: h });
+		const { id: claimed } = await client.call("schedules.save", { schedule: { title: "Claimed", agentId: herald, prompt: "x", repeat: { kind: "daily", hour: 5, minute: 0 }, createdBy: { agentId: herald, conversationId: h } } });
+		await client.until("claimed saved", () => client.schedules.some((s) => s.id === claimed));
+		assert.equal(schedulesOf(herald).find((s) => s.id === claimed).createdBy, undefined);
+		await client.call("agents.save", { agent: { id: herald, name: "Herald", schedule: { enabled: false } } });
+		await client.until("scheduling off", () => (client.agents.find((x) => x.id === herald) as any)?.schedule?.enabled === false);
+		answer = await use(h, "list_schedules", {});
+		assert.ok(answer.isError && /not available/.test(answer.text), "the tools are taken away at the next message");
+		assert.ok(schedulesOf(herald).some((s) => s.id === hourly.id), "the schedules already approved stay until the person deletes them");
+		for (const s of schedulesOf(herald)) await client.call("schedules.delete", { id: s.id });
+		step("selfschedule: the person's edits keep who set it, and only the engine can mark it; switching off takes the tools away");
+	}
+
 	// ---- Schedules
 	const { nextRun } = await import("../src/schedules.ts");
 	const monday9 = new Date(2026, 10, 9, 9, 0).getTime(); // a Monday, 09:00 local

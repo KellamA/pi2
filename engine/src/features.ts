@@ -14,6 +14,7 @@ import { knowledge } from "./knowledge.ts";
 import { limits } from "./limits.ts";
 import { look } from "./look.ts";
 import { plan } from "./plan.ts";
+import { selfSchedule } from "./selfschedule.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
 export type Engine = {
@@ -51,4 +52,4 @@ export type FeatureParts = {
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
-export const FEATURES: Feature[] = [plan, knowledge, look, limits];
+export const FEATURES: Feature[] = [plan, knowledge, look, limits, selfSchedule];
