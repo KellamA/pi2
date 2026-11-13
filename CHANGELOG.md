@@ -2,7 +2,7 @@
 
 What changed in each version, newest first.
 
-## Unreleased
+## 0.7.0
 
 ### Added
 - **Worktrees.** A conversation in a git repository can move into a worktree of its own, on a new branch, so several agents can change one project at once. An agent can be set to start every conversation in one. Removing a worktree takes the conversation back to where it was and keeps a branch with unmerged work. See [docs/worktrees.md](docs/worktrees.md).
@@ -13,6 +13,7 @@ What changed in each version, newest first.
 
 ### Changed
 - **Plan limits stay current.** Opening Usage checks again any signed-in subscription whose figures are more than an hour old, without waiting for Check Now.
+- **Model pickers name the provider.** An agent's model picker lists models under their provider, like the chat model menu, and names the provider when closed. Two providers offering a model with the same id no longer get their rows mixed up, and an agent whose model has since been hidden shows it as "(hidden)" instead of a blank picker.
 
 ### Fixed
 - After saving one of the starter agents, Save and Revert stayed lit and New Conversation stayed off, because saving fills in settings the starters were made without. The agent page now compares an agent as it would be saved.
