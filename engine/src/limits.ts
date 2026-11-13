@@ -616,7 +616,7 @@ async function askUsage(engine: Engine, id: string, address: UsageAddress): Prom
 			void response.body?.cancel().catch(() => {});
 			if (response.status === 429) throw new LimitsError(`${address.name} asked pi² to check less often. It will try again later.`, retryAfterMs(response.headers.get("retry-after")));
 			if (response.status === 401 || response.status === 403) {
-				throw new LimitsError(`${address.name} did not accept the sign-in (${response.status}). Signing in again in Settings › Providers may fix it.`);
+				throw new LimitsError(`${address.name} refused to say (${response.status}). If this keeps happening, signing in again in Settings › Providers may help.`);
 			}
 			throw new LimitsError(`${address.name} answered ${response.status}.`);
 		}
