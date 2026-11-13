@@ -15,5 +15,7 @@ xcuserdata/
 .env
 .env.*
 
-# Working copies made for parallel work
-.claude/
+# Working copies made for parallel work, and local Claude Code settings.
+# The shared settings (the issue hooks) are kept.
+.claude/*
+!.claude/settings.json

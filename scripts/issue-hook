@@ -1,0 +1,78 @@
+#!/bin/bash
+# Claude Code hook that keeps scripts/issue honest (wired up in .claude/settings.json).
+#
+#   issue-hook edit   PreToolUse on Edit/Write/NotebookEdit: refuse to change a
+#                     file in this repository until the session has an issue in
+#                     progress for the work.
+#   issue-hook stop   Stop: if the session left an issue marked in progress, ask
+#                     the agent once to close it or say what it is waiting on.
+#
+# The session's issues are found by reading the "[pi2-issue] ..." lines that
+# scripts/issue printed into this session's transcript. Set PI2_ISSUES=off to
+# turn both checks off.
+
+set -uo pipefail
+
+[[ ${PI2_ISSUES-} == off ]] && exit 0
+command -v jq >/dev/null || exit 0
+
+mode=${1-}
+input=$(cat)
+transcript=$(jq -r '.transcript_path // empty' <<<"$input")
+
+# Sub-agents work for a parent session, which owns the issue.
+[[ -n $(jq -r '.agent_id // empty' <<<"$input") ]] && exit 0
+
+# Prints "<number> <state>" for each issue this session touched, where state is
+# the last thing that happened to it: active, paused or closed. A "skipped"
+# line counts as an active pseudo-issue numbered 0.
+session_issues() {
+	[[ -f $transcript ]] || return 0
+	grep -oE '\[pi2-issue\] (opened|working on|paused|closed) #[0-9]+|\[pi2-issue\] skipped' "$transcript" |
+		awk '
+			/skipped/ { state["0"] = "active"; order["0"] = NR; next }
+			{
+				n = $NF; sub("#", "", n)
+				if ($2 == "opened" || $2 == "working") s = "active"
+				else s = $2
+				state[n] = s; order[n] = NR
+			}
+			END { for (n in state) print order[n], n, state[n] }
+		' | sort -n | cut -d" " -f2-
+}
+
+deny() {
+	jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
+	exit 0
+}
+
+case $mode in
+	edit)
+		file=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
+		[[ -n $file ]] || exit 0
+		cwd=$(jq -r '.cwd // empty' <<<"$input")
+		root=$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null) || exit 0
+		case $file in
+			"$root"/.git/* | "$root"/.claude/*) exit 0 ;;
+			"$root"/*) ;;
+			*) exit 0 ;; # outside the repository (memory, scratch files)
+		esac
+
+		issues=$(session_issues)
+		grep -q ' active$' <<<"$issues" && exit 0
+
+		paused=$(awk '$2 == "paused" { n = $1 } END { print n }' <<<"$issues")
+		if [[ -n $paused ]]; then
+			deny "Issue #$paused is marked waiting or blocked. If you are working on it again, run: scripts/issue take $paused   — then retry this edit. If this is different work, open a new issue with scripts/issue start."
+		fi
+		deny "This session has no issue in progress for this work. Before changing files in the repository, run: scripts/issue start \"<short title>\" -b \"<what and why>\"   (or scripts/issue take <N> to pick up an existing issue), then retry this edit. Only if GitHub cannot be reached, or the person said not to track this, run: scripts/issue skip \"<why>\""
+		;;
+	stop)
+		[[ $(jq -r '.stop_hook_active // false' <<<"$input") == true ]] && exit 0
+		open=$(session_issues | awk '$2 == "active" && $1 != "0" { printf "%s#%s", sep, $1; sep = ", " }')
+		[[ -n $open ]] || exit 0
+		reason="Before ending the turn, update $open, still marked in progress: scripts/issue done N \"<what changed and what was verified>\" if the work is finished; scripts/issue wait N \"<what you need from the person>\" if it waits on them; scripts/issue block N \"<why>\" if it is stuck. Then end the turn as you meant to."
+		jq -n --arg r "$reason" '{decision: "block", reason: $r}'
+		;;
+esac
+exit 0

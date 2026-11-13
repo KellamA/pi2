@@ -1,0 +1,158 @@
+#!/bin/bash
+# Keeps a GitHub issue for each piece of agent work, so the repository has a
+# record of what was done and a backlog of what might come next.
+#
+# Every command that changes an issue's state prints one line starting with
+# "[pi2-issue]". The hooks in scripts/issue-hook read those lines back from the
+# session transcript to know which issue a session is working on, so keep the
+# wording stable.
+#
+# See CLAUDE.md for when agents use each command.
+
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+Usage: scripts/issue <command> [arguments]
+
+  start "Title" [-b body] [-l label]...   Open an issue for work you are starting
+  take N                                   Pick up an existing issue (or resume a paused one)
+  note N "text"                            Add a progress note
+  wait N "what for"                        Mark it waiting on the person (keeps it open)
+  block N "why"                            Mark it blocked (keeps it open)
+  done N "summary"                         Close it as finished, with a summary
+  drop N "why"                             Close it as not going ahead
+  idea "Title" [-b body] [-l label]...     File something for later in the backlog
+  skip "why"                               Go ahead without an issue (GitHub unreachable,
+                                           or the person said not to track this)
+  list                                     Show open issues by status
+EOF
+}
+
+die() { echo "issue: $*" >&2; exit 1; }
+
+# Issues are public: never publish a home folder path.
+clean() { local s=${1-} t='~'; printf '%s' "${s//"$HOME"/$t}"; }
+
+branch() { git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"; }
+
+STATUS_LABELS=("in progress" "waiting" "blocked" "backlog")
+
+ensure_labels() {
+	local stamp
+	stamp="$(git rev-parse --git-common-dir)/pi2-issue-labels"
+	[[ -f $stamp ]] && return
+	gh label create "agent" --color 5319e7 --description "Opened by an agent session" --force >/dev/null
+	gh label create "in progress" --color fbca04 --description "Being worked on now" --force >/dev/null
+	gh label create "waiting" --color c5def5 --description "Waiting on a decision or review" --force >/dev/null
+	gh label create "blocked" --color b60205 --description "Cannot go on until something else changes" --force >/dev/null
+	gh label create "backlog" --color ededed --description "Not started; a candidate for later" --force >/dev/null
+	touch "$stamp"
+}
+
+# Replace whichever status label the issue has with the given one (or none).
+set_status() {
+	local n=$1 status=${2-} args=() l
+	ensure_labels
+	for l in "${STATUS_LABELS[@]}"; do
+		[[ $l == "$status" ]] || args+=(--remove-label "$l")
+	done
+	[[ -n $status ]] && args+=(--add-label "$status")
+	gh issue edit "$n" "${args[@]}" >/dev/null
+}
+
+need_number() { [[ ${1-} =~ ^[0-9]+$ ]] || die "expected an issue number, got '${1-}'"; }
+
+create() {
+	local status=$1; shift
+	local title=${1-}; shift || true
+	[[ -n $title ]] || die "a title is required"
+	local body="" labels=(agent "$status")
+	while (($#)); do
+		case $1 in
+			-b|--body) body=$2; shift 2 ;;
+			-l|--label) labels+=("$2"); shift 2 ;;
+			*) die "unknown option $1" ;;
+		esac
+	done
+	local footer
+	if [[ $status == "backlog" ]]; then
+		footer="_Filed by an agent session on branch \`$(branch)\`._"
+	else
+		footer="_Opened by an agent session on branch \`$(branch)\`._"
+	fi
+	body="${body:+$body
+
+}$footer"
+	local args=(--title "$(clean "$title")" --body "$(clean "$body")")
+	local l
+	for l in "${labels[@]}"; do args+=(--label "$l"); done
+	[[ $status == "in progress" ]] && args+=(--assignee @me)
+	gh issue create "${args[@]}"
+}
+
+cmd=${1-}; shift || true
+case $cmd in
+	start)
+		ensure_labels
+		url=$(create "in progress" "$@")
+		echo "[pi2-issue] opened #${url##*/} $url"
+		;;
+	idea)
+		ensure_labels
+		url=$(create "backlog" "$@")
+		echo "[pi2-issue] filed #${url##*/} $url"
+		;;
+	take)
+		need_number "${1-}"
+		ensure_labels
+		state=$(gh issue view "$1" --json state -q .state)
+		[[ $state == "CLOSED" ]] && gh issue reopen "$1" >/dev/null
+		set_status "$1" "in progress"
+		gh issue edit "$1" --add-label agent --add-assignee @me >/dev/null
+		gh issue comment "$1" --body "Picked up by an agent session on branch \`$(branch)\`." >/dev/null
+		echo "[pi2-issue] working on #$1 $(gh issue view "$1" --json url -q .url)"
+		;;
+	note)
+		need_number "${1-}"; [[ -n ${2-} ]] || die "note text is required"
+		gh issue comment "$1" --body "$(clean "$2")" >/dev/null
+		echo "Noted on #$1."
+		;;
+	wait|block)
+		need_number "${1-}"; [[ -n ${2-} ]] || die "say what it is waiting on"
+		if [[ $cmd == wait ]]; then label=waiting; title=Waiting; else label=blocked; title=Blocked; fi
+		set_status "$1" "$label"
+		gh issue comment "$1" --body "$(clean "**$title:** $2")" >/dev/null
+		echo "[pi2-issue] paused #$1 ($label)"
+		;;
+	done|drop)
+		need_number "${1-}"; [[ -n ${2-} ]] || die "a summary is required"
+		sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+		if [[ $cmd == done ]]; then
+			msg="**Done.** $2"$'\n\n'"Branch \`$(branch)\`${sha:+, at $sha}."
+			reason=completed
+		else
+			msg="**Not going ahead.** $2"
+			reason="not planned"
+		fi
+		set_status "$1" ""
+		gh issue close "$1" --reason "$reason" --comment "$(clean "$msg")" >/dev/null
+		echo "[pi2-issue] closed #$1 ($reason)"
+		;;
+	skip)
+		[[ -n ${1-} ]] || die "say why this work is not tracked"
+		echo "[pi2-issue] skipped: $1"
+		;;
+	list)
+		for status in "in progress" "waiting" "blocked" "backlog"; do
+			echo "== $status"
+			gh issue list --label "$status" --state open --limit 50 \
+				--json number,title -q '.[] | "  #\(.number)  \(.title)"'
+		done
+		echo "== other open"
+		gh issue list --state open --limit 50 --json number,title,labels \
+			-q '.[] | select([.labels[].name] | any(. == "in progress" or . == "waiting" or . == "blocked" or . == "backlog") | not) | "  #\(.number)  \(.title)"'
+		;;
+	""|-h|--help|help) usage ;;
+	*) usage >&2; exit 1 ;;
+esac
