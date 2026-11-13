@@ -870,7 +870,7 @@ try {
 		// A sub-chat has a list of its own.
 		const { id: parentChat } = await client.call("conversation.create", { agentId: "atlas" });
 		await client.call("conversation.open", { id: parentChat });
-		await client.call("submit", { id: parentChat, text: "/delegate Scout: say hi" });
+		await client.call("submit", { id: parentChat, text: "/delegate Forge: say hi" });
 		await client.until("plan delegation finished", () => {
 			const v = client.conversations.get(parentChat);
 			return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool") ? v : undefined;
