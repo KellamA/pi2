@@ -345,6 +345,8 @@ struct ConversationState: Codable, Equatable {
     let context: ContextSize
     let compacting: Bool
     let compactionError: String?
+    /// The project instructions file (AGENTS.md or CLAUDE.md) in the conversation's folder, if there is one.
+    let projectInstructions: String?
 }
 
 struct Spend: Codable, Equatable {

@@ -30,7 +30,7 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let state, data.items.isEmpty, !busy, state.partial == nil {
-                AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil)
+                AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions)
             } else {
                 TranscriptView(engine: engine, conversationID: id, items: data.items, state: state)
             }
@@ -977,6 +977,7 @@ struct AgentIntro: View {
     let engine: EngineClient
     let agent: AgentInfo
     let isSubChat: Bool
+    var projectInstructions: String?
 
     private var profile: AgentProfile? { engine.agent(agent.agentId) }
     private var folder: String? { agent.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } }
@@ -992,6 +993,7 @@ struct AgentIntro: View {
         }
         let delegates = (profile?.delegates ?? []).compactMap { engine.agent($0)?.name }
         if !delegates.isEmpty, !isSubChat { facts.append(("person.2", "Can hand work to \(ListFormatter.localizedString(byJoining: delegates))")) }
+        if let projectInstructions { facts.append(("text.badge.checkmark", "Follows the \(projectInstructions) in \(folder ?? "its folder")")) }
         if let files = profile?.files, !files.isEmpty { facts.append(("books.vertical", "\(files.count) reference file\(files.count == 1 ? "" : "s") at hand")) }
         if let computer = profile?.computer, computer.enabled {
             let apps = computer.apps.map(ComputerController.name(of:))
