@@ -27,6 +27,8 @@ export type AgentProfile = {
 	instructions: string;
 	access: Access;
 	cwd: string | null;
+	/** Whether each conversation the person starts gets a git worktree of its own, made from `cwd` (worktrees.ts). */
+	worktree?: boolean;
 	/** IDs of the agents this one may hand work to. */
 	delegates: string[];
 	maxTurns: number | null;
