@@ -9,6 +9,9 @@ What changed in each version, newest first.
 - **Branch tracker.** Each conversation working in a git repository shows its branch next to it in the sidebar and in its toolbar: a plain icon for the main checkout, a boxed one for a worktree, coloured by how the branch stands (changes, commits to push or merge, merged, conflicts). Branches in the sidebar lists them all by repository.
 - **Split panes.** The conversation area splits into up to 16 panes, each with its own conversation. Ready-made layouts (two, three even or one big with two half-size, grids up to four by four) are in the toolbar's Layout button and View › Layout; Split Right (⌘D) and Split Down (⇧⌘D) make any arrangement in between. Dividers drag to any size, and double-clicking one evens it out. The focused pane's conversation is the one the title, toolbar, sidebar and Conversation menu follow; ⌘] and ⌘[ move between panes and ⌃⌘W closes one. A conversation can be dragged in from the sidebar, and the layout is kept between launches.
 
+### Fixed
+- After saving one of the starter agents, Save and Revert stayed lit and New Conversation stayed off, because saving fills in settings the starters were made without. The agent page now compares an agent as it would be saved.
+
 ## 0.6.0
 
 ### Added

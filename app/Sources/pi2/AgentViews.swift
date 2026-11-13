@@ -48,10 +48,10 @@ struct AgentEditor: View {
     private var engine: EngineClient { model.engine }
     private var saved: AgentProfile? { engine.agent(agentID) }
     private var changed: Bool {
-        guard var draft else { return false }
-        // Rules are kept as soon as they are added or removed, not with the rest of the form.
-        draft.commandRules = saved?.commandRules
-        return draft != saved
+        guard let draft else { return false }
+        // Compared as they would be stored, so a setting the engine fills in or tidies on Save is not a change.
+        // That also leaves out rules, which are kept as soon as they are added or removed, not with the rest of the form.
+        return draft.asSaved != saved?.asSaved
     }
 
     var body: some View {

@@ -290,6 +290,35 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "schedule": ["enabled": schedule?.enabled ?? false],
         ]
     }
+
+    /// The agent as `agents.save` would store it: missing settings filled with their defaults and text tidied the way
+    /// the engine tidies it. Rules are left out, since saving never changes them. Two agents that are the same here
+    /// save the same, so the editor compares these to tell whether there is anything to save. The starter agents are
+    /// made without most of the optional settings, and saving fills them in.
+    var asSaved: AgentProfile {
+        var agent = self
+        agent.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        agent.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        agent.worktree = worktree ?? false
+        agent.delegates = delegates.filter { $0 != id }
+        agent.codeMode = codeMode ?? false
+        agent.mcpServers = mcpServers ?? []
+        var paths = Set<String>()
+        agent.files = (files ?? []).compactMap { file in
+            let path = file.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard paths.insert(path).inserted else { return nil }
+            return ReferenceFile(path: path, note: String(file.note.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300)))
+        }
+        var apps = Set<String>()
+        agent.computer = ComputerSettings(
+            enabled: computer?.enabled ?? false,
+            apps: (computer?.apps ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && apps.insert($0).inserted },
+            ask: computer?.ask ?? true)
+        agent.browser = browser ?? BrowserSettings()
+        agent.schedule = schedule ?? ScheduleSettings()
+        agent.commandRules = nil
+        return agent
+    }
 }
 
 /// Something a run is waiting on the person for: approval of a tool call, or an answer to a question.
