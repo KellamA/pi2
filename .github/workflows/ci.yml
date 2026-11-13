@@ -31,6 +31,21 @@ jobs:
       - run: npm run check
       - run: npm test
 
+  transcript:
+    name: Transcript page (tests)
+    runs-on: macos-26
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app/Web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      # Markdown, escaping, tool summaries, diffs and what a selection copies as. No dependencies to install.
+      - run: node --test test/
+
   app:
     name: App (build)
     runs-on: macos-26
