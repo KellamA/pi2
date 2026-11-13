@@ -76,6 +76,8 @@ try {
 	const home = join(long, "home");
 	const enginePath = socketPathFor(home);
 	const main = join(import.meta.dirname, "..", "src", "main.ts");
+	// The engine keeps the PATH this test has, and reads nobody's shell profile (src/shellpath.ts).
+	process.env.PI2_LOGIN_SHELL ??= "off";
 	const keychain = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 	const engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: keychain }, stdio: ["ignore", "ignore", "inherit"] });
 	try {

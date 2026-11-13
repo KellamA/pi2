@@ -16,6 +16,8 @@ const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 // The demo model types slowly for people; every engine this test starts makes it fast.
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
+// An engine a test starts keeps the PATH the test gave it, and reads nobody's shell profile (src/shellpath.ts).
+process.env.PI2_LOGIN_SHELL ??= "off";
 // Overridable so two copies of the suite can run at once without sharing Keychain items.
 const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 

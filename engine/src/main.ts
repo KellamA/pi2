@@ -47,6 +47,7 @@ import { type CommandRule, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
+import { adoptLoginPath } from "./shellpath.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
@@ -114,6 +115,8 @@ if (alreadyRunning) {
 	process.exit(0); // not a failure: launchd must not keep restarting a second copy
 }
 writeFileSync(join(home, "engine.pid"), String(process.pid));
+// Asked now, so the answer is there by the time anything is run; see shellpath.ts.
+const pathReady = adoptLoginPath(log);
 
 // A marker that is only removed by a clean stop: finding it at start means the last engine was killed or crashed.
 const runningMarker = join(home, "engine.running");
@@ -1540,6 +1543,8 @@ const server = createServer((socket) => {
 	socket.on("close", drop);
 	socket.on("error", drop);
 });
+// Nothing an agent or an MCP server starts may run before the PATH is the person's own.
+await pathReady;
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished

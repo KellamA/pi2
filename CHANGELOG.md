@@ -2,6 +2,11 @@
 
 What changed in each version, newest first.
 
+## Unreleased
+
+### Fixed
+- An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
+
 ## 0.7.0
 
 ### Added
