@@ -1665,10 +1665,13 @@ try {
 			assert.deepEqual(rows(limitsOf("github-copilot")), [["premium", "Premium requests", 37.5]]);
 			assert.equal(limitsOf("github-copilot").source, "responses");
 
-			// Asked twice in a row: within the minimum interval the second sends nothing. (The first may or may not send,
-			// depending on how long the steps above took on this machine.)
+			// Asked twice in a row: within the minimum interval the second sends nothing. The interval is waited out first,
+			// so the first always sends, whatever the steps above took on this machine.
+			await sleep(1600);
+			const beforeHits = { ...hits };
 			await watcher.call("limits.refresh");
 			const firstHits = { ...hits };
+			assert.deepEqual(firstHits, { anthropic: beforeHits.anthropic + 1, codex: beforeHits.codex + 1 }, "the first asks each once");
 			let answer = await watcher.call("limits.refresh");
 			assert.deepEqual(hits, firstHits, "no second request within the interval");
 			assert.equal(answer.providers.length, 3);
