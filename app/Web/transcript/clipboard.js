@@ -20,8 +20,8 @@
 	const PARAGRAPH = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "table", "hr", "article", "section", "figure"]);
 	const LINE = new Set(["div", "li", "tr", "pre", "header", "footer", "details", "summary", "dl", "dt", "dd", "thead", "tbody"]);
 	const DROPPED = new Set(["button", "svg", "script", "style", "template", "textarea", "select", "option", "noscript"]);
-	// Containers whose class makes them a paragraph of their own: a message, a code block, a divider.
-	const PARAGRAPH_CLASSES = ["msg", "codeblock", "marker", "table-wrap"];
+	// Containers whose class makes them a paragraph of their own: a message, a code block, a divider, a card.
+	const PARAGRAPH_CLASSES = ["msg", "codeblock", "marker", "table-wrap", "card"];
 
 	const tagOf = (el) => String(el.localName || el.tagName || "").toLowerCase();
 	const classesOf = (el) => String(el.getAttribute("class") || "").split(/\s+/);
@@ -88,7 +88,9 @@
 		if (node.nodeType !== 1) return;
 		const tag = tagOf(node);
 		const classes = classesOf(node);
-		const paragraph = PARAGRAPH.has(tag) || PARAGRAPH_CLASSES.some((name) => classes.includes(name));
+		// A tool row is one line; opened, it is a paragraph, set apart from the rows around it.
+		const paragraph =
+			PARAGRAPH.has(tag) || PARAGRAPH_CLASSES.some((name) => classes.includes(name)) || (classes.includes("tool") && classes.includes("open"));
 		const line = !paragraph && (LINE.has(tag) || classes.includes("tool"));
 		// Inside a list item, nested lists and paragraphs sit on the next line rather than after a blank one.
 		const gap = paragraph ? (context.inItem && (tag === "ul" || tag === "ol" || tag === "p") ? 1 : 2) : line ? 1 : 0;
@@ -184,7 +186,7 @@
 				const next = child.nextSibling;
 				if (child.nodeType === 1) {
 					if (child.hasAttribute("data-copy")) {
-						node.replaceChild(doc.createTextNode(child.getAttribute("data-copy")), child);
+						node.replaceChild(doc.createTextNode(child.getAttribute("data-copy") + " "), child);
 					} else if (dropped(child)) {
 						node.removeChild(child);
 					} else {

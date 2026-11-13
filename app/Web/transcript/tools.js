@@ -35,8 +35,12 @@
 				.slice(open + 9, close)
 				.split("\n")
 				.map((line) => line.replace(/^\[(error|warning|info)\] /, ""))
-				.join("\n");
-			result = result.slice(0, open) + note + result.slice(close + 10);
+				.join("\n")
+				.replace(/^\n+|\n+$/g, "");
+			// The note sits one blank line from the tool's own output, however the tag was spaced.
+			const before = result.slice(0, open).replace(/\n+$/, "");
+			const after = result.slice(close + 10).replace(/^\n+/, "");
+			result = before + (before && note ? "\n\n" : "") + note + (after && (before || note) ? "\n\n" : "") + after;
 		}
 		return result.replace(/^\n+|\n+$/g, "");
 	}
@@ -68,15 +72,52 @@
 		}
 	}
 
-	/** The one line worth showing for a call's arguments, as `ToolCall.summary` picks it in the app. */
+	const oneLine = (text) => text.replace(/\s*\n\s*/g, " ").trim();
+
+	/**
+	 * The one line worth showing for a call's arguments: the command, path, query or the like when there is one,
+	 * otherwise its fields as "name: value" pairs.
+	 */
 	function argumentSummary(args) {
 		if (!isObject(args)) return "";
 		for (const key of ["command", "path", "pattern", "query", "url", "task", "code", "question", "text", "content", "name"]) {
 			const value = args[key];
-			if (typeof value === "string" && value.trim() !== "") return value.replace(/\s*\n\s*/g, " ").trim();
+			if (typeof value === "string" && value.trim() !== "") return oneLine(value);
 		}
-		if (Object.keys(args).length === 0) return "";
-		return compactJSON(args);
+		return Object.entries(args)
+			.map(([key, value]) => `${key}: ${typeof value === "string" ? oneLine(value) : compactJSON(value)}`)
+			.join(", ");
+	}
+
+	/** A call as `ToolCall.summary` shows it in the app, which the Inbox's approval cards use. */
+	function callSummary(args) {
+		if (!isObject(args)) return "";
+		for (const key of ["command", "path", "task"]) if (typeof args[key] === "string") return args[key];
+		if (typeof args.code === "string") return args.code.replace(/\n/g, " ");
+		if (typeof args.question === "string") return args.question;
+		return prettyJSON(sortKeys(args)).replace(/\n/g, " ");
+	}
+
+	function sortKeys(value) {
+		if (Array.isArray(value)) return value.map(sortKeys);
+		if (!isObject(value)) return value;
+		return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys(value[key])]));
+	}
+
+	/** The steps of a task list a call carries (`items`, `plan`, `todos`, `steps` or `tasks`), or null. */
+	function planSteps(args) {
+		if (!isObject(args)) return null;
+		const list = [args.items, args.plan, args.todos, args.steps, args.tasks].find(Array.isArray);
+		if (!list) return null;
+		const steps = list
+			.map((step) => {
+				if (typeof step === "string") return { text: step, status: "" };
+				if (!isObject(step)) return null;
+				const text = [step.content, step.text, step.title, step.step, step.description, step.task].find((value) => typeof value === "string");
+				return text === undefined ? null : { text, status: str(step.status).toLowerCase() };
+			})
+			.filter(Boolean);
+		return steps.length > 0 ? steps : null;
 	}
 
 	/** Lines and columns of a read, when it asked for a window of the file. */
@@ -352,6 +393,7 @@
 	 *   { kind: "text", label, text, failed, language }        a file's text, an output, the arguments
 	 *   { kind: "images", entry, count }                       pictures kept with the result
 	 *   { kind: "qa", question, answer }                       a question and the person's answer
+	 *   { kind: "plan", steps: [{text, status}] }              a task list
 	 */
 	function detailFor(call, status, result, live) {
 		const args = isObject(call.arguments) ? call.arguments : {};
@@ -398,9 +440,17 @@
 				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images });
 				outputSection("What the app said");
 				break;
+			case "update_plan": {
+				const steps = planSteps(args);
+				if (steps) sections.push({ kind: "plan", steps });
+				if (failed || !steps) outputSection("Output");
+				break;
+			}
 			default: {
-				const input = Object.keys(args).length > 0 ? prettyJSON(args) : "";
-				if (input) sections.push({ kind: "text", label: "Input", text: input, language: "json" });
+				// A single plain value is already in the row's own line; anything more is shown as it was sent.
+				const keys = Object.keys(args);
+				const shown = keys.length === 1 && ["string", "number", "boolean"].includes(typeof args[keys[0]]);
+				if (keys.length > 0 && !shown) sections.push({ kind: "text", label: "Input", text: prettyJSON(args), language: "json" });
 				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images });
 				outputSection("Output");
 			}
@@ -452,6 +502,8 @@
 		readable,
 		basename,
 		argumentSummary,
+		callSummary,
+		planSteps,
 		parseDiff,
 		lineDiff,
 		diffFromEdits,

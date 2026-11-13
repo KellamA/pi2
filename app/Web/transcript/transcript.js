@@ -757,6 +757,24 @@
 					body.appendChild(strip);
 					break;
 				}
+				case "plan": {
+					const list = el("ul", "plan");
+					for (const step of section.steps) {
+						const done = ["done", "completed", "complete"].includes(step.status);
+						const active = ["in_progress", "in-progress", "active", "doing", "running"].includes(step.status);
+						const li = el("li", "task" + (done ? " done" : active ? " active" : ""));
+						const box = el("input");
+						box.type = "checkbox";
+						box.setAttribute("disabled", "");
+						if (done) box.setAttribute("checked", "");
+						box.setAttribute("aria-label", done ? "Done" : active ? "In progress" : "Not done");
+						li.append(box, document.createTextNode(step.text));
+						if (active) li.appendChild(el("span", "muted", " (in progress)"));
+						list.appendChild(li);
+					}
+					body.appendChild(list);
+					break;
+				}
 				case "qa": {
 					const qa = el("div", "qa");
 					qa.appendChild(el("p", "qa-question", section.question));
@@ -875,7 +893,7 @@
 		const answerBox = el("div", "delegate-answer" + (status === "failed" ? " failed" : ""));
 		if (answer !== "" && status !== "running") {
 			answerBox.appendChild(glyph("reply"));
-			answerBox.appendChild(el("div", "answer-text"));
+			answerBox.appendChild(el("div", "answer-text md"));
 			body.appendChild(answerBox);
 		}
 		row.appendChild(body);
@@ -928,12 +946,14 @@
 		card.setAttribute("aria-label", title);
 		const head = el("div", "card-head");
 		head.appendChild(el("span", "card-title", title));
-		head.appendChild(el("span", "card-note", "waits for you " + char(0xb7) + " survives restarts"));
+		const note = el("span", "card-note", "waits for you " + char(0xb7) + " survives restarts");
+		note.setAttribute("data-nocopy", "");
+		head.appendChild(note);
 		card.appendChild(head);
 
 		if (approval) {
 			// A computer action is described in words by the app that will do it; a command is shown as written.
-			const summary = app ? str(pending.question) || T.argumentSummary(args) : T.argumentSummary(args);
+			const summary = app ? str(pending.question) || T.callSummary(args) : T.callSummary(args);
 			card.appendChild(el(app ? "p" : "pre", app ? "card-summary words" : "card-summary", summary));
 			if (pending.tool === "edit") {
 				const diff = T.diffFromEdits(args);

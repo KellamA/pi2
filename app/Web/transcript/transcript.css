@@ -761,6 +761,40 @@ pre.diff .gap {
 	margin: 6px 0;
 }
 
+ul.plan {
+	list-style: none;
+	margin: 4px 0 8px;
+	padding: 0;
+	font-size: 13px;
+	color: var(--tx2);
+}
+
+ul.plan li {
+	display: flex;
+	align-items: baseline;
+	gap: 7px;
+	margin: 2px 0;
+}
+
+ul.plan input {
+	margin: 0;
+	accent-color: var(--acc);
+}
+
+ul.plan li.done {
+	color: var(--tx3);
+	text-decoration: line-through;
+}
+
+ul.plan li.active {
+	color: var(--tx);
+}
+
+ul.plan .muted {
+	color: var(--tx3);
+	white-space: pre;
+}
+
 .qa {
 	font-size: 13px;
 	color: var(--tx2);
