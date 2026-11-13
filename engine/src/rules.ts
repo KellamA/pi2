@@ -141,9 +141,13 @@ export function parseCommandLine(line: string): Parsed {
 			i += 2;
 			continue;
 		}
-		if (c === "#" && !inWord) {
-			// A comment runs to the end of the line; the line break still ends the command.
-			while (i < line.length && line[i] !== "\n") i++;
+		if (c === "#") {
+			// At the start of a word, a comment runs to the end of the line, and the line break still ends the command.
+			// Inside a word it is an ordinary character.
+			if (inWord) {
+				word += c;
+				i++;
+			} else while (i < line.length && line[i] !== "\n") i++;
 			continue;
 		}
 		if (c === ";") {
