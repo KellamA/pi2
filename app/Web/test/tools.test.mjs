@@ -150,6 +150,29 @@ test("hand-offs", () => {
 	assert.equal(T.delegation(call("delegate", {}), { details: { conversationId: "4" } }, null).chat, null);
 });
 
+test("a command one of the person's rules let through says which rule", () => {
+	const ran = T.describe(call("bash", { command: "npm test -- --grep x" }), "done", { details: { allowedBy: ["npm test"] } }, null);
+	assert.deepEqual(ran.note, [{ text: "allowed by your rule for " }, { text: "npm test", style: "code" }]);
+	assert.equal(ran.title, "Ran npm test -- --grep x (allowed by your rule for npm test)");
+	const several = T.describe(call("bash", { command: "a && b && c" }), "done", { details: { allowedBy: ["npm test", "git status", "./run-tests"] } }, null);
+	assert.equal(several.note.map((piece) => piece.text).join(""), "allowed by your rules for npm test, git status and ./run-tests");
+	for (const details of [null, {}, "x", { allowedBy: "npm test" }, { allowedBy: [] }, { allowedBy: [5, ""] }]) {
+		assert.deepEqual(T.describe(call("bash", { command: "x" }), "done", { details }, null).note, [], JSON.stringify(details));
+	}
+	assert.equal(line("bash", { command: "npm test" }), "Ran npm test", "without a rule the row is as before");
+});
+
+test("an approval for a command offers the engine's rule, and nothing else does", () => {
+	const pending = (rule, tool = "bash") => ({ id: "1", kind: "approval", tool, arguments: { command: "npm test -- --grep x" }, rule });
+	assert.deepEqual(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w" })), { words: ["npm", "test"], command: "npm test" });
+	assert.equal(T.ruleOffer(pending(undefined)), null);
+	assert.equal(T.ruleOffer(pending({ words: ["npm", "test"] }, "write")), null, "only commands");
+	for (const rule of [{}, { words: [] }, { words: "npm test" }, { words: ["npm", 5] }, { words: [""] }, null, "x"]) {
+		assert.equal(T.ruleOffer(pending(rule)), null, JSON.stringify(rule));
+	}
+	assert.equal(T.ruleOffer(null), null);
+});
+
 test("summaries for approval cards match the Inbox's", () => {
 	assert.equal(T.callSummary({ command: "rm -rf build" }), "rm -rf build");
 	assert.equal(T.callSummary({ path: "a.ts", edits: [] }), "a.ts");

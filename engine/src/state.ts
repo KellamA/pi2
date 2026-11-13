@@ -4,6 +4,7 @@ import type { BrowserSettings } from "./browser.ts";
 import type { ComputerSettings } from "./computer.ts";
 import type { ReferenceFile } from "./reference.ts";
 import type { ScheduleSettings } from "./selfschedule.ts";
+import type { CommandRule } from "./rules.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { defineDoc } from "@earendil-works/pi-durable";
 
@@ -41,6 +42,11 @@ export type AgentProfile = {
 	browser?: BrowserSettings;
 	/** Whether the agent may set schedules for itself, each approved by the person. Off when absent. */
 	schedule?: ScheduleSettings;
+	/**
+	 * Shell commands it may run without asking under "ask first", folder by folder (see rules.ts). Changed only through
+	 * `rules.add`, `rules.remove` and an approval's "rule" answer, never by saving the agent.
+	 */
+	commandRules?: CommandRule[];
 	createdAt: number;
 };
 
@@ -127,6 +133,11 @@ export type InboxItem = {
 	site?: string;
 	/** For a schedule an agent asks to set: when it would run, in words, such as "Every day at 07:00, first run …". */
 	when?: string;
+	/**
+	 * For a shell command: the rule the engine would make if the person answers "rule". The engine keeps its own copy and
+	 * makes the rule from that, never from anything the app sends back.
+	 */
+	rule?: { words: string[]; folder: string };
 	createdAt: number;
 };
 
@@ -154,6 +165,10 @@ export class Inbox {
 		const waiting = this.#waiting.get(id);
 		waiting?.resolve(value);
 		return waiting !== undefined;
+	}
+
+	get(id: string): InboxItem | undefined {
+		return this.#waiting.get(id)?.item;
 	}
 
 	list(): InboxItem[] {

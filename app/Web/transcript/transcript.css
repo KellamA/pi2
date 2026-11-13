@@ -595,6 +595,18 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	color: var(--tx3);
 }
 
+/* Which rule let a command run without asking: quiet, and the first to give way when the row is narrow. */
+.tool-note {
+	flex: 0 3 auto;
+	font-size: 12px;
+	color: var(--tx3);
+}
+
+.tool-note code {
+	font: 11px var(--mono);
+	color: var(--tx2);
+}
+
 .stats {
 	flex: none;
 	font-size: 12px;
@@ -1039,6 +1051,11 @@ pre.card-diff {
 	gap: 8px;
 }
 
+/* A command's approval has four choices, which wrap in a narrow window. */
+.card-buttons {
+	flex-wrap: wrap;
+}
+
 .answer-field {
 	flex: 1;
 	min-width: 0;
@@ -1081,6 +1098,10 @@ pre.card-diff {
 
 .btn.danger {
 	color: var(--bad);
+}
+
+.btn code {
+	font: 11.5px var(--mono);
 }
 
 .btn:disabled {

@@ -36,7 +36,7 @@ To sign and notarize a release build, set `SIGN_IDENTITY` (a Developer ID Applic
 cd engine && npm test
 ```
 
-This runs three things in turn: the Keychain store's test, the look tools' test, and the end-to-end test described next.
+This runs in turn the Keychain store's test, the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), and the end-to-end test described next.
 
 The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, pictures and files in messages, tools, approvals, delegation and sub-chats, reference files, computer use and the browser (each with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore.
 

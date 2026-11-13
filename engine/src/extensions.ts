@@ -1,5 +1,6 @@
 // What pi2 adds to every conversation: approval before risky tools, a way to ask the person, and delegation.
 
+import { resolve } from "node:path";
 import {
 	type AgentChange,
 	AgentDoc,
@@ -34,6 +35,7 @@ import {
 import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import type { FeatureParts } from "./features.ts";
+import { judgeCommand, proposeRule } from "./rules.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
@@ -52,6 +54,8 @@ export type Host = {
 	meta(conversationId: ConversationId): Meta | undefined;
 	agent(id: string | undefined): AgentProfile | undefined;
 	allowAlways(conversationId: ConversationId, tool: string): Promise<void>;
+	/** Keep a rule the person chose in an approval, after the same checks as one added by hand. Never throws. */
+	addRule(agentId: string, folder: string, words: string[]): Promise<void>;
 	/** How a conversation of `agent` is configured; `delegate` false leaves the delegation tool out. */
 	agentChange(agent: AgentProfile, options: { delegate: boolean }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
@@ -442,6 +446,32 @@ export function pi2Extension(host: Host): Extension {
 		return decision === "deny" ? { block: DECLINED } : undefined;
 	};
 
+	/**
+	 * Commands a rule let through, by tool task, so their results can say so (see `afterTool`). Kept in memory: a command
+	 * cut off by a crash ends as interrupted, and its result then simply goes without the note.
+	 */
+	const allowedByRule = new Map<string, string[]>();
+
+	/**
+	 * The person's rules for an agent's shell commands (rules.ts): whether this command is covered where it runs, and if
+	 * not, the rule to offer. Rules belong to the agent and a folder, so they hold in every conversation of that agent in
+	 * that folder, sub-chats and scheduled runs included.
+	 */
+	const shellRules = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ allowed: boolean; proposal?: { words: string[]; folder: string } }> => {
+		const agent = host.agent(host.meta(api.conversationId)?.agentId);
+		const command = (call.arguments as { command?: unknown }).command;
+		if (agent === undefined || typeof command !== "string") return { allowed: false };
+		const folder = resolve((await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? host.scratchFolder());
+		const verdict = judgeCommand(command, folder, agent.commandRules ?? []);
+		if (verdict.allowed) {
+			allowedByRule.set(String(api.taskId), verdict.rules);
+			if (allowedByRule.size > 200) allowedByRule.delete(allowedByRule.keys().next().value!);
+			return { allowed: true };
+		}
+		const words = proposeRule(command);
+		return words === undefined ? { allowed: false } : { allowed: false, proposal: { words, folder } };
+	};
+
 	return defineExtension({
 		name: "pi2",
 		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool, ...host.features.flatMap((feature) => feature.tools ?? [])],
@@ -493,6 +523,12 @@ export function pi2Extension(host: Host): Extension {
 					}
 					const key = isComputer ? `computer:${args.app ?? ""}` : call.name;
 					if (meta?.autoApprove?.includes(key)) return undefined;
+					let proposal: { words: string[]; folder: string } | undefined;
+					if (call.name === "bash") {
+						const rules = await shellRules(call, api, context);
+						if (rules.allowed) return undefined;
+						proposal = rules.proposal;
+					}
 					if (isComputer) {
 						// Ask the app what the action would act on, so the person approves "the Send button", not "control 12".
 						const described = await host.computer.perform(
@@ -511,12 +547,25 @@ export function pi2Extension(host: Host): Extension {
 							tool: call.name,
 							arguments: call.arguments,
 							question: description,
+							...(proposal === undefined ? {} : { rule: proposal }),
 							createdAt: Date.now(),
 						},
 						context,
 					);
 					if (decision === "always") await host.allowAlways(api.conversationId, key);
+					// The rule is the engine's own proposal; the app only says "rule". Either way the person allowed this command.
+					if (decision === "rule" && proposal !== undefined && meta?.agentId !== undefined) await host.addRule(meta.agentId, proposal.folder, proposal.words);
 					return decision === "deny" ? { block: DECLINED } : undefined;
+				},
+				afterTool: (_call, result, api) => {
+					const rules = allowedByRule.get(String(api.taskId));
+					if (rules === undefined) return undefined;
+					allowedByRule.delete(String(api.taskId));
+					// Stopped by a later check, the command never ran, and no rule allowed anything.
+					if (result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return undefined;
+					const details = result.details !== null && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
+					// The transcript shows which rule let the command run without asking.
+					return { ...result, details: { ...details, allowedBy: rules } };
 				},
 			}),
 		],

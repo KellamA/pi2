@@ -643,6 +643,10 @@ struct ToolCard: View {
     private var isRunning: Bool { result == nil && running }
     private var isError: Bool { result?.isError ?? false }
     private var output: String { Self.readable(result?.text ?? live?.output ?? "") }
+    /// The person's rules that let this command run without asking, as its result records them.
+    private var allowedBy: [String] {
+        (result?.details?["allowedBy"]?.arrayValue ?? []).compactMap { $0.stringValue }
+    }
 
     /// pi durable wraps the results it writes itself (refused, blocked, interrupted) in a tag meant for the model.
     private static func readable(_ text: String) -> String {
@@ -758,6 +762,11 @@ struct ToolCard: View {
                         .foregroundStyle(Theme.tx)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    if !allowedBy.isEmpty {
+                        // So a command that was not asked about does not look as if nothing checked it.
+                        Text("allowed by your rule").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                            .help("Ran without asking: your rule for “\(allowedBy.joined(separator: "”, “"))” covers it")
+                    }
                     if isRunning {
                         Spinner()
                     } else if result == nil {

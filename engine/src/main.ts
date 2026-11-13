@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
@@ -41,6 +41,7 @@ import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
+import { type CommandRule, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
@@ -121,6 +122,11 @@ const host: Host = {
 		editMeta(id, (meta) => {
 			if (!meta.autoApprove?.includes(tool)) meta.autoApprove = [...(meta.autoApprove ?? []), tool];
 		}),
+	addRule: (agentId, folder, words) =>
+		addCommandRule(agentId, folder, words).then(
+			() => {},
+			(error) => log("could not keep the rule:", error instanceof Error ? error.message : error),
+		),
 	agentChange: (agent, options) => agentChange(agent, options),
 	continueChat: async (id, content, requestId, callerContext) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
@@ -265,6 +271,36 @@ async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promi
 	await harness.commit(async (tx) => {
 		const meta = (await tx.doc(Library)).conversations[String(id)];
 		if (meta !== undefined) change(meta);
+	}, context);
+}
+
+// ---- Rules for an agent's shell commands (rules.ts). They live on the agent, so deleting it deletes them.
+
+const sameWords = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((word, index) => word === b[index]);
+
+/** Keep a rule, whether it was chosen in an approval or typed in the agent's settings: both pass the same checks. */
+async function addCommandRule(agentId: string, folder: string, words: string[]): Promise<CommandRule> {
+	const refused = ruleRefusal(words);
+	if (refused !== undefined) throw new Error(refused);
+	const rule: CommandRule = { folder: resolve(folder), words: [...words], createdAt: Date.now() };
+	await harness.commit(async (tx) => {
+		const agent = (await tx.doc(Agents)).agents[agentId];
+		if (agent === undefined) throw new Error(`Unknown agent: ${agentId}`);
+		const rules: CommandRule[] = JSON.parse(JSON.stringify(agent.commandRules ?? []));
+		if (rules.some((other) => sameFolder(other.folder, rule.folder) && sameWords(other.words, rule.words))) return;
+		agent.commandRules = [...rules, rule];
+	}, context);
+	return rule;
+}
+
+async function removeCommandRule(agentId: string, folder: string, words: string[]): Promise<void> {
+	await harness.commit(async (tx) => {
+		const agent = (await tx.doc(Agents)).agents[agentId];
+		if (agent === undefined) throw new Error(`Unknown agent: ${agentId}`);
+		const rules: CommandRule[] = JSON.parse(JSON.stringify(agent.commandRules ?? []));
+		const kept = rules.filter((rule) => !(sameFolder(rule.folder, folder) && sameWords(rule.words, words)));
+		if (kept.length === rules.length) throw new Error("That rule is already gone");
+		agent.commandRules = kept;
 	}, context);
 }
 
@@ -893,7 +929,12 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 			createdAt: previous?.createdAt ?? Date.now(),
 		};
-		await harness.commit(async (tx) => void ((await tx.doc(Agents)).agents[id] = agent), context);
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(Agents);
+			// Rules are kept as they are now, whatever the app sent: they change only through their own requests.
+			const rules: CommandRule[] = JSON.parse(JSON.stringify(doc.agents[id]?.commandRules ?? []));
+			doc.agents[id] = { ...agent, commandRules: rules };
+		}, context);
 		// The agent's conversations pick up what it may now do at their next message; see syncTools.
 		return { id };
 	},
@@ -959,8 +1000,27 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
-		if (!["once", "always", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
-		if (!inbox.answer(text(params, "id"), decision)) throw new Error("That request is no longer waiting");
+		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
+		const id = text(params, "id");
+		const item = inbox.get(id);
+		if (item === undefined) throw new Error("That request is no longer waiting");
+		// "rule" carries no words: the rule is the one the engine offered with the request.
+		if (decision === "rule" && item.rule === undefined) throw new Error("No rule can be made from that request");
+		if (!inbox.answer(id, decision)) throw new Error("That request is no longer waiting");
+		return {};
+	},
+	/** A rule typed in an agent's settings: `command` is its words, such as "npm test". */
+	"rules.add": async (params) => {
+		const agentId = text(params, "agentId");
+		if (agents[agentId] === undefined) throw new Error(`Unknown agent: ${agentId}`);
+		const folder = text(params, "folder");
+		if (!isAbsolute(folder) || !(existsSync(folder) && statSync(folder).isDirectory())) throw new Error(`Not a folder: ${folder}`);
+		return { rule: await addCommandRule(agentId, folder, wordsOf(text(params, "command"))) };
+	},
+	"rules.remove": async (params) => {
+		const words = params.words;
+		if (!Array.isArray(words) || words.some((word) => typeof word !== "string")) throw new Error("words must be a list of words");
+		await removeCommandRule(text(params, "agentId"), text(params, "folder"), words as string[]);
 		return {};
 	},
 	"inbox.answer": async (params) => {

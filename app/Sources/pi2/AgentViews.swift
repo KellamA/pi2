@@ -47,7 +47,12 @@ struct AgentEditor: View {
     @State private var confirmingDelete = false
     private var engine: EngineClient { model.engine }
     private var saved: AgentProfile? { engine.agent(agentID) }
-    private var changed: Bool { draft != nil && draft != saved }
+    private var changed: Bool {
+        guard var draft else { return false }
+        // Rules are kept as soon as they are added or removed, not with the rest of the form.
+        draft.commandRules = saved?.commandRules
+        return draft != saved
+    }
 
     var body: some View {
         Group {
@@ -203,6 +208,8 @@ struct AgentEditor: View {
                     Text(AccessLevel.all.first { $0.id == agent.access }?.detail ?? "").formFooter()
                 }
 
+                CommandRulesSection(engine: engine, agentID: agentID, folder: agent.cwd, access: agent.access)
+
                 Section {
                     Toggle("Write scripts that call its tools", isOn: Binding(get: { agent.codeMode ?? false }, set: { draft.wrappedValue.codeMode = $0 }))
                     if engine.mcpServers.isEmpty {
@@ -309,6 +316,108 @@ struct AgentEditor: View {
                 error = nil
             } catch {
                 self.error = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// The commands an agent may run without asking, folder by folder: listed, removed and added here. Changes apply at
+/// once, without Save, because a rule can also be made from an approval at any time. The engine checks every rule.
+struct CommandRulesSection: View {
+    let engine: EngineClient
+    let agentID: String
+    /// The agent's own folder, offered for a new rule until another is chosen.
+    let folder: String?
+    let access: String
+
+    @State private var command = ""
+    @State private var chosenFolder: String?
+    @State private var problem: String?
+
+    private var rules: [CommandRule] {
+        (engine.agent(agentID)?.commandRules ?? []).sorted { ($0.folder, $0.command) < ($1.folder, $1.command) }
+    }
+    private var newFolder: String? { chosenFolder ?? folder }
+
+    var body: some View {
+        Section {
+            if rules.isEmpty {
+                Text("None yet. Choose “Always Allow …” on a command’s approval, or add one here.").foregroundStyle(.secondary)
+            }
+            ForEach(rules) { rule in
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(rule.command).font(Theme.mono).lineLimit(1).truncationMode(.middle)
+                        Text("in \(engine.folderName(rule.folder))")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    }
+                    .help(rule.folder)
+                    Spacer(minLength: 8)
+                    Button("Remove", systemImage: "minus.circle") { remove(rule) }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help("Remove the rule for \(rule.command): the agent asks again before running it")
+                }
+            }
+            HStack(spacing: 8) {
+                TextField("Command", text: $command, prompt: Text("npm test"))
+                    .labelsHidden()
+                    .font(Theme.mono)
+                    .accessibilityLabel("Words a command starts with, for a new rule")
+                    .onSubmit { add() }
+                Button(newFolder.map { "in \(engine.folderName($0))" } ?? "Choose Folder…") {
+                    if let picked = EngineClient.pickFolder() { chosenFolder = picked }
+                }
+                .lineLimit(1)
+                .help(newFolder.map { "The rule is for \($0). Click to choose another folder." } ?? "Choose the folder the rule is for")
+                Button("Add") { add() }
+                    .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newFolder == nil)
+            }
+            if let problem {
+                Text(problem).foregroundStyle(Theme.bad).font(.callout)
+            }
+        } header: {
+            Text("Commands it may run without asking")
+        } footer: {
+            Text(footer).formFooter()
+        }
+    }
+
+    private var footer: String {
+        var text = "A rule covers commands that start with its words, in that folder only, whatever follows the words: “git status” also covers “git status -sb”, but not “git push” or “git -C other status”. "
+        text += "Commands joined by &&, ||, ; or | run without asking only when a rule covers each of them. "
+        text += "Anything more complicated still asks: a variable or $( ), writing to a file with >, cd, sudo, running in the background, or another folder. "
+        text += "Rules that would let the agent run anything, such as bash, python3, git or rm on their own, cannot be made. "
+        text += "Since a rule allows any options after its words, make one only for a command you would let the agent run with any options. "
+        if access != "ask" { text += "Rules only matter while tool access is “Ask first”. " }
+        text += "Changes here apply at once, without Save."
+        return text
+    }
+
+    private func add() {
+        let words = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, let folder = newFolder else { return }
+        Task {
+            do {
+                try await engine.call("rules.add", ["agentId": agentID, "folder": folder, "command": words])
+                command = ""
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+
+    private func remove(_ rule: CommandRule) {
+        Task {
+            do {
+                try await engine.call("rules.remove", ["agentId": agentID, "folder": rule.folder, "words": rule.words])
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
             }
         }
     }

@@ -140,7 +140,9 @@ final class TranscriptBridge {
         case .openLink(let url):
             NSWorkspace.shared.open(url)
         case .decide(let id, let decision):
-            guard inbox.contains(where: { $0.id == id && $0.kind == "approval" }) else { return }
+            guard let item = inbox.first(where: { $0.id == id && $0.kind == "approval" }) else { return }
+            // A rule only where the engine offered one, for a command; the engine checks this again.
+            if decision == "rule", item.tool != "bash" || item.rule == nil { return }
             engine.perform("inbox.decide", ["id": id, "decision": decision])
         case .answer(let id, let text):
             guard inbox.contains(where: { $0.id == id && $0.kind != "approval" }) else { return }

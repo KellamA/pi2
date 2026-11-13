@@ -37,6 +37,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
 | `src/browser.ts` | The browser: which addresses and uploads are allowed, the link to the app, what the agent is told |
 | `src/reference.ts` | An agent's reference files |
+| `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/plan.ts` | The agent's task list |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
@@ -51,7 +52,7 @@ Conversations, runs and tool calls are pi durable's. pi² adds a few documents o
 
 ### Approvals
 
-With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears.
+With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that the agent's own rules cover for the conversation's folder runs without asking; see [rules.md](rules.md).
 
 ### Sub-chats
 

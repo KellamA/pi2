@@ -1236,6 +1236,147 @@ try {
 	}
 
 	{
+		// command rules (engine/src/rules.ts)
+		const { chmodSync } = await import("node:fs");
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-")));
+		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-other-")));
+		for (const dir of [project, elsewhere]) {
+			writeFileSync(join(dir, "run-tests"), '#!/bin/sh\necho "tests ran: $*"\n');
+			chmodSync(join(dir, "run-tests"), 0o755);
+		}
+		type Rule = { folder: string; words: string[] };
+		const rulesOf = (id: string) => ((client.agents.find((x) => x.id === id) as any)?.commandRules ?? []) as Rule[];
+		const { id: smith } = await client.call("agents.save", { agent: { name: "Smith", access: "ask", cwd: project } });
+		const { id: tester } = await client.call("agents.save", { agent: { name: "Tester", access: "ask", cwd: project } });
+		await client.until("agents for rules", () => client.agents.some((x) => x.id === smith) && client.agents.some((x) => x.id === tester));
+		const open = async (agentId: string, cwd: string | null = project) => {
+			const { id } = await client.call("conversation.create", { agentId });
+			await client.call("conversation.open", { id });
+			if (cwd !== project && cwd !== null) await client.call("conversation.configure", { id, cwd });
+			await client.until("conversation for rules", () => client.conversations.get(id)?.state.agent.cwd === cwd);
+			return id as number;
+		};
+		/** Run a command and answer its approval with `decision`, if it asks. Says what it asked, or null. */
+		const run = async (id: number, command: string, decision = "deny") => {
+			const before = toolResults(id).length;
+			await client.call("submit", { id, text: `/bash ${command}` });
+			const asked = await client.until(`${command}: approval or result`, () => client.inbox.find((i) => i.conversationId === id) ?? (toolResults(id).length > before ? null : undefined));
+			if (asked !== null) await client.call("inbox.decide", { id: asked.id, decision });
+			await settled(id, before + 1);
+			return { asked: asked as (InboxItem & { rule?: Rule }) | null, result: toolResults(id).at(-1)! };
+		};
+
+		// An approval for a command offers a rule, and choosing it runs the command and keeps the rule.
+		const first = await open(smith);
+		await client.call("submit", { id: first, text: "/bash ./run-tests --fast" });
+		const offer = (await client.until("approval with a rule", () => client.inbox.find((i) => i.conversationId === first))) as InboxItem & { rule?: Rule };
+		assert.deepEqual(offer.rule, { words: ["./run-tests"], folder: project }, "the engine proposes the command word, not its arguments");
+		await assert.rejects(client.call("inbox.decide", { id: offer.id, decision: "sometimes" }), /Unknown decision/);
+		await client.call("inbox.decide", { id: offer.id, decision: "rule" });
+		await settled(first, 1);
+		assert.match(toolResults(first)[0]!.text, /tests ran: --fast/);
+		assert.equal(toolResults(first)[0]!.details?.allowedBy, undefined, "the person allowed that one, not a rule");
+		await client.until("rule kept", () => rulesOf(smith).length === 1);
+		assert.deepEqual(rulesOf(smith).map((r) => [r.folder, r.words]), [[project, ["./run-tests"]]]);
+		assert.equal(rulesOf(tester).length, 0);
+
+		// Kept across a restart, and good for a new conversation of that agent in that folder, other arguments included.
+		await sleep(400);
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		engine = startEngine();
+		client = await Client.attach();
+		await client.until("rules after restart", () => rulesOf(smith).length === 1);
+		const second = await open(smith);
+		let outcome = await run(second, "./run-tests --other 'a b' 2>&1 | tail -5");
+		assert.equal(outcome.asked, null, "covered by the rule: nothing asked");
+		assert.match(outcome.result.text, /tests ran: --other a b/);
+		assert.deepEqual(outcome.result.details?.allowedBy, ["./run-tests"], "the result says which rule let it run");
+		step("rules: an approval offers a rule for the command; choosing it runs the command and keeps the rule, across a restart; a new conversation of the agent in that folder runs it without asking, marked as allowed by the rule");
+
+		// Anything more, another folder or another agent still asks, and offers no rule it could not keep.
+		for (const command of ["./run-tests && touch pwned", "./run-tests; touch pwned", "./run-tests $(touch pwned)", "./run-tests > pwned", "cd . && ./run-tests", "FOO=1 ./run-tests"]) {
+			outcome = await run(second, command);
+			assert.ok(outcome.asked !== null, `${command} asks`);
+			assert.equal(outcome.asked!.rule, undefined, `${command} offers no rule`);
+			assert.equal(outcome.result.isError, true);
+		}
+		assert.ok(!existsSync(join(project, "pwned")), "nothing smuggled in ran");
+		const results = toolResults(second).length;
+		await client.call("submit", { id: second, text: "/bash ./run-tests || touch pwned" });
+		const compound = await client.until("compound approval", () => client.inbox.find((i) => i.conversationId === second));
+		await assert.rejects(client.call("inbox.decide", { id: compound.id, decision: "rule" }), /No rule can be made/, "the page cannot ask for a rule the engine did not offer");
+		await client.call("inbox.decide", { id: compound.id, decision: "deny" });
+		await settled(second, results + 1);
+		const otherFolder = await open(smith, elsewhere);
+		outcome = await run(otherFolder, "./run-tests");
+		assert.deepEqual(outcome.asked?.rule, { words: ["./run-tests"], folder: elsewhere }, "another folder asks, and offers a rule for that folder");
+		const otherAgent = await open(tester);
+		assert.ok((await run(otherAgent, "./run-tests")).asked !== null, "another agent asks");
+		step("rules: a compound command, a command that writes or changes folder, another folder and another agent all still ask");
+
+		// A sub-chat and a scheduled run of the agent are covered too.
+		const { id: lead } = await client.call("agents.save", { agent: { name: "Lead", access: "none", delegates: [smith] } });
+		await client.until("lead saved", () => client.agents.some((x) => x.id === lead));
+		const leading = await open(lead, null);
+		await client.call("submit", { id: leading, text: "/delegate Smith: /bash ./run-tests --sub" });
+		await settled(leading, 1);
+		const sub = toolResults(leading)[0]!.details?.conversationId as number;
+		assert.equal(typeof sub, "number", JSON.stringify(toolResults(leading)[0]));
+		await client.call("conversation.open", { id: sub });
+		const subResult = await client.until("sub-chat result", () => client.conversations.get(sub)?.items.find((i) => i.kind === "tool"));
+		assert.ok(/tests ran: --sub/.test(subResult.text) && subResult.details?.allowedBy?.[0] === "./run-tests", JSON.stringify(subResult));
+		const { id: scheduled } = await client.call("schedules.save", { schedule: { title: "Rule run", agentId: smith, prompt: "/bash ./run-tests --scheduled", repeat: { kind: "once", at: Date.now() + 1000 } } });
+		const ruleRun = (await client.until("scheduled run", () => client.library.find((x) => x.title === "Rule run"))).id;
+		await client.call("conversation.open", { id: ruleRun });
+		const scheduledResult = await client.until("scheduled result", () => client.conversations.get(ruleRun)?.items.find((i) => i.kind === "tool"));
+		assert.ok(/tests ran: --scheduled/.test(scheduledResult.text) && scheduledResult.details?.allowedBy?.[0] === "./run-tests", JSON.stringify(scheduledResult));
+		await client.call("schedules.delete", { id: scheduled });
+		assert.equal(client.inbox.length, 0, "neither asked");
+		step("rules: sub-chats and scheduled runs of the agent in that folder are covered too");
+
+		// By hand: the same checks, and a rule that would allow anything is refused, saying why.
+		const add = (command: string, agentId = smith, folder = project) => client.call("rules.add", { agentId, folder, command });
+		await assert.rejects(add("bash"), /bash alone would let the agent run anything/);
+		await assert.rejects(add("python3 -c"), /code it writes on the spot/);
+		await assert.rejects(add("rm -rf"), /always asks/);
+		await assert.rejects(add("sudo npm test"), /always asks/);
+		await assert.rejects(add("npm test; rm x"), /not a plain word/);
+		await assert.rejects(add(""), /first words/);
+		await assert.rejects(add("npm test", smith, join(project, "nope")), /Not a folder/);
+		await assert.rejects(add("npm test", smith, "relative/folder"), /Not a folder/);
+		await assert.rejects(add("npm test", "nobody"), /Unknown agent/);
+		await add("  ./run-tests  ", tester);
+		await client.until("rule added by hand", () => rulesOf(tester).length === 1);
+		assert.deepEqual(rulesOf(tester)[0]!.words, ["./run-tests"]);
+		await add("./run-tests", tester);
+		assert.equal(rulesOf(tester).length, 1, "the same rule is not kept twice");
+		outcome = await run(otherAgent, "./run-tests --by-hand");
+		assert.ok(outcome.asked === null && outcome.result.details?.allowedBy?.[0] === "./run-tests", "a rule added by hand works like one chosen in an approval");
+		// Saving the agent leaves its rules alone, whatever is sent.
+		await client.call("agents.save", { agent: { id: smith, name: "Smith", description: "Edited", commandRules: [] } });
+		await client.until("smith edited", () => (client.agents.find((x) => x.id === smith) as any)?.description === "Edited");
+		assert.equal(rulesOf(smith).length, 1, "saving the agent does not touch its rules");
+		step("rules: added by hand with the same checks; bash alone, inline code, rm, sudo and anything not plain are refused with a reason; saving the agent keeps them");
+
+		// Removing a rule makes the command ask again; deleting the agent removes its rules.
+		await client.call("rules.remove", { agentId: smith, folder: project, words: ["./run-tests"] });
+		await client.until("rule removed", () => rulesOf(smith).length === 0);
+		await assert.rejects(client.call("rules.remove", { agentId: smith, folder: project, words: ["./run-tests"] }), /already gone/);
+		outcome = await run(second, "./run-tests");
+		assert.ok(outcome.asked !== null && outcome.asked.rule !== undefined, "asks again, offering the rule again");
+		await client.call("agents.delete", { id: tester });
+		await client.until("tester deleted", () => !client.agents.some((x) => x.id === tester));
+		await client.call("agents.save", { agent: { name: "Tester", access: "ask" } });
+		await client.until("tester again", () => client.agents.some((x) => x.id === tester));
+		assert.equal(rulesOf(tester).length, 0, "a new agent of the same name starts with no rules");
+		for (const id of [lead, tester, smith]) await client.call("agents.delete", { id });
+		rmSync(project, { recursive: true, force: true });
+		rmSync(elsewhere, { recursive: true, force: true });
+		step("rules: removing a rule makes the command ask again; deleting the agent deletes its rules");
+	}
+
+	{
 		// limits (engine/src/limits.ts)
 		const L = await import("../src/limits.ts");
 		const { KeychainCredentialStore } = await import("../src/credentials.ts");
