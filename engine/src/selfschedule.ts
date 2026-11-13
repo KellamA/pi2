@@ -231,17 +231,6 @@ export const selfSchedule: Feature = (host) => {
 		// off while waiting for the person asks again.
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const agent = scheduler(api.conversationId);
-			if (agent === undefined) return fail(OFF);
-			const words = checkWords(args.title, args.prompt);
-			if (typeof words === "string") return fail(words);
-			const resolved = resolveTiming(args, Date.now());
-			if (typeof resolved === "string") return fail(resolved);
-			// Kept with the call: after a restart the same schedule, with the same id and the same "in 2 hours", is asked about.
-			const now = Date.now();
-			const kept = await api.memo<{ id: string; repeat: Repeat }>("schedule", { id: `s${now.toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`, repeat: resolved }, context);
-			const { id, repeat } = kept;
-
 			const made = (schedule: Schedule) => {
 				const next = schedule.nextRunAt ?? Date.now();
 				const first = schedule.repeat.kind === "once" ? "It runs" : "The first run is";
@@ -253,8 +242,24 @@ export const selfSchedule: Feature = (host) => {
 					details: { id: schedule.id, title: schedule.title, when: describeRepeat(schedule.repeat) },
 				};
 			};
+			// What an earlier attempt of this call settled, kept with the call: after a restart the same schedule, with the
+			// same id and the same "in 2 hours", is asked about, and one already saved is reported rather than made again.
+			const earlier = await api.memo<{ id: string; repeat: Repeat }>("schedule", context);
 			const existing = (await api.snapshot(Schedules, context))?.schedules ?? {};
-			if (existing[id] !== undefined) return made(existing[id]!);
+			if (earlier !== undefined && existing[earlier.id] !== undefined) return made(existing[earlier.id]!);
+
+			const agent = scheduler(api.conversationId);
+			if (agent === undefined) return fail(OFF);
+			const words = checkWords(args.title, args.prompt);
+			if (typeof words === "string") return fail(words);
+			let kept = earlier;
+			if (kept === undefined) {
+				const now = Date.now();
+				const resolved = resolveTiming(args, now);
+				if (typeof resolved === "string") return fail(resolved);
+				kept = await api.memo("schedule", { id: `s${now.toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`, repeat: resolved }, context);
+			}
+			const { id, repeat } = kept;
 			// Nothing is asked that could not be done.
 			if (counted(existing, agent.id) >= MAX_AGENT_SCHEDULES) return fail(FULL);
 			const first = nextRun(repeat, Date.now());
