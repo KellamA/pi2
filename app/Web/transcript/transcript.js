@@ -211,12 +211,21 @@
 		return svg;
 	}
 
+	/**
+	 * Starts an element's looping animation where a clock running since the page loaded has got to. Rows that stream
+	 * are rebuilt many times a second, and an animation that began again with each rebuild would look frozen.
+	 */
+	function inPhase(element) {
+		element.style.setProperty("--phase", -Math.round(performance.now()) + "ms");
+		return element;
+	}
+
 	function spinner(label = "Running") {
 		const s = el("span", "spinner");
 		s.setAttribute("role", "img");
 		s.setAttribute("aria-label", label);
 		s.setAttribute("data-nocopy", "");
-		return s;
+		return inPhase(s);
 	}
 
 	function labelPieces(pieces) {
@@ -348,7 +357,7 @@
 	}
 
 	function workingRow() {
-		const row = el("div", "working");
+		const row = inPhase(el("div", "working"));
 		row.setAttribute("role", "status");
 		row.setAttribute("aria-label", "Working");
 		row.setAttribute("data-nocopy", "");
@@ -429,29 +438,35 @@
 
 	// MARK: Answers
 
+	const phaseOf = (item) => (item.stop === "aborted" || item.stop === "error" ? "stopped" : "live");
 	const calls = (item) => (Array.isArray(item.toolCalls) ? item.toolCalls.filter((call) => isObject(call) && typeof call.callId === "string") : []);
 
-	function statusOf(call, preparing) {
-		if (preparing) return "preparing";
+	/**
+	 * Where a call stands. `phase` is "preparing" for a call the model is still writing, "stopped" for one in an
+	 * answer that was interrupted (it never ran), and "live" otherwise.
+	 */
+	function statusOf(call, phase) {
+		if (phase === "preparing") return "preparing";
 		const result = results.get(call.callId);
 		if (result) return result.isError ? "failed" : "done";
-		return live.busy ? "running" : "none";
+		return live.busy && phase !== "stopped" ? "running" : "none";
 	}
 
-	function callSignature(call, preparing) {
+	function callSignature(call, phase) {
 		const pending = inbox.get(call.callId);
 		return [
 			call.callId,
-			statusOf(call, preparing),
+			statusOf(call, phase),
 			rev(results.get(call.callId)),
 			rev(live.tools.get(call.callId)),
 			pending ? rev(pending) : 0,
-			preparing ? JSON.stringify(call.arguments ?? null) : "",
+			phase === "preparing" ? JSON.stringify(call.arguments ?? null) : "",
 		].join(":");
 	}
 
 	function assistantSpec(item, turnEnd, visible, index) {
-		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, ...calls(item).map((call) => callSignature(call, false))].join("|");
+		const phase = phaseOf(item);
+		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, ...calls(item).map((call) => callSignature(call, phase))].join("|");
 		return {
 			key: "i" + item.id,
 			sig,
@@ -493,9 +508,9 @@
 		if (itemCalls.length > 0) {
 			parts.push({
 				key: "tools",
-				sig: "c" + itemCalls.map((call) => callSignature(call, false)).join("|") + "/" + namesRevision,
+				sig: "c" + itemCalls.map((call) => callSignature(call, phaseOf(item))).join("|") + "/" + namesRevision,
 				build: () => el("div", "tools"),
-				update: (box) => reconcile(box, itemCalls.map((call) => toolSpec(call, false))),
+				update: (box) => reconcile(box, itemCalls.map((call) => toolSpec(call, phaseOf(item)))),
 			});
 		}
 		if (stop === "length") parts.push({ key: "length", sig: "l", build: () => noteRow("muted", "The answer was cut off at the model" + RSQUO + "s output limit.") });
@@ -551,7 +566,7 @@
 				key: "tools",
 				sig: "c" + liveRevision + "/" + namesRevision,
 				build: () => el("div", "tools"),
-				update: (box) => reconcile(box, partial.toolCalls.map((call) => toolSpec(call, true))),
+				update: (box) => reconcile(box, partial.toolCalls.map((call) => toolSpec(call, "preparing"))),
 			});
 		}
 		if (partial.text === "" && partial.thinking.trim() === "" && partial.toolCalls.length === 0) {
@@ -562,7 +577,7 @@
 
 	/** The pulsing dot that marks where streaming text has got to, at the end of its last line. */
 	function placeCaret(box) {
-		const caret = el("span", "caret");
+		const caret = inPhase(el("span", "caret"));
 		caret.setAttribute("aria-hidden", "true");
 		caret.setAttribute("data-nocopy", "");
 		let target = box.lastElementChild;
@@ -602,11 +617,16 @@
 			update: (row) => {
 				const head = row.firstChild;
 				const body = row.lastChild;
-				head.replaceChildren();
-				head.appendChild(streaming ? spinner("Thinking") : glyph("sparkle"));
-				head.appendChild(el("span", "tool-label" + (streaming ? " shimmer" : ""), streaming ? "Thinking" + ELLIPSIS : "Thought"));
-				const toggle = chevron(body.id, streaming ? "Thinking" : "Thought");
-				head.appendChild(toggle);
+				// The line itself changes only when thinking stops; more thought arriving only changes what it opens to.
+				if (row.__streaming !== streaming) {
+					row.__streaming = streaming;
+					head.replaceChildren();
+					head.appendChild(streaming ? spinner("Thinking") : glyph("sparkle"));
+					head.appendChild(el("span", "tool-label" + (streaming ? " shimmer" : ""), streaming ? "Thinking" + ELLIPSIS : "Thought"));
+					head.appendChild(chevron(body.id, streaming ? "Thinking" : "Thought"));
+					if (streaming) inPhase(head.children[1]);
+				}
+				const toggle = head.lastChild;
 				const open = opened.get(key) ?? false;
 				const apply = (value) => {
 					row.classList.toggle("open", value);
@@ -644,17 +664,17 @@
 
 	let bodyCount = 0;
 
-	function toolSpec(call, preparing) {
-		const pending = preparing ? null : inbox.get(call.callId);
+	function toolSpec(call, phase) {
+		const pending = phase === "preparing" ? null : inbox.get(call.callId);
 		if (pending) return { key: "q:" + pending.id, sig: "q" + rev(pending) + "/" + namesRevision, build: () => questionCard(pending, call) };
-		const sig = callSignature(call, preparing) + "/" + namesRevision;
-		if (call.name === "delegate") return { key: "d:" + call.callId, sig, build: () => el("div", "tool delegate"), update: (row) => fillDelegate(row, call, preparing) };
-		return { key: "t:" + call.callId, sig, build: () => el("div", "tool"), update: (row) => fillTool(row, call, preparing) };
+		const sig = callSignature(call, phase) + "/" + namesRevision;
+		if (call.name === "delegate") return { key: "d:" + call.callId, sig, build: () => el("div", "tool delegate"), update: (row) => fillDelegate(row, call, phase) };
+		return { key: "t:" + call.callId, sig, build: () => el("div", "tool"), update: (row) => fillTool(row, call, phase) };
 	}
 
-	function fillTool(row, call, preparing) {
+	function fillTool(row, call, phase) {
 		const key = "t:" + call.callId;
-		const status = statusOf(call, preparing);
+		const status = statusOf(call, phase);
 		const result = results.get(call.callId);
 		const liveTool = live.tools.get(call.callId);
 		const info = T.describe(call, status, result, liveTool, names);
@@ -809,7 +829,8 @@
 	}
 
 	function diffElement(diff) {
-		const pre = el("pre", "output diff");
+		const numbered = diff.lines.some((line) => line.number !== null);
+		const pre = el("pre", "output diff" + (numbered ? "" : " unnumbered"));
 		const width = String(Math.max(0, ...diff.lines.map((line) => line.number ?? 0))).length;
 		diff.lines.forEach((line, index) => {
 			const row = el("span", "dl " + line.kind);
@@ -831,9 +852,9 @@
 		return names.agents.find((agent) => agent.id === id && id !== "") ?? names.agents.find((agent) => str(agent.name).toLowerCase() === lower || agent.id === name) ?? null;
 	}
 
-	function fillDelegate(row, call, preparing) {
+	function fillDelegate(row, call, phase) {
 		const key = "d:" + call.callId;
-		const status = statusOf(call, preparing);
+		const status = statusOf(call, phase);
 		const result = results.get(call.callId);
 		const liveTool = live.tools.get(call.callId);
 		const info = T.delegation(call, result, liveTool);

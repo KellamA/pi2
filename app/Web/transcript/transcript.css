@@ -728,6 +728,11 @@ pre.diff .ln {
 	color: var(--tx3);
 }
 
+pre.diff.unnumbered .ln {
+	min-width: 0;
+	padding: 0 0 0 12px;
+}
+
 pre.diff .sg {
 	flex: none;
 	width: 1.3em;
@@ -836,7 +841,7 @@ ul.plan .muted {
 	-webkit-background-clip: text;
 	background-clip: text;
 	color: transparent;
-	animation: shimmer 1.8s linear infinite;
+	animation: shimmer 1.8s linear var(--phase, 0s) infinite;
 }
 
 @keyframes shimmer {
@@ -1162,7 +1167,7 @@ pre.card-diff {
 	border: 2px solid color-mix(in srgb, var(--acc) 22%, transparent);
 	border-top-color: var(--acc);
 	border-radius: 50%;
-	animation: spin 0.9s linear infinite;
+	animation: spin 0.9s linear var(--phase, 0s) infinite;
 }
 
 @keyframes spin {
@@ -1182,15 +1187,15 @@ pre.card-diff {
 	height: 6px;
 	border-radius: 50%;
 	background: var(--acc);
-	animation: breathe 1.2s ease-in-out infinite;
+	animation: breathe 1.2s ease-in-out var(--phase, 0s) infinite;
 }
 
 .working span:nth-child(2) {
-	animation-delay: 0.18s;
+	animation-delay: calc(var(--phase, 0s) + 0.18s);
 }
 
 .working span:nth-child(3) {
-	animation-delay: 0.36s;
+	animation-delay: calc(var(--phase, 0s) + 0.36s);
 }
 
 @keyframes breathe {
@@ -1213,7 +1218,7 @@ pre.card-diff {
 	border-radius: 50%;
 	background: var(--acc);
 	vertical-align: 0.05em;
-	animation: pulse 1.1s ease-in-out infinite;
+	animation: pulse 1.1s ease-in-out var(--phase, 0s) infinite;
 }
 
 @keyframes pulse {
