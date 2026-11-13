@@ -216,6 +216,8 @@ struct ModelsSheet: View {
     let engine: EngineClient
     let provider: ProviderInfo
     @State private var error: String?
+    @State private var query = ""
+    @FocusState private var searching: Bool
     @Environment(\.dismiss) private var dismiss
 
     /// The sheet's own copy of the choice, so quick ticks build on each other without waiting for the engine.
@@ -225,6 +227,19 @@ struct ModelsSheet: View {
         engine.allModels.filter { $0.provider == provider.id }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
     private var shown: Int { models.filter { !hidden.contains($0.id) }.count }
+    private var filtering: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// The models the search leaves: every word typed has to be in the model's name or its id.
+    private var matches: [ModelInfo] {
+        let words = query.split(whereSeparator: { $0.isWhitespace }).map { String($0) }
+        guard !words.isEmpty else { return models }
+        return models.filter { model in
+            words.allSatisfy { word in
+                model.name.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                    || model.id.range(of: word, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -232,18 +247,34 @@ struct ModelsSheet: View {
             Text("Ticked models appear in the model menus. A hidden model that a conversation or agent already uses keeps working.")
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                TextField("Search", text: $query, prompt: Text("Search by name or id"))
+                    .textFieldStyle(.roundedBorder)
+                    .focused($searching)
+                    .accessibilityLabel("Search models")
+                if !query.isEmpty {
+                    Button("Clear Search", systemImage: "xmark.circle.fill") {
+                        query = ""
+                        searching = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Clear the search")
+                }
+            }
             HStack {
+                // With a search typed, the two buttons act on what it found and leave the rest as it is.
+                Button(filtering ? "Select Matches" : "Select All") { setShown(true) }
+                    .disabled(matches.allSatisfy { !hidden.contains($0.id) })
+                    .help(filtering ? "Tick every model the search found" : "Tick every model")
+                Button(filtering ? "Deselect Matches" : "Deselect All") { setShown(false) }
+                    .disabled(matches.allSatisfy { hidden.contains($0.id) })
+                    .help(filtering ? "Untick every model the search found" : "Untick every model, to then pick the few you want")
+                Spacer()
                 Button("Newest Only") { apply(["id": provider.id, "newest": true]) }
                     .help("Keep the newest version of each model family, such as one Opus, one Sonnet and one Haiku")
-                Button("Show All") {
-                    hidden = []
-                    apply(["id": provider.id, "hidden": [String]()])
-                }
-                    .disabled(shown == models.count)
-                Spacer()
-                Text("\(shown) of \(models.count) showing").font(.callout).foregroundStyle(.secondary)
             }
-            List(models) { model in
+            List(matches) { model in
                 Toggle(isOn: Binding(
                     get: { !hidden.contains(model.id) },
                     set: { show in
@@ -256,20 +287,39 @@ struct ModelsSheet: View {
                         Text(model.id).font(.caption.monospaced()).foregroundStyle(.secondary)
                     }
                 }
-                // The last model showing cannot be hidden: the menus would have nothing from this provider.
-                .disabled(!hidden.contains(model.id) && shown == 1)
             }
             .listStyle(.bordered)
             .frame(height: 320)
+            .overlay {
+                if matches.isEmpty, filtering { ContentUnavailableView.search(text: query) }
+            }
+            if shown == 0, !models.isEmpty {
+                Text("None are ticked, so \(provider.name) has no models in the model menus.")
+                    .font(.callout).foregroundStyle(Theme.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
             HStack {
+                Text(filtering ? "\(matches.count) found · \(shown) of \(models.count) showing" : "\(shown) of \(models.count) showing")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .monospacedDigit()
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
-        .frame(width: 460)
-        .onAppear { hidden = Set(models.filter { $0.hidden == true }.map(\.id)) }
+        .frame(width: 480)
+        .onAppear {
+            hidden = Set(models.filter { $0.hidden == true }.map(\.id))
+            searching = true
+        }
+    }
+
+    /// Ticks or unticks every model the search leaves (all of them when nothing is typed) in one step.
+    private func setShown(_ show: Bool) {
+        let ids = matches.map(\.id)
+        if show { hidden.subtract(ids) } else { hidden.formUnion(ids) }
+        apply(["id": provider.id, "hidden": hidden.sorted()])
     }
 
     private func apply(_ params: [String: Any]) {

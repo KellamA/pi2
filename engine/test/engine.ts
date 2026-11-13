@@ -2050,14 +2050,16 @@ try {
 	assert.ok(groqIds.length > 1 && groq().every((m: any) => m.hidden === false));
 	await client.call("providers.setHiddenModels", { id: "groq", hidden: groqIds.slice(1) });
 	await client.until("all but one hidden", () => groq().filter((m: any) => !m.hidden).length === 1 && groq().length === groqIds.length);
-	await assert.rejects(client.call("providers.setHiddenModels", { id: "groq", hidden: groqIds }), /at least one/);
+	// Every one of them may be hidden: unticking all and then picking a few is how a long list is cut down.
+	await client.call("providers.setHiddenModels", { id: "groq", hidden: groqIds });
+	await client.until("all hidden", () => groq().every((m: any) => m.hidden) && groq().length === groqIds.length);
 	await client.call("providers.setHiddenModels", { id: "groq", newest: true });
 	// Which of groq's models that hides depends on their names; the rule itself is checked below.
 	await client.until("newest only", () => groq().filter((m: any) => !m.hidden).length > 1);
 	await client.call("providers.setHiddenModels", { id: "groq", hidden: [] });
 	await client.until("all showing", () => groq().every((m: any) => !m.hidden));
 	assert.deepEqual([...newestOnly(["claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "gpt-4o", "gpt-4o-2024-05-13"])].sort(), ["claude-haiku-4-5", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-4o"]);
-	step("models can be hidden per provider, never all of them; newest-only keeps one per family");
+	step("models can be hidden per provider, all of them too; newest-only keeps one per family");
 
 	await client.call("providers.logout", { id: "groq" });
 	await client.until("groq removed", () => client.providers.find((p) => p.id === "groq")!.status === null);

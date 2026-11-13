@@ -695,7 +695,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (available.length === 0) throw new Error("That provider has no models to choose from yet");
 		const hidden = params.newest === true ? available.filter((model) => !newestOnly(available).has(model)) : params.hidden;
 		if (!Array.isArray(hidden) || hidden.some((model) => typeof model !== "string")) throw new Error("hidden must be a list of model ids");
-		if (available.every((model) => hidden.includes(model))) throw new Error("Keep at least one model showing");
 		settings.hiddenModels = { ...settings.hiddenModels, [id]: hidden as string[] };
 		if (hidden.length === 0) delete settings.hiddenModels[id];
 		saveSettings();

@@ -19,7 +19,7 @@ What changed in each version, newest first.
 - **Pictures and files in chats.** Paste, drop or attach pictures, text and code files, PDFs and Word documents. A model on your own endpoint can be marked as able to see pictures. See [docs/attachments.md](docs/attachments.md).
 - **Sub-chats.** Each handoff to another agent opens a chat under the conversation that started it. An agent can continue an earlier sub-chat instead of starting a new one.
 - **Reference files.** Files and folders an agent can always read, opened on demand.
-- **Model picker per provider.** Choose which models show in the menus; "Newest Only" keeps one of each family.
+- **Model picker per provider.** Choose which models show in the menus. Search by name or id, Select All and Deselect All (which act on the search's matches while one is typed), and "Newest Only", which keeps one of each family. A provider may have every model unticked.
 - **A new look.** A dark-first palette, with light and match-system in Settings › General.
 
 ### Changed

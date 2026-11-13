@@ -67,11 +67,11 @@ pi² has its own browser, with its own sign-ins, separate from Safari and Chrome
 
 ### Use any model
 
-Sign in with a subscription, add API keys for any of 40 or so providers, or add your own endpoint. Choose which of a provider's models show up in the menus; "Newest Only" keeps one of each family.
+Sign in with a subscription, add API keys for any of 40 or so providers, or add your own endpoint. Choose which of a provider's models show up in the menus: search the list by name or id, untick everything and pick the few you want, or let "Newest Only" keep one of each family.
 
 <p align="center">
   <img src="docs/images/providers.png" alt="Provider settings: a local endpoint and two API keys" width="400">
-  <img src="docs/images/models.png" alt="Choosing which models show" width="400">
+  <img src="docs/images/models.png" alt="Choosing which models show: a search for opus, with only the newest ticked" width="400">
 </p>
 
 ### Leave it running
