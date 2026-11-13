@@ -160,16 +160,20 @@ export function isPrivateHost(hostname: string): boolean {
 export function checkAddress(raw: string): { url: string; host: string } | { refused: string } {
 	const text = raw.trim();
 	if (text === "") return { refused: "open needs `url`, the address of the page." };
+	const notAnAddress = { refused: `"${text.slice(0, 200)}" is not a web address.` };
 	let url: URL | undefined;
 	try {
 		url = new URL(text);
-	} catch {}
+	} catch {
+		// Something that names its scheme and still cannot be read is not helped by guessing another one.
+		if (text.includes("://")) return notAnAddress;
+	}
 	// "example.com/jobs" has no scheme, and "example.com:8080" only looks as if it had one.
 	if (url === undefined || (!text.includes("://") && /^[^/?#:]+:\d+([/?#]|$)/.test(text))) {
 		try {
 			url = new URL(`https://${text}`);
 		} catch {
-			return { refused: `"${text.slice(0, 200)}" is not a web address.` };
+			return notAnAddress;
 		}
 	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
