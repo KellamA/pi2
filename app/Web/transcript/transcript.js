@@ -443,6 +443,9 @@
 	// MARK: Answers
 
 	const phaseOf = (item) => (item.stop === "aborted" || item.stop === "error" ? "stopped" : "live");
+	/** How the engine words the result of a call the person declined (DECLINED in engine/src/extensions.ts). */
+	const DECLINED = /The person declined this action\b/;
+
 	const calls = (item) => (Array.isArray(item.toolCalls) ? item.toolCalls.filter((call) => isObject(call) && typeof call.callId === "string") : []);
 
 	/**
@@ -452,7 +455,8 @@
 	function statusOf(call, phase) {
 		if (phase === "preparing") return "preparing";
 		const result = results.get(call.callId);
-		if (result) return result.isError ? "failed" : "done";
+		// A call the person declined never ran: it is not a failure of the tool, and must not read as one.
+		if (result) return result.isError ? (DECLINED.test(str(result.text)) ? "denied" : "failed") : "done";
 		return live.busy && phase !== "stopped" ? "running" : "none";
 	}
 
@@ -704,6 +708,9 @@
 		if (status === "failed") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status failed", "Failed"));
+		} else if (status === "denied") {
+			head.appendChild(document.createTextNode(" "));
+			head.appendChild(el("span", "tool-status none", "Declined, did not run"));
 		} else if (status === "none") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status none", "No result"));
@@ -892,6 +899,9 @@
 		} else if (status === "failed") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status failed", "Did not finish"));
+		} else if (status === "denied") {
+			head.appendChild(document.createTextNode(" "));
+			head.appendChild(el("span", "tool-status none", "Declined, did not start"));
 		} else if (status === "none") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status none", "No result"));

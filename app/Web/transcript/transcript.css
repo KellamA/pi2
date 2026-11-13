@@ -93,8 +93,12 @@ button,
 	user-select: none;
 }
 
-/* A column of text at most 760 pixels wide, inside the side padding. */
+/*
+ * A column of text at most 760 pixels wide, inside the side padding. Positioned, so that a selection running from one
+ * row to the next is shaded across the column and not across the whole window.
+ */
 main {
+	position: relative;
 	max-width: 816px;
 	margin: 0 auto;
 	padding: 24px 28px 40px;
@@ -619,6 +623,13 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 .tool-status.none {
 	color: var(--tx3);
 }
+
+/* A step the person declined is crossed out: it was asked for and did not happen. */
+.tool.denied .tool-label {
+	text-decoration: line-through;
+	text-decoration-color: var(--tx3);
+}
+
 
 .tool-status.working {
 	display: flex;
