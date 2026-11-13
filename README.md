@@ -18,10 +18,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.png" alt="A conversation in pi²: an agent runs a test, hands a question to a second agent, edits a file, and asks before pushing" width="900">
+  <img src="docs/images/hero.png" alt="A conversation in pi²: an agent hands a question to a second agent, edits a file, reruns a test, keeps a task list, and asks before pushing" width="900">
 </p>
 
-<p align="center"><sub>The screenshots show sample conversations, with answers scripted for the pictures.</sub></p>
+<p align="center"><sub>The screenshots show sample conversations, with answers and usage figures scripted for the pictures.</sub></p>
 
 ## What it is
 
@@ -82,7 +82,7 @@ Usage is counted by model, agent and conversation. Models you pay for by use sho
 
 For a subscription you are signed in to, Usage also shows the plan's own limits where the provider reports them: how much of the 5-hour and weekly windows is used, and when each resets. [Where the numbers come from](docs/limits.md).
 
-<p align="center"><img src="docs/images/usage.png" alt="Usage by model and by agent" width="820"></p>
+<p align="center"><img src="docs/images/usage.png" alt="Usage: plan limits for two subscriptions, then tokens by model and by agent" width="820"></p>
 
 ### Read it like a document
 
@@ -90,13 +90,16 @@ The conversation is one page, laid out the way Claude Code lays out a session: y
 
 Because it is one page, a selection runs across everything: drag from a paragraph through tool steps and a code block, press ⌘C, and what you paste is clean text. ⌘A then ⌘C copies the whole conversation. [How the transcript is built](docs/transcript.md).
 
+<p align="center"><img src="docs/images/attachments.png" alt="A message with a picture and a file attached, and the agent's answer as a formatted list" width="820"></p>
+
+Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures show in the conversation and open larger when clicked. [What can be attached](docs/attachments.md).
+
 ### And the rest
 
 - **Project instructions**: a folder's `AGENTS.md` or `CLAUDE.md` is given to any agent working in it.
 - **Memory**: switch it on for an agent and it keeps short notes between conversations, which you can read, edit and delete in its settings. [How both work](docs/knowledge.md).
 - **Looking around**: agents can list, find and search files in their folder without the shell, and fetch a page or search the web without the browser, even on a schedule with the app closed. [The look tools](docs/look.md).
 - **A task list**: for work with several steps, the agent keeps a checklist pinned above the message field, so you can see the plan and where it stands.
-- **Pictures and files in chats**: paste a screenshot, drop in files, or attach PDFs and Word documents. [What can be attached](docs/attachments.md).
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent.
 - **Scripts**: let a model chain many tool calls in one step.
