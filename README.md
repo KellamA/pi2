@@ -57,6 +57,10 @@ Terminals and password managers can never be added. Browsers and System Settings
 
 <p align="center"><img src="docs/images/agent-computer-use.png" alt="The Computer use section of an agent's settings" width="820"></p>
 
+### Give an agent a browser of its own
+
+pi² has its own browser, with its own sign-ins, separate from Safari and Chrome. An agent can open pages, search, read, follow links, fill in forms and upload a file; you can watch in the Browser window, sign in to a site yourself, solve a CAPTCHA, or take over. Reading and following links is free. Clicking buttons, typing and uploading wait for your approval, site by site. It never types into password or card fields, and cannot reach addresses on your own machine or network. [How the browser works](docs/browser.md).
+
 ### Use any model
 
 Sign in with a subscription, add API keys for any of 40 or so providers, or add your own endpoint. Choose which of a provider's models show up in the menus; "Newest Only" keeps one of each family.
@@ -152,6 +156,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 
 - [Architecture](docs/architecture.md): how the app and the engine fit together, where data lives, known limits.
 - [Computer use](docs/computer-use.md): how it works, what it will not do, how to try it safely.
+- [Browser](docs/browser.md): the agents' own browser, what it asks about, and what it will not do.
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Changelog](CHANGELOG.md)

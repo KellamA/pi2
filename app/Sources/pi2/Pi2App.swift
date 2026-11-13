@@ -333,10 +333,12 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack(spacing: 7) {
                 Dot(color: statusColor)
-                Text(statusText).foregroundStyle(Theme.tx2)
-                Spacer()
+                // The status keeps its one line; in a narrow sidebar the day's spend gives way first.
+                Text(statusText).foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
+                Spacer(minLength: 4)
                 if let today = engine.usage?.today, today.cost > 0 {
                     Text("\(today.costText) today").foregroundStyle(Theme.tx3)
+                        .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
                         .help("Spent today on models paid for by use")
                 }
                 Button("Browser", systemImage: "globe") { openWindow(id: "browser") }
