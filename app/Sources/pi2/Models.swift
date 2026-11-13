@@ -347,6 +347,8 @@ struct ConversationState: Codable, Equatable {
     let compactionError: String?
     /// The agent's task list; nil when it keeps none.
     let plan: TaskList?
+    /// The project instructions file (AGENTS.md or CLAUDE.md) in the conversation's folder, if there is one.
+    let projectInstructions: String?
 }
 
 /// The task list an agent keeps for a conversation (`update_plan`). `updatedAt` tells one version of it from the next.

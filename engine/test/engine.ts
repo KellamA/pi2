@@ -911,6 +911,128 @@ try {
 
 	{
 		// knowledge (engine/src/knowledge.ts)
+		const { symlinkSync, unlinkSync } = await import("node:fs");
+		const assistants = (id: number) => client.conversations.get(id)!.items.filter((i) => i.kind === "assistant" && i.stop === "stop").length;
+		/** Send a message and wait for the answer to it. */
+		const say = async (id: number, text: string): Promise<string> => {
+			const before = assistants(id);
+			await client.call("submit", { id, text });
+			await client.until(`answer to ${text.slice(0, 30)}`, () => !client.conversations.get(id)!.state.busy && assistants(id) > before);
+			return client.conversations.get(id)!.items.findLast((i) => i.kind === "assistant")!.text;
+		};
+		const open = async (agentId: string, cwd?: string) => {
+			const { id } = await client.call("conversation.create", { agentId });
+			await client.call("conversation.open", { id });
+			if (cwd !== undefined) {
+				await client.call("conversation.configure", { id, cwd });
+				await client.until("folder applied", () => client.conversations.get(id)?.state.agent.cwd === cwd);
+			}
+			return id as number;
+		};
+		const info = (id: number) => (client.conversations.get(id)!.state as any).projectInstructions;
+		const { id: pilot } = await client.call("agents.save", { agent: { name: "Pilot", access: "none" } });
+		await client.until("pilot saved", () => client.agents.some((x) => x.id === pilot));
+
+		// -- Project instructions
+		const project = realpathSync(mkdtempSync(join(tmpdir(), "pi2-project-")));
+		writeFileSync(join(project, "AGENTS.md"), "Always indent with tabs.\n");
+		writeFileSync(join(project, "CLAUDE.md"), "Claude-only notes.\n");
+		const p1 = await open(pilot, project);
+		let said = await say(p1, "/system");
+		assert.ok(/From AGENTS\.md in this folder\. These are the project's instructions/.test(said) && said.includes("Always indent with tabs."), "AGENTS.md reaches the model");
+		assert.ok(!said.includes("Claude-only"), "AGENTS.md is preferred to CLAUDE.md");
+		assert.equal(info(p1), "AGENTS.md", "the app is told which file is in effect");
+		writeFileSync(join(project, "AGENTS.md"), "Always indent with spaces.\n");
+		said = await say(p1, "/system");
+		assert.ok(said.includes("indent with spaces") && !said.includes("indent with tabs"), "an edit counts from the next message");
+		unlinkSync(join(project, "AGENTS.md"));
+		said = await say(p1, "/system");
+		assert.ok(said.includes("From CLAUDE.md in this folder") && said.includes("Claude-only notes."), "CLAUDE.md is used when there is no AGENTS.md");
+		unlinkSync(join(project, "CLAUDE.md"));
+		said = await say(p1, "/system");
+		assert.ok(!said.includes("project's instructions"), "no file, no section");
+		writeFileSync(join(project, "AGENTS.md"), "x".repeat(30_000));
+		const { describeProjectInstructions } = await import("../src/knowledge.ts"); // streaming 24,000 characters from the demo model would take minutes
+		const cut = describeProjectInstructions(project)!;
+		assert.ok(cut.includes("is longer than 24,000 characters") && cut.includes("x".repeat(24_000)) && !cut.includes("x".repeat(24_001)), "a long file is cut, with a note");
+		step("project instructions: AGENTS.md, else CLAUDE.md, read fresh at every message, cut when long");
+
+		const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-outside-")));
+		writeFileSync(join(outside, "secret.md"), "OUTSIDE-SECRET");
+		const linked = realpathSync(mkdtempSync(join(tmpdir(), "pi2-linked-")));
+		symlinkSync(join(outside, "secret.md"), join(linked, "AGENTS.md"));
+		const p2 = await open(pilot, linked);
+		said = await say(p2, "/system");
+		assert.ok(!said.includes("OUTSIDE-SECRET") && !said.includes("project's instructions"), "a link out of the folder is not followed");
+		assert.equal(info(p2), null);
+		const p3 = await open(pilot);
+		assert.ok(!(await say(p3, "/system")).includes("project's instructions"), "no chosen folder, no instructions");
+		step("project instructions: a link out of the folder is not followed; no folder, none");
+
+		// -- Memory
+		said = await say(p3, "/system");
+		assert.ok(!said.includes("your own notes") && !/TOOLS:.*(remember|forget)/.test(said), "memory is off by default: no section, no tools");
+		await say(p3, '/tool remember {"note":"should not be kept"}');
+		assert.ok(toolResults(p3).at(-1)!.isError && !/Noted/.test(toolResults(p3).at(-1)!.text), "and the tool is not offered");
+		assert.equal(client.events.memory?.agents?.[pilot], undefined, "nothing is stored");
+		await assert.rejects(client.call("memory.setEnabled", { agentId: "nobody", enabled: true }), /Unknown agent/);
+		await client.call("memory.setEnabled", { agentId: pilot, enabled: true });
+		await client.until("memory on", () => client.events.memory?.agents?.[pilot]?.enabled === true);
+		const noted = () => client.events.memory.agents[pilot].notes as { id: string; text: string; createdAt: number; conversation: number | null }[];
+		await say(p3, '/tool remember {"note":"  Prefers\\nmetric units  "}');
+		assert.match(toolResults(p3).at(-1)!.text, /Noted \(m1\)/);
+		await client.until("note broadcast", () => noted().length === 1);
+		assert.deepEqual([noted()[0]!.text, noted()[0]!.conversation], ["Prefers metric units", p3], "the note is tidied, and says where it came from");
+		await say(p3, '/tool remember {"note":"prefers metric units"}');
+		assert.ok(/already have/.test(toolResults(p3).at(-1)!.text) && noted().length === 1, "the same note is not added twice");
+
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		engine = startEngine();
+		client = await Client.attach();
+		await client.until("memory sent on connecting", () => client.events.memory?.agents?.[pilot]?.notes?.length === 1);
+		const q1 = await open(pilot);
+		said = await say(q1, "/system");
+		assert.ok(said.includes("your own notes") && said.includes("m1: Prefers metric units"), "after a restart, a new conversation of the agent is given the note");
+		assert.ok(/not instructions from the person/.test(said) && /TOOLS:.*remember.*|TOOLS:.*forget/.test(said), "and told what the notes are, with the tools to change them");
+		const other = await open("scout");
+		assert.ok(!(await say(other, "/system")).includes("metric units"), "another agent does not get it");
+		step("memory: off by default, remember stores and broadcasts, survives a restart, belongs to one agent");
+
+		await say(q1, '/tool forget {"id":"m1"}');
+		assert.match(toolResults(q1).at(-1)!.text, /Forgot m1/);
+		await client.until("note gone", () => noted().length === 0);
+		await say(q1, '/tool forget {"id":"m1"}');
+		assert.ok(toolResults(q1).at(-1)!.isError && /no note m1/.test(toolResults(q1).at(-1)!.text));
+		assert.ok(!(await say(q1, "/system")).includes("Prefers metric"), "a forgotten note is no longer given");
+		step("memory: forget removes a note");
+
+		await say(q1, `/tool remember ${JSON.stringify({ note: "y".repeat(401) })}`);
+		assert.ok(toolResults(q1).at(-1)!.isError && /401 characters; the most is 400/.test(toolResults(q1).at(-1)!.text), "a long note is refused with its length");
+		for (let i = 0; i < 60; i++) await client.call("memory.add", { agentId: pilot, text: `note number ${i}` });
+		assert.equal(noted().length, 60);
+		await say(q1, '/tool remember {"note":"one too many"}');
+		assert.ok(toolResults(q1).at(-1)!.isError && /60 notes.*Forget one/.test(toolResults(q1).at(-1)!.text), "the sixty-first is refused, saying what to do");
+		await assert.rejects(client.call("memory.add", { agentId: pilot, text: "one too many" }), /60 notes/);
+		step("memory: the length and count caps refuse with a message");
+
+		const first = noted()[0]!;
+		await client.call("memory.edit", { agentId: pilot, id: first.id, text: "edited by hand" });
+		await client.until("edit broadcast", () => noted()[0]!.text === "edited by hand");
+		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: first.id, text: "z".repeat(401) }), /400 characters/);
+		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: "m999", text: "x" }), /gone/);
+		await client.call("memory.delete", { agentId: pilot, id: first.id });
+		await client.until("delete broadcast", () => noted().length === 59 && noted().every((n) => n.id !== first.id));
+		assert.ok(noted().every((n) => n.conversation === null), "notes written by hand belong to no conversation");
+		await client.call("memory.setEnabled", { agentId: pilot, enabled: false });
+		await client.until("memory off", () => client.events.memory.agents[pilot].enabled === false);
+		assert.equal(noted().length, 59, "turning memory off keeps the notes");
+		said = await say(q1, "/system");
+		assert.ok(!said.includes("your own notes"), "but they are no longer given");
+		await say(q1, '/tool remember {"note":"after off"}');
+		assert.ok(toolResults(q1).at(-1)!.isError && !/Noted/.test(toolResults(q1).at(-1)!.text), "and the tools are taken away at the next message");
+		for (const n of noted()) await client.call("memory.delete", { agentId: pilot, id: n.id });
+		step("memory: the app can turn it on and off and add, edit and delete notes");
 	}
 
 	{

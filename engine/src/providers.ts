@@ -145,6 +145,21 @@ function demoProvider(): Provider {
 			const [name, ...rest] = prompt.slice(6).split(" ");
 			return fauxAssistantMessage([fauxText("Calling that tool."), fauxToolCall(name!, JSON.parse(rest.join(" ") || "{}"))], { stopReason: "toolUse" });
 		}
+		if (prompt === "/system") {
+			// Answers with the system prompt and the tools the model was offered, so tests can see what reaches it.
+			// Later system messages replace sections by name (null removes one) and add or remove tools.
+			const sections = new Map<string, string>();
+			const offered = new Set<string>();
+			for (const message of request.messages as readonly { role?: string; sections?: Record<string, string | null>; toolsAdded?: { name: string }[]; toolsRemoved?: { name: string }[] }[]) {
+				if (message.role !== "system") continue;
+				for (const [key, value] of Object.entries(message.sections ?? {})) value === null ? sections.delete(key) : sections.set(key, value);
+				for (const added of message.toolsAdded ?? []) offered.add(added.name);
+				for (const removed of message.toolsRemoved ?? []) offered.delete(removed.name);
+			}
+			// Only the sections about what the agent knows, and the tools for memory: the demo model speaks slowly.
+			const prompts = [...sections].filter(([key]) => key === "project_instructions" || key === "memory").map(([key, value]) => `<${key}>\n${value}\n</${key}>`).join("\n");
+			return fauxAssistantMessage(`SYSTEM PROMPT\n${prompts}\nTOOLS: ${[...offered].filter((name) => name === "remember" || name === "forget").join(", ")}`);
+		}
 		if (prompt.startsWith("/mcp ")) {
 			// "/mcp <tool name> <json arguments>"
 			const [name, ...rest] = prompt.slice(5).split(" ");

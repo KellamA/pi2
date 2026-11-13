@@ -38,6 +38,10 @@ export type FeatureParts = {
 	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
 	state?(view: ConversationView, meta: Meta | undefined): Record<string, unknown>;
+	/** Runs once when the harness is open, before the engine listens or runs anything: load what the rest needs at once. */
+	start?(): Promise<void>;
+	/** Events sent to each app as it connects, so it need not wait for the next change. */
+	greeting?(): unknown[];
 };
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
