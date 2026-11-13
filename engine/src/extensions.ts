@@ -1,5 +1,6 @@
 // What pi2 adds to every conversation: approval before risky tools, a way to ask the person, and delegation.
 
+import { resolve } from "node:path";
 import {
 	type AgentChange,
 	AgentDoc,
@@ -460,7 +461,7 @@ export function pi2Extension(host: Host): Extension {
 		const agent = host.agent(host.meta(api.conversationId)?.agentId);
 		const command = (call.arguments as { command?: unknown }).command;
 		if (agent === undefined || typeof command !== "string") return { allowed: false };
-		const folder = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? host.scratchFolder();
+		const folder = resolve((await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? host.scratchFolder());
 		const verdict = judgeCommand(command, folder, agent.commandRules ?? []);
 		if (verdict.allowed) {
 			allowedByRule.set(String(api.taskId), verdict.rules);
