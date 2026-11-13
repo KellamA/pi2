@@ -32,7 +32,7 @@ struct ChatView: View {
             if let state, data.items.isEmpty, !busy, state.partial == nil {
                 AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil)
             } else {
-                TranscriptView(engine: engine, conversationID: id, items: data.items, state: state)
+                ConversationTranscript(engine: engine, conversationID: id, items: data.items, state: state)
             }
             // A subagent of this conversation is waiting on the person.
             ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in

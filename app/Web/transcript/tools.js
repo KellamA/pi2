@@ -1,0 +1,467 @@
+/*
+ * What the transcript says about a tool call: the one-line summary ("Ran `npm test`", "Edited session.ts +6 −2"),
+ * the glyph beside it, and the detail behind its chevron (a command and its output, a diff, a file's text).
+ *
+ * Pure functions over the call, its result and its live state, so Node can test them. Loaded as a plain script by the
+ * page (it sets `PiTools`).
+ */
+(function (root, factory) {
+	const api = factory();
+	if (typeof module === "object" && module.exports) module.exports = api;
+	else root.PiTools = api;
+})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+	"use strict";
+
+	const MINUS = String.fromCharCode(0x2212);
+	const ELLIPSIS = String.fromCharCode(0x2026);
+	const QUOTE_OPEN = String.fromCharCode(0x201c);
+	const QUOTE_CLOSE = String.fromCharCode(0x201d);
+
+	const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+	const str = (value) => (typeof value === "string" ? value : "");
+
+	/**
+	 * pi durable wraps the results it writes itself (refused, blocked, interrupted, a command that exited non-zero) in a
+	 * <harness> note meant for the model. The person reads the note's lines without the tag or their severity prefix.
+	 */
+	function readable(text) {
+		let result = str(text);
+		for (;;) {
+			const open = result.indexOf("<harness>");
+			if (open < 0) break;
+			const close = result.indexOf("</harness>", open + 9);
+			if (close < 0) break;
+			const note = result
+				.slice(open + 9, close)
+				.split("\n")
+				.map((line) => line.replace(/^\[(error|warning|info)\] /, ""))
+				.join("\n");
+			result = result.slice(0, open) + note + result.slice(close + 10);
+		}
+		return result.replace(/^\n+|\n+$/g, "");
+	}
+
+	function basename(path) {
+		const clean = str(path).replace(/\/+$/, "");
+		const parts = clean.split("/");
+		return parts[parts.length - 1] || clean;
+	}
+
+	function firstLine(text) {
+		const lines = str(text).trim().split("\n");
+		return lines.length > 1 ? lines[0] + " " + ELLIPSIS : lines[0];
+	}
+
+	function compactJSON(value) {
+		try {
+			return JSON.stringify(value) ?? "";
+		} catch {
+			return "";
+		}
+	}
+
+	function prettyJSON(value) {
+		try {
+			return JSON.stringify(value, null, 2) ?? "";
+		} catch {
+			return "";
+		}
+	}
+
+	/** The one line worth showing for a call's arguments, as `ToolCall.summary` picks it in the app. */
+	function argumentSummary(args) {
+		if (!isObject(args)) return "";
+		for (const key of ["command", "path", "pattern", "query", "url", "task", "code", "question", "text", "content", "name"]) {
+			const value = args[key];
+			if (typeof value === "string" && value.trim() !== "") return value.replace(/\s*\n\s*/g, " ").trim();
+		}
+		if (Object.keys(args).length === 0) return "";
+		return compactJSON(args);
+	}
+
+	/** Lines and columns of a read, when it asked for a window of the file. */
+	function readWindow(args) {
+		const offset = typeof args.offset === "number" ? args.offset : null;
+		const limit = typeof args.limit === "number" ? args.limit : null;
+		if (offset === null && limit === null) return null;
+		const from = offset ?? 1;
+		return limit === null ? `from line ${from}` : `lines ${from}${String.fromCharCode(0x2013)}${from + limit - 1}`;
+	}
+
+	// MARK: - Diffs
+
+	/**
+	 * The diff an edit result carries in `details.diff`: one line per row, "+12 text", "-12 text" or " 12 text", with
+	 * a row of "..." where unchanged lines were left out.
+	 */
+	function parseDiff(diff) {
+		const lines = [];
+		let added = 0;
+		let removed = 0;
+		for (const row of str(diff).split("\n")) {
+			if (row === "") continue;
+			const m = /^([+\- ])( *)(\d*) (.*)$/.exec(row);
+			if (!m) {
+				lines.push({ kind: "context", number: null, text: row });
+				continue;
+			}
+			if (m[3] === "" && m[4] === "...") {
+				lines.push({ kind: "gap", number: null, text: ELLIPSIS });
+				continue;
+			}
+			const kind = m[1] === "+" ? "add" : m[1] === "-" ? "remove" : "context";
+			if (kind === "add") added++;
+			if (kind === "remove") removed++;
+			lines.push({ kind, number: m[3] === "" ? null : Number(m[3]), text: m[4] });
+		}
+		return { lines, added, removed };
+	}
+
+	/** Line diff of two texts by longest common subsequence; one side replaced wholesale when they are very long. */
+	function lineDiff(before, after) {
+		const a = before.split("\n");
+		const b = after.split("\n");
+		if (a.length * b.length > 250_000) {
+			return [...a.map((text) => ({ kind: "remove", number: null, text })), ...b.map((text) => ({ kind: "add", number: null, text }))];
+		}
+		const table = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+		for (let i = a.length - 1; i >= 0; i--) {
+			for (let j = b.length - 1; j >= 0; j--) {
+				table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+			}
+		}
+		const out = [];
+		let i = 0;
+		let j = 0;
+		while (i < a.length && j < b.length) {
+			if (a[i] === b[j]) {
+				out.push({ kind: "context", number: null, text: a[i] });
+				i++;
+				j++;
+			} else if (table[i + 1][j] >= table[i][j + 1]) {
+				out.push({ kind: "remove", number: null, text: a[i++] });
+			} else {
+				out.push({ kind: "add", number: null, text: b[j++] });
+			}
+		}
+		while (i < a.length) out.push({ kind: "remove", number: null, text: a[i++] });
+		while (j < b.length) out.push({ kind: "add", number: null, text: b[j++] });
+		return out;
+	}
+
+	/** The edits a call asked for (`edits: [{oldText, newText}]`, or the older single pair), as one diff. */
+	function diffFromEdits(args) {
+		let edits = [];
+		if (isObject(args)) {
+			if (Array.isArray(args.edits)) edits = args.edits.filter(isObject);
+			else if (isObject(args.edits)) edits = [args.edits];
+			if (typeof args.oldText === "string" && typeof args.newText === "string") edits.push({ oldText: args.oldText, newText: args.newText });
+		}
+		const lines = [];
+		edits.forEach((edit, index) => {
+			if (index > 0) lines.push({ kind: "gap", number: null, text: ELLIPSIS });
+			lines.push(...lineDiff(str(edit.oldText), str(edit.newText)));
+		});
+		return {
+			lines,
+			added: lines.filter((line) => line.kind === "add").length,
+			removed: lines.filter((line) => line.kind === "remove").length,
+		};
+	}
+
+	/** The diff to show for an edit: the result's own when it has one (it has line numbers), else built from the call. */
+	function editDiff(args, details) {
+		if (isObject(details) && typeof details.diff === "string" && details.diff.trim() !== "") return parseDiff(details.diff);
+		return diffFromEdits(args);
+	}
+
+	/** A diff as text to copy: each line with its sign. */
+	function diffText(diff) {
+		return diff.lines
+			.map((line) => (line.kind === "gap" ? ELLIPSIS : (line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ") + line.text))
+			.join("\n");
+	}
+
+	const counts = (added, removed) => {
+		const parts = [];
+		if (added > 0) parts.push("+" + added);
+		if (removed > 0) parts.push(MINUS + removed);
+		return parts.join(" ");
+	};
+
+	// MARK: - Summaries
+
+	const t = (text) => ({ text });
+	const code = (text) => ({ text, style: "code" });
+	const name = (text) => ({ text, style: "name" });
+	const muted = (text) => ({ text, style: "muted" });
+
+	/** A quoted, shortened argument for a one-line summary. */
+	function quoted(text) {
+		const line = str(text).replace(/\s+/g, " ").trim();
+		return QUOTE_OPEN + (line.length > 120 ? line.slice(0, 120) + ELLIPSIS : line) + QUOTE_CLOSE;
+	}
+
+	function capitalized(text) {
+		return text.charAt(0).toUpperCase() + text.slice(1);
+	}
+
+	/**
+	 * Everything the transcript shows about one call.
+	 *
+	 * `status` is "running" (a result is still coming), "preparing" (the model is still writing the call), "done",
+	 * "failed", or "none" (no result and none coming: the run stopped first). `names` carries what only the app knows:
+	 * `mcp` (tool name to "Server: tool") and `apps` (bundle ID to app name).
+	 *
+	 * Returns `{ glyph, label, stats, title, detail }`: `label` is a list of `{text, style}` pieces for the one line,
+	 * `stats` a short figure after it, `title` the line as plain text for tooltips and VoiceOver, and `detail` what the
+	 * chevron opens (see `detailFor`).
+	 */
+	function describe(call, status, result, live, names = {}) {
+		const args = isObject(call.arguments) ? call.arguments : {};
+		const details = (result && result.details) ?? (live && live.details) ?? null;
+		const active = status === "running" || status === "preparing";
+		const dots = active ? ELLIPSIS : "";
+		const toolName = str(call.name);
+		let glyph = "tool";
+		let label;
+		let stats = "";
+
+		switch (toolName) {
+			case "bash":
+			case "powershell": {
+				glyph = "terminal";
+				const command = firstLine(args.command);
+				label = command ? [t(active ? "Running " : "Ran "), code(command), t(dots)] : [t(active ? "Running a command" + ELLIPSIS : "Ran a command")];
+				break;
+			}
+			case "read": {
+				glyph = "file";
+				const file = basename(args.path);
+				label = file ? [t(active ? "Reading " : "Read "), name(file), t(dots)] : [t(active ? "Reading a file" + ELLIPSIS : "Read a file")];
+				stats = readWindow(args) ?? "";
+				break;
+			}
+			case "write": {
+				glyph = "pencil";
+				const file = basename(args.path);
+				label = file ? [t(active ? "Writing " : "Wrote "), name(file), t(dots)] : [t(active ? "Writing a file" + ELLIPSIS : "Wrote a file")];
+				if (typeof args.content === "string" && status !== "preparing") {
+					const lines = args.content === "" ? 0 : args.content.replace(/\n$/, "").split("\n").length;
+					stats = lines > 0 ? "+" + lines : "";
+				}
+				break;
+			}
+			case "edit": {
+				glyph = "pencil";
+				const file = basename(args.path);
+				label = file ? [t(active ? "Editing " : "Edited "), name(file), t(dots)] : [t(active ? "Editing a file" + ELLIPSIS : "Edited a file")];
+				if (status !== "preparing") {
+					const diff = editDiff(args, details);
+					stats = counts(diff.added, diff.removed);
+				}
+				break;
+			}
+			case "read_reference": {
+				glyph = "book";
+				const file = basename(args.path);
+				label = [t(active ? "Reading reference " : "Read reference "), name(file || "file"), t(dots)];
+				stats = readWindow(args) ?? "";
+				break;
+			}
+			case "ask_user":
+				glyph = "question";
+				label = [t(active ? "Asking " : "Asked "), muted(quoted(args.question))];
+				break;
+			case "codemode":
+				glyph = "code";
+				label = [t(active ? "Running a script" + ELLIPSIS : "Ran a script")];
+				break;
+			case "computer":
+			case "browser": {
+				glyph = toolName === "browser" ? "globe" : "cursor";
+				// The app says what it did ("Clicked “Send” in Mail"); until then, what was asked.
+				const summary = isObject(details) ? str(details.summary) : "";
+				if (summary) {
+					label = [t(summary)];
+				} else {
+					const action = capitalized(str(args.action).trim().replace(/_/g, " ")) || capitalized(toolName);
+					const app = str(args.app);
+					const appName = app ? (names.apps && typeof names.apps[app] === "string" ? names.apps[app] : app) : "";
+					const where = appName ? " in " + appName : str(args.url) ? " " + str(args.url) : "";
+					label = [t(action + where + dots)];
+				}
+				break;
+			}
+			case "update_plan":
+				glyph = "list";
+				label = [t(active ? "Updating the task list" + ELLIPSIS : "Updated the task list")];
+				break;
+			case "remember":
+			case "forget": {
+				glyph = "memory";
+				const what = argumentSummary(args);
+				const verb = toolName === "remember" ? (active ? "Remembering" : "Remembered") : active ? "Forgetting" : "Forgot";
+				label = what ? [t(verb + " "), muted(quoted(what)), t(dots)] : [t(verb + (active ? ELLIPSIS : " something"))];
+				break;
+			}
+			case "list_files": {
+				glyph = "folder";
+				const where = str(args.path) || str(args.dir) || str(args.directory);
+				label = [t(active ? "Listing " : "Listed "), name(where ? basename(where) || where : "files"), t(dots)];
+				break;
+			}
+			case "find_files":
+			case "search_files": {
+				glyph = "search";
+				const pattern = str(args.pattern) || str(args.query) || str(args.glob) || str(args.regex) || argumentSummary(args);
+				const verb = toolName === "find_files" ? (active ? "Finding " : "Found ") : active ? "Searching for " : "Searched for ";
+				label = toolName === "find_files" ? [t(verb), code(pattern || "files"), t(dots)] : [t(verb), code(pattern || "text"), t(dots)];
+				break;
+			}
+			case "web_fetch": {
+				glyph = "globe";
+				const url = str(args.url);
+				label = [t(active ? "Fetching " : "Fetched "), name(url || "a page"), t(dots)];
+				break;
+			}
+			case "web_search": {
+				glyph = "search";
+				const query = str(args.query) || argumentSummary(args);
+				label = [t(active ? "Searching the web for " : "Searched the web for "), muted(quoted(query)), t(dots)];
+				break;
+			}
+			default: {
+				// An MCP tool reads as "Server: tool" rather than its long internal name.
+				const mcp = names.mcp && typeof names.mcp[toolName] === "string" ? names.mcp[toolName] : null;
+				glyph = mcp || toolName.startsWith("mcp__") ? "plug" : "tool";
+				const summary = argumentSummary(args);
+				label = [name(mcp ?? toolName)];
+				if (summary) label.push(muted(" " + (summary.length > 200 ? summary.slice(0, 200) + ELLIPSIS : summary)));
+				if (active) label.push(t(ELLIPSIS));
+			}
+		}
+		const title = label.map((piece) => piece.text).join("") + (stats ? " " + stats : "");
+		return { glyph, label, stats, title };
+	}
+
+	/**
+	 * What a call's row opens to: a list of sections, each `{kind, ...}`.
+	 *   { kind: "command", label, command, output, failed }   a command and what it printed
+	 *   { kind: "diff", label, diff }                          an edit
+	 *   { kind: "text", label, text, failed, language }        a file's text, an output, the arguments
+	 *   { kind: "images", entry, count }                       pictures kept with the result
+	 *   { kind: "qa", question, answer }                       a question and the person's answer
+	 */
+	function detailFor(call, status, result, live) {
+		const args = isObject(call.arguments) ? call.arguments : {};
+		const details = (result && result.details) ?? (live && live.details) ?? null;
+		const output = readable(result ? result.text : live ? live.output : "");
+		const failed = status === "failed";
+		const active = status === "running" || status === "preparing";
+		const sections = [];
+		const outputSection = (label) => {
+			if (output !== "") sections.push({ kind: "text", label, text: output, failed });
+			else if (active) sections.push({ kind: "text", label, text: "", placeholder: "Running" + ELLIPSIS });
+			else if (result) sections.push({ kind: "text", label, text: "", placeholder: "(no output)" });
+		};
+		const images = result && typeof result.images === "number" && result.images > 0 ? result.images : 0;
+
+		switch (str(call.name)) {
+			case "bash":
+			case "powershell":
+				sections.push({ kind: "command", label: str(call.name), command: str(args.command), output, failed, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
+				break;
+			case "read":
+			case "read_reference":
+				if (failed || !result || output !== "") outputSection(str(args.path) || "Output");
+				break;
+			case "write":
+				if (typeof args.content === "string") sections.push({ kind: "text", label: str(args.path) || "File", text: args.content, language: extension(args.path) });
+				if (failed) outputSection("Result");
+				break;
+			case "edit": {
+				const diff = editDiff(args, details);
+				if (diff.lines.length > 0) sections.push({ kind: "diff", label: str(args.path) || "Changes", diff });
+				if (failed) outputSection("Result");
+				break;
+			}
+			case "ask_user":
+				sections.push({ kind: "qa", question: str(args.question), answer: output, failed });
+				break;
+			case "codemode":
+				if (str(args.code)) sections.push({ kind: "text", label: "Script", text: str(args.code), language: "js" });
+				outputSection("Output");
+				break;
+			case "computer":
+			case "browser":
+				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images });
+				outputSection("What the app said");
+				break;
+			default: {
+				const input = Object.keys(args).length > 0 ? prettyJSON(args) : "";
+				if (input) sections.push({ kind: "text", label: "Input", text: input, language: "json" });
+				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images });
+				outputSection("Output");
+			}
+		}
+		if (images > 0 && !sections.some((section) => section.kind === "images")) sections.unshift({ kind: "images", entry: result.id, count: images });
+		return sections;
+	}
+
+	function extension(path) {
+		const m = /\.([A-Za-z0-9]{1,10})$/.exec(str(path));
+		return m ? m[1].toLowerCase() : "";
+	}
+
+	// MARK: - Hand-offs
+
+	/** A delegation's answer without the footer the engine adds for the model ("(Sub-chat 4 with Atlas. …)"). */
+	function subagentAnswer(output) {
+		const text = readable(output);
+		const at = text.indexOf("\n\n(Sub-chat ");
+		return at >= 0 ? text.slice(0, at) : text;
+	}
+
+	/** Who a delegation went to and whether it carried on an earlier sub-chat. */
+	function delegation(call, result, live) {
+		const args = isObject(call.arguments) ? call.arguments : {};
+		const details = (result && result.details) ?? (live && live.details) ?? null;
+		const chat = isObject(details) && Number.isInteger(details.conversationId) ? details.conversationId : null;
+		const named = str(args.agent).trim();
+		const agentName = named || (isObject(details) ? str(details.agentName) : "") || "agent";
+		const continued = Number.isInteger(args.chat);
+		return { agentName, task: str(args.task), chat, continued, agentId: isObject(details) ? str(details.agentId) : "" };
+	}
+
+	/** Bytes as Finder shows a file's size. */
+	function formatBytes(bytes) {
+		const n = Number(bytes) || 0;
+		if (n < 1000) return n === 1 ? "1 byte" : `${n} bytes`;
+		const units = ["KB", "MB", "GB", "TB"];
+		let value = n / 1000;
+		let unit = 0;
+		while (value >= 1000 && unit < units.length - 1) {
+			value /= 1000;
+			unit++;
+		}
+		return (unit === 0 ? Math.round(value) : Math.round(value * 10) / 10) + " " + units[unit];
+	}
+
+	return {
+		readable,
+		basename,
+		argumentSummary,
+		parseDiff,
+		lineDiff,
+		diffFromEdits,
+		editDiff,
+		diffText,
+		describe,
+		detailFor,
+		subagentAnswer,
+		delegation,
+		formatBytes,
+		prettyJSON,
+	};
+});

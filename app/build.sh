@@ -35,6 +35,9 @@ if [[ ! -f build/AppIcon.icns || make-icon.swift -nt build/AppIcon.icns ]]; then
 fi
 cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
+# The transcript page: plain HTML, CSS and JavaScript with no build step, loaded from here by the app.
+cp -R Web/transcript "$APP/Contents/Resources/transcript"
+
 NODE="$(command -v node)"
 ENGINE_KEYS=""
 if [[ "$MODE" == release ]]; then
