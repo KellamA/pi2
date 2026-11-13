@@ -131,6 +131,17 @@ struct Pi2App: App {
             }
         }
 
+        // pi²'s own browser: the pages agents are on, which the person can watch and use. Opened from the Window menu,
+        // the sidebar or a conversation's toolbar, never at launch: the main window is what starts the engine.
+        Window("Browser", id: "browser") {
+            BrowserWindow(engine: model.engine)
+                .tint(.piAccent)
+        }
+        .defaultSize(width: 1100, height: 780)
+        .keyboardShortcut("b", modifiers: [.command, .shift])
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
         MenuBarExtra {
             MenuBarView(model: model)
                 .tint(.piAccent)
@@ -235,6 +246,7 @@ struct RootView: View {
 
 struct SidebarView: View {
     @Bindable var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     private var engine: EngineClient { model.engine }
 
     var body: some View {
@@ -327,6 +339,11 @@ struct SidebarView: View {
                     Text("\(today.costText) today").foregroundStyle(Theme.tx3)
                         .help("Spent today on models paid for by use")
                 }
+                Button("Browser", systemImage: "globe") { openWindow(id: "browser") }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.tx3)
+                    .help("Open pi²’s browser: the pages your agents are on (⇧⌘B)")
                 SettingsLink { Image(systemName: "gearshape") }
                     .buttonStyle(.borderless)
                     .foregroundStyle(Theme.tx3)
@@ -600,6 +617,9 @@ private struct WindowOpener: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Color.clear.onAppear { model.showMainWindow = { openWindow(id: "main") } }
+        Color.clear.onAppear {
+            model.showMainWindow = { openWindow(id: "main") }
+            model.engine.browser.showWindow = { openWindow(id: "browser") }
+        }
     }
 }

@@ -1,5 +1,6 @@
 // The app's own durable state, and the in-memory list of things waiting on the person.
 
+import type { BrowserSettings } from "./browser.ts";
 import type { ComputerSettings } from "./computer.ts";
 import type { ReferenceFile } from "./reference.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
@@ -35,6 +36,8 @@ export type AgentProfile = {
 	files?: ReferenceFile[];
 	/** Whether the agent may use apps on this Mac, and which. */
 	computer?: ComputerSettings;
+	/** Whether the agent may browse the web in pi²'s own browser. */
+	browser?: BrowserSettings;
 	createdAt: number;
 };
 
@@ -117,6 +120,8 @@ export type InboxItem = {
 	tool: string;
 	arguments: unknown;
 	question: string | null;
+	/** For a browser action: the site it would act on, which is what "always allow" then covers. */
+	site?: string;
 	createdAt: number;
 };
 

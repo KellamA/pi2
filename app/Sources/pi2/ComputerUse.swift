@@ -59,7 +59,7 @@ final class ComputerSession {
 
 // MARK: - Indicator
 
-/// A small pill at the top of the screen while an agent is working another app, with the way to stop it.
+/// A small pill at the top of the screen while an agent is working another app or a web page, with the way to stop it.
 /// Pressing Esc twice does the same from anywhere.
 @MainActor
 final class ComputerIndicator {
@@ -68,11 +68,19 @@ final class ComputerIndicator {
     private var monitors: [Any] = []
     private var lastEscape = Date.distantPast
     private var stop: () -> Void = {}
+    /// Which line the pill sits on, so that two kinds of work at once do not cover each other.
+    private let row: Int
 
-    func show(agent: String, app: String, stop: @escaping () -> Void) {
+    init(row: Int = 0) {
+        self.row = row
+    }
+
+    /// `doing` is what joins the agent to the thing it works ("Atlas is using Notes"); `reveal`, when given, puts a
+    /// Show button on the pill.
+    func show(agent: String, app: String, doing: String = "is using", reveal: (() -> Void)? = nil, stop: @escaping () -> Void) {
         hide?.cancel()
         self.stop = stop
-        let view = NSHostingView(rootView: IndicatorPill(agent: agent, app: app) { [weak self] in self?.stopNow() })
+        let view = NSHostingView(rootView: IndicatorPill(agent: agent, app: app, doing: doing, reveal: reveal) { [weak self] in self?.stopNow() })
         view.setFrameSize(view.fittingSize)
         let panel = self.panel ?? {
             let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -88,7 +96,7 @@ final class ComputerIndicator {
         panel.contentView = view
         if let screen = NSScreen.main {
             let size = view.fittingSize
-            let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 8)
+            let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 8 - CGFloat(row) * (size.height - 6))
             panel.setFrame(NSRect(origin: origin, size: size), display: true)
         }
         panel.orderFrontRegardless()
@@ -135,15 +143,22 @@ final class ComputerIndicator {
 private struct IndicatorPill: View {
     let agent: String
     let app: String
+    let doing: String
+    let reveal: (() -> Void)?
     let stop: () -> Void
 
     var body: some View {
         HStack(spacing: 9) {
             Spinner(size: 11)
-            Text("\(agent) is using \(app)").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.tx)
+            Text("\(agent) \(doing) \(app)").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.tx)
             Text("Esc Esc").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.tx3)
                 .padding(.horizontal, 5).padding(.vertical, 1.5)
                 .background(Theme.card2, in: .rect(cornerRadius: 4))
+            if let reveal {
+                Button("Show") { reveal() }
+                    .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
+                    .help("Show the page in pi²’s browser")
+            }
             Button("Stop", systemImage: "stop.fill", action: stop)
                 .buttonStyle(PiButtonStyle(kind: .danger, compact: true))
         }

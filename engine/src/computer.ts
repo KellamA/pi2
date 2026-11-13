@@ -96,17 +96,36 @@ export type ComputerRequest = {
 	image?: boolean;
 };
 
+/** The least any answer from the app holds. `unreachable` marks one the engine wrote itself because none came. */
+export type HostReply = { ok: boolean; text: string; unreachable?: boolean };
+
 /** What the app sends back: text for the model, a short line for the person, and a screenshot when there is one. */
-export type ComputerReply = { ok: boolean; text: string; summary?: string; image?: { data: string; mimeType: string } };
+export type ComputerReply = HostReply & { summary?: string; image?: { data: string; mimeType: string } };
 
 type HostLink = { send: (message: unknown) => void };
 
-/** Sends computer actions to the app that holds the permissions, and matches up the answers. */
-export class ComputerHost {
+/** What a kind of host is called on the wire, and what its tool is told when the app cannot answer. */
+type HostWording = { event: string; notOpen: string; closed: string; late: string };
+
+/**
+ * Sends actions to the app that can carry them out, and matches up the answers. Computer use and the browser each
+ * have one: the app holds the macOS permissions for the first and the web views for the second.
+ */
+export class AppHost<Request extends object, Reply extends HostReply> {
 	/** Every app that offered, oldest first. The newest does the work; if it goes, the one before takes over again. */
 	readonly #hosts: HostLink[] = [];
-	readonly #pending = new Map<string, { resolve: (reply: ComputerReply) => void; host: HostLink }>();
+	readonly #pending = new Map<string, { resolve: (reply: Reply) => void; host: HostLink }>();
+	readonly #wording: HostWording;
 	#next = 1;
+
+	constructor(wording: HostWording) {
+		this.#wording = wording;
+	}
+
+	/** An answer the engine gives in the app's place. */
+	#unanswered(text: string): Reply {
+		return { ok: false, text, unreachable: true } as Reply;
+	}
 
 	register(host: HostLink): void {
 		this.unlist(host);
@@ -123,7 +142,7 @@ export class ComputerHost {
 		for (const [id, pending] of this.#pending) {
 			if (pending.host !== host) continue;
 			this.#pending.delete(id);
-			pending.resolve({ ok: false, text: "The pi² app closed before the action finished. It may or may not have happened; take a screenshot to check once pi² is open again." });
+			pending.resolve(this.#unanswered(this.#wording.closed));
 		}
 		this.unlist(host);
 	}
@@ -132,16 +151,16 @@ export class ComputerHost {
 		return this.#hosts.length > 0;
 	}
 
-	async perform(request: ComputerRequest & { conversationId: number; agentName: string }, context: Context, timeoutMs = 60_000): Promise<ComputerReply> {
+	async perform(request: Request & { conversationId: number; agentName: string }, context: Context, timeoutMs = 60_000): Promise<Reply> {
 		const host = this.#hosts.at(-1);
-		if (host === undefined) return { ok: false, text: "The pi² app is not open, so there is no screen to use. Ask the person to open pi²." };
-		const id = `computer-${this.#next++}`;
-		const reply = new Promise<ComputerReply>((resolve) => this.#pending.set(id, { resolve, host }));
+		if (host === undefined) return this.#unanswered(this.#wording.notOpen);
+		const id = `${this.#wording.event}-${this.#next++}`;
+		const reply = new Promise<Reply>((resolve) => this.#pending.set(id, { resolve, host }));
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		const timeout = new Promise<ComputerReply>((resolve) => {
-			timer = setTimeout(() => resolve({ ok: false, text: "The app did not answer in time. The action may or may not have happened; take a screenshot to check." }), timeoutMs);
+		const timeout = new Promise<Reply>((resolve) => {
+			timer = setTimeout(() => resolve(this.#unanswered(this.#wording.late)), timeoutMs);
 		});
-		host.send({ event: "computer", requestId: id, ...request });
+		host.send({ event: this.#wording.event, requestId: id, ...request });
 		try {
 			return await awaitWithContext(Promise.race([reply, timeout]), context);
 		} finally {
@@ -150,10 +169,22 @@ export class ComputerHost {
 		}
 	}
 
-	answer(id: string, reply: ComputerReply): boolean {
+	answer(id: string, reply: Reply): boolean {
 		const pending = this.#pending.get(id);
 		pending?.resolve(reply);
 		return pending !== undefined;
+	}
+}
+
+/** Sends computer actions to the app that holds the permissions, and matches up the answers. */
+export class ComputerHost extends AppHost<ComputerRequest, ComputerReply> {
+	constructor() {
+		super({
+			event: "computer",
+			notOpen: "The pi² app is not open, so there is no screen to use. Ask the person to open pi².",
+			closed: "The pi² app closed before the action finished. It may or may not have happened; take a screenshot to check once pi² is open again.",
+			late: "The app did not answer in time. The action may or may not have happened; take a screenshot to check.",
+		});
 	}
 }
 
@@ -193,12 +224,16 @@ export function plainDescription(args: { action?: unknown; app?: unknown; elemen
 	}
 }
 
-const DROPPED = "[An earlier screenshot was here. Take a new one if you need to see the window again.]";
+/** The tools whose results carry screenshots, and what stands in for a picture that is no longer sent. */
+const DROPPED: Record<string, string> = {
+	computer: "[An earlier screenshot was here. Take a new one if you need to see the window again.]",
+	browser: "[An earlier screenshot was here. Take a new one if you need to see the page again.]",
+};
 
 /**
- * Keep only the newest screenshots in what the model is sent. A screenshot is stale as soon as the window changes, and
- * each costs a thousand tokens or more, so a long session would otherwise fill the context with pictures of the past.
- * The transcript itself keeps them all; this shapes one request.
+ * Keep only the newest screenshots in what the model is sent, of windows and of web pages alike. A screenshot is stale
+ * as soon as what it shows changes, and each costs a thousand tokens or more, so a long session would otherwise fill
+ * the context with pictures of the past. The transcript itself keeps them all; this shapes one request.
  */
 export function pruneScreenshots(messages: readonly Message[], keep = 2): readonly Message[] {
 	let seen = 0;
@@ -206,11 +241,12 @@ export function pruneScreenshots(messages: readonly Message[], keep = 2): readon
 	const result = [...messages];
 	for (let i = result.length - 1; i >= 0; i--) {
 		const message = result[i]!;
-		if (message.role !== "toolResult" || message.toolName !== "computer" || !message.content.some((block) => block.type === "image")) continue;
+		const dropped = message.role === "toolResult" ? DROPPED[message.toolName] : undefined;
+		if (message.role !== "toolResult" || dropped === undefined || !message.content.some((block) => block.type === "image")) continue;
 		seen++;
 		if (seen <= keep) continue;
 		changed = true;
-		result[i] = { ...message, content: message.content.map((block) => (block.type === "image" ? { type: "text" as const, text: DROPPED } : block)) };
+		result[i] = { ...message, content: message.content.map((block) => (block.type === "image" ? { type: "text" as const, text: dropped } : block)) };
 	}
 	return changed ? result : messages;
 }

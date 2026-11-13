@@ -175,6 +175,12 @@ struct ComputerSettings: Codable, Equatable {
     var ask = true
 }
 
+/// Whether an agent may browse the web in pi²'s own browser, and whether it asks before acting on a page.
+struct BrowserSettings: Codable, Equatable {
+    var enabled = false
+    var ask = true
+}
+
 /// A file or folder an agent may always read, with a note on what it is for.
 struct ReferenceFile: Codable, Equatable, Identifiable {
     var path: String
@@ -201,6 +207,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var files: [ReferenceFile]?
     /// Whether the agent may use apps on this Mac, and which.
     var computer: ComputerSettings?
+    /// Whether the agent may browse the web in pi²'s own browser.
+    var browser: BrowserSettings?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -217,6 +225,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "mcpServers": mcpServers ?? [],
             "files": (files ?? []).map { ["path": $0.path, "note": $0.note] },
             "computer": ["enabled": computer?.enabled ?? false, "apps": computer?.apps ?? [], "ask": computer?.ask ?? true],
+            "browser": ["enabled": browser?.enabled ?? false, "ask": browser?.ask ?? true],
         ]
     }
 }
@@ -230,6 +239,8 @@ struct InboxItem: Codable, Equatable, Identifiable {
     let tool: String
     let arguments: JSONValue
     let question: String?
+    /// For a browser action: the site it would act on, which is what "always allow" then covers.
+    var site: String? = nil
     let title: String
     let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.

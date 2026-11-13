@@ -64,7 +64,7 @@ export function describeReferenceFiles(files: readonly ReferenceFile[]): string 
 }
 
 /** Where `path` really is, if it is one of the listed files or inside one of the listed folders. */
-function locate(files: readonly ReferenceFile[], path: string): string | undefined {
+export function locateReference(files: readonly ReferenceFile[], path: string): string | undefined {
 	const wanted = path.trim();
 	const candidates = isAbsolute(wanted)
 		? [wanted]
@@ -99,7 +99,7 @@ export type ReferenceResult = { text: string; isError?: boolean };
 /** Read a listed file (a window of its lines) or list a listed folder. */
 export function readReference(files: readonly ReferenceFile[], path: string, offset?: number, limit?: number): ReferenceResult {
 	if (files.length === 0) return { text: "This agent has no reference files.", isError: true };
-	const real = locate(files, path);
+	const real = locateReference(files, path);
 	if (real === undefined) {
 		return { text: `"${path}" is not one of your reference files or inside one of your reference folders. You have:\n${files.map((file) => `- ${file.path}`).join("\n")}`, isError: true };
 	}

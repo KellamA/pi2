@@ -46,6 +46,8 @@ final class EngineClient {
     var lastError: String?
     /// Does what agents ask of other apps' windows; the app holds the macOS permissions for it.
     let computer = ComputerSession()
+    /// Works pages in pi²'s own browser for agents; the app holds the web views.
+    let browser = BrowserSession()
 
     private let home: URL
     private var connection: NWConnection?
@@ -210,6 +212,8 @@ final class EngineClient {
                     self.receive(on: connection)
                     // Offer this app as the one that sees and works other apps for agents.
                     Task { _ = try? await self.call("computer.register") }
+                    // And as the one whose browser agents use.
+                    Task { _ = try? await self.call("browser.register") }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.perform("conversation.open", ["id": id]) }
                 case .waiting(let error), .failed(let error):
@@ -322,6 +326,8 @@ final class EngineClient {
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
+            case "browser":
+                browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
                 if let error = envelope.error {
