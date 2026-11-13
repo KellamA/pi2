@@ -93,8 +93,9 @@ button,
 	user-select: none;
 }
 
+/* A column of text at most 760 pixels wide, inside the side padding. */
 main {
-	max-width: 760px;
+	max-width: 816px;
 	margin: 0 auto;
 	padding: 24px 28px 40px;
 }

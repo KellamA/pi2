@@ -110,7 +110,8 @@ struct TranscriptFeed {
     /// The message as the JSON text the page parses. The page is handed it as a string argument, never as script.
     static func json(_ message: Message) -> String? {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
+        // Sorted, so a call's arguments are summarised in the same order every time.
+        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
         guard let data = try? encoder.encode(message) else { return nil }
         return String(data: data, encoding: .utf8)
     }

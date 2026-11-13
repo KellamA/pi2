@@ -188,7 +188,10 @@
 		sparkle: ["M8 1.6 9.3 6l4.4 1.4-4.4 1.4L8 13.2 6.7 8.8 2.3 7.4 6.7 6z"],
 		chevron: ["M6 3.8 10.2 8 6 12.2"],
 		copy: ["M5.5 5.5h7.2a.8.8 0 0 1 .8.8v7.2a.8.8 0 0 1-.8.8H5.5a.8.8 0 0 1-.8-.8V6.3a.8.8 0 0 1 .8-.8z", "M2.5 10.3V3.3a.8.8 0 0 1 .8-.8h7"],
-		fork: ["M4.5 2v12", "M4.5 10.5c0-2.6 7-2.4 7-6.5", "M11.5 2v2"],
+		fork: [
+			"M5 4.6a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2z", "M5 14.6a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2z",
+			"M11 4.6a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2z", "M5 4.6v6.8", "M11 4.6v1a3 3 0 0 1-3 3H7a2 2 0 0 0-2 2",
+		],
 		check: ["M3 8.6l3 3 7-7.2"],
 		open: ["M5.5 10.5l6-6", "M6.5 4.5h5v5"],
 		down: ["M8 3v10", "M4 9l4 4 4-4"],
@@ -304,7 +307,8 @@
 				specs.push({ key: "i" + item.id, sig: "u" + rev(item), build: () => userRow(item) });
 			} else if (item.kind === "assistant") {
 				for (const call of calls(item)) shownCalls.add(call.callId);
-				const turnEnd = next ? next.kind !== "assistant" : !live.partial;
+				// A turn ends at the person's next message, or when the run is over; its actions wait until then.
+				const turnEnd = next ? next.kind !== "assistant" : !live.partial && !live.busy;
 				specs.push(assistantSpec(item, turnEnd, visible, index));
 			} else {
 				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(item.text) });
