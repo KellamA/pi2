@@ -17,7 +17,7 @@ const PATCHES: Patch[] = [
 		// After a command exits, pi-durable waits 100 ms for more output and then closes the pipes. Each turn of the event
 		// loop runs timers before it reads pipes, so when the engine is busy for longer than that (just after a restart,
 		// say) the timer fires first and output already in the pipe is thrown away: the command succeeds with no output.
-		// Waiting one setImmediate lets the poll phase read the pipe first; new output arms a new timer. Issue #13.
+		// Waiting one setImmediate lets the poll phase read the pipe first; new output arms a new timer. Issue #13; reported as https://github.com/earendil-works/pi/issues/12157.
 		why: "command output lost when the event loop is busy as a command exits",
 		file: "node_modules/@earendil-works/pi-durable/dist/env/node.js",
 		find: `            postExitTimer = setTimeout(() => {
