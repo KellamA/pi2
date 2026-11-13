@@ -43,6 +43,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
 | `src/schedules.ts` | Schedule rules and next-run times |
+| `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
 
