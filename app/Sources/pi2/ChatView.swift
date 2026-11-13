@@ -668,6 +668,7 @@ struct ToolCard: View {
             return call.arguments["chat"]?.intValue == nil ? "Delegate to \(name)" : "Continue with \(name)"
         case "ask_user": return "Question"
         case "read_reference": return "Read reference file"
+        case "write_document": return "Write document"
         case "codemode": return "Script"
         case "browser": return "Browser"
         default:
@@ -685,6 +686,7 @@ struct ToolCard: View {
         case "bash": "terminal"
         case "read": "doc.text"
         case "write", "edit": "pencil"
+        case "write_document": "doc.richtext"
         case "delegate": "person.2"
         case "ask_user": "questionmark.bubble"
         case "codemode": "chevron.left.forwardslash.chevron.right"
@@ -698,6 +700,7 @@ struct ToolCard: View {
         switch call.name {
         case "ask_user": "question"
         case "read_reference": "reference"
+        case "write_document": "document"
         case "codemode": "script"
         default:
             if let server = engine.mcpServers.first(where: { $0.tools.contains { $0.toolName == call.name } }) {

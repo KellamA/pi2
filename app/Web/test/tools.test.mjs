@@ -23,6 +23,10 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("read", { path: "a.ts", offset: 10, limit: 50 }), "Read a.ts lines 10–59");
 	assert.equal(line("write", { path: "docs/notes.md", content: "a\nb\nc\n" }), "Wrote notes.md +3");
 	assert.equal(line("write", { path: "docs/notes.md", content: "a" }, "running"), "Writing notes.md… +1");
+	assert.equal(line("write_document", { path: "reports/q3.docx", markdown: "# Q3" }), "Wrote q3.docx");
+	assert.equal(line("write_document", { path: "reports/q3.docx", markdown: "# Q3" }, "running"), "Writing q3.docx…");
+	assert.equal(line("write_document", {}, "preparing"), "Writing a document…");
+	assert.equal(line("write_document", {}), "Wrote a document");
 	assert.equal(line("read_reference", { path: "/refs/style.md" }), "Read reference style.md");
 	assert.equal(line("codemode", { code: "1+1" }), "Ran a script");
 	assert.equal(line("update_plan", { items: [] }), "Updated the task list");
@@ -75,6 +79,9 @@ test("what a row opens to", () => {
 	assert.deepEqual(kinds("bash", { command: "ls" }), ["command"]);
 	assert.deepEqual(kinds("edit", { path: "a", edits: [{ oldText: "a", newText: "b" }] }), ["diff"]);
 	assert.deepEqual(kinds("edit", { path: "a", edits: [{ oldText: "a", newText: "b" }] }, "failed"), ["diff", "text"]);
+	assert.deepEqual(kinds("write_document", { path: "a.docx", markdown: "# x" }), ["text"]);
+	assert.deepEqual(kinds("write_document", { path: "a.docx", markdown: "# x" }, "failed", { text: "exists", id: 4 }), ["text", "text"]);
+	assert.equal(T.describe(call("write_document", { path: "a.docx" }), "done", null, null).glyph, "file");
 	assert.deepEqual(kinds("write", { path: "a", content: "x" }), ["text"]);
 	assert.deepEqual(kinds("ask_user", { question: "q" }), ["qa"]);
 	assert.deepEqual(kinds("computer", { action: "screenshot" }, "done", { text: "Window", id: 4, images: 1 }), ["images", "text"]);
@@ -138,7 +145,7 @@ test("sizes as Finder shows them", () => {
 
 test("hostile arguments never break a summary", () => {
 	for (const args of [null, "string", 5, [], { command: 5 }, { path: {} }, { edits: [{ oldText: 1, newText: null }] }, { action: {} }]) {
-		for (const name of ["bash", "read", "write", "edit", "computer", "delegate", "ask_user", "update_plan", "mcp__a__b", "x"]) {
+		for (const name of ["bash", "read", "write", "write_document", "edit", "computer", "delegate", "ask_user", "update_plan", "mcp__a__b", "x"]) {
 			const described = T.describe(call(name, args), "done", { text: null, details: "x" }, null);
 			assert.equal(typeof described.title, "string");
 			assert.ok(Array.isArray(T.detailFor(call(name, args), "done", { text: null }, null)));

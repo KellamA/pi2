@@ -38,7 +38,7 @@ import { judgeCommand, proposeRule } from "./rules.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
-const GATED = new Set(["bash", "write", "edit"]);
+const GATED = new Set(["bash", "write", "edit", "write_document"]);
 
 export type Host = {
 	/** Features in files of their own; their tools, sections and hooks join this extension's. Filled in by main. */
