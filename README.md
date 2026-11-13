@@ -45,7 +45,11 @@ Agents can hand work to each other. Each handoff opens a sub-chat under the conv
 
 Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
 
-<p align="center"><img src="docs/images/inbox.png" alt="The Inbox with a question and two approvals waiting" width="820"></p>
+<p align="center"><img src="docs/images/inbox.png" alt="The Inbox: a command, a schedule an agent wants to set, a question, and an app action, all waiting" width="820"></p>
+
+Being asked about every `git status` gets old, and switching approvals off for the whole shell gives too much away. So an approval for a command offers a third choice: allow commands that start the same way, for that agent in that folder, from now on. Anything more involved still asks: two commands joined together unless each is covered, writing to a file, a variable, `sudo`. Rules that would allow anything, such as `bash` or `rm` on their own, cannot be made. You can review and remove rules in the agent's settings. [What a rule covers](docs/rules.md).
+
+<p align="center"><img src="docs/images/rules.png" alt="An approval for npm test with the choice to always allow npm test here" width="820"></p>
 
 ### Let an agent use your apps
 
@@ -72,9 +76,9 @@ Sign in with a subscription, add API keys for any of 40 or so providers, or add 
 
 ### Leave it running
 
-Schedules start conversations on their own: every morning, every hour, or once at a set time. Activity shows what is running and what is waiting for you. Closing the window leaves pi² in the menu bar, and the engine can keep going after you quit.
+Schedules start conversations on their own: every morning, every hour, or once at a set time. An agent you allow to can set one for itself when you ask it to check something later or regularly, and you approve each one before it exists. [What agents can schedule](docs/schedules.md). Activity shows what is running and what is waiting for you. Closing the window leaves pi² in the menu bar, and the engine can keep going after you quit.
 
-<p align="center"><img src="docs/images/activity.png" alt="Activity: running conversations and two schedules" width="820"></p>
+<p align="center"><img src="docs/images/activity.png" alt="Activity: running conversations and three schedules, one of them set by an agent" width="820"></p>
 
 ### Know what it costs
 
@@ -175,7 +179,8 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Browser](docs/browser.md): the agents' own browser, what it asks about, and what it will not do.
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
 - [Transcript](docs/transcript.md): how the conversation page is built, and how it is kept from running anything a model writes.
-- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md).
+- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md).
+- [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)

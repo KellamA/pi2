@@ -6,6 +6,8 @@ What changed in each version, newest first.
 
 ### Added
 - **A new transcript.** The conversation is one page in the style of Claude Code: answers as plain text with full Markdown, tool steps as single lines that open to their output or diff, approvals and questions where the agent stopped. A selection runs across prose, code and tool steps and copies as clean text. See [docs/transcript.md](docs/transcript.md).
+- **Command rules.** An approval for a shell command can allow commands that start the same way from then on, for that agent in that folder. Compound commands, writes to files, variables and anything else not plainly covered still ask, and rules that would allow anything cannot be made. Rules are listed in the agent's settings. See [docs/rules.md](docs/rules.md).
+- **Agents can schedule their own work.** Off by default per agent. Each schedule is approved by you before it is made, shows in Activity as set by the agent, and the agent can cancel only its own. See [docs/schedules.md](docs/schedules.md).
 - **Formatted documents.** An agent that may write files can write a Word, RTF, OpenDocument or HTML document from Markdown with `write_document`, with the same approval as any other write. See [docs/documents.md](docs/documents.md).
 - **Computer use.** An agent can see and work the apps you choose, one window at a time, in the background, asking before it acts. See [docs/computer-use.md](docs/computer-use.md).
 - **A browser of the agents' own.** An agent can open pages, search, read, click, type and upload in pi²'s own browser, which keeps its sign-ins apart from Safari and Chrome. You can watch and take over in the Browser window. See [docs/browser.md](docs/browser.md).
@@ -26,6 +28,7 @@ What changed in each version, newest first.
 - Usage names models as "Provider · Model".
 
 ### Fixed
+- A step you declined read "Ran … Failed" in the conversation. It is now crossed out and marked as declined.
 - Switching on hand-offs, reference files, computer use or extra tools for an agent did nothing in conversations it already had. They now pick up the change at their next message, and lose an ability that was switched off.
 - The app did not build with Xcode 26 (Swift 6.3).
 - An endpoint saved without a key, the usual case for Ollama and LM Studio, failed with "No API key for provider".

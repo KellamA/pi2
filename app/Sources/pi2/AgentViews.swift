@@ -387,11 +387,9 @@ struct CommandRulesSection: View {
     }
 
     private var footer: String {
-        var text = "A rule covers commands that start with its words, in that folder only, whatever follows the words: “git status” also covers “git status -sb”, but not “git push” or “git -C other status”. "
-        text += "Commands joined by &&, ||, ; or | run without asking only when a rule covers each of them. "
-        text += "Anything more complicated still asks: a variable or $( ), writing to a file with >, cd, sudo, running in the background, or another folder. "
-        text += "Rules that would let the agent run anything, such as bash, python3, git or rm on their own, cannot be made. "
-        text += "Since a rule allows any options after its words, make one only for a command you would let the agent run with any options. "
+        var text = "A rule covers commands that start with its words, in that folder only: “git status” also covers “git status -sb”, but not “git push”. "
+        text += "It allows any options after its words, so make one only for a command you would let the agent run that way. "
+        text += "Anything more complicated still asks, and rules that would allow anything, such as bash or rm on their own, cannot be made. "
         if access != "ask" { text += "Rules only matter while tool access is “Ask first”. " }
         text += "Changes here apply at once, without Save."
         return text
