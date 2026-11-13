@@ -156,6 +156,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	providers: () => providers,
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
 const pi2 = pi2Extension(host);
@@ -493,6 +494,7 @@ async function announceProviders(): Promise<void> {
 	broadcast(await providersEvent());
 	// Signing in or out changes which usage has a price.
 	scheduleUsageRefresh();
+	for (const feature of host.features) feature.providersChanged?.();
 }
 
 /** The model a new conversation starts with: the last one picked if it is still usable, else the demo model. */

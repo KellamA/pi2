@@ -36,6 +36,11 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
 | `src/browser.ts` | The browser: which addresses and uploads are allowed, the link to the app, what the agent is told |
 | `src/reference.ts` | An agent's reference files |
+| `src/features.ts` | The list of features that live in one file each, and what such a file can add |
+| `src/plan.ts` | The agent's task list |
+| `src/knowledge.ts` | A project's instructions file, and an agent's memory |
+| `src/look.ts` | Listing and searching files, fetching pages and searching the web |
+| `src/limits.ts` | A subscription's own usage limits |
 | `src/schedules.ts` | Schedule rules and next-run times |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |

@@ -80,6 +80,8 @@ Schedules start conversations on their own: every morning, every hour, or once a
 
 Usage is counted by model, agent and conversation. Models you pay for by use show a cost and count toward an optional daily budget; subscriptions and local models count tokens only.
 
+For a subscription you are signed in to, Usage also shows the plan's own limits where the provider reports them: how much of the 5-hour and weekly windows is used, and when each resets. [Where the numbers come from](docs/limits.md).
+
 <p align="center"><img src="docs/images/usage.png" alt="Usage by model and by agent" width="820"></p>
 
 ### And the rest
@@ -162,6 +164,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Computer use](docs/computer-use.md): how it works, what it will not do, how to try it safely.
 - [Browser](docs/browser.md): the agents' own browser, what it asks about, and what it will not do.
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
+- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md).
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)

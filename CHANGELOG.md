@@ -7,6 +7,7 @@ What changed in each version, newest first.
 ### Added
 - **Computer use.** An agent can see and work the apps you choose, one window at a time, in the background, asking before it acts. See [docs/computer-use.md](docs/computer-use.md).
 - **A browser of the agents' own.** An agent can open pages, search, read, click, type and upload in pi²'s own browser, which keeps its sign-ins apart from Safari and Chrome. You can watch and take over in the Browser window. See [docs/browser.md](docs/browser.md).
+- **Plan limits.** For a subscription you are signed in to, Usage shows how much of each of the provider's windows is used (for example 5-hour and weekly) and when it resets, for Anthropic, OpenAI Codex, GitHub Copilot and Kimi. These come from interfaces the providers do not document; see [docs/limits.md](docs/limits.md).
 - **Project instructions.** An agent working in a folder that has an `AGENTS.md` or `CLAUDE.md` is given it, read fresh for every message.
 - **Memory.** Per agent and off by default: the agent keeps short notes between conversations with `remember` and `forget`, and you can read, edit and delete them in its settings. See [docs/knowledge.md](docs/knowledge.md).
 - **Tools for looking around.** `list_files`, `find_files` and `search_files` for any agent that may read its folder, and `web_fetch` and `web_search` for agents with the browser switched on. None of them changes anything or needs approval. See [docs/look.md](docs/look.md).
