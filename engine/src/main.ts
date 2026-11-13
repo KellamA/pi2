@@ -36,6 +36,7 @@ import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
+import { preparePlan } from "./plan.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
@@ -507,6 +508,8 @@ async function subscribe(client: Client, conv: Conversation): Promise<void> {
 	const id = conv.id as unknown as number;
 	if (client.subscriptions.has(id)) return;
 	const watch = await conv.watch(context, { min: 300, max: 600 });
+	// A feature's own documents are not part of the view; the task list is loaded here so the first state carries it.
+	await preparePlan(id);
 	let view = watch.value;
 	let lastSent: unknown;
 	const push = () => {
