@@ -84,6 +84,7 @@ Usage is counted by model, agent and conversation. Models you pay for by use sho
 
 ### And the rest
 
+- **A task list**: for work with several steps, the agent keeps a checklist pinned above the message field, so you can see the plan and where it stands.
 - **Pictures and files in chats**: paste a screenshot, drop in files, or attach PDFs and Word documents. [What can be attached](docs/attachments.md).
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent.

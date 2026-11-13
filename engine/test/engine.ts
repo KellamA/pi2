@@ -823,6 +823,90 @@ try {
 	// below, and nowhere else in this file.
 	{
 		// plan (engine/src/plan.ts)
+		const planOf = (id: number) => (client.conversations.get(id)?.state as any)?.plan as { items: { content: string; status: string }[] } | null | undefined;
+		const results = (id: number) => client.conversations.get(id)!.items.filter((i) => i.kind === "tool");
+		const update = async (id: number, items: unknown) => {
+			const before = results(id).length;
+			await client.call("submit", { id, text: `/tool update_plan ${JSON.stringify({ items })}` });
+			await client.until("update_plan answered", () => {
+				const v = client.conversations.get(id)!;
+				return !v.state.busy && results(id).length === before + 1;
+			});
+			return results(id).at(-1)!;
+		};
+		const item = (content: string, status: string) => ({ content, status });
+
+		const { id: p } = await client.call("conversation.create");
+		await client.call("conversation.open", { id: p });
+		await client.until("plan conversation", () => client.conversations.get(p));
+		assert.equal(planOf(p) ?? null, null, "no list at first");
+
+		let answer = await update(p, [item("Read the code", "completed"), item("Write the change", "in_progress"), item("Run the tests", "pending")]);
+		assert.equal(answer.isError, false, answer.text);
+		assert.equal(answer.text, "1 of 3 done");
+		await client.until("list arrives in the state", () => planOf(p)?.items.length === 3);
+		assert.deepEqual(planOf(p)!.items.map((x) => x.status), ["completed", "in_progress", "pending"]);
+
+		answer = await update(p, [item("Read the code", "completed"), item("Write the change", "completed"), item("Run the tests", "in_progress"), item("Tidy up", "pending")]);
+		assert.equal(answer.text, "2 of 4 done");
+		await client.until("list replaced", () => planOf(p)?.items.length === 4);
+		assert.equal(planOf(p)!.items[2]!.content, "Run the tests");
+
+		const refusals: [string, unknown, RegExp][] = [
+			["no items", [], /empty/],
+			["two in progress", [item("A", "in_progress"), item("B", "in_progress")], /2 items are in_progress/],
+			["too many", Array.from({ length: 21 }, (_, n) => item(`Step ${n}`, "pending")), /most allowed is 20/],
+			["bad status", [item("A", "done")], /status "done"/],
+			["empty text", [item("  ", "pending")], /no text/],
+			["too long", [item("x".repeat(200), "pending")], /200 characters/],
+		];
+		for (const [what, items, message] of refusals) {
+			answer = await update(p, items);
+			assert.ok(answer.isError && message.test(answer.text), `${what}: ${answer.text}`);
+			assert.ok(answer.text.includes("unchanged"));
+		}
+		assert.deepEqual(planOf(p)!.items.map((x) => x.content), ["Read the code", "Write the change", "Run the tests", "Tidy up"], "refused lists leave the old one in place");
+
+		// A sub-chat has a list of its own.
+		const { id: parentChat } = await client.call("conversation.create", { agentId: "atlas" });
+		await client.call("conversation.open", { id: parentChat });
+		await client.call("submit", { id: parentChat, text: "/delegate Forge: say hi" });
+		await client.until("plan delegation finished", () => {
+			const v = client.conversations.get(parentChat);
+			return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool") ? v : undefined;
+		});
+		const subChat = results(parentChat)[0]!.details?.conversationId as number;
+		assert.equal(typeof subChat, "number", JSON.stringify(results(parentChat)[0]));
+		await client.call("conversation.open", { id: subChat });
+		await client.until("sub-chat transcript", () => client.conversations.get(subChat));
+		answer = await update(parentChat, [item("Parent step", "in_progress")]);
+		assert.equal(answer.isError, false, answer.text);
+		assert.equal((await update(subChat, [item("Sub-chat step", "pending"), item("Another", "pending")])).isError, false, "the sub-chat is offered the tool too");
+		await client.until("both lists", () => planOf(subChat)?.items.length === 2 && planOf(parentChat)?.items.length === 1);
+		assert.equal(planOf(parentChat)!.items[0]!.content, "Parent step");
+		assert.equal(planOf(p)!.items.length, 4, "other conversations keep their lists");
+
+		// A fork carries the list along, and then has its own.
+		const forkedAt = client.conversations.get(p)!.items.filter((i) => i.kind === "assistant").at(-1)!;
+		const { id: forked } = await client.call("conversation.fork", { id: p, entryId: forkedAt.id });
+		await client.call("conversation.open", { id: forked });
+		await client.until("forked list", () => planOf(forked)?.items.length === 4);
+		answer = await update(forked, [item("Only in the fork", "pending")]);
+		assert.equal(answer.isError, false, answer.text);
+		await client.until("fork replaced its list", () => planOf(forked)?.items.length === 1);
+		assert.equal(planOf(p)!.items.length, 4, "the original keeps its list");
+
+		// The list survives the engine being killed and started again.
+		await sleep(1200);
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		engine = startEngine();
+		client = await Client.attach();
+		for (const id of [p, subChat]) await client.call("conversation.open", { id });
+		await client.until("lists after restart", () => planOf(p)?.items.length === 4 && planOf(subChat)?.items.length === 2);
+		assert.equal(planOf(p)!.items[3]!.content, "Tidy up");
+		assert.equal(planOf(subChat)!.items[0]!.content, "Sub-chat step");
+		step("plan: update_plan stores, replaces and refuses lists; per conversation, sub-chats included; survives kill -9");
 	}
 
 	{

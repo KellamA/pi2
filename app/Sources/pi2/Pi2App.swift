@@ -337,9 +337,14 @@ struct SidebarView: View {
                 Text(statusText).foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
                 Spacer(minLength: 4)
                 if let today = engine.usage?.today, today.cost > 0 {
-                    Text("\(today.costText) today").foregroundStyle(Theme.tx3)
-                        .lineLimit(1).truncationMode(.tail).layoutPriority(-1)
-                        .help("Spent today on models paid for by use")
+                    // The longer wording when there is room for it, the bare amount when there is not.
+                    ViewThatFits(in: .horizontal) {
+                        Text("\(today.costText) today")
+                        Text(today.costText)
+                    }
+                    .lineLimit(1)
+                    .foregroundStyle(Theme.tx3)
+                    .help("Spent today on models paid for by use")
                 }
                 Button("Browser", systemImage: "globe") { openWindow(id: "browser") }
                     .labelStyle(.iconOnly)
