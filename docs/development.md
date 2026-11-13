@@ -20,6 +20,8 @@ cd engine && npm ci
 open "app/build/pi².app"
 ```
 
+`npm ci` also runs `engine/scripts/patch-dependencies.ts`, which fixes bugs in installed dependencies that their own releases do not have yet (each patch says what and why). If a dependency update changes a patched file, the install stops with a message: check whether the fix is still needed, then update or remove its patch.
+
 This is a development build. It runs the engine from `engine/` with the Node on your `PATH`, so engine edits take effect the next time the engine starts (**Debug › Kill Engine** restarts it), and the build only works on this machine.
 
 For an app that carries its own Node and engine and can be moved:
@@ -36,7 +38,7 @@ Signed builds, the update feed and the release workflow are described in [releas
 cd engine && npm test
 ```
 
-This runs side by side the Keychain store's test, the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), the worktrees test (which makes throwaway git repositories and has an engine make and remove worktrees in them), and the end-to-end test described next.
+This runs side by side the Keychain store's test, the test that commands keep their output when the engine is busy as they exit, the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), the worktrees test (which makes throwaway git repositories and has an engine make and remove worktrees in them), and the end-to-end test described next.
 
 The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, pictures and files in messages, tools, approvals, delegation and sub-chats, reference files, computer use and the browser (each with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore. It makes the demo model type fast (`PI2_DEMO_TOKENS_PER_SECOND`); a check that needs an answer still on its way, to stop it or kill the engine in the middle of it, sends a message starting with `/slow `, which is answered at the usual pace. `npm run test:engine` runs this test alone.
 

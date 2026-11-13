@@ -71,6 +71,8 @@ if [[ "$MODE" == release ]]; then
   cp -R ../engine/src "$ENGINE/src"
   cp ../engine/package.json ../engine/package-lock.json "$ENGINE/"
   (cd "$ENGINE" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund >/dev/null 2>&1)
+  # Without install scripts, so the dependencies' own do not run; the engine's fixes to them are applied here instead.
+  "$NODE" ../engine/scripts/patch-dependencies.ts "$ENGINE" >/dev/null
   echo "$BUILD_ID" > "$ENGINE/BUILD"
   EXTRA_KEYS="<key>PI2BuildID</key><string>$BUILD_ID</string>"
   if [[ -n "${SPARKLE_PUBLIC_KEY:-}" ]]; then
