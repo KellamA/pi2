@@ -181,6 +181,11 @@ struct BrowserSettings: Codable, Equatable {
     var ask = true
 }
 
+/// Whether an agent may set schedules for itself. You approve each one before it is set.
+struct ScheduleSettings: Codable, Equatable {
+    var enabled = false
+}
+
 /// A file or folder an agent may always read, with a note on what it is for.
 struct ReferenceFile: Codable, Equatable, Identifiable {
     var path: String
@@ -209,6 +214,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var computer: ComputerSettings?
     /// Whether the agent may browse the web in pi²'s own browser.
     var browser: BrowserSettings?
+    /// Whether the agent may set schedules for itself.
+    var schedule: ScheduleSettings?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -226,6 +233,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "files": (files ?? []).map { ["path": $0.path, "note": $0.note] },
             "computer": ["enabled": computer?.enabled ?? false, "apps": computer?.apps ?? [], "ask": computer?.ask ?? true],
             "browser": ["enabled": browser?.enabled ?? false, "ask": browser?.ask ?? true],
+            "schedule": ["enabled": schedule?.enabled ?? false],
         ]
     }
 }
@@ -241,6 +249,8 @@ struct InboxItem: Codable, Equatable, Identifiable {
     let question: String?
     /// For a browser action: the site it would act on, which is what "always allow" then covers.
     var site: String? = nil
+    /// For a schedule an agent asks to set: when it would run, in words.
+    var when: String? = nil
     let title: String
     let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
@@ -305,6 +315,13 @@ struct Schedule: Codable, Equatable, Identifiable {
     var nextRunAt: Double?
     var lastRunAt: Double?
     var lastConversationId: Int?
+    /// Set when an agent made it, with your approval; nil when you did. Only the engine sets it.
+    var createdBy: Creator?
+
+    struct Creator: Codable, Equatable {
+        let agentId: String
+        let conversationId: Int
+    }
 
     func payload(isNew: Bool) -> [String: Any] {
         var result: [String: Any] = ["title": title, "agentId": agentId, "prompt": prompt, "repeat": `repeat`.payload, "enabled": enabled]

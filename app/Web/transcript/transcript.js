@@ -181,6 +181,7 @@
 		globe: ["M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13z", "M1.7 8h12.6", "M8 1.6c1.8 1.9 2.6 4 2.6 6.4S9.8 12.5 8 14.4C6.2 12.5 5.4 10.4 5.4 8S6.2 3.5 8 1.6z"],
 		list: ["M6 4h8", "M6 8h8", "M6 12h8", "M2.3 4h.6", "M2.3 8h.6", "M2.3 12h.6"],
 		memory: ["M4 1.8h8v12.4l-4-3-4 3z"],
+		clock: ["M8 14.5a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13z", "M8 4.4V8l2.5 1.6"],
 		folder: ["M1.5 4.2a1 1 0 0 1 1-1h3.6l1.6 1.6h5.8a1 1 0 0 1 1 1v6.4a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"],
 		search: ["M7 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10z", "M10.6 10.6 14 14"],
 		plug: ["M6 1.5v3", "M10 1.5v3", "M4 4.5h8v2.6a4 4 0 0 1-8 0z", "M8 11.1v3.4"],
@@ -970,8 +971,10 @@
 		const args = isObject(pending.arguments) ? pending.arguments : {};
 		const who = str(pending.agentName) || "The agent";
 		const app = pending.tool === "computer" && str(args.app) ? str(names.apps[args.app]) || str(args.app) : "";
+		const schedule = pending.tool === "schedule_task" ? T.scheduleApproval(pending) : null;
 		let request;
 		if (app) request = `${who} wants to use ${app}`;
+		else if (schedule) request = schedule.request;
 		else if (pending.tool === "bash") request = `${who} wants to run a command`;
 		else if (pending.tool === "write") request = `${who} wants to write a file`;
 		else if (pending.tool === "edit") request = `${who} wants to edit a file`;
@@ -989,9 +992,19 @@
 		card.appendChild(head);
 
 		if (approval) {
-			// A computer action is described in words by the app that will do it; a command is shown as written.
-			const summary = app ? str(pending.question) || T.callSummary(args) : T.callSummary(args);
-			card.appendChild(el(app ? "p" : "pre", app ? "card-summary words" : "card-summary", summary));
+			if (schedule) {
+				// When it would run, in the engine's words, then what each run would be told, in full: the person approves
+				// the words, and nobody may be watching when they are carried out.
+				card.appendChild(el("p", "card-summary words", schedule.when || T.callSummary(args)));
+				if (schedule.prompt) card.appendChild(el("p", "card-summary words card-prompt", schedule.prompt));
+				const caption = el("p", "card-caption", "Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it in Activity.");
+				caption.setAttribute("data-nocopy", "");
+				card.appendChild(caption);
+			} else {
+				// A computer action is described in words by the app that will do it; a command is shown as written.
+				const summary = app ? str(pending.question) || T.callSummary(args) : T.callSummary(args);
+				card.appendChild(el(app ? "p" : "pre", app ? "card-summary words" : "card-summary", summary));
+			}
 			// What a file will become, so the decision can be made from the card.
 			let change = null;
 			if (pending.tool === "edit") change = T.diffFromEdits(args);
@@ -1007,12 +1020,17 @@
 			};
 			const once = button("btn primary", null, "Allow Once");
 			once.addEventListener("click", () => decide("once"));
-			const always = button("btn", null, app ? `Always Allow in ${app}` : `Always Allow ${str(pending.tool)} Here`);
-			always.title = app ? `Stop asking about ${app} for the rest of this conversation` : `Stop asking about ${str(pending.tool)} in this conversation`;
-			always.addEventListener("click", () => decide("always"));
+			choices.appendChild(once);
+			// A schedule runs later with no one watching, so each one is a decision of its own: there is no "always".
+			if (!schedule) {
+				const always = button("btn", null, app ? `Always Allow in ${app}` : `Always Allow ${str(pending.tool)} Here`);
+				always.title = app ? `Stop asking about ${app} for the rest of this conversation` : `Stop asking about ${str(pending.tool)} in this conversation`;
+				always.addEventListener("click", () => decide("always"));
+				choices.appendChild(always);
+			}
 			const deny = button("btn danger", null, "Deny");
 			deny.addEventListener("click", () => decide("deny"));
-			choices.append(once, always, deny);
+			choices.appendChild(deny);
 			card.appendChild(choices);
 		} else {
 			card.appendChild(el("p", "card-question", str(pending.question)));

@@ -687,6 +687,7 @@ struct ToolCard: View {
         case "read": "doc.text"
         case "write", "edit": "pencil"
         case "write_document": "doc.richtext"
+        case "schedule_task", "list_schedules", "cancel_schedule": "clock"
         case "delegate": "person.2"
         case "ask_user": "questionmark.bubble"
         case "codemode": "chevron.left.forwardslash.chevron.right"

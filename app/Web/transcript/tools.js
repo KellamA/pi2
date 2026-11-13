@@ -390,6 +390,28 @@
 				glyph = "list";
 				label = [t(active ? "Updating the task list" + ELLIPSIS : "Updated the task list")];
 				break;
+			case "schedule_task": {
+				glyph = "clock";
+				// Until it is done the schedule may never exist (the person can say no), so only then is it "Scheduled".
+				const title = str(args.title).replace(/\s+/g, " ").trim();
+				const when = status === "done" && isObject(details) ? str(details.when) : "";
+				const verb = active ? "Scheduling " : status === "done" ? "Scheduled " : "Schedule ";
+				label = [t(verb), title ? muted(quoted(title)) : t("work"), ...(when ? [t(", " + when)] : []), t(dots)];
+				break;
+			}
+			case "list_schedules":
+				glyph = "clock";
+				label = [t(active ? "Listing schedules" + ELLIPSIS : "Listed schedules")];
+				break;
+			case "cancel_schedule": {
+				glyph = "clock";
+				const id = str(args.id).trim();
+				const title = status === "done" && isObject(details) ? str(details.title) : "";
+				const verb = active ? "Cancelling " : status === "done" ? "Cancelled " : "Cancel ";
+				if (title) label = [t(verb), muted(quoted(title))];
+				else label = id ? [t(verb + "schedule "), code(id), t(dots)] : [t(verb + "a schedule" + dots)];
+				break;
+			}
 			case "remember":
 			case "forget": {
 				glyph = "memory";
@@ -503,6 +525,17 @@
 				if (failed || !steps) outputSection("Output");
 				break;
 			}
+			case "schedule_task":
+				// What each run will be told, then whether it was set and when it runs.
+				if (str(args.prompt).trim() !== "") sections.push({ kind: "text", label: "Prompt", text: str(args.prompt).trim() });
+				outputSection("Result");
+				break;
+			case "list_schedules":
+				outputSection("Schedules");
+				break;
+			case "cancel_schedule":
+				outputSection("Result");
+				break;
 			default: {
 				// A single plain value is already in the row's own line; anything more is shown as it was sent.
 				const keys = Object.keys(args);
@@ -514,6 +547,22 @@
 		}
 		if (images > 0 && !sections.some((section) => section.kind === "images")) sections.unshift({ kind: "images", entry: result.id, count: images });
 		return sections;
+	}
+
+	/**
+	 * What an approval card shows for a schedule an agent wants to set: the heading ("Atlas wants to schedule “Morning
+	 * brief”"), when it would run in the engine's words, and the prompt each run would be given, in full.
+	 */
+	function scheduleApproval(pending) {
+		const item = isObject(pending) ? pending : {};
+		const args = isObject(item.arguments) ? item.arguments : {};
+		const who = str(item.agentName) || "The agent";
+		const title = str(args.title).replace(/\s+/g, " ").trim();
+		return {
+			request: title ? `${who} wants to schedule ${QUOTE_OPEN}${title}${QUOTE_CLOSE}` : `${who} wants to schedule work`,
+			when: str(item.when) || str(item.question),
+			prompt: str(args.prompt).trim(),
+		};
 	}
 
 	function extension(path) {
@@ -569,6 +618,7 @@
 		describe,
 		detailFor,
 		subagentAnswer,
+		scheduleApproval,
 		folded,
 		delegation,
 		formatBytes,

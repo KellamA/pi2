@@ -18,17 +18,31 @@ struct InboxCard: View {
     }
 
     private var isBrowser: Bool { item.tool == "browser" }
+    /// A schedule the agent wants to set for itself.
+    private var isSchedule: Bool { item.tool == "schedule_task" }
     /// For a browser action: the site it would act on, when the app could say.
     private var targetSite: String? { isBrowser ? item.site.flatMap { $0.isEmpty ? nil : $0 } : nil }
-    /// Whether the action is put in words by the app that will do it, rather than shown as the call was written.
-    private var inWords: Bool { targetApp != nil || isBrowser }
-    /// For typing into a web page: the whole text, when it is too long for the line that describes it.
-    private var longText: String? {
+    /// Whether the action is put in words by the app or the engine, rather than shown as the call was written.
+    private var inWords: Bool { targetApp != nil || isBrowser || isSchedule }
+    /// The line that says what would happen. For a schedule, when it would run: its title is in the heading and its
+    /// prompt below.
+    private var described: String {
+        if isSchedule { return item.when ?? item.question ?? item.call.summary }
+        return inWords ? (item.question ?? item.call.summary) : item.call.summary
+    }
+    /// Words to read in full before deciding: what a scheduled run would be told, or what would be typed into a web page
+    /// when it is too long for the line that describes it.
+    private var longText: (text: String, label: String)? {
+        if isSchedule, let prompt = item.arguments["prompt"]?.stringValue {
+            return (prompt.trimmingCharacters(in: .whitespacesAndNewlines), "What the agent will be told to do")
+        }
         guard isBrowser, item.arguments["action"]?.stringValue == "type", let text = item.arguments["text"]?.stringValue, text.count > 80 else { return nil }
-        return text
+        return (text, "The text to be typed")
     }
     /// What the "always" button covers, and what it says when hovered. Nil when there is nothing it could cover.
     private var always: (title: String, help: String)? {
+        // A schedule runs later with no one watching, so each one is a decision of its own.
+        if isSchedule { return nil }
         if let targetApp { return ("Always Allow in \(targetApp)", "Stop asking about \(targetApp) for the rest of this conversation") }
         if isBrowser { return targetSite.map { ("Always Allow on \($0)", "Stop asking about actions on \($0) for the rest of this conversation") } }
         return ("Always Allow \(item.tool) Here", "Stop asking about \(item.tool) in this conversation")
@@ -39,6 +53,10 @@ struct InboxCard: View {
         let who = item.agentName ?? "The agent"
         if let targetApp { return "\(who) wants to use \(targetApp)" }
         if isBrowser { return "\(who) wants to act on \(targetSite ?? "a web page")" }
+        if isSchedule {
+            let title = (item.arguments["title"]?.stringValue ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return title.isEmpty ? "\(who) wants to schedule work" : "\(who) wants to schedule “\(title)”"
+        }
         return switch item.tool {
         case "bash": "\(who) wants to run a command"
         case "write": "\(who) wants to write a file"
@@ -72,8 +90,9 @@ struct InboxCard: View {
                 Text("waits for you · survives restarts").font(.system(size: 11)).foregroundStyle(Theme.tx3)
             }
             if isApproval {
-                // An action on a window or a web page is described in words by the app that will do it; a command is shown as written.
-                Text(inWords ? (item.question ?? item.call.summary) : item.call.summary)
+                // An action on a window or a web page is described in words by the app that will do it, and a schedule
+                // by the engine; a command is shown as written.
+                Text(described)
                     .font(inWords ? .system(size: 13) : Theme.mono)
                     .foregroundStyle(Theme.tx)
                     .textSelection(.enabled)
@@ -82,9 +101,9 @@ struct InboxCard: View {
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(Color.black.opacity(0.18), in: .rect(cornerRadius: 7))
                 if let longText {
-                    // What will be typed, in full: the person approves the words, not their count.
+                    // In full: the person approves the words, not their count.
                     ScrollView {
-                        Text(longText)
+                        Text(longText.text)
                             .font(.system(size: 12.5))
                             .foregroundStyle(Theme.tx2)
                             .textSelection(.enabled)
@@ -93,7 +112,13 @@ struct InboxCard: View {
                     }
                     .frame(maxHeight: 140)
                     .background(Color.black.opacity(0.12), in: .rect(cornerRadius: 7))
-                    .accessibilityLabel("The text to be typed")
+                    .accessibilityLabel(longText.label)
+                }
+                if isSchedule {
+                    Text("Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it in Activity.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.tx3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 HStack(spacing: 8) {
                     Button("Allow Once") { decide("once") }

@@ -96,6 +96,33 @@ test("what a row opens to", () => {
 	assert.equal(failed[0].failed, true);
 });
 
+test("scheduling: one-line summaries, what a row opens to, and the approval card", () => {
+	const args = { title: "Morning  news\nbrief", prompt: " Sum up the news. ", repeat: "daily", time: "07:00" };
+	const made = { text: "Scheduled …", details: { id: "s1", title: "Morning news brief", when: "every day at 07:00" } };
+	assert.equal(line("schedule_task", args, "running"), "Scheduling “Morning news brief”…");
+	assert.equal(line("schedule_task", args, "done", made), "Scheduled “Morning news brief”, every day at 07:00");
+	// Refused or declined: nothing was scheduled, so it does not say it was.
+	assert.equal(line("schedule_task", args, "failed", { text: "declined" }), "Schedule “Morning news brief”");
+	assert.equal(line("schedule_task", {}, "preparing"), "Scheduling work…");
+	assert.equal(line("list_schedules", {}, "running"), "Listing schedules…");
+	assert.equal(line("list_schedules", {}), "Listed schedules");
+	assert.equal(line("cancel_schedule", { id: "s1" }, "done", { text: "Cancelled", details: { id: "s1", title: "Morning news brief" } }), "Cancelled “Morning news brief”");
+	assert.equal(line("cancel_schedule", { id: "s1" }, "running"), "Cancelling schedule s1…");
+	assert.equal(line("cancel_schedule", { id: "s9" }, "failed", { text: "not yours" }), "Cancel schedule s9");
+	assert.equal(line("cancel_schedule", {}), "Cancelled a schedule");
+	for (const name of ["schedule_task", "list_schedules", "cancel_schedule"]) assert.equal(T.describe(call(name, {}), "done", null, null).glyph, "clock");
+
+	const opens = T.detailFor(call("schedule_task", args), "done", made, null);
+	assert.deepEqual(opens.map((s) => [s.kind, s.label]), [["text", "Prompt"], ["text", "Result"]]);
+	assert.equal(opens[0].text, "Sum up the news.");
+	assert.deepEqual(T.detailFor(call("list_schedules", {}), "done", { text: "It is now …" }, null).map((s) => s.label), ["Schedules"]);
+
+	const pending = { kind: "approval", tool: "schedule_task", agentName: "Atlas", arguments: args, question: "Atlas wants to schedule …", when: "Every day at 07:00, first run Friday 13 November at 07:00" };
+	assert.deepEqual(T.scheduleApproval(pending), { request: "Atlas wants to schedule “Morning news brief”", when: "Every day at 07:00, first run Friday 13 November at 07:00", prompt: "Sum up the news." });
+	assert.deepEqual(T.scheduleApproval({ tool: "schedule_task", arguments: null, question: "Q" }), { request: "The agent wants to schedule work", when: "Q", prompt: "" });
+	assert.deepEqual(T.scheduleApproval(null), { request: "The agent wants to schedule work", when: "", prompt: "" });
+});
+
 test("diffs: from the result's details, and built from the edits", () => {
 	const diff = T.parseDiff(" 9 keep\n-10 old\n+10 new\n   ...\n 20 end");
 	assert.deepEqual(diff.lines.map((l) => [l.kind, l.number, l.text]), [["context", 9, "keep"], ["remove", 10, "old"], ["add", 10, "new"], ["gap", null, "…"], ["context", 20, "end"]]);
@@ -145,7 +172,7 @@ test("sizes as Finder shows them", () => {
 
 test("hostile arguments never break a summary", () => {
 	for (const args of [null, "string", 5, [], { command: 5 }, { path: {} }, { edits: [{ oldText: 1, newText: null }] }, { action: {} }]) {
-		for (const name of ["bash", "read", "write", "write_document", "edit", "computer", "delegate", "ask_user", "update_plan", "mcp__a__b", "x"]) {
+		for (const name of ["bash", "read", "write", "write_document", "edit", "computer", "delegate", "ask_user", "update_plan", "schedule_task", "list_schedules", "cancel_schedule", "mcp__a__b", "x"]) {
 			const described = T.describe(call(name, args), "done", { text: null, details: "x" }, null);
 			assert.equal(typeof described.title, "string");
 			assert.ok(Array.isArray(T.detailFor(call(name, args), "done", { text: null }, null)));

@@ -3,6 +3,7 @@
 import type { BrowserSettings } from "./browser.ts";
 import type { ComputerSettings } from "./computer.ts";
 import type { ReferenceFile } from "./reference.ts";
+import type { ScheduleSettings } from "./selfschedule.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { defineDoc } from "@earendil-works/pi-durable";
 
@@ -38,6 +39,8 @@ export type AgentProfile = {
 	computer?: ComputerSettings;
 	/** Whether the agent may browse the web in pi²'s own browser. */
 	browser?: BrowserSettings;
+	/** Whether the agent may set schedules for itself, each approved by the person. Off when absent. */
+	schedule?: ScheduleSettings;
 	createdAt: number;
 };
 
@@ -122,6 +125,8 @@ export type InboxItem = {
 	question: string | null;
 	/** For a browser action: the site it would act on, which is what "always allow" then covers. */
 	site?: string;
+	/** For a schedule an agent asks to set: when it would run, in words, such as "Every day at 07:00, first run …". */
+	when?: string;
 	createdAt: number;
 };
 
