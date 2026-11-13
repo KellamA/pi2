@@ -118,9 +118,13 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 
 ## Install
 
-There is no download yet: signed releases are set up but none has been published ([how releases are made](docs/releasing.md)). Until then, pi² builds from source in a couple of minutes.
+Download the disk image from the [latest release](https://github.com/KellamA/pi2/releases/latest), open it, and drag pi² to Applications. It needs macOS 15 or later on an Apple silicon Mac. The app is signed and notarized by Apple, and carries its own engine, so there is nothing else to install.
 
-You need macOS 15 or later, Xcode's command line tools, and Node 26 or later.
+On its second launch pi² asks whether to check for updates automatically. Updates are signed and installed in place, and running agents pick up where they were. You can change the answer in **Settings › General**, or check at any time with **pi² › Check for Updates…**.
+
+### Building from source
+
+pi² builds in a couple of minutes. You need macOS 15 or later, Xcode's command line tools, and Node 26 or later.
 
 ```bash
 git clone https://github.com/KellamA/pi2.git && cd pi2
@@ -138,7 +142,7 @@ cd engine && npm ci && cd ..
 open "app/build/pi².app"
 ```
 
-That is a development build: it runs the engine from the `engine` folder, so keep the folder where it is. For an app that carries its own engine and can be moved to Applications:
+That is a development build: it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. For an app that carries its own engine and can be moved to Applications:
 
 ```bash
 ./app/build.sh release
@@ -159,7 +163,7 @@ pi² is early. Read this before you rely on it.
 - The engine has an end-to-end test suite that runs on every change, and the transcript page has tests of its own. The rest of the app has no automated tests; it is checked by hand.
 - Subscription sign-in and computer use are the newest parts and have had the least real use.
 - A few things are built but have had little or no testing: Quick Ask and its global shortcut, the menu bar panel, notifications, and starting the engine at login.
-- Releases are set up to be signed, notarized and updated in place, but none has been published yet. Updating has only been tried against a test feed on this Mac.
+- 0.6.0 is the first published release, so no copy has yet updated itself from a real release. Updating has been tried end to end against a test feed.
 
 Known limits are listed in [docs/architecture.md](docs/architecture.md#known-limits).
 
