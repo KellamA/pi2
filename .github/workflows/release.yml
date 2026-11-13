@@ -1,0 +1,120 @@
+name: Release
+
+# Pushing a tag such as v0.7.0 builds pi², signs and notarizes it, and makes a draft GitHub release with the disk
+# image, the update archive and the update feed. Nothing reaches anyone until the draft is published by hand: installed
+# copies look for updates in the newest published release. See docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, notarize and draft the release
+    runs-on: macos-26
+    timeout-minutes: 60
+    # Secrets live in this environment, so they can be limited to tags and need an approval if you want one.
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the build number is the number of commits
+
+      - name: Check the tag
+        run: |
+          version="$(tr -d '[:space:]' < app/VERSION)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::The tag is $GITHUB_REF_NAME but app/VERSION says $version."
+            exit 1
+          fi
+          # Build numbers count commits on main, so a release from anywhere else could go backwards.
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main."
+            exit 1
+          fi
+          grep -q "^## $version\$" CHANGELOG.md || { echo "::error::CHANGELOG.md has no section for $version."; exit 1; }
+
+      # The official Node build, which only uses macOS's own libraries, so it can be copied into the app.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: engine/package-lock.json
+
+      - name: Test the engine
+        working-directory: engine
+        run: |
+          npm ci
+          npm run check
+          npm test
+
+      - name: Import the signing certificate
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -P "$DEVELOPER_ID_P12_PASSWORD" -f pkcs12 -k "$keychain" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+
+      - name: Write the notary key
+        env:
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: echo "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+
+      - name: Build, sign and notarize the app
+        working-directory: app
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: ./build.sh release
+
+      - name: Package the disk image, the update and the feed
+        working-directory: app
+        env:
+          SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+          NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: ./release.sh
+
+      - name: Check what Gatekeeper will think
+        working-directory: app
+        run: |
+          spctl --assess --type execute --verbose "build/pi².app"
+          spctl --assess --type open --context context:primary-signature --verbose build/release/pi2-*.dmg
+          xcrun stapler validate "build/pi².app"
+          xcrun stapler validate build/release/pi2-*.dmg
+
+      - name: Draft the GitHub release
+        working-directory: app/build/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "pi² ${GITHUB_REF_NAME#v}" --notes-file notes.md \
+            pi2-*.dmg pi2-*.zip appcast.xml
+
+      - name: Remove the signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8"

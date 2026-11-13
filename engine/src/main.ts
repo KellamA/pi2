@@ -7,7 +7,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
@@ -51,6 +52,16 @@ const context = BACKGROUND_CONTEXT;
 const home = process.env.PI2_HOME ?? join(homedir(), "Library", "Application Support", "pi2");
 const socketPath = join(home, "engine.sock");
 mkdirSync(home, { recursive: true });
+/** Which build of the app this engine came with: the `BUILD` file a release build writes next to `src`. A development
+ * engine has none. The app compares it with its own after an update and restarts an engine left over from before. */
+const engineMain = fileURLToPath(import.meta.url);
+const build = (() => {
+	try {
+		return readFileSync(join(dirname(engineMain), "..", "BUILD"), "utf8").trim() || null;
+	} catch {
+		return null;
+	}
+})();
 
 function log(...parts: unknown[]): void {
 	console.error("[pi2-engine]", ...parts);
@@ -631,6 +642,7 @@ const text = (params: Params, key: string): string => {
 };
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
+	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
 	"conversation.create": async (params) => {
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");

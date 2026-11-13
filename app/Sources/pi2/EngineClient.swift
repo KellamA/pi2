@@ -228,6 +228,8 @@ final class EngineClient {
                     Task { _ = try? await self.call("computer.register") }
                     // And as the one whose browser agents use.
                     Task { _ = try? await self.call("browser.register") }
+                    // After an update the engine that answered may be the one from before.
+                    Task { await self.replaceEngineFromAnotherBuild() }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.perform("conversation.open", ["id": id]) }
                 case .waiting(let error), .failed(let error):
@@ -440,6 +442,11 @@ final class EngineClient {
             return
         }
         lastLaunch = Date()
+        // When the login item starts this engine, start it through launchd, so it is still restarted after a crash.
+        if let item = EngineLoginItem.current, item.serves(home: home.path), item.arguments == [node, main],
+           EngineLoginItem.start() {
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: node)
         process.arguments = [main]
@@ -519,5 +526,70 @@ final class EngineClient {
     /// A clean stop, used when the app quits unless the person chose to keep agents running.
     func stopEngine() {
         if let pid = enginePID { kill(pid, SIGTERM) }
+    }
+
+    // MARK: - Updates
+
+    /// The build this app is, which build.sh also writes into the engine's `BUILD` file. Nil in a development build.
+    static var buildID: String? { Bundle.main.object(forInfoDictionaryKey: "PI2BuildID") as? String }
+    /// Whether the engine was already replaced in this run of the app, so a mismatch a restart cannot fix never loops.
+    private var replacedEngine = false
+
+    /// The engine outlives the app when agents are kept running or it starts at login, so after an update (or after
+    /// the app was moved) the engine that answers may be the one from before. Ask which build it is; if it is not this
+    /// app's, stop it cleanly and start this app's. Runs pick up where they stopped.
+    private func replaceEngineFromAnotherBuild() async {
+        guard Self.isSelfContained, !replacedEngine, let (node, main) = Self.enginePaths else { return }
+        // An engine from before this check does not know the method, which makes it just as much from another build.
+        let info = try? await call("engine.info")
+        if let info, info["build"]?.stringValue == Self.buildID, info["main"]?.stringValue == main { return }
+        replacedEngine = true
+        note("replacing an engine from build \(info?["build"]?.stringValue ?? "unknown") with \(Self.buildID ?? "unknown")")
+        holdEngine = true
+        defer {
+            holdEngine = false
+            lastLaunch = .distantPast
+        }
+        stopEngine()
+        // A clean stop waits for the engine to close its storage. Past that, a hard stop is safe: reopening recovers.
+        for _ in 0..<150 where enginePID != nil { try? await Task.sleep(for: .milliseconds(100)) }
+        if let pid = enginePID {
+            kill(pid, SIGKILL)
+            for _ in 0..<20 where enginePID != nil { try? await Task.sleep(for: .milliseconds(100)) }
+        }
+        // A login item for this data folder may still name the old copy of the app; point it at this one.
+        if let item = EngineLoginItem.current, item.serves(home: home.path), item.arguments != [node, main] {
+            EngineLoginItem.remove()
+            do {
+                try EngineLoginItem.install(node: node, main: main, home: home.path)
+            } catch {
+                lastError = "Could not update the login item: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Called just before an update replaces the app. Stops the engine cleanly, so it is not left running from files
+    /// that are being swapped out, and keeps it stopped while this copy of the app quits. If agents should keep
+    /// running without the app, the new engine is started a little later, once the new app is in place; if the new
+    /// app opens first, it starts the engine itself and the late start finds it running and exits.
+    func prepareForUpdate() {
+        holdEngine = true
+        stopEngine()
+        let deadline = Date().addingTimeInterval(10)
+        while enginePID != nil, Date() < deadline { usleep(100_000) }
+        if let pid = enginePID { kill(pid, SIGKILL) }
+        let loginItem = EngineLoginItem.current?.serves(home: home.path) == true
+        guard loginItem || UserDefaults.standard.bool(forKey: BackgroundSettings.keepEngineKey),
+              let (node, main) = Self.enginePaths else { return }
+        let later = Process()
+        later.executableURL = URL(fileURLWithPath: "/bin/sh")
+        later.arguments = loginItem
+            ? ["-c", "sleep 20; exec /bin/launchctl kickstart \"gui/$(id -u)/$0\"", EngineLoginItem.label]
+            : ["-c", "sleep 20; exec \"$0\" \"$1\" >> \"$2\" 2>&1", node, main, home.appendingPathComponent("engine.log").path]
+        later.environment = ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path]) { _, new in new }
+        later.standardInput = FileHandle.nullDevice
+        later.standardOutput = FileHandle.nullDevice
+        later.standardError = FileHandle.nullDevice
+        try? later.run()
     }
 }
