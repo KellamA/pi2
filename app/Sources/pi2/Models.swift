@@ -345,6 +345,37 @@ struct ConversationState: Codable, Equatable {
     let context: ContextSize
     let compacting: Bool
     let compactionError: String?
+    /// The agent's task list; nil when it keeps none.
+    let plan: TaskList?
+}
+
+/// The task list an agent keeps for a conversation (`update_plan`). `updatedAt` tells one version of it from the next.
+struct TaskList: Codable, Equatable {
+    let items: [TaskItem]
+    let updatedAt: Double
+
+    var doneCount: Int { items.filter { $0.state == .completed }.count }
+    var isFinished: Bool { !items.isEmpty && doneCount == items.count }
+    /// The step in hand, or the next one waiting.
+    var current: TaskItem? { items.first { $0.state == .inProgress } ?? items.first { $0.state == .pending } }
+}
+
+struct TaskItem: Codable, Equatable {
+    enum Step { case pending, inProgress, completed
+
+        var words: String {
+            switch self {
+            case .pending: "to do"
+            case .inProgress: "in progress"
+            case .completed: "done"
+            }
+        }
+    }
+
+    let content: String
+    let status: String
+
+    var state: Step { status == "completed" ? .completed : (status == "in_progress" ? .inProgress : .pending) }
 }
 
 struct Spend: Codable, Equatable {

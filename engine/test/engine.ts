@@ -876,6 +876,7 @@ try {
 			return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool") ? v : undefined;
 		});
 		const subChat = results(parentChat)[0]!.details?.conversationId as number;
+		assert.equal(typeof subChat, "number", JSON.stringify(results(parentChat)[0]));
 		await client.call("conversation.open", { id: subChat });
 		await client.until("sub-chat transcript", () => client.conversations.get(subChat));
 		answer = await update(parentChat, [item("Parent step", "in_progress")]);
@@ -884,6 +885,16 @@ try {
 		await client.until("both lists", () => planOf(subChat)?.items.length === 2 && planOf(parentChat)?.items.length === 1);
 		assert.equal(planOf(parentChat)!.items[0]!.content, "Parent step");
 		assert.equal(planOf(p)!.items.length, 4, "other conversations keep their lists");
+
+		// A fork carries the list along, and then has its own.
+		const forkedAt = client.conversations.get(p)!.items.filter((i) => i.kind === "assistant").at(-1)!;
+		const { id: forked } = await client.call("conversation.fork", { id: p, entryId: forkedAt.id });
+		await client.call("conversation.open", { id: forked });
+		await client.until("forked list", () => planOf(forked)?.items.length === 4);
+		answer = await update(forked, [item("Only in the fork", "pending")]);
+		assert.equal(answer.isError, false, answer.text);
+		await client.until("fork replaced its list", () => planOf(forked)?.items.length === 1);
+		assert.equal(planOf(p)!.items.length, 4, "the original keeps its list");
 
 		// The list survives the engine being killed and started again.
 		await sleep(1200);
