@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node test/credentials.ts && node test/engine.ts",
+    "test:browser": "node test/browser.ts",
     "start": "node src/main.ts",
     "check": "tsc --noEmit"
   },
