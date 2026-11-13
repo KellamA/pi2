@@ -146,7 +146,7 @@ struct PaneLayout: Identifiable, Sendable {
 final class Workspace {
     static let maxPanes = 16
     /// The coordinate space pane frames are measured in.
-    static let space = "pi2.workspace"
+    nonisolated static let space = "pi2.workspace"
     private static let key = "workspace.layout"
 
     private(set) var root: PaneNode
