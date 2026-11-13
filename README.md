@@ -100,6 +100,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Memory**: switch it on for an agent and it keeps short notes between conversations, which you can read, edit and delete in its settings. [How both work](docs/knowledge.md).
 - **Looking around**: agents can list, find and search files in their folder without the shell, and fetch a page or search the web without the browser, even on a schedule with the app closed. [The look tools](docs/look.md).
 - **A task list**: for work with several steps, the agent keeps a checklist pinned above the message field, so you can see the plan and where it stands.
+- **Documents**: ask for a report or a letter and the agent can write it as a Word, RTF, OpenDocument or HTML file. [What survives the conversion](docs/documents.md).
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent.
 - **Scripts**: let a model chain many tool calls in one step.
