@@ -10,6 +10,7 @@ import type { Host } from "./extensions.ts";
 import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
+import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits } from "./limits.ts";
 import { look } from "./look.ts";
@@ -51,4 +52,4 @@ export type FeatureParts = {
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
-export const FEATURES: Feature[] = [plan, knowledge, look, limits];
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits];

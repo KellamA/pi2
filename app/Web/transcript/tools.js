@@ -337,6 +337,12 @@
 				}
 				break;
 			}
+			case "write_document": {
+				glyph = "file";
+				const file = basename(args.path);
+				label = file ? [t(active ? "Writing " : "Wrote "), name(file), t(dots)] : [t(active ? "Writing a document" + ELLIPSIS : "Wrote a document")];
+				break;
+			}
 			case "edit": {
 				glyph = "pencil";
 				const file = basename(args.path);
@@ -466,6 +472,11 @@
 				break;
 			case "write":
 				if (typeof args.content === "string") sections.push({ kind: "text", label: str(args.path) || "File", text: args.content, language: extension(args.path) });
+				if (failed) outputSection("Result");
+				break;
+			case "write_document":
+				// The Markdown as the agent wrote it, not the arguments with its line breaks escaped.
+				if (typeof args.markdown === "string") sections.push({ kind: "text", label: str(args.path) || "Document", text: args.markdown, language: "md" });
 				if (failed) outputSection("Result");
 				break;
 			case "edit": {
