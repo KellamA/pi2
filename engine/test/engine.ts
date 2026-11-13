@@ -888,7 +888,7 @@ try {
 		assert.ok(!/hidden|outside|image\.bin/.test(searched.text.replace(/\(Not searched.*\)/, "")), "heavy places, linked files and binary files are not searched");
 		assert.match(searched.text, /\(Not searched: 1 binary files\)/);
 		assert.match((await looked(lk, "search_files", { query: "needle", glob: "**/*.ts" })).text, /^1 match in 1 file/);
-		assert.match((await looked(lk, "search_files", { query: "ne+dle \\w+", regex: true })).text, /^2 matches/);
+		assert.match((await looked(lk, "search_files", { query: "ne+dle \\w+", regex: true, ignoreCase: true })).text, /^2 matches/);
 		assert.equal((await looked(lk, "search_files", { query: "(", regex: true })).isError, true);
 		assert.match((await looked(lk, "search_files", { query: "zzz-nothing" })).text, /^No matches in/);
 		const hits = await looked(lk, "search_files", { query: "cap-me", path: "hits" });

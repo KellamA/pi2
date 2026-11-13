@@ -317,19 +317,20 @@ export async function searchFiles(
 			for (let i = 0; i < lines.length; i++) {
 				const at = find(lines[i]!);
 				if (at < 0) continue;
-				if (total >= SEARCH_TOTAL) {
-					capped = true;
-					return false;
-				}
 				group ??= { path: inRoot, lines: [], extra: 0 };
 				if (group.lines.length >= SEARCH_PER_FILE) {
 					group.extra++;
 					continue;
 				}
+				if (total >= SEARCH_TOTAL) {
+					capped = true;
+					break;
+				}
 				total++;
 				group.lines.push(`  ${i + 1}: ${clip(lines[i]!.replace(/\r$/, ""), at)}`);
 			}
-			if (group !== undefined) groups.push(group);
+			if (group !== undefined && group.lines.length > 0) groups.push(group);
+			if (capped) return false;
 		},
 		limits,
 	);
