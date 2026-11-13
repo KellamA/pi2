@@ -1142,6 +1142,100 @@ try {
 	}
 
 	{
+		// documents (engine/src/documents.ts)
+		const folder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-")));
+		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-outside-")));
+		const { id: dc } = await client.call("conversation.create");
+		await client.call("conversation.open", { id: dc });
+		let docCalls = 0;
+		const document = async (args: Record<string, unknown>) => {
+			docCalls++;
+			await client.call("submit", { id: dc, text: `/tool write_document ${JSON.stringify(args)}` });
+			await settled(dc, docCalls);
+			return toolResults(dc).at(-1)! as any;
+		};
+		const SENTENCE = "The quarterly numbers are in and they are good.";
+		const markdown = `# Quarterly report\n\n${SENTENCE}\n\n| Item | Count |\n|---|---|\n| Apples | 3 |\n`;
+		const asText = (name: string) => execFileSync("/usr/bin/textutil", ["-convert", "txt", "-stdout", join(folder, name)], { encoding: "utf8" });
+
+		// Without write access the tool is not there, and nothing is written.
+		for (const access of ["none", "read"]) {
+			await client.call("conversation.configure", { id: dc, access, cwd: folder });
+			await client.until(`documents ${access}`, () => client.conversations.get(dc)!.state.agent.cwd === folder && client.conversations.get(dc)!.state.agent.access === access);
+			const refused = await document({ path: "no.docx", markdown });
+			assert.equal(refused.isError, true, `write_document is not offered with ${access} access`);
+			assert.ok(!existsSync(join(folder, "no.docx")));
+		}
+
+		// Under "ask" it waits for the person, as write does.
+		await client.call("conversation.configure", { id: dc, access: "ask", cwd: folder });
+		await client.until("documents ask", () => client.conversations.get(dc)!.state.agent.access === "ask");
+		await client.call("submit", { id: dc, text: `/tool write_document ${JSON.stringify({ path: "report.docx", markdown })}` });
+		docCalls++;
+		let ask = await client.until("approval to write a document", () => client.inbox.find((i) => i.conversationId === dc));
+		assert.equal(ask.kind, "approval");
+		assert.equal(ask.tool, "write_document");
+		assert.equal((ask as any).arguments.path, "report.docx");
+		await sleep(500);
+		assert.equal(toolResults(dc).length, docCalls - 1, "nothing runs before the decision");
+		assert.ok(!existsSync(join(folder, "report.docx")));
+		await client.call("inbox.decide", { id: ask.id, decision: "deny" });
+		await settled(dc, docCalls);
+		assert.ok(toolResults(dc).at(-1)!.isError && /declined/.test(toolResults(dc).at(-1)!.text));
+		assert.ok(!existsSync(join(folder, "report.docx")), "a denied document is not written");
+
+		await client.call("submit", { id: dc, text: `/tool write_document ${JSON.stringify({ path: "report.docx", markdown })}` });
+		docCalls++;
+		ask = await client.until("second approval to write a document", () => client.inbox.find((i) => i.conversationId === dc));
+		await client.call("inbox.decide", { id: ask.id, decision: "once" });
+		await settled(dc, docCalls);
+		const made = toolResults(dc).at(-1)! as any;
+		assert.equal(made.isError, false, made.text);
+		assert.match(made.text, /^Wrote report\.docx \(Word document\)/);
+		assert.equal(readFileSync(join(folder, "report.docx")).subarray(0, 2).toString(), "PK", "a real Word file, not Markdown");
+		const plain = asText("report.docx");
+		assert.ok(plain.includes("Quarterly report") && plain.includes(SENTENCE) && plain.includes("Apples"), plain);
+		assert.ok(!plain.includes("#") && !plain.includes("|---"), "the Markdown marks are gone");
+		assert.equal(client.inbox.length, 0);
+
+		// "Always allow" covers the tool for this conversation, as it does for write.
+		await client.call("submit", { id: dc, text: `/tool write_document ${JSON.stringify({ path: "second.html", markdown: "# Second" })}` });
+		docCalls++;
+		ask = await client.until("approval before always", () => client.inbox.find((i) => i.conversationId === dc));
+		await client.call("inbox.decide", { id: ask.id, decision: "always" });
+		await settled(dc, docCalls);
+		assert.ok(existsSync(join(folder, "second.html")));
+		assert.equal((await document({ path: "third.rtf", markdown: "# Third" })).isError, false, "no second question after always");
+		assert.equal(client.inbox.length, 0);
+		assert.equal(readFileSync(join(folder, "third.rtf")).subarray(0, 5).toString(), "{\\rtf");
+
+		// Refusals, with full access so that nothing waits.
+		await client.call("conversation.configure", { id: dc, access: "full" });
+		await client.until("documents full", () => client.conversations.get(dc)!.state.agent.access === "full");
+		const refusedBy = async (args: Record<string, unknown>, pattern: RegExp) => {
+			const result = await document(args);
+			assert.equal(result.isError, true, `${JSON.stringify(args).slice(0, 60)} should be refused`);
+			assert.match(result.text, pattern);
+		};
+		await refusedBy({ path: "../outside.docx", markdown }, /outside this conversation's folder/);
+		await refusedBy({ path: join(elsewhere, "outside.docx"), markdown }, /outside this conversation's folder/);
+		await refusedBy({ path: "notes.txt", markdown }, /\.docx \(Word\), \.rtf, \.odt \(OpenDocument\) and \.html/);
+		await refusedBy({ path: "report.pdf", markdown }, /PDF is not offered.*\.docx/);
+		await refusedBy({ path: "report.docx", markdown: "# Different" }, /already exists.*overwrite: true/);
+		assert.ok(asText("report.docx").includes(SENTENCE), "the existing file was left alone");
+		assert.deepEqual(readdirSync(elsewhere), [], "nothing was written outside the folder");
+		const replaced = await document({ path: "report.docx", markdown: "# Different\n\nReplaced text.", overwrite: true });
+		assert.equal(replaced.isError, false, replaced.text);
+		assert.ok(asText("report.docx").includes("Replaced text.") && !asText("report.docx").includes(SENTENCE));
+		assert.deepEqual(readdirSync(folder).sort(), ["report.docx", "second.html", "third.rtf"]);
+		assert.equal(client.inbox.length, 0);
+
+		rmSync(folder, { recursive: true, force: true });
+		rmSync(elsewhere, { recursive: true, force: true });
+		step("documents: write_document only with write access; under ask it waits for approval (deny writes nothing, always covers the conversation); a .docx is a real Word file; refuses other folders, other formats, PDF and overwriting");
+	}
+
+	{
 		// limits (engine/src/limits.ts)
 		const L = await import("../src/limits.ts");
 		const { KeychainCredentialStore } = await import("../src/credentials.ts");

@@ -43,7 +43,19 @@ struct InboxCard: View {
         case "bash": "\(who) wants to run a command"
         case "write": "\(who) wants to write a file"
         case "edit": "\(who) wants to edit a file"
+        case "write_document": "\(who) wants to write \(documentKind)"
         default: "\(who) wants to use \(item.tool)"
+        }
+    }
+
+    /// What a document written by the agent is, from the ending of the file name it chose: the file itself is shown below.
+    private var documentKind: String {
+        switch (item.arguments["path"]?.stringValue ?? "").split(separator: ".").last?.lowercased() {
+        case "docx": "a Word document"
+        case "rtf": "an RTF document"
+        case "odt": "an OpenDocument file"
+        case "html": "an HTML page"
+        default: "a document"
         }
     }
 
