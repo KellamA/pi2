@@ -45,13 +45,13 @@ import { validateReferenceFiles } from "./reference.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
 import { type CommandRule, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
+import { socketPathFor } from "./socket.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
 const home = process.env.PI2_HOME ?? join(homedir(), "Library", "Application Support", "pi2");
-const socketPath = join(home, "engine.sock");
 mkdirSync(home, { recursive: true });
 /** Which build of the app this engine came with: the `BUILD` file a release build writes next to `src`. A development
  * engine has none. The app compares it with its own after an update and restarts an engine left over from before. */
@@ -78,6 +78,14 @@ process.on("unhandledRejection", (reason) => {
 	log("fatal: unhandled rejection", reason instanceof Error ? (reason.stack ?? reason) : reason);
 	process.exit(1);
 });
+const socketPath = (() => {
+	try {
+		return socketPathFor(home);
+	} catch (error) {
+		log("fatal: no socket path for", home, error instanceof Error ? error.message : error);
+		process.exit(1);
+	}
+})();
 
 // One process writes a storage at a time. If an engine already answers on the socket, this one must not start.
 const alreadyRunning = await new Promise<boolean>((resolve) => {
