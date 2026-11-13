@@ -22,7 +22,7 @@ A subscription whose provider does not report its limits says so in one line. Wh
 pi² learns them two ways:
 
 - **From the answers it already gets.** Some providers put the figures in the headers (or, for Codex over a WebSocket, an event) of every answer to a subscription request. pi² reads them as they pass. This costs nothing and is what the providers' own clients rely on.
-- **By asking.** Some providers have a usage address that answers for the signed-in account. pi² asks it when you press the button, when you sign in, when the engine starts and the last reading is more than 10 minutes old, and about 15 seconds after a run on that subscription if the answers did not carry the figures. It asks each provider at most about once a minute, and after a "too many requests" answer it leaves that provider alone for at least five minutes (longer if the provider says so).
+- **By asking.** Some providers have a usage address that answers for the signed-in account. pi² asks it when you press the button, when you open **Usage** and the last check was more than an hour ago, when you sign in, when the engine starts and the last reading is more than 10 minutes old, and about 15 seconds after a run on that subscription if the answers did not carry the figures. It asks each provider at most about once a minute, and after a "too many requests" answer it leaves that provider alone for at least five minutes (longer if the provider says so).
 
 The token for asking comes from pi-ai's own sign-in handling, which renews it when it is about to expire and stores the renewed one. It is only ever sent to that provider's usage address (redirects are refused), and it is never written to a log, an error message, the app or `limits.json`.
 
