@@ -529,26 +529,28 @@ const SANS = `Arial, Helvetica, sans-serif`;
 const MONO = `"Courier New", Courier, monospace`;
 
 // Written for textutil's reader as much as for a browser: sizes in points, and only what both understand.
+// Text is left at the default colour; only text on a shaded background is given one, so it stays readable on
+// that shade whatever the viewer's own colours are.
 const STYLE = `
-body { font-family: ${SANS}; font-size: 11pt; line-height: 1.35; color: #1a1a1a; }
+body { font-family: ${SANS}; font-size: 11pt; line-height: 1.35; }
 p { margin: 0 0 8pt 0; }
-h1, h2, h3, h4, h5, h6 { font-family: ${SANS}; font-weight: bold; color: #111111; margin: 16pt 0 6pt 0; }
+h1, h2, h3, h4, h5, h6 { font-family: ${SANS}; font-weight: bold; margin: 16pt 0 6pt 0; }
 h1 { font-size: 22pt; }
 h2 { font-size: 17pt; }
 h3 { font-size: 14pt; }
 h4 { font-size: 12pt; }
 h5 { font-size: 11pt; }
-h6 { font-size: 11pt; color: #555555; }
+h6 { font-size: 11pt; font-style: italic; }
 code { font-family: ${MONO}; font-size: 10pt; }
-pre { font-family: ${MONO}; font-size: 9.5pt; line-height: 1.25; background-color: #f2f2f2; margin: 0 0 10pt 0; padding: 6pt; }
+pre { font-family: ${MONO}; font-size: 9.5pt; line-height: 1.25; background-color: #f2f2f2; color: #111111; margin: 0 0 10pt 0; padding: 6pt; }
 pre code { font-size: 9.5pt; }
 ul, ol { margin: 0 0 8pt 0; }
 li { margin: 0 0 2pt 0; }
-blockquote { margin: 0 0 8pt 18pt; padding-left: 8pt; color: #555555; }
-blockquote p { margin: 0 0 8pt 18pt; color: #555555; }
+blockquote { margin: 0 0 8pt 18pt; padding-left: 8pt; font-style: italic; }
+blockquote p { margin: 0 0 8pt 18pt; font-style: italic; }
 table { border-collapse: collapse; margin: 0 0 10pt 0; }
 th, td { border: 1px solid #999999; padding: 4pt 6pt; vertical-align: top; }
-th { background-color: #e6e6e6; font-weight: bold; }
+th { background-color: #e6e6e6; color: #111111; font-weight: bold; }
 hr { border: 0; border-top: 1px solid #999999; margin: 12pt 0; }
 a { color: #0b57d0; }
 `;
