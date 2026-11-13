@@ -8,6 +8,9 @@ What changed in each version, newest first.
 - **Worktrees.** A conversation in a git repository can move into a worktree of its own, on a new branch, so several agents can change one project at once. An agent can be set to start every conversation in one. Removing a worktree takes the conversation back to where it was and keeps a branch with unmerged work. See [docs/worktrees.md](docs/worktrees.md).
 - **Branch tracker.** Each conversation working in a git repository shows its branch next to it in the sidebar and in its toolbar: a plain icon for the main checkout, a boxed one for a worktree, coloured by how the branch stands (changes, commits to push or merge, merged, conflicts). Branches in the sidebar lists them all by repository.
 
+### Fixed
+- After saving one of the starter agents, Save and Revert stayed lit and New Conversation stayed off, because saving fills in settings the starters were made without. The agent page now compares an agent as it would be saved.
+
 ## 0.6.0
 
 ### Added
