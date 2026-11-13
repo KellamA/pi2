@@ -431,7 +431,7 @@ export function htmlToText(source: string, base: string): { title: string; text:
 			if (!closing && out !== "" && !out.endsWith("\n")) out += " | ";
 		} else if (name === "img") {
 			const alt = attribute(attributes, "alt")?.trim();
-			if (alt) add(`[image: ${alt}] `);
+			if (alt) add(` [image: ${alt}] `);
 		} else if (name === "a") {
 			if (closing) {
 				if (link !== undefined) {

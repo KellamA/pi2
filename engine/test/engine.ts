@@ -831,6 +831,108 @@ try {
 
 	{
 		// look (engine/src/look.ts)
+		const { symlinkSync } = await import("node:fs");
+		const tree = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-")));
+		const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-outside-")));
+		writeFileSync(join(outside, "secret.txt"), "needle outside\n");
+		mkdirSync(join(tree, "src", "deep"), { recursive: true });
+		mkdirSync(join(tree, "node_modules", "pkg"), { recursive: true });
+		mkdirSync(join(tree, "many"));
+		mkdirSync(join(tree, "hits"));
+		writeFileSync(join(tree, "src", "app.ts"), "export const a = 1;\n// needle one\n");
+		writeFileSync(join(tree, "src", "deep", "test_b.py"), "print('Needle two')\n");
+		writeFileSync(join(tree, "node_modules", "pkg", "x.ts"), "needle hidden\n");
+		writeFileSync(join(tree, "image.bin"), Buffer.from([0, 1, 2, 110, 101, 101, 100, 108, 101]));
+		writeFileSync(join(tree, "README.md"), "hello\n");
+		for (let i = 0; i < 320; i++) writeFileSync(join(tree, "many", `f${String(i).padStart(3, "0")}.txt`), "");
+		for (let i = 0; i < 12; i++) writeFileSync(join(tree, "hits", `h${i}.txt`), Array.from({ length: 12 }, (_, n) => `line ${n} cap-me`).join("\n"));
+		symlinkSync(outside, join(tree, "link-out"));
+		symlinkSync(join(outside, "secret.txt"), join(tree, "link-file.txt"));
+
+		const { id: lk } = await client.call("conversation.create");
+		await client.call("conversation.open", { id: lk });
+		let lookCalls = 0;
+		const looked = async (id: number, name: string, args: Record<string, unknown>) => {
+			lookCalls++;
+			await client.call("submit", { id, text: `/tool ${name} ${JSON.stringify(args)}` });
+			await settled(id, id === lk ? lookCalls : toolResults(id).length + 1);
+			return toolResults(id).at(-1)! as any;
+		};
+		for (const name of ["list_files", "find_files", "search_files"]) {
+			assert.equal((await looked(lk, name, { pattern: "x", query: "x" })).isError, true, `${name} is not offered with tools off`);
+		}
+		await client.call("conversation.configure", { id: lk, access: "read", cwd: tree });
+		await client.until("look folder", () => client.conversations.get(lk)!.state.agent.cwd === tree);
+
+		const listed = await looked(lk, "list_files", {});
+		assert.equal(listed.isError, false, listed.text);
+		assert.ok(listed.text.indexOf("many/") < listed.text.indexOf("README.md") && listed.text.includes("README.md  6 B") && listed.text.includes("src/"), listed.text);
+		assert.ok(!listed.text.includes("node_modules/") && listed.text.includes("Left out by default: node_modules"), "heavy places are left out and the listing says so");
+		assert.ok(listed.text.includes("link-out  (link, not followed)"));
+		const many = await looked(lk, "list_files", { path: "many" });
+		assert.match(many.text, /^many\/ : 320 entries\nf000\.txt/);
+		assert.match(many.text, /… and 20 more not shown/, "the listing is capped and says so");
+		assert.equal((await looked(lk, "list_files", { path: "src/deep/.." })).isError, false);
+		assert.equal((await looked(lk, "list_files", { path: "src/app.ts" })).isError, true, "a file is not a folder");
+
+		const found = await looked(lk, "find_files", { pattern: "**/*.{ts,py}" });
+		assert.equal(found.isError, false, found.text);
+		assert.ok(found.text.startsWith("2 files match") && found.text.includes("src/app.ts") && found.text.includes("src/deep/test_b.py") && !found.text.includes("x.ts"), found.text);
+		assert.ok(!found.text.includes("secret"), "a link out of the folder is not followed");
+		assert.match((await looked(lk, "find_files", { pattern: "*.txt", path: "many" })).text, /… and 120 more not shown/, "find is capped and says so");
+		assert.match((await looked(lk, "find_files", { pattern: "test_*.py", path: "src" })).text, /^1 file matches/);
+
+		const searched = await looked(lk, "search_files", { query: "needle", ignoreCase: true });
+		assert.equal(searched.isError, false, searched.text);
+		assert.ok(searched.text.startsWith("2 matches in 2 files") && searched.text.includes("src/app.ts\n  2: // needle one") && searched.text.includes("src/deep/test_b.py\n  1: print('Needle two')"), searched.text);
+		assert.ok(!/hidden|outside|image\.bin/.test(searched.text.replace(/\(Not searched.*\)/, "")), "heavy places, linked files and binary files are not searched");
+		assert.match(searched.text, /\(Not searched: 1 binary files\)/);
+		assert.match((await looked(lk, "search_files", { query: "needle", glob: "**/*.ts" })).text, /^1 match in 1 file/);
+		assert.match((await looked(lk, "search_files", { query: "ne+dle \\w+", regex: true })).text, /^2 matches/);
+		assert.equal((await looked(lk, "search_files", { query: "(", regex: true })).isError, true);
+		assert.match((await looked(lk, "search_files", { query: "zzz-nothing" })).text, /^No matches in/);
+		const hits = await looked(lk, "search_files", { query: "cap-me", path: "hits" });
+		assert.match(hits.text, /… 2 more in this file/, "per file cap");
+		assert.match(hits.text, /Stopped at 100 matches/, "total cap");
+		assert.equal(hits.text.split("\n").filter((l: string) => /^  \d+: /.test(l)).length, 100);
+
+		for (const path of ["..", "../../..", outside, join(outside, "secret.txt"), "link-out", "link-out/secret.txt", "link-file.txt"]) {
+			for (const [name, args] of [["list_files", { path }], ["find_files", { pattern: "*", path }], ["search_files", { query: "needle", path }]] as const) {
+				const refused = await looked(lk, name, args);
+				assert.ok(refused.isError && /outside this conversation's folder/.test(refused.text) && !refused.text.includes("needle outside"), `${name} ${path}: ${refused.text}`);
+			}
+		}
+		assert.equal(client.inbox.length, 0, "looking is never asked about");
+
+		// The web: offered only with the agent's browser switched on, and only public pages.
+		const webTools = ["web_fetch", "web_search"];
+		await client.call("agents.save", { agent: { id: custom, name: "Quill", access: "read", browser: { enabled: false } } });
+		await client.until("web off", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.enabled === false);
+		const { id: lw } = await client.call("conversation.create", { agentId: custom });
+		await client.call("conversation.open", { id: lw });
+		for (const name of webTools) assert.equal((await looked(lw, name, { url: "https://example.com/", query: "x" })).isError, true, `${name} is not offered without the browser switch`);
+		assert.equal((await looked(lw, "list_files", {})).isError, false, "the agent's access reaches the file tools");
+		await client.call("agents.save", { agent: { id: custom, name: "Quill", browser: { enabled: true } } });
+		await client.until("web on", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.enabled === true);
+		const refusedAddresses: [string, RegExp][] = [
+			["http://127.0.0.1:8080/", /off limits/],
+			["http://localhost/", /off limits/],
+			["http://169.254.169.254/latest/meta-data/", /off limits/],
+			["http://192.168.1.1/admin", /off limits/],
+			["http://[::1]/", /off limits/],
+			["file:///etc/passwd", /http and https/],
+			["ftp://example.com/x", /http and https/],
+			["javascript:alert(1)", /http and https|not a web address/],
+		];
+		for (const [url, why] of refusedAddresses) {
+			const refused = await looked(lw, "web_fetch", { url });
+			assert.ok(refused.isError && why.test(refused.text), `${url}: ${refused.text}`);
+		}
+		assert.equal((await looked(lw, "web_search", { query: "" })).isError, true);
+		assert.equal(client.inbox.length, 0, "reading the web is never asked about");
+		await client.call("agents.save", { agent: { id: custom, name: "Quill", browser: { enabled: false } } });
+		await client.until("web off again", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.enabled === false);
+		step("look: file tools only with tool access, inside the folder, never through a link, capped; web tools only with the browser switch, public addresses only");
 	}
 
 	{

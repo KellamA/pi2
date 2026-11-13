@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node test/credentials.ts && node test/engine.ts",
+    "test": "node test/credentials.ts && node test/look.ts && node test/engine.ts",
+    "test:look": "node test/look.ts",
     "test:browser": "node test/browser.ts",
     "start": "node src/main.ts",
     "check": "tsc --noEmit"
