@@ -40,6 +40,8 @@ class Client {
 	providers: { id: string; kind: string; status: unknown; oauth: { subscription: boolean } | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	/** As the app does for computer use: what the engine asked this client to do on screen, and how it answers. */
+	/** The latest event of each kind not handled above. */
+	events: Record<string, any> = {};
 	computerRequests: any[] = [];
 	computerReply: ((request: any) => Record<string, unknown> | undefined) | undefined;
 	/** The same for the browser: what the engine asked this client to do in a web page, and how it answers. */
@@ -101,6 +103,9 @@ class Client {
 			conv.items.push(...message.items);
 			conv.state = message.state;
 			this.conversations.set(message.id, conv);
+		} else if (typeof message.event === "string") {
+			// Any other event: kept by name, for features that send their own.
+			this.events[message.event] = message;
 		} else if (message.id !== undefined && message.id !== null) {
 			const reply = this.#replies.get(message.id);
 			this.#replies.delete(message.id);
@@ -813,6 +818,24 @@ try {
 	await client.until("browser off", () => (client.agents.find((x) => x.id === custom) as any)?.browser?.enabled === false);
 	assert.equal((await browse({ action: "read" })).isError, true, "switched off, the tool is taken away from the conversation");
 	step("browser: public http(s) pages only; looks and follows links without asking; asks before buttons, typing and uploads, site by site; uploads only what it may read; survives the app closing");
+
+	// ---- Features in files of their own (engine/src/features.ts). Each adds its test step inside its own braces
+	// below, and nowhere else in this file.
+	{
+		// plan (engine/src/plan.ts)
+	}
+
+	{
+		// knowledge (engine/src/knowledge.ts)
+	}
+
+	{
+		// look (engine/src/look.ts)
+	}
+
+	{
+		// limits (engine/src/limits.ts)
+	}
 
 	// ---- Schedules
 	const { nextRun } = await import("../src/schedules.ts");

@@ -66,6 +66,7 @@ struct ChatView: View {
                 .panel(fill: stopped ? Theme.panel : Theme.bad.opacity(0.08), border: stopped ? Theme.line : Theme.bad.opacity(0.35))
                 .padding(.horizontal, 28).padding(.top, 8)
             }
+            PlanStrip(engine: engine, id: id, state: state)
             queue
             composer
         }

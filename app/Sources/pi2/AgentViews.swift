@@ -178,6 +178,8 @@ struct AgentEditor: View {
                     Text("The agent sees this list in every conversation and opens a file when it needs it, so files cost nothing until they are read. They are read from disk each time, so your edits are picked up. The agent can only read them, even with tools off.").formFooter()
                 }
 
+                AgentMemorySection(engine: engine, agentID: agentID)
+
                 Section {
                     Picker("Tool access", selection: draft.access) {
                         ForEach(AccessLevel.all, id: \.id) { Text($0.title).tag($0.id) }

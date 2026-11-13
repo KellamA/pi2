@@ -15,6 +15,7 @@ struct UsageView: View {
                         spendTile("All time", usage.total)
                         tile("Models used", "\(usage.models.count)", usage.models.first.map { "most: \(modelName($0.key))" } ?? "none yet")
                     }
+                    LimitsSection(engine: engine)
                     budget(usage)
                     bars("By model", usage.models.map { (modelName($0.key), $0.tokens, $0.subscription == true ? "\(Formats.tokens($0.tokens)) tokens · subscription" : Formats.usage(tokens: $0.tokens, cost: $0.cost), Color.piAccent) })
                     bars("By agent", usage.agents.map { row in

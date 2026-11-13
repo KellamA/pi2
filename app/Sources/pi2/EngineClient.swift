@@ -44,6 +44,8 @@ final class EngineClient {
     var onNavigate: (Int) -> Void = { _ in }
     var signIn: SignInFlow?
     var lastError: String?
+    /// The latest event of each kind that a feature in a file of its own reads ("limits", "memory"), as sent.
+    private(set) var extras: [String: JSONValue] = [:]
     /// Does what agents ask of other apps' windows; the app holds the macOS permissions for it.
     let computer = ComputerSession()
     /// Works pages in pi²'s own browser for agents; the app holds the web views.
@@ -328,6 +330,9 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
+            case "limits", "memory":
+                // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
+                extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
                 if let error = envelope.error {

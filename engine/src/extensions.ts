@@ -33,12 +33,15 @@ import {
 } from "./browser.ts";
 import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
+import type { FeatureParts } from "./features.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
 const GATED = new Set(["bash", "write", "edit"]);
 
 export type Host = {
+	/** Features in files of their own; their tools, sections and hooks join this extension's. Filled in by main. */
+	features: FeatureParts[];
 	inbox: Inbox;
 	computer: ComputerHost;
 	browser: BrowserHost;
@@ -441,7 +444,7 @@ export function pi2Extension(host: Host): Extension {
 
 	return defineExtension({
 		name: "pi2",
-		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool],
+		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool, ...host.features.flatMap((feature) => feature.tools ?? [])],
 		sections: [
 			section("computer_use", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "computer")) return undefined;
@@ -465,8 +468,10 @@ export function pi2Extension(host: Host): Extension {
 					"Each delegation opens a sub-chat under this conversation. Start a new one for a new piece of work; continue an existing one (pass its number as `chat`) when the work builds on what that agent already did.",
 				].join("\n");
 			}),
+			...host.features.flatMap((feature) => feature.sections ?? []),
 		],
 		hooks: [
+			...host.features.flatMap((feature) => feature.hooks ?? []),
 			// Screenshots go stale; only the newest are sent to the model, whatever the transcript holds.
 			hook(GenerationTask, {
 				beforeRequest: (request) => ({ messages: pruneScreenshots(request.messages) }),

@@ -34,7 +34,8 @@ import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
-import { pi2Extension } from "./extensions.ts";
+import { type Host, pi2Extension } from "./extensions.ts";
+import { type Engine, FEATURES } from "./features.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
@@ -106,7 +107,7 @@ const browser = new BrowserHost();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
 let agents: Record<string, AgentProfile> = {};
 
-const pi2 = pi2Extension({
+const host: Host = {
 	inbox,
 	computer,
 	browser,
@@ -142,7 +143,21 @@ const pi2 = pi2Extension({
 		const entry = await conv?.commit((tx) => tx.entry(AssistantEntry, entryId as EntryId), context);
 		return textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content);
 	},
-});
+	features: [],
+};
+// Features in files of their own (see features.ts). They are made here, before the harness opens, so what they
+// need of the engine is handed over as getters.
+const engine: Engine = {
+	harness: () => harness,
+	context: () => context,
+	home,
+	broadcast: (message) => broadcast(message),
+	log,
+	agents: () => agents,
+	library: () => library,
+};
+host.features = FEATURES.map((feature) => feature(host, engine));
+const pi2 = pi2Extension(host);
 const registry = createRegistry();
 const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
 let mcpTools = mcp.extension();
@@ -163,7 +178,8 @@ function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undef
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
 	const screen = agent?.computer?.enabled === true ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
-	return [...files, ...reference, ...screen, ...web, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent) ?? []);
+	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -391,6 +407,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 			agentId: meta?.agentId ?? null,
 			parent: meta?.parent ?? null,
 		},
+		// What features add (see features.ts).
+		...Object.assign({}, ...host.features.map((feature) => feature.state?.(view, meta) ?? {})),
 	};
 }
 
@@ -1001,6 +1019,10 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 };
+// Requests that features answer.
+for (const feature of host.features) {
+	for (const [method, handler] of Object.entries(feature.handlers ?? {})) handlers[method] = (params) => handler(params);
+}
 
 // ---- Live indexes: the library document and which conversations have work running
 
