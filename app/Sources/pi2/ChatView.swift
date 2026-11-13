@@ -76,6 +76,7 @@ struct ChatView: View {
                         .labelStyle(.titleAndIcon)
                         .help("Go to the conversation whose agent opened this sub-chat")
                 }
+                if engine.agent(state?.agent.agentId)?.browser?.enabled == true { BrowserButton(engine: engine, conversationID: id) }
                 ContextMeter(engine: engine, id: id, state: state)
                 ModelMenu(engine: engine, id: id, agent: state?.agent)
                 ToolsMenu(engine: engine, id: id, agent: state?.agent)
@@ -350,7 +351,7 @@ struct ToolsMenu: View {
         case "read": "Read · \(folderName ?? "scratch folder")"
         case "ask": "Ask first · \(folderName ?? "scratch folder")"
         case "full": "Full · \(folderName ?? "scratch folder")"
-        default: usesComputer ? "Computer use" : "Tools off"
+        default: usesComputer ? "Computer use" : engine.agent(agent?.agentId)?.browser?.enabled == true ? "Browser" : "Tools off"
         }
     }
 
@@ -627,6 +628,7 @@ struct ToolCard: View {
         case "ask_user": return "Question"
         case "read_reference": return "Read reference file"
         case "codemode": return "Script"
+        case "browser": return "Browser"
         default:
             // An MCP tool reads as "Server: tool" rather than its long internal name.
             if let server = engine.mcpServers.first(where: { $0.tools.contains { $0.toolName == call.name } }),
@@ -645,6 +647,7 @@ struct ToolCard: View {
         case "delegate": "person.2"
         case "ask_user": "questionmark.bubble"
         case "codemode": "chevron.left.forwardslash.chevron.right"
+        case "browser": "globe"
         default: call.name.hasPrefix("mcp__") ? "puzzlepiece.extension" : "hammer"
         }
     }
@@ -679,6 +682,7 @@ struct ToolCard: View {
             let action = (call.arguments["action"]?.stringValue ?? "").replacingOccurrences(of: "_", with: " ")
             return call.arguments["app"]?.stringValue.map { "\(action) · \(ComputerController.name(of: $0))" } ?? action
         }
+        if call.name == "browser" { return BrowserSession.line(for: call, details: result?.details ?? live?.details) }
         if call.name.hasPrefix("mcp__"), title.contains(": ") {
             let tool = title.components(separatedBy: ": ").last ?? ""
             return call.summary.isEmpty ? tool : "\(tool) \(call.summary)"
@@ -705,7 +709,7 @@ struct ToolCard: View {
                 HStack(spacing: 8) {
                     Tag(tagText, tone)
                     Text(detail)
-                        .font(call.name == "computer" ? .system(size: 12.5) : Theme.mono)
+                        .font(call.name == "computer" || call.name == "browser" ? .system(size: 12.5) : Theme.mono)
                         .foregroundStyle(Theme.tx)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -952,6 +956,7 @@ struct AgentIntro: View {
             let apps = computer.apps.map(ComputerController.name(of:))
             facts.append(("macwindow.on.rectangle", apps.isEmpty ? "Computer use is on, with no apps chosen yet" : "Can use \(ListFormatter.localizedString(byJoining: apps)) on this Mac"))
         }
+        if profile?.browser?.enabled == true { facts.append(("globe", "Can browse the web in pi²’s own browser")) }
         return facts
     }
 

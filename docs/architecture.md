@@ -6,7 +6,9 @@ pi² is two programs:
 app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/pi2           the app
           Sources/ComputerKit   seeing and working other apps' windows
+          Sources/BrowserKit    pi²'s own browser: loading web pages, reading them and acting in them
           Sources/pi2-probe     a command-line way to try ComputerKit while developing; not part of the app
+          Sources/pi2-browser-probe   checks BrowserKit against pages it serves itself; not part of the app
 engine/   Node + TypeScript process that hosts the pi durable harness
 ```
 
@@ -17,7 +19,7 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line.
 
 - The app sends requests: `{"id": 1, "method": "submit", "params": {…}}`. The engine answers `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`.
-- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`.
+- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`, `browser`.
 
 The app starts the engine if it is not running, and reconnects if it dies. A second engine on the same data folder exits at once.
 
@@ -27,10 +29,11 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 |---|---|
 | `src/main.ts` | Startup, the socket server, request handlers, events |
 | `src/state.ts` | The app's own documents (conversation index, agents) and the Inbox |
-| `src/extensions.ts` | What pi² adds to every conversation: approvals, `ask_user`, `delegate`, `read_reference`, `computer` |
+| `src/extensions.ts` | What pi² adds to every conversation: approvals, `ask_user`, `delegate`, `read_reference`, `computer`, `browser` |
 | `src/providers.ts` | Built-in providers, custom endpoints, the scripted demo model |
 | `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
+| `src/browser.ts` | The browser: which addresses and uploads are allowed, the link to the app, what the agent is told |
 | `src/reference.ts` | An agent's reference files |
 | `src/schedules.ts` | Schedule rules and next-run times |
 | `src/mcp.ts` | MCP servers and their tools |
@@ -68,5 +71,6 @@ Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folde
 - Computer use: a click at a bare point (not on a listed control) is ignored by some apps while they are in the background; the agent is told when nothing changed. Pop-up menus and apps with little accessibility support (some games, some cross-platform apps) may not be workable.
 - macOS ties the Accessibility and Screen Recording permissions to the exact build. After rebuilding a development build, remove pi² from those lists in System Settings and grant it again.
 - Anything running as you can talk to the engine's socket. With computer use on, that includes asking an agent to use the apps you allowed.
+- The browser: pi² has to be open; a frame from another site is listed with its address rather than read in place; a page that is not showing in the Browser window counts as hidden to the site. See [browser.md](browser.md).
 - Builds are not signed with a Developer ID or notarized. The script has a path for it (`SIGN_IDENTITY`, `NOTARY_PROFILE`), which has not been exercised.
 - Not built: remote environments over SSH, MCP sign-in (OAuth), per-run budgets, automatic updates, loading very old messages in very long conversations.

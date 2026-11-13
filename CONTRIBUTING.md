@@ -18,7 +18,7 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 1. Read [docs/development.md](docs/development.md) to build and run the project, and [docs/architecture.md](docs/architecture.md) for how it fits together.
 2. Keep the change to one thing. A small pull request is reviewed sooner.
 3. If you touch the engine, run `npm run check` and `npm test` in `engine/`, and add to `engine/test/engine.ts` when you add behaviour.
-4. If you touch the app, build it and try the change on a throwaway data folder (the development doc shows how). The app has no automated tests, so say in the pull request what you tried by hand.
+4. If you touch the app, build it and try the change on a throwaway data folder (the development doc shows how). Apart from the browser's page handling, which `pi2-browser-probe` checks, the app has no automated tests, so say in the pull request what you tried by hand.
 5. Say plainly what is and is not tested.
 
 ## What fits

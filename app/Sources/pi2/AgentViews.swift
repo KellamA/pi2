@@ -232,6 +232,11 @@ struct AgentEditor: View {
                     set: { draft.wrappedValue.computer = $0 }
                 ))
 
+                BrowserSection(settings: Binding(
+                    get: { agent.browser ?? BrowserSettings() },
+                    set: { draft.wrappedValue.browser = $0 }
+                ))
+
                 Section {
                     let others = engine.agents.filter { $0.id != agentID }
                     if others.isEmpty { Text("There are no other agents yet.").foregroundStyle(.secondary) }
