@@ -155,6 +155,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	providers: () => providers,
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
 const pi2 = pi2Extension(host);
@@ -491,6 +492,7 @@ async function announceProviders(): Promise<void> {
 	broadcast(await providersEvent());
 	// Signing in or out changes which usage has a price.
 	scheduleUsageRefresh();
+	for (const feature of host.features) feature.providersChanged?.();
 }
 
 /** The model a new conversation starts with: the last one picked if it is still usable, else the demo model. */
@@ -1303,6 +1305,7 @@ const server = createServer((socket) => {
 	send(client, recoveryEvent());
 	send(client, usageSummary);
 	send(client, mcpEvent());
+	for (const feature of host.features) for (const event of feature.welcome?.() ?? []) send(client, event);
 	void providersEvent().then((event) => send(client, event));
 	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line
 	// are kept apart and joined once, at its end: searching one growing string for the line break would copy all of it

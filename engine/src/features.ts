@@ -7,6 +7,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
+import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
 import { knowledge } from "./knowledge.ts";
@@ -25,6 +26,8 @@ export type Engine = {
 	log(...args: unknown[]): void;
 	agents(): Record<string, AgentProfile>;
 	library(): { conversations: Record<string, Meta> };
+	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
+	providers(): Providers;
 };
 
 export type FeatureParts = {
@@ -38,6 +41,10 @@ export type FeatureParts = {
 	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
 	state?(view: ConversationView, meta: Meta | undefined): Record<string, unknown>;
+	/** Events an app is sent as it connects, after the engine's own. */
+	welcome?(): unknown[];
+	/** A provider was signed in or out, or its key or endpoint changed. */
+	providersChanged?(): void;
 };
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
