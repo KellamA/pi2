@@ -318,7 +318,7 @@ try {
 
 	// ---- An approval survives a crash
 	await client.call("submit", { id: f, text: "/bash echo after-crash" });
-	await client.until("approval before crash", () => client.inbox.find((i) => i.conversationId === f));
+	const beforeCrash = await client.until("approval before crash", () => client.inbox.find((i) => i.conversationId === f));
 	engine.kill("SIGKILL");
 	await new Promise((resolve) => engine.once("exit", resolve));
 	engine = startEngine();
@@ -326,8 +326,22 @@ try {
 	await client.call("conversation.open", { id: f });
 	ask = await client.until("approval asked again after restart", () => client.inbox.find((i) => i.conversationId === f));
 	await client.call("inbox.decide", { id: ask.id, decision: "always" });
-	await settled(f, 3);
-	assert.ok(toolResults(f)[2]!.text.includes("after-crash"));
+	// This failed now and then in CI with the third result not being the command's (issue #13), and did not fail locally.
+	// So wait for the approved call's own result rather than for a count, and show the transcript when anything is off.
+	const transcript = () =>
+		JSON.stringify(
+			client.conversations.get(f)!.items.map(({ id, kind, callId, isError, stop, text }) => ({ id, kind, callId, isError, stop, text: text.slice(0, 200) })),
+			null,
+			1,
+		);
+	await client
+		.until("the approved call's result, and idle", () => !client.conversations.get(f)!.state.busy && toolResults(f).some((r) => r.callId === ask.callId))
+		.catch((error: Error) => assert.fail(`${error.message}; the transcript:\n${transcript()}`));
+	const ran = toolResults(f).filter((r) => r.callId === ask.callId);
+	assert.equal(ask.callId, beforeCrash.callId, `the same call is asked about again; the transcript:\n${transcript()}`);
+	assert.equal(ran.length, 1, `the call has one result; the transcript:\n${transcript()}`);
+	assert.ok(!ran[0]!.isError && ran[0]!.text.includes("after-crash"), `the command ran; the transcript:\n${transcript()}`);
+	assert.equal(toolResults(f).length, 3, `no other tool result was added; the transcript:\n${transcript()}`);
 	step("kill -9 while waiting: the approval is asked again, then the command runs once");
 
 	await client.call("submit", { id: f, text: "/bash echo no-prompt" });
