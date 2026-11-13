@@ -15,7 +15,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { isAttachmentBlock } from "./attachments.ts";
 
 export const DEMO_PROVIDER = "demo";
@@ -88,16 +88,36 @@ function textOf(content: unknown): string {
 	return content.map((block) => (block?.type === "text" && typeof block.text === "string" ? block.text : "")).join("");
 }
 
+type DemoMessage = { role?: string; content?: unknown; isError?: boolean };
+type DemoBlock = { type?: string; text?: unknown };
+
+/** The newest thing for the demo model to answer. A tool or prompt change can add a system message after it, so skip those. */
+function demoLast(messages: readonly unknown[]): DemoMessage | undefined {
+	return (messages as readonly DemoMessage[]).findLast((message) => message.role === "user" || message.role === "toolResult");
+}
+
+const isAttached = (block: DemoBlock) => block?.type === "text" && typeof block.text === "string" && isAttachmentBlock(block.text);
+
+/** What the person typed, apart from what they attached: attached texts are blocks of their own, after it. */
+function demoPrompt(last: DemoMessage | undefined): string {
+	const blocks: readonly DemoBlock[] = Array.isArray(last?.content) ? last.content : [];
+	return (typeof last?.content === "string" ? last.content : textOf(blocks.filter((block) => !isAttached(block)))).trim();
+}
+
 /** A scripted stand-in model so the app works before any provider is connected. `/bash` and `/read` make it call tools. */
 function demoProvider(): Provider {
 	// Tests add a second demo model that cannot see images, to check what such a model is given.
 	const textOnly = process.env.PI2_DEMO_TEXT_MODEL === "1" ? [{ id: "demo-text", name: "Demo model (text only)", input: ["text" as const] }] : [];
-	const faux = fauxProvider({ provider: DEMO_PROVIDER, models: [{ id: DEMO_MODEL, name: "Demo model (scripted)" }, ...textOnly], tokensPerSecond: 20 });
+	const models = [{ id: DEMO_MODEL, name: "Demo model (scripted)" }, ...textOnly];
+	// It types at a readable pace. Tests set PI2_DEMO_TOKENS_PER_SECOND to speed it up, since most of their time would
+	// otherwise go to waiting on it; a message that starts with "/slow " is still answered at the readable pace, for the
+	// tests that need an answer to be on its way (to stop it, queue behind it or kill the engine in the middle of it).
+	const READABLE = 20;
+	const speed = Number(process.env.PI2_DEMO_TOKENS_PER_SECOND);
+	const slow = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: READABLE });
+	const fast = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: Number.isFinite(speed) && speed > 0 ? speed : READABLE });
 	const step = (request: { messages: readonly unknown[] }) => {
-		// The newest thing to answer. A tool or prompt change can add a system message after it, so skip those.
-		const last = (request.messages as readonly { role?: string; content?: unknown; isError?: boolean }[]).findLast(
-			(message) => message.role === "user" || message.role === "toolResult",
-		);
+		const last = demoLast(request.messages);
 		if (last?.role === "toolResult") {
 			// Says how many pictures it was sent, so it is visible that old screenshots are left out.
 			const pictures = (request.messages as readonly { content?: unknown }[]).reduce(
@@ -107,10 +127,9 @@ function demoProvider(): Provider {
 			const seen = pictures === 0 ? "" : ` I can see ${pictures} picture${pictures === 1 ? "" : "s"}.`;
 			return fauxAssistantMessage(last.isError ? "The tool reported an error; its output is above." : `Done. The tool returned: ${textOf(last.content).slice(0, 200)}${seen}`);
 		}
-		// What the person typed, apart from what they attached: attached texts are blocks of their own, after it.
-		const blocks: readonly { type?: string; text?: unknown }[] = Array.isArray(last?.content) ? last.content : [];
-		const attached = (block: { type?: string; text?: unknown }) => block?.type === "text" && typeof block.text === "string" && isAttachmentBlock(block.text);
-		const prompt = (typeof last?.content === "string" ? last.content : textOf(blocks.filter((block) => !attached(block)))).trim();
+		const blocks: readonly DemoBlock[] = Array.isArray(last?.content) ? last.content : [];
+		const typed = demoPrompt(last);
+		const prompt = typed.startsWith("/slow ") ? typed.slice(6).trim() : typed;
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
@@ -170,7 +189,7 @@ function demoProvider(): Provider {
 		}
 		// Says what came with the message, so it is visible that attachments reach the model.
 		const pictures = blocks.filter((block) => block?.type === "image").length;
-		const files = blocks.filter(attached).length;
+		const files = blocks.filter(isAttached).length;
 		const came = [pictures === 0 ? "" : `${pictures} picture${pictures === 1 ? "" : "s"}`, files === 0 ? "" : `${files} attached file${files === 1 ? "" : "s"}`].filter((part) => part !== "");
 		return fauxAssistantMessage(
 			`You said: "${prompt}". ${came.length === 0 ? "" : `With it came ${came.join(" and ")}. `}I am the demo model, a scripted stand-in with no intelligence behind it. ` +
@@ -179,8 +198,22 @@ function demoProvider(): Provider {
 				"to see tool calls. One, two, three, four, five. Done.",
 		);
 	};
-	faux.setResponses(Array.from({ length: 100_000 }, () => step));
-	return faux.provider;
+	slow.setResponses(Array.from({ length: 100_000 }, () => step));
+	fast.setResponses(Array.from({ length: 100_000 }, () => step));
+	const pace = (context: { messages: readonly unknown[] }, options?: object) =>
+		(options as { deferred?: unknown } | undefined)?.deferred === undefined && demoPrompt(demoLast(context.messages)).startsWith("/slow ") ? slow : fast;
+	return createProvider({
+		id: DEMO_PROVIDER,
+		auth: { apiKey: { name: "Demo", resolve: async () => ({ auth: {} }) } },
+		models: fast.models,
+		api: {
+			stream: (model, context, options) => pace(context, options).stream(model, context, options),
+			streamSimple: (model, context, options) => pace(context, options).streamSimple(model, context, options),
+			// Deferred answers are always made by the fast one, so it holds their handles.
+			fetchDeferred: fast.fetchDeferred,
+			cancelDeferred: fast.cancelDeferred,
+		},
+	});
 }
 
 /** Sent as the key to an endpoint that was saved without one. */
