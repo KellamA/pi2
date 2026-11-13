@@ -29,10 +29,15 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("ask_user", { question: "Which one?" }), "Asked “Which one?”");
 	assert.equal(line("web_search", { query: "swift 6" }, "running"), "Searching the web for “swift 6”…");
 	assert.equal(line("web_fetch", { url: "https://x.com" }), "Fetched https://x.com");
-	assert.equal(line("search_files", { pattern: "TODO" }), "Searched for TODO");
-	assert.equal(line("find_files", { pattern: "*.ts" }), "Found *.ts");
+	// The look, plan and memory tools, with the arguments they take.
+	assert.equal(line("search_files", { query: "TODO", glob: "**/*.ts", ignoreCase: true }), "Searched for TODO");
+	assert.equal(line("find_files", { pattern: "**/*.ts" }), "Found **/*.ts");
 	assert.equal(line("list_files", { path: "src/" }), "Listed src");
-	assert.equal(line("remember", { text: "Prefers tabs" }), "Remembered “Prefers tabs”");
+	assert.equal(line("list_files", {}), "Listed files");
+	assert.equal(line("web_fetch", { url: "https://x.com/a", offset: 2000 }), "Fetched https://x.com/a");
+	assert.equal(line("update_plan", { items: [{ content: "a", status: "in_progress" }] }, "running"), "Updating the task list…");
+	assert.equal(line("remember", { note: "Prefers tabs" }), "Remembered “Prefers tabs”");
+	assert.equal(line("forget", { id: "m3" }), "Forgot “m3”");
 	assert.equal(line("forget", {}), "Forgot something");
 });
 
@@ -48,7 +53,11 @@ test("an edit counts its lines from the result's diff, or from the call", () => 
 test("computer and browser rows use the app's own words when they have them", () => {
 	assert.equal(line("computer", { action: "click", app: "com.apple.mail" }, "done", { details: { summary: "Clicked “Send” in Mail" } }), "Clicked “Send” in Mail");
 	assert.equal(line("computer", { action: "open_app", app: "com.apple.mail" }, "running", null, null, { apps: { "com.apple.mail": "Mail" } }), "Open app in Mail…");
-	assert.equal(line("browser", { action: "navigate", url: "https://x.com" }, "running"), "Navigate https://x.com…");
+	assert.equal(line("browser", { action: "open", url: "https://x.com" }, "running"), "Open https://x.com…");
+	assert.equal(line("browser", { action: "click", element: 4 }), "Click element 4");
+	assert.equal(line("browser", { action: "scroll", dy: -1 }), "Scroll up");
+	assert.equal(line("browser", { action: "upload", path: "/tmp/a/report.pdf" }), "Upload report.pdf");
+	assert.equal(line("browser", { action: "search", query: "pi durable" }, "done", { details: { summary: "Searched for “pi durable”" } }), "Searched for “pi durable”");
 	assert.equal(T.describe(call("browser", {}), "done", null, null).glyph, "globe");
 });
 

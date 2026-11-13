@@ -80,11 +80,14 @@
 	 */
 	function argumentSummary(args) {
 		if (!isObject(args)) return "";
-		for (const key of ["command", "path", "pattern", "query", "url", "task", "code", "question", "text", "content", "name"]) {
+		for (const key of ["command", "path", "pattern", "query", "url", "task", "code", "question", "text", "content", "note", "name"]) {
 			const value = args[key];
 			if (typeof value === "string" && value.trim() !== "") return oneLine(value);
 		}
-		return Object.entries(args)
+		const entries = Object.entries(args);
+		// One plain value needs no name: forget's { id } reads as the ID.
+		if (entries.length === 1 && ["string", "number", "boolean"].includes(typeof entries[0][1])) return oneLine(String(entries[0][1]));
+		return entries
 			.map(([key, value]) => `${key}: ${typeof value === "string" ? oneLine(value) : compactJSON(value)}`)
 			.join(", ");
 	}
@@ -243,6 +246,24 @@
 		return QUOTE_OPEN + (line.length > 120 ? line.slice(0, 120) + ELLIPSIS : line) + QUOTE_CLOSE;
 	}
 
+	/** A browser call before the app has said what it did, in the words `BrowserSession.line` uses. */
+	function browserLine(args) {
+		const element = Number.isInteger(args.element) ? `element ${args.element}` : "an element";
+		switch (str(args.action).trim()) {
+			case "open": return `Open ${str(args.url) || "a page"}`;
+			case "search": return `Search for ${QUOTE_OPEN}${str(args.query)}${QUOTE_CLOSE}`;
+			case "read": return "Read the page";
+			case "screenshot": return "Take a picture of the page";
+			case "click": return `Click ${element}`;
+			case "type": return `Type into ${element}`;
+			case "select": return `Choose ${QUOTE_OPEN}${str(args.option)}${QUOTE_CLOSE} in ${element}`;
+			case "scroll": return `Scroll ${typeof args.dy === "number" && args.dy < 0 ? "up" : "down"}`;
+			case "back": return "Go back";
+			case "upload": return `Upload ${basename(args.path) || "a file"}`;
+			default: return argumentSummary(args) || "Browser";
+		}
+	}
+
 	function capitalized(text) {
 		return text.charAt(0).toUpperCase() + text.slice(1);
 	}
@@ -325,6 +346,8 @@
 				const summary = isObject(details) ? str(details.summary) : "";
 				if (summary) {
 					label = [t(summary)];
+				} else if (toolName === "browser") {
+					label = [t(browserLine(args) + dots)];
 				} else {
 					const action = capitalized(str(args.action).trim().replace(/_/g, " ")) || capitalized(toolName);
 					const app = str(args.app);
