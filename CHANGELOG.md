@@ -6,6 +6,7 @@ What changed in each version, newest first.
 
 ### Added
 - **A new transcript.** The conversation is one page in the style of Claude Code: answers as plain text with full Markdown, tool steps as single lines that open to their output or diff, approvals and questions where the agent stopped. A selection runs across prose, code and tool steps and copies as clean text. See [docs/transcript.md](docs/transcript.md).
+- **Archive.** A conversation can be archived instead of deleted: it leaves the sidebar with its sub-chats, stays readable and searchable, and can be restored. Conversations left unused for a chosen time can be archived automatically. See [docs/archive.md](docs/archive.md).
 - **Command rules.** An approval for a shell command can allow commands that start the same way from then on, for that agent in that folder. Compound commands, writes to files, variables and anything else not plainly covered still ask, and rules that would allow anything cannot be made. Rules are listed in the agent's settings. See [docs/rules.md](docs/rules.md).
 - **Agents can schedule their own work.** Off by default per agent. Each schedule is approved by you before it is made, shows in Activity as set by the agent, and the agent can cancel only its own. See [docs/schedules.md](docs/schedules.md).
 - **Formatted documents.** An agent that may write files can write a Word, RTF, OpenDocument or HTML document from Markdown with `write_document`, with the same approval as any other write. See [docs/documents.md](docs/documents.md).
@@ -23,6 +24,7 @@ What changed in each version, newest first.
 - **A new look.** A dark-first palette, with light and match-system in Settings › General.
 
 ### Changed
+- Delete is now separate from Archive and says what it does: pi² stops showing the conversation and cannot bring it back, and its text stays in pi²'s data file.
 - Reference files can be Word, RTF and OpenDocument files; the agent is given their text.
 - Usage from a subscription sign-in, or from a local model, counts tokens only. It shows no cost and does not count toward the daily budget.
 - Usage names models as "Provider · Model".

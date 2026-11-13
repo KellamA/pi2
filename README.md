@@ -108,6 +108,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent.
 - **Scripts**: let a model chain many tool calls in one step.
+- **Archive**: put a conversation away without losing it. It leaves the sidebar, stays readable and searchable, and can be restored; pi² can archive what has gone unused for a while on its own. [How the Archive works](docs/archive.md).
 - **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.
 - **Command palette** (⌘K) and **Quick Ask** from anywhere (⌃⌥Space).
 - **Backup and restore** of everything except your keys.
@@ -181,6 +182,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Transcript](docs/transcript.md): how the conversation page is built, and how it is kept from running anything a model writes.
 - [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md).
 - [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
+- [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)

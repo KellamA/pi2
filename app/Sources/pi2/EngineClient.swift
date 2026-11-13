@@ -16,6 +16,10 @@ final class EngineClient {
 
     private(set) var status: Status = .connecting
     private(set) var conversations: [ConversationSummary] = []
+    /// The Archive, newest first.
+    private(set) var archived: [ArchivedConversation] = []
+    /// After how many unused days a conversation is archived on its own; nil for never.
+    private(set) var autoArchiveDays: Int?
     private(set) var open: [Int: ConversationData] = [:]
     private(set) var providers: [ProviderInfo] = []
     /// Every model of every connected provider, including the ones hidden in Settings.
@@ -270,7 +274,11 @@ final class EngineClient {
         let error: String?
         let result: JSONValue?
     }
-    private struct LibraryEvent: Decodable { let conversations: [ConversationSummary] }
+    private struct LibraryEvent: Decodable {
+        let conversations: [ConversationSummary]
+        let archived: [ArchivedConversation]?
+        let autoArchiveDays: Int?
+    }
     private struct AgentsEvent: Decodable { let agents: [AgentProfile] }
     private struct InboxEvent: Decodable { let items: [InboxItem] }
     private struct ActivityEvent: Decodable { let runs: [ActivityRun] }
@@ -303,7 +311,10 @@ final class EngineClient {
         do {
             switch envelope.event {
             case "library":
-                conversations = try decoder.decode(LibraryEvent.self, from: line).conversations
+                let event = try decoder.decode(LibraryEvent.self, from: line)
+                conversations = event.conversations
+                archived = event.archived ?? []
+                autoArchiveDays = event.autoArchiveDays
                 hasLoadedLibrary = true
             case "agents":
                 agents = try decoder.decode(AgentsEvent.self, from: line).agents

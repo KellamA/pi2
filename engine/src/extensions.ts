@@ -36,6 +36,7 @@ import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOK
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule } from "./rules.ts";
+import { isPutAway } from "./archive.ts";
 import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
@@ -114,7 +115,7 @@ export function pi2Extension(host: Host): Extension {
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
 				const agent = host.agent(meta?.agentId);
-				if (meta === undefined || meta.parent !== parent || meta.archived === true || agent === undefined) {
+				if (meta === undefined || meta.parent !== parent || isPutAway(meta) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
 				}
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);

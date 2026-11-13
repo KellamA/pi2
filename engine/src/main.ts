@@ -44,6 +44,7 @@ import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts
 import { type CommandRule, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
+import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -222,7 +223,7 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean; deviceId?: string; hiddenModels?: Record<string, string[]> } = (() => {
+const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean; deviceId?: string; hiddenModels?: Record<string, string[]>; autoArchiveDays?: number | null } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -432,6 +433,10 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		context: contextOf(view, agent.model),
 		compacting: (live.compactions ?? []).length > 0,
 		compactionError: live.compactionFailure?.error ?? null,
+		// An archived conversation, or a sub-chat of one, is not in the list the app is sent; its title and standing
+		// come with it here, so it can still be shown, read-only.
+		title: meta?.title ?? "",
+		archived: isArchived(meta) || (meta?.parent !== undefined && isArchived(library.conversations[String(meta.parent)])),
 		queued: (inbox.items ?? [])
 			.filter((item) => item.mode !== "write")
 			.map((item) => {
@@ -474,6 +479,11 @@ function broadcast(message: unknown): void {
 }
 
 library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
+// Conversations deleted before there was an archive are marked the new way, once.
+if (Object.values(library.conversations).some((meta) => meta.archived !== undefined)) {
+	await harness.commit(async (tx) => void migrateDeleted((await tx.doc(Library)).conversations), context);
+	library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
+}
 for (const feature of host.features) await feature.start?.();
 let busyConversations = new Set<number>();
 /** Every conversation with live work, sub-chats included. */
@@ -481,8 +491,8 @@ let working = new Set<number>();
 
 function libraryEvent() {
 	const conversations = Object.entries(library.conversations)
-		// Sub-chats are listed too, pointing at their parent, unless either of them was deleted.
-		.filter(([, meta]) => meta.archived !== true && (meta.parent === undefined || library.conversations[String(meta.parent)]?.archived !== true))
+		// Sub-chats are listed too, pointing at their parent, unless either of them was archived or deleted.
+		.filter(([, meta]) => !isPutAway(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
 		.map(([id, meta]) => ({
 			id: Number(id),
 			title: meta.title,
@@ -494,7 +504,48 @@ function libraryEvent() {
 			parent: meta.parent ?? null,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
-	return { event: "library", conversations };
+	// The Archive: top-level conversations only; a sub-chat is reached through the conversation it belongs to.
+	const archived = Object.entries(library.conversations)
+		.filter(([, meta]) => isArchived(meta) && meta.parent === undefined)
+		.map(([id, meta]) => ({
+			id: Number(id),
+			title: meta.title,
+			createdAt: meta.createdAt,
+			updatedAt: meta.updatedAt,
+			archivedAt: meta.archivedAt as number,
+			agentId: meta.agentId ?? null,
+			subChats: Object.values(library.conversations).filter((child) => child.parent === Number(id) && !isDeleted(child)).length,
+		}))
+		.sort((a, b) => b.archivedAt - a.archivedAt);
+	return { event: "library", conversations, archived, autoArchiveDays: settings.autoArchiveDays ?? null };
+}
+
+/** Nothing new is started in a conversation that was put away, or in one of its sub-chats. */
+function refuseIfPutAway(id: number): void {
+	const put = [library.conversations[String(id)], library.conversations[String(rootOf(id))]];
+	if (put.some(isDeleted)) throw new Error("This conversation was deleted");
+	if (put.some(isArchived)) throw new Error("This conversation is archived. Restore it to carry on.");
+}
+
+/** Archive a top-level conversation: stop what it is doing, and move it and its sub-chats out of the sidebar. */
+async function archiveConversation(id: number): Promise<void> {
+	const conv = await conversation(id);
+	const meta = library.conversations[String(id)];
+	if (meta?.parent !== undefined) throw new Error("A sub-chat is archived together with the conversation it belongs to");
+	if (isDeleted(meta)) throw new Error("That conversation was deleted");
+	await conv.abort(context);
+	await editMeta(conv.id, (m) => {
+		if (m.archivedAt === undefined) m.archivedAt = Date.now();
+	});
+}
+
+/** Archive what has gone unused for as long as the person chose. Conversations that are working or waiting are left. */
+async function sweepArchive(): Promise<void> {
+	const waiting = new Set(inbox.list().map((item) => item.conversationId));
+	const active = (id: number) => working.has(id) || busyConversations.has(id) || waiting.has(id);
+	for (const id of dueForArchive(library.conversations, Date.now(), settings.autoArchiveDays ?? null, active)) {
+		await archiveConversation(id).catch((error) => log("could not archive conversation", id, error instanceof Error ? error.message : ""));
+	}
 }
 
 function agentsEvent() {
@@ -640,20 +691,25 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"conversation.compact": async (params) => {
 		const instructions = typeof params.instructions === "string" && params.instructions.trim() !== "" ? params.instructions.trim() : undefined;
-		await (await conversation(params.id)).compact(instructions, context);
+		const conv = await conversation(params.id);
+		refuseIfPutAway(params.id as number);
+		await conv.compact(instructions, context);
 		return {};
 	},
 	"conversation.reset": async (params) => {
 		const note = typeof params.note === "string" && params.note.trim() !== "" ? params.note.trim() : undefined;
-		await (await conversation(params.id)).reset(note, context);
+		const conv = await conversation(params.id);
+		refuseIfPutAway(params.id as number);
+		await conv.reset(note, context);
 		return {};
 	},
 	search: async (params) => {
 		const query = text(params, "query").trim().toLowerCase();
 		if (query.length < 2) return { results: [] };
-		const results: { conversationId: number; title: string; entryId: number; role: string; snippet: string }[] = [];
+		const results: { conversationId: number; title: string; entryId: number; role: string; snippet: string; archived: boolean }[] = [];
+		// Archived conversations are searched too: finding something again is what they are kept for.
 		const ids = Object.entries(library.conversations)
-			.filter(([, meta]) => meta.archived !== true && meta.parent === undefined)
+			.filter(([, meta]) => !isDeleted(meta) && meta.parent === undefined)
 			.sort(([, x], [, y]) => y.updatedAt - x.updatedAt)
 			.map(([id]) => Number(id));
 		for (const id of ids) {
@@ -671,7 +727,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if (at === -1) continue;
 					const start = Math.max(0, at - 40);
 					const snippet = (start > 0 ? "…" : "") + body.slice(start, at + query.length + 80).replace(/\s+/g, " ") + (at + query.length + 80 < body.length ? "…" : "");
-					results.push({ conversationId: id, title: library.conversations[String(id)]?.title ?? "", entryId: entry.id as unknown as number, role: message.role, snippet });
+					results.push({ conversationId: id, title: library.conversations[String(id)]?.title ?? "", entryId: entry.id as unknown as number, role: message.role, snippet, archived: isArchived(library.conversations[String(id)]) });
 					if (results.length >= 40) break;
 				}
 				cursor = (batch as { next?: unknown }).next;
@@ -810,9 +866,29 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"backup.create": async (params) => ({ path: await createBackup(home, text(params, "directory")) }),
 	"conversation.archive": async (params) => {
+		if (typeof params.id !== "number") throw new Error(`Unknown conversation: ${String(params.id)}`);
+		await archiveConversation(params.id);
+		return {};
+	},
+	"conversation.unarchive": async (params) => {
+		const conv = await conversation(params.id);
+		if (isDeleted(library.conversations[String(params.id)])) throw new Error("That conversation was deleted");
+		await editMeta(conv.id, (meta) => void delete meta.archivedAt);
+		return {};
+	},
+	/** Shown nowhere again. Its entries stay in the session file: pi durable cannot erase a conversation. */
+	"conversation.delete": async (params) => {
 		const conv = await conversation(params.id);
 		await conv.abort(context);
-		await editMeta(conv.id, (meta) => void (meta.archived = true));
+		await editMeta(conv.id, (meta) => void (meta.deleted = true));
+		return {};
+	},
+	"settings.setAutoArchive": async (params) => {
+		settings.autoArchiveDays = validateAutoArchive(params.days);
+		saveSettings();
+		broadcast(libraryEvent());
+		// Chosen now, so applied now: the person sees what the setting does without waiting for the next check.
+		await sweepArchive();
 		return {};
 	},
 	"conversation.configure": async (params, client) => {
@@ -846,6 +922,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	submit: async (params) => {
 		const conv = await conversation(params.id);
+		refuseIfPutAway(params.id as number);
 		const attachments = validateAttachments(params.attachments);
 		// Attachments can be the whole message.
 		const content = attachments.length > 0 && params.text === undefined ? "" : text(params, "text");
@@ -882,7 +959,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 	continue: async (params) => {
-		await (await conversation(params.id)).submit({ type: "continue" }, context);
+		const conv = await conversation(params.id);
+		refuseIfPutAway(params.id as number);
+		await conv.submit({ type: "continue" }, context);
 		return {};
 	},
 	withdraw: async (params) => {
@@ -1099,11 +1178,23 @@ for (const feature of host.features) {
 await harness.commit(async (tx) => void (await tx.doc(Library)), context);
 const libraryWatch = await harness.watchDoc(Library, context);
 if (libraryWatch === undefined) throw new Error("The library document could not be opened");
+/** Which conversations are put away, as one string: when it changes, open conversations are told their new standing. */
+const putAway = () =>
+	Object.entries(library.conversations)
+		.filter(([, meta]) => isPutAway(meta))
+		.map(([id]) => id)
+		.join(",");
+let wasPutAway = putAway();
 libraryWatch.start(async (call) => {
 	if (call.kind !== "value") return;
 	library = call.value;
 	broadcast(libraryEvent());
 	broadcast(inboxEvent()); // titles shown in the inbox come from here
+	const now = putAway();
+	if (now !== wasPutAway) {
+		wasPutAway = now;
+		for (const client of clients) for (const subscription of client.subscriptions.values()) subscription.push();
+	}
 });
 
 // Agents: created with three starters on a first launch, then whatever the person makes of them.
@@ -1122,6 +1213,7 @@ agentsWatch.start(async (call) => {
 });
 const graphWatch = await harness.watchTaskGraph(context);
 type Graph = { tasks: Record<string, { conversationId?: unknown }> };
+/** The conversation `id` belongs to: itself, or the one whose sub-chat it is. */
 const rootOf = (id: number): number => library.conversations[String(id)]?.parent ?? id;
 const conversationsWithWork = (graph: Graph) => new Set(Object.values(graph.tasks).map((task) => task.conversationId as number));
 working = conversationsWithWork(graphWatch.value as never);
@@ -1236,7 +1328,7 @@ async function refreshUsage(): Promise<void> {
 		if (row !== undefined) {
 			row.cost += usage.cost;
 			row.tokens += usage.tokens;
-		} else if (library.conversations[String(root)]?.archived !== true) {
+		} else if (!isPutAway(library.conversations[String(root)])) {
 			byConversation.push({ id: root, title: library.conversations[String(root)]?.title ?? "", ...usage });
 		}
 	}
@@ -1424,6 +1516,13 @@ server.listen(socketPath, () => {
 	void tickSchedules(); // and start whatever came due while the engine was not running
 	void mcp.start(); // connect to MCP servers without holding up the app
 });
+
+// Conversations left unused for as long as the person chose are archived: a little after start-up, once what was
+// running has had time to show as running, and then a few times a day.
+const sweepSoon = setTimeout(() => void sweepArchive(), 2 * 60_000);
+const sweepOften = setInterval(() => void sweepArchive(), 6 * 3_600_000);
+sweepSoon.unref();
+sweepOften.unref();
 
 // A clean stop closes the Harness. SIGKILL is the crash case and needs no handler: reopening recovers.
 let stopping = false;

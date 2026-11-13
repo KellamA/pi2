@@ -5,6 +5,7 @@ enum Selection: Hashable {
     case inbox
     case activity
     case usage
+    case archive
     case agent(String)
     case conversation(Int)
 }
@@ -19,6 +20,7 @@ extension Selection {
         case "inbox": self = .inbox
         case "activity": self = .activity
         case "usage": self = .usage
+        case "archive": self = .archive
         default:
             if value.hasPrefix("agent:") {
                 self = .agent(String(value.dropFirst("agent:".count)))
@@ -49,8 +51,13 @@ final class AppModel {
     /// The conversation whose rename prompt is showing.
     var renaming: ConversationSummary?
     var newTitle = ""
-    /// The conversation whose delete confirmation is showing.
-    var deleting: ConversationSummary?
+    /// The conversation whose delete confirmation is showing, from the sidebar or from the Archive.
+    var deleting: PendingDelete?
+
+    struct PendingDelete: Equatable {
+        let id: Int
+        let title: String
+    }
     /// Brings back the main window after it was closed; set by the views that can open windows.
     var showMainWindow: () -> Void = {}
 
@@ -94,12 +101,39 @@ final class AppModel {
     }
 
     func delete(_ conversation: ConversationSummary) {
-        deleting = conversation
+        deleting = PendingDelete(id: conversation.id, title: conversation.title)
+    }
+
+    func delete(id: Int, title: String) {
+        deleting = PendingDelete(id: id, title: title)
     }
 
     func confirmDelete() {
-        if let deleting { engine.perform("conversation.archive", ["id": deleting.id]) }
+        if let deleting {
+            if selectedConversationID == deleting.id { selection = nextAfter(deleting.id) }
+            engine.perform("conversation.delete", ["id": deleting.id])
+        }
         deleting = nil
+    }
+
+    /// Puts a conversation in the Archive. The window moves on to the next conversation, as it would in a mail app.
+    func archive(_ conversation: ConversationSummary) {
+        if selectedConversationID == conversation.id { selection = nextAfter(conversation.id) }
+        engine.perform("conversation.archive", ["id": conversation.id])
+    }
+
+    /// What to show once `id` leaves the sidebar: the conversation below it, else the one above, else nothing.
+    private func nextAfter(_ id: Int) -> Selection? {
+        let roots = engine.rootConversations
+        guard let index = roots.firstIndex(where: { $0.id == id }) else { return engine.archived.contains { $0.id == id } ? .archive : nil }
+        let next = index + 1 < roots.count ? roots[index + 1] : index > 0 ? roots[index - 1] : nil
+        return next.map { .conversation($0.id) }
+    }
+
+    /// Whether a conversation is one the app may show although the sidebar does not list it: an archived one, or a
+    /// sub-chat of one.
+    func isArchived(_ id: Int) -> Bool {
+        engine.archived.contains { $0.id == id } || engine.open[id]?.state?.archived == true
     }
 }
 
@@ -144,6 +178,7 @@ struct Pi2App: App {
                     .keyboardShortcut("a", modifiers: [.command, .shift])
                 Button("Show Usage") { model.selection = .usage }
                     .keyboardShortcut("u", modifiers: [.command, .shift])
+                Button("Show Archive") { model.selection = .archive }
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -217,6 +252,8 @@ struct RootView: View {
                 ActivityView(model: model)
             case .usage:
                 UsageView(model: model)
+            case .archive:
+                ArchiveView(model: model)
             case .agent(let id):
                 AgentEditor(model: model, agentID: id)
                     .id(id)
@@ -252,8 +289,9 @@ struct RootView: View {
             if let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
         }
         .onChange(of: engine.conversations) { _, list in
-            // The conversation on screen was deleted: move to the next one.
-            if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }) {
+            // The conversation on screen was deleted: move to the next one. An archived one may stay on screen: it can
+            // still be read.
+            if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }), !model.isArchived(id) {
                 model.selection = list.first { $0.parent == nil }.map { .conversation($0.id) }
             }
         }
@@ -264,7 +302,7 @@ struct RootView: View {
             Button("Delete", role: .destructive) { model.confirmDelete() }
             Button("Cancel", role: .cancel) { model.deleting = nil }
         } message: {
-            Text("Any work it is running will be stopped. This cannot be undone from the app.")
+            Text("Any work it is doing is stopped, and pi² will not show it again or bring it back. Its text stays in pi²’s data on this Mac. To put it away but keep it, archive it instead.")
         }
         .alert("Something went wrong", isPresented: Binding(get: { engine.lastError != nil }, set: { if !$0 { engine.lastError = nil } })) {
             Button("OK") { engine.lastError = nil }
@@ -299,6 +337,12 @@ struct SidebarView: View {
             navRow("Usage", icon: "chart.bar", tag: .usage) {
                 if engine.usage?.overBudget == true {
                     Tag("over budget", .bad)
+                }
+            }
+            navRow("Archive", icon: "archivebox", tag: .archive) {
+                if !engine.archived.isEmpty {
+                    Text("\(engine.archived.count)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
+                        .accessibilityLabel("\(engine.archived.count) archived")
                 }
             }
 
@@ -459,6 +503,8 @@ struct SidebarView: View {
         .tag(Selection.conversation(conversation.id))
         .contextMenu {
             Button("Rename…") { model.beginRename(conversation) }
+            // A sub-chat is archived with the conversation it belongs to.
+            if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
             Button("Delete", role: .destructive) { model.delete(conversation) }
         }
     }
@@ -571,6 +617,10 @@ struct ConversationCommands: View {
         Divider()
         Button("Rename…") { if let conversation = model.selectedConversation { model.beginRename(conversation) } }
             .disabled(model.selectedConversation == nil)
+        // The same key as in Mail. A sub-chat is archived with the conversation it belongs to.
+        Button("Archive Conversation") { if let conversation = model.selectedConversation { model.archive(conversation) } }
+            .keyboardShortcut("a", modifiers: [.command, .control])
+            .disabled(model.selectedConversation == nil || model.selectedConversation?.parent != nil)
         Button("Delete Conversation") { if let conversation = model.selectedConversation { model.delete(conversation) } }
             .disabled(model.selectedConversation == nil)
         Divider()

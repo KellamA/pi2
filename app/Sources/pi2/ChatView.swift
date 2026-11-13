@@ -17,8 +17,11 @@ struct ChatView: View {
     private var busy: Bool { state?.busy ?? false }
     private var summary: ConversationSummary? { engine.conversations.first { $0.id == id } }
     private var parent: ConversationSummary? { summary?.parent.flatMap { parent in engine.conversations.first { $0.id == parent } } }
+    /// The conversation, or the one it is a sub-chat of, is in the Archive: it can be read but not continued.
+    private var archived: Bool { state?.archived == true || engine.archived.contains { $0.id == id } }
     private var title: String {
-        let title = summary?.title ?? ""
+        // One that is archived is not in the sidebar's list; its title comes with its state.
+        let title = summary?.title ?? engine.archived.first { $0.id == id }?.title ?? state?.title ?? ""
         return title.isEmpty ? "New conversation" : title
     }
     private var subtitle: String {
@@ -55,7 +58,8 @@ struct ChatView: View {
                         .foregroundStyle(stopped ? Theme.tx2 : Theme.bad)
                     Text(failure.message).foregroundStyle(stopped ? Theme.tx2 : Theme.tx).lineLimit(3)
                     Spacer()
-                    if failure.reason != "nothing_to_answer" {
+                    // An archived conversation is restored first; there is nothing to continue until then.
+                    if failure.reason != "nothing_to_answer", !archived {
                         Button("Continue", systemImage: "play.fill") { engine.perform("continue", ["id": id]) }
                             .buttonStyle(.piSecondary)
                             .help("Resume the run from where it stopped, without typing a new message")
@@ -67,8 +71,12 @@ struct ChatView: View {
                 .padding(.horizontal, 28).padding(.top, 8)
             }
             PlanStrip(engine: engine, id: id, state: state)
-            queue
-            composer
+            if archived {
+                archivedBar
+            } else {
+                queue
+                composer
+            }
         }
         .background(Theme.window)
         // Files and pictures dropped anywhere on the conversation are attached to the draft.
@@ -82,8 +90,9 @@ struct ChatView: View {
         .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItemGroup {
-                if let parent {
-                    Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parent.id) }
+                // The sidebar's list knows a sub-chat's parent; for a sub-chat of an archived conversation, its state does.
+                if let parentID = parent?.id ?? state?.agent.parent {
+                    Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parentID) }
                         .labelStyle(.titleAndIcon)
                         .help("Go to the conversation whose agent opened this sub-chat")
                 }
@@ -97,6 +106,28 @@ struct ChatView: View {
             engine.openConversation(id)
             composerFocused = true
         }
+    }
+
+    /// In place of the message field for an archived conversation: what it is, and the way back.
+    private var archivedBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "archivebox").foregroundStyle(Theme.tx2)
+            if let root = state?.agent.parent, !engine.archived.contains(where: { $0.id == id }) {
+                Text("This sub-chat belongs to an archived conversation. Restore that conversation to carry on.").foregroundStyle(Theme.tx2)
+                Spacer()
+                Button("Restore") { engine.perform("conversation.unarchive", ["id": root]) }
+                    .buttonStyle(.piPrimary)
+            } else {
+                Text("This conversation is archived. You can read it; restore it to carry on.").foregroundStyle(Theme.tx2)
+                Spacer()
+                Button("Restore") { engine.perform("conversation.unarchive", ["id": id]) }
+                    .buttonStyle(.piPrimary)
+            }
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .panel()
+        .padding(.horizontal, 28).padding(.vertical, 12)
     }
 
     private func banner(_ text: String, systemImage: String, color: Color) -> some View {

@@ -75,6 +75,18 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let parent: Int?
 }
 
+/// A conversation in the Archive: out of the sidebar, still readable and searchable, and restorable.
+struct ArchivedConversation: Codable, Identifiable, Equatable {
+    let id: Int
+    let title: String
+    let updatedAt: Double
+    let archivedAt: Double
+    let agentId: String?
+    let createdAt: Double?
+    /// How many sub-chats went into the Archive with it.
+    let subChats: Int
+}
+
 struct ToolCall: Codable, Equatable, Identifiable {
     let callId: String
     let name: String
@@ -386,6 +398,10 @@ struct ConversationState: Codable, Equatable {
     let plan: TaskList?
     /// The project instructions file (AGENTS.md or CLAUDE.md) in the conversation's folder, if there is one.
     let projectInstructions: String?
+    /// The conversation's title, for one that is not in the sidebar's list (an archived one, or its sub-chat).
+    let title: String?
+    /// It, or the conversation it is a sub-chat of, is archived: it can be read but not continued.
+    let archived: Bool?
 }
 
 /// The task list an agent keeps for a conversation (`update_plan`). `updatedAt` tells one version of it from the next.
@@ -526,6 +542,8 @@ struct SearchResult: Codable, Equatable, Identifiable {
     let entryId: Int
     let role: String
     let snippet: String
+    /// Found in an archived conversation.
+    let archived: Bool?
     var id: Int { entryId }
 }
 

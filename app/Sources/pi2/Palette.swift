@@ -27,7 +27,7 @@ struct PaletteView: View {
         for agent in engine.agents where matches("new conversation with \(agent.name)") {
             result.append(Entry(id: "new-\(agent.id)", icon: "plus.bubble", title: "New conversation with \(agent.name)", detail: "Agent") { model.newConversation(agentId: agent.id) })
         }
-        let places: [(String, String, Selection)] = [("Inbox", "tray", .inbox), ("Activity", "waveform.path.ecg", .activity), ("Usage", "chart.bar", .usage)]
+        let places: [(String, String, Selection)] = [("Inbox", "tray", .inbox), ("Activity", "waveform.path.ecg", .activity), ("Usage", "chart.bar", .usage), ("Archive", "archivebox", .archive)]
         for (name, icon, selection) in places where matches("go to \(name)") {
             result.append(Entry(id: "go-\(name)", icon: icon, title: "Go to \(name)", detail: "View") { model.selection = selection })
         }
@@ -43,8 +43,15 @@ struct PaletteView: View {
                 model.selection = .conversation(conversation.id)
             })
         }
+        // Archived conversations are found only by typing: they were put away so as not to be in the way.
+        for conversation in engine.archived where !needle.isEmpty && matches(conversation.title) {
+            let agent = engine.agent(conversation.agentId)?.name ?? ""
+            result.append(Entry(id: "a-\(conversation.id)", icon: "archivebox", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: agent.isEmpty ? "Archived" : "\(agent) · archived") {
+                model.selection = .conversation(conversation.id)
+            })
+        }
         for message in messages {
-            result.append(Entry(id: "m-\(message.entryId)", icon: "text.magnifyingglass", title: message.snippet, detail: "In “\(message.title.isEmpty ? "New conversation" : message.title)”") {
+            result.append(Entry(id: "m-\(message.entryId)", icon: "text.magnifyingglass", title: message.snippet, detail: "In “\(message.title.isEmpty ? "New conversation" : message.title)”\(message.archived == true ? " · archived" : "")") {
                 model.selection = .conversation(message.conversationId)
             })
         }

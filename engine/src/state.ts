@@ -54,6 +54,11 @@ export type Meta = {
 	title: string;
 	createdAt: number;
 	updatedAt: number;
+	/** When the person archived it: out of the sidebar, kept in the Archive, and restorable (archive.ts). */
+	archivedAt?: number;
+	/** The person deleted it: it is shown nowhere again. */
+	deleted?: boolean;
+	/** What deleting set before there was an archive. Turned into `deleted` once, at start-up. */
 	archived?: boolean;
 	access: Access;
 	agentId?: string;

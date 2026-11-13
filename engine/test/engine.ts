@@ -30,6 +30,8 @@ class Client {
 	socket!: Socket;
 	conversations = new Map<number, Conv>();
 	library: { id: number; title: string; busy: boolean; parent: number | null }[] = [];
+	archived: { id: number; title: string; archivedAt: number; subChats: number }[] = [];
+	autoArchiveDays: number | null = null;
 	agents: { id: string; name: string; access: string; delegates: string[] }[] = [];
 	inbox: InboxItem[] = [];
 	activity: { conversationId: number; rootConversationId: number; status: string }[] = [];
@@ -78,7 +80,11 @@ class Client {
 	}
 
 	receive(message: any): void {
-		if (message.event === "library") this.library = message.conversations;
+		if (message.event === "library") {
+			this.library = message.conversations;
+			this.archived = message.archived;
+			this.autoArchiveDays = message.autoArchiveDays;
+		}
 		else if (message.event === "agents") this.agents = message.agents;
 		else if (message.event === "inbox") this.inbox = message.items;
 		else if (message.event === "activity") this.activity = message.runs;
@@ -2099,6 +2105,95 @@ try {
 	await client.call("endpoints.remove", { id: endpointId });
 	await client.until("endpoint gone", () => !client.providers.some((p) => p.id === endpointId));
 	step("switch a conversation's model; remove the endpoint");
+
+	// ---- The Archive
+	{
+		const { migrateDeleted, dueForArchive, validateAutoArchive } = await import("../src/archive.ts");
+		// Deleting used to set `archived`. Those stay deleted: they must not turn up in the Archive.
+		const before: any = { "1": { title: "gone", archived: true }, "2": { title: "kept" }, "3": { title: "stale flag", archived: false } };
+		assert.equal(migrateDeleted(before), true);
+		assert.deepEqual(before, { "1": { title: "gone", deleted: true }, "2": { title: "kept" }, "3": { title: "stale flag" } });
+		assert.equal(migrateDeleted(before as never), false);
+
+		// What goes unused long enough is due; what is recent, working, waiting, or already put away is not.
+		const DAY = 86_400_000;
+		const now = 100 * DAY;
+		const shelf: any = {
+			"1": { updatedAt: now - 40 * DAY },
+			"2": { updatedAt: now - 5 * DAY },
+			"3": { updatedAt: now - 40 * DAY, archivedAt: 1 },
+			"4": { updatedAt: now - 40 * DAY, deleted: true },
+			"5": { updatedAt: now - 40 * DAY },
+			"6": { updatedAt: now - 2 * DAY, parent: 5 },
+			"7": { updatedAt: now - 40 * DAY },
+			"8": { updatedAt: now - 40 * DAY },
+			"9": { updatedAt: now - 40 * DAY, parent: 8 },
+		};
+		const active = (id: number) => id === 7 || id === 9;
+		assert.deepEqual(dueForArchive(shelf, now, 30, active), [1], "a recent sub-chat or one at work keeps its conversation");
+		assert.deepEqual(dueForArchive(shelf, now, null, active), []);
+		assert.deepEqual(dueForArchive(shelf, now, 1, () => false), [1, 2, 5, 7, 8]);
+		assert.equal(validateAutoArchive(null), null);
+		assert.equal(validateAutoArchive(30), 30);
+		for (const bad of [0, -1, 1.5, "30", 99_999]) assert.throws(() => validateAutoArchive(bad), /whole number of days/);
+
+		// Archived: out of the list, in the Archive, found by search, and closed to new messages.
+		const { id: z } = await client.call("conversation.create");
+		await client.call("conversation.open", { id: z });
+		await client.call("submit", { id: z, text: "remember the word quokka-archive" });
+		await client.idle(z);
+		await client.call("conversation.archive", { id: z });
+		const shelved = await client.until("in the archive", () => (client.library.some((x) => x.id === z) ? undefined : client.archived.find((x) => x.id === z)));
+		assert.ok(shelved.archivedAt > 0);
+		assert.equal(shelved.subChats, 0);
+		await assert.rejects(client.call("submit", { id: z, text: "more" }), /archived/);
+		for (const method of ["continue", "conversation.compact", "conversation.reset"]) await assert.rejects(client.call(method, { id: z }), /archived/, method);
+		const hit = (await client.call("search", { query: "quokka-archive" })).results.find((r: any) => r.conversationId === z);
+		assert.equal(hit?.archived, true, "an archived conversation is still found, and says it is archived");
+
+		// Restored: back in the list and open to messages again.
+		await client.call("conversation.unarchive", { id: z });
+		await client.until("restored", () => client.library.some((x) => x.id === z) && !client.archived.some((x) => x.id === z));
+		await client.call("submit", { id: z, text: "back again" });
+		await client.idle(z);
+
+		// Archiving stops what the conversation was waiting for.
+		const { id: w } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: w, access: "ask" });
+		await client.call("conversation.open", { id: w });
+		await client.call("submit", { id: w, text: "/bash echo never-runs" });
+		await client.until("an approval waiting", () => client.inbox.find((i) => i.conversationId === w));
+		await client.call("conversation.archive", { id: w });
+		await client.until("nothing waiting once archived", () => !client.inbox.some((i) => i.conversationId === w) && client.archived.some((x) => x.id === w));
+
+		// A sub-chat goes with the conversation it belongs to, and comes back with it.
+		assert.ok(client.library.some((x) => x.id === m) && client.library.some((x) => x.id === childId));
+		await assert.rejects(client.call("conversation.archive", { id: childId }), /together with/);
+		await client.call("conversation.archive", { id: m });
+		const parent = await client.until("parent and sub-chat out of the list", () => (client.library.some((x) => x.id === m || x.id === childId) ? undefined : client.archived.find((x) => x.id === m)));
+		assert.ok(parent.subChats >= 1);
+		assert.ok(!client.archived.some((x) => x.id === childId), "the Archive lists conversations, not their sub-chats");
+		await assert.rejects(client.call("submit", { id: childId, text: "hello" }), /archived/);
+		await client.call("conversation.unarchive", { id: m });
+		await client.until("parent and sub-chat back", () => client.library.some((x) => x.id === m) && client.library.some((x) => x.id === childId));
+
+		// Deleted: in neither place, not found, and not to be brought back.
+		await client.call("conversation.delete", { id: w });
+		await client.until("deleted", () => !client.archived.some((x) => x.id === w) && !client.library.some((x) => x.id === w));
+		await assert.rejects(client.call("conversation.unarchive", { id: w }), /deleted/);
+		await assert.rejects(client.call("conversation.archive", { id: w }), /deleted/);
+		await assert.rejects(client.call("submit", { id: w, text: "again" }), /deleted/);
+		assert.ok(!(await client.call("search", { query: "never-runs" })).results.some((r: any) => r.conversationId === w));
+
+		// Archiving on its own: the setting is checked, announced, and leaves alone what was used today.
+		await assert.rejects(client.call("settings.setAutoArchive", { days: 0 }), /whole number of days/);
+		await client.call("settings.setAutoArchive", { days: 30 });
+		await client.until("the setting is announced", () => client.autoArchiveDays === 30);
+		assert.ok(client.library.some((x) => x.id === z));
+		await client.call("settings.setAutoArchive", { days: null });
+		await client.until("the setting is off", () => client.autoArchiveDays === null);
+		step("archive: out of the list and into the Archive, still searched, closed to messages, restored; sub-chats go with their conversation; delete is separate and final; unused conversations are archived after the days chosen");
+	}
 
 	// ---- Export and backup (taken before the archive below, so a restore brings that conversation back)
 	const markdown = (await client.call("conversation.export", { id: b, format: "markdown" })).text as string;

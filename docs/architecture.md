@@ -40,6 +40,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/plan.ts` | The agent's task list |
+| `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
@@ -82,4 +83,5 @@ Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folde
 - Anything running as you can talk to the engine's socket. With computer use on, that includes asking an agent to use the apps you allowed.
 - The browser: pi² has to be open; a frame from another site is listed with its address rather than read in place; a page that is not showing in the Browser window counts as hidden to the site. See [browser.md](browser.md).
 - Builds are not signed with a Developer ID or notarized. The script has a path for it (`SIGN_IDENTITY`, `NOTARY_PROFILE`), which has not been exercised.
+- Deleting a conversation stops pi² showing it; it does not erase its text from the session file, because pi durable cannot remove a conversation. See [archive.md](archive.md).
 - Not built: remote environments over SSH, MCP sign-in (OAuth), per-run budgets, automatic updates, loading very old messages in very long conversations.
