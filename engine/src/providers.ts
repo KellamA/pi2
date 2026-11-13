@@ -145,6 +145,11 @@ function demoProvider(): Provider {
 			const [name, ...rest] = prompt.slice(6).split(" ");
 			return fauxAssistantMessage([fauxText("Calling that tool."), fauxToolCall(name!, JSON.parse(rest.join(" ") || "{}"))], { stopReason: "toolUse" });
 		}
+		if (prompt === "/system") {
+			// Answers with the system prompt and the tools the model was offered, so tests can see what reaches it.
+			const system = (request.messages as readonly { role?: string; content?: unknown }[]).filter((message) => message.role === "system");
+			return fauxAssistantMessage(`SYSTEM PROMPT\n${system.map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content))).join("\n")}`);
+		}
 		if (prompt.startsWith("/mcp ")) {
 			// "/mcp <tool name> <json arguments>"
 			const [name, ...rest] = prompt.slice(5).split(" ");

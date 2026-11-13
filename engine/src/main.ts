@@ -435,6 +435,7 @@ function broadcast(message: unknown): void {
 }
 
 library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
+for (const feature of host.features) await feature.start?.();
 let busyConversations = new Set<number>();
 /** Every conversation with live work, sub-chats included. */
 let working = new Set<number>();
@@ -1303,6 +1304,7 @@ const server = createServer((socket) => {
 	send(client, recoveryEvent());
 	send(client, usageSummary);
 	send(client, mcpEvent());
+	for (const feature of host.features) for (const event of feature.greeting?.() ?? []) send(client, event);
 	void providersEvent().then((event) => send(client, event));
 	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line
 	// are kept apart and joined once, at its end: searching one growing string for the line break would copy all of it
