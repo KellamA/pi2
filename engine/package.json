@@ -14,7 +14,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "MIT",
+  "license": "UNLICENSED",
   "type": "module",
   "dependencies": {
     "@earendil-works/chord": "1.5.2",

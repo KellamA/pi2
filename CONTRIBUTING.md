@@ -33,7 +33,3 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 - TypeScript: strict, run directly by Node, tabs for indentation.
 - Comments explain why, not what.
 - Text the person reads is plain and specific: say what happened and what to do next.
-
-## License
-
-pi² is [MIT licensed](LICENSE). By sending a pull request you agree that your contribution is released under the same license.
