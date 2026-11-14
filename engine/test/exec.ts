@@ -3,31 +3,31 @@
 // let that wait run out before the output already in the pipe was read, so the command succeeded with no output.
 // scripts/patch-dependencies.ts fixes it until pi-durable does; this fails if the fix is missing.
 //
-// Each command exits at once and leaves a child that writes 50 ms later, and the event loop is then kept busy for
-// 150 ms after the exit, as it is in an engine that is starting up.
+// Each command exits at once and leaves a child that holds the pipe open. The event loop is then kept busy, as it is in
+// an engine that is starting up: while it is, the child is told to write, and the loop stays busy until the child says
+// it has written and for at least 150 ms, longer than the library's 100 ms wait for more output. So when the loop
+// turns, the wait has run out and the output is certainly in the pipe, however slow the machine is (issue #60).
 //
 // It also checks that a command's standard input is closed (issue #45): `cat` and `read` with nothing to read return at
 // once, instead of waiting for input that never comes. And that the `bash` agents get says it has a time limit.
 
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The environment imports spawn from node:child_process; this wraps it before the environment is loaded.
-let busyAfterExit = 0;
+// The environment imports spawn from node:child_process; this wraps it before the environment is loaded. The library
+// handles "exit" (and starts its wait for more output) first, then whatever is in busyAfterExit runs.
+let busyAfterExit: (() => void) | undefined;
 const realSpawn = childProcess.spawn;
 (childProcess as { spawn: unknown }).spawn = (...args: Parameters<typeof realSpawn>) => {
 	const child = realSpawn(...args);
 	const emit = child.emit.bind(child);
 	child.emit = ((event: string, ...rest: unknown[]) => {
 		const result = emit(event, ...rest);
-		if (event === "exit" && busyAfterExit > 0) {
-			const until = Date.now() + busyAfterExit;
-			while (Date.now() < until) {}
-		}
+		if (event === "exit") busyAfterExit?.();
 		return result;
 	}) as typeof child.emit;
 	return child;
@@ -46,12 +46,25 @@ const run = async (command: string) => {
 };
 
 try {
-	busyAfterExit = 150;
+	const pause = new Int32Array(new SharedArrayBuffer(4)); // Atomics.wait on it sleeps without letting the loop turn
 	for (let i = 0; i < 5; i++) {
-		const { output } = await run("(sleep 0.05; echo late) & echo early");
-		assert.equal(output, "early\nlate\n", "output still in the pipe when the engine gets to it is kept");
+		// The child writes only once told to, so not before the exit, and the engine cannot have read it yet. It then
+		// says it has written (write returned, so the text is in the pipe) and keeps the pipe open.
+		const go = join(folder, `go-${i}`);
+		const written = join(folder, `written-${i}`);
+		let childWrote = false;
+		busyAfterExit = () => {
+			const until = Date.now() + 150;
+			const giveUp = Date.now() + 30_000;
+			writeFileSync(go, "");
+			while (!(childWrote = existsSync(written)) && Date.now() < giveUp) Atomics.wait(pause, 0, 0, 1);
+			while (Date.now() < until) {}
+		};
+		const { output } = await run(`(while [ ! -e go-${i} ]; do sleep 0.01; done; echo late; : > written-${i}; sleep 1) & echo early`);
+		busyAfterExit = undefined;
+		assert.ok(childWrote, "the background child wrote while the engine was busy");
+		assert.equal(output, "early\nlate\n", "output already in the pipe when the engine gets to it is kept");
 	}
-	busyAfterExit = 0;
 	assert.equal((await run("echo plain")).output, "plain\n");
 	// What the wait is for: a background process holding the pipe open does not keep the command from finishing.
 	const held = await run("sleep 5 & echo held");
