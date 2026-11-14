@@ -682,10 +682,32 @@ try {
 	assert.ok(toolResults(k).at(-1)!.isError && /closed before/.test(toolResults(k).at(-1)!.text));
 	assert.equal((await use({ action: "list_apps" })).text, "ok", "the app that was there before takes over again");
 	assert.deepEqual(sentToApp("list_apps").at(-1).apps, [NOTES, MAIL, "com.apple.Safari"], "the app is told which apps to list");
+
+	// pi² itself is never usable; a copy of it under another bundle id is look-only, so an agent can check a change to the app.
+	const PI2 = "dev.pi2.app";
+	const COPY = "dev.pi2.app.test";
+	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, PI2] } } }), /cannot be given.*pi² itself/);
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY] } } });
+	await client.until("the copy of pi² added", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(COPY));
+	const itself = await use({ action: "screenshot", app: PI2 });
+	assert.ok(itself.isError && sentToApp("screenshot", PI2).length === 0, "pi² itself cannot even be looked at");
+	await use({ action: "open_app", app: COPY }, false);
+	const opening = await client.until("approval to open the copy", () => client.inbox.find((i) => i.tool === "computer"));
+	await client.call("inbox.decide", { id: opening.id, decision: "once" });
+	await settled(k, computerCalls);
+	assert.ok(!toolResults(k).at(-1)!.isError && sentToApp("open_app", COPY).length === 1, "a copy of pi² can be opened");
+	const copyShot = await use({ action: "screenshot", app: COPY });
+	assert.ok(!copyShot.isError && sentToApp("screenshot", COPY).length === 1, "a copy of pi² can be looked at");
+	for (const acting of [{ action: "click", element: 1 }, { action: "click", x: 10, y: 10 }, { action: "type", text: "hi" }, { action: "key", text: "return" }, { action: "menu", path: "File > New" }, { action: "scroll", dy: 1 }]) {
+		const refused = await use({ ...acting, app: COPY });
+		assert.ok(refused.isError && /only be looked at/.test(refused.text), `a copy of pi² refuses ${JSON.stringify(acting)}`);
+	}
+	assert.equal(client.inbox.length, 0, "acting on a copy of pi² is refused without asking");
+	assert.ok(["click", "type", "key", "menu", "scroll"].every((action) => sentToApp(action, COPY).length === 0), "nothing that acts reaches a copy of pi²");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: false, apps: [NOTES] } } });
 	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
 	assert.equal((await use({ action: "list_apps" })).isError, true, "switched off, the tool is taken away from the conversation");
-	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing");
+	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing; a copy of pi² is look-only");
 
 	// ---- The browser: the engine decides what may be opened and asks before acting; a fake app stands in for the pages
 	const { checkAddress } = await import("../src/browser.ts");
