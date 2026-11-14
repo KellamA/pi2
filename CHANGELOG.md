@@ -6,6 +6,7 @@ What changed in each version, newest first.
 
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
+- An agent could not look at a picture larger than 2,000 pixels or 4.5 MB with `read`, such as a screenshot of a window on a Retina display, and could not read BMP at all. `read` now scales such a picture down to fit, converts BMP, and tells the agent the size before and after.
 
 ## 0.7.0
 

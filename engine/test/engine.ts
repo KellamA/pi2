@@ -8,6 +8,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { crc32, deflateSync } from "node:zlib";
 import { newestOnly } from "../src/providers.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
@@ -527,6 +528,56 @@ try {
 			eyes.close();
 		}
 		step("attachments: pictures and files reach the model and show in the transcript; limits and text-only models refuse plainly; an endpoint model marked as seeing pictures gets them");
+	}
+
+	// ---- Pictures read with `read`: one larger than the model takes is shrunk to fit, one within it is left as it is
+	{
+		/** A PNG of one colour, written here so no picture is kept in the repository. */
+		const png = (width: number, height: number) => {
+			const chunk = (type: string, data: Buffer) => {
+				const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+				const length = Buffer.alloc(4);
+				length.writeUInt32BE(data.length);
+				const crc = Buffer.alloc(4);
+				crc.writeUInt32BE(crc32(body));
+				return Buffer.concat([length, body, crc]);
+			};
+			const header = Buffer.alloc(13);
+			header.writeUInt32BE(width, 0);
+			header.writeUInt32BE(height, 4);
+			header.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+			const row = Buffer.alloc(1 + width * 3, 0x60);
+			row[0] = 0; // no filter
+			const pixels = deflateSync(Buffer.concat(Array.from({ length: height }, () => row)));
+			return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header), chunk("IDAT", pixels), chunk("IEND", Buffer.alloc(0))]);
+		};
+		const sizeOf = (picture: Buffer) => ({ width: picture.readUInt32BE(16), height: picture.readUInt32BE(20) });
+		const wide = png(3000, 1200);
+		const small = png(40, 30);
+		writeFileSync(join(workdir, "wide.png"), wide);
+		writeFileSync(join(workdir, "small.png"), small);
+		const { id: pics } = await client.call("conversation.create", { agentId: "forge" });
+		await client.call("conversation.open", { id: pics });
+		await client.call("conversation.configure", { id: pics, cwd: workdir });
+		const readPicture = async (name: string, results: number) => {
+			await client.call("submit", { id: pics, text: `/read ${name}` });
+			await settled(pics, results);
+			const result = toolResults(pics)[results - 1]! as any;
+			assert.ok(!result.isError && result.images === 1, `${name} is read as a picture: ${result.text}`);
+			return { result, image: await client.call("conversation.image", { id: pics, entryId: result.id, index: 0 }) };
+		};
+
+		const shrunk = await readPicture("wide.png", 1);
+		assert.equal(shrunk.image.mimeType, "image/png");
+		const to = sizeOf(Buffer.from(shrunk.image.data, "base64"));
+		assert.deepEqual(to, { width: 2000, height: 800 }, "shrunk to the model's 2000 px, keeping its shape");
+		assert.ok(shrunk.image.data.length <= 4.5 * 1024 * 1024);
+		assert.match(shrunk.result.text, /Resized from 3000x1200 to 2000x800\. Multiply coordinates by 1\.50/, "the model is told it was resized");
+
+		const same = await readPicture("small.png", 2);
+		assert.deepEqual(same.image, { data: small.toString("base64"), mimeType: "image/png" }, "a picture within the limits comes back as it is");
+		assert.doesNotMatch(same.result.text, /Resized|Converted/);
+		step("read: a picture wider than the model takes is shrunk to fit and the model is told; a small one is unchanged");
 	}
 
 	// ---- Editing agents
