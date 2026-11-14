@@ -177,6 +177,9 @@ try {
 			engine.kill("SIGTERM");
 			await exited;
 		}
+		// In a temporary folder with a long path, the socket is reached through a link in /tmp (src/socket.ts).
+		const reached = socketPathFor(home);
+		if (reached !== join(home, "engine.sock")) rmSync(join(reached, ".."), { force: true });
 	}
 } finally {
 	rmSync(scratch, { recursive: true, force: true });

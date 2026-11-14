@@ -13,6 +13,12 @@ import { newestOnly } from "../src/providers.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
+/** Folders a check makes in the temporary folder, removed at the end with the data folder whether the checks passed or not. */
+const scratchFolders: string[] = [];
+function removedAtEnd(folder: string): string {
+	scratchFolders.push(folder);
+	return folder;
+}
 const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 // The demo model types slowly for people; every engine this test starts makes it fast.
@@ -643,7 +649,15 @@ try {
 	const NOTES = "com.example.notes";
 	const MAIL = "com.example.mail";
 	const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: ["com.apple.Terminal"] } } }), /cannot be given/);
+	// macOS finds an app by its bundle id without regard to case, and so do the lists.
+	for (const terminal of ["com.apple.Terminal", "com.apple.terminal", "COM.APPLE.TERMINAL"]) {
+		await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [terminal] } } }), /cannot be given/, `${terminal} is refused`);
+	}
+	const policy = await import("../src/computer.ts");
+	assert.ok(["com.apple.terminal", "Com.Apple.Terminal", "DEV.PI2.APP", "com.1PASSWORD.1password.helper"].every(policy.isNever), "never means never, in any case");
+	assert.ok(["com.apple.safari", "COM.GOOGLE.CHROME", "Dev.Pi2.App.Test"].every(policy.isViewOnly), "look-only means look-only, in any case");
+	assert.ok(!policy.isNever("dev.pi2.apples") && !policy.isViewOnly("com.apple.safariX"), "only a whole bundle id, or one under it, matches");
+	assert.deepEqual(policy.validateComputer({ apps: [NOTES, "COM.EXAMPLE.NOTES", MAIL, "com.example.Mail"] }).apps, [NOTES, MAIL], "two spellings of one app are kept once");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, "com.apple.Safari"] } } });
 	await client.until("computer use saved", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === true);
 	assert.equal((client.agents.find((x) => x.id === custom) as any).computer.ask, true, "asking first is the default");
@@ -694,6 +708,12 @@ try {
 
 	const viewOnly = await use({ action: "click", app: "com.apple.Safari", x: 10, y: 10 });
 	assert.ok(viewOnly.isError && /only be looked at/.test(viewOnly.text));
+	const viewOnlyCase = await use({ action: "click", app: "COM.APPLE.SAFARI", x: 10, y: 10 });
+	assert.ok(viewOnlyCase.isError && /only be looked at/.test(viewOnlyCase.text), "a look-only app spelled another way is still look-only");
+	const neverCase = await use({ action: "screenshot", app: "com.apple.terminal" });
+	assert.ok(neverCase.isError && client.computerRequests.every((r) => r.app?.toLowerCase() !== "com.apple.terminal"), "a never app spelled another way does not reach the app");
+	await use({ action: "click", app: "COM.Example.Notes", element: 1 });
+	assert.ok(client.inbox.length === 0 && sentToApp("click", NOTES).length === 3, "another spelling of a given app is that app: same approval, sent as it was given");
 	const notAllowed = await use({ action: "screenshot", app: MAIL });
 	assert.ok(notAllowed.isError && /may not use/.test(notAllowed.text));
 	const incomplete = await use({ action: "click", app: NOTES });
@@ -737,11 +757,15 @@ try {
 	// pi² itself is never usable; a copy of it under another bundle id is look-only, so an agent can check a change to the app.
 	const PI2 = "dev.pi2.app";
 	const COPY = "dev.pi2.app.test";
-	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, PI2] } } }), /cannot be given.*pi² itself/);
+	for (const spelling of [PI2, "Dev.Pi2.App", "DEV.PI2.APP"]) {
+		await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, spelling] } } }), /cannot be given.*pi² itself/, `${spelling} is refused`);
+	}
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY] } } });
 	await client.until("the copy of pi² added", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(COPY));
 	const itself = await use({ action: "screenshot", app: PI2 });
 	assert.ok(itself.isError && sentToApp("screenshot", PI2).length === 0, "pi² itself cannot even be looked at");
+	const itselfCase = await use({ action: "screenshot", app: "DEV.PI2.APP" });
+	assert.ok(itselfCase.isError && client.computerRequests.every((r) => r.app?.toLowerCase() !== PI2), "nor can pi² itself spelled another way");
 	await use({ action: "open_app", app: COPY }, false);
 	const opening = await client.until("approval to open the copy", () => client.inbox.find((i) => i.tool === "computer"));
 	await client.call("inbox.decide", { id: opening.id, decision: "once" });
@@ -755,6 +779,14 @@ try {
 	}
 	assert.equal(client.inbox.length, 0, "acting on a copy of pi² is refused without asking");
 	assert.ok(["click", "type", "key", "menu", "scroll"].every((action) => sentToApp(action, COPY).length === 0), "nothing that acts reaches a copy of pi²");
+	// A copy given under another spelling is still a copy: looked at, never acted on.
+	const COPY_CASE = "Dev.PI2.App.Test";
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY_CASE] } } });
+	await client.until("the copy of pi² added under another spelling", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(COPY_CASE));
+	assert.ok(!(await use({ action: "screenshot", app: COPY_CASE })).isError && sentToApp("screenshot", COPY_CASE).length === 1, "a copy of pi² spelled another way can be looked at");
+	const copyCase = await use({ action: "click", app: "dev.pi2.app.TEST", element: 1 });
+	assert.ok(copyCase.isError && /only be looked at/.test(copyCase.text) && client.inbox.length === 0, "a copy of pi² spelled another way refuses a click");
+	assert.ok(client.computerRequests.every((r) => r.action !== "click" || r.app?.toLowerCase() !== COPY), "no click reaches a copy of pi² in any spelling");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: false, apps: [NOTES] } } });
 	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
 	assert.equal((await use({ action: "list_apps" })).isError, true, "switched off, the tool is taken away from the conversation");
@@ -1032,7 +1064,7 @@ try {
 		await client.until("pilot saved", () => client.agents.some((x) => x.id === pilot));
 
 		// -- Project instructions
-		const project = realpathSync(mkdtempSync(join(tmpdir(), "pi2-project-")));
+		const project = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-project-"))));
 		writeFileSync(join(project, "AGENTS.md"), "Always indent with tabs.\n");
 		writeFileSync(join(project, "CLAUDE.md"), "Claude-only notes.\n");
 		const p1 = await open(pilot, project);
@@ -1056,9 +1088,9 @@ try {
 		assert.ok(cut.includes("is longer than 24,000 characters") && cut.includes("x".repeat(24_000)) && !cut.includes("x".repeat(24_001)), "a long file is cut, with a note");
 		step("project instructions: AGENTS.md, else CLAUDE.md, read fresh at every message, cut when long");
 
-		const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-outside-")));
+		const outside = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-outside-"))));
 		writeFileSync(join(outside, "secret.md"), "OUTSIDE-SECRET");
-		const linked = realpathSync(mkdtempSync(join(tmpdir(), "pi2-linked-")));
+		const linked = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-linked-"))));
 		symlinkSync(join(outside, "secret.md"), join(linked, "AGENTS.md"));
 		const p2 = await open(pilot, linked);
 		said = await say(p2, "/system");
@@ -1071,7 +1103,7 @@ try {
 
 		// A repository: every folder from its top down to the conversation's is looked in, and none above the top.
 		const { readProjectInstructions } = await import("../src/knowledge.ts");
-		const above = realpathSync(mkdtempSync(join(tmpdir(), "pi2-above-")));
+		const above = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-above-"))));
 		writeFileSync(join(above, "AGENTS.md"), "ABOVE-THE-REPOSITORY");
 		const repo = join(above, "repo");
 		const sub = join(repo, "engine");
@@ -1191,8 +1223,8 @@ try {
 	{
 		// look (engine/src/look.ts)
 		const { symlinkSync } = await import("node:fs");
-		const tree = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-")));
-		const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-outside-")));
+		const tree = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-"))));
+		const outside = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-outside-"))));
 		writeFileSync(join(outside, "secret.txt"), "needle outside\n");
 		mkdirSync(join(tree, "src", "deep"), { recursive: true });
 		mkdirSync(join(tree, "node_modules", "pkg"), { recursive: true });
@@ -1296,8 +1328,8 @@ try {
 
 	{
 		// documents (engine/src/documents.ts)
-		const folder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-")));
-		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-outside-")));
+		const folder = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-"))));
+		const elsewhere = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-outside-"))));
 		const { id: dc } = await client.call("conversation.create");
 		await client.call("conversation.open", { id: dc });
 		let docCalls = 0;
@@ -1391,8 +1423,8 @@ try {
 	{
 		// command rules (engine/src/rules.ts)
 		const { chmodSync } = await import("node:fs");
-		const project = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-")));
-		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-other-")));
+		const project = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-"))));
+		const elsewhere = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-other-"))));
 		for (const dir of [project, elsewhere]) {
 			writeFileSync(join(dir, "run-tests"), '#!/bin/sh\necho "tests ran: $*"\n');
 			chmodSync(join(dir, "run-tests"), 0o755);
@@ -1663,7 +1695,7 @@ try {
 		// End to end: a second engine on its own data folder and Keychain service, with two subscription sign-ins
 		// stored there as pi-ai stores them, not due for renewal (so no real sign-in server is called), and a local
 		// stand-in for each usage address.
-		const limitsHome = mkdtempSync(join(tmpdir(), "pi2-limits-"));
+		const limitsHome = removedAtEnd(mkdtempSync(join(tmpdir(), "pi2-limits-")));
 		const store = new KeychainCredentialStore(limitsHome, `${KEYCHAIN_SERVICE}.limits`);
 		const claudeToken = "sk-ant-oat01-limits-test-not-a-real-token";
 		const codexToken = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-limits-test" } })).toString("base64url")}.not-signed`;
@@ -2407,5 +2439,6 @@ try {
 	cleanKeychain();
 	rmSync(home, { recursive: true, force: true });
 	rmSync(workdir, { recursive: true, force: true });
+	for (const folder of scratchFolders) rmSync(folder, { recursive: true, force: true });
 }
 process.exit(0);
