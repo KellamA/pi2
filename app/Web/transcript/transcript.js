@@ -45,7 +45,7 @@
 	const items = new Map();
 	let order = [];
 	const results = new Map();
-	let live = { busy: false, partial: null, tools: new Map(), retrying: false };
+	let live = { busy: false, partial: null, tools: new Map(), retrying: false, setup: null };
 	let liveRevision = 0;
 	let inbox = new Map();
 	let names = { conversationId: 0, agentName: "", mcp: {}, agents: [], apps: {} };
@@ -96,6 +96,9 @@
 				tools.set(tool.callId, next);
 			}
 			const partial = isObject(message.live.partial) ? message.live.partial : null;
+			const setup = isObject(message.live.setup) && typeof message.live.setup.run === "string" ? { run: message.live.setup.run, output: str(message.live.setup.output) } : null;
+			if (setup && live.setup && live.setup.run === setup.run && live.setup.output === setup.output) revisions.set(setup, rev(live.setup));
+			else if (setup) stamp(setup);
 			live = {
 				busy: message.live.busy === true,
 				partial: partial && {
@@ -105,6 +108,7 @@
 				},
 				tools,
 				retrying: message.live.retrying === true,
+				setup,
 			};
 			liveRevision = ++revision;
 		}
@@ -691,25 +695,27 @@
 
 	/**
 	 * The agent's set-up command in a new worktree, drawn as a command row. The engine writes one entry as it starts and
-	 * one as it ends; the start shows, with a spinner, only until its end arrives.
+	 * one as it ends; the start shows, with a spinner and what it has printed so far (sent with the live state), only
+	 * until its end arrives. Both are one call, by run, so a row the person opened stays open when it ends.
 	 */
 	function setupSpec(item, visible) {
 		const details = isObject(item.details) ? item.details : {};
 		const running = details.status === "running";
 		const ended = (other) => other.kind === "setup" && isObject(other.details) && other.details.run === details.run && other.details.status !== "running";
 		if (running && visible.some(ended)) return null;
-		const call = { callId: "setup:" + item.id, name: "pi2_setup", arguments: { command: str(details.command) } };
+		const call = { callId: "setup:" + (str(details.run) || item.id), name: "pi2_setup", arguments: { command: str(details.command) } };
+		const output = running && live.setup && live.setup.run === details.run ? live.setup : null;
 		const fixed = running
-			? { status: "running", result: undefined }
+			? { status: "running", result: undefined, live: output ? { callId: call.callId, name: call.name, status: "running", output: output.output } : undefined }
 			: { status: details.status === "failed" ? "failed" : "done", result: { id: item.id, text: str(details.output), isError: details.status === "failed", details } };
-		return { key: "s" + item.id, sig: "s" + rev(item) + "/" + fixed.status, build: () => el("div", "tool"), update: (row) => fillTool(row, call, "", fixed) };
+		return { key: "s" + item.id, sig: "s" + rev(item) + "/" + fixed.status + "/" + rev(output), build: () => el("div", "tool"), update: (row) => fillTool(row, call, "", fixed) };
 	}
 
 	function fillTool(row, call, phase, fixed) {
 		const key = "t:" + call.callId;
 		const status = fixed ? fixed.status : statusOf(call, phase);
 		const result = fixed ? fixed.result : results.get(call.callId);
-		const liveTool = live.tools.get(call.callId);
+		const liveTool = fixed ? fixed.live : live.tools.get(call.callId);
 		const info = T.describe(call, status, result, liveTool, names);
 		const sections = T.detailFor(call, status, result, liveTool);
 		row.className = "tool " + status;
@@ -754,7 +760,7 @@
 		head.appendChild(toggle);
 		row.appendChild(body);
 		const liveOutput = liveTool && str(liveTool.output) !== "";
-		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode"].includes(call.name));
+		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode", "pi2_setup"].includes(call.name));
 		const apply = (value) => {
 			row.classList.toggle("open", value);
 			body.hidden = !value;
@@ -766,7 +772,13 @@
 		};
 		apply(opened.get(key) ?? defaultOpen);
 		const output = body.querySelector(".output");
-		if (output) output.scrollTop = followOutput ? output.scrollHeight : oldScroll;
+		if (output) {
+			const place = () => (output.scrollTop = followOutput ? output.scrollHeight : oldScroll);
+			place();
+			// A row built before it is in the page has no height yet: one shown with output already running (a set-up
+			// or a command still going when the conversation is opened) would otherwise stay at its top.
+			if (!row.isConnected) setTimeout(place, 0);
+		}
 		head.onclick = (event) => {
 			if (selectionInside(head) || event.target.closest("a")) return;
 			userToggle(row, () => {

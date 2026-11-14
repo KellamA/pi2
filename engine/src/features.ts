@@ -36,6 +36,8 @@ export type Engine = {
 	busy(id: number): boolean;
 	/** How many apps are connected. */
 	apps(): number;
+	/** Send a conversation's state again to the apps showing it: for a change to what a feature's `state` reads from outside the conversation's documents. */
+	stateChanged(id: number): void;
 };
 
 export type FeatureParts = {
