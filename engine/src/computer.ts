@@ -71,19 +71,30 @@ const VIEW_ONLY = [
  */
 const PI2 = "dev.pi2.app";
 
-const matches = (list: readonly string[], bundleId: string) => list.some((id) => bundleId === id || bundleId.startsWith(`${id}.`));
-export const isNever = (bundleId: string) => bundleId === PI2 || matches(NEVER, bundleId);
-export const isViewOnly = (bundleId: string) => bundleId.startsWith(`${PI2}.`) || matches(VIEW_ONLY, bundleId);
+// macOS finds an app by its bundle id without regard to case, so every comparison here ignores it too: otherwise
+// `com.apple.terminal` would slip past a list that says `com.apple.Terminal`. ComputerPolicy in the app does the same.
+const lower = (bundleId: string) => bundleId.toLowerCase();
+const matches = (list: readonly string[], bundleId: string) =>
+	list.some((entry) => {
+		const id = lower(entry);
+		return lower(bundleId) === id || lower(bundleId).startsWith(`${id}.`);
+	});
+export const isNever = (bundleId: string) => lower(bundleId) === PI2 || matches(NEVER, bundleId);
+export const isViewOnly = (bundleId: string) => lower(bundleId).startsWith(`${PI2}.`) || matches(VIEW_ONLY, bundleId);
+/** `app` as it is spelled in `apps`, matched without regard to case, or undefined when it is not one of them. */
+export const givenApp = (apps: readonly string[], app: string) => apps.find((given) => lower(given) === lower(app));
 
 export function validateComputer(input: unknown): ComputerSettings {
 	const value = (input ?? {}) as Partial<ComputerSettings>;
 	if (value.apps !== undefined && !Array.isArray(value.apps)) throw new Error("apps must be a list of bundle IDs");
 	const apps = (value.apps ?? []).filter((app): app is string => typeof app === "string" && app.trim() !== "").map((app) => app.trim());
 	const refused = apps.find(isNever);
-	if (refused === PI2) throw new Error(`${refused} cannot be given to an agent: it is pi² itself, where an agent could approve its own requests`);
+	if (refused !== undefined && lower(refused) === PI2) throw new Error(`${refused} cannot be given to an agent: it is pi² itself, where an agent could approve its own requests`);
 	if (refused !== undefined) throw new Error(`${refused} cannot be given to an agent: it runs commands or holds secrets`);
 	if (apps.length > 40) throw new Error("An agent can be given at most 40 apps");
-	return { enabled: value.enabled === true, apps: [...new Set(apps)], ask: value.ask !== false };
+	// Two spellings of one bundle id are one app: the first spelling is kept.
+	const unique = apps.filter((app, index) => apps.findIndex((other) => lower(other) === lower(app)) === index);
+	return { enabled: value.enabled === true, apps: unique, ask: value.ask !== false };
 }
 
 export type ComputerRequest = {

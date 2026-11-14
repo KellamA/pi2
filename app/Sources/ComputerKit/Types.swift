@@ -75,10 +75,16 @@ public enum ComputerPolicy {
     /// with this one, such as a throwaway test build, is look-only, so an agent working on pi² can check a change by looking.
     static let pi2 = "dev.pi2.app"
 
+    // macOS finds an app by its bundle id without regard to case, so every comparison here ignores it too: otherwise
+    // `com.apple.terminal` would slip past a list that says `com.apple.Terminal`. The engine's lists do the same.
     private static func matches(_ list: [String], _ bundleID: String) -> Bool {
-        list.contains { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
+        let id = bundleID.lowercased()
+        return list.contains { id == $0.lowercased() || id.hasPrefix($0.lowercased() + ".") }
     }
 
-    public static func isNever(_ bundleID: String) -> Bool { bundleID == pi2 || matches(never, bundleID) }
-    public static func isViewOnly(_ bundleID: String) -> Bool { bundleID.hasPrefix(pi2 + ".") || matches(viewOnly, bundleID) }
+    /// Whether two bundle ids name the same app.
+    public static func same(_ a: String, _ b: String?) -> Bool { b.map { a.lowercased() == $0.lowercased() } ?? false }
+
+    public static func isNever(_ bundleID: String) -> Bool { same(bundleID, pi2) || matches(never, bundleID) }
+    public static func isViewOnly(_ bundleID: String) -> Bool { bundleID.lowercased().hasPrefix(pi2 + ".") || matches(viewOnly, bundleID) }
 }

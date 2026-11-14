@@ -19,7 +19,8 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 2. Keep the change to one thing. A small pull request is reviewed sooner.
 3. If you touch the engine, run `npm run check` and `npm test` in `engine/`, and add to `engine/test/engine.ts` when you add behaviour.
 4. If you touch the app, build it and try the change in a throwaway copy, as [Testing safely](#testing-safely) shows. Apart from the browser's page handling, which `pi2-browser-probe` checks, the app has no automated tests, so say in the pull request what you tried by hand.
-5. Say plainly what is and is not tested.
+5. If you touch `scripts/issue-hook`, run `scripts/test-issue-hook`. It needs `jq`, works in a temporary folder and touches no GitHub issue.
+6. Say plainly what is and is not tested.
 
 ## Testing safely
 

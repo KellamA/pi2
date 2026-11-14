@@ -32,7 +32,7 @@ import {
 	UNASKED,
 	uploadable,
 } from "./browser.ts";
-import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
+import { ACTIONS, type ComputerHost, describeComputer, givenApp, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
@@ -198,7 +198,7 @@ export function pi2Extension(host: Host): Extension {
 		if (!(ACTIONS as readonly string[]).includes(action)) return `Unknown action "${args.action}". Use one of: ${ACTIONS.join(", ")}.`;
 		if (action === "list_apps") return undefined;
 		if (args.app === undefined || args.app.trim() === "") return `${action} needs \`app\`, a bundle ID from list_apps.`;
-		if (!settings.apps.includes(args.app)) return `You may not use ${args.app}. Apps you may use: ${settings.apps.join(", ") || "none; the person adds them in this agent's settings"}.`;
+		if (givenApp(settings.apps, args.app) === undefined) return `You may not use ${args.app}. Apps you may use: ${settings.apps.join(", ") || "none; the person adds them in this agent's settings"}.`;
 		if (isNever(args.app)) return `${args.app} cannot be used by an agent.`;
 		if (!LOOKING.has(action) && action !== "open_app" && isViewOnly(args.app)) return `${args.app} can only be looked at, not controlled.`;
 		if (action === "click" && args.element === undefined && (args.x === undefined || args.y === undefined)) return "click needs `element`, or both `x` and `y`.";
@@ -206,6 +206,15 @@ export function pi2Extension(host: Host): Extension {
 		if (action === "scroll" && (args.dy === undefined || args.dy === 0)) return "scroll needs `dy`: pages to scroll, positive for down.";
 		if (action === "menu" && (args.path === undefined || args.path.trim() === "")) return 'menu needs `path`, such as "File > Save".';
 		return undefined;
+	};
+
+	/**
+	 * The call with `app` spelled as in the agent's settings. macOS treats bundle ids without regard to case, so one app
+	 * is one app however the agent spells it: one approval for the rest of the conversation, and one name sent to the app.
+	 */
+	const asGiven = (conversationId: ConversationId, args: ComputerArgs): ComputerArgs => {
+		const app = typeof args.app !== "string" ? undefined : givenApp(computerOf(conversationId)?.apps ?? [], args.app);
+		return app === undefined ? args : { ...args, app };
 	};
 
 	/** The request the app is sent: only the fields the action uses. */
@@ -247,7 +256,8 @@ export function pi2Extension(host: Host): Extension {
 		replay: "unsafe",
 		// One action at a time: each depends on the window the last one left.
 		executionMode: "sequential",
-		execute: async (args, api, context) => {
+		execute: async (call, api, context) => {
+			const args = asGiven(api.conversationId, call);
 			const refused = refusal(api.conversationId, args);
 			if (refused !== undefined) return { output: text(refused), isError: true };
 			// A model that cannot see images gets the list of controls and the window's text, and no picture is taken.
@@ -525,7 +535,7 @@ export function pi2Extension(host: Host): Extension {
 					if (call.name === "browser") return approveBrowser(call, api, context);
 					const meta = host.meta(api.conversationId);
 					const isComputer = call.name === "computer";
-					const args = call.arguments as ComputerArgs;
+					const args = isComputer ? asGiven(api.conversationId, call.arguments as ComputerArgs) : (call.arguments as ComputerArgs);
 					let description: string | null = null;
 					if (isComputer) {
 						// Computer use has its own rule: whatever changes something asks, app by app, whatever the file access.
