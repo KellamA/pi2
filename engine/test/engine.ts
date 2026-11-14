@@ -27,7 +27,7 @@ type State = { usage: { cost: number; tokens: number }; context: { used: number;
 type Conv = { items: Item[]; state: State };
 
 function startEngine(): ChildProcess {
-	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5", PI2_DEMO_TEXT_MODEL: "1" }, stdio: ["ignore", "ignore", "inherit"] });
+	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5", PI2_DEMO_TEXT_MODEL: "1", PI2_COMMAND_TIMEOUT_SECONDS: "3" }, stdio: ["ignore", "ignore", "inherit"] });
 }
 
 class Client {
@@ -1918,6 +1918,32 @@ try {
 		assert.ok(schedulesOf(herald).some((s) => s.id === hourly.id), "the schedules already approved stay until the person deletes them");
 		for (const s of schedulesOf(herald)) await client.call("schedules.delete", { id: s.id });
 		step("selfschedule: the person's edits keep who set it, and only the engine can mark it; switching off takes the tools away");
+	}
+	{
+		// commands (engine/src/commands.ts): this engine's default limit is 3 seconds (PI2_COMMAND_TIMEOUT_SECONDS)
+		const open = async () => {
+			const { id } = await client.call("conversation.create");
+			await client.call("conversation.open", { id });
+			await client.call("conversation.configure", { id, access: "full", cwd: workdir });
+			await client.until("full access", () => client.conversations.get(id)?.state.agent.access === "full");
+			return id as number;
+		};
+		const [stopped, longer, input] = [await open(), await open(), await open()];
+		const started = Date.now();
+		// At once, so the two waits overlap.
+		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 60; echo never-printed" });
+		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
+		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
+		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
+		assert.equal(cut.isError, true, cut.text);
+		assert.ok(cut.text.includes("begun") && !cut.text.includes("never-printed"), `what it wrote before it was stopped is kept: ${cut.text}`);
+		assert.match(cut.text, /stopped after 3 seconds, the default time limit for a command\. If it needs longer, run it again with a larger `timeout`/);
+		assert.equal(honoured.isError, false, honoured.text);
+		assert.ok(honoured.text.includes("finished-late"), `a larger timeout is honoured: ${honoured.text}`);
+		assert.equal(reader.isError, false, reader.text);
+		assert.ok(reader.text.includes("got []"), `a command reading its input gets none: ${reader.text}`);
+		assert.ok(Date.now() - started < 30_000, "the stopped command did not run its full minute");
+		step("commands: one without a timeout is stopped at the default and says how to get longer; a larger timeout is honoured; standard input is closed");
 	}
 
 	// ---- Schedules

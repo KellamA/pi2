@@ -4,6 +4,9 @@ What changed in each version, newest first.
 
 ## Unreleased
 
+### Changed
+- **Commands have a time limit.** A command an agent runs is stopped after 30 minutes, so one that never finishes no longer holds the conversation until you stop it. The agent is told the limit, can ask for longer for a command it knows is slow, and is told when the limit stopped one. A command that waits for typed input fails at once instead of waiting.
+
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
 
