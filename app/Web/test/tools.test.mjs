@@ -162,6 +162,17 @@ test("a command one of the person's rules let through says which rule", () => {
 	assert.equal(line("bash", { command: "npm test" }), "Ran npm test", "without a rule the row is as before");
 });
 
+test("a worktree's set-up command reads as pi²'s, and says how it failed", () => {
+	assert.equal(line("pi2_setup", { command: "npm ci" }, "running"), "Running the set-up command npm ci…");
+	assert.equal(line("pi2_setup", { command: "npm ci" }, "done", { text: "added 3 packages", details: { status: "done" } }), "Ran the set-up command npm ci");
+	const failed = T.describe(call("pi2_setup", { command: "npm ci" }), "failed", { text: "npm ERR!", isError: true, details: { status: "failed", reason: "exited with code 1" } }, null);
+	assert.equal(failed.title, "Ran the set-up command npm ci (exited with code 1)");
+	assert.equal(failed.glyph, "terminal");
+	const [opened] = T.detailFor(call("pi2_setup", { command: "npm ci" }), "failed", { text: "npm ERR!", isError: true }, null);
+	assert.deepEqual(opened, { kind: "command", label: "Set-up command", command: "npm ci", output: "npm ERR!", failed: true, placeholder: "(no output)" });
+	assert.equal(T.detailFor(call("pi2_setup", { command: "npm ci" }), "running", undefined, null)[0].placeholder, "Running…");
+});
+
 test("an approval for a command offers the engine's rule, and nothing else does", () => {
 	const pending = (rule, tool = "bash") => ({ id: "1", kind: "approval", tool, arguments: { command: "npm test -- --grep x" }, rule });
 	assert.deepEqual(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w" })), { words: ["npm", "test"], command: "npm test" });

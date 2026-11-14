@@ -8,11 +8,16 @@
 // app which branch it is on, whether that is a worktree, and how the branch stands: clean, changed, ahead, merged,
 // in conflict. Nothing here runs a git command that changes anything, except creating and removing a worktree when
 // the person asks for it.
+//
+// An agent can have a set-up command (`npm ci`, say) that runs once in each new worktree of its conversations, so what
+// git ignores is put back before the agent needs it. Its start and end are written into the transcript, and the
+// conversation's next request waits for it, so the agent is told how it went before it answers.
 
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { awaitWithContext } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
@@ -32,7 +37,64 @@ export type Worktree = {
 	/** The commit it started at. */
 	baseCommit: string;
 	createdAt: number;
+	/** How the agent's set-up command went in it, when there was one. */
+	setup?: Setup;
 };
+
+/** A set-up command's run in a new worktree. Written to the transcript as a `SETUP_ENTRY` when it starts and ends. */
+export type Setup = {
+	/** Which run this is, so that the transcript's start and end entries pair up. */
+	run: string;
+	command: string;
+	status: "running" | "done" | "failed";
+	/** For a failure, what happened, worded to follow "the set-up command": "exited with code 1". */
+	reason?: string;
+	seconds?: number;
+	/** The end of what it printed, standard output and errors together. */
+	output?: string;
+};
+
+/** A set-up command's transcript entry: display only, so the model never sees it (a prompt section tells it instead). */
+export const SETUP_ENTRY = "pi2.setup";
+/** Long enough for an install and a first build; a command still going after this is stopped. */
+const SETUP_TIMEOUT_MS = 15 * 60_000;
+/** How much of its output the transcript keeps: the end, where the errors are. */
+const SETUP_KEEP_CHARS = 32 * 1024;
+/** How much of a failed set-up's output the agent is shown. */
+const SETUP_TOLD_CHARS = 2_000;
+/** After SIGTERM, how long a set-up gets before SIGKILL; after it exits, how long the rest of its output may take. */
+const SETUP_GRACE_MS = 3_000;
+
+/** What the app is sent for a set-up entry: one line for anything that shows only text, and the rest as details. */
+export function setupItem(id: number, data: unknown) {
+	const setup = (data !== null && typeof data === "object" ? data : {}) as Partial<Setup>;
+	const command = typeof setup.command === "string" ? setup.command : "";
+	const status = setup.status === "done" || setup.status === "failed" ? setup.status : "running";
+	const reason = typeof setup.reason === "string" ? setup.reason : "failed";
+	const text = status === "running" ? `Running the set-up command: ${command}` : status === "done" ? `The set-up command finished: ${command}` : `The set-up command ${reason}: ${command}`;
+	const details = {
+		run: String(setup.run ?? ""),
+		command,
+		status,
+		reason: status === "failed" ? reason : null,
+		seconds: typeof setup.seconds === "number" ? setup.seconds : null,
+		output: typeof setup.output === "string" ? setup.output : "",
+	};
+	return { id, kind: "setup" as const, text, isError: status === "failed", details };
+}
+
+/** The end of `text`, at most `chars` of it, marked when something was left out. */
+const tail = (text: string, chars: number) => (text.length <= chars ? text : `[earlier output left out]\n${text.slice(-chars)}`);
+
+/** Signal a set-up command and everything it started: it leads a process group of its own. */
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+	if (child.pid === undefined) return;
+	try {
+		process.kill(-child.pid, signal);
+	} catch {
+		// Already gone.
+	}
+}
 
 const Worktrees = defineDoc<{ conversations: Record<string, Worktree> }>({
 	kind: "pi2.worktrees",
@@ -285,6 +347,8 @@ export const worktrees: Feature = (_host, engine) => {
 	let gitMissing = false;
 	/** Conversations whose worktree is being made or removed right now. */
 	const changing = new Set<number>();
+	/** Set-up commands running now, by conversation. `settled` resolves once their end is recorded and written. */
+	const setups = new Map<number, { child: ChildProcess; stop(reason: string): void; settled: Promise<void> }>();
 
 	const event = () => ({ event: "branches", conversations: last, leftBehind });
 
@@ -372,6 +436,76 @@ export const worktrees: Feature = (_host, engine) => {
 		folders.set(id, { cwd, at: Date.now() });
 	}
 
+	/** Write a set-up command's start or end into the conversation's transcript, where the person sees it. */
+	async function noteSetup(id: number, setup: Setup): Promise<void> {
+		try {
+			const conv = await engine.harness().conversation(id as unknown as ConversationId, engine.context());
+			await conv?.submit({ type: "write", entry: { kind: SETUP_ENTRY, data: JSON.parse(JSON.stringify(setup)) } }, engine.context());
+		} catch (error) {
+			engine.log("could not note the set-up of", id, error instanceof Error ? error.message : error);
+		}
+	}
+
+	/** Keep how the set-up went with the worktree, unless the worktree went, or made another, meanwhile. */
+	async function recordSetup(id: number, setup: Setup): Promise<void> {
+		await save((doc) => {
+			const own = doc[String(id)];
+			if (own !== undefined && (own.setup === undefined || own.setup.run === setup.run)) own.setup = { ...setup, ...(setup.output === undefined ? {} : { output: tail(setup.output, SETUP_TOLD_CHARS) }) };
+		});
+	}
+
+	/**
+	 * Run the agent's set-up command in a worktree just made for conversation `id`, without waiting for it. It runs as
+	 * the person typed it, through bash, with the engine's environment, in a process group of its own so that stopping
+	 * it stops whatever it started too.
+	 */
+	async function startSetup(id: number, root: string, command: string): Promise<void> {
+		const run = `${id}-${Date.now()}`;
+		const started = Date.now();
+		await recordSetup(id, { run, command, status: "running" });
+		await noteSetup(id, { run, command, status: "running" });
+		let output = "";
+		let stopped: string | undefined;
+		let failedToStart: string | undefined;
+		const child = spawn("/bin/bash", ["-c", command], { cwd: root, env: process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		const keep = (chunk: Buffer) => {
+			output += chunk.toString("utf8");
+			if (output.length > 2 * SETUP_KEEP_CHARS) output = output.slice(-SETUP_KEEP_CHARS);
+		};
+		child.stdout?.on("data", keep);
+		child.stderr?.on("data", keep);
+		const stop = (reason: string) => {
+			if (stopped !== undefined || child.exitCode !== null || child.signalCode !== null) return;
+			stopped = reason;
+			signalGroup(child, "SIGTERM");
+			setTimeout(() => signalGroup(child, "SIGKILL"), SETUP_GRACE_MS).unref();
+		};
+		const timer = setTimeout(() => stop(`did not finish within ${SETUP_TIMEOUT_MS / 60_000} minutes and was stopped`), SETUP_TIMEOUT_MS);
+		timer.unref();
+		const ended = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+			child.once("error", (error) => {
+				failedToStart = error.message;
+				resolve({ code: null, signal: null });
+			});
+			child.once("close", (code, signal) => resolve({ code, signal }));
+			// Something it started in the background may hold its output open long after it exits; do not wait on that.
+			child.once("exit", (code, signal) => setTimeout(() => resolve({ code, signal }), SETUP_GRACE_MS).unref());
+		});
+		const settled = ended.then(async ({ code, signal }) => {
+			clearTimeout(timer);
+			child.stdout?.destroy();
+			child.stderr?.destroy();
+			const reason =
+				failedToStart !== undefined ? `could not start: ${failedToStart}` : stopped !== undefined ? stopped : code !== 0 ? (code === null ? `was ended by ${signal ?? "a signal"}` : `exited with code ${code}`) : undefined;
+			const setup: Setup = { run, command, status: reason === undefined ? "done" : "failed", ...(reason === undefined ? {} : { reason }), seconds: Math.round((Date.now() - started) / 1000), output: tail(output, SETUP_KEEP_CHARS) };
+			engine.log("set-up for", id, reason === undefined ? "finished" : reason);
+			await recordSetup(id, setup).catch((error) => engine.log("could not record the set-up of", id, error instanceof Error ? error.message : error));
+			await noteSetup(id, setup);
+			if (setups.get(id)?.child === child) setups.delete(id);
+		});
+		setups.set(id, { child, stop, settled });
+	}
+
 	/** Make a worktree for conversation `id` from the repository its folder is in, and move the conversation into it. */
 	async function create(id: number, requested?: string): Promise<{ path: string; branch: string }> {
 		if (mine[String(id)] !== undefined) throw new Error("This conversation already has a worktree of its own");
@@ -411,6 +545,13 @@ export const worktrees: Feature = (_host, engine) => {
 			});
 			await setFolder(id, target);
 			engine.log("worktree made for", id, "on", branch);
+			// The agent's set-up command, written for the agent's own repository, so run only in a worktree of that one.
+			const agent = engine.agents()[meta?.agentId ?? ""];
+			const command = agent?.setup?.trim() ?? "";
+			const theirs = command === "" || agent?.cwd == null ? undefined : await repoOf(agent.cwd);
+			if (theirs !== undefined && realish(theirs.commonDir) === realish(repo.commonDir)) {
+				await startSetup(id, path, command).catch((error) => engine.log("could not start the set-up of", id, error instanceof Error ? error.message : error));
+			}
 			return { path: target, branch };
 		} finally {
 			changing.delete(id);
@@ -426,6 +567,12 @@ export const worktrees: Feature = (_host, engine) => {
 		if (changing.has(id)) throw new Error("The worktree is already being changed");
 		changing.add(id);
 		try {
+			// A set-up still running would go on writing into the folder being removed.
+			const stopSetup = async () => {
+				const setup = setups.get(id);
+				setup?.stop("was stopped because the worktree was removed");
+				await setup?.settled;
+			};
 			const repoRoot = isFolder(own.repo) ? own.repo : undefined;
 			if (isFolder(own.path)) {
 				if (!options.force) {
@@ -434,12 +581,14 @@ export const worktrees: Feature = (_host, engine) => {
 						throw new Error(`The worktree has ${status.changes + status.conflicts} uncommitted change${status.changes + status.conflicts === 1 ? "" : "s"}. Commit them, or remove it anyway to lose them`);
 					}
 				}
+				await stopSetup();
 				await git(["worktree", "remove", ...(options.force ? ["--force"] : []), own.path], repoRoot ?? own.path).catch((error: Error) => {
 					throw new Error(`git could not remove the worktree: ${error.message}`);
 				});
-			} else if (repoRoot !== undefined) {
+			} else {
+				await stopSetup();
 				// Its folder was deleted by hand: let git forget it too.
-				await tryGit(["worktree", "prune"], repoRoot);
+				if (repoRoot !== undefined) await tryGit(["worktree", "prune"], repoRoot);
 			}
 			let branchDeleted = false;
 			let note: string | null = null;
@@ -467,13 +616,31 @@ export const worktrees: Feature = (_host, engine) => {
 			`This conversation works in a git worktree of its own: ${cwd ?? own.path}, on the branch ${own.branch}${own.base ? `, made from ${own.base}` : ""}.`,
 			`Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to ${own.branch}, do not check out another branch here, and do not change the main checkout at ${own.repo}.`,
 			"Files git ignores (installed packages, build output, local settings) are not copied into a new worktree; set them up here if the work needs them.",
+			...setupNote(own.setup),
 		].join(" ");
+
+	/** What the agent is told about the set-up command that ran in its worktree. */
+	function setupNote(setup: Setup | undefined): string[] {
+		if (setup === undefined || setup.status === "running") return [];
+		const ran = `When pi² made this worktree it ran the set-up command the person gave this agent, in the worktree's top folder: \`${setup.command}\`.`;
+		if (setup.status === "done") return [`${ran} It finished without errors.`];
+		const output = (setup.output ?? "").trim();
+		const fence = "`".repeat(Math.max(3, ...[...output.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+		return [
+			`${ran} It ${setup.reason ?? "failed"}, so what it sets up may be missing or incomplete; the person can see this in the conversation too.`,
+			...(output === "" ? [] : [`The end of its output:\n${fence}\n${output}\n${fence}`]),
+		];
+	}
 
 	let timer: ReturnType<typeof setInterval> | undefined;
 
 	return {
 		sections: [
 			section("worktree", async (input, context) => {
+				// A message sent while the set-up command runs waits for it, so the agent starts in a worktree that is ready
+				// and is told how the set-up went. Stopping the run stops the wait, not the set-up.
+				const setup = setups.get(Number(input.conversationId));
+				if (setup !== undefined) await awaitWithContext(setup.settled, context);
 				const own = mine[String(input.conversationId)];
 				if (own === undefined) return undefined;
 				const cwd = ((await input.read.snapshot(AgentDoc, input.conversationId, context)) as { cwd?: string | null } | undefined)?.cwd ?? null;
@@ -484,6 +651,17 @@ export const worktrees: Feature = (_host, engine) => {
 		],
 		start: async () => {
 			mine = JSON.parse(JSON.stringify((await engine.harness().snapshot(Worktrees, engine.context()))?.conversations ?? {}));
+			// A set-up that was running when the last engine stopped will not finish: say so where it was started.
+			for (const [key, own] of Object.entries(mine)) {
+				if (own.setup?.status !== "running") continue;
+				const setup: Setup = { ...own.setup, status: "failed", reason: "was cut off when pi²’s engine stopped" };
+				await recordSetup(Number(key), setup);
+				await noteSetup(Number(key), setup);
+			}
+			// Stopping the engine stops the set-ups it started, which would otherwise carry on alone.
+			process.once("exit", () => {
+				for (const setup of setups.values()) signalGroup(setup.child, "SIGKILL");
+			});
 			timer = setInterval(() => {
 				// Nobody to tell: wait for an app to connect.
 				if (engine.apps() > 0) void refresh();

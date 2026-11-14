@@ -4,6 +4,9 @@ What changed in each version, newest first.
 
 ## Unreleased
 
+### Added
+- **A set-up command for new worktrees.** In an agent's settings, under Give each conversation its own worktree, a command such as `npm ci` runs once in each new worktree of that agent's conversations, right after pi² makes it, so what git ignores is put back. The conversation shows it running, then its output and whether it failed; the first answer waits for it, and the agent is told how it went. See [docs/worktrees.md](docs/worktrees.md).
+
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
 

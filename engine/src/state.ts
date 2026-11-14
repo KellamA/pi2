@@ -29,6 +29,11 @@ export type AgentProfile = {
 	cwd: string | null;
 	/** Whether each conversation the person starts gets a git worktree of its own, made from `cwd` (worktrees.ts). */
 	worktree?: boolean;
+	/**
+	 * A shell command run once in each new worktree of this agent's conversations, right after pi² makes it (worktrees.ts).
+	 * Typed by the person in the agent's settings, so it runs without asking; saved only through `agents.save`.
+	 */
+	setup?: string;
 	/** IDs of the agents this one may hand work to. */
 	delegates: string[];
 	maxTurns: number | null;

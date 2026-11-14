@@ -37,7 +37,7 @@ import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
-import { inRepository } from "./worktrees.ts";
+import { inRepository, SETUP_ENTRY, setupItem } from "./worktrees.ts";
 import { preparePlan } from "./plan.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
@@ -348,7 +348,8 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string };
+	| { id: number; kind: "marker"; text: string }
+	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
 
@@ -372,6 +373,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
+	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -872,7 +874,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				lines.push("## You", "", item.text, "");
 				const attached = describeAttachments(item.attachments, item.images);
 				if (attached !== undefined) lines.push(`*${attached}*`, "");
-			} else if (item.kind === "marker") lines.push(`*${item.text}*`, "");
+			} else if (item.kind === "marker" || item.kind === "setup") lines.push(`*${item.text}*`, "");
 			else if (item.kind === "assistant") {
 				lines.push(`## ${agentName}${item.stop === "aborted" || item.stop === "error" ? " (interrupted)" : ""}`, "");
 				if (item.text !== "") lines.push(item.text, "");
@@ -1005,6 +1007,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (input.access !== undefined && !ACCESS_LEVELS.includes(input.access)) throw new Error(`Unknown access level: ${String(input.access)}`);
 		if (typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
 		if (input.worktree !== undefined && typeof input.worktree !== "boolean") throw new Error("worktree must be true or false");
+		if (input.setup !== undefined && typeof input.setup !== "string") throw new Error("The set-up command must be text");
+		if (typeof input.setup === "string" && input.setup.length > 4_000) throw new Error("The set-up command is too long: keep it under 4,000 characters, or put it in a script");
 		if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
 		const taken = Object.values(agents).some((other) => other.id !== input.id && other.name.toLowerCase() === name.toLowerCase());
 		if (taken) throw new Error(`There is already an agent called ${name}`);
@@ -1027,6 +1031,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			access: input.access ?? previous?.access ?? "none",
 			cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
 			worktree: input.worktree ?? previous?.worktree ?? false,
+			setup: (input.setup ?? previous?.setup ?? "").trim(),
 			delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
 			maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
 			codeMode: input.codeMode ?? previous?.codeMode ?? false,

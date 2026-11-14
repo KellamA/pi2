@@ -314,6 +314,9 @@
 				// A turn ends at the person's next message, or when the run is over; its actions wait until then.
 				const turnEnd = next ? next.kind !== "assistant" : !live.partial && !live.busy;
 				specs.push(assistantSpec(item, turnEnd, visible, index));
+			} else if (item.kind === "setup") {
+				const spec = setupSpec(item, visible);
+				if (spec) specs.push(spec);
 			} else {
 				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(item.text) });
 			}
@@ -686,10 +689,26 @@
 		return { key: "t:" + call.callId, sig, build: () => el("div", "tool"), update: (row) => fillTool(row, call, phase) };
 	}
 
-	function fillTool(row, call, phase) {
+	/**
+	 * The agent's set-up command in a new worktree, drawn as a command row. The engine writes one entry as it starts and
+	 * one as it ends; the start shows, with a spinner, only until its end arrives.
+	 */
+	function setupSpec(item, visible) {
+		const details = isObject(item.details) ? item.details : {};
+		const running = details.status === "running";
+		const ended = (other) => other.kind === "setup" && isObject(other.details) && other.details.run === details.run && other.details.status !== "running";
+		if (running && visible.some(ended)) return null;
+		const call = { callId: "setup:" + item.id, name: "pi2_setup", arguments: { command: str(details.command) } };
+		const fixed = running
+			? { status: "running", result: undefined }
+			: { status: details.status === "failed" ? "failed" : "done", result: { id: item.id, text: str(details.output), isError: details.status === "failed", details } };
+		return { key: "s" + item.id, sig: "s" + rev(item) + "/" + fixed.status, build: () => el("div", "tool"), update: (row) => fillTool(row, call, "", fixed) };
+	}
+
+	function fillTool(row, call, phase, fixed) {
 		const key = "t:" + call.callId;
-		const status = statusOf(call, phase);
-		const result = results.get(call.callId);
+		const status = fixed ? fixed.status : statusOf(call, phase);
+		const result = fixed ? fixed.result : results.get(call.callId);
 		const liveTool = live.tools.get(call.callId);
 		const info = T.describe(call, status, result, liveTool, names);
 		const sections = T.detailFor(call, status, result, liveTool);

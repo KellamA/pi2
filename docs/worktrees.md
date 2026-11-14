@@ -17,7 +17,16 @@ The worktree is made in pi²'s data folder (`worktrees/<repository>-<id>/<branch
 
 The agent is told it is in a worktree of its own, on which branch, and to commit there and leave other branches and the main checkout alone.
 
-Files git ignores (installed packages, build output, `.env` files) are not in a new worktree. An agent that needs them has to set them up there.
+Files git ignores (installed packages, build output, `.env` files) are not in a new worktree. An agent that needs them has to set them up there, unless its agent has a set-up command.
+
+## A set-up command
+
+In an agent's settings, under **Give each conversation its own worktree**, **Set-up command** is a shell command that puts back what a new worktree lacks, such as `npm ci` or `npm --prefix engine ci && cp ../shared.env .env`. pi² runs it once in each new worktree of that agent's conversations, right after making it: the ones made for new conversations, and ones made from the branch menu for a conversation of that agent. It does not run for a worktree of another repository than the agent's folder, since the command was written for that one.
+
+- It runs in the worktree's top folder through `/bin/bash -c`, with the same environment as the agent's own commands (including the `PATH` from your login shell). It runs without asking: you typed it, and an agent cannot change it.
+- The conversation shows it running, then what it printed (the last 32 KB) and whether it finished or failed. A failed set-up is opened so you see why.
+- A message sent while it runs waits for it, so the agent starts in a worktree that is ready. The agent is told the command ran and how it ended, with the end of its output if it failed. A failed set-up does not stop the conversation: the agent carries on, and can finish the job itself.
+- It is stopped, together with anything it started, after 15 minutes, when the worktree is removed, or when pi²'s engine stops. Stopping the agent's answer does not stop the set-up. A set-up cut off by the engine stopping is shown as cut off when the engine starts again, and is not run again. (If the engine crashes or is killed outright, the command is left to finish on its own.)
 
 ## Every conversation in its own worktree
 

@@ -221,6 +221,11 @@ struct AgentEditor: View {
                         Text("Each new conversation works on a branch of its own in a separate checkout of the folder’s git repository, so several can change it at once.")
                     }
                     .disabled(agent.cwd == nil && agent.worktree != true)
+                    TextField(text: Binding(get: { agent.setup ?? "" }, set: { draft.wrappedValue.setup = $0 }), prompt: Text("None, for example npm ci")) {
+                        Text("Set-up command")
+                        Text("Runs once in the top folder of each new worktree for this agent, right after pi² makes it; the first answer waits for it.")
+                    }
+                    .disabled(agent.cwd == nil && (agent.setup ?? "").isEmpty)
                     TextField("Turn limit per run", text: $turnsText, prompt: Text("No limit"))
                         .onChange(of: turnsText) { _, value in
                             draft.wrappedValue.maxTurns = Int(value.trimmingCharacters(in: .whitespaces)).flatMap { $0 >= 1 ? $0 : nil }

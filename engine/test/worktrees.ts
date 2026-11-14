@@ -222,6 +222,92 @@ try {
 	assert.notEqual(client.branch(c).branch, client.branch(d).branch, "and its own branch");
 	step("an agent set to use worktrees starts each conversation in a worktree of its own");
 
+	// An agent's set-up command: run once in each new worktree, its end shown in the transcript and told to the agent.
+	const tooling = repo("tooling");
+	writeFileSync(join(tooling, ".gitignore"), "deps/\n");
+	run(tooling, "add", ".gitignore");
+	run(tooling, "commit", "-q", "-m", "ignore deps");
+	const setups = (id: number) => client.conversations.get(id)?.items.filter((item: Event) => item.kind === "setup") ?? [];
+	const ended = (id: number) => setups(id).find((item: Event) => item.details.status !== "running");
+	await assert.rejects(client.call("agents.save", { agent: { name: "Setter", setup: ["npm", "ci"] } }), /must be text/);
+	const { id: setter } = await client.call("agents.save", {
+		agent: { name: "Setter", access: "full", cwd: tooling, worktree: true, setup: "  sleep 2; echo installing; mkdir -p deps; echo once >> deps/runs; echo a-warning >&2  " },
+	});
+	const { id: e } = await client.call("conversation.create", { agentId: setter });
+	await client.call("conversation.open", { id: e });
+	await client.until("set-up shown as running", () => setups(e)[0]?.details.status === "running");
+	assert.equal(ended(e), undefined, "the command takes a while");
+	// The first message, sent while the set-up runs, waits for it.
+	await client.call("submit", { id: e, text: "/system" });
+	const answered = await client.until("answer after the set-up", () => {
+		const conv = client.conversations.get(e);
+		return conv !== undefined && !conv.state.busy && conv.items.at(-1)?.kind === "assistant" ? conv.items : undefined;
+	});
+	assert.deepEqual(
+		answered.map((item: Event) => (item.kind === "setup" ? `setup:${item.details.status}` : item.kind)),
+		["setup:running", "user", "setup:done", "assistant"],
+		"the set-up's end comes before the answer",
+	);
+	const done = ended(e);
+	assert.equal(done.details.command, "sleep 2; echo installing; mkdir -p deps; echo once >> deps/runs; echo a-warning >&2", "the command is kept as typed, trimmed");
+	assert.equal(done.isError, false);
+	assert.match(done.details.output, /installing\n/);
+	assert.match(done.details.output, /a-warning/, "errors are shown with the output");
+	assert.match(done.text, /^The set-up command finished/);
+	assert.match(answered.at(-1).text, /ran the set-up command[^]*`sleep 2; echo installing[^]*It finished without errors/, "the agent is told it ran");
+	const setterRoot = await client.until("tracked", () => client.branch(e)?.managed === true && client.branch(e).root);
+	assert.equal(readFileSync(join(setterRoot, "deps", "runs"), "utf8"), "once\n", "it ran in the worktree's top folder");
+	assert.equal(existsSync(join(tooling, "deps")), false, "and not in the main checkout");
+	await client.bash(e, "true");
+	assert.equal(readFileSync(join(setterRoot, "deps", "runs"), "utf8"), "once\n", "it runs once, not for every message");
+	step("a set-up command runs once in a new worktree; the first message waits for it, and its output is in the transcript");
+
+	const { id: breaker } = await client.call("agents.save", { agent: { name: "Breaker", access: "full", cwd: tooling, worktree: true, setup: "echo broken-thing >&2; exit 3" } });
+	const { id: f } = await client.call("conversation.create", { agentId: breaker });
+	await client.call("conversation.open", { id: f });
+	const failed = await client.until("set-up failed", () => ended(f));
+	assert.equal(failed.isError, true);
+	assert.equal(failed.details.reason, "exited with code 3");
+	assert.match(failed.details.output, /broken-thing/);
+	assert.match(failed.text, /^The set-up command exited with code 3/);
+	assert.match(await client.bash(f, "echo still-works"), /still-works/, "the conversation works after a failed set-up");
+	await client.call("submit", { id: f, text: "/system" });
+	const told = await client.until("told of the failure", () => {
+		const conv = client.conversations.get(f);
+		const last = conv?.items.at(-1);
+		return !conv?.state.busy && last?.kind === "assistant" && last.text.startsWith("SYSTEM PROMPT") ? last.text : undefined;
+	});
+	assert.match(told, /It exited with code 3[^]*broken-thing/, "the agent is told it failed, with the end of its output");
+	step("a failing set-up is shown as failed and told to the agent, and the conversation still works");
+
+	// Made from the app for a conversation of an agent with a set-up command, then removed while it runs.
+	const pidFile = join(scratch, "setup.pid");
+	const { id: manual } = await client.call("agents.save", { agent: { name: "Manual", access: "full", cwd: tooling, setup: `sleep 30 & echo $! > '${pidFile}'; wait` } });
+	const { id: g } = await client.call("conversation.create", { agentId: manual });
+	await client.call("conversation.open", { id: g });
+	await sleep(300);
+	assert.equal(setups(g).length, 0, "no worktree, no set-up");
+	await client.call("worktree.create", { id: g });
+	await client.until("set-up running", () => setups(g)[0]?.details.status === "running" && existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
+	const sleeper = Number(readFileSync(pidFile, "utf8"));
+	const madeAt = await client.until("tracked", () => client.branch(g)?.managed === true && client.branch(g).root);
+	const removing = Date.now();
+	await client.call("worktree.remove", { id: g });
+	assert.ok(Date.now() - removing < 10_000, "removing does not wait for the command to finish");
+	const stopped = await client.until("set-up stopped", () => ended(g));
+	assert.equal(stopped.details.reason, "was stopped because the worktree was removed");
+	assert.equal(existsSync(madeAt), false, "the worktree is gone");
+	const gone = () => {
+		try {
+			process.kill(sleeper, 0);
+			return false;
+		} catch {
+			return true;
+		}
+	};
+	await client.until("what the command started was stopped too", gone, 5_000);
+	step("a worktree made from the app runs the agent's set-up; removing it mid-run stops the command and everything it started");
+
 	// Its folder deleted by hand: shown as missing, and removing it tidies up.
 	rmSync(client.branch(d).root, { recursive: true, force: true });
 	await client.call("branches.refresh");
@@ -231,6 +317,13 @@ try {
 	assert.ok(!run(project, "worktree", "list").includes(`pi2/builder-${d}`), "git forgot the deleted worktree");
 	step("a worktree deleted by hand shows as missing; removing it lets git forget it");
 
+	// A set-up still running when the engine stops is stopped with it, and said to be cut off when it starts again.
+	rmSync(pidFile, { force: true });
+	const { id: h } = await client.call("conversation.create", { agentId: manual });
+	await client.call("worktree.create", { id: h });
+	await client.until("set-up started", () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
+	const orphan = Number(readFileSync(pidFile, "utf8"));
+
 	// The worktree's record outlives a restart.
 	engine.kill("SIGTERM");
 	await new Promise((resolve) => engine.once("exit", resolve));
@@ -238,6 +331,12 @@ try {
 	const again = await Client.attach();
 	await again.until("worktree remembered", () => again.branch(c)?.managed === true);
 	step("after a restart the worktree is still known as the conversation's own");
+	assert.throws(() => process.kill(orphan, 0), "stopping the engine stopped the set-up");
+	await again.call("conversation.open", { id: h });
+	const cut = await again.until("cut off", () => again.conversations.get(h)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
+	assert.equal(cut.details.reason, "was cut off when pi²’s engine stopped");
+	assert.match(await again.bash(h, "echo after-restart"), /after-restart/);
+	step("a set-up running when the engine stops is stopped with it, and shown as cut off after a restart");
 
 	// Archived or deleted, its worktree stays on disk and is listed as left behind, where it can be removed.
 	const behind = (id: number) => again.events.branches?.leftBehind?.find((w: Event) => w.id === id);

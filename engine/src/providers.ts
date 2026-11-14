@@ -175,8 +175,8 @@ function demoProvider(): Provider {
 				for (const added of message.toolsAdded ?? []) offered.add(added.name);
 				for (const removed of message.toolsRemoved ?? []) offered.delete(removed.name);
 			}
-			// Only the sections about what the agent knows, and the tools for memory: the demo model speaks slowly.
-			const prompts = [...sections].filter(([key]) => key === "project_instructions" || key === "memory").map(([key, value]) => `<${key}>\n${value}\n</${key}>`).join("\n");
+			// Only the sections about what the agent knows and its worktree, and the tools for memory: the demo model speaks slowly.
+			const prompts = [...sections].filter(([key]) => key === "project_instructions" || key === "memory" || key === "worktree").map(([key, value]) => `<${key}>\n${value}\n</${key}>`).join("\n");
 			return fauxAssistantMessage(`SYSTEM PROMPT\n${prompts}\nTOOLS: ${[...offered].filter((name) => name === "remember" || name === "forget").join(", ")}`);
 		}
 		if (prompt.startsWith("/mcp ")) {
