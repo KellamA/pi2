@@ -173,6 +173,11 @@ assert.ok(!documentHtml("Just text").includes("<h1>"));
 const textutil = (...args: string[]) => execFileSync("/usr/bin/textutil", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 const root = realpathSync(mkdtempSync(join(tmpdir(), "pi2-documents-")));
 const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-documents-outside-")));
+// Removed however the test ends: a failed check ends the process, and "exit" still runs.
+process.on("exit", () => {
+	rmSync(root, { recursive: true, force: true });
+	rmSync(outside, { recursive: true, force: true });
+});
 const before = readdirSync(tmpdir()).filter((name) => name.startsWith("pi2-document-")).length;
 
 const REPORT = `# Quarterly report
@@ -321,6 +326,4 @@ assert.equal(readdirSync(tmpdir()).filter((name) => name.startsWith("pi2-documen
 written(await writeDocument(root, { path: "dash.docx", markdown: "text", title: "--help -output /tmp/x" }));
 assert.ok(existsSync(join(root, "dash.docx")));
 
-rmSync(root, { recursive: true, force: true });
-rmSync(outside, { recursive: true, force: true });
 console.log("documents: ok");
