@@ -954,6 +954,7 @@ try {
 			return id as number;
 		};
 		const info = (id: number) => (client.conversations.get(id)!.state as any).projectInstructions;
+		const infoFiles = (id: number) => (client.conversations.get(id)!.state as any).projectInstructionFiles;
 		const { id: pilot } = await client.call("agents.save", { agent: { name: "Pilot", access: "none" } });
 		await client.until("pilot saved", () => client.agents.some((x) => x.id === pilot));
 
@@ -965,7 +966,8 @@ try {
 		let said = await say(p1, "/system");
 		assert.ok(/From AGENTS\.md in this folder\. These are the project's instructions/.test(said) && said.includes("Always indent with tabs."), "AGENTS.md reaches the model");
 		assert.ok(!said.includes("Claude-only"), "AGENTS.md is preferred to CLAUDE.md");
-		assert.deepEqual(info(p1), [{ folder: project, file: "AGENTS.md" }], "the app is told which file is in effect");
+		assert.equal(info(p1), "AGENTS.md", "the app is told which file is in effect, by name as before");
+		assert.deepEqual(infoFiles(p1), [{ folder: project, file: "AGENTS.md" }], "and in the list of files");
 		writeFileSync(join(project, "AGENTS.md"), "Always indent with spaces.\n");
 		said = await say(p1, "/system");
 		assert.ok(said.includes("indent with spaces") && !said.includes("indent with tabs"), "an edit counts from the next message");
@@ -989,6 +991,7 @@ try {
 		said = await say(p2, "/system");
 		assert.ok(!said.includes("OUTSIDE-SECRET") && !said.includes("project's instructions"), "a link out of the folder is not followed");
 		assert.equal(info(p2), null);
+		assert.deepEqual(infoFiles(p2), []);
 		const p3 = await open(pilot);
 		assert.ok(!(await say(p3, "/system")).includes("project's instructions"), "no chosen folder, no instructions");
 		step("project instructions: a link out of the folder is not followed; no folder, none");
@@ -1006,14 +1009,16 @@ try {
 		said = await say(p4, "/system");
 		assert.ok(said.includes(`From AGENTS.md in ${repo}, a folder above this one in its git repository.`) && said.includes("Rules from the top."), "a subfolder of a repository gets the top's file");
 		assert.ok(!said.includes("ABOVE-THE-REPOSITORY"), "nothing above the repository's top is read");
-		assert.deepEqual(info(p4), [{ folder: repo, file: "AGENTS.md" }]);
+		assert.equal(info(p4), "AGENTS.md", "the old field names the nearest file, here one above");
+		assert.deepEqual(infoFiles(p4), [{ folder: repo, file: "AGENTS.md" }]);
 		writeFileSync(join(sub, "CLAUDE.md"), "Rules for the engine.\n");
 		const p5 = await open(pilot, sub);
 		said = await say(p5, "/system");
 		const top = said.indexOf(`From AGENTS.md in ${repo}, a folder above this one`);
 		const near = said.indexOf("From CLAUDE.md in this folder:");
 		assert.ok(said.includes("from 2 files") && top >= 0 && near > top && said.indexOf("Rules from the top.") < said.indexOf("Rules for the engine."), "both files are given, the top's first");
-		assert.deepEqual(info(p5), [{ folder: repo, file: "AGENTS.md" }, { folder: sub, file: "CLAUDE.md" }], "the app is told of both");
+		assert.equal(info(p5), "CLAUDE.md", "the old field names the nearest file");
+		assert.deepEqual(infoFiles(p5), [{ folder: repo, file: "AGENTS.md" }, { folder: sub, file: "CLAUDE.md" }], "the list has both, the top's first");
 		assert.deepEqual(readProjectInstructions(join(sub, "src")).map((x) => x.file), ["AGENTS.md", "CLAUDE.md"], "a folder without a file of its own still gets those above it");
 		assert.deepEqual(readProjectInstructions(above).map((x) => [x.folder, x.text]), [[above, "ABOVE-THE-REPOSITORY"]], "a folder outside any repository reads only itself");
 		assert.deepEqual(readProjectInstructions(join(above, "repo-less")), [], "a missing folder has none");

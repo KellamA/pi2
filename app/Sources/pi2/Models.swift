@@ -469,9 +469,11 @@ struct ConversationState: Codable, Equatable {
     let compactionError: String?
     /// The agent's task list; nil when it keeps none.
     let plan: TaskList?
-    /// The project instructions files (AGENTS.md or CLAUDE.md) in effect: in the conversation's folder and the folders above it
-    /// up to the top of its git repository, the outermost first. Nil when there are none.
-    let projectInstructions: [ProjectInstructionsFile]?
+    /// The nearest project instructions file (AGENTS.md or CLAUDE.md) in effect, if there is one.
+    let projectInstructions: String?
+    /// Every project instructions file in effect: in the conversation's folder and the folders above it up to the top of its
+    /// git repository, the outermost first. Nil from an engine older than this field.
+    let projectInstructionFiles: [ProjectInstructionsFile]?
     /// The conversation's title, for one that is not in the sidebar's list (an archived one, or its sub-chat).
     let title: String?
     /// It, or the conversation it is a sub-chat of, is archived: it can be read but not continued.

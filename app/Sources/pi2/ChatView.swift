@@ -34,7 +34,7 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let state, data.items.isEmpty, !busy, state.partial == nil {
-                AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions)
+                AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions, projectInstructionFiles: state.projectInstructionFiles)
                     // In a short pane the introduction gives way, so the message field stays in view.
                     .frame(minHeight: 0)
                     .clipped()
@@ -1033,7 +1033,8 @@ struct AgentIntro: View {
     let engine: EngineClient
     let agent: AgentInfo
     let isSubChat: Bool
-    var projectInstructions: [ProjectInstructionsFile]?
+    var projectInstructions: String?
+    var projectInstructionFiles: [ProjectInstructionsFile]?
 
     private var profile: AgentProfile? { engine.agent(agent.agentId) }
     private var folder: String? { agent.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } }
@@ -1049,9 +1050,14 @@ struct AgentIntro: View {
         }
         let delegates = (profile?.delegates ?? []).compactMap { engine.agent($0)?.name }
         if !delegates.isEmpty, !isSubChat { facts.append(("person.2", "Can hand work to \(ListFormatter.localizedString(byJoining: delegates))")) }
-        if let projectInstructions, !projectInstructions.isEmpty {
-            let files = projectInstructions.map { "the \($0.file) in \(URL(fileURLWithPath: $0.folder).lastPathComponent)" }
-            facts.append(("text.badge.checkmark", "Follows \(ListFormatter.localizedString(byJoining: files))"))
+        if let projectInstructionFiles {
+            if !projectInstructionFiles.isEmpty {
+                let files = projectInstructionFiles.map { "the \($0.file) in \(URL(fileURLWithPath: $0.folder).lastPathComponent)" }
+                facts.append(("text.badge.checkmark", "Follows \(ListFormatter.localizedString(byJoining: files))"))
+            }
+        } else if let projectInstructions {
+            // An engine older than the list: it only looks in the conversation's own folder.
+            facts.append(("text.badge.checkmark", "Follows the \(projectInstructions) in \(folder ?? "its folder")"))
         }
         if let files = profile?.files, !files.isEmpty { facts.append(("books.vertical", "\(files.count) reference file\(files.count == 1 ? "" : "s") at hand")) }
         if let computer = profile?.computer, computer.enabled {

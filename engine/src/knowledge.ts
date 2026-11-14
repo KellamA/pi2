@@ -276,7 +276,8 @@ export const knowledge: Feature = (host, engine) => {
 		state: (view) => {
 			const cwd = (view.docs["pi.agent"] as { cwd?: string } | undefined)?.cwd;
 			const found = cwd === undefined || cwd === null ? [] : readProjectInstructions(cwd);
-			return { projectInstructions: found.length === 0 ? null : found.map(({ folder, file }) => ({ folder, file })) };
+			// projectInstructions stays the nearest file's name, as it was, for an app built before the list was added.
+			return { projectInstructions: found.at(-1)?.file ?? null, projectInstructionFiles: found.map(({ folder, file }) => ({ folder, file })) };
 		},
 		start: async () => {
 			memory = (await engine.harness().snapshot(Memory, engine.context()))?.agents ?? {};
