@@ -13,9 +13,11 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
+import type { ConversationId, DocumentReader } from "@earendil-works/pi-durable";
 import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
+import type { MadeWorktree } from "./rules.ts";
 import type { AgentProfile } from "./state.ts";
 
 /** A worktree pi² made for a conversation. */
@@ -529,6 +531,15 @@ export const worktrees: Feature = (_host, engine) => {
 		},
 	};
 };
+
+/**
+ * Every worktree pi² made and still has a record of (its conversation's, whether listed, archived or deleted): its folder
+ * and its repository's main checkout. Command rules follow these (rules.ts, `ruleFolder`).
+ */
+export async function madeWorktrees(read: DocumentReader, context: Context): Promise<MadeWorktree[]> {
+	const doc = await read.snapshot(Worktrees, context);
+	return Object.values(doc?.conversations ?? {}).map(({ path, repo }) => ({ path, repo }));
+}
 
 /** Whether `folder` is in a git repository, for checking an agent's settings. */
 export async function inRepository(folder: string): Promise<boolean> {

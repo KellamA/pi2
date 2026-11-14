@@ -471,7 +471,7 @@
 		if (!isObject(pending) || pending.tool !== "bash" || !isObject(pending.rule) || !Array.isArray(pending.rule.words)) return null;
 		const words = pending.rule.words;
 		if (words.length === 0 || !words.every((word) => typeof word === "string" && word !== "")) return null;
-		return { words, command: words.join(" ") };
+		return { words, command: words.join(" "), worktrees: pending.rule.worktrees === true };
 	}
 
 	function ruleNote(details) {

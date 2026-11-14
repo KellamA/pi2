@@ -35,9 +35,12 @@ import {
 import { ACTIONS, type ComputerHost, describeComputer, isNever, isViewOnly, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import type { FeatureParts } from "./features.ts";
-import { judgeCommand, proposeRule } from "./rules.ts";
+import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isPutAway } from "./archive.ts";
-import { type AgentProfile, type Inbox, Library, type Meta } from "./state.ts";
+import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
+import { madeWorktrees, repoOf } from "./worktrees.ts";
+
+type RuleProposal = NonNullable<InboxItem["rule"]>;
 
 /** Tools that change things on the Mac, and so wait for approval when a conversation's access is "ask". */
 const GATED = new Set(["bash", "write", "edit", "write_document"]);
@@ -456,21 +459,27 @@ export function pi2Extension(host: Host): Extension {
 	/**
 	 * The person's rules for an agent's shell commands (rules.ts): whether this command is covered where it runs, and if
 	 * not, the rule to offer. Rules belong to the agent and a folder, so they hold in every conversation of that agent in
-	 * that folder, sub-chats and scheduled runs included.
+	 * that folder, sub-chats and scheduled runs included, and in the same folder of every worktree pi² made from that
+	 * repository: a rule offered inside one is for the main checkout's folder (`ruleFolder`).
 	 */
-	const shellRules = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ allowed: boolean; proposal?: { words: string[]; folder: string } }> => {
+	const shellRules = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ allowed: boolean; proposal?: RuleProposal }> => {
 		const agent = host.agent(host.meta(api.conversationId)?.agentId);
 		const command = (call.arguments as { command?: unknown }).command;
 		if (agent === undefined || typeof command !== "string") return { allowed: false };
 		const folder = resolve((await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? host.scratchFolder());
-		const verdict = judgeCommand(command, folder, agent.commandRules ?? []);
+		const made = await madeWorktrees(api, context);
+		const verdict = judgeCommand(command, folder, agent.commandRules ?? [], made);
 		if (verdict.allowed) {
 			allowedByRule.set(String(api.taskId), verdict.rules);
 			if (allowedByRule.size > 200) allowedByRule.delete(allowedByRule.keys().next().value!);
 			return { allowed: true };
 		}
 		const words = proposeRule(command);
-		return words === undefined ? { allowed: false } : { allowed: false, proposal: { words, folder } };
+		if (words === undefined) return { allowed: false };
+		const kept = ruleFolder(folder, made);
+		// The approval says so when the rule will also hold in worktrees: it is kept for a main checkout's folder.
+		const acrossWorktrees = kept !== folder || (await repoOf(kept))?.worktree === false;
+		return { allowed: false, proposal: { words, folder: kept, ...(acrossWorktrees ? { worktrees: true as const } : {}) } };
 	};
 
 	return defineExtension({
@@ -524,7 +533,7 @@ export function pi2Extension(host: Host): Extension {
 					}
 					const key = isComputer ? `computer:${args.app ?? ""}` : call.name;
 					if (meta?.autoApprove?.includes(key)) return undefined;
-					let proposal: { words: string[]; folder: string } | undefined;
+					let proposal: RuleProposal | undefined;
 					if (call.name === "bash") {
 						const rules = await shellRules(call, api, context);
 						if (rules.allowed) return undefined;

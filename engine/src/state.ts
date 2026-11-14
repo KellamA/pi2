@@ -142,9 +142,10 @@ export type InboxItem = {
 	when?: string;
 	/**
 	 * For a shell command: the rule the engine would make if the person answers "rule". The engine keeps its own copy and
-	 * makes the rule from that, never from anything the app sends back.
+	 * makes the rule from that, never from anything the app sends back. `worktrees` when the rule will also hold in the
+	 * same folder of every worktree pi² makes from that repository (rules.ts, `ruleFolder`).
 	 */
-	rule?: { words: string[]; folder: string };
+	rule?: { words: string[]; folder: string; worktrees?: true };
 	createdAt: number;
 };
 

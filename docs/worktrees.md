@@ -25,6 +25,8 @@ In an agent's settings, under Tools, **Give each conversation its own worktree**
 
 Conversations started by a schedule, sub-chats, and forks are not given one: a fork works in the same folder as the conversation it came from.
 
+The agent's command rules for the repository hold in these worktrees too, and a rule made in one is kept for the main checkout, so the next conversation does not ask again. See [rules.md](rules.md).
+
 If the worktree cannot be made, the conversation starts in the agent's folder as usual, and its branch icon shows that.
 
 ## Removing a worktree

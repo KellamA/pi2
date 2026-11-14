@@ -411,6 +411,7 @@ struct CommandRulesSection: View {
 
     private var footer: String {
         var text = "A rule covers commands that start with its words, in that folder only: “git status” also covers “git status -sb”, but not “git push”. "
+        text += "In a git repository, that folder also means the same folder of every worktree pi² makes from it, and a rule made in one of those worktrees is kept for the main checkout. "
         text += "It allows any options after its words, so make one only for a command you would let the agent run that way. "
         text += "Anything more complicated still asks, and rules that would allow anything, such as bash or rm on their own, cannot be made. "
         if access != "ask" { text += "Rules only matter while tool access is “Ask first”. " }

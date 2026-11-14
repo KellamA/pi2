@@ -173,8 +173,8 @@ struct InboxCard: View {
         }
     }
 
-    /// For a command the engine can make a rule of: allow commands that start with the same words, in this folder, from
-    /// now on. The engine makes the rule it offered; only the choice is sent.
+    /// For a command the engine can make a rule of: allow commands that start with the same words, in this folder (and,
+    /// in a repository, its worktrees pi² makes), from now on. The engine makes the rule it offered; only the choice is sent.
     @ViewBuilder
     private var ruleButton: some View {
         if item.tool == "bash", let rule = item.rule, !rule.words.isEmpty {
@@ -183,7 +183,7 @@ struct InboxCard: View {
                 Text("Always Allow \(Text(rule.command).font(.system(size: 12, design: .monospaced))) Here")
             }
             .buttonStyle(.piSecondary)
-            .help("\(who) may then run commands that start with “\(rule.command)” in \(engine.folderName(rule.folder)) without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent’s settings.")
+            .help("\(who) may then run commands that start with “\(rule.command)” in \(engine.folderName(rule.folder))\(rule.worktrees == true ? " and the same folder of every worktree pi² makes from that repository," : "") without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent’s settings.")
         }
     }
 

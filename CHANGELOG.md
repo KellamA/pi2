@@ -4,6 +4,9 @@ What changed in each version, newest first.
 
 ## Unreleased
 
+### Changed
+- **Command rules reach worktrees.** A rule made in a repository's main checkout, or in any worktree pi² made from it, now holds in the same folder of all that repository's pi² worktrees, for the same agent, so a conversation in a new worktree no longer asks for `npm test` again. A rule made in a worktree is kept for the main checkout's folder. Worktrees pi² did not make are not affected. See [docs/rules.md](docs/rules.md).
+
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
 
