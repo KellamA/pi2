@@ -5,6 +5,8 @@ What changed in each version, newest first.
 ## Unreleased
 
 ### Changed
+- `app/build.sh` stops before building when a copy of pi² is running from the bundle it would replace, and says which process and what to do instead; `PI2_REPLACE_RUNNING=1` replaces it anyway. [docs/development.md](docs/development.md) has a new section, "Working on pi² with pi²".
+- **A test copy of pi² can be looked at.** Computer use no longer refuses every app whose bundle id starts with `dev.pi2.app.`: such a copy is look-only, like browsers and System Settings, so an agent working on pi² can check a change by looking at a throwaway build. pi² itself (`dev.pi2.app`) still cannot be given to an agent.
 - **Project instructions from the repository's top.** A conversation working in a subfolder of a git repository is now given the `AGENTS.md` or `CLAUDE.md` of each folder from the repository's top down to its own, the top's first, so the nearest has the last word. Nothing above the repository's top is read, and a folder in no repository reads only itself, as before. The 24,000-character cap is shared between the files. See [docs/knowledge.md](docs/knowledge.md).
 
 ### Fixed
