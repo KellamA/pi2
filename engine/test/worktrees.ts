@@ -561,6 +561,30 @@ try {
 		assert.ok(alive(member), "a group left without its leader is not touched");
 		process.kill(member);
 		step("a left-over process number now used by another process, or a group whose leader is gone, is not touched");
+
+		// A record no set-up could have left (1 would signal every process the person owns, 0 the engine's own group) is
+		// refused before anything is looked at or signalled, and so is the engine's own pid or group.
+		const ownGroup = Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
+		assert.ok(ownGroup > 1, `the test's own group: ${ownGroup}`);
+		const ownStart = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim().replace(/\s+/g, " ");
+		const signalled: unknown[] = [];
+		const kill = process.kill;
+		process.kill = ((pid: number, signal?: string | number) => {
+			signalled.push([pid, signal]);
+			return true;
+		}) as typeof process.kill;
+		try {
+			for (const group of [0, 1, -1, -other.pid!, 2.5, Number.NaN, process.pid, ownGroup]) {
+				assert.equal(await stopLeftOver({ group, start: ownStart }, 10), "unsure", `group ${group}`);
+			}
+			assert.equal(await stopLeftOver({ group: other.pid!, start: "" }, 10), "unsure", "an empty start time");
+			assert.equal(await stopLeftOver({ group: "7" as unknown as number, start: ownStart }, 10), "unsure", "a number stored as text");
+			await sleep(100);
+		} finally {
+			process.kill = kill;
+		}
+		assert.deepEqual(signalled, [], "nothing was signalled");
+		step("a left-over record of 0, 1, a negative or fractional number, or the engine's own pid or group, is refused and signals nothing");
 	}
 	console.log("PASS");
 } finally {

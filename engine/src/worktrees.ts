@@ -128,6 +128,9 @@ function processes(pid?: number): Promise<Map<number, { group: number; start: st
 	});
 }
 
+/** A process or group number a left-over set-up may be signalled by: a whole number above 1 that is not this engine's own. */
+const signallable = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 1 && n !== process.pid;
+
 /** What became of a set-up an engine that died left behind. */
 export type LeftOver = "stopped" | "gone" | "unsure";
 
@@ -140,7 +143,13 @@ export type LeftOver = "stopped" | "gone" | "unsure";
  * still there, and provably the same, gets SIGKILL after `graceMs`.
  */
 export async function stopLeftOver(left: SetupProcess, graceMs = SETUP_GRACE_MS): Promise<LeftOver> {
+	// The record comes from a stored document, and a group number of 1 would signal every process the person owns, and 0
+	// this engine's own group. Anything a set-up could never have been recorded with is refused before looking.
+	if (!signallable(left.group) || typeof left.start !== "string" || left.start === "") return "unsure";
 	const all = await processes();
+	// Nor the group this engine is in, or one whose number it cannot read.
+	const ownGroup = all.get(process.pid)?.group;
+	if (ownGroup === undefined || ownGroup === left.group) return "unsure";
 	const leader = all.get(left.group);
 	if (leader === undefined) return [...all.values()].some((each) => each.group === left.group) ? "unsure" : "gone";
 	if (leader.group !== left.group || leader.start !== left.start) return "gone";
@@ -153,7 +162,7 @@ export async function stopLeftOver(left: SetupProcess, graceMs = SETUP_GRACE_MS)
 	setTimeout(async () => {
 		const now = await processes().catch(() => new Map<number, { group: number; start: string }>());
 		const same = (pid: number, was: { group: number; start: string }) => now.get(pid)?.group === was.group && now.get(pid)?.start === was.start;
-		const targets = same(left.group, leader) ? [-left.group] : members.filter(([pid, was]) => same(pid, was)).map(([pid]) => pid);
+		const targets = same(left.group, leader) ? [-left.group] : members.filter(([pid, was]) => signallable(pid) && same(pid, was)).map(([pid]) => pid);
 		for (const target of targets) {
 			try {
 				process.kill(target, "SIGKILL");
