@@ -53,7 +53,15 @@ export type Setup = {
 	seconds?: number;
 	/** The end of what it printed, standard output and errors together. */
 	output?: string;
+	/** While it runs: its process group, so that an engine started after one that died can find what was left running. */
+	process?: SetupProcess;
 };
+
+/**
+ * A set-up command's process group: its id, which is the pid of the process that leads it, and when that process started,
+ * as `ps -o lstart=` gives it. The start time tells the group apart from an unrelated one that later got the same number.
+ */
+export type SetupProcess = { group: number; start: string };
 
 /** A set-up command's transcript entry: display only, so the model never sees it (a prompt section tells it instead). */
 export const SETUP_ENTRY = "pi2.setup";
@@ -65,6 +73,8 @@ const SETUP_KEEP_CHARS = 32 * 1024;
 const SETUP_TOLD_CHARS = 2_000;
 /** After SIGTERM, how long a set-up gets before SIGKILL; after it exits, how long the rest of its output may take. */
 const SETUP_GRACE_MS = 3_000;
+/** How often the apps are sent a running set-up's output, at most. */
+const SETUP_PUSH_MS = 250;
 
 /** What the app is sent for a set-up entry: one line for anything that shows only text, and the rest as details. */
 export function setupItem(id: number, data: unknown) {
@@ -95,6 +105,73 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 	} catch {
 		// Already gone.
 	}
+}
+
+/**
+ * Processes as `ps` lists them, by pid: their process group and start time. Only `pid` when given, else all of them.
+ * In UTC and the C locale, so the same process reads the same whoever asks and whenever. Processes that have ended and
+ * wait only to be reaped are left out: they run nothing.
+ */
+function processes(pid?: number): Promise<Map<number, { group: number; start: string }>> {
+	return new Promise((resolve, reject) => {
+		const which = pid === undefined ? ["-A"] : ["-p", String(pid)];
+		execFile("/bin/ps", [...which, "-o", "pid=,pgid=,stat=,lstart="], { timeout: GIT_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
+			const found = new Map<number, { group: number; start: string }>();
+			for (const line of String(stdout).split("\n")) {
+				const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line);
+				if (match && !match[3]!.startsWith("Z")) found.set(Number(match[1]), { group: Number(match[2]), start: match[4]!.replace(/\s+/g, " ") });
+			}
+			// ps exits 1 when the one process asked about is not there: that is an answer, not a failure.
+			if (error && !(pid !== undefined && (error as { code?: unknown }).code === 1)) reject(error);
+			else resolve(found);
+		});
+	});
+}
+
+/** A process or group number a left-over set-up may be signalled by: a whole number above 1 that is not this engine's own. */
+const signallable = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 1 && n !== process.pid;
+
+/** What became of a set-up an engine that died left behind. */
+export type LeftOver = "stopped" | "gone" | "unsure";
+
+/**
+ * Stop a set-up command's process group left running by an engine that died, but only if it is provably the same: its
+ * leader is alive, still leads the group, and started when the record says. A group's id is not given to a new process
+ * while the group lasts, so a leader that is gone, or a number that now belongs to a process that started at another time,
+ * means the group is gone too; members left without their leader are a group that cannot be told apart from another one
+ * that got the same number later, so they are left alone. "stopped" is answered once SIGTERM is sent; whatever of it is
+ * still there, and provably the same, gets SIGKILL after `graceMs`.
+ */
+export async function stopLeftOver(left: SetupProcess, graceMs = SETUP_GRACE_MS): Promise<LeftOver> {
+	// The record comes from a stored document, and a group number of 1 would signal every process the person owns, and 0
+	// this engine's own group. Anything a set-up could never have been recorded with is refused before looking.
+	if (!signallable(left.group) || typeof left.start !== "string" || left.start === "") return "unsure";
+	const all = await processes();
+	// Nor the group this engine is in, or one whose number it cannot read.
+	const ownGroup = all.get(process.pid)?.group;
+	if (ownGroup === undefined || ownGroup === left.group) return "unsure";
+	const leader = all.get(left.group);
+	if (leader === undefined) return [...all.values()].some((each) => each.group === left.group) ? "unsure" : "gone";
+	if (leader.group !== left.group || leader.start !== left.start) return "gone";
+	const members = [...all].filter(([, each]) => each.group === left.group);
+	try {
+		process.kill(-left.group, "SIGTERM");
+	} catch {
+		return "gone";
+	}
+	setTimeout(async () => {
+		const now = await processes().catch(() => new Map<number, { group: number; start: string }>());
+		const same = (pid: number, was: { group: number; start: string }) => now.get(pid)?.group === was.group && now.get(pid)?.start === was.start;
+		const targets = same(left.group, leader) ? [-left.group] : members.filter(([pid, was]) => signallable(pid) && same(pid, was)).map(([pid]) => pid);
+		for (const target of targets) {
+			try {
+				process.kill(target, "SIGKILL");
+			} catch {
+				// Gone meanwhile.
+			}
+		}
+	}, graceMs).unref();
+	return "stopped";
 }
 
 const Worktrees = defineDoc<{ conversations: Record<string, Worktree> }>({
@@ -361,8 +438,11 @@ export const worktrees: Feature = (_host, engine) => {
 	let gitMissing = false;
 	/** Conversations whose worktree is being made or removed right now. */
 	const changing = new Set<number>();
-	/** Set-up commands running now, by conversation. `settled` resolves once their end is recorded and written. */
-	const setups = new Map<number, { child: ChildProcess; stop(reason: string): void; settled: Promise<void> }>();
+	/**
+	 * Set-up commands running now, by conversation. `settled` resolves once their end is recorded and written; `output` is
+	 * what they have printed so far, which the conversation's state carries while they run.
+	 */
+	const setups = new Map<number, { run: string; child: ChildProcess; output(): string; stop(reason: string): void; settled: Promise<void> }>();
 
 	const event = () => ({ event: "branches", conversations: last, leftBehind });
 
@@ -482,9 +562,16 @@ export const worktrees: Feature = (_host, engine) => {
 		let stopped: string | undefined;
 		let failedToStart: string | undefined;
 		const child = spawn("/bin/bash", ["-c", command], { cwd: root, env: process.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		// Its output goes to the apps with the conversation's state as it arrives, a few times a second at most. Not as
+		// transcript entries, which are kept for good: the one written when it ends holds the output's end.
+		let pushing: ReturnType<typeof setTimeout> | undefined;
 		const keep = (chunk: Buffer) => {
 			output += chunk.toString("utf8");
 			if (output.length > 2 * SETUP_KEEP_CHARS) output = output.slice(-SETUP_KEEP_CHARS);
+			pushing ??= setTimeout(() => {
+				pushing = undefined;
+				engine.stateChanged(id);
+			}, SETUP_PUSH_MS);
 		};
 		child.stdout?.on("data", keep);
 		child.stderr?.on("data", keep);
@@ -505,8 +592,24 @@ export const worktrees: Feature = (_host, engine) => {
 			// Something it started in the background may hold its output open long after it exits; do not wait on that.
 			child.once("exit", (code, signal) => setTimeout(() => resolve({ code, signal }), SETUP_GRACE_MS).unref());
 		});
+		// Its process group and that group's start, so that if this engine dies, the next one can stop what it left running.
+		// Read only while the child is known not to have been reaped: until then its pid cannot belong to anything else.
+		if (child.pid !== undefined) {
+			const group = child.pid;
+			void processes(group)
+				.then(async (found) => {
+					const own = found.get(group);
+					if (own === undefined || own.group !== group || child.exitCode !== null || child.signalCode !== null) return;
+					await save((doc) => {
+						const setup = doc[String(id)]?.setup;
+						if (setup?.run === run && setup.status === "running") setup.process = { group, start: own.start };
+					});
+				})
+				.catch((error) => engine.log("could not note the set-up's process for", id, error instanceof Error ? error.message : error));
+		}
 		const settled = ended.then(async ({ code, signal }) => {
 			clearTimeout(timer);
+			clearTimeout(pushing);
 			child.stdout?.destroy();
 			child.stderr?.destroy();
 			const reason =
@@ -515,9 +618,13 @@ export const worktrees: Feature = (_host, engine) => {
 			engine.log("set-up for", id, reason === undefined ? "finished" : reason);
 			await recordSetup(id, setup).catch((error) => engine.log("could not record the set-up of", id, error instanceof Error ? error.message : error));
 			await noteSetup(id, setup);
-			if (setups.get(id)?.child === child) setups.delete(id);
+			if (setups.get(id)?.child === child) {
+				setups.delete(id);
+				// The entry has its output now; the state no longer carries it.
+				engine.stateChanged(id);
+			}
 		});
-		setups.set(id, { child, stop, settled });
+		setups.set(id, { run, child, output: () => output, stop, settled });
 	}
 
 	/** Make a worktree for conversation `id` from the repository its folder is in, and move the conversation into it. */
@@ -681,10 +788,21 @@ export const worktrees: Feature = (_host, engine) => {
 		],
 		start: async () => {
 			mine = JSON.parse(JSON.stringify((await engine.harness().snapshot(Worktrees, engine.context()))?.conversations ?? {}));
-			// A set-up that was running when the last engine stopped will not finish: say so where it was started.
+			// A set-up that was running when the last engine stopped will not finish: say so where it was started. An engine
+			// that died outright (SIGKILL, a crash) did not stop it, so it may still be running: stop it, if it is provably the
+			// same one, and otherwise leave it alone and say so.
 			for (const [key, own] of Object.entries(mine)) {
 				if (own.setup?.status !== "running") continue;
-				const setup: Setup = { ...own.setup, status: "failed", reason: "was cut off when pi²’s engine stopped" };
+				const { process: left, ...was } = own.setup;
+				const found: LeftOver = left === undefined ? "gone" : await stopLeftOver(left).catch(() => "unsure" as const);
+				if (left !== undefined) engine.log("set-up left by the last engine for", key, found === "stopped" ? "was stopped" : found === "unsure" ? "may still be running" : "is not running");
+				const reason =
+					found === "stopped"
+						? "was left running when pi²’s engine stopped, and was stopped when the engine started again"
+						: found === "unsure"
+							? `was cut off when pi²’s engine stopped. Something it started may still be running (process group ${left?.group}), and was left alone because pi² could not be sure it is the same`
+							: "was cut off when pi²’s engine stopped";
+				const setup: Setup = { ...was, status: "failed", reason };
 				await recordSetup(Number(key), setup);
 				await noteSetup(Number(key), setup);
 			}
@@ -700,6 +818,11 @@ export const worktrees: Feature = (_host, engine) => {
 			void refresh();
 		},
 		greeting: () => [event()],
+		// A set-up command running in the conversation's worktree, with the end of what it has printed so far.
+		state: (view) => {
+			const running = setups.get(view.conversation.id as unknown as number);
+			return { setup: running === undefined ? null : { run: running.run, output: tail(running.output(), SETUP_KEEP_CHARS) } };
+		},
 		folderChanged: (id) => {
 			folders.delete(id);
 			void refresh();

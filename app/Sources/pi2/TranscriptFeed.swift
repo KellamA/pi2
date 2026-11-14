@@ -13,6 +13,8 @@ struct TranscriptFeed {
         var tools: [LiveTool]
         /// Retries are shown outside the transcript; the page only needs to know not to show "working" dots meanwhile.
         var retrying: Bool
+        /// A worktree set-up command still running, whose output the page shows in its row as it arrives.
+        var setup: LiveSetup?
     }
 
     /// An agent a hand-off can name.
@@ -83,7 +85,7 @@ struct TranscriptFeed {
         firstSent = items.first?.id
         lastSent = items.last
 
-        let live = Live(busy: state?.busy ?? false, partial: state?.partial, tools: state?.tools ?? [], retrying: state?.retry != nil)
+        let live = Live(busy: state?.busy ?? false, partial: state?.partial, tools: state?.tools ?? [], retrying: state?.retry != nil, setup: state?.setup)
         if live != self.live {
             message.live = live
             self.live = live

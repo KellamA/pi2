@@ -484,6 +484,15 @@ struct ConversationState: Codable, Equatable {
     let title: String?
     /// It, or the conversation it is a sub-chat of, is archived: it can be read but not continued.
     let archived: Bool?
+    /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
+    /// none is running, and from an engine older than this field.
+    let setup: LiveSetup?
+}
+
+/// A worktree set-up command still running: which run it is (its transcript entry's `details.run`) and the end of its output.
+struct LiveSetup: Codable, Equatable {
+    let run: String
+    let output: String
 }
 
 /// One project instructions file in effect for a conversation: its name, and the real path of the folder it is in.

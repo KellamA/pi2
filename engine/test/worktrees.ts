@@ -8,7 +8,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
+import { inspect, parseStatus, stopLeftOver, suggestBranch } from "../src/worktrees.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -324,6 +324,28 @@ try {
 	assert.match(told, /It exited with code 3[^]*broken-thing/, "the agent is told it failed, with the end of its output");
 	step("a failing set-up is shown as failed and told to the agent, and the conversation still works");
 
+	{
+		// What a set-up prints is in the conversation's state while it runs, and only in its entry once it has ended.
+		const gate = join(scratch, "streamer.gate");
+		const { id: streamer } = await client.call("agents.save", {
+			agent: { name: "Streamer", access: "full", cwd: tooling, worktree: true, setup: `echo early-line; while [ ! -e '${gate}' ]; do sleep 0.1; done; echo late-line` },
+		});
+		const { id: s } = await client.call("conversation.create", { agentId: streamer });
+		await client.call("conversation.open", { id: s });
+		const live = await client.until("output while it runs", () => {
+			const setup = client.conversations.get(s)?.state.setup;
+			return typeof setup?.output === "string" && setup.output.includes("early-line") ? setup : undefined;
+		});
+		assert.equal(ended(s), undefined, "it is still running");
+		assert.equal(live.run, setups(s)[0].details.run, "the output is the running entry's");
+		assert.equal(setups(s).length, 1, "output arriving writes no entries");
+		writeFileSync(gate, "");
+		const finished = await client.until("set-up ended", () => ended(s));
+		assert.match(finished.details.output, /early-line\nlate-line/);
+		await client.until("output gone from the state", () => client.conversations.get(s)?.state.setup === null);
+		step("a running set-up's output is in the conversation's state as it arrives, and leaves it once the entry has it");
+	}
+
 	// Made from the app for a conversation of an agent with a set-up command, then removed while it runs.
 	const pidFile = join(scratch, "setup.pid");
 	const { id: manual } = await client.call("agents.save", { agent: { name: "Manual", access: "full", cwd: tooling, setup: `sleep 30 & echo $! > '${pidFile}'; wait` } });
@@ -484,6 +506,85 @@ try {
 		outcome = await attempt(f, "./run-tests");
 		assert.equal(outcome.asked, null, "the rule outlives the worktree it was made in");
 		step("rules: another agent, another repository and a worktree pi² did not make still ask; a rule added by hand in a worktree is kept for the main checkout");
+	}
+
+	{
+		// An engine killed outright mid set-up leaves the command running; the next engine stops it, and what it started.
+		const alive = (pid: number) => {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		const leaderFile = join(scratch, "left.pid");
+		const childFile = join(scratch, "left-child.pid");
+		const { id: lingerer } = await again.call("agents.save", { agent: { name: "Lingerer", access: "full", cwd: tooling, setup: `sleep 120 & echo $! > '${childFile}'; echo $$ > '${leaderFile}'; wait` } });
+		const { id: k } = await again.call("conversation.create", { agentId: lingerer });
+		await again.call("worktree.create", { id: k });
+		const [leader, started] = await again.until("set-up running", () => {
+			const read = (file: string) => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0);
+			return read(leaderFile) > 0 && read(childFile) > 0 ? [read(leaderFile), read(childFile)] : undefined;
+		});
+		// The engine notes the command's process group just after starting it.
+		await sleep(1_000);
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		assert.ok(alive(leader) && alive(started), "an engine killed outright does not stop the set-up");
+		engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "inherit"] });
+		const third = await Client.attach();
+		await third.call("conversation.open", { id: k });
+		const cut = await third.until("marked", () => third.conversations.get(k)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
+		assert.equal(cut.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
+		await third.until("what was left running is stopped", () => !alive(leader) && !alive(started), 10_000);
+		step("a set-up left running by an engine killed outright is stopped by the next engine, with what it started, and marked");
+
+		// A number that now belongs to another process, or members of a group whose leader is gone, are left alone.
+		const other = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
+		other.unref();
+		assert.equal(await stopLeftOver({ group: other.pid!, start: "Thu Jan 1 00:00:00 1970" }, 100), "gone");
+		await sleep(300);
+		assert.ok(alive(other.pid!), "a process that got the same number, but started at another time, is not touched");
+		process.kill(other.pid!);
+		const orphaning = spawn("/bin/bash", ["-c", "sleep 30 & echo $!"], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+		let printed = "";
+		let exited = false;
+		orphaning.stdout!.on("data", (chunk) => (printed += chunk));
+		orphaning.once("exit", () => (exited = true));
+		await third.until("leader gone, member left", () => exited && printed.includes("\n"));
+		orphaning.stdout!.destroy();
+		const member = Number(printed.trim());
+		assert.ok(member > 0 && alive(member), printed);
+		assert.equal(await stopLeftOver({ group: orphaning.pid!, start: "anything" }, 100), "unsure");
+		await sleep(300);
+		assert.ok(alive(member), "a group left without its leader is not touched");
+		process.kill(member);
+		step("a left-over process number now used by another process, or a group whose leader is gone, is not touched");
+
+		// A record no set-up could have left (1 would signal every process the person owns, 0 the engine's own group) is
+		// refused before anything is looked at or signalled, and so is the engine's own pid or group.
+		const ownGroup = Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
+		assert.ok(ownGroup > 1, `the test's own group: ${ownGroup}`);
+		const ownStart = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim().replace(/\s+/g, " ");
+		const signalled: unknown[] = [];
+		const kill = process.kill;
+		process.kill = ((pid: number, signal?: string | number) => {
+			signalled.push([pid, signal]);
+			return true;
+		}) as typeof process.kill;
+		try {
+			for (const group of [0, 1, -1, -other.pid!, 2.5, Number.NaN, process.pid, ownGroup]) {
+				assert.equal(await stopLeftOver({ group, start: ownStart }, 10), "unsure", `group ${group}`);
+			}
+			assert.equal(await stopLeftOver({ group: other.pid!, start: "" }, 10), "unsure", "an empty start time");
+			assert.equal(await stopLeftOver({ group: "7" as unknown as number, start: ownStart }, 10), "unsure", "a number stored as text");
+			await sleep(100);
+		} finally {
+			process.kill = kill;
+		}
+		assert.deepEqual(signalled, [], "nothing was signalled");
+		step("a left-over record of 0, 1, a negative or fractional number, or the engine's own pid or group, is refused and signals nothing");
 	}
 	console.log("PASS");
 } finally {

@@ -171,6 +171,8 @@ test("a worktree's set-up command reads as pi²'s, and says how it failed", () =
 	const [opened] = T.detailFor(call("pi2_setup", { command: "npm ci" }), "failed", { text: "npm ERR!", isError: true }, null);
 	assert.deepEqual(opened, { kind: "command", label: "Set-up command", command: "npm ci", output: "npm ERR!", failed: true, placeholder: "(no output)" });
 	assert.equal(T.detailFor(call("pi2_setup", { command: "npm ci" }), "running", undefined, null)[0].placeholder, "Running…");
+	const [arriving] = T.detailFor(call("pi2_setup", { command: "npm ci" }), "running", undefined, { status: "running", output: "added 1 package\n" });
+	assert.equal(arriving.output, "added 1 package", "what it has printed so far shows while it runs");
 });
 
 test("an approval for a command offers the engine's rule, and nothing else does", () => {
