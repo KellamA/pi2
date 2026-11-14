@@ -4,9 +4,12 @@
 // past a rule. The guiding principle: the command line is read the way bash will read it, and anything this reader is
 // not certain about makes the whole line ask, as it would without rules.
 
-import { resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
-/** Commands that start with `words` may run without asking, for one agent, when its conversation works in `folder`. */
+/**
+ * Commands that start with `words` may run without asking, for one agent, when its conversation works in `folder`, or in
+ * the same folder of a worktree pi² made from that repository (see `ruleFolder`).
+ */
 export type CommandRule = { folder: string; words: string[]; createdAt: number };
 
 /** One word of a simple command, with quotes and escapes taken off. */
@@ -365,12 +368,34 @@ export function sameFolder(a: string, b: string): boolean {
 	return resolve(a) === resolve(b);
 }
 
+/** A worktree pi² made (worktrees.ts keeps the record): its folder, and the main checkout of the repository it came from. */
+export type MadeWorktree = { path: string; repo: string };
+
+/**
+ * The folder rules are kept for and matched against, for a conversation working in `folder`. Inside a worktree pi² made,
+ * it is the same subfolder of the repository's main checkout, so one rule holds in the main checkout and in every
+ * worktree pi² makes from it; anywhere else, the folder itself. Only pi²'s own records count, never a guess from a path.
+ */
+export function ruleFolder(folder: string, worktrees: readonly MadeWorktree[]): string {
+	const here = resolve(folder);
+	let best: { root: string; repo: string } | undefined;
+	for (const worktree of worktrees) {
+		const root = resolve(worktree.path);
+		if (here !== root && !here.startsWith(root.endsWith(sep) ? root : root + sep)) continue;
+		if (best === undefined || root.length > best.root.length) best = { root, repo: worktree.repo };
+	}
+	return best === undefined ? here : resolve(best.repo, relative(best.root, here));
+}
+
 /**
  * Whether `command`, run in `folder`, is covered by `rules`: every simple command in it is covered by a rule for that
- * folder or is on the harmless list, and at least one is covered by a rule. Anything else asks.
+ * folder (or, inside a worktree pi² made, for its rule folder: see `ruleFolder`) or is on the harmless list, and at least
+ * one is covered by a rule. Anything else asks.
  */
-export function judgeCommand(command: string, folder: string, rules: readonly CommandRule[]): Verdict {
-	const here = rules.filter((rule) => sameFolder(rule.folder, folder) && ruleRefusal(rule.words) === undefined);
+export function judgeCommand(command: string, folder: string, rules: readonly CommandRule[], worktrees: readonly MadeWorktree[] = []): Verdict {
+	const kept = ruleFolder(folder, worktrees);
+	// A rule kept for the worktree's own folder, as rules were before they followed worktrees, still counts there.
+	const here = rules.filter((rule) => (sameFolder(rule.folder, kept) || sameFolder(rule.folder, folder)) && ruleRefusal(rule.words) === undefined);
 	if (here.length === 0) return { allowed: false, reason: "no rule for this folder" };
 	const parsed = parseCommandLine(command);
 	if ("ask" in parsed) return { allowed: false, reason: parsed.ask };

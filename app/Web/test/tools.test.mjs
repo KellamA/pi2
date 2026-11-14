@@ -164,7 +164,9 @@ test("a command one of the person's rules let through says which rule", () => {
 
 test("an approval for a command offers the engine's rule, and nothing else does", () => {
 	const pending = (rule, tool = "bash") => ({ id: "1", kind: "approval", tool, arguments: { command: "npm test -- --grep x" }, rule });
-	assert.deepEqual(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w" })), { words: ["npm", "test"], command: "npm test" });
+	assert.deepEqual(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w" })), { words: ["npm", "test"], command: "npm test", worktrees: false });
+	assert.equal(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w", worktrees: true })).worktrees, true, "says when the rule also holds in the repository's worktrees");
+	assert.equal(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w", worktrees: "yes" })).worktrees, false);
 	assert.equal(T.ruleOffer(pending(undefined)), null);
 	assert.equal(T.ruleOffer(pending({ words: ["npm", "test"] }, "write")), null, "only commands");
 	for (const rule of [{}, { words: [] }, { words: "npm test" }, { words: ["npm", 5] }, { words: [""] }, null, "x"]) {

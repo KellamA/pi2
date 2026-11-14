@@ -362,6 +362,8 @@ struct InboxItem: Codable, Equatable, Identifiable {
 struct RuleOffer: Codable, Equatable {
     let words: [String]
     let folder: String
+    /// The rule is kept for a repository's main checkout, so it also holds in the worktrees pi² makes from it.
+    var worktrees: Bool? = nil
     var command: String { words.joined(separator: " ") }
 }
 
