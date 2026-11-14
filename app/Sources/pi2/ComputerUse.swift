@@ -270,9 +270,9 @@ struct ComputerUseSection: View {
         for url in panel.urls {
             guard let bundleID = Bundle(url: url)?.bundleIdentifier else { continue }
             let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
-            if ComputerPolicy.isNever(bundleID) || bundleID == Bundle.main.bundleIdentifier {
+            if ComputerPolicy.isNever(bundleID) || ComputerPolicy.same(bundleID, Bundle.main.bundleIdentifier) {
                 turnedAway.append(name)
-            } else if !settings.apps.contains(bundleID) {
+            } else if !settings.apps.contains(where: { ComputerPolicy.same($0, bundleID) }) {
                 settings.apps.append(bundleID)
             }
         }

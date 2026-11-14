@@ -1,0 +1,138 @@
+#!/bin/bash
+# Checks scripts/issue-hook by feeding it the JSON Claude Code sends, against
+# throwaway git repositories in a temporary folder and transcripts written by
+# hand. Touches no GitHub issue and no file outside that folder.
+#
+#   scripts/test-issue-hook
+
+set -uo pipefail
+
+hook="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/issue-hook"
+command -v jq >/dev/null || { echo "test-issue-hook: needs jq" >&2; exit 1; }
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+R=$(cd -P -- "$T" && pwd -P) # the real path, in case $T is reached through a link
+
+git_() { git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+
+repo=$R/repo
+mkdir -p "$repo/src" "$repo/.claude" "$R/elsewhere"
+git_ init -q "$repo"
+git_ -C "$repo" commit -q --allow-empty -m init
+echo x >"$repo/src/a.txt"
+ln -s "$repo" "$R/link"            # the same repository reached through a link
+git_ -C "$repo" worktree add -q "$R/wt"
+mkdir -p "$R/my repo/src"
+git_ init -q "$R/my repo"
+
+: >"$R/none.jsonl"
+printf '%s\n' '{"text":"[pi2-issue] working on #7 https://example.invalid/7"}' >"$R/active.jsonl"
+printf '%s\n' '{"text":"[pi2-issue] working on #7 https://example.invalid/7"}' \
+	'{"text":"[pi2-issue] paused #7 (waiting)"}' >"$R/paused.jsonl"
+printf '%s\n' '{"text":"[pi2-issue] skipped: no network"}' >"$R/skipped.jsonl"
+ln -s "$R/active.jsonl" "$R/active-link.jsonl"
+
+pass=0 fail=0
+
+# expect <allow|deny|paused> <description> <cwd> <file> <transcript> [env...]
+expect() {
+	local want=$1 what=$2 cwd=$3 file=$4 transcript=$5 out got
+	shift 5
+	out=$(jq -n --arg c "$cwd" --arg f "$file" --arg t "$transcript" \
+		'{session_id: "s", transcript_path: $t, cwd: $c, hook_event_name: "PreToolUse",
+		  tool_name: "Write", tool_input: {file_path: $f, content: "x"}}' |
+		env "$@" "$hook" edit)
+	if [[ -z $out ]]; then got=allow
+	elif [[ $out == *'waiting or blocked'* ]]; then got=paused
+	elif [[ $out == *'"deny"'* ]]; then got=deny
+	else got="unexpected output: $out"
+	fi
+	report "$want" "$got" "edit: $what"
+}
+
+# expect_stop <block|quiet> <description> <transcript> [stop_hook_active]
+expect_stop() {
+	local want=$1 what=$2 out got
+	out=$(jq -n --arg t "$3" --argjson a "${4-false}" \
+		'{session_id: "s", transcript_path: $t, hook_event_name: "Stop", stop_hook_active: $a}' |
+		"$hook" stop)
+	if [[ -z $out ]]; then got=quiet
+	elif [[ $out == *'"block"'*'#7'* ]]; then got=block
+	else got="unexpected output: $out"
+	fi
+	report "$want" "$got" "stop: $what"
+}
+
+report() {
+	if [[ $1 == "$2" ]]; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		echo "FAIL $3: expected $1, got $2"
+	fi
+}
+
+none=$R/none.jsonl active=$R/active.jsonl paused=$R/paused.jsonl
+
+for base in "$repo" "$R/link" "$T/repo"; do
+	expect deny "no issue, existing file, via $base" "$base" "$base/src/a.txt" "$none"
+	expect deny "no issue, new file in new folders, via $base" "$base" "$base/new/deeper/b.txt" "$none"
+	expect allow "issue in progress, via $base" "$base" "$base/src/a.txt" "$active"
+	expect allow "issue in progress, new folders, via $base" "$base" "$base/new/deeper/b.txt" "$active"
+	expect paused "issue paused, via $base" "$base" "$base/src/a.txt" "$paused"
+	expect allow "skipped, via $base" "$base" "$base/src/a.txt" "$R/skipped.jsonl"
+	expect allow ".git/, via $base" "$base" "$base/.git/info/exclude" "$none"
+	expect allow ".claude/, via $base" "$base" "$base/.claude/settings.local.json" "$none"
+	expect allow ".claude/, new folder, via $base" "$base" "$base/.claude/new/x.md" "$none"
+	expect allow "outside the repository, via $base" "$base" "$R/elsewhere/x.txt" "$none"
+	expect allow "outside, new folder, via $base" "$base" "$R/elsewhere/new/x.txt" "$none"
+done
+
+# The session in one form, the file in the other.
+expect deny "cwd real, file through the link" "$repo" "$R/link/src/a.txt" "$none"
+expect deny "cwd through the link, file real" "$R/link" "$repo/src/a.txt" "$none"
+expect deny "cwd in a subfolder" "$R/link/src" "$repo/src/a.txt" "$none"
+
+# Paths given relative to cwd, and ones with . and .. in them.
+expect deny "relative path" "$R/link" "src/a.txt" "$none"
+expect deny "relative path into new folders" "$R/link" "new/b.txt" "$none"
+expect allow "relative path, issue in progress" "$R/link" "src/a.txt" "$active"
+expect allow "relative path to .claude/" "$R/link/src" "../.claude/x.md" "$none"
+expect allow "relative path out of the repository" "$R/link" "../elsewhere/x.txt" "$none"
+expect deny "existing folder then .." "$R/link" "$R/link/src/../b.txt" "$none"
+expect deny "new folder then .." "$R/link" "$R/link/new/../b.txt" "$none"
+expect allow "new folder then .. out of the repository" "$R/link" "$R/link/new/../../elsewhere/b.txt" "$none"
+expect deny ".claude/ then .. back into the repository" "$R/link" "$R/link/.claude/../src/b.txt" "$none"
+
+# A worktree is a checkout of its own, with its own top.
+expect deny "worktree, no issue" "$R/wt" "$R/wt/src/a.txt" "$none"
+expect allow "worktree, issue in progress" "$R/wt" "$R/wt/src/a.txt" "$active"
+expect allow "worktree, its .claude/" "$R/wt" "$R/wt/.claude/x.md" "$none"
+expect allow "worktree session, file in the main checkout (not its repository top)" "$R/wt" "$repo/src/a.txt" "$none"
+
+# A path with a space.
+expect deny "space in path, no issue" "$R/my repo" "$R/my repo/src/a b.txt" "$none"
+expect allow "space in path, issue in progress" "$R/my repo" "$R/my repo/src/a b.txt" "$active"
+expect allow "space in path, outside" "$R/my repo" "$R/elsewhere/a b.txt" "$none"
+
+# Not in a repository at all, a missing transcript, and the switches.
+expect allow "cwd not in a repository" "$R/elsewhere" "$R/elsewhere/x.txt" "$none"
+expect deny "transcript missing" "$repo" "$repo/src/a.txt" "$R/missing.jsonl"
+expect allow "transcript through a link" "$R/link" "$R/link/src/a.txt" "$R/active-link.jsonl"
+expect allow "PI2_ISSUES=off" "$R/link" "$R/link/src/a.txt" "$none" PI2_ISSUES=off
+
+# Without jq the hook lets everything through quietly.
+mkdir "$R/bin"
+for tool in git cat grep awk sort cut env; do ln -s "$(command -v "$tool")" "$R/bin/$tool"; done
+expect allow "jq missing" "$repo" "$repo/src/a.txt" "$none" PATH="$R/bin"
+
+expect_stop block "issue in progress" "$active"
+expect_stop block "issue in progress, transcript through a link" "$R/active-link.jsonl"
+expect_stop quiet "no issue" "$none"
+expect_stop quiet "issue paused" "$paused"
+expect_stop quiet "only skipped" "$R/skipped.jsonl"
+expect_stop quiet "already asked once" "$active" true
+
+echo "$pass passed, $fail failed"
+((fail == 0))

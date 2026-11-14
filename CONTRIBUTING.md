@@ -19,7 +19,8 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 2. Keep the change to one thing. A small pull request is reviewed sooner.
 3. If you touch the engine, run `npm run check` and `npm test` in `engine/`, and add to `engine/test/engine.ts` when you add behaviour.
 4. If you touch the app, build it and try the change in a throwaway copy, as [Testing safely](#testing-safely) shows. Apart from the browser's page handling, which `pi2-browser-probe` checks, the app has no automated tests, so say in the pull request what you tried by hand.
-5. Say plainly what is and is not tested.
+5. If you touch `scripts/issue-hook`, run `scripts/test-issue-hook`. It needs `jq`, works in a temporary folder and touches no GitHub issue.
+6. Say plainly what is and is not tested.
 
 ## Testing safely
 
@@ -31,7 +32,7 @@ pi² is often worked on, by people and by agents, on a Mac where it is also in u
 - **Never drive, quit, restart or signal the person's own running pi² or its engine.** Do not use `pkill` or `killall` by name, which would match theirs too. Stop only the processes you started, by their pid.
 - **Never read or write the real Keychain service, `dev.pi2.credentials`, and never call a model provider with the person's sign-ins.** The scripted demo model (see [docs/development.md](docs/development.md)) answers without a provider.
 - **Do not set off a macOS permission prompt** (Accessibility, Screen Recording, Notifications, Automation and the like). The prompt appears on the person's screen, and their answer stays until they change it in System Settings. A copy with its own bundle id has no permissions, so computer use and turning on notifications in it would ask. Quitting an app with `osascript` sends it an Apple event and can ask for Automation, which is another reason to stop by pid. Signing the person's own bundle again resets its permissions.
-- **Leave the login item alone, in a test copy too, whether on or off.** There is one per Mac, the launchd agent `dev.pi2.engine`, and the switch in Settings acts on it whichever copy you use. Turning it off in a test copy stops the person's engine; turning it on replaces their item with one that runs the copy's engine on the real data folder.
+- **Leave the login item alone, in a test copy too, whether on or off.** There is one per Mac, the launchd agent `dev.pi2.engine`, and it belongs to the copy of pi² on the usual data folder. A copy on a data folder of its own shows the switch in Settings as unavailable and cannot install, replace or remove the item. Do not work around that: the item starts the person's engine, and removing it stops that engine.
 - **Never run `app/build.sh` in a checkout whose bundle is the one in use.** It deletes `app/build/pi².app` and builds it again, and a development build runs its engine from that checkout's `engine/src`, so switching branches there changes the running engine too. Build in a clone or a worktree of your own.
 - **When several sessions share one checkout, work in a clone or worktree of your own**, and stage files by name, never `git add -A`: another session may have switched the branch or left work of its own there.
 - **Clean up afterwards**: the copy, its data folder, its preferences, its test Keychain items, and any process you started.
