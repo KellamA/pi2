@@ -278,12 +278,66 @@ enum EngineLoginItem {
         return Item(arguments: plist["ProgramArguments"] as? [String] ?? [], home: environment?["PI2_HOME"])
     }
 
-    /// Starts the engine through launchd, if it is not running already. False if launchd does not have the item.
-    static func start() -> Bool {
-        (try? launchctl(["kickstart", "gui/\(getuid())/\(label)"])) == 0
+    /// The installed item, or nil if there is none. An item that cannot be read serves no data folder.
+    static var installedItem: Item? {
+        guard installed else { return nil }
+        return current ?? Item(arguments: [], home: nil)
     }
 
+    /// The data folder pi² uses when `PI2_HOME` does not name another. Only a copy on this folder may install the
+    /// login item when there is none, so its label stays the one item for the copy in real use.
+    static var defaultHome: String {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("pi2").path
+    }
+
+    /// Whether a copy of pi² on the data folder `home` may install, replace or remove the login item, given the item
+    /// installed now (nil if none). It may change only an item that serves its own data folder, and install one only
+    /// on the default data folder, so a test copy on a folder of its own never touches the item of the copy in use.
+    static func mayChange(_ item: Item?, home: String, defaultHome: String = EngineLoginItem.defaultHome) -> Bool {
+        (item ?? Item(arguments: [], home: defaultHome)).serves(home: home)
+    }
+
+    /// What the switch in Settings shows for a copy on the data folder `home`.
+    enum Switch: Equatable {
+        case on, off
+        /// The copy may not change the item; the text says why.
+        case unavailable(String)
+
+        var isUnavailable: Bool {
+            if case .unavailable = self { return true }
+            return false
+        }
+    }
+
+    static func switchState(_ item: Item?, home: String, defaultHome: String = EngineLoginItem.defaultHome) -> Switch {
+        if mayChange(item, home: home, defaultHome: defaultHome) { return item == nil ? .off : .on }
+        if Item(arguments: [], home: defaultHome).serves(home: home) {
+            return .unavailable("The login item starts the engine for another data folder, so pi² leaves it alone.")
+        }
+        return .unavailable("This copy of pi² has a data folder of its own. The login item belongs to the pi² that uses the usual data folder, so it cannot be changed here.")
+    }
+
+    struct Refused: LocalizedError {
+        let errorDescription: String?
+    }
+
+    /// Throws, saying why, unless `mayChange` allows a copy on `home` to change the item installed now.
+    private static func check(home: String) throws {
+        if case .unavailable(let why) = switchState(installedItem, home: home) { throw Refused(errorDescription: why) }
+    }
+
+    /// Starts the engine through launchd, if it is not running already. False if launchd does not have the item, or
+    /// the item starts the engine for another data folder than `home`.
+    static func start(home: String) -> Bool {
+        guard current?.serves(home: home) == true else { return false }
+        return (try? launchctl(["kickstart", "gui/\(getuid())/\(label)"])) == 0
+    }
+
+    /// Installs the item for the data folder `home`, replacing the one there if it serves the same folder. Refuses
+    /// when this copy may not change the item (see `mayChange`).
     static func install(node: String, main: String, home: String) throws {
+        try check(home: home)
+        if installed { _ = try? launchctl(["bootout", "gui/\(getuid())/\(label)"]) }
         let plist: [String: Any] = [
             "Label": label,
             "ProgramArguments": [node, main],
@@ -300,7 +354,10 @@ enum EngineLoginItem {
         try launchctl(["bootstrap", "gui/\(getuid())", plistURL.path])
     }
 
-    static func remove() {
+    /// Removes the item, which stops the engine it started. Refuses unless the item serves the data folder `home`.
+    static func remove(home: String) throws {
+        guard installed else { return }
+        try check(home: home)
         _ = try? launchctl(["bootout", "gui/\(getuid())/\(label)"])
         try? FileManager.default.removeItem(at: plistURL)
     }

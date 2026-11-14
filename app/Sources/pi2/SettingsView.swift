@@ -5,7 +5,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            GeneralSettings()
+            GeneralSettings(home: engine.dataFolder.path)
                 .tabItem { Label("General", systemImage: "gearshape") }
             ProvidersSettings(engine: engine)
                 .tabItem { Label("Providers", systemImage: "key") }
@@ -19,6 +19,8 @@ struct SettingsView: View {
 }
 
 struct GeneralSettings: View {
+    /// This copy's data folder.
+    let home: String
     @AppStorage(Notifier.defaultsKey) private var notify = false
     @AppStorage(AppAppearance.key) private var appearance = AppAppearance.dark.rawValue
     @State private var denied = false
@@ -51,7 +53,7 @@ struct GeneralSettings: View {
             } footer: {
                 Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.").formFooter()
             }
-            BackgroundSettings()
+            BackgroundSettings(home: home)
             UpdateSettings()
         }
         .formStyle(.grouped)
@@ -62,14 +64,19 @@ struct GeneralSettings: View {
 struct BackgroundSettings: View {
     static let keepEngineKey = "keepEngineAfterQuit"
     @AppStorage(BackgroundSettings.keepEngineKey) private var keepEngine = false
-    @State private var atLogin = EngineLoginItem.installed
+    /// This copy's data folder. Only the copy whose data folder the login item serves may change it.
+    let home: String
+    @State private var loginItem = EngineLoginItem.installedItem
     @State private var error: String?
 
     var body: some View {
         Section {
             Toggle("Keep agents running after I quit pi²", isOn: $keepEngine)
+            let atLogin = EngineLoginItem.switchState(loginItem, home: home)
             // A closure, not the method itself: Swift 6.3 (Xcode 26) crashes turning a method into a binding's setter.
-            Toggle("Start the engine when I log in", isOn: Binding(get: { atLogin }, set: { setLoginItem($0) }))
+            Toggle("Start the engine when I log in", isOn: Binding(get: { atLogin == .on }, set: { setLoginItem($0) }))
+                .disabled(atLogin.isUnavailable)
+            if case .unavailable(let why) = atLogin { Text(why).font(.callout).foregroundStyle(.secondary) }
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
         } header: {
             Text("In the background")
@@ -85,16 +92,19 @@ struct BackgroundSettings: View {
                 error = "This build does not know where its engine is."
                 return
             }
-            let home = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("pi2").path
             do {
                 try EngineLoginItem.install(node: node, main: main, home: home)
             } catch {
                 self.error = "Could not install the login item: \(error.localizedDescription)"
             }
         } else {
-            EngineLoginItem.remove()
+            do {
+                try EngineLoginItem.remove(home: home)
+            } catch {
+                self.error = "Could not remove the login item: \(error.localizedDescription)"
+            }
         }
-        atLogin = EngineLoginItem.installed
+        loginItem = EngineLoginItem.installedItem
     }
 }
 
