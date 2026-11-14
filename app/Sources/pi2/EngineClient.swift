@@ -472,7 +472,7 @@ final class EngineClient {
         lastLaunch = Date()
         // When the login item starts this engine, start it through launchd, so it is still restarted after a crash.
         if let item = EngineLoginItem.current, item.serves(home: home.path), item.arguments == [node, main],
-           EngineLoginItem.start() {
+           EngineLoginItem.start(home: home.path) {
             return
         }
         let process = Process()
@@ -585,9 +585,9 @@ final class EngineClient {
             kill(pid, SIGKILL)
             for _ in 0..<20 where enginePID != nil { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        // A login item for this data folder may still name the old copy of the app; point it at this one.
+        // A login item for this data folder may still name the old copy of the app; point it at this one. `install`
+        // replaces it, and refuses if it serves another data folder.
         if let item = EngineLoginItem.current, item.serves(home: home.path), item.arguments != [node, main] {
-            EngineLoginItem.remove()
             do {
                 try EngineLoginItem.install(node: node, main: main, home: home.path)
             } catch {
