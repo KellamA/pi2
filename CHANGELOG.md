@@ -4,6 +4,9 @@ What changed in each version, newest first.
 
 ## Unreleased
 
+### Changed
+- **Project instructions from the repository's top.** A conversation working in a subfolder of a git repository is now given the `AGENTS.md` or `CLAUDE.md` of each folder from the repository's top down to its own, the top's first, so the nearest has the last word. Nothing above the repository's top is read, and a folder in no repository reads only itself, as before. The 24,000-character cap is shared between the files. See [docs/knowledge.md](docs/knowledge.md).
+
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
 
