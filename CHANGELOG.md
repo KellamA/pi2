@@ -6,6 +6,7 @@ What changed in each version, newest first.
 
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
+- A conversation working in a worktree that handed work to another agent got a helper working in a different checkout, often the main one. A new sub-chat now starts in the folder its parent works in, worktree included, and is told so, unless the other agent's own folder is in another repository. See [docs/worktrees.md](docs/worktrees.md).
 
 ## 0.7.0
 

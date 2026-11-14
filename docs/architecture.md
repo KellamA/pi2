@@ -59,7 +59,7 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 ### Sub-chats
 
-`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one.
+`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository ([worktrees.md](worktrees.md#sub-chats)). The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one.
 
 ### What commands can find
 
