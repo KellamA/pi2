@@ -133,6 +133,11 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
+		if (prompt.startsWith("/timeout ")) {
+			// "/timeout <seconds> <command>": bash with a time limit of its own
+			const [seconds, ...command] = prompt.slice(9).split(" ");
+			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: command.join(" "), timeout: Number(seconds) })], { stopReason: "toolUse" });
+		}
 		if (prompt.startsWith("/ask ")) {
 			return fauxAssistantMessage([fauxText("I need to check something with you."), fauxToolCall("ask_user", { question: prompt.slice(5) })], { stopReason: "toolUse" });
 		}
@@ -175,7 +180,7 @@ function demoProvider(): Provider {
 				for (const added of message.toolsAdded ?? []) offered.add(added.name);
 				for (const removed of message.toolsRemoved ?? []) offered.delete(removed.name);
 			}
-			// Only the sections about what the agent knows and its worktree, and the tools for memory: the demo model speaks slowly.
+			// Only the sections about what the agent knows and where it works, and the tools for memory: the demo model speaks slowly.
 			const prompts = [...sections].filter(([key]) => key === "project_instructions" || key === "memory" || key === "worktree").map(([key, value]) => `<${key}>\n${value}\n</${key}>`).join("\n");
 			return fauxAssistantMessage(`SYSTEM PROMPT\n${prompts}\nTOOLS: ${[...offered].filter((name) => name === "remember" || name === "forget").join(", ")}`);
 		}

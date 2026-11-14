@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
@@ -30,20 +30,21 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
+import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
-import { inRepository, SETUP_ENTRY, setupItem } from "./worktrees.ts";
+import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem } from "./worktrees.ts";
 import { preparePlan } from "./plan.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
-import { type CommandRule, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
+import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
@@ -192,6 +193,9 @@ const engine: Engine = {
 	apps: () => clients.size,
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
+// `read` shrinks a picture larger than the model takes (a Retina screenshot, say) and converts BMP, rather than refusing
+// it. Photon is WebAssembly, so it needs no native module or install script, and runs in a worker that exits when idle.
+const CodingTools = createCodingTools({ images: await createNodePhotonImages() });
 const pi2 = pi2Extension(host);
 const registry = createRegistry();
 const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
@@ -304,11 +308,14 @@ async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promi
 
 const sameWords = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((word, index) => word === b[index]);
 
-/** Keep a rule, whether it was chosen in an approval or typed in the agent's settings: both pass the same checks. */
+/**
+ * Keep a rule, whether it was chosen in an approval or typed in the agent's settings: both pass the same checks, and a
+ * folder inside a worktree pi² made is kept as the same folder of the repository's main checkout (rules.ts, `ruleFolder`).
+ */
 async function addCommandRule(agentId: string, folder: string, words: string[]): Promise<CommandRule> {
 	const refused = ruleRefusal(words);
 	if (refused !== undefined) throw new Error(refused);
-	const rule: CommandRule = { folder: resolve(folder), words: [...words], createdAt: Date.now() };
+	const rule: CommandRule = { folder: ruleFolder(folder, await madeWorktrees(harness, context)), words: [...words], createdAt: Date.now() };
 	await harness.commit(async (tx) => {
 		const agent = (await tx.doc(Agents)).agents[agentId];
 		if (agent === undefined) throw new Error(`Unknown agent: ${agentId}`);

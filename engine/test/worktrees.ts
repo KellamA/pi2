@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -145,13 +145,17 @@ class Client {
 	}
 	/** Runs a shell command through the demo model and returns its output. */
 	async bash(id: number, command: string): Promise<string> {
+		return (await this.tool(id, `/bash ${command}`)).text;
+	}
+	/** Sends a message the demo model answers with a tool call, and returns that call once the answer is in. */
+	async tool(id: number, text: string): Promise<Event> {
 		const before = this.conversations.get(id)?.items.filter((i: Event) => i.kind === "tool").length ?? 0;
-		await this.call("submit", { id, text: `/bash ${command}` });
-		const conv = await this.until("command ran", () => {
+		await this.call("submit", { id, text });
+		const conv = await this.until("tool ran", () => {
 			const c = this.conversations.get(id);
 			return c !== undefined && !c.state.busy && c.items.filter((i: Event) => i.kind === "tool").length > before && c.items.at(-1).kind === "assistant" ? c : undefined;
 		});
-		return conv.items.filter((i: Event) => i.kind === "tool").at(-1).text;
+		return conv.items.filter((i: Event) => i.kind === "tool").at(-1);
 	}
 }
 
@@ -211,6 +215,46 @@ try {
 	assert.ok(!run(project, "branch").includes(made.branch), "the merged branch was deleted");
 	assert.equal(readFileSync(join(project, "sub", "new.txt"), "utf8"), "made-here\n", "the work arrived through the merge");
 	step("remove the worktree: its folder and merged branch go, and the conversation returns to where it was");
+
+	{
+		// A conversation in a worktree hands work to other agents.
+		const outside = repo("outside");
+		const save = async (agent: Record<string, unknown>): Promise<string> => (await client.call("agents.save", { agent })).id;
+		const helper = await save({ name: "Helper", access: "full" });
+		const neighbour = await save({ name: "Neighbour", access: "full", cwd: project });
+		const outsider = await save({ name: "Outsider", access: "full", cwd: outside });
+		const lead = await save({ name: "Lead", access: "full", delegates: [helper, neighbour, outsider] });
+		const { id: e } = await client.call("conversation.create", { agentId: lead });
+		await client.call("conversation.open", { id: e });
+		await client.call("conversation.configure", { id: e, cwd: project });
+		const shared = await client.call("worktree.create", { id: e });
+		await client.until("lead in its worktree", () => client.conversations.get(e)?.state.agent.cwd === shared.path);
+		/** Hands a task to an agent; returns the sub-chat's number and its answer. */
+		const handOff = async (agent: string, task: string): Promise<{ sub: number; answer: string }> => {
+			const call = await client.tool(e, `/delegate ${agent}: ${task}`);
+			assert.equal(typeof call.details?.conversationId, "number", JSON.stringify(call));
+			return { sub: call.details.conversationId, answer: call.text };
+		};
+		const where = "/bash pwd && git branch --show-current";
+		const helped = await handOff("Helper", where);
+		assert.ok(helped.answer.includes(shared.path) && helped.answer.includes(shared.branch), `an agent with no folder works in the worktree: ${helped.answer}`);
+		const neighboured = await handOff("Neighbour", where);
+		assert.ok(neighboured.answer.includes(shared.path), `an agent whose folder is in the same repository works in the worktree: ${neighboured.answer}`);
+		const outsided = await handOff("Outsider", where);
+		assert.ok(outsided.answer.includes(outside) && !outsided.answer.includes(shared.path), `an agent whose folder is in another repository keeps it: ${outsided.answer}`);
+		const told = (await handOff("Helper", "/system")).answer;
+		assert.ok(told.includes("<worktree>") && told.includes("This sub-chat works in the git worktree") && told.includes(shared.branch), `the sub-chat is told about the worktree: ${told}`);
+		assert.ok(!(await handOff("Outsider", "/system")).answer.includes("<worktree>"), "a sub-chat elsewhere is not");
+		step("a sub-chat joins its parent's worktree, and is told so, unless its agent works in another repository");
+
+		const cwdOf = (id: number) => client.conversations.get(id)?.state.agent.cwd;
+		for (const id of [helped.sub, neighboured.sub, outsided.sub]) await client.call("conversation.open", { id });
+		await client.until("sub-chats open", () => cwdOf(helped.sub) === shared.path && cwdOf(neighboured.sub) === shared.path && cwdOf(outsided.sub) === outside);
+		await client.call("worktree.remove", { id: e });
+		await client.until("sub-chats back with their parent", () => cwdOf(e) === project && cwdOf(helped.sub) === project && cwdOf(neighboured.sub) === project);
+		assert.equal(cwdOf(outsided.sub), outside, "a sub-chat elsewhere stays where it is");
+		step("removing the worktree takes the sub-chats that worked in it back with their parent");
+	}
 
 	// An agent whose conversations each get a worktree.
 	await assert.rejects(client.call("agents.save", { agent: { name: "Builder", access: "full", cwd: scratch, worktree: true } }), /git repository/);
@@ -359,6 +403,88 @@ try {
 	assert.equal(existsSync(left.status.root), false, "removing it deletes the worktree's folder");
 	assert.ok(run(project, "branch").includes(left.status.branch), "and keeps its branch");
 	step("an archived or deleted conversation's worktree is listed as left behind, and can be removed");
+
+	{
+		// Command rules (src/rules.ts) follow the worktrees pi² made: a rule made in one holds in all of them and in the main
+		// checkout, for the same agent and repository only.
+		const script = (dir: string) => {
+			writeFileSync(join(dir, "run-tests"), '#!/bin/sh\necho "tests ran in $(pwd -P)"\n');
+			chmodSync(join(dir, "run-tests"), 0o755);
+			run(dir, "add", "run-tests");
+			run(dir, "commit", "-q", "-m", "tests");
+		};
+		script(project);
+		const second = repo("second");
+		script(second);
+		const byHand = join(scratch, "by-hand");
+		run(project, "worktree", "add", "-q", "-b", "by-hand", byHand);
+		const inbox = () => (again.events.inbox?.items ?? []) as Event[];
+		const tools = (id: number) => again.conversations.get(id)?.items.filter((i: Event) => i.kind === "tool") ?? [];
+		const cwdOf = (id: number) => again.conversations.get(id)?.state.agent.cwd as string | undefined;
+		const start = async (agentId: string, cwd?: string) => {
+			const { id } = await again.call("conversation.create", { agentId });
+			await again.call("conversation.open", { id });
+			await again.until("conversation in a worktree", () => cwdOf(id)?.startsWith(join(home, "worktrees")));
+			if (cwd !== undefined) {
+				await again.call("conversation.configure", { id, cwd });
+				await again.until("conversation moved", () => cwdOf(id) === cwd);
+			}
+			return id as number;
+		};
+		/** Run a command and answer its approval with `decision`, if it asks. Says what it asked, or null, and the result. */
+		const attempt = async (id: number, command: string, decision = "deny") => {
+			const before = tools(id).length;
+			await again.call("submit", { id, text: `/bash ${command}` });
+			const asked = await again.until(`${command}: approval or result`, () => inbox().find((i) => i.conversationId === id) ?? (tools(id).length > before ? null : undefined));
+			if (asked !== null) await again.call("inbox.decide", { id: asked.id, decision });
+			await again.until(`${command}: settled`, () => {
+				const conv = again.conversations.get(id);
+				return conv !== undefined && !conv.state.busy && tools(id).length > before && conv.items.at(-1).kind === "assistant";
+			});
+			return { asked: asked as Event | null, result: tools(id).at(-1) as Event };
+		};
+		const ranIn = (outcome: { result: Event }, id: number) => outcome.result.text.includes(`tests ran in ${realpathSync(cwdOf(id)!)}`);
+		type Rule = { folder: string; words: string[] };
+		const rulesOf = (id: string) => ((again.events.agents?.agents ?? []).find((x: Event) => x.id === id)?.commandRules ?? []) as Rule[];
+		const { id: asker } = await again.call("agents.save", { agent: { name: "Asker", access: "ask", cwd: project, worktree: true } });
+		const { id: other } = await again.call("agents.save", { agent: { name: "Other", access: "ask", cwd: project, worktree: true } });
+
+		const e = await start(asker);
+		let outcome = await attempt(e, "./run-tests", "rule");
+		assert.deepEqual(outcome.asked?.rule, { words: ["./run-tests"], folder: project, worktrees: true }, "the rule offered in a worktree is for the main checkout, and says it covers worktrees");
+		assert.ok(ranIn(outcome, e), outcome.result.text);
+		await again.until("rule kept", () => rulesOf(asker).length === 1);
+		assert.deepEqual(rulesOf(asker).map((r) => [r.folder, r.words]), [[project, ["./run-tests"]]]);
+		const f = await start(asker);
+		assert.notEqual(cwdOf(f), cwdOf(e));
+		outcome = await attempt(f, "./run-tests --again");
+		assert.equal(outcome.asked, null, "another worktree conversation of the same agent and repository does not ask");
+		assert.ok(ranIn(outcome, f) && outcome.result.details?.allowedBy?.[0] === "./run-tests", JSON.stringify(outcome.result));
+		const g = await start(asker, project);
+		outcome = await attempt(g, "./run-tests");
+		assert.ok(outcome.asked === null && ranIn(outcome, g), "nor does the main checkout");
+		outcome = await attempt(g, "git status");
+		assert.deepEqual(outcome.asked?.rule, { words: ["git", "status"], folder: project, worktrees: true }, "a rule offered in the main checkout covers worktrees too");
+		step("rules: a rule made in one worktree conversation holds in another worktree of the same repository and in the main checkout");
+
+		outcome = await attempt(await start(other), "./run-tests");
+		assert.ok(outcome.asked !== null, "another agent asks");
+		outcome = await attempt(await start(asker, byHand), "./run-tests");
+		assert.deepEqual(outcome.asked?.rule, { words: ["./run-tests"], folder: byHand }, "a worktree pi² did not make asks, and its rule would be for that folder only");
+		await again.call("agents.save", { agent: { id: asker, name: "Asker", access: "ask", cwd: second, worktree: true } });
+		await again.until("asker moved", () => (again.events.agents?.agents ?? []).find((x: Event) => x.id === asker)?.cwd === second);
+		const h = await start(asker);
+		outcome = await attempt(h, "./run-tests");
+		assert.deepEqual(outcome.asked?.rule, { words: ["./run-tests"], folder: second, worktrees: true }, "a worktree of another repository asks");
+		assert.equal(rulesOf(asker).length, 1, "saving the agent kept its rule");
+		await again.call("rules.add", { agentId: other, folder: cwdOf(f), command: "./run-tests" });
+		await again.until("rule added by hand", () => rulesOf(other).length === 1);
+		assert.equal(rulesOf(other)[0]!.folder, project, "a rule added by hand for a worktree's folder is kept for the main checkout's");
+		await again.call("worktree.remove", { id: e, force: true });
+		outcome = await attempt(f, "./run-tests");
+		assert.equal(outcome.asked, null, "the rule outlives the worktree it was made in");
+		step("rules: another agent, another repository and a worktree pi² did not make still ask; a rule added by hand in a worktree is kept for the main checkout");
+	}
 	console.log("PASS");
 } finally {
 	engine.kill("SIGTERM");

@@ -32,9 +32,17 @@ In an agent's settings, under **Give each conversation its own worktree**, **Set
 
 In an agent's settings, under Tools, **Give each conversation its own worktree** makes every conversation you start with that agent begin in a new worktree, made from the agent's folder, on a branch named after the agent and the conversation (`pi2/forge-12`). The agent's folder has to be in a git repository.
 
-Conversations started by a schedule, sub-chats, and forks are not given one: a fork works in the same folder as the conversation it came from.
+Conversations started by a schedule, sub-chats, and forks are not given one: a fork works in the same folder as the conversation it came from, and a sub-chat usually works in its parent's (see below).
+
+The agent's command rules for the repository hold in these worktrees too, and a rule made in one is kept for the main checkout, so the next conversation does not ask again. See [rules.md](rules.md).
 
 If the worktree cannot be made, the conversation starts in the agent's folder as usual, and its branch icon shows that.
+
+## Sub-chats
+
+When a conversation hands work to another agent, the sub-chat starts in the folder the conversation is working in at that moment. So a helper called from a worktree works in that worktree, on its branch, and is told so the same way. This holds when the other agent has no folder of its own, or when its folder is in the same git repository. An agent whose folder is in another repository, or in none, works in its own folder as usual.
+
+Continuing an earlier sub-chat keeps the folder it has. Removing a worktree moves the sub-chats working in it back with their conversation.
 
 ## Removing a worktree
 

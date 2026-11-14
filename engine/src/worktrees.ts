@@ -17,10 +17,11 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { awaitWithContext } from "@earendil-works/chord/context";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import { awaitWithContext, type Context } from "@earendil-works/chord/context";
+import type { ConversationId, DocumentReader } from "@earendil-works/pi-durable";
 import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
+import type { MadeWorktree } from "./rules.ts";
 import type { AgentProfile } from "./state.ts";
 
 /** A worktree pi² made for a conversation. */
@@ -208,6 +209,19 @@ function realish(path: string): string {
 	} catch {
 		return path;
 	}
+}
+
+/** Whether `folder` is `root` or inside it. */
+const within = (folder: string, root: string) => (realish(folder) + sep).startsWith(realish(root) + sep);
+
+/**
+ * The folder a new sub-chat starts in. It joins the folder its parent works in now (a worktree, say), unless the other
+ * agent has a folder of its own in another repository, or in none, which it keeps.
+ */
+export async function subChatFolder(parent: string | null, own: string | null): Promise<string | null> {
+	if (own === null || parent === null) return parent ?? own;
+	const [a, b] = await Promise.all([repoOf(parent), repoOf(own)]);
+	return a !== undefined && b !== undefined && realish(a.commonDir) === realish(b.commonDir) ? parent : own;
 }
 
 /** The repository's default branch: what origin/HEAD points at, else a local main or master. */
@@ -573,6 +587,14 @@ export const worktrees: Feature = (_host, engine) => {
 				setup?.stop("was stopped because the worktree was removed");
 				await setup?.settled;
 			};
+			// Sub-chats working in the worktree go back with the conversation, so continuing one does not run in a folder that is gone.
+			const joined: number[] = [];
+			for (const [key, meta] of Object.entries(engine.library().conversations)) {
+				if (meta.parent !== id || mine[key] !== undefined) continue;
+				folders.delete(Number(key));
+				const cwd = await folderOf(Number(key));
+				if (cwd !== null && within(cwd, own.path)) joined.push(Number(key));
+			}
 			const repoRoot = isFolder(own.repo) ? own.repo : undefined;
 			if (isFolder(own.path)) {
 				if (!options.force) {
@@ -602,7 +624,7 @@ export const worktrees: Feature = (_host, engine) => {
 			}
 			const back = isFolder(own.origin) ? own.origin : repoRoot;
 			await save((doc) => void delete doc[String(id)]);
-			if (back !== undefined) await setFolder(id, back);
+			if (back !== undefined) for (const each of [id, ...joined]) await setFolder(each, back);
 			engine.log("worktree removed for", id);
 			return { branchDeleted, note };
 		} finally {
@@ -611,9 +633,9 @@ export const worktrees: Feature = (_host, engine) => {
 		}
 	}
 
-	const guide = (own: Worktree, cwd: string | null) =>
+	const guide = (own: Worktree, cwd: string | null, shared: boolean) =>
 		[
-			`This conversation works in a git worktree of its own: ${cwd ?? own.path}, on the branch ${own.branch}${own.base ? `, made from ${own.base}` : ""}.`,
+			`${shared ? "This sub-chat works in the git worktree of the conversation that handed it this task" : "This conversation works in a git worktree of its own"}: ${cwd ?? own.path}, on the branch ${own.branch}${own.base ? `, made from ${own.base}` : ""}.`,
 			`Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to ${own.branch}, do not check out another branch here, and do not change the main checkout at ${own.repo}.`,
 			"Files git ignores (installed packages, build output, local settings) are not copied into a new worktree; set them up here if the work needs them.",
 			...setupNote(own.setup),
@@ -637,16 +659,24 @@ export const worktrees: Feature = (_host, engine) => {
 	return {
 		sections: [
 			section("worktree", async (input, context) => {
-				// A message sent while the set-up command runs waits for it, so the agent starts in a worktree that is ready
-				// and is told how the set-up went. Stopping the run stops the wait, not the set-up.
-				const setup = setups.get(Number(input.conversationId));
-				if (setup !== undefined) await awaitWithContext(setup.settled, context);
-				const own = mine[String(input.conversationId)];
-				if (own === undefined) return undefined;
+				// A sub-chat is told about the worktree of the conversation that handed it work, when it works there too.
+				const parent = engine.library().conversations[String(input.conversationId)]?.parent;
+				const shared = mine[String(input.conversationId)] === undefined && parent !== undefined;
+				const owner = shared && parent !== undefined ? parent : Number(input.conversationId);
+				const before = mine[String(owner)];
+				if (before === undefined) return undefined;
 				const cwd = ((await input.read.snapshot(AgentDoc, input.conversationId, context)) as { cwd?: string | null } | undefined)?.cwd ?? null;
 				// Only while the conversation is still in the worktree.
-				if (cwd === null || !(realish(cwd) + sep).startsWith(realish(own.path) + sep)) return undefined;
-				return guide(own, cwd);
+				if (cwd === null || !within(cwd, before.path)) return undefined;
+				// A message sent while the set-up command runs waits for it, so the agent starts in a worktree that is ready
+				// and is told how the set-up went; a sub-chat working there waits too. Stopping the run stops the wait, not
+				// the set-up.
+				const setup = setups.get(owner);
+				if (setup !== undefined) await awaitWithContext(setup.settled, context);
+				// Read again: the record changes when the set-up ends, and is gone if the worktree was removed meanwhile.
+				const own = mine[String(owner)];
+				if (own === undefined) return undefined;
+				return guide(own, cwd, shared);
 			}),
 		],
 		start: async () => {
@@ -707,6 +737,15 @@ export const worktrees: Feature = (_host, engine) => {
 		},
 	};
 };
+
+/**
+ * Every worktree pi² made and still has a record of (its conversation's, whether listed, archived or deleted): its folder
+ * and its repository's main checkout. Command rules follow these (rules.ts, `ruleFolder`).
+ */
+export async function madeWorktrees(read: DocumentReader, context: Context): Promise<MadeWorktree[]> {
+	const doc = await read.snapshot(Worktrees, context);
+	return Object.values(doc?.conversations ?? {}).map(({ path, repo }) => ({ path, repo }));
+}
 
 /** Whether `folder` is in a git repository, for checking an agent's settings. */
 export async function inRepository(folder: string): Promise<boolean> {

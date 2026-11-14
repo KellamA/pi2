@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CommandRule, judgeCommand, MAX_WORDS, parseCommandLine, proposeRule, ruleRefusal, sameFolder, wordsOf } from "../src/rules.ts";
+import { type CommandRule, judgeCommand, type MadeWorktree, MAX_WORDS, parseCommandLine, proposeRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "../src/rules.ts";
 
 const folder = "/work/webapp";
 const rule = (...words: string[]): CommandRule => ({ folder, words, createdAt: 0 });
@@ -238,6 +238,35 @@ assert.equal(allowed("npm test", "/work/x/../webapp"), true);
 for (const elsewhere of ["/work/webapp2", "/work", "/work/webapp/sub", "/", "/Work/webapp"]) assert.equal(allowed("npm test", elsewhere), false, elsewhere);
 assert.ok(sameFolder("/a/b/", "/a/b") && !sameFolder("/a/b", "/a/bc"));
 assert.equal(allowed("npm test", folder, []), false, "no rules, no exceptions");
+
+// Worktrees pi² made: a folder in one stands for the same folder of the repository's main checkout.
+const made: MadeWorktree[] = [
+	{ path: "/data/worktrees/webapp-1a2b3c/pi2-one", repo: "/work/webapp" },
+	{ path: "/data/worktrees/webapp-1a2b3c/pi2-two", repo: "/work/webapp" },
+	{ path: "/data/worktrees/other-4d5e6f/pi2-one", repo: "/work/other" },
+];
+assert.equal(ruleFolder("/data/worktrees/webapp-1a2b3c/pi2-one", made), "/work/webapp");
+assert.equal(ruleFolder("/data/worktrees/webapp-1a2b3c/pi2-two/sub/", made), "/work/webapp/sub");
+assert.equal(ruleFolder("/data/worktrees/other-4d5e6f/pi2-one", made), "/work/other");
+assert.equal(ruleFolder("/work/webapp", made), "/work/webapp", "the main checkout is itself");
+for (const not of ["/data/worktrees/webapp-1a2b3c/pi2-one-2", "/data/worktrees/webapp-1a2b3c", "/data/worktrees/webapp-1a2b3c/pi2-on", "/elsewhere/pi2-one"]) {
+	assert.equal(ruleFolder(not, made), not, `${not} is no worktree pi² made`);
+}
+assert.equal(ruleFolder("/data/worktrees/webapp-1a2b3c/pi2-one/../pi2-two", made), "/work/webapp", "read as written, then matched");
+assert.equal(ruleFolder("/data/worktrees/webapp-1a2b3c/pi2-one", []), "/data/worktrees/webapp-1a2b3c/pi2-one", "without pi²'s records, nothing is guessed from the path");
+const inWorktree = (command: string, at: string, list = rules) => judgeCommand(command, at, list, made).allowed;
+for (const at of ["/data/worktrees/webapp-1a2b3c/pi2-one", "/data/worktrees/webapp-1a2b3c/pi2-two/", "/work/webapp"]) assert.equal(inWorktree("npm test", at), true, at);
+for (const at of ["/data/worktrees/other-4d5e6f/pi2-one", "/data/worktrees/webapp-1a2b3c/pi2-one/sub", "/data/worktrees/webapp-1a2b3c/pi2-one-2", "/data/worktrees/webapp-1a2b3c"]) {
+	assert.equal(inWorktree("npm test", at), false, `${at}: another repository, a subfolder, or no worktree pi² made`);
+}
+assert.equal(judgeCommand("npm test", "/data/worktrees/webapp-1a2b3c/pi2-one", rules).allowed, false, "a worktree pi² did not record is just a folder");
+const subRules = [{ folder: "/work/webapp/sub", words: ["npm", "test"], createdAt: 0 }];
+assert.equal(inWorktree("npm test", "/data/worktrees/webapp-1a2b3c/pi2-two/sub", subRules), true, "a subfolder's rule holds in the same subfolder of a worktree");
+assert.equal(inWorktree("npm test", "/data/worktrees/webapp-1a2b3c/pi2-two", subRules), false, "and not in its parent");
+const oldRule = [{ folder: "/data/worktrees/webapp-1a2b3c/pi2-one", words: ["npm", "test"], createdAt: 0 }];
+assert.equal(inWorktree("npm test", "/data/worktrees/webapp-1a2b3c/pi2-one", oldRule), true, "a rule kept for the worktree's own folder still holds there");
+assert.equal(inWorktree("npm test", "/data/worktrees/webapp-1a2b3c/pi2-two", oldRule), false, "and nowhere else");
+for (const attack of ["npm test && rm -rf ~", "cd .. && npm test", "npm test > x"]) assert.equal(inWorktree(attack, "/data/worktrees/webapp-1a2b3c/pi2-one"), false, attack);
 // A rule that would be refused today is ignored, even if it was stored somehow.
 assert.equal(allowed("bash -c 'rm -rf ~'", folder, [rule("bash")]), false);
 assert.equal(allowed("rm -rf ~", folder, [rule("rm")]), false);
