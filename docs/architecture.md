@@ -45,7 +45,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
 | `src/schedules.ts` | Schedule rules and next-run times |
-| `src/worktrees.ts` | A git worktree per conversation, and the branch tracker. See [worktrees.md](worktrees.md) |
+| `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start |
 | `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |

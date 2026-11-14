@@ -321,6 +321,11 @@
 				label = command ? [t(active ? "Running " : "Ran "), code(command), t(dots)] : [t(active ? "Running a command" + ELLIPSIS : "Ran a command")];
 				break;
 			}
+			case "pi2_setup":
+				// The agent's set-up command, which pi² ran in a new worktree: not a call the agent made.
+				glyph = "terminal";
+				label = [t(active ? "Running the set-up command " : "Ran the set-up command "), code(firstLine(args.command)), t(dots)];
+				break;
 			case "read": {
 				glyph = "file";
 				const file = basename(args.path);
@@ -457,7 +462,8 @@
 				if (active) label.push(t(ELLIPSIS));
 			}
 		}
-		const note = ruleNote(details);
+		// A set-up that failed says how, in the engine's words ("exited with code 1").
+		const note = toolName === "pi2_setup" ? (status === "failed" && isObject(details) && str(details.reason) ? [t(str(details.reason))] : []) : ruleNote(details);
 		const title = label.map((piece) => piece.text).join("") + (stats ? " " + stats : "") + (note.length > 0 ? " (" + note.map((piece) => piece.text).join("") + ")" : "");
 		return { glyph, label, stats, title, note };
 	}
@@ -512,6 +518,9 @@
 			case "bash":
 			case "powershell":
 				sections.push({ kind: "command", label: str(call.name), command: str(args.command), output, failed, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
+				break;
+			case "pi2_setup":
+				sections.push({ kind: "command", label: "Set-up command", command: str(args.command), output, failed, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
 				break;
 			case "read":
 			case "read_reference":

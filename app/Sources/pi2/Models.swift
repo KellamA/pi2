@@ -268,6 +268,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var cwd: String?
     /// Whether each conversation the person starts gets a git worktree of its own, made from `cwd`.
     var worktree: Bool?
+    /// A shell command run once in each new worktree of the agent's conversations. Empty for none.
+    var setup: String?
     var delegates: [String]
     var maxTurns: Int?
     var codeMode: Bool?
@@ -293,6 +295,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "instructions": instructions, "access": access,
             "cwd": cwd as Any? ?? NSNull(),
             "worktree": worktree ?? false,
+            "setup": setup ?? "",
             "delegates": delegates,
             "maxTurns": maxTurns as Any? ?? NSNull(),
             "codeMode": codeMode ?? false,
@@ -313,6 +316,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
         agent.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         agent.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
         agent.worktree = worktree ?? false
+        agent.setup = (setup ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         agent.delegates = delegates.filter { $0 != id }
         agent.codeMode = codeMode ?? false
         agent.mcpServers = mcpServers ?? []

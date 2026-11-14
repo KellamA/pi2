@@ -4,6 +4,9 @@ What changed in each version, newest first.
 
 ## Unreleased
 
+### Added
+- **A set-up command for new worktrees.** In an agent's settings, under Give each conversation its own worktree, a command such as `npm ci` runs once in each new worktree of that agent's conversations, right after pi² makes it, so what git ignores is put back. The conversation shows it running, then its output and whether it failed; the first answer waits for it, and the agent is told how it went. See [docs/worktrees.md](docs/worktrees.md).
+
 ### Changed
 - `app/build.sh` stops before building when a copy of pi² is running from the bundle it would replace, and says which process and what to do instead; `PI2_REPLACE_RUNNING=1` replaces it anyway. [docs/development.md](docs/development.md) has a new section, "Working on pi² with pi²".
 - **A test copy of pi² can be looked at.** Computer use no longer refuses every app whose bundle id starts with `dev.pi2.app.`: such a copy is look-only, like browsers and System Settings, so an agent working on pi² can check a change by looking at a throwaway build. pi² itself (`dev.pi2.app`) still cannot be given to an agent.
