@@ -1,31 +1,48 @@
 // What an agent knows before the first message: a project's own instructions file, and the agent's memory.
 // See docs/knowledge.md.
 
-import { closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { join, sep } from "node:path";
+import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { AgentDoc, defineDoc, defineTool, section } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import type { Feature } from "./features.ts";
 
 // ---- Project instructions
 
-/** The files looked for in a conversation's folder, in order of preference. */
+/** The files looked for in each folder, in order of preference. */
 export const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
+/** The most characters of instructions given, all files together. */
 export const MAX_INSTRUCTION_CHARS = 24_000;
-/** Bytes read from the file: enough for the cap even when every character takes four. */
+/** Bytes read from a file: enough for the cap even when every character takes four. */
 const MAX_INSTRUCTION_BYTES = MAX_INSTRUCTION_CHARS * 4 + 4;
 
+/** One folder's instructions file. `folder` is a real path; `text` is cut to its share of the cap when `cut`. */
+export type ProjectInstructions = { folder: string; file: string; text: string; cut: boolean };
+
 /**
- * The project instructions of `folder`: the first of the listed files that is a plain text file really inside it.
- * A link that leads out of the folder is not followed, and a missing, unreadable or non-text file counts as absent.
+ * The folders whose instructions apply to `folder` (a real path), from the top of its git repository down to it.
+ * The top is the nearest folder with a `.git` entry: a folder in a main checkout, a file in a worktree. Found without
+ * starting git, because this runs for every model request. A folder in no repository applies alone.
  */
-export function readProjectInstructions(folder: string): { file: string; text: string; cut: boolean } | undefined {
-	let root: string;
-	try {
-		root = realpathSync(folder);
-	} catch {
-		return undefined;
+function instructionFolders(folder: string): string[] {
+	const folders: string[] = [];
+	for (let at = folder; ; at = dirname(at)) {
+		folders.push(at);
+		try {
+			const entry = statSync(join(at, ".git"));
+			if (entry.isDirectory() || entry.isFile()) return folders.reverse();
+		} catch {
+			// No .git here: keep going up.
+		}
+		if (dirname(at) === at) return [folder];
 	}
+}
+
+/**
+ * The first of the listed files that is a plain text file really inside `root` (a real path). A link that leads out of
+ * the folder is not followed, and a missing, unreadable or non-text file counts as absent. Not yet cut to any share.
+ */
+function readInstructionsIn(root: string): { file: string; text: string } | undefined {
 	for (const file of INSTRUCTION_FILES) {
 		let fd: number | undefined;
 		try {
@@ -37,11 +54,9 @@ export function readProjectInstructions(folder: string): { file: string; text: s
 			const count = readSync(fd, buffer, 0, buffer.length, 0);
 			const bytes = buffer.subarray(0, count);
 			if (bytes.subarray(0, 8000).includes(0)) continue;
-			let text = bytes.toString("utf8").trim();
+			const text = bytes.toString("utf8").trim();
 			if (text === "") continue;
-			const cut = text.length > MAX_INSTRUCTION_CHARS;
-			if (cut) text = text.slice(0, MAX_INSTRUCTION_CHARS);
-			return { file, text, cut };
+			return { file, text };
 		} catch {
 			// Missing, unreadable: try the next file.
 		} finally {
@@ -51,11 +66,62 @@ export function readProjectInstructions(folder: string): { file: string; text: s
 	return undefined;
 }
 
+/**
+ * The project instructions for working in `folder`: in it and in each folder above it up to the top of its git
+ * repository, one file per folder, the top's first. Together they are cut to `MAX_INSTRUCTION_CHARS`, shared so that a
+ * file shorter than an equal share is given whole and the longer ones split what is left equally: no file is crowded
+ * out by another, however long that one is.
+ */
+export function readProjectInstructions(folder: string): ProjectInstructions[] {
+	let start: string;
+	try {
+		start = realpathSync(folder);
+	} catch {
+		return [];
+	}
+	const found = instructionFolders(start).flatMap((at) => {
+		const one = readInstructionsIn(at);
+		return one === undefined ? [] : [{ folder: at, ...one }];
+	});
+	const share = new Map<(typeof found)[number], number>();
+	let left = MAX_INSTRUCTION_CHARS;
+	[...found].sort((a, b) => a.text.length - b.text.length).forEach((one, index, shortestFirst) => {
+		const given = Math.min(one.text.length, Math.floor(left / (shortestFirst.length - index)));
+		share.set(one, given);
+		left -= given;
+	});
+	return found.map((one) => {
+		const given = share.get(one)!;
+		const cut = one.text.length > given;
+		return { folder: one.folder, file: one.file, text: cut ? one.text.slice(0, given) : one.text, cut };
+	});
+}
+
 export function describeProjectInstructions(folder: string): string | undefined {
 	const found = readProjectInstructions(folder);
-	if (found === undefined) return undefined;
-	const note = found.cut ? `\n\n(This file is longer than ${MAX_INSTRUCTION_CHARS.toLocaleString("en-US")} characters; the rest is not shown. Read ${found.file} in the folder for the rest.)` : "";
-	return `From ${found.file} in this folder. These are the project's instructions for working in this folder:\n\n${found.text}${note}`;
+	if (found.length === 0) return undefined;
+	let own: string;
+	try {
+		own = realpathSync(folder);
+	} catch {
+		return undefined;
+	}
+	const where = (one: ProjectInstructions) => (one.folder === own ? "this folder" : `${one.folder}, a folder above this one in its git repository`);
+	const body = (one: ProjectInstructions) => {
+		const path = one.folder === own ? `${one.file} in this folder` : join(one.folder, one.file);
+		const limit = MAX_INSTRUCTION_CHARS.toLocaleString("en-US");
+		const note = !one.cut
+			? ""
+			: found.length === 1
+				? `\n\n(This file is longer than ${limit} characters; the rest is not shown. Read ${path} for the rest.)`
+				: `\n\n(This file is cut here, to keep the project's instructions to ${limit} characters in all; the rest is not shown. Read ${path} for the rest.)`;
+		return `${one.text}${note}`;
+	};
+	if (found.length === 1) return `From ${found[0]!.file} in ${where(found[0]!)}. These are the project's instructions for working in this folder:\n\n${body(found[0]!)}`;
+	return [
+		`These are the project's instructions for working in this folder, from ${found.length} files: the outermost folder's first, the nearest folder's last. Where they differ, the nearer one has the last word.`,
+		...found.map((one) => `From ${one.file} in ${where(one)}:\n\n${body(one)}`),
+	].join("\n\n");
 }
 
 // ---- Memory
@@ -209,7 +275,9 @@ export const knowledge: Feature = (host, engine) => {
 		],
 		state: (view) => {
 			const cwd = (view.docs["pi.agent"] as { cwd?: string } | undefined)?.cwd;
-			return { projectInstructions: cwd === undefined || cwd === null ? null : (readProjectInstructions(cwd)?.file ?? null) };
+			const found = cwd === undefined || cwd === null ? [] : readProjectInstructions(cwd);
+			// projectInstructions stays the nearest file's name, as it was, for an app built before the list was added.
+			return { projectInstructions: found.at(-1)?.file ?? null, projectInstructionFiles: found.map(({ folder, file }) => ({ folder, file })) };
 		},
 		start: async () => {
 			memory = (await engine.harness().snapshot(Memory, engine.context()))?.agents ?? {};

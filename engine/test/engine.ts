@@ -733,10 +733,32 @@ try {
 	assert.ok(toolResults(k).at(-1)!.isError && /closed before/.test(toolResults(k).at(-1)!.text));
 	assert.equal((await use({ action: "list_apps" })).text, "ok", "the app that was there before takes over again");
 	assert.deepEqual(sentToApp("list_apps").at(-1).apps, [NOTES, MAIL, "com.apple.Safari"], "the app is told which apps to list");
+
+	// pi² itself is never usable; a copy of it under another bundle id is look-only, so an agent can check a change to the app.
+	const PI2 = "dev.pi2.app";
+	const COPY = "dev.pi2.app.test";
+	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, PI2] } } }), /cannot be given.*pi² itself/);
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY] } } });
+	await client.until("the copy of pi² added", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(COPY));
+	const itself = await use({ action: "screenshot", app: PI2 });
+	assert.ok(itself.isError && sentToApp("screenshot", PI2).length === 0, "pi² itself cannot even be looked at");
+	await use({ action: "open_app", app: COPY }, false);
+	const opening = await client.until("approval to open the copy", () => client.inbox.find((i) => i.tool === "computer"));
+	await client.call("inbox.decide", { id: opening.id, decision: "once" });
+	await settled(k, computerCalls);
+	assert.ok(!toolResults(k).at(-1)!.isError && sentToApp("open_app", COPY).length === 1, "a copy of pi² can be opened");
+	const copyShot = await use({ action: "screenshot", app: COPY });
+	assert.ok(!copyShot.isError && sentToApp("screenshot", COPY).length === 1, "a copy of pi² can be looked at");
+	for (const acting of [{ action: "click", element: 1 }, { action: "click", x: 10, y: 10 }, { action: "type", text: "hi" }, { action: "key", text: "return" }, { action: "menu", path: "File > New" }, { action: "scroll", dy: 1 }]) {
+		const refused = await use({ ...acting, app: COPY });
+		assert.ok(refused.isError && /only be looked at/.test(refused.text), `a copy of pi² refuses ${JSON.stringify(acting)}`);
+	}
+	assert.equal(client.inbox.length, 0, "acting on a copy of pi² is refused without asking");
+	assert.ok(["click", "type", "key", "menu", "scroll"].every((action) => sentToApp(action, COPY).length === 0), "nothing that acts reaches a copy of pi²");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: false, apps: [NOTES] } } });
 	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
 	assert.equal((await use({ action: "list_apps" })).isError, true, "switched off, the tool is taken away from the conversation");
-	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing");
+	step("computer use: asks before acting and says what, app by app; refuses what is not allowed; trims old screenshots; survives the app closing; a copy of pi² is look-only");
 
 	// ---- The browser: the engine decides what may be opened and asks before acting; a fake app stands in for the pages
 	const { checkAddress } = await import("../src/browser.ts");
@@ -1005,6 +1027,7 @@ try {
 			return id as number;
 		};
 		const info = (id: number) => (client.conversations.get(id)!.state as any).projectInstructions;
+		const infoFiles = (id: number) => (client.conversations.get(id)!.state as any).projectInstructionFiles;
 		const { id: pilot } = await client.call("agents.save", { agent: { name: "Pilot", access: "none" } });
 		await client.until("pilot saved", () => client.agents.some((x) => x.id === pilot));
 
@@ -1016,7 +1039,8 @@ try {
 		let said = await say(p1, "/system");
 		assert.ok(/From AGENTS\.md in this folder\. These are the project's instructions/.test(said) && said.includes("Always indent with tabs."), "AGENTS.md reaches the model");
 		assert.ok(!said.includes("Claude-only"), "AGENTS.md is preferred to CLAUDE.md");
-		assert.equal(info(p1), "AGENTS.md", "the app is told which file is in effect");
+		assert.equal(info(p1), "AGENTS.md", "the app is told which file is in effect, by name as before");
+		assert.deepEqual(infoFiles(p1), [{ folder: project, file: "AGENTS.md" }], "and in the list of files");
 		writeFileSync(join(project, "AGENTS.md"), "Always indent with spaces.\n");
 		said = await say(p1, "/system");
 		assert.ok(said.includes("indent with spaces") && !said.includes("indent with tabs"), "an edit counts from the next message");
@@ -1040,9 +1064,63 @@ try {
 		said = await say(p2, "/system");
 		assert.ok(!said.includes("OUTSIDE-SECRET") && !said.includes("project's instructions"), "a link out of the folder is not followed");
 		assert.equal(info(p2), null);
+		assert.deepEqual(infoFiles(p2), []);
 		const p3 = await open(pilot);
 		assert.ok(!(await say(p3, "/system")).includes("project's instructions"), "no chosen folder, no instructions");
 		step("project instructions: a link out of the folder is not followed; no folder, none");
+
+		// A repository: every folder from its top down to the conversation's is looked in, and none above the top.
+		const { readProjectInstructions } = await import("../src/knowledge.ts");
+		const above = realpathSync(mkdtempSync(join(tmpdir(), "pi2-above-")));
+		writeFileSync(join(above, "AGENTS.md"), "ABOVE-THE-REPOSITORY");
+		const repo = join(above, "repo");
+		const sub = join(repo, "engine");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		mkdirSync(join(sub, "src"), { recursive: true });
+		writeFileSync(join(repo, "AGENTS.md"), "Rules from the top.\n");
+		const p4 = await open(pilot, join(sub, "src"));
+		said = await say(p4, "/system");
+		assert.ok(said.includes(`From AGENTS.md in ${repo}, a folder above this one in its git repository.`) && said.includes("Rules from the top."), "a subfolder of a repository gets the top's file");
+		assert.ok(!said.includes("ABOVE-THE-REPOSITORY"), "nothing above the repository's top is read");
+		assert.equal(info(p4), "AGENTS.md", "the old field names the nearest file, here one above");
+		assert.deepEqual(infoFiles(p4), [{ folder: repo, file: "AGENTS.md" }]);
+		writeFileSync(join(sub, "CLAUDE.md"), "Rules for the engine.\n");
+		const p5 = await open(pilot, sub);
+		said = await say(p5, "/system");
+		const top = said.indexOf(`From AGENTS.md in ${repo}, a folder above this one`);
+		const near = said.indexOf("From CLAUDE.md in this folder:");
+		assert.ok(said.includes("from 2 files") && top >= 0 && near > top && said.indexOf("Rules from the top.") < said.indexOf("Rules for the engine."), "both files are given, the top's first");
+		assert.equal(info(p5), "CLAUDE.md", "the old field names the nearest file");
+		assert.deepEqual(infoFiles(p5), [{ folder: repo, file: "AGENTS.md" }, { folder: sub, file: "CLAUDE.md" }], "the list has both, the top's first");
+		assert.deepEqual(readProjectInstructions(join(sub, "src")).map((x) => x.file), ["AGENTS.md", "CLAUDE.md"], "a folder without a file of its own still gets those above it");
+		assert.deepEqual(readProjectInstructions(above).map((x) => [x.folder, x.text]), [[above, "ABOVE-THE-REPOSITORY"]], "a folder outside any repository reads only itself");
+		assert.deepEqual(readProjectInstructions(join(above, "repo-less")), [], "a missing folder has none");
+
+		// The cap is shared: a short file is given whole, the long ones split the rest equally, each cut with a note.
+		writeFileSync(join(repo, "AGENTS.md"), "t".repeat(30_000));
+		writeFileSync(join(sub, "CLAUDE.md"), "s".repeat(4_000));
+		assert.deepEqual(readProjectInstructions(sub).map((x) => [x.text.length, x.cut]), [[20_000, true], [4_000, false]], "a short file is given whole and the long one has the rest");
+		writeFileSync(join(sub, "CLAUDE.md"), "s".repeat(30_000));
+		assert.deepEqual(readProjectInstructions(sub).map((x) => [x.text.length, x.cut]), [[12_000, true], [12_000, true]], "two long files share the cap equally");
+		const shared = describeProjectInstructions(sub)!;
+		assert.ok(shared.includes(`to keep the project's instructions to 24,000 characters in all; the rest is not shown. Read ${join(repo, "AGENTS.md")} for the rest.`), "the cut top file says where the rest is");
+		assert.ok(shared.includes("Read CLAUDE.md in this folder for the rest."), "and so does the cut nearer one");
+
+		// A link out of a folder is still not followed, in a folder above too: the link falls through to that folder's CLAUDE.md.
+		writeFileSync(join(sub, "CLAUDE.md"), "Rules for the engine.\n");
+		unlinkSync(join(repo, "AGENTS.md"));
+		symlinkSync(join(outside, "secret.md"), join(repo, "AGENTS.md"));
+		writeFileSync(join(repo, "CLAUDE.md"), "Claude rules from the top.\n");
+		symlinkSync(join(repo, "CLAUDE.md"), join(sub, "AGENTS.md")); // inside the repository, but out of the subfolder
+		assert.deepEqual(readProjectInstructions(sub).map((x) => [x.folder, x.file, x.text]), [[repo, "CLAUDE.md", "Claude rules from the top."], [sub, "CLAUDE.md", "Rules for the engine."]], "a link out of each folder is not followed");
+
+		// A worktree, where .git is a file, is a repository's top: the checkout it sits in is not looked in.
+		const worktree = join(repo, "worktrees", "feature");
+		mkdirSync(join(worktree, "engine"), { recursive: true });
+		writeFileSync(join(worktree, ".git"), "gitdir: ../../.git/worktrees/feature\n");
+		writeFileSync(join(worktree, "AGENTS.md"), "Worktree rules.\n");
+		assert.deepEqual(readProjectInstructions(join(worktree, "engine")).map((x) => [x.folder, x.text]), [[worktree, "Worktree rules."]], "a worktree is treated as a repository's top");
+		step("project instructions: from a repository's top down to the conversation's folder, top first, the cap shared; a worktree is a top");
 
 		// -- Memory
 		said = await say(p3, "/system");

@@ -16,8 +16,42 @@
 #   SPARKLE_PUBLIC_KEY="…"                        the updates key; without it the build does not update itself
 #   SPARKLE_FEED_URL="https://…/appcast.xml"      where to look for updates; defaults to the newest GitHub release
 # Without SIGN_IDENTITY the app gets an ad-hoc signature, which is enough to run it on this Mac.
+#
+# The build replaces build/pi².app, so it stops before doing anything if a copy of pi² is running from that bundle.
+# Build in a clone or a git worktree instead, or quit that copy; PI2_REPLACE_RUNNING=1 replaces it anyway.
 set -euo pipefail
 cd "$(dirname "$0")"
+APP="build/pi².app"
+
+# Deleting a running app's bundle pulls its files out from under it, and re-signing the new one resets the
+# permissions macOS gave the old one. Processes are matched by their executable's real path, so Sparkle's helpers
+# count too, and by the open executable file, which finds a copy started by a relative path.
+if [[ -e "$APP" && "${PI2_REPLACE_RUNNING:-}" != 1 ]]; then
+  BUNDLE="${APP:A}"
+  typeset -A RUNNING
+  # In UTF-8, or ps writes the ² as an escape sequence.
+  LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm= | while read -r pid exe; do
+    if [[ "$exe" == /* && "${exe:A}" == "$BUNDLE"/* ]]; then RUNNING[$pid]="$exe"; fi
+  done
+  if [[ -f "$APP/Contents/MacOS/pi2" ]]; then
+    for pid in $(lsof -t -a -d txt -- "$APP/Contents/MacOS/pi2" 2>/dev/null || true); do
+      if [[ -z "${RUNNING[$pid]:-}" ]]; then RUNNING[$pid]="$(LC_ALL=en_US.UTF-8 ps -p "$pid" -o comm= || true)"; fi
+    done
+  fi
+  if (( ${#RUNNING} )); then
+    {
+      echo "build.sh stopped before building anything: it would delete and replace $BUNDLE,"
+      echo "and a copy of pi² is running from that bundle:"
+      for pid in ${(kon)RUNNING}; do echo "  process $pid  ${RUNNING[$pid]}"; done
+      echo "Replacing it would delete the files of a running app, and the new build would lose the Accessibility and"
+      echo "Screen Recording permissions given to this one. A development build also runs its engine from this checkout."
+      echo "Build in a separate clone or a git worktree instead (docs/development.md, \"Working on pi² with pi²\"),"
+      echo "or quit that copy of pi² and run build.sh again. To replace it anyway: PI2_REPLACE_RUNNING=1 $0${1:+ $*}"
+    } >&2
+    exit 1
+  fi
+fi
+
 MODE="${1:-dev}"
 CONFIG=debug
 [[ "$MODE" == release ]] && CONFIG=release
@@ -39,7 +73,6 @@ fi
 
 swift build -c "$CONFIG" --product pi2
 BIN="$(swift build -c "$CONFIG" --show-bin-path)"
-APP="build/pi².app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN/pi2" "$APP/Contents/MacOS/pi2"
