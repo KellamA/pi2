@@ -45,7 +45,7 @@ public actor ComputerController {
         if request.action == "list_apps" { return listApps(request.apps) }
         guard let bundleID = request.app, !bundleID.isEmpty else { return .failure("\(request.action) needs `app`, a bundle ID from list_apps.") }
         let acting = request.action == "describe" ? (request.of ?? "") : request.action
-        if bundleID == ownBundleID || ComputerPolicy.isNever(bundleID) { return .failure("\(bundleID) cannot be used by an agent.") }
+        if ComputerPolicy.same(bundleID, ownBundleID) || ComputerPolicy.isNever(bundleID) { return .failure("\(bundleID) cannot be used by an agent.") }
         if ComputerPolicy.isViewOnly(bundleID), !["screenshot", "open_app"].contains(acting) {
             return .failure("\(Self.name(of: bundleID)) can only be looked at, not controlled.")
         }

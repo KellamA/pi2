@@ -643,7 +643,15 @@ try {
 	const NOTES = "com.example.notes";
 	const MAIL = "com.example.mail";
 	const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: ["com.apple.Terminal"] } } }), /cannot be given/);
+	// macOS finds an app by its bundle id without regard to case, and so do the lists.
+	for (const terminal of ["com.apple.Terminal", "com.apple.terminal", "COM.APPLE.TERMINAL"]) {
+		await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [terminal] } } }), /cannot be given/, `${terminal} is refused`);
+	}
+	const policy = await import("../src/computer.ts");
+	assert.ok(["com.apple.terminal", "Com.Apple.Terminal", "DEV.PI2.APP", "com.1PASSWORD.1password.helper"].every(policy.isNever), "never means never, in any case");
+	assert.ok(["com.apple.safari", "COM.GOOGLE.CHROME", "Dev.Pi2.App.Test"].every(policy.isViewOnly), "look-only means look-only, in any case");
+	assert.ok(!policy.isNever("dev.pi2.apples") && !policy.isViewOnly("com.apple.safariX"), "only a whole bundle id, or one under it, matches");
+	assert.deepEqual(policy.validateComputer({ apps: [NOTES, "COM.EXAMPLE.NOTES", MAIL, "com.example.Mail"] }).apps, [NOTES, MAIL], "two spellings of one app are kept once");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, "com.apple.Safari"] } } });
 	await client.until("computer use saved", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === true);
 	assert.equal((client.agents.find((x) => x.id === custom) as any).computer.ask, true, "asking first is the default");
@@ -694,6 +702,12 @@ try {
 
 	const viewOnly = await use({ action: "click", app: "com.apple.Safari", x: 10, y: 10 });
 	assert.ok(viewOnly.isError && /only be looked at/.test(viewOnly.text));
+	const viewOnlyCase = await use({ action: "click", app: "COM.APPLE.SAFARI", x: 10, y: 10 });
+	assert.ok(viewOnlyCase.isError && /only be looked at/.test(viewOnlyCase.text), "a look-only app spelled another way is still look-only");
+	const neverCase = await use({ action: "screenshot", app: "com.apple.terminal" });
+	assert.ok(neverCase.isError && client.computerRequests.every((r) => r.app?.toLowerCase() !== "com.apple.terminal"), "a never app spelled another way does not reach the app");
+	await use({ action: "click", app: "COM.Example.Notes", element: 1 });
+	assert.ok(client.inbox.length === 0 && sentToApp("click", NOTES).length === 3, "another spelling of a given app is that app: same approval, sent as it was given");
 	const notAllowed = await use({ action: "screenshot", app: MAIL });
 	assert.ok(notAllowed.isError && /may not use/.test(notAllowed.text));
 	const incomplete = await use({ action: "click", app: NOTES });
@@ -737,11 +751,15 @@ try {
 	// pi² itself is never usable; a copy of it under another bundle id is look-only, so an agent can check a change to the app.
 	const PI2 = "dev.pi2.app";
 	const COPY = "dev.pi2.app.test";
-	await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, PI2] } } }), /cannot be given.*pi² itself/);
+	for (const spelling of [PI2, "Dev.Pi2.App", "DEV.PI2.APP"]) {
+		await assert.rejects(client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, spelling] } } }), /cannot be given.*pi² itself/, `${spelling} is refused`);
+	}
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY] } } });
 	await client.until("the copy of pi² added", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(COPY));
 	const itself = await use({ action: "screenshot", app: PI2 });
 	assert.ok(itself.isError && sentToApp("screenshot", PI2).length === 0, "pi² itself cannot even be looked at");
+	const itselfCase = await use({ action: "screenshot", app: "DEV.PI2.APP" });
+	assert.ok(itselfCase.isError && client.computerRequests.every((r) => r.app?.toLowerCase() !== PI2), "nor can pi² itself spelled another way");
 	await use({ action: "open_app", app: COPY }, false);
 	const opening = await client.until("approval to open the copy", () => client.inbox.find((i) => i.tool === "computer"));
 	await client.call("inbox.decide", { id: opening.id, decision: "once" });
@@ -755,6 +773,14 @@ try {
 	}
 	assert.equal(client.inbox.length, 0, "acting on a copy of pi² is refused without asking");
 	assert.ok(["click", "type", "key", "menu", "scroll"].every((action) => sentToApp(action, COPY).length === 0), "nothing that acts reaches a copy of pi²");
+	// A copy given under another spelling is still a copy: looked at, never acted on.
+	const COPY_CASE = "Dev.PI2.App.Test";
+	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY_CASE] } } });
+	await client.until("the copy of pi² added under another spelling", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.apps.includes(COPY_CASE));
+	assert.ok(!(await use({ action: "screenshot", app: COPY_CASE })).isError && sentToApp("screenshot", COPY_CASE).length === 1, "a copy of pi² spelled another way can be looked at");
+	const copyCase = await use({ action: "click", app: "dev.pi2.app.TEST", element: 1 });
+	assert.ok(copyCase.isError && /only be looked at/.test(copyCase.text) && client.inbox.length === 0, "a copy of pi² spelled another way refuses a click");
+	assert.ok(client.computerRequests.every((r) => r.action !== "click" || r.app?.toLowerCase() !== COPY), "no click reaches a copy of pi² in any spelling");
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: false, apps: [NOTES] } } });
 	await client.until("computer use off", () => (client.agents.find((x) => x.id === custom) as any)?.computer?.enabled === false);
 	assert.equal((await use({ action: "list_apps" })).isError, true, "switched off, the tool is taken away from the conversation");
