@@ -38,7 +38,7 @@ import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isPutAway } from "./archive.ts";
 import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
-import { madeWorktrees, repoOf } from "./worktrees.ts";
+import { madeWorktrees, repoOf, subChatFolder } from "./worktrees.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -132,7 +132,10 @@ export function pi2Extension(host: Host): Extension {
 				const names = allowed.map((a) => a.name).join(", ");
 				return { output: text(names === "" ? "This conversation has no agents to delegate to." : `Unknown agent "${args.agent}". Available: ${names}.`), isError: true };
 			}
-			const change = await host.agentChange(target, { delegate: false });
+			const profile = await host.agentChange(target, { delegate: false });
+			// The helper works where its parent works now (its worktree, say), unless it has a project of its own elsewhere.
+			const here = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? null;
+			const change = { ...profile, cwd: await subChatFolder(here, target.cwd) };
 			const child = await api.commit(async (tx: Tx) => {
 				const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
 				if (existing !== undefined) return existing.id;
@@ -485,6 +488,7 @@ export function pi2Extension(host: Host): Extension {
 	return defineExtension({
 		name: "pi2",
 		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool, ...host.features.flatMap((feature) => feature.tools ?? [])],
+		wraps: host.features.flatMap((feature) => feature.wraps ?? []),
 		sections: [
 			section("computer_use", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "computer")) return undefined;

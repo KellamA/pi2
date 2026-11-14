@@ -471,12 +471,21 @@ struct ConversationState: Codable, Equatable {
     let compactionError: String?
     /// The agent's task list; nil when it keeps none.
     let plan: TaskList?
-    /// The project instructions file (AGENTS.md or CLAUDE.md) in the conversation's folder, if there is one.
+    /// The nearest project instructions file (AGENTS.md or CLAUDE.md) in effect, if there is one.
     let projectInstructions: String?
+    /// Every project instructions file in effect: in the conversation's folder and the folders above it up to the top of its
+    /// git repository, the outermost first. Nil from an engine older than this field.
+    let projectInstructionFiles: [ProjectInstructionsFile]?
     /// The conversation's title, for one that is not in the sidebar's list (an archived one, or its sub-chat).
     let title: String?
     /// It, or the conversation it is a sub-chat of, is archived: it can be read but not continued.
     let archived: Bool?
+}
+
+/// One project instructions file in effect for a conversation: its name, and the real path of the folder it is in.
+struct ProjectInstructionsFile: Codable, Equatable {
+    let folder: String
+    let file: String
 }
 
 /// The task list an agent keeps for a conversation (`update_plan`). `updatedAt` tells one version of it from the next.

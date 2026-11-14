@@ -38,6 +38,10 @@ If the conversation's model does not take pictures, picture chips are marked, a 
 
 A model on your own endpoint (Ollama, LM Studio and the like) is treated as text-only until you say otherwise: pi² cannot ask the server. In **Settings › Providers**, add or edit the endpoint and switch the model on under **Can see pictures**. That also lets it get screenshots in [computer use](computer-use.md).
 
+## Pictures an agent reads itself
+
+An agent with tool access can open a picture in its folder with `read`, such as a screenshot it has just taken. PNG, JPEG, GIF and WebP are read; BMP is converted to PNG. A picture larger than the model takes (2,000 × 2,000 pixels and 4.5 MB unless the model says otherwise) is scaled down to fit and, if it is still too many bytes, re-encoded as JPEG or made smaller still. The agent is told the size before and after, so it can map what it sees back to the original. The engine does this with [Photon](https://github.com/silvia-odwyer/photon), which pi durable ships as WebAssembly, in a worker thread that ends when it has been idle for half a minute. HEIC and TIFF are not read this way; `sips -s format png` can convert them first.
+
 ## In the transcript
 
 A sent message shows its pictures as thumbnails (click one to enlarge it) and its files as chips with their names and sizes. The typed text is shown on its own; the contents of the files are not repeated. An export names a message's attachments.

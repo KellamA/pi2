@@ -231,7 +231,7 @@ struct ComputerUseSection: View {
         text += settings.ask
             ? "It asks before each click, keystroke or menu command; you can allow an app for the rest of a conversation. Looking is not asked about. "
             : "It acts without asking. "
-        text += "Terminals and password managers cannot be added; browsers and System Settings can be looked at but not controlled."
+        text += "Terminals, password managers and pi² itself cannot be added; browsers, System Settings and test copies of pi² can be looked at but not controlled."
         if !EngineClient.isSelfContained {
             text += " This is a development build: macOS ties these permissions to the exact build, so after rebuilding you may need to remove pi² from the list in System Settings and grant it again."
         }
@@ -276,7 +276,7 @@ struct ComputerUseSection: View {
                 settings.apps.append(bundleID)
             }
         }
-        refused = turnedAway.isEmpty ? nil : "\(ListFormatter.localizedString(byJoining: turnedAway)) cannot be given to an agent: typing there runs commands, or it holds your passwords."
+        refused = turnedAway.isEmpty ? nil : "\(ListFormatter.localizedString(byJoining: turnedAway)) cannot be given to an agent: typing there runs commands, it holds your passwords, or it is pi² itself."
     }
 
     private static func icon(for bundleID: String) -> NSImage {

@@ -43,7 +43,7 @@ Agents can hand work to each other. Each handoff opens a sub-chat under the conv
 
 ### Stay in control
 
-Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
+Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. A command that runs for more than 30 minutes is stopped, unless the agent asked for longer, and one that waits for typed input fails at once instead of holding the conversation. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
 
 <p align="center"><img src="docs/images/inbox.png" alt="The Inbox: a command, a schedule an agent wants to set, a question, and an app action, all waiting" width="820"></p>
 
