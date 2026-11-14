@@ -5,11 +5,12 @@
 // bottom is the only place that names them. Nothing else in the engine needs to change to add one.
 
 import type { Context } from "@earendil-works/chord/context";
-import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration } from "@earendil-works/pi-durable";
+import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
+import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits } from "./limits.ts";
@@ -42,6 +43,9 @@ export type FeatureParts = {
 	tools?: ToolRegistration<any, any>[];
 	sections?: PromptSection[];
 	hooks?: HookRegistration[];
+	/** Changes to tools from elsewhere (pi durable's coding tools, say), applied wherever they are offered. */
+	// biome-ignore lint/suspicious/noExplicitAny: tools of any parameter shape
+	wraps?: Wrap<any>[];
 	/** Which of this feature's tools a conversation with this access and agent is given. */
 	toolNames?(access: Access, agent: AgentProfile | undefined): string[];
 	/** Requests from the app, by method name. Throw an Error with a plain message to refuse. */
@@ -62,4 +66,4 @@ export type FeatureParts = {
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees];
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands];

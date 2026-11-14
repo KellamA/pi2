@@ -480,6 +480,7 @@ export function pi2Extension(host: Host): Extension {
 	return defineExtension({
 		name: "pi2",
 		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool, ...host.features.flatMap((feature) => feature.tools ?? [])],
+		wraps: host.features.flatMap((feature) => feature.wraps ?? []),
 		sections: [
 			section("computer_use", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "computer")) return undefined;

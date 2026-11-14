@@ -65,16 +65,20 @@ public enum ComputerPolicy {
         "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper", "com.apple.ScriptEditor2", "com.apple.Automator",
         "com.apple.keychainaccess", "com.apple.Passwords", "com.1password.1password", "com.agilebits.onepassword7", "com.bitwarden.desktop",
     ]
-    /// Browsers hold every signed-in account, and System Settings changes the Mac: these can be looked at only.
+    /// Browsers hold every signed-in account, and System Settings changes the Mac: these can be looked at only. So can copies of pi²; see `pi2`.
     static let viewOnly = [
         "com.apple.systempreferences", "com.apple.Safari", "com.google.Chrome", "org.mozilla.firefox", "com.microsoft.edgemac",
         "company.thebrowser.Browser", "company.thebrowser.dia", "com.brave.Browser", "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
     ]
 
+    /// pi² itself, where an agent could approve its own requests: never usable. A copy under another bundle id that starts
+    /// with this one, such as a throwaway test build, is look-only, so an agent working on pi² can check a change by looking.
+    static let pi2 = "dev.pi2.app"
+
     private static func matches(_ list: [String], _ bundleID: String) -> Bool {
         list.contains { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
     }
 
-    public static func isNever(_ bundleID: String) -> Bool { matches(never, bundleID) }
-    public static func isViewOnly(_ bundleID: String) -> Bool { matches(viewOnly, bundleID) }
+    public static func isNever(_ bundleID: String) -> Bool { bundleID == pi2 || matches(never, bundleID) }
+    public static func isViewOnly(_ bundleID: String) -> Bool { bundleID.hasPrefix(pi2 + ".") || matches(viewOnly, bundleID) }
 }

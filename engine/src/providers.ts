@@ -133,6 +133,11 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
+		if (prompt.startsWith("/timeout ")) {
+			// "/timeout <seconds> <command>": bash with a time limit of its own
+			const [seconds, ...command] = prompt.slice(9).split(" ");
+			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: command.join(" "), timeout: Number(seconds) })], { stopReason: "toolUse" });
+		}
 		if (prompt.startsWith("/ask ")) {
 			return fauxAssistantMessage([fauxText("I need to check something with you."), fauxToolCall("ask_user", { question: prompt.slice(5) })], { stopReason: "toolUse" });
 		}

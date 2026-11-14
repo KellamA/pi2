@@ -4,8 +4,15 @@ What changed in each version, newest first.
 
 ## Unreleased
 
+### Changed
+- `app/build.sh` stops before building when a copy of pi² is running from the bundle it would replace, and says which process and what to do instead; `PI2_REPLACE_RUNNING=1` replaces it anyway. [docs/development.md](docs/development.md) has a new section, "Working on pi² with pi²".
+- **A test copy of pi² can be looked at.** Computer use no longer refuses every app whose bundle id starts with `dev.pi2.app.`: such a copy is look-only, like browsers and System Settings, so an agent working on pi² can check a change by looking at a throwaway build. pi² itself (`dev.pi2.app`) still cannot be given to an agent.
+- **Project instructions from the repository's top.** A conversation working in a subfolder of a git repository is now given the `AGENTS.md` or `CLAUDE.md` of each folder from the repository's top down to its own, the top's first, so the nearest has the last word. Nothing above the repository's top is read, and a folder in no repository reads only itself, as before. The 24,000-character cap is shared between the files. See [docs/knowledge.md](docs/knowledge.md).
+- **Commands have a time limit.** A command an agent runs is stopped after 30 minutes, so one that never finishes no longer holds the conversation until you stop it. The agent is told the limit, can ask for longer for a command it knows is slow, and is told when the limit stopped one. A command that waits for typed input fails at once instead of waiting.
+
 ### Fixed
 - An agent's commands could not find programs you installed yourself, such as `node`, `npm` or `gh`: they ran with the bare `PATH` macOS gives an app. The engine now takes its `PATH` from your login shell when it starts, so commands, MCP servers and git find what a terminal window would.
+- An agent could not look at a picture larger than 2,000 pixels or 4.5 MB with `read`, such as a screenshot of a window on a Retina display, and could not read BMP at all. `read` now scales such a picture down to fit, converts BMP, and tells the agent the size before and after.
 - A conversation working in a worktree that handed work to another agent got a helper working in a different checkout, often the main one. A new sub-chat now starts in the folder its parent works in, worktree included, and is told so, unless the other agent's own folder is in another repository. See [docs/worktrees.md](docs/worktrees.md).
 
 ## 0.7.0
