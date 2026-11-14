@@ -30,7 +30,8 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
+import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
@@ -192,6 +193,9 @@ const engine: Engine = {
 	apps: () => clients.size,
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
+// `read` shrinks a picture larger than the model takes (a Retina screenshot, say) and converts BMP, rather than refusing
+// it. Photon is WebAssembly, so it needs no native module or install script, and runs in a worker that exits when idle.
+const CodingTools = createCodingTools({ images: await createNodePhotonImages() });
 const pi2 = pi2Extension(host);
 const registry = createRegistry();
 const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });

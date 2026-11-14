@@ -68,12 +68,24 @@ See [transcript.md](transcript.md). The rest of the app has no automated tests. 
 open -n "app/build/pi².app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.test
 ```
 
+On a Mac where pi² is in real use, give the copy its own bundle id as well and clean up after it: [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the steps and the rules.
+
 A development build (not a release build) also reads two variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title.
 - `PI2_DRAW_WHEN_HIDDEN=1` keeps the transcript drawing while the window is covered or the screen is locked. WebKit normally stops drawing a page nobody can see, which leaves it blank in a window capture. This uses a WebKit switch that is not public, which is why it is left out of release builds.
 
 The scripted demo model answers `/bash <command>`, `/timeout <seconds> <command>` (bash with a `timeout`), `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider.
+
+## Working on pi² with pi²
+
+A development build runs its engine from the checkout it was built in. If that is the copy you work in, an engine edit, a branch switch or a `git pull` there changes the code its engine starts next time, and if that code is broken there is no pi² left to fix it with. So:
+
+- Use an installed release as your everyday copy. It carries its own engine and Node, so nothing you change in a checkout reaches it.
+- Do the work in git worktrees (a conversation can move into one of its own; see [worktrees.md](worktrees.md)) or in a separate clone, never in the checkout a running development build came from.
+- Run a test copy on its own data folder (`PI2_HOME`), Keychain service (`PI2_KEYCHAIN_SERVICE`) and bundle id (change `CFBundleIdentifier` in the copy's `Info.plist`, then sign it again with `codesign --force --sign -`), so it shares no conversations, keys or macOS permissions with the copy you use. [CONTRIBUTING.md](../CONTRIBUTING.md) has the rules for testing safely.
+
+`app/build.sh` deletes and rebuilds `app/build/pi².app`, so before it builds or deletes anything it looks for a running process whose executable is inside that bundle. If it finds one, it names the process and stops: deleting the bundle would pull the files out from under a running app, and the new build would lose the Accessibility and Screen Recording permissions given to the old one. Build in a worktree or clone instead, or quit that copy. `PI2_REPLACE_RUNNING=1 ./app/build.sh` replaces it anyway.
 
 ## Layout
 

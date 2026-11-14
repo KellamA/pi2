@@ -27,7 +27,7 @@ export const LOOKING: ReadonlySet<string> = new Set(["list_apps", "screenshot"])
 
 /**
  * Apps an agent may never be given: shells and script runners, where typing is running code without the approval the
- * bash tool has; password managers; and pi² itself, where an agent could approve its own requests.
+ * bash tool has; and password managers. pi² itself is never usable either; see `PI2`.
  */
 const NEVER = [
 	"com.apple.Terminal",
@@ -45,10 +45,12 @@ const NEVER = [
 	"com.1password.1password",
 	"com.agilebits.onepassword7",
 	"com.bitwarden.desktop",
-	"dev.pi2.app",
 ];
 
-/** Apps an agent may look at but not control: browsers, which hold every signed-in account, and System Settings. */
+/**
+ * Apps an agent may look at but not control: browsers, which hold every signed-in account, and System Settings. Copies
+ * of pi² are look-only too; see `PI2`.
+ */
 const VIEW_ONLY = [
 	"com.apple.systempreferences",
 	"com.apple.Safari",
@@ -62,15 +64,23 @@ const VIEW_ONLY = [
 	"com.vivaldi.Vivaldi",
 ];
 
+/**
+ * pi² itself, where an agent could approve its own requests: never usable. A copy of pi² under another bundle id that
+ * starts with this one, such as a throwaway test build, is look-only: an agent working on pi² can check a change by
+ * looking at the copy, and cannot click its approve buttons.
+ */
+const PI2 = "dev.pi2.app";
+
 const matches = (list: readonly string[], bundleId: string) => list.some((id) => bundleId === id || bundleId.startsWith(`${id}.`));
-export const isNever = (bundleId: string) => matches(NEVER, bundleId);
-export const isViewOnly = (bundleId: string) => matches(VIEW_ONLY, bundleId);
+export const isNever = (bundleId: string) => bundleId === PI2 || matches(NEVER, bundleId);
+export const isViewOnly = (bundleId: string) => bundleId.startsWith(`${PI2}.`) || matches(VIEW_ONLY, bundleId);
 
 export function validateComputer(input: unknown): ComputerSettings {
 	const value = (input ?? {}) as Partial<ComputerSettings>;
 	if (value.apps !== undefined && !Array.isArray(value.apps)) throw new Error("apps must be a list of bundle IDs");
 	const apps = (value.apps ?? []).filter((app): app is string => typeof app === "string" && app.trim() !== "").map((app) => app.trim());
 	const refused = apps.find(isNever);
+	if (refused === PI2) throw new Error(`${refused} cannot be given to an agent: it is pi² itself, where an agent could approve its own requests`);
 	if (refused !== undefined) throw new Error(`${refused} cannot be given to an agent: it runs commands or holds secrets`);
 	if (apps.length > 40) throw new Error("An agent can be given at most 40 apps");
 	return { enabled: value.enabled === true, apps: [...new Set(apps)], ask: value.ask !== false };

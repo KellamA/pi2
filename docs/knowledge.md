@@ -4,17 +4,18 @@ Two things are put in front of the model before the person has said anything: th
 
 ## Project instructions
 
-When a conversation works in a folder that has an `AGENTS.md`, the agent is given its text, as Claude Code and Codex do. Without an `AGENTS.md`, a `CLAUDE.md` is used instead. They are never combined.
+When a conversation works in a folder that has an `AGENTS.md`, the agent is given its text, as Claude Code and Codex do. Without an `AGENTS.md`, a `CLAUDE.md` is used instead. In one folder they are never combined.
 
 - The folder is the conversation's own (the agent's folder, or the one chosen for the conversation). A conversation in pi²'s scratch folder has none.
+- In a git repository, the folders above the conversation's are looked in too, up to the top of the repository and no further, each by the same rule. The top is the nearest folder with a `.git` entry: a folder in a main checkout, a file in a worktree, so a worktree's own top is where the search stops. It is found without running git, since this happens at every request. A folder in no repository is looked in by itself. Folders are walked by their real paths, so a conversation in a link to a folder is treated as in that folder.
 - The file is read again for every request, so an edit takes effect at the next message.
-- It is put in the prompt as the `project_instructions` section, introduced by a line that says which file it is and that these are the project's instructions for working in this folder.
+- It is put in the prompt as the `project_instructions` section, introduced by a line that says which file it is and that these are the project's instructions for working in this folder. When more than one folder has a file, all are given, the outermost folder's first and the nearest's last, each introduced by where it is from, under a line saying the nearer one has the last word where they differ. A file in a folder above is named by its full path.
 - It applies whatever the conversation's tool access is, including tools off: the person chose the folder.
-- The text is cut at 24,000 characters, with a note in the prompt saying so.
-- A file that is missing, empty, unreadable or not text gives no section. A file that is a link leading out of the folder is not followed and counts as missing (so `AGENTS.md` as such a link falls through to `CLAUDE.md`). Links are resolved as `reference.ts` resolves them: the real path must be inside the folder's real path.
-- An empty conversation's introduction says "Follows the AGENTS.md in <folder>", so the person can see it is in effect. The engine sends the file name as `projectInstructions` in the conversation state.
+- The text is cut at 24,000 characters in all, with a note in the prompt after each cut file saying where to read the rest. With several files the 24,000 are shared: a file shorter than an equal share is given whole, and the longer ones split what is left equally, so no file is crowded out by a long one.
+- A file that is missing, empty, unreadable or not text gives nothing. A file that is a link leading out of its folder is not followed and counts as missing (so `AGENTS.md` as such a link falls through to `CLAUDE.md`); this holds for each folder looked in, so a link in a sub-folder to the repository's top file is not followed either. Links are resolved as `reference.ts` resolves them: the real path must be inside the folder's real path.
+- An empty conversation's introduction says "Follows the AGENTS.md in <folder>" (or "the AGENTS.md in <top> and the CLAUDE.md in <folder>"), so the person can see what is in effect. The engine sends the files as `projectInstructionFiles` in the conversation state: `[{ folder, file }]`, outermost first, with each folder's real path, empty when there are none. `projectInstructions` is still sent, as before, for an app built before the list: the name of the nearest file in effect, or null.
 
-Only the file in the folder itself is read, not those in parent folders or sub-folders.
+Files in sub-folders of the conversation's folder are not read.
 
 ## Memory
 
@@ -52,4 +53,4 @@ After every change, from the app or from a tool, the engine broadcasts `{ event:
 - Notes are plain short text; there is no search or ranking, and all of an agent's notes (up to 60 × 400 characters) go into the prompt every time.
 - The agent decides what to remember from the prompt's guidance; nothing stops a model from noting something it should not. That is why memory is off by default and the notes are visible and editable.
 - Notes are not shared between agents, and a sub-chat uses the notes of the agent it runs as.
-- Project instructions are read from one file in one folder; they are not combined with other agents' instructions or searched for in parent folders.
+- Project instructions are read from one file per folder, from the conversation's folder up to the top of its git repository; they are not combined with other agents' instructions, and nothing above a repository's top (or above a folder in no repository) is read.
