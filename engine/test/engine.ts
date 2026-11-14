@@ -13,6 +13,12 @@ import { newestOnly } from "../src/providers.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
+/** Folders a check makes in the temporary folder, removed at the end with the data folder whether the checks passed or not. */
+const scratchFolders: string[] = [];
+function removedAtEnd(folder: string): string {
+	scratchFolders.push(folder);
+	return folder;
+}
 const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 // The demo model types slowly for people; every engine this test starts makes it fast.
@@ -1058,7 +1064,7 @@ try {
 		await client.until("pilot saved", () => client.agents.some((x) => x.id === pilot));
 
 		// -- Project instructions
-		const project = realpathSync(mkdtempSync(join(tmpdir(), "pi2-project-")));
+		const project = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-project-"))));
 		writeFileSync(join(project, "AGENTS.md"), "Always indent with tabs.\n");
 		writeFileSync(join(project, "CLAUDE.md"), "Claude-only notes.\n");
 		const p1 = await open(pilot, project);
@@ -1082,9 +1088,9 @@ try {
 		assert.ok(cut.includes("is longer than 24,000 characters") && cut.includes("x".repeat(24_000)) && !cut.includes("x".repeat(24_001)), "a long file is cut, with a note");
 		step("project instructions: AGENTS.md, else CLAUDE.md, read fresh at every message, cut when long");
 
-		const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-outside-")));
+		const outside = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-outside-"))));
 		writeFileSync(join(outside, "secret.md"), "OUTSIDE-SECRET");
-		const linked = realpathSync(mkdtempSync(join(tmpdir(), "pi2-linked-")));
+		const linked = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-linked-"))));
 		symlinkSync(join(outside, "secret.md"), join(linked, "AGENTS.md"));
 		const p2 = await open(pilot, linked);
 		said = await say(p2, "/system");
@@ -1097,7 +1103,7 @@ try {
 
 		// A repository: every folder from its top down to the conversation's is looked in, and none above the top.
 		const { readProjectInstructions } = await import("../src/knowledge.ts");
-		const above = realpathSync(mkdtempSync(join(tmpdir(), "pi2-above-")));
+		const above = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-above-"))));
 		writeFileSync(join(above, "AGENTS.md"), "ABOVE-THE-REPOSITORY");
 		const repo = join(above, "repo");
 		const sub = join(repo, "engine");
@@ -1217,8 +1223,8 @@ try {
 	{
 		// look (engine/src/look.ts)
 		const { symlinkSync } = await import("node:fs");
-		const tree = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-")));
-		const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-outside-")));
+		const tree = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-"))));
+		const outside = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-outside-"))));
 		writeFileSync(join(outside, "secret.txt"), "needle outside\n");
 		mkdirSync(join(tree, "src", "deep"), { recursive: true });
 		mkdirSync(join(tree, "node_modules", "pkg"), { recursive: true });
@@ -1322,8 +1328,8 @@ try {
 
 	{
 		// documents (engine/src/documents.ts)
-		const folder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-")));
-		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-outside-")));
+		const folder = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-"))));
+		const elsewhere = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-docs-outside-"))));
 		const { id: dc } = await client.call("conversation.create");
 		await client.call("conversation.open", { id: dc });
 		let docCalls = 0;
@@ -1417,8 +1423,8 @@ try {
 	{
 		// command rules (engine/src/rules.ts)
 		const { chmodSync } = await import("node:fs");
-		const project = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-")));
-		const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-other-")));
+		const project = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-"))));
+		const elsewhere = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-other-"))));
 		for (const dir of [project, elsewhere]) {
 			writeFileSync(join(dir, "run-tests"), '#!/bin/sh\necho "tests ran: $*"\n');
 			chmodSync(join(dir, "run-tests"), 0o755);
@@ -1689,7 +1695,7 @@ try {
 		// End to end: a second engine on its own data folder and Keychain service, with two subscription sign-ins
 		// stored there as pi-ai stores them, not due for renewal (so no real sign-in server is called), and a local
 		// stand-in for each usage address.
-		const limitsHome = mkdtempSync(join(tmpdir(), "pi2-limits-"));
+		const limitsHome = removedAtEnd(mkdtempSync(join(tmpdir(), "pi2-limits-")));
 		const store = new KeychainCredentialStore(limitsHome, `${KEYCHAIN_SERVICE}.limits`);
 		const claudeToken = "sk-ant-oat01-limits-test-not-a-real-token";
 		const codexToken = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-limits-test" } })).toString("base64url")}.not-signed`;
@@ -2433,5 +2439,6 @@ try {
 	cleanKeychain();
 	rmSync(home, { recursive: true, force: true });
 	rmSync(workdir, { recursive: true, force: true });
+	for (const folder of scratchFolders) rmSync(folder, { recursive: true, force: true });
 }
 process.exit(0);

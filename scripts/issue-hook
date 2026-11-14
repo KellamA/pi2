@@ -41,6 +41,35 @@ session_issues() {
 		' | sort -n | cut -d" " -f2-
 }
 
+# Prints the absolute path $1 with symbolic links in its folders resolved, the
+# way `git rev-parse --show-toplevel` gives the repository's top. Without this a
+# folder reached through a link (on macOS /tmp and /var/folders are really
+# under /private) never matches the top. The file, and some folders above it,
+# may not exist yet when it is being created, so the nearest folder that does
+# exist is resolved and the rest put back, with "." and ".." taken out by hand.
+# Only builtins, so it costs one subshell; the file itself is not resolved.
+physical() (
+	unset CDPATH
+	set -f
+	dir=${1%/*} rest=${1##*/}
+	until cd -P -- "${dir:-/}" 2>/dev/null; do
+		[[ $dir == */* ]] || exit 1
+		rest=${dir##*/}/$rest
+		dir=${dir%/*}
+	done
+	path=$PWD
+	[[ $path == / ]] && path=
+	IFS=/
+	for part in $rest; do
+		case $part in
+			'' | .) ;;
+			..) path=${path%/*} ;;
+			*) path=$path/$part ;;
+		esac
+	done
+	printf '%s\n' "${path:-/}"
+)
+
 deny() {
 	jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
 	exit 0
@@ -51,7 +80,11 @@ case $mode in
 		file=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
 		[[ -n $file ]] || exit 0
 		cwd=$(jq -r '.cwd // empty' <<<"$input")
-		root=$(git -C "${cwd:-.}" rev-parse --show-toplevel 2>/dev/null) || exit 0
+		cwd=${cwd:-$PWD}
+		# In a worktree the top is the worktree's own, not the main checkout's.
+		root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
+		[[ $file == /* ]] || file=$cwd/$file
+		file=$(physical "$file") && root=$(physical "$root/.") || exit 0
 		case $file in
 			"$root"/.git/* | "$root"/.claude/*) exit 0 ;;
 			"$root"/*) ;;

@@ -1,7 +1,7 @@
 // The pure parts of engine/src/look.ts, and its fetching against a server of the test's own. No real website is loaded.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -147,6 +147,8 @@ assert.match(((await look.fetchPage(`${base}/page`, { abortSignal: stop.signal }
 
 // ---- Files: the walk and its limits
 const root = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-")));
+// Removed however the test ends: a failed check ends the process, and "exit" still runs.
+process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 mkdirSync(join(root, "src", "deep"), { recursive: true });
 mkdirSync(join(root, "node_modules", "pkg"), { recursive: true });
 mkdirSync(join(root, ".git"));

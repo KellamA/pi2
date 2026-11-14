@@ -364,6 +364,8 @@ for (const [line, expected] of offers) {
 // notes its name in a log. Any other program would fail as not found, and any file written would show in the folders.
 
 const sandbox = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rules-")));
+// Removed however the test ends: a failed check ends the process, and "exit" still runs.
+process.on("exit", () => rmSync(sandbox, { recursive: true, force: true }));
 const bin = join(sandbox, "bin");
 const work = join(sandbox, "work");
 const home = join(sandbox, "home");
@@ -437,6 +439,5 @@ for (let n = 0; n < 6000; n++) {
 	for (const name of outcome.ran) assert.ok(standIns.includes(name) || name === "run-tests", `${JSON.stringify(line)} ran ${name}`);
 }
 assert.ok(ran > 300, `enough random lines were allowed to mean something (${ran} of ${tried})`);
-rmSync(sandbox, { recursive: true, force: true });
 
 console.log(`rules: ok (${ran} of ${tried} random lines allowed, each checked against /bin/bash)`);
