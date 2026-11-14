@@ -48,6 +48,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/worktrees.ts` | A git worktree per conversation, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start |
+| `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
 
@@ -59,13 +60,19 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 ### Sub-chats
 
-`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one.
+`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository ([worktrees.md](worktrees.md#sub-chats)). The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one.
 
 ### What commands can find
 
 The app or the login item starts the engine, so it begins with the `PATH` macOS gives every program: `/usr/bin:/bin:/usr/sbin:/sbin`. Programs the person installed themselves (with Homebrew, a version manager, or into `~/.local/bin`) are not on it. As it starts, the engine asks the person's login shell for its `PATH`, the way a new terminal window would have it (`zsh`, `bash` or `fish`, run as a login and interactive shell), and takes that as its own, keeping its own folders after it. Shell commands, MCP servers started as programs, and git all inherit it. Only full paths are kept, so an entry that means "the current folder" never lets a file in a project stand in for a program.
 
 A shell that does not answer within five seconds, fails, or is one the engine does not know how to ask is left alone; the engine then adds `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin` and `~/.local/bin`, where they exist. `engine.log` says which happened. A change to the shell's profile counts from the next time the engine starts.
+
+### How long a command may run
+
+A shell command is stopped after 30 minutes unless the call that runs it passes a `timeout` in seconds; the model can pass a larger one for a command it knows takes longer, such as a full build. The tool's description says so, and so does the result of a command the limit stopped, under what it had written by then. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.
+
+A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
 
 ## Where things live
 
@@ -77,7 +84,7 @@ A shell that does not answer within five seconds, fails, or is one the engine do
 
 A sign-in credential can be several kilobytes, more than one Keychain command can carry, so long ones are split across several items with a checksum. A damaged item reads as "signed out" rather than as an error.
 
-Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do).
+Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 30 minutes; the end-to-end test uses 3).
 
 ## Known limits
 

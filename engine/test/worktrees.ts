@@ -145,13 +145,17 @@ class Client {
 	}
 	/** Runs a shell command through the demo model and returns its output. */
 	async bash(id: number, command: string): Promise<string> {
+		return (await this.tool(id, `/bash ${command}`)).text;
+	}
+	/** Sends a message the demo model answers with a tool call, and returns that call once the answer is in. */
+	async tool(id: number, text: string): Promise<Event> {
 		const before = this.conversations.get(id)?.items.filter((i: Event) => i.kind === "tool").length ?? 0;
-		await this.call("submit", { id, text: `/bash ${command}` });
-		const conv = await this.until("command ran", () => {
+		await this.call("submit", { id, text });
+		const conv = await this.until("tool ran", () => {
 			const c = this.conversations.get(id);
 			return c !== undefined && !c.state.busy && c.items.filter((i: Event) => i.kind === "tool").length > before && c.items.at(-1).kind === "assistant" ? c : undefined;
 		});
-		return conv.items.filter((i: Event) => i.kind === "tool").at(-1).text;
+		return conv.items.filter((i: Event) => i.kind === "tool").at(-1);
 	}
 }
 
@@ -211,6 +215,44 @@ try {
 	assert.ok(!run(project, "branch").includes(made.branch), "the merged branch was deleted");
 	assert.equal(readFileSync(join(project, "sub", "new.txt"), "utf8"), "made-here\n", "the work arrived through the merge");
 	step("remove the worktree: its folder and merged branch go, and the conversation returns to where it was");
+
+	// A conversation in a worktree hands work to other agents.
+	const outside = repo("outside");
+	const save = async (agent: Record<string, unknown>): Promise<string> => (await client.call("agents.save", { agent })).id;
+	const helper = await save({ name: "Helper", access: "full" });
+	const neighbour = await save({ name: "Neighbour", access: "full", cwd: project });
+	const outsider = await save({ name: "Outsider", access: "full", cwd: outside });
+	const lead = await save({ name: "Lead", access: "full", delegates: [helper, neighbour, outsider] });
+	const { id: e } = await client.call("conversation.create", { agentId: lead });
+	await client.call("conversation.open", { id: e });
+	await client.call("conversation.configure", { id: e, cwd: project });
+	const shared = await client.call("worktree.create", { id: e });
+	await client.until("lead in its worktree", () => client.conversations.get(e)?.state.agent.cwd === shared.path);
+	/** Hands a task to an agent; returns the sub-chat's number and its answer. */
+	const handOff = async (agent: string, task: string): Promise<{ sub: number; answer: string }> => {
+		const call = await client.tool(e, `/delegate ${agent}: ${task}`);
+		assert.equal(typeof call.details?.conversationId, "number", JSON.stringify(call));
+		return { sub: call.details.conversationId, answer: call.text };
+	};
+	const where = "/bash pwd && git branch --show-current";
+	const helped = await handOff("Helper", where);
+	assert.ok(helped.answer.includes(shared.path) && helped.answer.includes(shared.branch), `an agent with no folder works in the worktree: ${helped.answer}`);
+	const neighboured = await handOff("Neighbour", where);
+	assert.ok(neighboured.answer.includes(shared.path), `an agent whose folder is in the same repository works in the worktree: ${neighboured.answer}`);
+	const outsided = await handOff("Outsider", where);
+	assert.ok(outsided.answer.includes(outside) && !outsided.answer.includes(shared.path), `an agent whose folder is in another repository keeps it: ${outsided.answer}`);
+	const told = (await handOff("Helper", "/system")).answer;
+	assert.ok(told.includes("<worktree>") && told.includes("This sub-chat works in the git worktree") && told.includes(shared.branch), `the sub-chat is told about the worktree: ${told}`);
+	assert.ok(!(await handOff("Outsider", "/system")).answer.includes("<worktree>"), "a sub-chat elsewhere is not");
+	step("a sub-chat joins its parent's worktree, and is told so, unless its agent works in another repository");
+
+	const cwdOf = (id: number) => client.conversations.get(id)?.state.agent.cwd;
+	for (const id of [helped.sub, neighboured.sub, outsided.sub]) await client.call("conversation.open", { id });
+	await client.until("sub-chats open", () => cwdOf(helped.sub) === shared.path && cwdOf(neighboured.sub) === shared.path && cwdOf(outsided.sub) === outside);
+	await client.call("worktree.remove", { id: e });
+	await client.until("sub-chats back with their parent", () => cwdOf(e) === project && cwdOf(helped.sub) === project && cwdOf(neighboured.sub) === project);
+	assert.equal(cwdOf(outsided.sub), outside, "a sub-chat elsewhere stays where it is");
+	step("removing the worktree takes the sub-chats that worked in it back with their parent");
 
 	// An agent whose conversations each get a worktree.
 	await assert.rejects(client.call("agents.save", { agent: { name: "Builder", access: "full", cwd: scratch, worktree: true } }), /git repository/);
