@@ -82,7 +82,8 @@ export function setupItem(id: number, data: unknown) {
 	const command = typeof setup.command === "string" ? setup.command : "";
 	const status = setup.status === "done" || setup.status === "failed" ? setup.status : "running";
 	const reason = typeof setup.reason === "string" ? setup.reason : "failed";
-	const text = status === "running" ? `Running the set-up command: ${command}` : status === "done" ? `The set-up command finished: ${command}` : `The set-up command ${reason}: ${command}`;
+	// A failed one leads with what happened, so that where the line is cut short it is the command that goes.
+	const text = status === "running" ? `Running the set-up command: ${command}` : status === "done" ? `The set-up command finished: ${command}` : `${setupLead(status, reason)} · ${command}`;
 	const details = {
 		run: String(setup.run ?? ""),
 		command,
@@ -92,6 +93,22 @@ export function setupItem(id: number, data: unknown) {
 		output: typeof setup.output === "string" ? setup.output : "",
 	};
 	return { id, kind: "setup" as const, text, isError: status === "failed", details };
+}
+
+/** What happened to a set-up, without its command: "Set-up command failed: exited with code 1". */
+function setupLead(status: string, reason: string | null): string {
+	if (status === "running") return "Running the set-up command";
+	if (status === "done") return "The set-up command finished";
+	const why = (reason ?? "").replace(/\s+/g, " ").trim();
+	return why === "" || why === "failed" ? "Set-up command failed" : `Set-up command failed: ${why}`;
+}
+
+/** A set-up entry in a Markdown export: what happened, then the command in a block of its own, exactly as it was. */
+export function setupMarkdown(details: ReturnType<typeof setupItem>["details"]): string {
+	const lead = `*${setupLead(details.status, details.reason)}*`;
+	if (details.command.trim() === "") return lead;
+	const fence = "`".repeat(Math.max(3, ...[...details.command.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+	return `${lead}\n\n${fence}sh\n${details.command}\n${fence}`;
 }
 
 /** The end of `text`, at most `chars` of it, marked when something was left out. */

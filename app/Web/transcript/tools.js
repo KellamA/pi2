@@ -292,6 +292,21 @@
 	}
 
 	/**
+	 * How a set-up command failed, in the engine's words, worded to follow "the set-up command" ("exited with code 1",
+	 * "was stopped because the worktree was removed"). Empty when it gave none beyond "failed".
+	 */
+	function setupReason(details) {
+		const reason = isObject(details) ? str(details.reason).replace(/\s+/g, " ").trim() : "";
+		return reason === "failed" ? "" : reason;
+	}
+
+	/** The same as a sentence: "The set-up command exited with code 1." */
+	function setupSentence(details) {
+		const reason = setupReason(details) || "failed";
+		return "The set-up command " + reason + (/[.!?]$/.test(reason) ? "" : ".");
+	}
+
+	/**
 	 * Everything the transcript shows about one call.
 	 *
 	 * `status` is "running" (a result is still coming), "preparing" (the model is still writing the call), "done",
@@ -324,7 +339,13 @@
 			case "pi2_setup":
 				// The agent's set-up command, which pi² ran in a new worktree: not a call the agent made.
 				glyph = "terminal";
-				label = [t(active ? "Running the set-up command " : "Ran the set-up command "), code(firstLine(args.command)), t(dots)];
+				if (status === "failed") {
+					// A failed one leads with what happened, so that when the row is narrow the command gives way, not the reason.
+					const reason = setupReason(details);
+					label = [{ text: "Set-up command failed" + (reason ? ": " + reason : ""), style: "reason" }, muted(" · "), code(firstLine(args.command))];
+				} else {
+					label = [t(active ? "Running the set-up command " : "Ran the set-up command "), code(firstLine(args.command)), t(dots)];
+				}
 				break;
 			case "read": {
 				glyph = "file";
@@ -462,8 +483,8 @@
 				if (active) label.push(t(ELLIPSIS));
 			}
 		}
-		// A set-up that failed says how, in the engine's words ("exited with code 1").
-		const note = toolName === "pi2_setup" ? (status === "failed" && isObject(details) && str(details.reason) ? [t(str(details.reason))] : []) : ruleNote(details);
+		// A set-up that failed says how in its label.
+		const note = toolName === "pi2_setup" ? [] : ruleNote(details);
 		const title = label.map((piece) => piece.text).join("") + (stats ? " " + stats : "") + (note.length > 0 ? " (" + note.map((piece) => piece.text).join("") + ")" : "");
 		return { glyph, label, stats, title, note };
 	}
@@ -493,6 +514,7 @@
 
 	/**
 	 * What a call's row opens to: a list of sections, each `{kind, ...}`.
+	 *   { kind: "status", text, failed }                      what happened, on a line of its own (a failed set-up)
 	 *   { kind: "command", label, command, output, failed }   a command and what it printed
 	 *   { kind: "diff", label, diff }                          an edit
 	 *   { kind: "text", label, text, failed, language }        a file's text, an output, the arguments
@@ -520,7 +542,10 @@
 				sections.push({ kind: "command", label: str(call.name), command: str(args.command), output, failed, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
 				break;
 			case "pi2_setup":
-				sections.push({ kind: "command", label: "Set-up command", command: str(args.command), output, failed, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
+				// A failed one says how first, on a line of its own. Its output keeps the ordinary colour: that line and the
+				// status carry the red, and the line that failed is easier to find among lines that are not all red.
+				if (failed) sections.push({ kind: "status", text: setupSentence(details), failed: true });
+				sections.push({ kind: "command", label: "Set-up command", command: str(args.command), output, failed: false, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
 				break;
 			case "read":
 			case "read_reference":

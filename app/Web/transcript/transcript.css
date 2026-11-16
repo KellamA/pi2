@@ -595,6 +595,53 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	color: var(--tx3);
 }
 
+/*
+ * A failed set-up leads with what happened, then the command. The reason is never cut: it keeps its width, and wraps
+ * only if it alone is wider than the row. The command takes the room left, shortened to fit, and moves to a line of its
+ * own when not even a few characters of it would fit beside the reason.
+ */
+.tool.setup.failed > .row-head {
+	align-items: flex-start;
+}
+
+.tool.setup.failed > .row-head > .tool-label {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 6px;
+	padding: 5px 0;
+	white-space: normal;
+}
+
+/* The glyph and the chevron stay beside the first line when it wraps. */
+.tool.setup.failed > .row-head > .glyph {
+	margin-top: 6px;
+}
+
+.tool.setup.failed > .row-head > .chevron {
+	margin-top: 4px;
+}
+
+.tool.setup.failed > .row-head > .tool-label > .reason {
+	flex: 0 0 auto;
+	max-width: 100%;
+	color: var(--bad);
+	font-weight: 500;
+}
+
+.tool.setup.failed > .row-head > .tool-label > .muted {
+	flex: none;
+}
+
+.tool.setup.failed > .row-head > .tool-label > code {
+	flex: 1 1 0;
+	min-width: 4em;
+	max-width: max-content;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Which rule let a command run without asking: quiet, and the first to give way when the row is narrow. */
 .tool-note {
 	flex: 0 3 auto;
@@ -702,6 +749,19 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 
 .detail {
 	margin: 6px 0;
+}
+
+/* What happened to a failed set-up, on a line of its own above its output. */
+.detail-status {
+	margin: 4px 0 6px;
+	font-size: 12.5px;
+	color: var(--tx2);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.detail-status.failed {
+	color: var(--bad);
 }
 
 pre.output {

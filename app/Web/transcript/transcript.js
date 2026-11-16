@@ -718,7 +718,7 @@
 		const liveTool = fixed ? fixed.live : live.tools.get(call.callId);
 		const info = T.describe(call, status, result, liveTool, names);
 		const sections = T.detailFor(call, status, result, liveTool);
-		row.className = "tool " + status;
+		row.className = "tool " + status + (call.name === "pi2_setup" ? " setup" : "");
 
 		// Where the output was scrolled to, so new output does not pull the reader away from what they are reading.
 		const oldOutput = row.querySelector(".output");
@@ -741,7 +741,8 @@
 			note.setAttribute("data-nocopy", "");
 			head.appendChild(note);
 		}
-		if (status === "failed") {
+		// A failed set-up already says so where its line starts.
+		if (status === "failed" && call.name !== "pi2_setup") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status failed", "Failed"));
 		} else if (status === "denied") {
@@ -793,6 +794,9 @@
 	function fillDetail(body, sections) {
 		for (const section of sections) {
 			switch (section.kind) {
+				case "status":
+					body.appendChild(el("div", "detail-status" + (section.failed ? " failed" : ""), section.text));
+					break;
 				case "command": {
 					const box = detailBox(section.label, () => (section.output !== "" ? section.output : section.command));
 					const pre = el("pre", "output" + (section.failed ? " failed" : ""));

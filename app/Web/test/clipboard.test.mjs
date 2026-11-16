@@ -49,6 +49,33 @@ test("a collapsed tool row gives its summary; an open one its content too", () =
 	assert.equal(C.plainText(turn(true)), "Running the tests.\n\nRan npm test +1\n$ npm test\nok 1\nok 2\n\nRan npm test +1");
 });
 
+test("a failed set-up copies with its reason, collapsed and open", () => {
+	// As transcript.js builds it: the reason leads the line, and the opened row repeats it above the output.
+	const row = (open) =>
+		h(
+			"div",
+			{ class: "tool failed setup" + (open ? " open" : "") },
+			h(
+				"div",
+				{ class: "row-head" },
+				h("svg", { "aria-hidden": "true" }),
+				h("span", { class: "tool-label" }, h("span", { class: "reason" }, "Set-up command failed: exited with code 3"), h("span", { class: "muted" }, " · "), h("code", "npm ci && npm run build")),
+				h("button", { class: "chevron", "data-nocopy": "" }, "Show details"),
+			),
+			h(
+				"div",
+				{ class: "row-body", ...(open ? {} : { hidden: "" }) },
+				h("div", { class: "detail-status failed" }, "The set-up command exited with code 3."),
+				h("div", { class: "detail" }, h("div", { class: "detail-head", "data-nocopy": "" }, h("span", "Set-up command"), h("button", "Copy")), h("pre", { class: "output" }, h("span", { class: "command" }, h("span", { class: "prompt" }, "$ "), "npm ci && npm run build"), "\nfetching deps\nnpm ERR! could not resolve")),
+			),
+		);
+	assert.equal(C.plainText(row(false)), "Set-up command failed: exited with code 3 · npm ci && npm run build");
+	assert.equal(
+		C.plainText(h("div", row(true), h("p", "After."))),
+		"Set-up command failed: exited with code 3 · npm ci && npm run build\nThe set-up command exited with code 3.\n$ npm ci && npm run build\nfetching deps\nnpm ERR! could not resolve\n\nAfter.",
+	);
+});
+
 test("controls, hidden parts and marked parts give nothing; data-copy gives its text", () => {
 	const tree = h(
 		"div",

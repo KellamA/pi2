@@ -38,7 +38,7 @@ import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
-import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem } from "./worktrees.ts";
+import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { preparePlan } from "./plan.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
@@ -884,7 +884,13 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				lines.push("## You", "", item.text, "");
 				const attached = describeAttachments(item.attachments, item.images);
 				if (attached !== undefined) lines.push(`*${attached}*`, "");
-			} else if (item.kind === "marker" || item.kind === "setup") lines.push(`*${item.text}*`, "");
+			} else if (item.kind === "marker") lines.push(`*${item.text}*`, "");
+			else if (item.kind === "setup") {
+				// Its start is left out once its end is there, as the conversation shows it.
+				const run = item.details.run;
+				const ended = item.details.status === "running" && items.some((other) => other.kind === "setup" && other.details.run === run && other.details.status !== "running");
+				if (!ended) lines.push(setupMarkdown(item.details), "");
+			}
 			else if (item.kind === "assistant") {
 				lines.push(`## ${agentName}${item.stop === "aborted" || item.stop === "error" ? " (interrupted)" : ""}`, "");
 				if (item.text !== "") lines.push(item.text, "");
