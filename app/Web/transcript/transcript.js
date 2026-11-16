@@ -1082,7 +1082,7 @@
 				// Only the choice goes back: the engine makes the rule it offered, whatever this page shows.
 				const allowRule = button("btn", null, "Always Allow ");
 				allowRule.appendChild(el("code", "", rule.command));
-				allowRule.appendChild(document.createTextNode(" Here"));
+				allowRule.appendChild(document.createTextNode(" " + rule.place));
 				// A rule kept for a repository's main checkout also holds in the worktrees pi2 makes from it.
 				const where = rule.worktrees ? `in this folder of the repository, in its main checkout and in every worktree pi${char(0xb2)} makes from it,` : "in this folder";
 				allowRule.title = `${who} may then run commands that start with ${LDQUO}${rule.command}${RDQUO} ${where} without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent${RSQUO}s settings.`;

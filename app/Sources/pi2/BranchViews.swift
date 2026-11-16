@@ -69,13 +69,36 @@ extension BranchStatus {
         return lines
     }
 
-    var whereText: String {
+    /// `owner`: the conversation whose worktree this one, a sub-chat, works in (see `EngineClient.worktreeOwner`).
+    func whereText(owner: ConversationSummary?) -> String {
         if managed { return "Its own worktree of \(repo)" }
+        if let owner { return "Works in the worktree of “\(owner.title.isEmpty ? "New conversation" : owner.title)”" }
         if worktree { return "A worktree of \(repo)" }
         return "The main checkout of \(repo)"
     }
 
-    var help: String { ([name, whereText] + facts).joined(separator: "\n") }
+    /// The checkout in a few words, after the branch's name.
+    func kindText(owner: ConversationSummary?) -> String {
+        managed ? "· own worktree" : owner != nil ? "· parent’s worktree" : worktree ? "· worktree" : "· main checkout"
+    }
+
+    func help(owner: ConversationSummary?) -> String { ([name, whereText(owner: owner)] + facts).joined(separator: "\n") }
+}
+
+extension EngineClient {
+    /// For a sub-chat working in the worktree pi² made for a conversation further up (docs/worktrees.md, Sub-chats):
+    /// that conversation. Nil for any other conversation. Worked out from the parents' checkouts, as the sidebar does.
+    func worktreeOwner(of id: Int) -> ConversationSummary? {
+        guard let status = branches[id], status.worktree, !status.managed else { return nil }
+        var seen: Set<Int> = [id]
+        var parentID = conversations.first { $0.id == id }?.parent
+        while let next = parentID, seen.insert(next).inserted, let parent = conversations.first(where: { $0.id == next }),
+              let parentStatus = branches[next], parentStatus.root == status.root {
+            if parentStatus.managed { return parent }
+            parentID = parent.parent
+        }
+        return nil
+    }
 }
 
 /// The branch icon: a plain branch for a repository's main checkout, a boxed one for a worktree.
@@ -109,7 +132,7 @@ struct BranchBadge: View {
             BranchIcon(status: status).contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .help(status.help)
+        .help(status.help(owner: engine.worktreeOwner(of: conversationID)))
         .popover(isPresented: $showing, arrowEdge: .trailing) {
             BranchDetails(engine: engine, conversationID: conversationID, status: status) { showing = false }
         }
@@ -132,7 +155,7 @@ struct BranchDetails: View {
                 Tag(status.stateTitle, status.tone)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(status.whereText).foregroundStyle(Theme.tx2)
+                Text(status.whereText(owner: engine.worktreeOwner(of: conversationID))).foregroundStyle(Theme.tx2)
                 Text(status.root).font(Theme.mono).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.head).textSelection(.enabled)
             }
             if !status.facts.isEmpty {
@@ -195,7 +218,7 @@ struct BranchMenu: View {
 
     var body: some View {
         Menu {
-            Text(status.whereText)
+            Text(status.whereText(owner: engine.worktreeOwner(of: id)))
             ForEach(status.facts, id: \.self) { Text($0) }
             Divider()
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: status.root)]) }
@@ -218,7 +241,7 @@ struct BranchMenu: View {
                 Text(status.branch ?? status.head ?? "detached").lineLimit(1).truncationMode(.middle).frame(maxWidth: 170)
             }
         }
-        .help(status.help)
+        .help(status.help(owner: engine.worktreeOwner(of: id)))
     }
 }
 
@@ -231,7 +254,8 @@ struct BranchMenu: View {
 final class WorktreeDialogs {
     static let shared = WorktreeDialogs()
 
-    struct Creating: Equatable { let id: Int; var branch: String }
+    /// `subChat`: said when the conversation is a sub-chat working in its parent's worktree.
+    struct Creating: Equatable { let id: Int; var branch: String; var subChat: String? }
     struct Removing: Equatable { let id: Int; let status: BranchStatus }
 
     var creating: Creating?
@@ -240,7 +264,12 @@ final class WorktreeDialogs {
     var notice: String?
 
     func create(_ id: Int, engine: EngineClient) {
-        creating = Creating(id: id, branch: "")
+        var subChat: String?
+        if engine.worktreeOwner(of: id) != nil, let status = engine.branches[id] {
+            let start = status.branch.map { "the parent’s branch \($0)" } ?? "the commit the parent’s worktree is on"
+            subChat = "The new worktree starts from \(start), and this sub-chat stops working in its parent’s worktree."
+        }
+        creating = Creating(id: id, branch: "", subChat: subChat)
         Task {
             if let suggested = try? await engine.call("worktree.suggest", ["id": id])["branch"]?.stringValue, creating?.id == id, creating?.branch == "" {
                 creating?.branch = suggested
@@ -270,7 +299,8 @@ private struct WorktreeDialogsModifier: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) { dialogs.creating = nil }
             } message: {
-                Text("The conversation moves into a checkout of its own on this branch, made from where its folder is now. Other agents can keep working in the repository meanwhile. An existing branch is checked out as it is.")
+                Text("The conversation moves into a checkout of its own on this branch, made from where its folder is now. Other agents can keep working in the repository meanwhile. An existing branch is checked out as it is."
+                    + (dialogs.creating?.subChat.map { "\n\n\($0)" } ?? ""))
             }
             .alert("Worktree removed", isPresented: Binding(get: { dialogs.notice != nil }, set: { if !$0 { dialogs.notice = nil } })) {
                 Button("OK") { dialogs.notice = nil }
@@ -330,6 +360,8 @@ struct BranchesView: View {
     private struct Row: Identifiable {
         let conversation: ConversationSummary
         let status: BranchStatus
+        /// For a sub-chat in the worktree of a conversation further up: that conversation. Listed under it.
+        let owner: ConversationSummary?
         var id: Int { conversation.id }
     }
 
@@ -337,13 +369,19 @@ struct BranchesView: View {
 
     private var groups: [(repo: String, rows: [Row])] {
         let rows = engine.conversations.compactMap { conversation in
-            engine.branches[conversation.id].map { Row(conversation: conversation, status: $0) }
+            engine.branches[conversation.id].map { Row(conversation: conversation, status: $0, owner: engine.worktreeOwner(of: conversation.id)) }
         }
         return Dictionary(grouping: rows, by: \.status.repo)
             .map { repo, rows in
-                (repo: repo, rows: rows.sorted {
+                let sorted = rows.sorted {
                     let a = Self.order.firstIndex(of: $0.status.state) ?? 99, b = Self.order.firstIndex(of: $1.status.state) ?? 99
                     return a != b ? a < b : $0.conversation.updatedAt > $1.conversation.updatedAt
+                }
+                // Sub-chats in a worktree follow the conversation it was made for (always listed too, as it has a branch
+                // and is in the sidebar), oldest first, as in the sidebar.
+                let under = Dictionary(grouping: sorted.filter { $0.owner != nil }, by: { $0.owner!.id })
+                return (repo: repo, rows: sorted.filter { $0.owner == nil }.flatMap { row in
+                    [row] + (under[row.id] ?? []).sorted { ($0.conversation.createdAt ?? 0) < ($1.conversation.createdAt ?? 0) }
                 })
             }
             .sorted { $0.repo.localizedCaseInsensitiveCompare($1.repo) == .orderedAscending }
@@ -365,7 +403,7 @@ struct BranchesView: View {
                             let worktrees = group.rows.filter { $0.status.managed }.count
                             if worktrees > 0 { Text("\(worktrees) worktree\(worktrees == 1 ? "" : "s")").font(.caption).foregroundStyle(Theme.tx3) }
                         }
-                        ForEach(group.rows) { row in rowView(row) }
+                        ForEach(group.rows) { row in rowView(row).padding(.leading, row.owner == nil ? 0 : 16) }
                     }
                 }
                 if !engine.leftBehind.isEmpty { leftBehindSection }
@@ -408,7 +446,7 @@ struct BranchesView: View {
                 HStack(spacing: 6) {
                     BranchIcon(status: row.status, size: 10)
                     Text(row.status.name).font(Theme.mono).lineLimit(1).truncationMode(.middle)
-                    Text(row.status.managed ? "· own worktree" : row.status.worktree ? "· worktree" : "· main checkout")
+                    Text(row.status.kindText(owner: row.owner))
                         .font(.caption).foregroundStyle(Theme.tx3)
                 }
                 .foregroundStyle(Theme.tx2)
@@ -434,7 +472,7 @@ struct BranchesView: View {
         }
         .padding(10)
         .panel()
-        .help(row.status.help)
+        .help(row.status.help(owner: row.owner))
     }
 
     /// Worktrees whose conversations were archived or deleted. They stay on disk, with any work in them, until removed.

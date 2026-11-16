@@ -223,7 +223,7 @@ test("a failed set-up leads with what happened, for each way the engine says it 
 
 test("an approval for a command offers the engine's rule, and nothing else does", () => {
 	const pending = (rule, tool = "bash") => ({ id: "1", kind: "approval", tool, arguments: { command: "npm test -- --grep x" }, rule });
-	assert.deepEqual(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w" })), { words: ["npm", "test"], command: "npm test", worktrees: false });
+	assert.deepEqual(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w" })), { words: ["npm", "test"], command: "npm test", worktrees: false, place: "Here" });
 	assert.equal(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w", worktrees: true })).worktrees, true, "says when the rule also holds in the repository's worktrees");
 	assert.equal(T.ruleOffer(pending({ words: ["npm", "test"], folder: "/w", worktrees: "yes" })).worktrees, false);
 	assert.equal(T.ruleOffer(pending(undefined)), null);
@@ -232,6 +232,17 @@ test("an approval for a command offers the engine's rule, and nothing else does"
 		assert.equal(T.ruleOffer(pending(rule)), null, JSON.stringify(rule));
 	}
 	assert.equal(T.ruleOffer(null), null);
+});
+
+test("the rule's button says how far the rule reaches", () => {
+	const label = (rule) => {
+		const offer = T.ruleOffer({ id: "1", kind: "approval", tool: "bash", arguments: { command: "./run-tests --fast" }, rule });
+		return `Always Allow ${offer.command} ${offer.place}`;
+	};
+	assert.equal(label({ words: ["./run-tests"], folder: "/w" }), "Always Allow ./run-tests Here");
+	assert.equal(label({ words: ["./run-tests"], folder: "/w", worktrees: false }), "Always Allow ./run-tests Here");
+	assert.equal(label({ words: ["./run-tests"], folder: "/w", worktrees: true }), "Always Allow ./run-tests in This Repository", "a rule kept for the main checkout covers its worktrees");
+	assert.equal(label({ words: ["./run-tests"], folder: "/w", worktrees: 1 }), "Always Allow ./run-tests Here", "only a real true widens it");
 });
 
 test("summaries for approval cards match the Inbox's", () => {

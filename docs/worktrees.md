@@ -45,6 +45,8 @@ When a conversation hands work to another agent, the sub-chat starts in the fold
 
 Continuing an earlier sub-chat keeps the folder it has. Removing a worktree moves the sub-chats working in it back with their conversation.
 
+The app shows such a sub-chat as working in its parent's worktree: **Branches** lists it under the conversation whose worktree it is, marked "parent's worktree", and its tooltip and branch menu name that conversation. A sub-chat can still be given a worktree of its own with **New Worktree…**: it starts from the parent's branch, and the sub-chat stops working in its parent's worktree.
+
 ## Removing a worktree
 
 Choose **Remove Worktree…** from the same places. The conversation goes back to the folder it worked in before.

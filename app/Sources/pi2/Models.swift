@@ -369,6 +369,9 @@ struct RuleOffer: Codable, Equatable {
     /// The rule is kept for a repository's main checkout, so it also holds in the worktrees pi² makes from it.
     var worktrees: Bool? = nil
     var command: String { words.joined(separator: " ") }
+    /// How the approval's button ends, after the command: "Here", or "in This Repository" when the rule also holds in
+    /// the repository's main checkout and its pi² worktrees. The conversation page says the same (`ruleOffer` in tools.js).
+    var place: String { worktrees == true ? "in This Repository" : "Here" }
 }
 
 /// A conversation with work in flight, as the Activity view lists it.

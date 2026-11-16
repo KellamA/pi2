@@ -36,6 +36,31 @@ struct AgentAvatar: View {
     }
 }
 
+/// The sections of an agent's page, by the short names a development build can open the page at, with
+/// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
+enum AgentSection: String, CaseIterable {
+    case profile, model, instructions, files, memory, tools, rules, extras, computer, browser, schedule, delegates
+}
+
+#if DEBUG
+extension AgentSection {
+    /// The agent and section `PI2_SHOW` asked for, until the page for that agent first opens and takes it: coming back
+    /// to the page later opens it at the top, as usual.
+    @MainActor private static var asked: (agent: String, section: AgentSection)? = {
+        guard let value = ProcessInfo.processInfo.environment["PI2_SHOW"], value.hasPrefix("agent:"),
+              let hash = value.firstIndex(of: "#"),
+              let section = AgentSection(rawValue: String(value[value.index(after: hash)...])) else { return nil }
+        return (String(value[value.index(value.startIndex, offsetBy: "agent:".count)..<hash]), section)
+    }()
+
+    @MainActor static func take(for agentID: String) -> AgentSection? {
+        guard let asked, asked.agent == agentID else { return nil }
+        self.asked = nil
+        return asked.section
+    }
+}
+#endif
+
 /// Edits one agent: what model it runs, what it is told, what it may do, and who it may hand work to.
 struct AgentEditor: View {
     @Bindable var model: AppModel
@@ -57,7 +82,12 @@ struct AgentEditor: View {
     var body: some View {
         Group {
             if let draft = Binding($draft) {
-                form(draft)
+                ScrollViewReader { proxy in
+                    form(draft)
+                        #if DEBUG
+                        .task { await scroll(to: AgentSection.take(for: agentID), with: proxy) }
+                        #endif
+                }
             } else {
                 ContentUnavailableView("Agent not found", systemImage: "person.crop.circle.badge.questionmark")
             }
@@ -98,6 +128,18 @@ struct AgentEditor: View {
         turnsText = saved?.maxTurns.map(String.init) ?? ""
     }
 
+    #if DEBUG
+    /// Brings the section `PI2_SHOW` asked for to the top of the page. Parts of the page fill in after it first appears
+    /// (models, memory, MCP servers), which moves the sections below them, so it scrolls again while the page settles.
+    private func scroll(to section: AgentSection?, with proxy: ScrollViewProxy) async {
+        guard let section else { return }
+        for delay in [100, 400, 1000, 2000] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            proxy.scrollTo(section, anchor: .top)
+        }
+    }
+    #endif
+
     @ViewBuilder
     private func form(_ draft: Binding<AgentProfile>) -> some View {
         let agent = draft.wrappedValue
@@ -116,6 +158,7 @@ struct AgentEditor: View {
                         ForEach(AgentColor.names, id: \.self) { Text($0.capitalized).tag($0) }
                     }
                 }
+                .id(AgentSection.profile)
 
                 Section("Model") {
                     Picker(selection: draft.model) {
@@ -152,6 +195,7 @@ struct AgentEditor: View {
                         }
                     }
                 }
+                .id(AgentSection.model)
 
                 Section("Instructions") {
                     TextEditor(text: draft.instructions)
@@ -159,6 +203,7 @@ struct AgentEditor: View {
                         .frame(minHeight: 110)
                         .accessibilityLabel("Instructions")
                 }
+                .id(AgentSection.instructions)
 
                 Section {
                     let files = agent.files ?? []
@@ -200,8 +245,10 @@ struct AgentEditor: View {
                 } footer: {
                     Text("The agent sees this list in every conversation and opens a file when it needs it, so files cost nothing until they are read. They are read from disk each time, so your edits are picked up. The agent can only read them, even with tools off.").formFooter()
                 }
+                .id(AgentSection.files)
 
                 AgentMemorySection(engine: engine, agentID: agentID)
+                    .id(AgentSection.memory)
 
                 Section {
                     Picker("Tool access", selection: draft.access) {
@@ -235,8 +282,10 @@ struct AgentEditor: View {
                 } footer: {
                     Text(AccessLevel.all.first { $0.id == agent.access }?.detail ?? "").formFooter()
                 }
+                .id(AgentSection.tools)
 
                 CommandRulesSection(engine: engine, agentID: agentID, folder: agent.cwd, access: agent.access)
+                    .id(AgentSection.rules)
 
                 Section {
                     Toggle("Write scripts that call its tools", isOn: Binding(get: { agent.codeMode ?? false }, set: { draft.wrappedValue.codeMode = $0 }))
@@ -263,16 +312,19 @@ struct AgentEditor: View {
                 } footer: {
                     Text("Scripts let the model chain many tool calls in one step. MCP servers add tools from other apps and services.").formFooter()
                 }
+                .id(AgentSection.extras)
 
                 ComputerUseSection(settings: Binding(
                     get: { agent.computer ?? ComputerSettings() },
                     set: { draft.wrappedValue.computer = $0 }
                 ))
+                .id(AgentSection.computer)
 
                 BrowserSection(settings: Binding(
                     get: { agent.browser ?? BrowserSettings() },
                     set: { draft.wrappedValue.browser = $0 }
                 ))
+                .id(AgentSection.browser)
 
                 Section {
                     Toggle("Can schedule its own work", isOn: Binding(
@@ -286,6 +338,7 @@ struct AgentEditor: View {
                         ? "When you ask it to do something later or regularly, such as every morning or in two hours, the agent can set a schedule for itself. You approve each one before it is set. Each run then starts a new conversation with this agent, with its tools and access, and works with no one watching. It can run at most every 15 minutes, and the agent can have 20 at most. The agent can list its schedules and cancel the ones it set, but not yours. They show in Activity, marked “set by \(agent.name)”."
                         : "Off: the agent cannot set schedules. You can still schedule it yourself in Activity.").formFooter()
                 }
+                .id(AgentSection.schedule)
 
                 Section {
                     let others = engine.agents.filter { $0.id != agentID }
@@ -310,6 +363,7 @@ struct AgentEditor: View {
                 } footer: {
                     Text("The other agent runs with its own model, instructions and tools, and reports back.").formFooter()
                 }
+                .id(AgentSection.delegates)
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
