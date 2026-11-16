@@ -20,7 +20,7 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line. macOS limits a socket's path to 103 bytes, so when the data folder's path is too long for that (only possible with `PI2_HOME`), the app and the engine both reach the socket through a short link to the data folder in `/tmp/pi2-<uid>/` (`engine/src/socket.ts` and `app/Sources/pi2/EngineSocket.swift` work it out the same way).
 
 - The app sends requests: `{"id": 1, "method": "submit", "params": {…}}`. The engine answers `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`.
-- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`, `browser`.
+- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`, `browser`.
 
 The app starts the engine if it is not running, and reconnects if it dies. A second engine on the same data folder exits at once.
 
@@ -49,6 +49,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start |
 | `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
+| `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
 
@@ -72,6 +73,8 @@ A shell that does not answer within five seconds, fails, or is one the engine do
 
 A shell command is stopped after 30 minutes unless the call that runs it passes a `timeout` in seconds; the model can pass a larger one for a command it knows takes longer, such as a full build. The tool's description says so, and so does the result of a command the limit stopped, under what it had written by then. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.
 
+A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
+
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
 
 ## Where things live
@@ -91,6 +94,7 @@ Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folde
 - pi durable is marked experimental. The engine pins version 1.5.2 exactly.
 - Approvals wait inside the running engine and are asked again after a restart. pi durable ends a waiting call after five crashes in a row.
 - Whether a subscription may be used from a third-party app is up to each provider's terms.
+- A background command's output is kept in memory only, its last 128 KB, and is gone when the engine stops. See [background.md](background.md).
 - With "Full access", commands run without asking. Tools always work inside the conversation's folder, or the app's own scratch folder when none is chosen.
 - A model on a custom endpoint is treated as text-only until it is marked as able to see pictures in the endpoint's settings. Unmarked, it gets the list of controls in computer use but not the pictures, and cannot be sent attached pictures.
 - Computer use: a click at a bare point (not on a listed control) is ignored by some apps while they are in the background; the agent is told when nothing changed. Pop-up menus and apps with little accessibility support (some games, some cross-platform apps) may not be workable.

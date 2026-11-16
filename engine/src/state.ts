@@ -151,6 +151,8 @@ export type InboxItem = {
 	 * same folder of every worktree pi² makes from that repository (rules.ts, `ruleFolder`).
 	 */
 	rule?: { words: string[]; folder: string; worktrees?: true };
+	/** For a shell command: it would be started and left running in the background (background.ts), so the approval says so. */
+	background?: true;
 	createdAt: number;
 };
 

@@ -1031,7 +1031,7 @@
 		let request;
 		if (app) request = `${who} wants to use ${app}`;
 		else if (schedule) request = schedule.request;
-		else if (pending.tool === "bash") request = `${who} wants to run a command`;
+		else if (pending.tool === "bash") request = pending.background === true ? `${who} wants to run a command in the background` : `${who} wants to run a command`;
 		else if (pending.tool === "write") request = `${who} wants to write a file`;
 		else if (pending.tool === "edit") request = `${who} wants to edit a file`;
 		else request = `${who} wants to use ${str(pending.tool)}`;
@@ -1060,6 +1060,13 @@
 				// A computer action is described in words by the app that will do it; a command is shown as written.
 				const summary = app ? str(pending.question) || T.callSummary(args) : T.callSummary(args);
 				card.appendChild(el(app ? "p" : "pre", app ? "card-summary words" : "card-summary", summary));
+				// A command that will be left running says so, under the command.
+				const keeps = T.backgroundCaption(pending);
+				if (keeps) {
+					const caption = el("p", "card-caption", keeps);
+					caption.setAttribute("data-nocopy", "");
+					card.appendChild(caption);
+				}
 			}
 			// What a file will become, so the decision can be made from the card.
 			let change = null;

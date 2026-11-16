@@ -353,6 +353,8 @@ struct InboxItem: Codable, Equatable, Identifiable {
     var when: String? = nil
     /// For a command: the rule the engine offers to make of it. Answering "rule" makes this rule; nothing else is sent.
     var rule: RuleOffer? = nil
+    /// For a command: it would be started and left running in the background, so the card says so.
+    var background: Bool? = nil
     let title: String
     let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
@@ -372,6 +374,19 @@ struct RuleOffer: Codable, Equatable {
     /// How the approval's button ends, after the command: "Here", or "in This Repository" when the rule also holds in
     /// the repository's main checkout and its pi² worktrees. The conversation page says the same (`ruleOffer` in tools.js).
     var place: String { worktrees == true ? "in This Repository" : "Here" }
+}
+
+/// A command an agent left running in the background, as the Activity view lists it.
+struct BackgroundCommand: Codable, Equatable, Identifiable {
+    /// "bg-3": what the agent and the transcript call it.
+    let id: String
+    let conversationId: Int
+    /// The conversation in the sidebar it belongs to; differs from `conversationId` for a sub-chat's command.
+    let rootConversationId: Int
+    let command: String
+    /// The folder it was started in.
+    let cwd: String
+    let startedAt: Double
 }
 
 /// A conversation with work in flight, as the Activity view lists it.

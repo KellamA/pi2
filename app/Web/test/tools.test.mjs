@@ -45,6 +45,47 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("forget", {}), "Forgot something");
 });
 
+test("a command left running in the background, and the rows that read and stop it", () => {
+	const dev = { command: "npm run dev", background: true };
+	assert.equal(line("bash", dev, "running"), "Starting npm run dev in the background…");
+	assert.equal(line("bash", dev, "done", { details: { background: { id: "bg-3", status: "running" } } }), "Started npm run dev in the background bg-3");
+	assert.equal(line("bash", dev, "failed", { details: { background: { id: "bg-3", status: "ended" } } }), "Started npm run dev in the background bg-3");
+	assert.equal(line("bash", { background: true }, "preparing"), "Starting a command in the background…");
+	assert.equal(line("bash", { command: "npm run dev", background: false }), "Ran npm run dev", "only true is the background");
+	// Which rule let it start is said as for any command.
+	assert.equal(
+		line("bash", dev, "done", { details: { background: { id: "bg-3" }, allowedBy: ["npm run dev"] } }),
+		"Started npm run dev in the background bg-3 (allowed by your rule for npm run dev)",
+	);
+	const read = { details: { action: "read", id: "bg-3", command: "npm run dev", status: "running" } };
+	assert.equal(line("background", { action: "read", id: "bg-3" }, "running"), "Reading the output of bg-3…");
+	assert.equal(line("background", { action: "read", id: "3" }, "done", read), "Read the output of npm run dev bg-3");
+	assert.equal(line("background", { action: "stop", id: "bg-3" }, "done", { details: { ...read.details, action: "stop", status: "ended" } }), "Stopped npm run dev bg-3");
+	assert.equal(line("background", { action: "stop", id: "bg-9" }, "failed"), "Stopped bg-9");
+	assert.equal(line("background", { action: "stop" }, "failed"), "Stopped a background command");
+	assert.equal(line("background", { action: "list" }), "Listed background commands");
+	assert.equal(line("background", { action: "list" }, "running"), "Listing background commands…");
+
+	const started = T.detailFor(call("bash", dev), "done", { text: "Started in the background as bg-3.", details: {} }, null);
+	assert.deepEqual(started, [{ kind: "command", label: "bash, in the background", command: "npm run dev", output: "Started in the background as bg-3.", failed: false, placeholder: "(no output)" }]);
+	assert.equal(T.detailFor(call("bash", dev), "running", null, null)[0].placeholder, "Starting…");
+	assert.equal(T.detailFor(call("bash", { command: "ls" }), "done", { text: "a" }, null)[0].label, "bash");
+	assert.deepEqual(T.detailFor(call("background", { action: "read", id: "bg-3" }), "done", { text: "bg-3: running.\nready" }, null), [{ kind: "text", label: "Output", text: "bg-3: running.\nready", failed: false }]);
+	assert.equal(T.detailFor(call("background", { action: "list" }), "done", { text: "none" }, null)[0].label, "Background commands");
+});
+
+test("an approval for a background command says it keeps running", () => {
+	const caption = T.backgroundCaption({ tool: "bash", background: true });
+	assert.match(caption, /^It is started and left running, with no time limit, until it ends, the agent or you stop it/);
+	assert.match(caption, /Activity lists it while it runs/);
+	assert.equal(T.backgroundCaption({ tool: "bash" }), "");
+	assert.equal(T.backgroundCaption({ tool: "bash", background: "true" }), "", "only the engine's own true");
+	assert.equal(T.backgroundCaption({ tool: "write", background: true }), "", "only for a command");
+	assert.equal(T.backgroundCaption(null), "");
+	// The rule it offers is the one a command that is waited for would be offered.
+	assert.equal(T.ruleOffer({ tool: "bash", background: true, rule: { words: ["npm", "run", "dev"], folder: "/x", worktrees: true } }).place, "in This Repository");
+});
+
 test("an edit counts its lines from the result's diff, or from the call", () => {
 	const args = { path: "src/a.ts", edits: [{ oldText: "a\nb", newText: "a\nc\nd" }] };
 	assert.equal(line("edit", args), `Edited a.ts +2 ${MINUS}1`);
