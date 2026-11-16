@@ -20,7 +20,7 @@ import { basename, join } from "node:path";
 
 /**
  * How long start-up waits for the login shell's answer. One that reads a slow profile is worth waiting for, but the
- * app is waiting for the engine meanwhile.
+ * app is waiting for the engine meanwhile. Tests change it for the engine with PI2_LOGIN_SHELL_TIMEOUT_SECONDS.
  */
 export const ASK_MS = 5_000;
 /**
@@ -220,6 +220,16 @@ export function askShell(shell: string, env: NodeJS.ProcessEnv = process.env, ti
 	return listenToShell(shell, env, timeoutMs, 0).late;
 }
 
+/**
+ * How long start-up waits when nothing else says: ASK_MS, or the seconds in PI2_LOGIN_SHELL_TIMEOUT_SECONDS. A test
+ * that starts an engine with a stand-in shell sets that, so a busy Mac does not make the engine go on without the
+ * stand-in's PATH (issue #84).
+ */
+function startUpWait(env: NodeJS.ProcessEnv): number {
+	const seconds = Number(env.PI2_LOGIN_SHELL_TIMEOUT_SECONDS);
+	return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : ASK_MS;
+}
+
 /** A login shell that missed start-up's wait and is still listened to. */
 export interface StillListening {
 	/** Settles once the shell has answered and its PATH is taken, or it has failed or been stopped. Never rejects. */
@@ -238,7 +248,7 @@ export interface StillListening {
  *
  * Never throws; says in the log what it did, without the shell's folders.
  */
-export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: NodeJS.ProcessEnv = process.env, waitMs = ASK_MS, giveUpMs = GIVE_UP_MS): Promise<StillListening | undefined> {
+export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: NodeJS.ProcessEnv = process.env, waitMs = startUpWait(env), giveUpMs = GIVE_UP_MS): Promise<StillListening | undefined> {
 	// Tests switch this off, so an engine they start runs with the PATH they gave it and reads nobody's profile.
 	if (env.PI2_LOGIN_SHELL === "off") return undefined;
 	const shell = loginShell(env);
