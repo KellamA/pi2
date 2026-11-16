@@ -1116,6 +1116,14 @@ pre.card-diff {
 	font: 11.5px var(--mono);
 }
 
+/* A long command is cut short in the rule's button, so the button still fits the card and ends with where the rule holds. */
+.card-buttons .btn code {
+	display: inline-block;
+	max-width: 22em;
+	overflow: clip;
+	text-overflow: ellipsis;
+}
+
 .btn:disabled {
 	opacity: 0.45;
 	cursor: default;
