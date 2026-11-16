@@ -31,8 +31,12 @@ function script(folder: string, name: string, body: string): string {
 	return path;
 }
 const quiet = () => {};
-/** The limit where the limit is not what is checked: only a shell that hangs would ever reach it. */
-const PATIENT_SECONDS = 120;
+/**
+ * The limit wherever the limit is not what is checked, and how long the test waits for something that will happen
+ * unless what it tests is broken: only a hang reaches it. Ten minutes, since a Mac busy enough can hold a test back
+ * for minutes.
+ */
+const PATIENT_SECONDS = 600;
 /** Whether a process is gone (a process that has ended but not been collected by its parent still counts as there). */
 function gone(pid: number): boolean {
 	try {
@@ -65,25 +69,25 @@ try {
 	const patient = PATIENT_SECONDS * 1000;
 	assert.deepEqual(await askShell(shell, { PATH: BARE }, patient), { path: `${tools}:/usr/bin:/bin` });
 
-	// Starts a child that would run for two minutes, writes down its number (all at once, by renaming the file), and
-	// waits for it. Its limit is what is checked here, so it is short. On a busy Mac the stand-in may be given up on
-	// before it has even started its child, which leaves nothing to check the stopping of; then it is asked again with
-	// twice the time, until it has.
+	// Starts a child that would run as long as the test's patience, writes down its number (all at once, by renaming
+	// the file), and waits for it. Its limit is what is checked here, so it is short. On a busy Mac the stand-in may be
+	// given up on before it has even started its child, which leaves nothing to check the stopping of; then it is asked
+	// again with twice the time, until it has.
 	const pidFile = join(scratch, "hung.pid");
-	const hung = script(join(scratch, "hung"), "bash", `sleep 120 &\necho $! > "${pidFile}.new"\nmv "${pidFile}.new" "${pidFile}"\nwait`);
+	const hung = script(join(scratch, "hung"), "bash", `sleep ${PATIENT_SECONDS} &\necho $! > "${pidFile}.new"\nmv "${pidFile}.new" "${pidFile}"\nwait`);
 	let left: number | undefined;
 	for (let limit = 2_000; left === undefined; limit *= 2) {
-		assert.ok(limit <= 32_000, "the hung stand-in started its child before it was given up on, given 32 seconds");
+		assert.ok(limit <= 128_000, "the hung stand-in started its child before it was given up on, given two minutes");
 		rmSync(pidFile, { force: true });
 		const started = Date.now();
 		const late = await askShell(hung, { PATH: BARE }, limit);
 		assert.ok("reason" in late && /did not answer/.test(late.reason), "a shell that hangs is given up on");
-		assert.ok(Date.now() - started < limit + 30_000, "without waiting for the child, which would have taken two minutes");
+		assert.ok(Date.now() - started < limit + 120_000, "without waiting for the child, which would run for ten minutes");
 		if (existsSync(pidFile)) left = Number(readFileSync(pidFile, "utf8"));
 	}
 	assert.ok(Number.isInteger(left) && left > 1, "the stand-in wrote down its child's number");
 	// Once killed, the child is collected by launchd, since its parent went with it; that takes a moment.
-	for (const deadline = Date.now() + 30_000; !gone(left) && Date.now() < deadline; ) await sleep(50);
+	for (const deadline = Date.now() + 120_000; !gone(left) && Date.now() < deadline; ) await sleep(50);
 	assert.ok(gone(left), "what the hung shell started is stopped with it");
 
 	const failed = await askShell(script(join(scratch, "failing"), "fish", "exit 3"), { PATH: BARE }, patient);
@@ -98,8 +102,8 @@ try {
 
 	// ---- Taking it as the engine's own
 
-	const limit = String(PATIENT_SECONDS);
-	let env: NodeJS.ProcessEnv = { PATH: BARE, PI2_LOGIN_SHELL: shell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: limit };
+	const patientSeconds = String(PATIENT_SECONDS);
+	let env: NodeJS.ProcessEnv = { PATH: BARE, PI2_LOGIN_SHELL: shell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: patientSeconds };
 	await adoptLoginPath(quiet, env);
 	assert.equal(env.PATH, `${tools}:${BARE}`, "the shell's folders first, then any the engine had that it did not name");
 
@@ -108,7 +112,7 @@ try {
 	assert.equal(env.PATH, BARE, "switched off, the PATH is left exactly as it was");
 
 	const usualThenBare = [...usualFolders(), ...BARE.split(":")].filter((folder, index, all) => all.indexOf(folder) === index).join(":");
-	env = { PATH: BARE, PI2_LOGIN_SHELL: join(scratch, "failing", "fish"), PI2_LOGIN_SHELL_TIMEOUT_SECONDS: limit };
+	env = { PATH: BARE, PI2_LOGIN_SHELL: join(scratch, "failing", "fish"), PI2_LOGIN_SHELL_TIMEOUT_SECONDS: patientSeconds };
 	const lines: string[] = [];
 	await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env);
 	assert.equal(env.PATH, usualThenBare, "without an answer, the usual places are added in front");
@@ -135,7 +139,7 @@ try {
 			...process.env,
 			PATH: BARE,
 			PI2_LOGIN_SHELL: shell,
-			PI2_LOGIN_SHELL_TIMEOUT_SECONDS: limit,
+			PI2_LOGIN_SHELL_TIMEOUT_SECONDS: patientSeconds,
 			PI2_HOME: home,
 			PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-shellpath",
 			PI2_DEMO_TOKENS_PER_SECOND: "1000",
@@ -147,7 +151,7 @@ try {
 		// there so that an engine that never listens fails the test instead of hanging it.
 		const socketPath = socketPathFor(home);
 		let socket!: Socket;
-		for (const deadline = Date.now() + 120_000; ; ) {
+		for (const deadline = Date.now() + patient; ; ) {
 			assert.ok(engine.exitCode === null && engine.signalCode === null, "the engine is still running");
 			try {
 				if (!existsSync(join(home, "engine.sock"))) throw new Error("no socket yet");
@@ -192,7 +196,7 @@ try {
 		const bash = async (id: number, command: string): Promise<Item> => {
 			const before = items.filter((item) => item.kind === "tool").length;
 			await call("submit", { id, text: `/bash ${command}` });
-			for (const deadline = Date.now() + 120_000; ; ) {
+			for (const deadline = Date.now() + patient; ; ) {
 				const results = items.filter((item) => item.kind === "tool");
 				if (!busy && results.length > before && items.at(-1)?.kind === "assistant") return results.at(-1)!;
 				if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${command}`);
