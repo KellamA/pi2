@@ -572,6 +572,8 @@ export function pi2Extension(host: Host): Extension {
 							arguments: call.arguments,
 							question: description,
 							...(proposal === undefined ? {} : { rule: proposal }),
+							// A command that will be left running: the approval says so, and is otherwise a command's.
+							...(call.name === "bash" && (call.arguments as { background?: unknown }).background === true ? { background: true as const } : {}),
 							createdAt: Date.now(),
 						},
 						context,

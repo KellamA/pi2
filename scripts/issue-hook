@@ -2,8 +2,9 @@
 # Claude Code hook that keeps scripts/issue honest (wired up in .claude/settings.json).
 #
 #   issue-hook edit   PreToolUse on Edit/Write/NotebookEdit: refuse to change a
-#                     file in this repository until the session has an issue in
-#                     progress for the work.
+#                     file in this repository, in any of its checkouts (the
+#                     main one or a worktree), until the session has an issue
+#                     in progress for the work.
 #   issue-hook stop   Stop: if the session left an issue marked in progress, ask
 #                     the agent once to close it or say what it is waiting on.
 #
@@ -81,15 +82,38 @@ case $mode in
 		[[ -n $file ]] || exit 0
 		cwd=$(jq -r '.cwd // empty' <<<"$input")
 		cwd=${cwd:-$PWD}
-		# In a worktree the top is the worktree's own, not the main checkout's.
-		root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || exit 0
 		[[ $file == /* ]] || file=$cwd/$file
-		file=$(physical "$file") && root=$(physical "$root/.") || exit 0
-		case $file in
-			"$root"/.git/* | "$root"/.claude/*) exit 0 ;;
-			"$root"/*) ;;
-			*) exit 0 ;; # outside the repository (memory, scratch files)
-		esac
+		file=$(physical "$file") || exit 0
+
+		# The file is judged by the checkout it is in, not by the session's. A
+		# session in a worktree can edit a file in the main checkout, and one in
+		# the main checkout a file in a worktree, which pi² and Claude Code put
+		# under the main checkout's .claude/worktrees/. So neither "outside the
+		# session's top" nor "under the session's .claude/" shows that a file is
+		# not this repository's. git is asked in the nearest folder above the
+		# file that exists, and gives nothing when that folder is in no
+		# repository (memory, scratch files) or inside a .git folder, which is
+		# also where a worktree's own git folder is.
+		dir=${file%/*}
+		until [[ -d ${dir:-/} ]]; do dir=${dir%/*}; done
+		dir=${dir:-/}
+		{ IFS= read -r top && IFS= read -r theirs; } \
+			< <(git -C "$dir" rev-parse --show-toplevel --git-common-dir 2>/dev/null) || exit 0
+		top=$(physical "$top/.") || exit 0
+		# The checkout's own .claude/ (settings, memory). A file in a worktree
+		# below it does not count as that: its top is the worktree's.
+		[[ $file == "$top"/.claude/* ]] && exit 0
+
+		# The file is in this repository when its checkout shares a git folder
+		# with the session's: the main checkout's .git, for it and for each of
+		# its worktrees. Otherwise it is another repository's, or the session is
+		# in none. git gives that folder relative to where it was asked in the
+		# main checkout and as it was recorded in a worktree, hence physical.
+		mine=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || exit 0
+		[[ $theirs == /* ]] || theirs=$dir/$theirs
+		[[ $mine == /* ]] || mine=$cwd/$mine
+		theirs=$(physical "$theirs/.") && mine=$(physical "$mine/.") || exit 0
+		[[ $theirs == "$mine" ]] || exit 0
 
 		issues=$(session_issues)
 		grep -q ' active$' <<<"$issues" && exit 0

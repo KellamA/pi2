@@ -23,11 +23,14 @@ Files git ignores (installed packages, build output, `.env` files) are not in a 
 
 In an agent's settings, under **Give each conversation its own worktree**, **Set-up command** is a shell command that puts back what a new worktree lacks, such as `npm ci` or `npm --prefix engine ci && cp ../shared.env .env`. pi² runs it once in each new worktree of that agent's conversations, right after making it: the ones made for new conversations, and ones made from the branch menu for a conversation of that agent. It does not run for a worktree of another repository than the agent's folder, since the command was written for that one.
 
-- It runs in the worktree's top folder through `/bin/bash -c`, with the same environment as the agent's own commands (including the `PATH` from your login shell). It runs without asking: you typed it, and an agent cannot change it.
+- It runs in the worktree's top folder through `/bin/bash -c`, with the same environment as the agent's own commands (including the `PATH` from your login shell) and one variable more, `PI2_RUN`, which pi² uses to know the command's processes again (see the last point). It runs without asking: you typed it, and an agent cannot change it.
 - The conversation shows it running, with what it prints as it arrives, as for a command an agent runs; then what it printed (the last 32 KB) and whether it finished or failed. A failed set-up leads with what happened ("Set-up command failed: exited with code 3"), then the command, which is the part shortened when the row is narrow. It is opened so you see why: the reason again on a line of its own, then the output in the ordinary colour, so the line that failed is easy to find.
 - A message sent while it runs waits for it, so the agent starts in a worktree that is ready. The agent is told the command ran and how it ended, with the end of its output if it failed. A failed set-up does not stop the conversation: the agent carries on, and can finish the job itself.
 - It is stopped, together with anything it started, after 15 minutes, when the worktree is removed, or when pi²'s engine stops. Stopping the agent's answer does not stop the set-up. A set-up cut off by the engine stopping is shown as cut off when the engine starts again, and is not run again.
-- If the engine crashes or is killed outright, the command is left running for the moment. The next engine stops it, with anything it started, and says so in the conversation. It stops it only if it can tell it is the same: pi² notes the command's process group and when its first process started, and checks both, because a process number is used again by other programs once it is free. Anything it cannot be sure of, such as what the command started in the background after its first process ended, is left alone, and the conversation says so with the process group's number.
+- If the engine crashes or is killed outright, the command is left running for the moment. The next engine stops it, with anything it started, and says so in the conversation. It stops only what it can tell is the same, because a process number is used again by other programs once it is free.
+  - pi² notes the command's process group and when its first process started. While that first process is still there, and started when noted, the whole group is the command's, and is stopped.
+  - Once the first process has ended, what it started in the background is known one process at a time. pi² gives each run a random value in the environment variable `PI2_RUN`, which everything the command starts inherits, and notes it too. A process in the noted group whose environment holds that value is stopped.
+  - Anything else is left alone, and the conversation says so with the process group's number. That covers a process started with the variable taken out of its environment, and the programs that come with macOS (`/bin/sh`, `sleep`, `tail`, `/usr/bin/perl`), whose environment macOS does not let another process read. Other programs, such as `node` or one you compiled yourself, can be read.
 
 ## Every conversation in its own worktree
 
@@ -55,11 +58,11 @@ Choose **Remove Worktree…** from the same places. The conversation goes back t
 - **Remove Worktree and Branch** deletes the branch too, but only if everything on it is merged. A branch with unmerged commits is kept, and pi² says so.
 - A worktree with uncommitted changes can only be removed by discarding them (**Remove and Discard Changes**). Commit them first to keep them.
 
-A worktree cannot be removed while its agent is working.
+A worktree cannot be removed while its agent is working. A command the agent left running in the background in the worktree ([background.md](background.md)) does not prevent it: the command is stopped first, and the conversation says so.
 
 ## Worktrees left behind
 
-Archiving or deleting a conversation leaves its worktree where it is, with any work in it: an archived conversation can be restored and carry on there.
+Archiving or deleting a conversation leaves its worktree where it is, with any work in it: an archived conversation can be restored and carry on there. Commands its agent left running in the background are stopped.
 
 - When you delete a conversation whose worktree has nothing uncommitted, pi² offers **Delete and Remove Worktree**. The branch is kept. A worktree with uncommitted changes is always kept.
 - **Branches** lists every worktree whose conversation was archived or deleted under **Left Behind**, with how its branch stands. **Remove…** asks the same questions as removing any other worktree: keep the branch or delete it too (only if merged), or discard uncommitted changes.

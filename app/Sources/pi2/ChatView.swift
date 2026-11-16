@@ -730,7 +730,7 @@ struct ToolCard: View {
 
     private var icon: String {
         switch call.name {
-        case "bash": "terminal"
+        case "bash", "background": "terminal"
         case "read": "doc.text"
         case "write", "edit": "pencil"
         case "write_document": "doc.richtext"

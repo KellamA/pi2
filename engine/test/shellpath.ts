@@ -118,13 +118,16 @@ try {
 	assert.equal(env.PATH, usualThenBare, "without an answer, the usual places are added in front");
 	assert.ok(lines.length === 1 && /not taken from the login shell \(fish stopped with code 3\)/.test(lines[0]!), "and the log says why");
 
-	// The limit the engine gives the shell can be set, as the engine started below needs. A hung shell is given up on
-	// whenever it is asked, so this does not depend on how busy the Mac is.
+	// How long start-up waits for the shell can be set, as the engine started below needs. A hung shell misses the wait
+	// whenever it is asked, so this does not depend on how busy the Mac is. It is then still listened to (latepath.ts
+	// checks what comes of that), so it is stopped here.
 	env = { PATH: BARE, PI2_LOGIN_SHELL: hung, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: "1" };
 	lines.length = 0;
-	await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env);
+	const listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env);
+	listening?.stop();
+	await listening?.done;
 	assert.equal(env.PATH, usualThenBare);
-	assert.ok(lines.length === 1 && /\(bash did not answer within 1 second/.test(lines[0]!), `the limit is the one given: ${lines[0]}`);
+	assert.ok(lines.length === 1 && /\(bash did not answer within 1 second/.test(lines[0]!), `the wait is the one given: ${lines[0]}`);
 	step("the engine's PATH becomes the shell's, or gains the usual places when the shell gives none");
 
 	// ---- A real engine, started the way the app starts it

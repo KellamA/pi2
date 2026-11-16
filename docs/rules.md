@@ -18,6 +18,7 @@ The code is `engine/src/rules.ts`.
 - **Anything after the words.** Options, file names, quoted text, `*.ts` and `~/x` are all fine after them.
 - **Every conversation of that agent in that folder:** new ones, sub-chats where another agent hands work to it, and scheduled runs.
 - **Only under Ask first.** With tools off or "Read files" there is no shell at all; with full access nothing asks anyway. **Always Allow bash Here** still exists, and still covers the whole shell for one conversation.
+- **The same command left running in the background.** A rule does not mind whether the agent waits for the command or starts it with `background: true` and leaves it running ([background.md](background.md)): a rule for `npm run dev` covers both. Make a rule for a server or a watcher only if you are content for the agent to start it unasked; Activity lists what is running, with a Stop button.
 
 A line with several commands joined by `&&`, `||`, `;`, `|` or line breaks runs without asking only when **every** command in it is covered by a rule, or is one of these harmless ones: `echo`, `true`, `false`, `pwd`, `cat`, `head`, `tail`, `wc`, `grep`. At least one command must be covered by a rule: `echo hi` on its own still asks.
 
@@ -30,7 +31,7 @@ pi² reads the command line itself before deciding. Anything it is not certain a
 - `$` outside single quotes: variables, `$(…)`, `$((…))`, `${…}`, `$'…'`.
 - Backticks.
 - `(` and `)`: subshells, process substitution (`<(…)`, `>(…)`), arithmetic.
-- `&` on its own (running in the background), `|&`, `;;`, `!`.
+- `&` on its own (running in the background), `|&`, `;;`, `!`. An agent that wants a command left running starts it with `background: true` instead, which a rule can cover.
 - Writing to a file: `>`, `>>`, `>|`, `<>`, `&>`, `>&file`, except onto `/dev/null`.
 - Reading from a file or a here-document: `<`, `<<`, `<<<`.
 - Bash's keywords as a command: `if`, `for`, `while`, `case`, `{ … }`, `function`, `time`, `[[ … ]]`.
