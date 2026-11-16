@@ -11,7 +11,10 @@ import { existsSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 
-/** How long a login shell gets to answer. One that reads a slow profile is worth waiting for; one that hangs is not. */
+/**
+ * How long a login shell gets to answer. One that reads a slow profile is worth waiting for; one that hangs is not.
+ * Tests change it for the engine with PI2_LOGIN_SHELL_TIMEOUT_SECONDS.
+ */
 export const ASK_MS = 5_000;
 /** Shells that take `-ilc` and hand what they start PATH as one string of folders separated by colons. */
 const KNOWN_SHELLS: ReadonlySet<string> = new Set(["zsh", "bash", "fish"]);
@@ -99,7 +102,10 @@ export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: No
 	// Tests switch this off, so an engine they start runs with the PATH they gave it and reads nobody's profile.
 	if (env.PI2_LOGIN_SHELL === "off") return;
 	const shell = loginShell(env);
-	const asked = shell === undefined ? { reason: "the account names no shell" } : await askShell(shell, env);
+	// A test that starts an engine with a stand-in shell gives it longer, so a busy Mac does not make it give up.
+	const seconds = Number(env.PI2_LOGIN_SHELL_TIMEOUT_SECONDS);
+	const limit = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : ASK_MS;
+	const asked = shell === undefined ? { reason: "the account names no shell" } : await askShell(shell, env, limit);
 	if ("path" in asked) {
 		env.PATH = folders(asked.path, env.PATH).join(":");
 		log(`PATH taken from ${basename(shell!)}: ${folders(asked.path).length} folders`);
