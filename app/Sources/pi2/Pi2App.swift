@@ -14,7 +14,8 @@ enum Selection: Hashable {
 #if DEBUG
 extension Selection {
     /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
-    /// a conversation's number or title. For taking pictures of the app; see docs/development.md.
+    /// a conversation's number or title. For taking pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the
+    /// agent's page at one of its sections, which the page reads for itself (`AgentSection`).
     init?(launch value: String?, conversations: [ConversationSummary]) {
         guard let value, !value.isEmpty else { return nil }
         switch value {
@@ -25,7 +26,7 @@ extension Selection {
         case "branches": self = .branches
         default:
             if value.hasPrefix("agent:") {
-                self = .agent(String(value.dropFirst("agent:".count)))
+                self = .agent(String(value.dropFirst("agent:".count).prefix { $0 != "#" }))
             } else if let found = conversations.first(where: { String($0.id) == value || $0.title == value }) {
                 self = .conversation(found.id)
             } else {
