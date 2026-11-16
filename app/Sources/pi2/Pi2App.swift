@@ -15,7 +15,8 @@ enum Selection: Hashable {
 extension Selection {
     /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
     /// a conversation's number or title. For taking pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the
-    /// agent's page at one of its sections, which the page reads for itself (`AgentSection`).
+    /// agent's page at one of its sections, which the page reads for itself (`AgentSection`). "settings" and what follows
+    /// it is not about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual.
     init?(launch value: String?, conversations: [ConversationSummary]) {
         guard let value, !value.isEmpty else { return nil }
         switch value {
@@ -814,11 +815,25 @@ struct LiftButtonStyle: ButtonStyle {
 private struct WindowOpener: View {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
+    #if DEBUG
+    @Environment(\.openSettings) private var openSettings
+    #endif
 
     var body: some View {
         Color.clear.onAppear {
             model.showMainWindow = { openWindow(id: "main") }
             model.engine.browser.showWindow = { openWindow(id: "browser") }
         }
+        #if DEBUG
+        // `PI2_SHOW=settings…` opens the Settings window, but not while the app is launching: a development build once
+        // overflowed its stack there, inside the Settings scene, as the first window came on screen and the scenes'
+        // phases changed (#74). So it waits until the engine has answered with the library, which is after the main
+        // window is up and has chosen what to show, then a second more, and opens Settings from a task of its own.
+        .task(id: model.engine.hasLoadedLibrary) {
+            guard model.engine.hasLoadedLibrary, SettingsLaunch.asked != nil else { return }
+            try? await Task.sleep(for: .seconds(1))
+            if !Task.isCancelled, SettingsLaunch.takeWindow() { openSettings() }
+        }
+        #endif
     }
 }

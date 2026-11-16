@@ -1,18 +1,101 @@
 import SwiftUI
 
+/// The tabs of the Settings window, by the names a development build can open it on with `PI2_SHOW=settings:<name>`
+/// (docs/development.md). In the order they appear.
+enum SettingsTab: String, CaseIterable {
+    case general, providers, tools, storage
+}
+
+/// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
+enum SettingsSection: String {
+    // General
+    case appearance, notifications, background, updates
+    // Providers
+    case subscriptions, endpoints, keys
+    // Tools
+    case servers
+    // Storage
+    case folder, backup
+}
+
+#if DEBUG
+/// The Settings window as `PI2_SHOW` asked a development build for it: "settings", "settings:<tab>" or
+/// "settings:<tab>#<section>". A tab it does not know is General, and a section the tab does not have leaves the tab
+/// at its top.
+struct SettingsLaunch {
+    var tab = SettingsTab.general
+    var section: SettingsSection?
+
+    init?(_ value: String?) {
+        guard let value, value == "settings" || value.hasPrefix("settings:") else { return nil }
+        let asked = value.dropFirst("settings:".count).split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        if let name = asked.first, let tab = SettingsTab(rawValue: String(name)) { self.tab = tab }
+        if asked.count > 1 { section = SettingsSection(rawValue: String(asked[1])) }
+    }
+
+    @MainActor static let asked = SettingsLaunch(ProcessInfo.processInfo.environment["PI2_SHOW"])
+    /// Whether the window is still to be opened, and whether the tab is still to be scrolled: each happens once, so
+    /// opening Settings again later, or coming back to the tab, shows it as usual.
+    @MainActor private static var toOpen = asked != nil
+    @MainActor private static var toScroll = asked?.section != nil
+
+    /// True the first time it is asked, when `PI2_SHOW` asked for Settings.
+    @MainActor static func takeWindow() -> Bool {
+        defer { toOpen = false }
+        return toOpen
+    }
+
+    /// Brings the section asked for to the top of `tab`'s form, if `tab` is the one asked for. Parts of a tab fill in
+    /// after it first appears (the providers, the MCP servers), which moves the sections below them, so it scrolls
+    /// again while the tab settles.
+    @MainActor static func scroll(_ tab: SettingsTab, with proxy: ScrollViewProxy) async {
+        guard toScroll, let asked, asked.tab == tab, let section = asked.section else { return }
+        toScroll = false
+        for delay in [100, 400, 1000, 2000] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            proxy.scrollTo(section, anchor: .top)
+        }
+    }
+}
+#endif
+
+extension View {
+    /// For the form of a Settings tab, whose sections carry a `SettingsSection` as their id: lets a development build
+    /// open the tab with one of them at the top.
+    func settingsPage(_ tab: SettingsTab) -> some View {
+        #if DEBUG
+        ScrollViewReader { proxy in
+            task { await SettingsLaunch.scroll(tab, with: proxy) }
+        }
+        #else
+        self
+        #endif
+    }
+}
+
 struct SettingsView: View {
     let engine: EngineClient
+    @State private var tab: SettingsTab = {
+        #if DEBUG
+        if let asked = SettingsLaunch.asked { return asked.tab }
+        #endif
+        return .general
+    }()
 
     var body: some View {
-        TabView {
+        TabView(selection: $tab) {
             GeneralSettings(home: engine.dataFolder.path)
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             ProvidersSettings(engine: engine)
                 .tabItem { Label("Providers", systemImage: "key") }
+                .tag(SettingsTab.providers)
             ToolsSettings(engine: engine)
                 .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
+                .tag(SettingsTab.tools)
             StorageSettings(engine: engine)
                 .tabItem { Label("Storage", systemImage: "externaldrive") }
+                .tag(SettingsTab.storage)
         }
         .frame(width: 660, height: 600)
     }
@@ -35,6 +118,7 @@ struct GeneralSettings: View {
             } footer: {
                 Text("pi² is designed dark first. Light follows the same palette.").formFooter()
             }
+            .id(SettingsSection.appearance)
             Section {
                 Toggle("Notify me when an agent needs me", isOn: $notify)
                     .onChange(of: notify) { _, on in
@@ -53,10 +137,14 @@ struct GeneralSettings: View {
             } footer: {
                 Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.").formFooter()
             }
+            .id(SettingsSection.notifications)
             BackgroundSettings(home: home)
+                .id(SettingsSection.background)
             UpdateSettings()
+                .id(SettingsSection.updates)
         }
         .formStyle(.grouped)
+        .settingsPage(.general)
     }
 }
 
@@ -161,6 +249,7 @@ struct ProvidersSettings: View {
             } footer: {
                 Text("Sign-in uses your existing plan. Each provider decides whether its subscription may be used from other apps; check their terms.").formFooter()
             }
+            .id(SettingsSection.subscriptions)
 
             Section {
                 ForEach(endpoints) { provider in
@@ -183,6 +272,7 @@ struct ProvidersSettings: View {
             } footer: {
                 Text("Any server that speaks the OpenAI or Anthropic API: Ollama, LM Studio, vLLM, llama.cpp, or a gateway you run.").formFooter()
             }
+            .id(SettingsSection.endpoints)
 
             Section("API keys") {
                 TextField("Search providers", text: $search)
@@ -202,8 +292,10 @@ struct ProvidersSettings: View {
                     .accessibilityElement(children: .combine)
                 }
             }
+            .id(SettingsSection.keys)
         }
         .formStyle(.grouped)
+        .settingsPage(.providers)
         .sheet(item: $keyTarget) { provider in
             KeySheet(engine: engine, provider: provider)
         }
