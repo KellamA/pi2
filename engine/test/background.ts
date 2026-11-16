@@ -348,7 +348,8 @@ try {
 	const leftBehind = await pidIn(leftFile);
 	assert.equal(
 		await client.until("its end shown", () => client.markers(a).find((text) => text.includes(leaving.bg))),
-		`Background command ${leaving.bg} finished, and what it had left running was stopped with it: sleep 600 & echo $! > '${leftFile}'; echo leaving`,
+		// The line shows the command cut to a length, and the temporary folder's path can be long.
+		`Background command ${leaving.bg} finished, and what it had left running was stopped with it: ${commandLine(`sleep 600 & echo $! > '${leftFile}'; echo leaving`)}`,
 	);
 	await client.until("what it left running is stopped", () => !alive(leftBehind), 5_000);
 	step("a command that ends by itself is shown in the transcript and told to the agent at its next request; what it left running is stopped");
