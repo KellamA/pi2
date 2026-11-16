@@ -313,7 +313,10 @@ try {
 	assert.equal(failed.isError, true);
 	assert.equal(failed.details.reason, "exited with code 3");
 	assert.match(failed.details.output, /broken-thing/);
-	assert.match(failed.text, /^The set-up command exited with code 3/);
+	assert.equal(failed.text, "Set-up command failed: exited with code 3 · echo broken-thing >&2; exit 3", "it leads with what happened, so a cut line loses the command");
+	const exported = (await client.call("conversation.export", { id: f, format: "markdown" })).text as string;
+	assert.ok(exported.includes("*Set-up command failed: exited with code 3*\n\n```sh\necho broken-thing >&2; exit 3\n```\n"), exported);
+	assert.ok(!exported.includes("Running the set-up command"), "an export shows how it ended, not its start as well");
 	assert.match(await client.bash(f, "echo still-works"), /still-works/, "the conversation works after a failed set-up");
 	await client.call("submit", { id: f, text: "/system" });
 	const told = await client.until("told of the failure", () => {

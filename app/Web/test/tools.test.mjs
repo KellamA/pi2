@@ -166,13 +166,59 @@ test("a worktree's set-up command reads as pi²'s, and says how it failed", () =
 	assert.equal(line("pi2_setup", { command: "npm ci" }, "running"), "Running the set-up command npm ci…");
 	assert.equal(line("pi2_setup", { command: "npm ci" }, "done", { text: "added 3 packages", details: { status: "done" } }), "Ran the set-up command npm ci");
 	const failed = T.describe(call("pi2_setup", { command: "npm ci" }), "failed", { text: "npm ERR!", isError: true, details: { status: "failed", reason: "exited with code 1" } }, null);
-	assert.equal(failed.title, "Ran the set-up command npm ci (exited with code 1)");
+	assert.equal(failed.title, "Set-up command failed: exited with code 1 · npm ci");
 	assert.equal(failed.glyph, "terminal");
-	const [opened] = T.detailFor(call("pi2_setup", { command: "npm ci" }), "failed", { text: "npm ERR!", isError: true }, null);
-	assert.deepEqual(opened, { kind: "command", label: "Set-up command", command: "npm ci", output: "npm ERR!", failed: true, placeholder: "(no output)" });
+	assert.deepEqual(failed.note, []);
+	const [said, opened] = T.detailFor(call("pi2_setup", { command: "npm ci" }), "failed", { text: "npm ERR!", isError: true, details: { status: "failed", reason: "exited with code 1" } }, null);
+	assert.deepEqual(said, { kind: "status", text: "The set-up command exited with code 1.", failed: true });
+	assert.deepEqual(opened, { kind: "command", label: "Set-up command", command: "npm ci", output: "npm ERR!", failed: false, placeholder: "(no output)" });
 	assert.equal(T.detailFor(call("pi2_setup", { command: "npm ci" }), "running", undefined, null)[0].placeholder, "Running…");
 	const [arriving] = T.detailFor(call("pi2_setup", { command: "npm ci" }), "running", undefined, { status: "running", output: "added 1 package\n" });
 	assert.equal(arriving.output, "added 1 package", "what it has printed so far shows while it runs");
+	assert.equal(T.detailFor(call("pi2_setup", { command: "npm ci" }), "done", { text: "added 3 packages", details: { status: "done" } }, null).length, 1, "one that finished says nothing more");
+});
+
+test("a failed set-up leads with what happened, for each way the engine says it can fail", () => {
+	const command = 'echo "fetching deps"; sleep 2; echo "npm ERR! could not resolve" >&2; npm --prefix engine ci && npm run build && cp ../shared.env .env; exit 3';
+	const output = "fetching deps\nnpm ERR! could not resolve";
+	// The reasons as engine/src/worktrees.ts words them, and the sentence the opened row starts with.
+	const reasons = [
+		["exited with code 3", "The set-up command exited with code 3."],
+		["was ended by SIGKILL", "The set-up command was ended by SIGKILL."],
+		["could not start: spawn /bin/bash ENOENT", "The set-up command could not start: spawn /bin/bash ENOENT."],
+		["did not finish within 15 minutes and was stopped", "The set-up command did not finish within 15 minutes and was stopped."],
+		["was stopped because the worktree was removed", "The set-up command was stopped because the worktree was removed."],
+		["was cut off when pi²’s engine stopped", "The set-up command was cut off when pi²’s engine stopped."],
+		["was left running when pi²’s engine stopped, and was stopped when the engine started again", "The set-up command was left running when pi²’s engine stopped, and was stopped when the engine started again."],
+		[
+			"was cut off when pi²’s engine stopped. Something it started may still be running (process group 4321), and was left alone because pi² could not be sure it is the same",
+			"The set-up command was cut off when pi²’s engine stopped. Something it started may still be running (process group 4321), and was left alone because pi² could not be sure it is the same.",
+		],
+	];
+	for (const [reason, sentence] of reasons) {
+		const result = { text: output, isError: true, details: { status: "failed", reason, command } };
+		const info = T.describe(call("pi2_setup", { command }), "failed", result, null);
+		// The reason comes first, whole, in a piece of its own; the command, which the row shortens, comes last.
+		assert.deepEqual(info.label[0], { text: "Set-up command failed: " + reason, style: "reason" }, reason);
+		assert.deepEqual(info.label.at(-1), { text: command, style: "code" }, reason);
+		assert.equal(info.title, `Set-up command failed: ${reason} · ${command}`);
+		const [said, opened] = T.detailFor(call("pi2_setup", { command }), "failed", result, null);
+		assert.deepEqual(said, { kind: "status", text: sentence, failed: true });
+		assert.equal(opened.output, output);
+		assert.equal(opened.failed, false, "its output is not all red");
+	}
+	// With no reason, or only "failed" (the engine's word when it has none), it still says it failed, once.
+	for (const details of [{ status: "failed", reason: "failed" }, { status: "failed", reason: null }, {}, null]) {
+		const result = { text: output, isError: true, details };
+		assert.equal(T.describe(call("pi2_setup", { command: "npm ci" }), "failed", result, null).title, "Set-up command failed · npm ci", JSON.stringify(details));
+		assert.equal(T.detailFor(call("pi2_setup", { command: "npm ci" }), "failed", result, null)[0].text, "The set-up command failed.");
+	}
+	// A command over several lines shows its first; a reason over several lines is kept whole, on one.
+	const lines = T.describe(call("pi2_setup", { command: "npm ci\nnpm run build" }), "failed", { details: { reason: "could not start:\n  spawn E2BIG" } }, null);
+	assert.equal(lines.title, "Set-up command failed: could not start: spawn E2BIG · npm ci …");
+	// A command an agent ran is drawn as before: its output stays red when it fails.
+	assert.equal(T.detailFor(call("bash", { command: "exit 3" }), "failed", { text: "boom", isError: true }, null)[0].failed, true);
+	assert.equal(line("bash", { command: "exit 3" }, "failed", { text: "boom", isError: true }), "Ran exit 3");
 });
 
 test("an approval for a command offers the engine's rule, and nothing else does", () => {
