@@ -545,6 +545,33 @@ try {
 		assert.match((await client.background(z, { action: "list" })).text, new RegExp(`- ${bg}: .*: was left running when pi²’s engine stopped, and was stopped when the engine started again; no unread output\\.`));
 		step("a background command left running by an engine killed outright is stopped by the next engine, with what it started, and marked");
 	}
+
+	// ---- What a command started is known by the run's marker, once the command's own first process is gone
+	{
+		// A program whose environment macOS lets another process read; `sleep` and the like it does not (docs/worktrees.md).
+		const holderFile = join(scratch, "holder.pid");
+		const leaderFile = join(scratch, "short-leader.pid");
+		const cmd = `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 600000)' '${holderFile}' & echo $$ > '${leaderFile}'; sleep 6`;
+		const { bg } = await client.start(z, cmd);
+		const [leader, holder] = [await pidIn(leaderFile), await pidIn(holderFile)];
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		// With no engine running, the command's own process ends, and what it started is left in a group without a leader.
+		for (let tries = 0; alive(leader); tries++) {
+			assert.ok(tries < 200, "the command's own process ended");
+			await sleep(100);
+		}
+		assert.ok(alive(holder), "what it started is still running");
+		engine = boot();
+		client = await Client.attach();
+		await client.call("conversation.open", { id: z });
+		assert.equal(
+			await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg} `))),
+			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
+		);
+		await client.until("what it had started is stopped", () => !alive(holder), 10_000);
+		step("what a background command started is stopped by the next engine by the run's marker, when the command's own process ended meanwhile");
+	}
 	console.log("PASS");
 } finally {
 	// A clean stop of the engine stops whatever it still has running in the background.
@@ -557,7 +584,7 @@ try {
 	for (const pid of started) {
 		try {
 			const line = execFileSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-			if (line.includes(scratch) || /^sleep 60\d$/.test(line)) process.kill(pid, "SIGKILL");
+			if (line.includes(scratch) || /^sleep (6|60\d)$/.test(line)) process.kill(pid, "SIGKILL");
 		} catch {
 			// Gone, as it should be.
 		}
