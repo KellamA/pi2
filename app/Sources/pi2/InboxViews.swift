@@ -120,7 +120,7 @@ struct InboxCard: View {
                         .foregroundStyle(Theme.tx3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                // Four choices do not fit a narrow card, such as the menu bar's, on one line; they wrap to two.
+                // Four choices do not fit a narrow card, such as the menu bar's, on one line; they wrap to two, or three.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
                         onceButton
@@ -133,6 +133,15 @@ struct InboxCard: View {
                             onceButton
                             ruleButton
                         }
+                        HStack(spacing: 8) {
+                            alwaysButton
+                            denyButton
+                        }
+                    }
+                    // A rule's button that says "in This Repository" may need a line of its own.
+                    VStack(alignment: .leading, spacing: 8) {
+                        onceButton
+                        ruleButton
                         HStack(spacing: 8) {
                             alwaysButton
                             denyButton
@@ -180,7 +189,12 @@ struct InboxCard: View {
         if item.tool == "bash", let rule = item.rule, !rule.words.isEmpty {
             let who = item.agentName ?? "This agent"
             Button { decide("rule") } label: {
-                Text("Always Allow \(Text(rule.command).font(.system(size: 12, design: .monospaced))) Here")
+                // A long command is cut in its middle, so the button still says where the rule holds.
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("Always Allow").fixedSize()
+                    Text(rule.command).font(.system(size: 12, design: .monospaced)).truncationMode(.middle)
+                    Text(rule.place).fixedSize()
+                }
             }
             .buttonStyle(.piSecondary)
             .help("\(who) may then run commands that start with “\(rule.command)” in \(engine.folderName(rule.folder))\(rule.worktrees == true ? " and the same folder of every worktree pi² makes from that repository," : "") without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent’s settings.")

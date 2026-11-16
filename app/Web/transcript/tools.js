@@ -472,12 +472,17 @@
 	 * For a command that ran without asking because of the person's rules (the engine lists them in `details.allowedBy`):
 	 * which rules, so the row does not look as if nothing checked it. Empty otherwise.
 	 */
-	/** The rule an approval for a command offers to make (`pending.rule`), as `{ words, command }`, or null. */
+	/**
+	 * The rule an approval for a command offers to make (`pending.rule`), as `{ words, command, worktrees, place }`, or
+	 * null. `place` ends the button's label: "Here", or "in This Repository" for a rule that also holds in the
+	 * repository's main checkout and its pi² worktrees, so the button says how wide the rule is without hovering.
+	 */
 	function ruleOffer(pending) {
 		if (!isObject(pending) || pending.tool !== "bash" || !isObject(pending.rule) || !Array.isArray(pending.rule.words)) return null;
 		const words = pending.rule.words;
 		if (words.length === 0 || !words.every((word) => typeof word === "string" && word !== "")) return null;
-		return { words, command: words.join(" "), worktrees: pending.rule.worktrees === true };
+		const worktrees = pending.rule.worktrees === true;
+		return { words, command: words.join(" "), worktrees, place: worktrees ? "in This Repository" : "Here" };
 	}
 
 	function ruleNote(details) {
