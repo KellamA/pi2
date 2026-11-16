@@ -80,8 +80,10 @@ On a Mac where pi² is in real use, give the copy its own bundle id as well and 
 
 A development build (not a release build) also reads two variables that help when taking pictures of the app or checking it by script:
 
-- `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title.
+- `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `rules` (commands it may run without asking), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
 - `PI2_DRAW_WHEN_HIDDEN=1` keeps the transcript drawing while the window is covered or the screen is locked. WebKit normally stops drawing a page nobody can see, which leaves it blank in a window capture. This uses a WebKit switch that is not public, which is why it is left out of release builds.
+
+To check a page without clicking, launch a throwaway copy with both (`open -n … --env PI2_SHOW=agent:<id>#rules --env PI2_DRAW_WHEN_HIDDEN=1`) and capture its window with `screencapture -l <window id>`, taking the id from `CGWindowListCopyWindowInfo` for the copy's process. Check first that screen capture is already allowed (`CGPreflightScreenCaptureAccess()`), since capturing without it makes macOS ask.
 
 The scripted demo model answers `/bash <command>`, `/timeout <seconds> <command>` (bash with a `timeout`), `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider.
 
