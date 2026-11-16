@@ -124,6 +124,9 @@ final class EngineClient {
     func openConversation(_ id: Int) {
         guard open[id] == nil else { return }
         open[id] = ConversationData()
+        // Panes restored at launch appear before the app has connected. Connecting asks for every open conversation,
+        // so one opened before then waits for that rather than failing.
+        guard status == .connected else { return }
         perform("conversation.open", ["id": id])
     }
 
