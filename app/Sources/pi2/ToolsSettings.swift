@@ -37,8 +37,10 @@ struct ToolsSettings: View {
             } footer: {
                 Text("A server's tools go to the agents you tick it for, under Extra tools in the agent's settings. With “Ask first”, tools a server does not mark as read-only wait for your approval. A local server is a program that runs on this Mac with your permissions; only add ones you trust.").formFooter()
             }
+            .id(SettingsSection.servers)
         }
         .formStyle(.grouped)
+        .settingsPage(.tools)
         .sheet(isPresented: $adding) { McpServerSheet(engine: engine) }
     }
 
