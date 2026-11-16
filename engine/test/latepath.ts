@@ -47,9 +47,15 @@ function standIn(folder: string, name: string, body: string): string {
 	spawnSync(path, ["first-run"]);
 	return path;
 }
+/**
+ * Shell lines that wait for the file `gate`. They give up once the scratch folder is gone: if a check fails while an
+ * engine is still in its first five seconds, stopping that engine kills it outright, before it can stop its shell,
+ * and the stand-in must not be left waiting for ever.
+ */
+const waitFor = (gate: string) => `while [ ! -e "${gate}" ]; do [ -d "${scratch}" ] || exit 1; sleep 0.05; done`;
 /** A shell that answers with `path`, but not before the file `gate` is there. */
 function gated(folder: string, gate: string, path: string): string {
-	return standIn(folder, "zsh", `while [ ! -e "${gate}" ]; do sleep 0.05; done\necho "Welcome back"\nPATH="${path}"\nexport PATH\neval "$2"`);
+	return standIn(folder, "zsh", `${waitFor(gate)}\necho "Welcome back"\nPATH="${path}"\nexport PATH\neval "$2"`);
 }
 /** A shell that never answers: it starts a program of its own, says in `pidFile` which, and waits for it. */
 function hanging(folder: string, pidFile: string): string {
@@ -194,7 +200,7 @@ try {
 	// ---- A shell that fails late, and one that cannot be started at all
 
 	const failGate = join(scratch, "fail-gate");
-	env = { PATH: BARE, PI2_LOGIN_SHELL: standIn(join(scratch, "fails-late"), "fish", `while [ ! -e "${failGate}" ]; do sleep 0.05; done\nexit 3`) };
+	env = { PATH: BARE, PI2_LOGIN_SHELL: standIn(join(scratch, "fails-late"), "fish", `${waitFor(failGate)}\nexit 3`) };
 	lines = [];
 	listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, 60_000);
 	assert.ok(listening !== undefined);
