@@ -58,7 +58,7 @@ struct InboxCard: View {
             return title.isEmpty ? "\(who) wants to schedule work" : "\(who) wants to schedule “\(title)”"
         }
         return switch item.tool {
-        case "bash": "\(who) wants to run a command"
+        case "bash": item.background == true ? "\(who) wants to run a command in the background" : "\(who) wants to run a command"
         case "write": "\(who) wants to write a file"
         case "edit": "\(who) wants to edit a file"
         case "write_document": "\(who) wants to write \(documentKind)"
@@ -113,6 +113,13 @@ struct InboxCard: View {
                     .frame(maxHeight: 140)
                     .background(Color.black.opacity(0.12), in: .rect(cornerRadius: 7))
                     .accessibilityLabel(longText.label)
+                }
+                if item.tool == "bash", item.background == true {
+                    // The same words as the conversation page's card (`backgroundCaption` in tools.js).
+                    Text("It is started and left running, with no time limit, until it ends, the agent or you stop it, this conversation is archived, or pi² stops. Activity lists it while it runs, with a Stop button.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.tx3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if isSchedule {
                     Text("Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it in Activity.")

@@ -9,7 +9,8 @@
 // turns, the wait has run out and the output is certainly in the pipe, however slow the machine is (issue #60).
 //
 // It also checks that a command's standard input is closed (issue #45): `cat` and `read` with nothing to read return at
-// once, instead of waiting for input that never comes. And that the `bash` agents get says it has a time limit.
+// once, instead of waiting for input that never comes. And that the `bash` agents get says it has a time limit, and
+// that it can leave a command running in the background.
 
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
@@ -86,9 +87,14 @@ try {
 	assert.match(bash.description, /Standard input is closed/);
 	assert.doesNotMatch(bash.description, /Optionally provide a timeout/);
 	assert.match(JSON.stringify(bash.parameters), /Timeout in seconds\. Default 1800 \(30 minutes\); pass a larger one/);
+	// And about leaving one running: how to, that the limit is not for it, and where its output is read.
+	assert.match(bash.description, /With `background: true` the command is started and left running/);
+	assert.match(bash.description, /A background command has no time limit unless you pass `timeout`/);
+	assert.match(bash.description, /the background tool reads its later output/);
+	assert.match(JSON.stringify(bash.parameters), /"background":\{[^}]*"type":"boolean"/);
 } finally {
 	rmSync(folder, { recursive: true, force: true });
 }
 
-console.log("exec: ok (output kept when the engine is busy as a command exits; standard input closed; bash tells of its time limit)");
+console.log("exec: ok (output kept when the engine is busy as a command exits; standard input closed; bash tells of its time limit and of running in the background)");
 process.exit(0); // the background sleep above still holds a pipe

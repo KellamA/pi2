@@ -5,10 +5,14 @@
 // call without `timeout` gets the default limit, and the model is told about the limit in the tool's description and
 // when it stops a command. Standard input is already closed: pi durable starts every command with it on /dev/null
 // (engine/test/exec.ts checks), so a command that asks a question gets no answer and fails at once.
+//
+// The same wrap gives `bash` its other way of running a command: with `background: true` it is started and left
+// running, with no time limit of its own (background.ts).
 
 import { wrapTool } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
-import { num, obj, opt, str } from "@earendil-works/pi-schema";
+import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
+import { BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, startInBackground } from "./background.ts";
 import type { Feature } from "./features.ts";
 
 /** The limit for a command whose call names none: 30 minutes. Tests shorten it with PI2_COMMAND_TIMEOUT_SECONDS. */
@@ -29,12 +33,14 @@ const LIMIT = duration(DEFAULT_COMMAND_TIMEOUT_SECONDS);
 const DESCRIPTION =
 	`${createBashTool().description.replace(/\s*Optionally provide a timeout in seconds\.\s*$/, "")} ` +
 	`A command is stopped after ${LIMIT} unless you pass \`timeout\`; for a command you know takes longer, pass a larger one. ` +
-	"Standard input is closed, so a command that asks a question fails instead of waiting for an answer: give answers as options or through a pipe.";
+	"Standard input is closed, so a command that asks a question fails instead of waiting for an answer: give answers as options or through a pipe. " +
+	BACKGROUND_DESCRIPTION;
 
 const PARAMETERS = obj(
 	{
 		command: str({ description: "Bash command to execute" }),
-		timeout: opt(num({ description: `Timeout in seconds. Default ${DEFAULT_COMMAND_TIMEOUT_SECONDS} (${LIMIT}); pass a larger one for a command known to take longer.` })),
+		timeout: opt(num({ description: `Timeout in seconds. Default ${DEFAULT_COMMAND_TIMEOUT_SECONDS} (${LIMIT}); pass a larger one for a command known to take longer. A background command has none unless one is passed.` })),
+		background: opt(bool({ description: BACKGROUND_PARAMETER })),
 	},
 	{ open: true },
 );
@@ -50,6 +56,9 @@ const withTimeLimit = wrapTool(createBashTool(), (bash) => ({
 	description: DESCRIPTION,
 	parameters: PARAMETERS,
 	execute: async (args, api, context) => {
+		// Left running rather than waited for, so the default limit is not for it.
+		// (The library's own type for the arguments does not know the parameter this wrap adds.)
+		if ((args as { background?: unknown }).background === true) return await startInBackground(args, api, context);
 		try {
 			return await bash.execute({ ...args, timeout: args.timeout ?? DEFAULT_COMMAND_TIMEOUT_SECONDS }, api, context);
 		} catch (error) {

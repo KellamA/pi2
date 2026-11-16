@@ -23,6 +23,7 @@ import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
 import type { MadeWorktree } from "./rules.ts";
 import type { AgentProfile } from "./state.ts";
+import { stopCommandsIn } from "./background.ts";
 
 /** A worktree pi² made for a conversation. */
 export type Worktree = {
@@ -794,11 +795,12 @@ export const worktrees: Feature = (_host, engine) => {
 		if (changing.has(id)) throw new Error("The worktree is already being changed");
 		changing.add(id);
 		try {
-			// A set-up still running would go on writing into the folder being removed.
+			// A set-up still running would go on writing into the folder being removed, and so would a command the agent
+			// left running in the background there.
 			const stopSetup = async () => {
 				const setup = setups.get(id);
 				setup?.stop("was stopped because the worktree was removed");
-				await setup?.settled;
+				await Promise.all([setup?.settled, stopCommandsIn(own.path, "was stopped because its worktree was removed")]);
 			};
 			// Sub-chats working in the worktree go back with the conversation, so continuing one does not run in a folder that is gone.
 			const joined: number[] = [];

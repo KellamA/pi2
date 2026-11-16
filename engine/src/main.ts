@@ -34,6 +34,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
+import { BACKGROUND_ENTRY, backgroundMarker, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
@@ -384,6 +385,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
+	if (entry.kind === BACKGROUND_ENTRY) return { id, kind: "marker", text: backgroundMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -579,7 +581,8 @@ async function archiveConversation(id: number): Promise<void> {
 /** Archive what has gone unused for as long as the person chose. Conversations that are working or waiting are left. */
 async function sweepArchive(): Promise<void> {
 	const waiting = new Set(inbox.list().map((item) => item.conversationId));
-	const active = (id: number) => working.has(id) || busyConversations.has(id) || waiting.has(id);
+	// One with a command still running in the background is in use too: archiving it would stop the command.
+	const active = (id: number) => working.has(id) || busyConversations.has(id) || waiting.has(id) || hasRunningCommands(id);
 	for (const id of dueForArchive(library.conversations, Date.now(), settings.autoArchiveDays ?? null, active)) {
 		await archiveConversation(id).catch((error) => log("could not archive conversation", id, error instanceof Error ? error.message : ""));
 	}
@@ -1248,6 +1251,7 @@ libraryWatch.start(async (call) => {
 	if (now !== wasPutAway) {
 		wasPutAway = now;
 		for (const client of clients) for (const subscription of client.subscriptions.values()) subscription.push();
+		for (const feature of host.features) feature.putAwayChanged?.();
 	}
 });
 
@@ -1591,6 +1595,8 @@ async function stop(): Promise<void> {
 	for (const client of clients) client.socket.destroy();
 	clearTimeout(scheduleTimer);
 	clearTimeout(usageTimer);
+	// What features left running (background commands) goes with the engine.
+	await Promise.all(host.features.map((feature) => feature.stopping?.().catch((error) => log("a feature did not stop cleanly:", error instanceof Error ? error.message : error))));
 	await mcp.stop();
 	await harness.close(context);
 	rmSync(socketPath, { force: true });

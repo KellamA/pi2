@@ -333,7 +333,28 @@
 			case "powershell": {
 				glyph = "terminal";
 				const command = firstLine(args.command);
+				if (args.background === true) {
+					// Started and left running: the row says so, and which command it became, for the rows that read and stop it.
+					const started = isObject(details) && isObject(details.background) ? str(details.background.id) : "";
+					label = command ? [t(active ? "Starting " : "Started "), code(command), t(" in the background" + dots)] : [t((active ? "Starting" : "Started") + " a command in the background" + dots)];
+					stats = started;
+					break;
+				}
 				label = command ? [t(active ? "Running " : "Ran "), code(command), t(dots)] : [t(active ? "Running a command" + ELLIPSIS : "Ran a command")];
+				break;
+			}
+			case "background": {
+				// Listing, reading and stopping the commands a conversation left running. The engine says which command an id
+				// stands for once it has answered; until then the row names the id.
+				glyph = "terminal";
+				const action = str(args.action).trim().toLowerCase();
+				const id = str(args.id).trim();
+				const command = isObject(details) ? firstLine(details.command) : "";
+				const what = command ? [code(command)] : [t(id || "a background command")];
+				if (action === "read") label = [t(active ? "Reading the output of " : "Read the output of "), ...what, t(dots)];
+				else if (action === "stop") label = [t(active ? "Stopping " : "Stopped "), ...what, t(dots)];
+				else label = [t(active ? "Listing background commands" + ELLIPSIS : "Listed background commands")];
+				if (command && id) stats = isObject(details) && str(details.id) ? str(details.id) : id;
 				break;
 			}
 			case "pi2_setup":
@@ -506,6 +527,15 @@
 		return { words, command: words.join(" "), worktrees, place: worktrees ? "in This Repository" : "Here" };
 	}
 
+	/**
+	 * For an approval of a command that would be left running in the background (`pending.background`): the words under
+	 * the command that say so, as the Inbox's card says them. Empty for any other approval.
+	 */
+	function backgroundCaption(pending) {
+		if (!isObject(pending) || pending.tool !== "bash" || pending.background !== true) return "";
+		return "It is started and left running, with no time limit, until it ends, the agent or you stop it, this conversation is archived, or pi" + String.fromCharCode(0xb2) + " stops. Activity lists it while it runs, with a Stop button.";
+	}
+
 	function ruleNote(details) {
 		const rules = isObject(details) && Array.isArray(details.allowedBy) ? details.allowedBy.filter((rule) => typeof rule === "string" && rule !== "") : [];
 		if (rules.length === 0) return [];
@@ -544,7 +574,18 @@
 		switch (str(call.name)) {
 			case "bash":
 			case "powershell":
-				sections.push({ kind: "command", label: str(call.name), command: str(args.command), output, failed, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
+				sections.push({
+					kind: "command",
+					label: args.background === true ? str(call.name) + ", in the background" : str(call.name),
+					command: str(args.command),
+					output,
+					failed,
+					placeholder: active ? (args.background === true ? "Starting" : "Running") + ELLIPSIS : result ? "(no output)" : "",
+				});
+				break;
+			case "background":
+				// What the engine answered: how the command stands, then what it printed.
+				outputSection(str(args.action).trim().toLowerCase() === "list" ? "Background commands" : "Output");
 				break;
 			case "pi2_setup":
 				// A failed one says how first, on a line of its own. Its output keeps the ordinary colour: that line and the
@@ -681,6 +722,7 @@
 		diffText,
 		describe,
 		ruleOffer,
+		backgroundCaption,
 		detailFor,
 		subagentAnswer,
 		scheduleApproval,

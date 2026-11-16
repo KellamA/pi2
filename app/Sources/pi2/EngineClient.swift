@@ -47,6 +47,8 @@ final class EngineClient {
     }
     private(set) var hasLoadedLibrary = false
     private(set) var activity: [ActivityRun] = []
+    /// Commands agents left running in the background, oldest first.
+    private(set) var backgroundCommands: [BackgroundCommand] = []
     private(set) var schedules: [Schedule] = []
     private(set) var recovery: RecoveryReport?
     private(set) var usage: UsageSummary?
@@ -311,6 +313,7 @@ final class EngineClient {
     }
     private struct InboxEvent: Decodable { let items: [InboxItem] }
     private struct ActivityEvent: Decodable { let runs: [ActivityRun] }
+    private struct BackgroundEvent: Decodable { let commands: [BackgroundCommand] }
     private struct SchedulesEvent: Decodable { let schedules: [Schedule] }
     private struct RecoveryEvent: Decodable { let recovery: RecoveryReport? }
     private struct McpEvent: Decodable { let servers: [McpServer] }
@@ -351,6 +354,8 @@ final class EngineClient {
                 inbox = try decoder.decode(InboxEvent.self, from: line).items
             case "activity":
                 activity = try decoder.decode(ActivityEvent.self, from: line).runs
+            case "background":
+                backgroundCommands = try decoder.decode(BackgroundEvent.self, from: line).commands
             case "schedules":
                 schedules = try decoder.decode(SchedulesEvent.self, from: line).schedules
             case "recovery":

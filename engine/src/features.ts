@@ -10,6 +10,7 @@ import type { Host } from "./extensions.ts";
 import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
+import { background } from "./background.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
@@ -64,8 +65,12 @@ export type FeatureParts = {
 	created?(id: number, agent: AgentProfile): Promise<void>;
 	/** A conversation's folder was changed by the person. */
 	folderChanged?(id: number): void;
+	/** Which conversations are archived or deleted has changed; `engine.library()` already says so. */
+	putAwayChanged?(): void;
+	/** The engine is stopping cleanly: stop what this feature started. The app waits a few seconds for the engine, so be quick. */
+	stopping?(): Promise<void>;
 };
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands];
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, background];

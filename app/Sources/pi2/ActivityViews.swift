@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// What is running, what the engine recovered, and what is scheduled.
+/// What is running, what agents left running in the background, what the engine recovered, and what is scheduled.
 struct ActivityView: View {
     @Bindable var model: AppModel
     @State private var editing: Schedule?
@@ -12,6 +12,7 @@ struct ActivityView: View {
             VStack(alignment: .leading, spacing: 22) {
                 if let recovery = engine.recovery { recoveryBanner(recovery) }
                 running
+                if !engine.backgroundCommands.isEmpty { background }
                 scheduled
             }
             .padding(.horizontal, 28).padding(.vertical, 22)
@@ -20,7 +21,7 @@ struct ActivityView: View {
         }
         .background(Theme.window)
         .navigationTitle("Activity")
-        .navigationSubtitle(engine.activity.isEmpty ? "Nothing running" : "\(engine.activity.count) running")
+        .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItem {
                 Button("Stop All", systemImage: "stop.fill") {
@@ -33,6 +34,15 @@ struct ActivityView: View {
         }
         .sheet(item: $editing) { ScheduleSheet(engine: engine, original: $0) }
         .sheet(isPresented: $creating) { ScheduleSheet(engine: engine, original: nil) }
+    }
+
+    /// "2 running · 1 background command": the agents at work, then what they left running.
+    private var subtitle: String {
+        let commands = engine.backgroundCommands.count
+        let left = commands == 0 ? nil : "\(commands) background command\(commands == 1 ? "" : "s")"
+        let working = engine.activity.isEmpty ? nil : "\(engine.activity.count) running"
+        let parts = [working, left].compactMap(\.self)
+        return parts.isEmpty ? "Nothing running" : parts.joined(separator: " · ")
     }
 
     private func recoveryBanner(_ recovery: RecoveryReport) -> some View {
@@ -77,6 +87,19 @@ struct ActivityView: View {
                 ForEach(engine.activity.filter { $0.parent != nil && $0.rootConversationId == run.conversationId }) { child in
                     RunRow(model: model, run: child, indented: true)
                 }
+            }
+        }
+    }
+
+    /// Commands agents started with `background: true` and left running: each with its conversation, and a way to stop it.
+    private var background: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Background commands").font(.headline)
+            Text("Commands agents started and left running. Each runs until it ends, its agent or you stop it, its conversation is archived, or pi² stops.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(engine.backgroundCommands) { command in
+                BackgroundCommandRow(model: model, command: command)
             }
         }
     }
@@ -174,6 +197,73 @@ private struct RunRow: View {
 
     private func elapsed(until now: Date) -> String {
         let seconds = max(0, Int(now.timeIntervalSince1970 - run.since / 1000))
+        if seconds >= 3600 { return "\(seconds / 3600)h \(seconds % 3600 / 60)m" }
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// One command left running in the background: what it is, whose it is, for how long, and Stop.
+private struct BackgroundCommandRow: View {
+    let model: AppModel
+    let command: BackgroundCommand
+    /// Set when Stop was pressed: the row stays until the engine says the command is gone, which can take a few seconds.
+    @State private var stopping = false
+    private var engine: EngineClient { model.engine }
+
+    /// The conversation that started it: a sub-chat's command names the sub-chat, and opens the conversation it belongs to.
+    private var conversation: ConversationSummary? { engine.conversations.first { $0.id == command.conversationId } }
+
+    private var source: String {
+        let title = conversation?.title ?? ""
+        let agent = engine.agent(conversation?.agentId)?.name
+        return [title.isEmpty ? "New conversation" : title, agent, engine.folderName(command.cwd)].compactMap(\.self).joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "terminal")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.tx2)
+                .frame(width: 22, height: 22)
+                .background(Theme.line2.opacity(0.5), in: .rect(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(command.command.split(whereSeparator: \.isNewline).joined(separator: " "))
+                    .font(Theme.mono)
+                    .lineLimit(1).truncationMode(.tail)
+                    .textSelection(.enabled)
+                    .help(command.command)
+                Text(source).font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+            }
+            // The command takes the room the rest of the row leaves, and is what gets cut short: the id, the time and the
+            // buttons keep their size.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Tag(stopping ? "stopping" : command.id, stopping ? .warn : .neutral)
+                .fixedSize()
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(elapsed(until: context.date)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.tx2)
+                    .frame(minWidth: 52, alignment: .trailing)
+            }
+            .fixedSize()
+            Button("Open") { model.selection = .conversation(command.rootConversationId) }
+                .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
+                .fixedSize()
+                .help("Open the conversation that started it")
+            Button("Stop", systemImage: "stop.fill") {
+                stopping = true
+                engine.perform("background.stop", ["id": command.id])
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(PiButtonStyle(kind: .danger, compact: true))
+            .disabled(stopping)
+            .fixedSize()
+            .help("Stop this command and everything it started")
+        }
+        .padding(10)
+        .panel()
+    }
+
+    private func elapsed(until now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince1970 - command.startedAt / 1000))
         if seconds >= 3600 { return "\(seconds / 3600)h \(seconds % 3600 / 60)m" }
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
