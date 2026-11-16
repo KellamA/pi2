@@ -23,8 +23,14 @@ git_ -C "$repo" commit -q --allow-empty -m init
 echo x >"$repo/src/a.txt"
 ln -s "$repo" "$R/link"            # the same repository reached through a link
 git_ -C "$repo" worktree add -q "$R/wt"
+inner=$repo/.claude/worktrees/in    # a worktree where pi² and Claude Code put theirs
+git_ -C "$repo" worktree add -q "$inner"
+mkdir -p "$inner/src" "$inner/.claude"
+echo x >"$inner/src/a.txt"
 mkdir -p "$R/my repo/src"
 git_ init -q "$R/my repo"
+mkdir -p "$repo/nested/src"         # another repository, inside this one's folder
+git_ init -q "$repo/nested"
 
 : >"$R/none.jsonl"
 printf '%s\n' '{"text":"[pi2-issue] working on #7 https://example.invalid/7"}' >"$R/active.jsonl"
@@ -109,7 +115,56 @@ expect deny ".claude/ then .. back into the repository" "$R/link" "$R/link/.clau
 expect deny "worktree, no issue" "$R/wt" "$R/wt/src/a.txt" "$none"
 expect allow "worktree, issue in progress" "$R/wt" "$R/wt/src/a.txt" "$active"
 expect allow "worktree, its .claude/" "$R/wt" "$R/wt/.claude/x.md" "$none"
-expect allow "worktree session, file in the main checkout (not its repository top)" "$R/wt" "$repo/src/a.txt" "$none"
+expect deny "worktree under .claude/worktrees, no issue" "$inner" "$inner/src/a.txt" "$none"
+expect allow "worktree under .claude/worktrees, issue in progress" "$inner" "$inner/src/a.txt" "$active"
+expect allow "worktree under .claude/worktrees, its .claude/" "$inner" "$inner/.claude/x.md" "$none"
+
+# A file is judged by the checkout it is in, whichever one the session is in.
+# From a worktree to the main checkout:
+for from in "$R/wt" "$inner" "$R/link/.claude/worktrees/in" "$T/wt"; do
+	expect deny "session in $from, file in the main checkout" "$from" "$repo/src/a.txt" "$none"
+	expect deny "session in $from, new file in the main checkout" "$from" "$repo/new/deeper/b.txt" "$none"
+	expect allow "session in $from, file in the main checkout, issue in progress" "$from" "$repo/src/a.txt" "$active"
+	expect paused "session in $from, file in the main checkout, issue paused" "$from" "$repo/src/a.txt" "$paused"
+	expect allow "session in $from, the main checkout's .git/" "$from" "$repo/.git/info/exclude" "$none"
+	expect allow "session in $from, the main checkout's .claude/" "$from" "$repo/.claude/settings.local.json" "$none"
+	expect allow "session in $from, outside any repository" "$from" "$R/elsewhere/x.txt" "$none"
+	expect allow "session in $from, another repository" "$from" "$R/my repo/src/a.txt" "$none"
+done
+expect deny "worktree session, main checkout through the link" "$R/wt" "$R/link/src/a.txt" "$none"
+expect deny "worktree session, relative path into the main checkout" "$R/wt" "../repo/src/a.txt" "$none"
+expect deny "worktree under .claude/worktrees, relative path up into the main checkout" "$inner" "../../../src/a.txt" "$none"
+expect allow "worktree under .claude/worktrees, relative path up into the main checkout's .claude/" "$inner" "../../x.md" "$none"
+
+# From the main checkout to a worktree, also one under its own .claude/:
+for base in "$repo" "$R/link" "$repo/src"; do
+	expect deny "session in $base, file in a worktree under .claude/worktrees" "$base" "$inner/src/a.txt" "$none"
+	expect deny "session in $base, new file in that worktree" "$base" "$inner/new/deeper/b.txt" "$none"
+	expect deny "session in $base, that worktree through the link" "$base" "$R/link/.claude/worktrees/in/src/a.txt" "$none"
+	expect allow "session in $base, file in that worktree, issue in progress" "$base" "$inner/src/a.txt" "$active"
+	expect paused "session in $base, file in that worktree, issue paused" "$base" "$inner/src/a.txt" "$paused"
+	expect allow "session in $base, that worktree's own .claude/" "$base" "$inner/.claude/x.md" "$none"
+	expect allow "session in $base, that worktree's own git folder" "$base" "$repo/.git/worktrees/in/info/exclude" "$none"
+	expect deny "session in $base, file in a worktree elsewhere" "$base" "$R/wt/src/a.txt" "$none"
+	expect allow "session in $base, .claude/worktrees but in no worktree" "$base" "$repo/.claude/worktrees/x.md" "$none"
+	expect allow "session in $base, .claude/worktrees, a folder that is no worktree" "$base" "$repo/.claude/worktrees/none/src/a.txt" "$none"
+done
+expect deny "relative path into a worktree under .claude/worktrees" "$repo" ".claude/worktrees/in/src/a.txt" "$none"
+expect deny ".claude/ then .. into a worktree's files" "$repo" "$inner/.claude/../src/a.txt" "$none"
+
+# From one worktree to another.
+expect deny "worktree session, file in another worktree" "$R/wt" "$inner/src/a.txt" "$none"
+expect deny "worktree session, file in another worktree, the other way" "$inner" "$R/wt/src/a.txt" "$none"
+expect allow "worktree session, file in another worktree, issue in progress" "$R/wt" "$inner/src/a.txt" "$active"
+expect allow "worktree session, another worktree's .claude/" "$R/wt" "$inner/.claude/x.md" "$none"
+
+# A different repository is not this one's business, wherever it is.
+expect allow "another repository" "$repo" "$R/my repo/src/a.txt" "$none"
+expect allow "another repository, new folders" "$repo" "$R/my repo/new/deeper/b.txt" "$none"
+expect allow "another repository inside this one's folder" "$repo" "$repo/nested/src/a.txt" "$none"
+expect allow "session in another repository, file in this one" "$R/my repo" "$repo/src/a.txt" "$none"
+expect deny "session in the repository inside, its own file" "$repo/nested" "$repo/nested/src/a.txt" "$none"
+expect allow "session in the repository inside, file in the one around it" "$repo/nested" "$repo/src/a.txt" "$none"
 
 # A path with a space.
 expect deny "space in path, no issue" "$R/my repo" "$R/my repo/src/a b.txt" "$none"
