@@ -51,6 +51,7 @@ struct StorageSettings: View {
             } footer: {
                 Text("Conversations, agents, schedules and settings live here in one database. Keys and sign-ins live in your macOS Keychain.").formFooter()
             }
+            .id(SettingsSection.folder)
             Section {
                 Button(working ? "Working…" : "Back Up Now…") { backUp() }.disabled(working)
                 Button("Restore From Backup…") {
@@ -65,8 +66,10 @@ struct StorageSettings: View {
             } footer: {
                 Text("A backup is a folder with a copy of everything except keys and sign-ins. It can be made while agents are working. Restoring replaces what is here now; the replaced data is moved aside inside the data folder, not deleted.").formFooter()
             }
+            .id(SettingsSection.backup)
         }
         .formStyle(.grouped)
+        .settingsPage(.storage)
         .confirmationDialog("Replace everything with this backup?", isPresented: Binding(get: { restoreFrom != nil }, set: { if !$0 { restoreFrom = nil } })) {
             Button("Restore", role: .destructive) { if let folder = restoreFrom { restore(folder) } }
             Button("Cancel", role: .cancel) { restoreFrom = nil }

@@ -1568,8 +1568,9 @@ const server = createServer((socket) => {
 	socket.on("close", drop);
 	socket.on("error", drop);
 });
-// Nothing an agent or an MCP server starts may run before the PATH is the person's own.
-await pathReady;
+// Nothing an agent or an MCP server starts may run before the PATH is the person's own, or, if their shell is too slow
+// to wait for, has the usual folders. The shell is then still listened to, and its PATH taken when it comes.
+const slowShell = await pathReady;
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished
@@ -1589,6 +1590,7 @@ let stopping = false;
 async function stop(): Promise<void> {
 	if (stopping) return;
 	stopping = true;
+	slowShell?.stop();
 	server.close();
 	for (const client of clients) client.socket.destroy();
 	clearTimeout(scheduleTimer);

@@ -47,7 +47,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/schedules.ts` | Schedule rules and next-run times |
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
-| `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start |
+| `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
 | `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/mcp.ts` | MCP servers and their tools |
@@ -67,7 +67,13 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 The app or the login item starts the engine, so it begins with the `PATH` macOS gives every program: `/usr/bin:/bin:/usr/sbin:/sbin`. Programs the person installed themselves (with Homebrew, a version manager, or into `~/.local/bin`) are not on it. As it starts, the engine asks the person's login shell for its `PATH`, the way a new terminal window would have it (`zsh`, `bash` or `fish`, run as a login and interactive shell), and takes that as its own, keeping its own folders after it. Shell commands, MCP servers started as programs, and git all inherit it. Only full paths are kept, so an entry that means "the current folder" never lets a file in a project stand in for a program.
 
-A shell that does not answer within five seconds, fails, or is one the engine does not know how to ask is left alone; the engine then adds `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin` and `~/.local/bin`, where they exist. `engine.log` says which happened. A change to the shell's profile counts from the next time the engine starts.
+A shell that fails, or is one the engine does not know how to ask, is left alone; the engine then adds `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin` and `~/.local/bin`, where they exist. `engine.log` says which happened. A change to the shell's profile counts from the next time the engine starts.
+
+Start-up waits five seconds for the shell's answer and no longer, since the app is waiting for the engine. A shell can take longer than that, most of all right after login, when the login item starts the engine and the Mac is at its busiest. Such a shell is not stopped: the engine adds the same usual folders for the time being, finishes starting, and keeps listening. When the shell answers, the engine's `PATH` becomes exactly what an answer in time would have made it: the shell's folders, then the ones the engine began with. The usual folders the shell does not name itself are dropped again, so a slow start and a quick one end with the same `PATH`.
+
+Whatever is started after that gets the shell's `PATH`, because each of these reads the engine's `PATH` at the moment it starts something: an agent's shell commands, git, a worktree's set-up command, and an MCP server that is connected or reconnected. Whatever was started before keeps the `PATH` it was started with: a command still running, and an MCP server connected as the engine started, together with what that server starts. Such a server keeps the usual folders, or stays failed if its program was not found in them, until it is reconnected in Settings or the engine starts again.
+
+A shell that has still not answered five minutes after it was asked is stopped, with whatever its profile started, and the `PATH` stays as it is. Five minutes is far longer than a shell that is merely slow has been seen to take, so one still going then is waiting for something that will not come. A shell still going when the engine stops is stopped with it, and neither the shell nor the five minutes keeps the engine from stopping. Only a shell that is still running is ever stopped: once it has ended, what it printed is its answer, and anything its profile left running is left alone, since the shell's process number may by then belong to another program. `engine.log` has a line when the wait runs out, and another when the shell's `PATH` is taken or when it is given up on, without the shell's folders.
 
 ### How long a command may run
 

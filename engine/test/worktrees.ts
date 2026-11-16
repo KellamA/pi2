@@ -8,7 +8,7 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { inspect, parseStatus, stopLeftOver, suggestBranch } from "../src/worktrees.ts";
+import { inspect, newRunMarker, parseStatus, RUN_VARIABLE, stopLeftOver, suggestBranch } from "../src/worktrees.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -543,6 +543,32 @@ try {
 		await third.until("what was left running is stopped", () => !alive(leader) && !alive(started), 10_000);
 		step("a set-up left running by an engine killed outright is stopped by the next engine, with what it started, and marked");
 
+		// The same when the command's first process has ended and only something it started in the background is left: the
+		// next engine knows it by the run's marker in its environment. The engine still counts the set-up as running for a
+		// few seconds after its first process ends, while what it started holds its output open; it is killed then. What is
+		// left is node, not `sleep`: macOS does not show the environment of its own programs.
+		const strayFile = join(scratch, "stray.pid");
+		const endedFile = join(scratch, "stray-leader.pid");
+		const holder = `'${process.execPath}' -e 'setTimeout(() => {}, 60000)'`;
+		const { id: strayer } = await third.call("agents.save", { agent: { name: "Strayer", access: "full", cwd: tooling, setup: `${holder} & echo $! > '${strayFile}'; echo $$ > '${endedFile}'; sleep 3` } });
+		const { id: l } = await third.call("conversation.create", { agentId: strayer });
+		await third.call("worktree.create", { id: l });
+		const [ended, stray] = await third.until("set-up running", () => {
+			const read = (file: string) => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0);
+			return read(endedFile) > 0 && read(strayFile) > 0 ? [read(endedFile), read(strayFile)] : undefined;
+		});
+		await third.until("the command's first process ended", () => !alive(ended), 10_000);
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		assert.ok(alive(stray), "what the set-up started in the background outlives it and the engine");
+		engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "inherit"] });
+		const fourth = await Client.attach();
+		await fourth.call("conversation.open", { id: l });
+		const strayed = await fourth.until("marked", () => fourth.conversations.get(l)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
+		assert.equal(strayed.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
+		await fourth.until("what was left without its leader is stopped", () => !alive(stray), 10_000);
+		step("what a set-up started in the background, left running after its first process ended and the engine was killed, is stopped by the next engine");
+
 		// A number that now belongs to another process, or members of a group whose leader is gone, are left alone.
 		const other = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
 		other.unref();
@@ -564,6 +590,73 @@ try {
 		assert.ok(alive(member), "a group left without its leader is not touched");
 		process.kill(member);
 		step("a left-over process number now used by another process, or a group whose leader is gone, is not touched");
+
+		// With a marker recorded, each member of a group left without its leader is known by the marker in its environment,
+		// and by nothing else. `orphans` starts a group whose first process ends at once, leaving node processes that print
+		// their own pid when they are up (`waiting`), and answers with the group and those pids, in the order printed. A
+		// variable given as undefined is one the group starts without.
+		const marker = newRunMarker();
+		const waiting = (before = "") => `'${process.execPath}' -e '${before}console.log(process.pid); setTimeout(() => {}, 30000)'`;
+		const orphans = async (script: string, env: Record<string, string | undefined>, count = 1) => {
+			const first = spawn("/bin/bash", ["-c", script], { detached: true, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "ignore"] });
+			let out = "";
+			let over = false;
+			first.stdout!.on("data", (chunk) => (out += chunk));
+			first.once("exit", () => (over = true));
+			await fourth.until("leader gone, members up", () => over && out.trim().split("\n").length === count && out.endsWith("\n"));
+			first.stdout!.destroy();
+			const pids = out.trim().split("\n").map(Number);
+			assert.ok(pids.every((pid) => pid > 0 && alive(pid)) && !alive(first.pid!), out);
+			return { group: first.pid!, pids };
+		};
+		const stopAll = (pids: number[]) => pids.forEach((pid) => process.kill(pid, "SIGKILL"));
+
+		let left = await orphans(`${waiting()} &`, { [RUN_VARIABLE]: marker });
+		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 100), "stopped");
+		await fourth.until("the member with the marker is stopped", () => !alive(left.pids[0]!), 5_000);
+		// One that takes no notice of SIGTERM is killed after the grace.
+		left = await orphans(`${waiting('process.on("SIGTERM", () => {}); ')} &`, { [RUN_VARIABLE]: marker });
+		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 1_000), "stopped");
+		await sleep(300);
+		assert.ok(alive(left.pids[0]!), "it took no notice of SIGTERM");
+		await fourth.until("the member that ignored SIGTERM is killed", () => !alive(left.pids[0]!), 5_000);
+		step("a member left without its leader that carries the run's marker is stopped, and killed if it ignores that");
+
+		// Look-alikes: a group of the same number whose member has no marker, another run's, the marker only in its
+		// arguments, or the marker in a variable of another name. A record from before there were markers, or one whose
+		// marker is not one pi² makes, proves nothing either, whatever the member carries.
+		const lookAlikes: [string, { group: number; pids: number[] }, string | undefined][] = [
+			["no marker", await orphans(`${waiting()} &`, { [RUN_VARIABLE]: undefined }), marker],
+			["another run's marker", await orphans(`${waiting()} &`, { [RUN_VARIABLE]: newRunMarker() }), marker],
+			["the marker in its arguments", await orphans(`${waiting()} ${RUN_VARIABLE}=${marker} &`, { [RUN_VARIABLE]: undefined }), marker],
+			["the marker in a variable of another name", await orphans(`${waiting()} &`, { [RUN_VARIABLE]: undefined, [`NOT_${RUN_VARIABLE}`]: marker }), marker],
+			["a record without a marker", await orphans(`${waiting()} &`, { [RUN_VARIABLE]: marker }), undefined],
+			["a marker pi² would not make", await orphans(`${waiting()} &`, { [RUN_VARIABLE]: "short" }), "short"],
+		];
+		for (const [what, alike, recorded] of lookAlikes) {
+			assert.equal(await stopLeftOver({ group: alike.group, start: "anything", ...(recorded === undefined ? {} : { marker: recorded }) }, 100), "unsure", what);
+		}
+		await sleep(400);
+		for (const [what, alike] of lookAlikes) assert.ok(alive(alike.pids[0]!), `a member with ${what} is not touched`);
+		stopAll(lookAlikes.flatMap(([, alike]) => alike.pids));
+		step("a look-alike group without the run's marker in its environment is not touched");
+
+		// A group with both: the member with the marker is stopped, the one started without it is left, and the answer says
+		// something was left.
+		left = await orphans(`${waiting()} & sleep 1; env -u ${RUN_VARIABLE} ${waiting()} &`, { [RUN_VARIABLE]: marker }, 2);
+		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 100), "unsure");
+		await fourth.until("the member with the marker is stopped", () => !alive(left.pids[0]!), 5_000);
+		await sleep(400);
+		assert.ok(alive(left.pids[1]!), "the member without the marker is not touched");
+		stopAll([left.pids[1]!]);
+		// A number that went to a new process means the old group ended: with or without a marker recorded, nothing of it is left.
+		const reused = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: "ignore" });
+		reused.unref();
+		assert.equal(await stopLeftOver({ group: reused.pid!, start: "Thu Jan 1 00:00:00 1970", marker }, 100), "gone");
+		await sleep(300);
+		assert.ok(alive(reused.pid!), "a process that got the same number is not touched, marker recorded or not");
+		process.kill(reused.pid!, "SIGKILL");
+		step("in a group with both, only the member that carries the marker is stopped; a number that went to a new process is still not touched");
 
 		// A record no set-up could have left (1 would signal every process the person owns, 0 the engine's own group) is
 		// refused before anything is looked at or signalled, and so is the engine's own pid or group.
