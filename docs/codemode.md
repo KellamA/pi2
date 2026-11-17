@@ -28,6 +28,10 @@ Each call resolves to the tool's text output, as a string, except:
 
 What a script can do is unchanged: it gets every tool the conversation can call, and `ALL_TOOLS`, `searchTools()` and `describeTool()` answer from all of them, whatever the section shows.
 
+## When `tools.bash()` rejects
+
+The tool's description says a call "rejects with an Error on failure", and that a tool whose declaration returns an object "resolves on failure too when it returned that object". `bash` is such a tool. So `await tools.bash({ command })` resolves with `{ output, exitCode, truncated, fullOutputPath? }` for every command that ran to its end, whatever its exit code: 0, a harmless 1 from a `grep` that found nothing, and also 127 (not found), 126 (not executable) or 137 (ended by SIGKILL), which the conversation shows as failed ([architecture.md](architecture.md#a-commands-exit-code)). A script checks `exitCode` itself. It rejects only when the command has no exit code: stopped at its time limit, stopped or aborted, or not started at all. That was so before #182 and is unchanged by it; `engine/test/codemode.ts` checks it.
+
 ## Checking it
 
 `engine/test/codemode.ts` (`npm run test:codemode`) starts an engine and checks the section for a plain agent with and without code mode, an agent with everything switched on, and one with a test MCP server of 40 tools, and that a script calls, lists, finds and describes an MCP tool the section does not show. It checks the full listing on the section itself, with a tool the model was not given. It also prints how long each section of the system prompt is in those conversations. The demo model's `/system sizes` answers with those lengths, and `/system codemode` with the section itself and the tools offered (see [development.md](development.md)).

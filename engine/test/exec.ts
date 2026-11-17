@@ -140,6 +140,36 @@ try {
 		"a second of quiet is not worth remarking on",
 	);
 	assert.equal((await runLimited({ command: "echo fine", timeout: 2 })).printed, "fine\n");
+
+	// A non-zero exit is told as a fact, not as an error, unless the command could not be started or a signal ended it
+	// (issue #182). Limits longer than any wait here, so only the command ends each run.
+	const roomy = (shell(undefined, { fallback: 600, most: 600 }) as unknown as { wrap(tool: unknown): Run }).wrap(createBashTool());
+	const ended = async (command: string) => {
+		let printed = "";
+		const api = { env, conversationId: 1, callId: "exit", output: (text: string) => void (printed += text), retainedOutput: () => ({ text: printed, truncated: false }), diagnostic: () => {} };
+		return (await hangs(command, roomy.execute({ command }, api, {}))) as { isError?: boolean; details?: unknown; diagnostics?: unknown; structuredOutput: { exitCode: number } };
+	};
+	const clean = await ended("true");
+	assert.deepEqual([clean.isError, clean.details, clean.diagnostics, clean.structuredOutput.exitCode], [undefined, undefined, undefined, 0], "exit 0 says nothing of it");
+	for (const [command, code] of [["grep -q nothing-here /dev/null", 1], ["echo pending; exit 8", 8], ["false && echo never", 1], ["exit 255", 255]] as const) {
+		const result = await ended(command);
+		assert.equal(result.isError, undefined, `${command}: not an error`);
+		assert.deepEqual(result.details, { exitCode: code }, command);
+		assert.deepEqual(result.diagnostics, [{ severity: "info", code: "exit_code", message: `Exit code ${code}` }], command);
+		assert.equal(result.structuredOutput.exitCode, code, `${command}: a script still gets the code`);
+	}
+	for (const [command, code, message, signal] of [
+		["no-such-command-182", 127, "Exit code 127: a command it ran was not found.", undefined],
+		["/dev/null", 126, "Exit code 126: a command it ran could not be run (it is not executable, or not allowed).", undefined],
+		["kill -KILL $$", 137, "The command was ended by SIGKILL (exit code 137).", "SIGKILL"],
+		["sh -c 'kill -TERM $$'", 143, "The command was ended by SIGTERM (exit code 143).", "SIGTERM"],
+	] as const) {
+		const result = await ended(command);
+		assert.equal(result.isError, true, `${command}: an error`);
+		assert.deepEqual(result.details, { exitCode: code, ...(signal === undefined ? {} : { signal }) }, command);
+		assert.deepEqual(result.diagnostics, [{ severity: "error", code: "exit_code", message }], command);
+		assert.equal(result.structuredOutput.exitCode, code, command);
+	}
 	// The messages about time, at the real limits: one stopped by the default, one whose own timeout ran out, and how
 	// long one that ended by itself took when that was a minute or more.
 	const real = { fallback: 120, most: 600 };
@@ -208,5 +238,5 @@ try {
 	rmSync(folder, { recursive: true, force: true });
 }
 
-console.log("exec: ok (output kept when the engine is busy as a command exits; standard input closed; bash tells of its time limits, lowers a timeout above the most and says what to do instead, tells of running in the background, and of where a long output is kept; kept outputs are bounded)");
+console.log("exec: ok (output kept when the engine is busy as a command exits; standard input closed; bash tells of its time limits, lowers a timeout above the most and says what to do instead, tells a non-zero exit as a fact unless the command could not start or a signal ended it, tells of running in the background, and of where a long output is kept; kept outputs are bounded)");
 process.exit(0); // the background sleep above still holds a pipe
