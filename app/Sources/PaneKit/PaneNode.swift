@@ -14,6 +14,11 @@ public enum SplitAxis: String, Codable, Sendable {
 
 /// The conversation area as a tree: a pane showing one conversation, or a split dividing its room between the nodes it
 /// holds. A node with no children is a pane.
+///
+/// Never give a node a value it still holds, such as `self = children[0]`. Optimised builds (Swift 6.4) copy straight
+/// from the child's place in `children` into the node, field by field, and release the node's old `children` (the
+/// array the child lives in) before the last field is copied: the result had a `fractions` array with a null buffer,
+/// and the app crashed saving it (#134). Take the child out of the array first, as `collapse` does.
 public struct PaneNode: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     /// For a pane: the conversation it shows. Nil is an empty pane, which offers a choice.
@@ -83,6 +88,8 @@ public struct PaneNode: Codable, Equatable, Identifiable, Sendable {
                 split.children.insert(new, at: index + 1)
             }
         } else {
+            // The new split is built around a copy of the pane, in an array of its own, before it takes the pane's
+            // place, so the pane is never given a value it still holds.
             modify(id) { node in
                 let old = node
                 node = .split(axis, [old, new])
@@ -99,12 +106,17 @@ public struct PaneNode: Codable, Equatable, Identifiable, Sendable {
             let share = fractions.remove(at: index)
             if !fractions.isEmpty { fractions[max(index - 1, 0)] += share }
         } else {
+            // A child split left with one child has already given way to it, in its own call.
             for index in children.indices { children[index].remove(id) }
         }
-        for index in children.indices where children[index].children.count == 1 {
-            children[index] = children[index].children[0]
-        }
-        if children.count == 1 { self = children[0] }
+        if children.count == 1 { collapse() }
+    }
+
+    /// Replaces a split holding one child by that child. The child is taken out of `children` first: see the note on
+    /// `PaneNode` for why `self = children[0]` must not be written here.
+    private mutating func collapse() {
+        let only = children.removeLast()
+        self = only
     }
 
     /// Gives the panes, in reading order, these conversations.
