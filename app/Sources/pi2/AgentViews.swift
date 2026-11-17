@@ -176,7 +176,7 @@ struct AgentEditor: View {
                         ForEach(engine.modelGroups, id: \.provider) { group in
                             Section(group.name) {
                                 ForEach(group.models, id: \.ref) { item in
-                                    Text(item.name).tag(ModelRef?.some(item.ref))
+                                    Text(item.listName).tag(ModelRef?.some(item.ref))
                                 }
                             }
                         }

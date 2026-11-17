@@ -167,7 +167,7 @@ writeFileSync(runningMarker, String(Date.now()));
 // ---- Models, tools, harness
 
 const credentials = new KeychainCredentialStore(home);
-const providers = new Providers(home, credentials, () => deviceId());
+const providers = new Providers(home, credentials, () => deviceId(), { log });
 const mcp = new McpServers(home, credentials);
 mcp.log = log;
 const inbox = new Inbox();
@@ -577,6 +577,11 @@ const demoPrice = Number(process.env.PI2_DEMO_COST ?? 0);
  */
 let subscriptions = new Set<string>();
 const onSubscription = (key: string) => subscriptions.has(key.split("/")[0]!);
+/** A model added by hand has no known price: pi-ai counts it at none, and Usage says so rather than showing nothing. */
+const unpriced = (key: string) => {
+	const slash = key.indexOf("/");
+	return !onSubscription(key) && providers.isAddedByHand(key.slice(0, slash), key.slice(slash + 1));
+};
 const costOf = (key: string, usage: UsageJson) => {
 	if (onSubscription(key)) return 0;
 	return key === `${DEMO_PROVIDER}/${DEMO_MODEL}` && demoPrice > 0 ? ((usage.totalTokens ?? 0) * demoPrice) / 1_000_000 : (usage.cost?.total ?? 0);
@@ -604,6 +609,26 @@ function contextOf(view: ConversationView, model: ModelRef | undefined) {
 	return { used: 0, window: window ?? null };
 }
 
+/**
+ * What a run's failure says, for the model it was asked of. pi durable names a model it cannot find by its key, and a
+ * provider's refusal of a model added by hand does not say that pi² only guessed it was there; both are said plainly.
+ */
+function failureDetail(failure: { reason: string; detail?: string }, model: ModelRef | undefined): string | null {
+	const provider = model === undefined ? undefined : providers.models.getProvider(model.provider);
+	if (failure.reason === "no_model" && model !== undefined) {
+		const what =
+			provider === undefined
+				? `${model.modelId}'s provider, ${model.provider}, is no longer connected.`
+				: `${provider.name} has no model ${model.modelId} now. A model added by hand and then removed, or one a provider no longer lists, cannot be used.`;
+		return `${what} Choose another model from the toolbar, then press Continue.`;
+	}
+	if (failure.reason === "model_error" && model !== undefined && providers.isAddedByHand(model.provider, model.modelId)) {
+		const said = failure.detail ?? "";
+		return `${said}${said === "" || /[.!?]$/.test(said) ? "" : "."} ${model.modelId} was added by hand in Settings › Providers: if ${provider?.name ?? model.provider} does not offer it to this sign-in or key, or names it otherwise, choose another model or change the id there.`.trim();
+	}
+	return failure.detail ?? null;
+}
+
 function stateOf(view: ConversationView, meta: Meta | undefined) {
 	const live = (view.docs["pi.live"] ?? {}) as LiveDocShape;
 	const agent = (view.docs["pi.agent"] ?? {}) as { model?: ModelRef; thinkingLevel?: string; cwd?: string };
@@ -621,7 +646,7 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		partial: partial === undefined ? null : assistantParts(partial),
 		retry: live.generation?.retry ?? null,
 		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "", details: slot.details ?? null, ...clock(slot.callId) })),
-		failure: live.runFailure === undefined ? null : { reason: live.runFailure.reason, detail: live.runFailure.detail ?? null },
+		failure: live.runFailure === undefined ? null : { reason: live.runFailure.reason, detail: failureDetail(live.runFailure, agent.model) },
 		usage: usageTotals(view.docs["pi.usage"] as UsageDocShape | undefined),
 		context: contextOf(view, agent.model),
 		compacting: (live.compactions ?? []).length > 0,
@@ -958,6 +983,23 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// Answer first: asking every provider about its sign-in takes a moment, and the sheet is waiting.
 		void announceProviders().catch((error) => log("announcing providers failed:", error));
 		return { hidden };
+	},
+	"providers.draftModel": async (params) =>
+		providers.draftModel(text(params, "provider"), text(params, "id"), {
+			...(typeof params.basedOn === "string" ? { basedOn: params.basedOn } : {}),
+			...(typeof params.api === "string" ? { api: params.api } : {}),
+		}),
+	"providers.addModel": async (params) => {
+		const model = await providers.addModel(params as never);
+		await announceProviders();
+		scheduleUsageRefresh();
+		return model;
+	},
+	"providers.removeModel": async (params) => {
+		providers.removeModel(text(params, "provider"), text(params, "id"));
+		await announceProviders();
+		scheduleUsageRefresh();
+		return {};
 	},
 	/** The app offers to do computer actions for agents; only one app does at a time, the latest to ask. */
 	"computer.register": async (_params, client) => {
@@ -1534,7 +1576,7 @@ async function refreshUsage(): Promise<void> {
 	usageSummary = {
 		event: "usage",
 		models: Object.entries(session.models ?? {})
-			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key) }))
+			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) }))
 			.sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),

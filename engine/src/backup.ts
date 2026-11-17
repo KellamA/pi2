@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync 
 import { join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 
-const SETTINGS_FILES = ["endpoints.json", "mcp.json", "settings.json", "credentials.json"];
+const SETTINGS_FILES = ["endpoints.json", "added-models.json", "mcp.json", "settings.json", "credentials.json"];
 const DATABASE = "session.sqlite";
 
 const stamp = (at = new Date()) =>

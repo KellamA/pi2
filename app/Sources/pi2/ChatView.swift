@@ -382,9 +382,9 @@ struct ModelMenu: View {
                 engine.configure(id, ["model": ["provider": model.provider, "modelId": model.id]])
             } label: {
                 if model.ref == agent?.model {
-                    Label(model.name, systemImage: "checkmark")
+                    Label(model.listName, systemImage: "checkmark")
                 } else {
-                    Text(model.name)
+                    Text(model.listName)
                 }
             }
         }

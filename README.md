@@ -69,6 +69,8 @@ pi² has its own browser, with its own sign-ins, separate from Safari and Chrome
 
 Sign in with a subscription, add API keys for any of 40 or so providers, or add your own endpoint. Choose which of a provider's models show up in the menus: search the list by name or id, untick everything and pick the few you want, or let "Newest Only" keep one of each family.
 
+A model released after your copy of pi² can be added by its id, on the sign-in or key you already have: in **Settings › Providers**, open the provider's **Models…** and choose **Add a Model by ID…**. Type the id the provider gives it (`gpt-6.2-sol`, say). pi² takes its context size, thinking levels, whether it sees pictures and the API it speaks from the newest model of the same family it knows, shows them, and lets you change any of them. The model is then in every model menu, marked "added by hand", and kept until you remove it or pi²'s own list comes to have it, which then takes its place. Its price is not known, so Usage counts its tokens without a cost, and it does not count towards the daily budget. If the provider does not offer the model to your sign-in or key, a conversation that uses it stops with the provider's message, and says the model was added by hand. Remove it in the same list; a conversation still set to it stops at its next turn and asks you to choose another model.
+
 <p align="center">
   <img src="docs/images/providers.png" alt="Provider settings: a local endpoint and two API keys" width="400">
   <img src="docs/images/models.png" alt="Choosing which models show: a search for opus, with only the newest ticked" width="400">
