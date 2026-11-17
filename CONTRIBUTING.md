@@ -58,10 +58,11 @@ ditto "app/build/pi².app" "$APP"
 codesign --force --sign - "$APP"
 ```
 
-Launch it on a data folder of its own and a Keychain service of its own. The app passes both variables on to the engine it starts.
+Launch it on a data folder of its own and a Keychain service of its own. The app passes both variables on to the engine it starts. `-g` keeps it from taking the focus, and the last two variables keep its windows out of the way of whoever is at the Mac: behind every other window, and parked in the bottom-right corner of the screen instead of the middle (see [development.md](docs/development.md); a development build reads them, a release build does not). A window kept there can still be captured with `screencapture -l`.
 
 ```bash
-open -n "$APP" --env PI2_HOME="$T/home" --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.test
+open -n -g "$APP" --env PI2_HOME="$T/home" --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.test \
+  --env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000
 ```
 
 Check that it runs on the throwaway folder, not the real one. `$T/home` should now hold `engine.sock`, `engine.pid` and an `engine.log` that ends with `listening on` and the path of that socket. (`app.log` appears there only once the app has had something to note, such as a dropped connection.) The engine should be the copy's own child, with both variables set:

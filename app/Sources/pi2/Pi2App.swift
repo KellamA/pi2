@@ -180,6 +180,7 @@ struct Pi2App: App {
             RootView(model: model)
                 .frame(minWidth: 820, minHeight: 480)
                 .tint(.piAccent)
+                .launchWindow()
                 .onAppear {
                     delegate.engine = model.engine
                     model.engine.start()
@@ -232,6 +233,7 @@ struct Pi2App: App {
         Window("Browser", id: "browser") {
             BrowserWindow(engine: model.engine)
                 .tint(.piAccent)
+                .launchWindow()
         }
         .defaultSize(width: 1100, height: 780)
         .keyboardShortcut("b", modifiers: [.command, .shift])
@@ -251,6 +253,7 @@ struct Pi2App: App {
         Settings {
             SettingsView(engine: model.engine)
                 .tint(.piAccent)
+                .launchWindow()
         }
     }
 }
