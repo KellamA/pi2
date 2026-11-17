@@ -71,6 +71,19 @@ Sign in with a subscription, add API keys for any of 40 or so providers, or add 
 
 A model released after your copy of pi² can be added by its id, on the sign-in or key you already have: in **Settings › Providers**, open the provider's **Models…** and choose **Add a Model by ID…**. Type the id the provider gives it (`gpt-6.2-sol`, say). pi² takes its context size, thinking levels, whether it sees pictures and the API it speaks from the newest model of the same family it knows, shows them, and lets you change any of them. The model is then in every model menu, marked "added by hand", and kept until you remove it or pi²'s own list comes to have it, which then takes its place. Its price is not known, so Usage counts its tokens without a cost, and it does not count towards the daily budget. If the provider does not offer the model to your sign-in or key, a conversation that uses it stops with the provider's message, and says the model was added by hand. Remove it in the same list; a conversation still set to it stops at its next turn and asks you to choose another model.
 
+**Ask** the provider instead, in the same window, and pi² asks it which models your sign-in or key can use, then lists the ones pi² does not know, to add as above with what the provider says of each (its name, context size, pictures and thinking levels, where it says them). It asks only the provider's own address, with your own credential, and the window says which address. What can be asked:
+
+| Provider | With | What is asked |
+| --- | --- | --- |
+| OpenAI Codex | ChatGPT sign-in | `chatgpt.com/backend-api/codex/models`, the list the Codex CLI shows |
+| OpenAI | API key, or ChatGPT sign-in | `GET /v1/models` on api.openai.com |
+| Anthropic | API key, or Claude sign-in | `GET /v1/models` on api.anthropic.com |
+| Google | API key | `GET /v1beta/models` on generativelanguage.googleapis.com |
+| Mistral, Groq, DeepSeek, xAI and the others that speak OpenAI's API | API key | `GET /models` at the provider's address |
+| Radius | key or sign-in | its own list, which pi² also fetches at each start |
+
+GitHub Copilot, Amazon Bedrock, Vertex AI, Azure OpenAI and sign-ins other than those above cannot be asked: the window says so, and a model is added by its id. Whether a subscription sign-in may list models is up to the provider; if it refuses, the window shows its answer.
+
 <p align="center">
   <img src="docs/images/providers.png" alt="Provider settings: a local endpoint and two API keys" width="400">
   <img src="docs/images/models.png" alt="Choosing which models show: a search for opus, with only the newest ticked" width="400">

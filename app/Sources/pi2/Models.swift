@@ -875,6 +875,15 @@ struct ProviderInfo: Codable, Identifiable, Equatable {
     let status: Status?
     let modelCount: Int
     let endpoint: EndpointConfig?
+    /// Whether a signed-in or keyed built-in provider can be asked which models it offers, where, or why not.
+    var ask: Ask? = nil
+
+    struct Ask: Codable, Equatable {
+        let can: Bool
+        /// The address asked; nil for a provider whose list the library refreshes itself.
+        var url: String? = nil
+        var why: String? = nil
+    }
 
     var statusText: String {
         guard let status else { return "Not connected" }
@@ -903,6 +912,22 @@ struct ModelInfo: Codable, Equatable, Identifiable {
     var listName: String { addedByHand == true ? "\(name) (added by hand)" : name }
 }
 
+/// What a provider said when asked which models its key or sign-in can use (`providers.ask`).
+struct ProviderListing: Codable, Equatable {
+    struct Listed: Codable, Equatable, Identifiable {
+        let id: String
+        let name: String
+        /// In pi²'s own list of the provider's models.
+        let known: Bool
+    }
+    let provider: String
+    let providerName: String
+    let asked: String?
+    let refreshed: Bool
+    let catalogCount: Int
+    let models: [Listed]
+}
+
 /// What the engine's `providers.draftModel` proposes for a model added by its id: settings taken from a model it knows.
 struct ModelDraft: Codable, Equatable {
     struct Template: Codable, Equatable, Identifiable {
@@ -918,6 +943,8 @@ struct ModelDraft: Codable, Equatable {
     let basedOnName: String
     /// "family": the newest of the id's family; "nearest": no model of that family, so the closest; "chosen": picked.
     let match: String
+    /// What the provider said itself when asked ("context size", "pictures"), in place of the template's.
+    var told: [String]? = nil
     let api: String
     let apis: [String]
     var contextWindow: Int

@@ -20,6 +20,7 @@ import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.l
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { isAttachmentBlock } from "./attachments.ts";
+import { FileModelsStore, type ListedModel, listerFor } from "./modellists.ts";
 
 export const DEMO_PROVIDER = "demo";
 export const DEMO_MODEL = "demo-1";
@@ -39,6 +40,24 @@ export type ProviderInfo = {
 	status: { type: string; source: string | null } | null;
 	modelCount: number;
 	endpoint: EndpointConfig | null;
+	/**
+	 * For a built-in provider that is signed in or has a key: whether it can be asked which models that credential can
+	 * use, and where (`url` is null for one whose list the library refreshes itself), or why not.
+	 */
+	ask: { can: true; url: string | null } | { can: false; why: string } | null;
+};
+
+/** What a provider said when asked which models its credential can use. */
+export type Listing = {
+	provider: string;
+	providerName: string;
+	/** The address asked; null when only the library's own refresh was. */
+	asked: string | null;
+	/** The library's own list of the provider's models was refreshed. */
+	refreshed: boolean;
+	catalogCount: number;
+	/** Those pi² does not know first, then newest first. */
+	models: { id: string; name: string; known: boolean; addedByHand: boolean }[];
 };
 
 export type ModelInfo = {
@@ -85,6 +104,8 @@ export type ModelDraft = {
 	basedOnName: string;
 	/** How `basedOn` was chosen: the newest of the id's family, the closest other one, or the person's or an earlier choice. */
 	match: "family" | "nearest" | "chosen";
+	/** What the provider itself said, when it was asked ("context size", "pictures"), in place of the template's. */
+	told?: string[];
 	api: string;
 	/** The APIs the provider's catalog models speak, for a provider with more than one. */
 	apis: string[];
@@ -122,6 +143,9 @@ function compareVersions(a: readonly number[], b: readonly number[]): number {
 	}
 	return 0;
 }
+
+/** For sorting model ids: the higher version first, then by id. */
+const newestFirst = (a: string, b: string) => compareVersions(familyOf(b).version, familyOf(a).version) || a.localeCompare(b);
 
 /**
  * Of a provider's model ids, the newest of each family, for the "newest only" shortcut in settings.
@@ -486,6 +510,8 @@ export class Providers {
 	#added: Record<string, AddedModel[]>;
 	/** The added models as built, by provider: the same objects each time, until they change. */
 	#built = new Map<string, Model<Api>[]>();
+	/** What each provider said of its models when last asked, by id: for adding one of them. */
+	readonly #listed = new Map<string, Map<string, ListedModel>>();
 	readonly #log: (...parts: unknown[]) => void;
 
 	/**
@@ -501,7 +527,11 @@ export class Providers {
 		this.#credentials = credentials;
 		this.#deviceId = deviceId;
 		this.#log = options.log ?? (() => {});
-		this.models = (options.builtins ?? builtinModels)({ credentials, identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } } });
+		this.models = (options.builtins ?? builtinModels)({
+			credentials,
+			modelsStore: new FileModelsStore(join(home, "model-catalogs.json")),
+			identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
+		});
 		this.#builtinIds = new Set(this.models.getProviders().map((p) => p.id));
 		this.#addedPath = join(home, "added-models.json");
 		try {
@@ -591,7 +621,7 @@ export class Providers {
 		if (listed !== undefined) throw new Error(`${catalog.name} already has ${id} (${listed.name}). If it is not in the model menus, tick it in Models….`);
 		if (models.length === 0) throw new Error(`pi² knows no models of ${catalog.name} to take this one's settings from`);
 		const apis = [...new Set(models.map((model) => model.api))];
-		const templates = [...models].sort((a, b) => compareVersions(familyOf(b.id).version, familyOf(a.id).version) || a.id.localeCompare(b.id)).map((model) => ({ id: model.id, name: model.name, api: model.api }));
+		const templates = [...models].sort((a, b) => newestFirst(a.id, b.id)).map((model) => ({ id: model.id, name: model.name, api: model.api }));
 		const existing = this.#added[providerId]?.find((entry) => entry.id === id);
 		let template: Model<Api> | undefined;
 		let match: ModelDraft["match"] = "chosen";
@@ -625,23 +655,107 @@ export class Providers {
 			template = nearest.model;
 			match = nearest.sameFamily ? "family" : "nearest";
 		}
+		// What the provider said of the id when it was last asked comes before what is taken from the template.
+		const said = this.#listed.get(providerId)?.get(id);
+		const told: string[] = [];
+		const take = <T>(what: string, value: T | undefined, otherwise: T): T => {
+			if (value === undefined) return otherwise;
+			told.push(what);
+			return value;
+		};
+		const contextWindow = take("context size", said?.contextWindow, template.contextWindow);
 		return {
 			provider: providerId,
 			providerName: catalog.name,
 			id,
-			name: existing?.name ?? nameLike(id, template),
+			name: existing?.name ?? take("name", said?.name, nameLike(id, template)),
 			basedOn: template.id,
 			basedOnName: template.name,
 			match,
+			told,
 			api: template.api,
 			apis,
-			contextWindow: template.contextWindow,
-			maxTokens: template.maxTokens,
-			vision: template.input.includes("image"),
-			thinkingLevels: template.reasoning ? getSupportedThinkingLevels(template) : [],
+			contextWindow,
+			maxTokens: Math.min(contextWindow, take("longest answer", said?.maxTokens, template.maxTokens)),
+			vision: take("pictures", said?.vision, template.input.includes("image")),
+			thinkingLevels: take("thinking levels", said?.thinkingLevels, template.reasoning ? getSupportedThinkingLevels(template) : []),
 			templates,
 			editing: existing !== undefined,
 		};
+	}
+
+	/** How `providerId` can be asked which models its present credential can use, for settings to say. */
+	#askable(provider: Provider, credential: "oauth" | "api_key"): ProviderInfo["ask"] {
+		const lister = listerFor(provider.id, provider.name, this.#catalogs.get(provider.id)?.getModels() ?? [], credential, undefined);
+		if (!("cannot" in lister)) return { can: true, url: new URL(lister.url).origin };
+		// One whose catalog the library refreshes itself is asked through it.
+		if (provider.refreshModels !== undefined) return { can: true, url: null };
+		return { can: false, why: lister.cannot };
+	}
+
+	/**
+	 * Asks a built-in provider which models its key or sign-in can use, with that credential, and keeps what it says of
+	 * each for adding one. A provider whose catalog the library refreshes itself has it refreshed first.
+	 */
+	async askProvider(providerId: string, signal: AbortSignal = new AbortController().signal): Promise<Listing> {
+		const catalog = this.#catalog(providerId);
+		const check = await this.models.checkAuth(providerId).catch(() => undefined);
+		if (check === undefined) throw new Error(`Sign in to ${catalog.name} or add its key first.`);
+		const wrapped = this.models.getProvider(providerId)!;
+		let refreshed = false;
+		if (wrapped.refreshModels !== undefined) {
+			const result = await this.models.refresh({ providers: [providerId], force: true, signal });
+			const failed = result.errors.get(providerId);
+			if (failed !== undefined) throw new Error(`${catalog.name} could not be asked for its list: ${failed.message}`);
+			refreshed = true;
+			this.giveWay();
+		}
+		const lister = listerFor(providerId, catalog.name, catalog.getModels(), check.type, undefined);
+		let listed: ListedModel[] = [];
+		let asked: string | null = null;
+		if ("cannot" in lister) {
+			if (!refreshed) throw new Error(lister.cannot);
+		} else {
+			const auth = await this.models.getAuth(providerId, { signal });
+			if (auth === undefined) throw new Error(`Sign in to ${catalog.name} or add its key first.`);
+			// A credential that names its own address (GitHub Copilot's does) is asked there; otherwise the models' own.
+			const where = auth.auth.baseUrl === undefined ? lister : listerFor(providerId, catalog.name, catalog.getModels(), check.type, auth.auth.baseUrl);
+			if ("cannot" in where) throw new Error(where.cannot);
+			asked = where.url;
+			const headers = Object.fromEntries(Object.entries(auth.auth.headers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+			listed = await where.list({ apiKey: auth.auth.apiKey, headers }, signal);
+			this.#listed.set(providerId, new Map(listed.map((model) => [model.id, model])));
+			this.#log(`asked ${catalog.name} for its models at ${new URL(where.url).origin}: ${listed.length} listed`);
+		}
+		const known = new Set(catalog.getModels().map((model) => model.id));
+		return {
+			provider: providerId,
+			providerName: catalog.name,
+			asked: asked === null ? null : new URL(asked).origin,
+			refreshed,
+			catalogCount: known.size,
+			models: listed
+				.map((model) => ({ id: model.id, name: model.name ?? model.id, known: known.has(model.id), addedByHand: this.isAddedByHand(providerId, model.id) }))
+				.sort((a, b) => Number(a.known) - Number(b.known) || newestFirst(a.id, b.id)),
+		};
+	}
+
+	/**
+	 * Refreshes the catalogs of providers whose list the library refreshes itself (pi-ai's `models.refresh()`), at start
+	 * for those with a credential stored in pi²: one whose key is only in the environment is left until it is asked for.
+	 * Returns why any could not be refreshed.
+	 */
+	async refreshCatalogs(): Promise<Map<string, Error>> {
+		const ids: string[] = [];
+		for (const provider of this.models.getProviders()) {
+			if (provider.refreshModels === undefined || !this.#catalogs.has(provider.id)) continue;
+			if ((await this.#credentials.read(provider.id).catch(() => undefined)) !== undefined) ids.push(provider.id);
+		}
+		// Even with no credential, a catalog fetched before is restored from the store without asking anyone.
+		await this.models.refresh({ allowNetwork: false });
+		const result = ids.length === 0 ? { errors: new Map<string, Error>() } : await this.models.refresh({ providers: ids });
+		this.giveWay();
+		return new Map(result.errors);
 	}
 
 	/**
@@ -739,6 +853,7 @@ export class Providers {
 					status: check ? { type: check.type, source: check.source ?? null } : null,
 					modelCount: provider.getModels().length,
 					endpoint,
+					ask: kind === "builtin" && check !== undefined ? this.#askable(provider, check.type) : null,
 				};
 			}),
 		);

@@ -366,6 +366,9 @@ struct ModelsSheet: View {
     /// A model to add by its id (an empty id) or one added by hand to change.
     @State private var adding: AddModelTarget?
     @State private var removing: ModelInfo?
+    /// What the provider said when asked for its models, shown in the list's place until Back.
+    @State private var listing: ProviderListing?
+    @State private var asking = false
 
     /// The sheet's own copy of the choice, so quick ticks build on each other without waiting for the engine.
     @State private var hidden: Set<String> = []
@@ -396,6 +399,8 @@ struct ModelsSheet: View {
         Group {
             if let target = adding {
                 AddModelForm(engine: engine, provider: provider, editing: target.id.isEmpty ? nil : target.id, typed: target.typed) { adding = nil }
+            } else if let listing {
+                ListingView(engine: engine, provider: provider, listing: listing, add: { adding = AddModelTarget(id: "", typed: $0) }, back: { self.listing = nil })
             } else {
                 list
             }
@@ -487,6 +492,7 @@ struct ModelsSheet: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                askRow
             }
             if shown == 0, !models.isEmpty {
                 Text("None are ticked, so \(provider.name) has no models in the model menus.")
@@ -507,6 +513,42 @@ struct ModelsSheet: View {
         .onAppear {
             hidden = Set(models.filter { $0.hidden == true }.map(\.id))
             searching = true
+        }
+    }
+
+    /// Asks the provider which models this key or sign-in can use, or says why it cannot be asked.
+    @ViewBuilder
+    private var askRow: some View {
+        let credential = provider.status?.type == "oauth" ? "sign-in" : "key"
+        if let ask = provider.ask {
+            if ask.can {
+                HStack(alignment: .firstTextBaseline) {
+                    Button(asking ? "Asking \(provider.name)…" : "Ask \(provider.name)…") { askProvider() }
+                        .disabled(asking)
+                        .help("Ask \(provider.name) which models this \(credential) can use, and offer the ones pi² does not list")
+                    Text(ask.url.map { "Asks \(URL(string: $0)?.host() ?? $0) which models this \(credential) can use." } ?? "Gets \(provider.name)'s list of models again.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if let why = ask.why {
+                Text("\(why) Add a model by its id instead.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func askProvider() {
+        asking = true
+        error = nil
+        Task {
+            defer { asking = false }
+            do {
+                let result = try await engine.call("providers.ask", ["id": provider.id])
+                listing = try JSONDecoder().decode(ProviderListing.self, from: JSONEncoder().encode(result))
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 
@@ -547,6 +589,64 @@ struct ModelsSheet: View {
                 hidden = Set(models.filter { $0.hidden == true }.map(\.id))
             }
         }
+    }
+}
+
+/// The models a provider listed when asked, those pi² does not list first, each to add as by its id.
+struct ListingView: View {
+    let engine: EngineClient
+    let provider: ProviderInfo
+    let listing: ProviderListing
+    let add: (String) -> Void
+    let back: () -> Void
+
+    private func added(_ id: String) -> Bool { engine.allModels.contains { $0.provider == provider.id && $0.id == id } }
+    private var new: [ProviderListing.Listed] { listing.models.filter { !$0.known } }
+
+    private var summary: String {
+        let credential = provider.status?.type == "oauth" ? "sign-in" : "key"
+        guard let asked = listing.asked else {
+            return "\(listing.providerName)'s list of models was fetched again: pi² now lists \(listing.catalogCount)."
+        }
+        let host = URL(string: asked)?.host() ?? asked
+        let count = listing.models.count
+        let lists = "Asked \(host) with your \(credential): it lists \(count) model\(count == 1 ? "" : "s") for chat"
+        if new.isEmpty { return "\(lists), and pi² knows every one." }
+        return "\(lists), \(new.count) of them not in pi²'s list. Add the ones you want: pi² takes what \(listing.providerName) says of each, and the rest from a model it knows."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Models \(listing.providerName) offers").font(.headline)
+            Text(summary)
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if !new.isEmpty {
+                List(new) { model in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.name)
+                            Text(model.id).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if added(model.id) {
+                            Tag("Added by hand", .acc)
+                        } else {
+                            Button("Add…") { add(model.id) }
+                                .help("Add \(model.id), checking what pi² takes for it first")
+                        }
+                    }
+                }
+                .listStyle(.bordered)
+                .frame(height: 300)
+            }
+            HStack {
+                Spacer()
+                Button("Back") { back() }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
     }
 }
 
@@ -681,7 +781,11 @@ struct AddModelForm: View {
     }
 
     private func takenFrom(_ draft: ModelDraft) -> String {
-        switch draft.match {
+        if let told = draft.told, !told.isEmpty {
+            let said = ListFormatter.localizedString(byJoining: told)
+            return "\(said.prefix(1).uppercased() + said.dropFirst()) as \(draft.providerName) says; the rest taken from \(draft.basedOnName). Change anything you know is different."
+        }
+        return switch draft.match {
         case "family": "Taken from \(draft.basedOnName), the newest \(draft.providerName) model of the same family. Change anything you know is different."
         case "nearest": "pi² knows no \(draft.providerName) model of this family. Taken from \(draft.basedOnName), the closest: check these."
         default: "Taken from \(draft.basedOnName)."
