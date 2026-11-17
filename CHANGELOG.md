@@ -4,12 +4,17 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Changed
+- **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
+
 ### Fixed
 - When something new reached an agent in the middle of a conversation (its first background command, a worktree, a project's instructions file, or a setting such as code mode, computer use or the browser switched on), the agent could be sent its whole system prompt and tool list again, about 25,000 characters, carried by every later turn. Now only what changed is sent.
 - An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
+- Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
 
 ### For contributors
 - The demo model's `/system history` lists what each system message of a conversation changed, and `engine/test/sections.ts` checks that a section or tool that arrives or goes is sent alone. [docs/architecture.md](docs/architecture.md#the-system-prompts-sections) lists every section of the system prompt and when it comes and goes.
+- **`scripts/test-copy` runs a throwaway copy of the app in one command a step.** `start <suffix> [--show <what>]` copies this checkout's development build under a bundle id, data folder and Keychain service of its own, signs it and launches it behind other windows without taking the focus, and prints the app's and the engine's process ids. `shot` captures its window only when screen capture is already allowed, and `stop` stops what it recorded, by pid, and removes the copy and everything it left. It refuses a suffix that could reach the installed copy, a release build, a suffix already in use and a pid it did not record. "A throwaway copy, step by step" in CONTRIBUTING.md now describes it; `scripts/test-test-copy` checks its refusals (#181).
 
 ## 0.7.7
 

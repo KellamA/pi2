@@ -228,6 +228,7 @@ try {
 		assert.ok(outsided.answer.includes(outside) && !outsided.answer.includes(shared.path), `an agent whose folder is in another repository keeps it: ${outsided.answer}`);
 		const told = (await handOff("Helper", "/system")).answer;
 		assert.ok(told.includes("<worktree>") && told.includes("This sub-chat works in the git worktree") && told.includes(shared.branch), `the sub-chat is told about the worktree: ${told}`);
+		assert.ok(told.includes("do not check out another branch here") && !told.includes("you may start a new branch"), `a sub-chat in its parent's worktree keeps to its branch: ${told}`);
 		assert.ok(!(await handOff("Outsider", "/system")).answer.includes("<worktree>"), "a sub-chat elsewhere is not");
 		step("a sub-chat joins its parent's worktree, and is told so, unless its agent works in another repository");
 
@@ -365,6 +366,35 @@ try {
 		const line = client.conversations.get(lead).items.filter((i: Event) => i.kind === "marker").at(-1).text;
 		assert.ok(line.includes("The agent removed a worktree with nothing uncommitted or unmerged; its branch sub-one is kept."), line);
 		step("sub_chats: each worktree's standing listed; archiving leaves it, or removes it on request when nothing would be lost, keeping the branch");
+
+		// A worker given several pieces of work in turn starts a new branch in its own worktree once its first is merged
+		// (#206): the tracker, sub_chats and removing the worktree go by the branch it is on now.
+		const next = (await delegate(lead, { agent: "Worker", task: "/bash git commit -q --allow-empty -m first", worktree: "sub-first" })).details.conversationId as number;
+		await client.call("conversation.open", { id: next });
+		const nextRoot = await client.until("the worker in its worktree", () => (cwdOf(next) !== project ? cwdOf(next) : undefined));
+		const toldNext = await client.tool(lead, `/continue ${next}: /system worktree`);
+		assert.ok(toldNext.text.includes("commit your work to its branch, do not check out a branch another worktree has") && toldNext.text.includes("Once sub-first is merged, you may start a new branch here from main"), `a worktree of its own may go on to a new branch: ${toldNext.text}`);
+		run(project, "merge", "-q", "--ff-only", "sub-first");
+		await client.until("the first branch merged", () => client.branch(next)?.state === "merged");
+		run(nextRoot, "switch", "-q", "-c", "sub-second", "main");
+		run(nextRoot, "commit", "-q", "--allow-empty", "-m", "second");
+		const moved = await client.until("the tracker on the new branch", () => client.branch(next)?.branch === "sub-second" && client.branch(next));
+		assert.equal(moved.managed, true, "still its own worktree");
+		assert.equal(moved.state, "ahead");
+		assert.equal(moved.unmerged, 1, "measured against what the worktree was made from");
+		const listedNext = await client.tool(lead, `/tool sub_chats {"action":"list"}`);
+		assert.ok(listedNext.text.includes(`worktree of its own at ${nextRoot}, on the branch sub-second (made from main): nothing uncommitted, 1 commit not on main`), listedNext.text);
+		const keptNext = await client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "archive", chats: [next], remove_worktree: true })}`);
+		assert.ok(keptNext.text.includes(`Its worktree at ${nextRoot}, branch sub-second (`) && keptNext.text.includes("was left where it is, since its branch has 1 commit that is not on main"), keptNext.text);
+		assert.ok(existsSync(nextRoot), "the new branch's commit is not lost");
+		run(project, "merge", "-q", "--ff-only", "sub-second");
+		await client.until("the second branch merged", () => client.branch(next)?.state === "merged" || client.events.branches?.leftBehind?.some((w: Event) => w.id === next && w.status.state === "merged"));
+		const gone = await client.call("worktree.remove", { id: next, deleteBranch: true });
+		assert.equal(gone.branchDeleted, true, JSON.stringify(gone));
+		assert.equal(existsSync(nextRoot), false);
+		const branches = run(project, "branch");
+		assert.ok(!branches.includes("sub-second") && branches.includes("sub-first"), `Remove Worktree and Branch deletes the branch it is on now, as Branches names it: ${branches}`);
+		step("a worktree of its own may go on to a new branch once its first is merged: the tracker, sub_chats and removing it follow the branch it is on now");
 	}
 
 	// An agent whose conversations each get a worktree.
