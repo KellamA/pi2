@@ -120,6 +120,20 @@ else
 	failures=$((failures + 1))
 fi
 
+# An app can be recorded before its engine writes engine.pid. Status must treat that as not ready yet, quietly.
+# Use this shell as the recorded app and a stand-in home, so no real copy or data folder is needed.
+mkdir -p "$root/app/build/test-copies/test-7" "$T/home"
+printf '%s\n' "app_pid=$$" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
+	"app_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
+out=$(HOME="$T/home" "$copy" status test-7 2>&1)
+status=$?
+if ((status == 0)) && [[ $out == *"engine pid        none recorded"* && $out != *"engine.pid"* ]]; then
+	echo "ok: test-copy status before engine.pid exists is quiet"
+else
+	echo "FAIL: test-copy status before engine.pid exists (exit $status): $out"
+	failures=$((failures + 1))
+fi
+
 if ((failures)); then
 	echo "$failures check(s) failed."
 	exit 1

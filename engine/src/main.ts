@@ -42,6 +42,7 @@ import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { noticingRefusals } from "./limitwait.ts";
+import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
@@ -309,8 +310,9 @@ const storage = await openNodeSqliteStorage(join(home, "session.sqlite"));
 const harness = await Harness.open(
 	storage,
 	{
-		// Every request notes how a provider refused it, so a limit can be waited for as long as the provider says.
-		models: noticingRefusals(providers.models),
+		// Every request notes how a provider refused it, so a limit can be waited for as long as the provider says. A
+		// conversation that hands out work asks for the long prompt cache (src/cache.ts).
+		models: noticingRefusals(promptCacheLifetimes(providers.models)),
 		registry,
 		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
 		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
