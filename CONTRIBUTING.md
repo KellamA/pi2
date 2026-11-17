@@ -93,7 +93,14 @@ rm -f ~/Library/Preferences/dev.pi2.app.test.plist
 while security delete-generic-password -s dev.pi2.credentials.test >/dev/null 2>&1; do :; done
 ```
 
-`defaults delete` can leave an empty file behind, hence the `rm`. If you used the copy's browser, also look for folders named `dev.pi2.app.test` in `~/Library/WebKit`, `~/Library/Caches` and `~/Library/HTTPStorages`.
+`defaults delete` can leave an empty file behind, hence the `rm`. The copy's browser, and anything else in it that loads from the web, can leave files of its own under its bundle id. Remove them by their exact paths:
+
+```bash
+rm -rf ~/Library/WebKit/dev.pi2.app.test ~/Library/Caches/dev.pi2.app.test \
+  ~/Library/HTTPStorages/dev.pi2.app.test ~/Library/HTTPStorages/dev.pi2.app.test.binarycookies
+```
+
+Do not look for them with a pattern across `~/Library`, such as `ls -d ~/Library/*/dev.pi2.app.test*`. To expand it, the shell reads every folder in `~/Library`, and some of those hold other apps' data that macOS protects: reading one can put a privacy prompt on the person's screen, and the command waits until someone answers it. A command like that waited 29 minutes in #160: exactly as long as a system prompt was on the screen. Name the folder, as above, or list one folder you know is not protected (`ls ~/Library/Caches`), never a pattern that reaches into all of them.
 
 ## What fits
 

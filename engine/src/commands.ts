@@ -6,6 +6,11 @@
 // when it stops a command. Standard input is already closed: pi durable starts every command with it on /dev/null
 // (engine/test/exec.ts checks), so a command that asks a question gets no answer and fails at once.
 //
+// The limits are Claude Code's (issue #160): 2 minutes unless the call passes `timeout`, and no more than 10 minutes
+// whatever it passes. A command that needs longer runs in the background, where the agent and the person can see it is
+// still going. The default was 30 minutes, and a command blocked on a privacy prompt nobody had seen held its
+// conversation for 29 of them with nothing to show for it.
+//
 // The result shows the end of a long output only. The wrap runs the command itself, as pi durable's `bash` does but
 // without its spill file in the system's temporary folder (never removed), and keeps the whole output in a file of its
 // own instead (output.ts), which the result names whenever it had to shorten the output.
@@ -23,45 +28,105 @@ import { BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, startInBackground } from 
 import type { Engine, Feature } from "./features.ts";
 import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore } from "./output.ts";
 
-/** The limit for a command whose call names none: 30 minutes. Tests shorten it with PI2_COMMAND_TIMEOUT_SECONDS. */
+/** How long a command in the foreground may run, in seconds: `fallback` when its call names no `timeout`, and `most` whatever it names. */
+export type Limits = { fallback: number; most: number };
+
+/** The limit for a command whose call names none: 2 minutes, as Claude Code's. Tests shorten it with PI2_COMMAND_TIMEOUT_SECONDS. */
 export const DEFAULT_COMMAND_TIMEOUT_SECONDS = (() => {
 	const seconds = Number(process.env.PI2_COMMAND_TIMEOUT_SECONDS);
-	return Number.isFinite(seconds) && seconds > 0 ? seconds : 30 * 60;
+	return Number.isFinite(seconds) && seconds > 0 ? seconds : 2 * 60;
 })();
 
-/** "30 minutes", "90 seconds", "1 second". */
+/** The most a call's `timeout` may give a command in the foreground: 10 minutes, as Claude Code's, or the default if that is longer. */
+export const MAX_COMMAND_TIMEOUT_SECONDS = Math.max(10 * 60, DEFAULT_COMMAND_TIMEOUT_SECONDS);
+
+const LIMITS: Limits = { fallback: DEFAULT_COMMAND_TIMEOUT_SECONDS, most: MAX_COMMAND_TIMEOUT_SECONDS };
+
+/** "2 minutes", "90 seconds", "1 second". */
 export function duration(seconds: number): string {
 	const [count, unit] = seconds >= 60 && seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
 	return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
-const LIMIT = duration(DEFAULT_COMMAND_TIMEOUT_SECONDS);
+/** A time the clock measured: "45 seconds", "3 minutes 12 seconds", "2 minutes". */
+export function elapsed(ms: number): string {
+	const seconds = Math.round(ms / 1000);
+	if (seconds < 60) return duration(seconds);
+	const rest = seconds % 60;
+	return rest === 0 ? duration(seconds) : `${duration(seconds - rest)} ${duration(rest)}`;
+}
 
 /** The longest `timeout` Node's timers take, as pi durable's `bash` checks it. */
 const MAX_TIMEOUT_SECONDS = 2_147_483_647 / 1000;
 
-export const DESCRIPTION =
-	"Execute a bash command in the current working directory. Returns combined stdout and stderr. " +
-	"A long output is shortened to its last 2000 lines or 50KB, whichever is less, and then the whole of it is kept in a file whose path the result gives: " +
-	`read the rest there with \`read\` (\`offset\`, \`limit\`) or search it with \`grep\`. The file is kept for ${KEEP_DAYS} days. ` +
-	"So do not cut a command's output short yourself with `head`, `tail` or `grep`: what you cut is not kept, and getting it back means running the command again. " +
-	`A command is stopped after ${LIMIT} unless you pass \`timeout\`; for a command you know takes longer, pass a larger one. ` +
-	"Standard input is closed, so a command that asks a question fails instead of waiting for an answer: give answers as options or through a pipe. " +
-	BACKGROUND_DESCRIPTION;
+/** What the model is told the tool does. */
+export function describe(limits: Limits): string {
+	return (
+		"Execute a bash command in the current working directory. Returns combined stdout and stderr. " +
+		"A long output is shortened to its last 2000 lines or 50KB, whichever is less, and then the whole of it is kept in a file whose path the result gives: " +
+		`read the rest there with \`read\` (\`offset\`, \`limit\`) or search it with \`grep\`. The file is kept for ${KEEP_DAYS} days. ` +
+		"So do not cut a command's output short yourself with `head`, `tail` or `grep`: what you cut is not kept, and getting it back means running the command again. " +
+		`A command is stopped after ${duration(limits.fallback)} unless you pass \`timeout\` in seconds, which can give it up to ${duration(limits.most)}. ` +
+		`For one that may take longer (a full test suite, a build), use \`background: true\`, which has no time limit. ` +
+		"Standard input is closed, so a command that asks a question fails instead of waiting for an answer: give answers as options or through a pipe. " +
+		BACKGROUND_DESCRIPTION
+	);
+}
 
-const PARAMETERS = obj(
-	{
-		command: str({ description: "Bash command to execute" }),
-		timeout: opt(num({ description: `Timeout in seconds. Default ${DEFAULT_COMMAND_TIMEOUT_SECONDS} (${LIMIT}); pass a larger one for a command known to take longer. A background command has none unless one is passed.` })),
-		background: opt(bool({ description: BACKGROUND_PARAMETER })),
-	},
-	{ open: true },
-);
+function parameters(limits: Limits) {
+	return obj(
+		{
+			command: str({ description: "Bash command to execute" }),
+			timeout: opt(
+				num({
+					description: `Timeout in seconds. Default ${limits.fallback} (${duration(limits.fallback)}), at most ${limits.most} (${duration(limits.most)}); pass a larger one for a command known to take longer. A background command has no time limit unless one is passed, and then it may be longer than ${duration(limits.most)}.`,
+				}),
+			),
+			background: opt(bool({ description: BACKGROUND_PARAMETER })),
+		},
+		{ open: true },
+	);
+}
 
-/** What the model reads when the limit stopped a command, under whatever output it had written. */
-export function stoppedMessage(timeout: number | undefined): string {
-	const why = timeout === undefined ? `${LIMIT}, the default time limit for a command` : `${duration(timeout)}, the \`timeout\` this call gave`;
-	return `The command was stopped after ${why}. If it needs longer, run it again with a larger \`timeout\` (in seconds).`;
+/** How long a command ran and how it printed, for what the result says about the time it took. */
+export type Timing = { ms: number; printed: boolean; quietAtEndMs: number; longestQuietMs: number };
+
+/** A minute without output is worth telling the agent about: it may be waiting on something. */
+const QUIET_MS = 60_000;
+
+/**
+ * What the model reads when the limit stopped a command, under whatever output it had written: which limit, whether it
+ * had gone quiet, and what to do instead. `given` is the call's own `timeout`, if it gave one.
+ */
+export function stoppedMessage(limits: Limits, given: number | undefined, timing?: Timing): string {
+	const capped = given !== undefined && given > limits.most;
+	const why =
+		given === undefined
+			? `${duration(limits.fallback)}, the default time limit for a command`
+			: capped
+				? `${duration(limits.most)}, the longest a command may run unless it is in the background (this call asked for ${duration(given)})`
+				: `${duration(given)}, the \`timeout\` this call gave`;
+	const quiet =
+		timing === undefined || timing.ms < QUIET_MS
+			? ""
+			: !timing.printed
+				? " It printed nothing in that time."
+				: timing.quietAtEndMs >= QUIET_MS
+					? ` It had printed nothing for the last ${elapsed(timing.quietAtEndMs)}.`
+					: "";
+	const waiting = quiet === "" ? "" : " A command that goes quiet for that long may be waiting on something, such as a permission prompt on the person's screen or a slow network folder; run again, it may wait again.";
+	const instead =
+		(given ?? limits.fallback) >= limits.most
+			? "If it needs longer, run it again with `background: true`, which has no time limit, and read its output with the background tool."
+			: `If it needs longer, run it again with a larger \`timeout\` (in seconds, up to ${limits.most}), or with \`background: true\`, which has no time limit, and read its output with the background tool.`;
+	return `The command was stopped after ${why}.${quiet}${waiting} ${instead}`;
+}
+
+/** What the result of a command that ended by itself says about a long run: how long, and how long it went quiet. */
+export function tookMessage(timing: Timing): string | undefined {
+	if (timing.ms < QUIET_MS) return undefined;
+	const quiet = !timing.printed ? ", printing nothing until it ended" : timing.longestQuietMs >= QUIET_MS ? `, and went ${elapsed(timing.longestQuietMs)} without printing anything` : "";
+	return `The command took ${elapsed(timing.ms)}${quiet}.`;
 }
 
 const count = (n: number) => n.toLocaleString("en-US");
@@ -81,28 +146,39 @@ export function keptMessage(kept: Kept, shown: string): string | undefined {
 }
 
 /** pi durable's `bash`, run without its spill file: the output goes to `store` as well as to the result. */
-async function run(store: OutputStore | undefined, args: { command: string; timeout: number; given: number | undefined }, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult> {
-	if (!Number.isFinite(args.timeout) || args.timeout <= 0) throw new Error("Invalid timeout: must be a finite number of seconds");
-	if (args.timeout > MAX_TIMEOUT_SECONDS) throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_SECONDS} seconds`);
+async function run(store: OutputStore | undefined, limits: Limits, args: { command: string; timeout?: number }, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult> {
+	const given = args.timeout;
+	if (given !== undefined && (!Number.isFinite(given) || given <= 0)) throw new Error("Invalid timeout: must be a finite number of seconds");
+	// A longer one is lowered to the most, as Claude Code does: a call asking for more is often only being generous.
+	const timeout = Math.min(given ?? limits.fallback, limits.most, MAX_TIMEOUT_SECONDS);
 	const env = api.env;
 	if (env === undefined) throw new Error("No execution environment is configured");
 	const conversationId = api.conversationId as unknown as number;
 	const recorder = store?.record(conversationId, api.callId);
+	const started = Date.now();
+	let lastPrinted: number | undefined;
+	let longestQuietMs = 0;
 	const result = await env.exec(
 		args.command,
 		{
 			cwd: env.cwd,
 			env: {},
 			inheritEnv: true,
-			timeout: args.timeout,
+			timeout,
 			// No `window`: every chunk is wanted for the file, not only the tail the result keeps.
 			onOutput: (text, _context, info) => {
+				const now = Date.now();
+				longestQuietMs = Math.max(longestQuietMs, now - (lastPrinted ?? started));
+				lastPrinted = now;
 				api.output(text, info.skipped);
 				recorder?.add(text);
 			},
 		},
 		context,
 	);
+	const ended = Date.now();
+	const quietAtEndMs = ended - (lastPrinted ?? started);
+	const timing: Timing = { ms: ended - started, printed: lastPrinted !== undefined, quietAtEndMs, longestQuietMs: Math.max(longestQuietMs, quietAtEndMs) };
 	const retained = api.retainedOutput();
 	const kept = recorder?.end(retained.truncated);
 	if (kept?.kept) store?.prune(conversationId);
@@ -110,10 +186,12 @@ async function run(store: OutputStore | undefined, args: { command: string; time
 	if (message !== undefined) api.diagnostic({ severity: "info", code: "full_output", message });
 	if (!result.ok) {
 		if (result.error.code === "aborted" && context.abortSignal?.aborted) throw result.error;
-		if (result.error.code === "timeout") throw new Error(stoppedMessage(args.given));
+		if (result.error.code === "timeout") throw new Error(stoppedMessage(limits, given, timing));
 		if (result.error.code === "aborted") throw new Error("Command aborted");
 		throw result.error;
 	}
+	const took = tookMessage(timing);
+	if (took !== undefined) api.diagnostic({ severity: "info", code: "took", message: took });
 	const exitCode = result.value.exitCode;
 	// What a script calling `bash` gets, as pi durable's `bash` gives it.
 	const structuredOutput = { output: retained.text, truncated: retained.truncated, ...(kept?.kept ? { fullOutputPath: kept.path } : {}), exitCode };
@@ -121,16 +199,17 @@ async function run(store: OutputStore | undefined, args: { command: string; time
 	return { structuredOutput, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: `Command exited with code ${exitCode}` }] };
 }
 
-const shell = (store: OutputStore | undefined) =>
+/** The wrap of `bash` with these limits, keeping long outputs in `store`. Tests make one with limits of their own. */
+export const shell = (store: OutputStore | undefined, limits: Limits = LIMITS) =>
 	wrapTool(createBashTool(), (bash) => ({
 		...bash,
-		description: DESCRIPTION,
-		parameters: PARAMETERS,
+		description: describe(limits),
+		parameters: parameters(limits),
 		execute: async (args, api, context) => {
-			// Left running rather than waited for, so the default limit is not for it.
+			// Left running rather than waited for, so the limits are not for it.
 			// (The library's own type for the arguments does not know the parameter this wrap adds.)
 			if ((args as { background?: unknown }).background === true) return await startInBackground(args, api, context);
-			return await run(store, { command: args.command, timeout: args.timeout ?? DEFAULT_COMMAND_TIMEOUT_SECONDS, given: args.timeout }, api, context);
+			return await run(store, limits, args, api, context);
 		},
 	}));
 
