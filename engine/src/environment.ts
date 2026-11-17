@@ -11,10 +11,9 @@
 // not take them unasked either. So every name that starts with PI2_ is left out, and each part of the engine that wants
 // one passes it itself.
 //
-// The exception is PI2_RUN, the marker of a set-up or background command's run (processes.ts). An engine started by
-// such a command has it in its own environment, and what that engine starts must carry it on, or the engine that
-// started the command could not find those processes after a crash. A set-up or background command gets a marker of its
-// own in place of it.
+// The exception is PI2_RUN, the marker of a command's run (processes.ts). An engine started by such a command has it in
+// its own environment, and what that engine starts must carry it on, or the engine that started the command could not
+// find those processes after a crash. A shell, background or set-up command gets a marker of its own in place of it.
 
 import { RUN_VARIABLE } from "./processes.ts";
 

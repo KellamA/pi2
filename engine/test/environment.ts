@@ -129,11 +129,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 		assert.equal(env.TEST_PASSED_ON, "yes", `${what} gets the engine's other variables`);
 		assert.equal(env.PATH, process.env.PATH, `${what} gets the engine's PATH`);
 	}
-	assert.equal(seen["a shell command"].PI2_RUN, MARKER, "a shell command carries on the marker of the run that started the engine");
-	assert.equal(seen["an MCP server"].PI2_RUN, MARKER, "and so does an MCP server");
-	for (const what of ["a background command", "a set-up command"] as const) assert.match(seen[what].PI2_RUN ?? "", /^[0-9a-f]{32}$/, `${what} gets a marker`);
-	assert.notEqual(seen["a background command"].PI2_RUN, MARKER, "of its own");
-	assert.notEqual(seen["a set-up command"].PI2_RUN, MARKER, "of its own");
+	assert.equal(seen["an MCP server"].PI2_RUN, MARKER, "an MCP server carries on the marker of the run that started the engine");
+	for (const what of ["a shell command", "a background command", "a set-up command"] as const) {
+		assert.match(seen[what].PI2_RUN ?? "", /^[0-9a-f]{32}$/, `${what} gets a marker`);
+		assert.notEqual(seen[what].PI2_RUN, MARKER, `${what} gets a marker of its own`);
+	}
 	step("a shell command, a background command, a set-up command and an MCP server do not get pi²'s own variables");
 
 	client.close();
