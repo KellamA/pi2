@@ -522,6 +522,7 @@ try {
 		const next = await client.start(z, "sleep 600");
 		assert.ok(Number(next.bg.slice(3)) > Number(bg.slice(3)), `ids are not used again after a restart: ${next.bg} after ${bg}`);
 		await client.background(z, { action: "stop", id: next.bg });
+		assert.equal(client.events.recovery?.recovery, null, "a clean stop is not an unexpected one: Activity has no notice");
 		step("a clean stop of the engine stops its background commands; the next engine writes that down and tells the agent");
 	}
 
@@ -543,7 +544,15 @@ try {
 		await client.until("what was left running is stopped", () => pids.every((pid) => !alive(pid)), 10_000);
 		assert.deepEqual(client.running(), []);
 		assert.match((await client.background(z, { action: "list" })).text, new RegExp(`- ${bg}: .*: was left running when pi²’s engine stopped, and was stopped when the engine started again; no unread output\\.`));
-		step("a background command left running by an engine killed outright is stopped by the next engine, with what it started, and marked");
+		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.
+		const notice: Event[] = client.events.recovery?.recovery?.background ?? [];
+		assert.deepEqual(
+			notice.map(({ title: _title, ...rest }) => rest),
+			[{ id: bg, conversationId: z, rootConversationId: z, command: cmd, outcome: "stopped", group: pids[0] }],
+		);
+		const listed = await client.until("the conversation listed", () => client.events.library?.conversations.find((conversation: Event) => conversation.id === z));
+		assert.equal(notice[0]!.title, listed.title, "with its conversation's title");
+		step("a background command left running by an engine killed outright is stopped by the next engine, with what it started, and marked; Activity's notice names it");
 	}
 
 	// ---- What a command started is known by the run's marker, once the command's own first process is gone
@@ -600,6 +609,11 @@ try {
 		await client.until("the part with the marker is stopped", () => !alive(marked), 10_000);
 		await sleep(500);
 		assert.ok(alive(unmarked), "the part without the marker is not touched");
+		assert.deepEqual(
+			client.events.recovery?.recovery?.background.map((left: Event) => [left.id, left.outcome, left.group]),
+			[[bg, "partly", group]],
+			"Activity's notice says it was stopped in part",
+		);
 		process.kill(unmarked, "SIGKILL");
 		step("when only part of what a background command started carries the run's marker, that part is stopped, the rest is left alone, and its line says both");
 	}

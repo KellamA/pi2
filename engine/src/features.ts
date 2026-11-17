@@ -57,6 +57,11 @@ export type FeatureParts = {
 	state?(view: ConversationView, meta: Meta | undefined): Record<string, unknown>;
 	/** Runs once when the harness is open, before the engine listens or runs anything: load what the rest needs at once. */
 	start?(): Promise<void>;
+	/**
+	 * After an engine that stopped unexpectedly: extra fields of the `recovery` event, about what this feature found that
+	 * engine had left. Asked once, after `start`.
+	 */
+	recovery?(): Record<string, unknown>;
 	/** Events sent to each app as it connects, so it need not wait for the next change. */
 	greeting?(): unknown[];
 	/** A provider was signed in or out, or its key or endpoint changed. */
