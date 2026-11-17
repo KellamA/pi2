@@ -102,4 +102,22 @@ export type Feature = (host: Host, engine: Engine) => FeatureParts;
 // The order of the sections no longer matters for what is sent: each keeps its place in a conversation (sections.ts,
 // #186), so one that comes or goes is sent alone wherever it is declared. `limitWait` starts first, so the waits it
 // keeps are loaded before what another feature's start sets going can ask about one.
-export const FEATURES: Feature[] = [limitWait, plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, scratch, coauthor, background, order];
+//
+// One a line, so that two pull requests adding a feature each do not change the same line. Where a new one does not
+// need a place of its own, put it beside the feature most like it rather than at the end, where the next one would go too.
+export const FEATURES: Feature[] = [
+	limitWait,
+	plan,
+	knowledge,
+	look,
+	documents,
+	limits,
+	selfSchedule,
+	worktrees,
+	commands,
+	reads,
+	scratch,
+	coauthor,
+	background,
+	order,
+];
