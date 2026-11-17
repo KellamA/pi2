@@ -42,11 +42,14 @@ public actor ComputerController {
     // MARK: - Entry point
 
     public func perform(_ request: ComputerRequest) async -> ComputerReply {
-        if request.action == "list_apps" { return listApps(request.apps) }
+        if request.action == "list_apps" { return listApps(request.apps, testCopies: request.testCopies) }
         guard let bundleID = request.app, !bundleID.isEmpty else { return .failure("\(request.action) needs `app`, a bundle ID from list_apps.") }
         let acting = request.action == "describe" ? (request.of ?? "") : request.action
         if ComputerPolicy.same(bundleID, ownBundleID) || ComputerPolicy.isNever(bundleID) { return .failure("\(bundleID) cannot be used by an agent.") }
-        if ComputerPolicy.isViewOnly(bundleID), !["screenshot", "open_app"].contains(acting) {
+        if ComputerPolicy.isViewOnly(bundleID), !["screenshot", "open_app"].contains(acting), !(request.testCopies && isTestCopy(bundleID)) {
+            if request.testCopies, TestCopy.hasTestCopyID(bundleID) {
+                return .failure("\(Self.name(of: bundleID)) can only be looked at, not controlled: it is not running as a throwaway test copy of a development build, as scripts/test-copy starts one.")
+            }
             return .failure("\(Self.name(of: bundleID)) can only be looked at, not controlled.")
         }
         if request.action == "describe" { return ComputerReply(ok: true, text: describe(request, bundleID: bundleID)) }
@@ -73,6 +76,14 @@ public actor ComputerController {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first { !$0.isTerminated }
     }
 
+    /// Whether `bundleID` is running, and only as a throwaway test copy (`TestCopy`): every instance under that id, since
+    /// an action goes to whichever macOS lists first. Never this app itself.
+    private func isTestCopy(_ bundleID: String) -> Bool {
+        guard !ComputerPolicy.same(bundleID, ownBundleID) else { return false }
+        let instances = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).filter { !$0.isTerminated }
+        return !instances.isEmpty && instances.allSatisfy { app in app.bundleURL.map { TestCopy.isThrowaway(bundleURL: $0, bundleID: bundleID) } ?? false }
+    }
+
     public static func name(of bundleID: String) -> String {
         if let name = running(bundleID)?.localizedName { return name }
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
@@ -81,14 +92,26 @@ public actor ComputerController {
         return bundleID
     }
 
-    private func listApps(_ apps: [String]) -> ComputerReply {
+    private func listApps(_ apps: [String], testCopies: Bool) -> ComputerReply {
+        var apps = apps
+        if testCopies {
+            // The test copies running now, which the agent may use without their being listed.
+            for app in NSWorkspace.shared.runningApplications {
+                guard let id = app.bundleIdentifier, TestCopy.hasTestCopyID(id), !apps.contains(where: { ComputerPolicy.same($0, id) }), isTestCopy(id) else { continue }
+                apps.append(id)
+            }
+        }
         guard !apps.isEmpty else {
+            if testCopies {
+                return ComputerReply(ok: true, text: "No apps listed, and no test copy of pi² is running. Start one with scripts/test-copy start test-<number>.", summary: "Listed apps")
+            }
             return ComputerReply(ok: true, text: "No apps yet. The person chooses them in this agent's settings in pi², under Computer use.", summary: "Listed apps")
         }
         let lines = apps.map { bundleID -> String in
             let installed = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
             let state = Self.running(bundleID) != nil ? "running" : installed ? "not running" : "not installed"
-            let limit = ComputerPolicy.isViewOnly(bundleID) ? ", look only" : ""
+            let copy = testCopies && isTestCopy(bundleID)
+            let limit = copy ? ", a test copy of pi²" : ComputerPolicy.isViewOnly(bundleID) ? ", look only" : ""
             return "\(bundleID) — \(Self.name(of: bundleID)) (\(state)\(limit))"
         }
         return ComputerReply(ok: true, text: "Apps you may use:\n" + lines.joined(separator: "\n"), summary: "Listed apps")

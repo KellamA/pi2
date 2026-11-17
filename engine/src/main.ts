@@ -47,7 +47,7 @@ import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
-import { ComputerHost, validateComputer } from "./computer.ts";
+import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
@@ -273,8 +273,9 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
-	// Computer use with no app allowed could only refuse; the tool comes with the first app the person allows (#177).
-	const screen = agent?.computer?.enabled === true && agent.computer.apps.length > 0 ? ["computer"] : [];
+	// Computer use with no app allowed could only refuse; the tool comes with the first app the person allows (#177), or
+	// with test copies of pi² allowed.
+	const screen = hasApps(agent?.computer) ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
 	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
@@ -424,7 +425,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		codeMode: input.codeMode ?? previous?.codeMode ?? false,
 		mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
 		files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
-		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
+		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true, testCopies: false }) : validateComputer(input.computer),
 		browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
