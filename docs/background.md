@@ -42,7 +42,7 @@ A background command runs until one of these:
 
 Stopping the agent's answer does not stop its background commands: they are meant to outlast an answer. A conversation with a background command still running is not [archived on its own](archive.md#archiving-on-its-own) for being unused.
 
-Stopping sends the command and everything it started a request to end (SIGTERM), and ends them outright (SIGKILL) if they are still there three seconds later.
+Stopping sends the command and everything it started a request to end (SIGTERM), and ends them outright (SIGKILL) if they are still there three seconds later. The stop is told as that stop ("was stopped by the agent", "was stopped by the person") whether everything went at once or part of what the command started outlasted its own process for a moment, which on a busy Mac it can: the stop was of all of it either way.
 
 ## Seeing and stopping them
 
@@ -59,7 +59,7 @@ In the conversation:
 - Starting one is a row like any command's: "Started `npm run dev` in the background", with its id. It opens to the command and what it had printed when the call returned.
 - Reading and stopping are rows of their own: "Read the output of `npm run dev`", "Stopped `npm run dev`". They open to what the agent was given.
 - A command that is over by the time the call that started it returns shows there: the row is marked failed if it exited with an error, and opens to what it printed.
-- Any other end that the agent did not ask for gets a line of its own in the conversation, like the one for a context reset: "Background command bg-2 exited with code 1: npm run dev", "… was stopped by the person: …", "… was stopped because the conversation was archived: …". So does an end that took something the command had left running with it.
+- Any other end that the agent did not ask for gets a line of its own in the conversation, like the one for a context reset: "Background command bg-2 exited with code 1: npm run dev", "… was stopped by the person: …", "… was stopped because the conversation was archived: …". So does an end the command came to by itself that took something it had left running with it: "… finished, and what it had left running was stopped with it: …". A stop is never worded that way, since a stop was meant for everything the command started.
 
 ## What the agent is told when one ends
 
@@ -94,7 +94,7 @@ A command's output comes to the engine as it is printed, and the engine keeps on
 - After an engine that stopped unexpectedly, the `recovery` event carries `background`: one `{ id, conversationId, rootConversationId, title, command, outcome, group }` for each command the last engine left, where `outcome` is `stopped`, `partly`, `gone`, `unsure` or `unknown` (left alone before its process was noted) and `title` is the root conversation's. A feature adds fields to that event with `recovery()` (`engine/src/features.ts`).
 - Features can now take part in two more moments (`engine/src/features.ts`): `putAwayChanged`, when a conversation is archived, deleted or restored, and `stopping`, when the engine stops cleanly.
 - The app's side is `app/Sources/pi2/BackgroundViews.swift` (the output window and the conversation's strip), with the rows in `ActivityViews.swift` and `MenuBar.swift`. A development build opens a command's output window at launch with `PI2_SHOW=output:<id>` ([development.md](development.md)).
-- `npm run test:background` (part of `npm test`) runs `engine/test/background.ts` against a real engine: start, read, wait, tail, list and stop; a command outliving the default limit; what bounds the output, also as the person reads it; approvals, rules across worktrees and Always Allow; ending by itself; a time limit of its own; Activity's stop; the person reading a command's output from any point, waiting for more, without changing what the agent has read; archiving, deleting (also of a sub-chat's parent) and removing a worktree; a clean stop of the engine; an engine killed outright, and Activity's notice of it; one killed whose command's own process then ended, leaving what it had started; and the same where only part of what it started carries the marker.
+- `npm run test:background` (part of `npm test`) runs `engine/test/background.ts` against a real engine: start, read, wait, tail, list and stop; a stop's wording when part of what the command started outlasts its own process (it ignores SIGTERM, so the SIGKILL ends it); a command outliving the default limit; what bounds the output, also as the person reads it; approvals, rules across worktrees and Always Allow; ending by itself; a time limit of its own; Activity's stop; the person reading a command's output from any point, waiting for more, without changing what the agent has read; archiving, deleting (also of a sub-chat's parent) and removing a worktree; a clean stop of the engine; an engine killed outright, and Activity's notice of it; one killed whose command's own process then ended, leaving what it had started; and the same where only part of what it started carries the marker.
 - The demo model answers `/background <command>` with `bash` and `background: true`, and `/tool background {"action":"read","id":"bg-1"}` with the `background` tool.
 
 ## Known limits
