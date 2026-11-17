@@ -1,4 +1,9 @@
-// The PATH the engine gives the programs it starts: the person's own, as their login shell has it.
+// The PATH the engine gives the programs it starts: the person's own, as their login shell has it. SSH_AUTH_SOCK too
+// (issue #96): the socket of the SSH agent that holds the person's keys, which a profile often points at another agent
+// than macOS's own (1Password, Secretive, gpg-agent), and without which an agent's `git push` over SSH would find none
+// of those keys. It is the path of a socket, not a secret. Nothing else is taken: a profile also exports tokens and the
+// like, and taking the whole environment would hand every one of them to every command an agent runs. A person gives
+// an agent the variables it should have in its settings instead (variables.ts).
 //
 // The engine is started by the app or by the login item, so it begins with the PATH macOS gives every program:
 // /usr/bin:/bin:/usr/sbin:/sbin. What the person installed themselves (Homebrew, a version manager, ~/.local/bin) is
@@ -62,6 +67,32 @@ export function readPath(output: string): string | undefined {
 	return found.length === 0 ? undefined : found.join(":");
 }
 
+/** What the shell is asked to print: SSH_AUTH_SOCK on a line marked as its own, then PATH on the last line. */
+const SOCKET_MARK = "pi2-ssh-auth-sock=";
+/**
+ * The command the shell runs. `sh`, not the shell itself, prints, so that it is the same in every shell (fish has no
+ * `${…-}`): what it prints is what a program the shell starts is given. Single quotes mean the same in all three.
+ */
+export const ASK_COMMAND = `exec /bin/sh -c 'printf "%s\\n%s\\n" "${SOCKET_MARK}\${SSH_AUTH_SOCK-}" "$PATH"'`;
+
+/**
+ * The SSH_AUTH_SOCK in what a shell printed, from the marked line just before the PATH. Undefined when the shell has
+ * none, or one that is not a full path.
+ */
+export function readSocket(output: string): string | undefined {
+	const lines = output.split("\n").filter((line) => line.trim() !== "");
+	const marked = lines.at(-2);
+	if (marked === undefined || !marked.startsWith(SOCKET_MARK)) return undefined;
+	const socket = marked.slice(SOCKET_MARK.length);
+	return socket.startsWith("/") ? socket : undefined;
+}
+
+/** The variables the engine takes from the login shell, and nothing else. */
+export const FROM_SHELL = ["PATH", "SSH_AUTH_SOCK"] as const;
+
+/** What of `env` came from the login shell, as one string: what something started with it was started with. */
+export const fromShell = (env: NodeJS.ProcessEnv = process.env): string => FROM_SHELL.map((name) => env[name] ?? "").join("\n");
+
 /** The shell to ask: the person's own, or the one a test names. Undefined when none is to be asked. */
 export function loginShell(env: NodeJS.ProcessEnv = process.env): string | undefined {
 	if (env.PI2_LOGIN_SHELL !== undefined) return env.PI2_LOGIN_SHELL === "off" || env.PI2_LOGIN_SHELL === "" ? undefined : env.PI2_LOGIN_SHELL;
@@ -74,8 +105,8 @@ export function loginShell(env: NodeJS.ProcessEnv = process.env): string | undef
 	}
 }
 
-/** What a shell said: its PATH, or why there is none. */
-export type Answer = { path: string } | { reason: string };
+/** What a shell said: its PATH and SSH_AUTH_SOCK (when it has one), or why there is none. */
+export type Answer = { path: string; socket?: string } | { reason: string };
 
 /** A shell that has been asked for its PATH. */
 export interface Asked {
@@ -114,9 +145,8 @@ export function listenToShell(shell: string, env: NodeJS.ProcessEnv = process.en
 	if (!KNOWN_SHELLS.has(name)) return refused(`${name} is not a shell pi² knows how to ask`);
 	let child: ChildProcess;
 	try {
-		// printenv, not echo: it prints what a program started by the shell is given, the same in every shell. In a
-		// group of its own so that whatever the profile started can be stopped with it.
-		child = spawn(shell, ["-ilc", "exec /usr/bin/printenv PATH"], { env, stdio: ["ignore", "pipe", "ignore"], detached: true });
+		// In a group of its own so that whatever the profile started can be stopped with it.
+		child = spawn(shell, ["-ilc", ASK_COMMAND], { env, stdio: ["ignore", "pipe", "ignore"], detached: true });
 	} catch (error) {
 		// A path or a variable that no program can be given. One that is only missing is reported below instead.
 		return refused(`${name} could not be started (${error instanceof Error ? error.message : String(error)})`);
@@ -158,7 +188,8 @@ export function listenToShell(shell: string, env: NodeJS.ProcessEnv = process.en
 	};
 	const conclude = (code: number | null) => {
 		const path = readPath(output);
-		finish(path !== undefined ? { path } : { reason: code === 0 ? `${name} printed no PATH` : `${name} stopped with code ${code ?? "none"}` });
+		const socket = readSocket(output);
+		finish(path !== undefined ? { path, ...(socket === undefined ? {} : { socket }) } : { reason: code === 0 ? `${name} printed no PATH` : `${name} stopped with code ${code ?? "none"}` });
 	};
 	// A limit is not acted on the moment its timer comes up. Node handles a timer that is due before it looks at what
 	// the programs it started have done, so if this process was busy as the limit passed (the engine is, while it
@@ -230,6 +261,16 @@ function startUpWait(env: NodeJS.ProcessEnv): number {
 	return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : ASK_MS;
 }
 
+/**
+ * Make the shell's SSH_AUTH_SOCK the engine's, if it named one; one it did not name leaves the engine's as it is. What
+ * to add to the log line, which says so only when it is another socket than the engine had, without its path.
+ */
+function takeSocket(env: NodeJS.ProcessEnv, answer: { socket?: string }): string {
+	if (answer.socket === undefined || answer.socket === env.SSH_AUTH_SOCK) return "";
+	env.SSH_AUTH_SOCK = answer.socket;
+	return ", and its SSH_AUTH_SOCK, another than the engine's";
+}
+
 /** A login shell that missed start-up's wait and is still listened to. */
 export interface StillListening {
 	/** Settles once the shell has answered and its PATH is taken, or it has failed or been stopped. Never rejects. */
@@ -239,8 +280,8 @@ export interface StillListening {
 }
 
 /**
- * Make the login shell's PATH this process's own, keeping any folder the engine already had after it. If the shell
- * cannot be asked, the usual places are added instead.
+ * Make the login shell's PATH this process's own, keeping any folder the engine already had after it, and its
+ * SSH_AUTH_SOCK when it has one. If the shell cannot be asked, the usual places are added instead.
  *
  * If the shell has only not answered within `waitMs`, the usual places are added for now and it is still listened to,
  * for up to `giveUpMs` from when it was asked: when it answers, the PATH becomes what an answer in time would have
@@ -271,7 +312,7 @@ export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: No
 	}
 	if ("path" in soon) {
 		env.PATH = folders(soon.path, env.PATH).join(":");
-		log(`PATH taken from ${basename(shell!)}: ${folders(soon.path).length} folders`);
+		log(`PATH taken from ${basename(shell!)}: ${folders(soon.path).length} folders${takeSocket(env, soon)}`);
 		return undefined;
 	}
 	const began = env.PATH;
@@ -296,7 +337,7 @@ export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: No
 			// the one a quicker start gives, in folders or in their order, for no reason the person could see.
 			// (Nothing else in the engine changes the PATH, so nothing else is lost by starting again from `began`.)
 			env.PATH = folders(late.path, began).join(":");
-			log(`PATH taken from ${basename(shell!)}, ${span(Date.now() - askedAt)} after it was asked: ${folders(late.path).length} folders. What is started from now on gets it`);
+			log(`PATH taken from ${basename(shell!)}, ${span(Date.now() - askedAt)} after it was asked: ${folders(late.path).length} folders${takeSocket(env, late)}. What is started from now on gets it`);
 		})
 		.catch(() => {}); // only a log that cannot be written leads here, and then there is nowhere to say so
 	return {

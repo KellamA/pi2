@@ -64,9 +64,9 @@ This runs, side by side, every file in `engine/test` but two: `patience.ts`, whi
 - `documents.ts`: the documents tool.
 - `earlystop.ts`: an engine told to stop while it is still starting stops cleanly (a real engine held in start-up by a stand-in shell that never answers).
 - `engine.ts`: the end-to-end test described next.
-- `environment.ts`: an engine started with pi²'s own variables set does not pass them to a shell command, a background command, a set-up command or an MCP server, and the commands get their conversation's scratch folder, a sub-chat its own, kept when archived and removed when deleted.
+- `environment.ts`: an engine started with pi²'s own variables set does not pass them to a shell command, a background command, a set-up command or an MCP server, and the commands get their conversation's scratch folder, a sub-chat its own, kept when archived and removed when deleted. The commands, not the server, get the variables the person gave their agent, whose values are in a Keychain service of the run's own and not in the data folder or a backup; a sub-chat gets its own agent's, names that would undo what the engine sets are refused, a copy of the agent gets the names alone, and deleting it removes its values.
 - `exec.ts`: commands keep their output when the engine is busy as they exit, and get no input.
-- `latepath.ts`: a login shell too slow for start-up still has its `PATH` taken when it answers (stand-in shells, and two real engines).
+- `latepath.ts`: a login shell too slow for start-up still has its `PATH` and `SSH_AUTH_SOCK` taken when it answers (stand-in shells, and two real engines).
 - `limitwait.ts`: limit waits. It reads refusals and decides waits on a clock of its own, then runs an engine against a stand-in provider on 127.0.0.1 that refuses with HTTP 429 and 529 and then answers, kills that engine in the middle of a wait, and stops it; see [limits.md](limits.md#when-a-limit-is-reached).
 - `log.ts`: every line of `engine.log` starts with its time, and `--restore`'s output does not.
 - `look.ts`: the look tools.
@@ -76,7 +76,7 @@ This runs, side by side, every file in `engine/test` but two: `patience.ts`, whi
 - `reading.ts`: `read` of several files, or several parts of one, in one call, around the library's own tool.
 - `rules.ts`: the command rules. It also runs the commands its rules allow through `/bin/bash`, in a folder of its own.
 - `sections.ts`: it switches on, one at a time, what brings a section or a tool into a conversation, and checks with `/system history` that each is sent alone, without the rest of the prompt; see [architecture.md](architecture.md#the-system-prompts-sections).
-- `shellpath.ts`: commands get the login shell's `PATH` (stand-in shells, and a real engine started with the bare one).
+- `shellpath.ts`: commands get the login shell's `PATH` and `SSH_AUTH_SOCK`, and nothing else from it (stand-in shells, the question itself in the real `bash` and `zsh`, and a real engine started with the bare `PATH`).
 - `socket.ts`: the engine's socket path, and a data folder whose path is too long for a socket, which the engine then reaches through a short link.
 - `worktrees.ts`: it makes throwaway git repositories and has an engine make and remove worktrees in them.
 
@@ -143,7 +143,7 @@ On a Mac where pi² is in real use, and where other sessions may be testing too,
 
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
-- `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `rules` (commands it may run without asking), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
+- `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `rules` (commands it may run without asking), `variables` (variables for its commands), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
 
   `output:<id>` opens a background command's output window as well, such as `output:bg-1` ([background.md](background.md)), about a second after the app has connected to its engine; the main window opens as it would without `PI2_SHOW`. It is a window of its own, 760 points wide, named after the command.
 
