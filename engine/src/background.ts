@@ -9,19 +9,19 @@
 // started. Its output comes to the engine through pipes, and only the end of it is kept, in memory. A session document
 // records each running command's group, when its first process started, and the marker it was started with, so that an
 // engine started after one that died can stop what was left running, and only what is provably the same (`stopLeftOver`
-// in worktrees.ts).
+// in processes.ts).
 //
 // Nothing here limits how many there are or how long they run. A command runs until it ends, the agent or the person
 // stops it, its conversation is archived or deleted, the worktree it runs in is removed, or the engine stops.
 
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Engine, Feature } from "./features.ts";
-import { type LeftOver, newRunMarker, RUN_VARIABLE, type SetupProcess, stopLeftOver } from "./worktrees.ts";
+import { killLater, type LeftOver, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
 export const KEEP_CHARS = 128 * 1024;
@@ -50,11 +50,8 @@ const MAX_TIMEOUT_SECONDS = 2_147_483;
 /** A line the transcript shows the person when a background command ends other than by the agent stopping it. */
 export const BACKGROUND_ENTRY = "pi2.background";
 
-/** A process as `ps` lists it: its group, and when it started. */
-type Listed = { group: number; start: string };
-
 /** A running command as the session document records it, for the engine that starts after this one. */
-type Left = { id: string; conversationId: number; command: string; cwd: string; startedAt: number; process?: SetupProcess };
+type Left = { id: string; conversationId: number; command: string; cwd: string; startedAt: number; process?: RunProcess };
 
 const Background = defineDoc<{ next: number; running: Record<string, Left> }>({
 	kind: "pi2.background",
@@ -145,31 +142,6 @@ function realish(path: string): string {
 }
 
 /**
- * Processes as `ps` lists them, by pid: their process group and start time. Only `pid` when given, else all of them. The
- * same reading as worktrees.ts takes for set-up commands (UTC and the C locale, so the same process reads the same
- * whoever asks; ones that have ended and only wait to be reaped are left out), so a start time noted here is one
- * `stopLeftOver` recognises.
- */
-function processes(pid?: number): Promise<Map<number, Listed>> {
-	return new Promise((resolve, reject) => {
-		const which = pid === undefined ? ["-A"] : ["-p", String(pid)];
-		execFile("/bin/ps", [...which, "-o", "pid=,pgid=,stat=,lstart="], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
-			const found = new Map<number, Listed>();
-			for (const line of String(stdout).split("\n")) {
-				const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line);
-				if (match && !match[3]!.startsWith("Z")) found.set(Number(match[1]), { group: Number(match[2]), start: match[4]!.replace(/\s+/g, " ") });
-			}
-			// ps exits 1 when the one process asked about is not there: that is an answer, not a failure.
-			if (error && !(pid !== undefined && (error as { code?: unknown }).code === 1)) reject(error);
-			else resolve(found);
-		});
-	});
-}
-
-/** A process or group number that may be signalled: a whole number above 1 that is not this engine's own. */
-const signallable = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 1 && n !== process.pid;
-
-/**
  * Signal a command and everything it started. Only while its first process has not been reaped: until then its number,
  * which is also the group's, cannot belong to anything else.
  */
@@ -202,18 +174,7 @@ async function stopMembers(group: number, graceMs: number): Promise<boolean> {
 	} catch {
 		return true;
 	}
-	setTimeout(async () => {
-		const now = await processes().catch(() => new Map<number, Listed>());
-		for (const [pid, was] of members) {
-			const is = now.get(pid);
-			if (is === undefined || is.group !== was.group || is.start !== was.start) continue;
-			try {
-				process.kill(pid, "SIGKILL");
-			} catch {
-				// Gone meanwhile.
-			}
-		}
-	}, graceMs).unref();
+	killLater(members, graceMs);
 	return true;
 }
 
@@ -429,20 +390,15 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 
 	// Its process group, that group's start and the run's marker, for the engine that comes after this one, should this one
 	// die. Read only while the child is known not to have been reaped: until then its pid cannot belong to anything else.
-	const group = child.pid;
-	const recorded =
-		group === undefined
-			? Promise.resolve()
-			: processes(group)
-					.then(async (found) => {
-						const own = found.get(group);
-						if (own === undefined || own.group !== group || reaped(child)) return;
-						await save((doc) => {
-							const record = doc.running[id];
-							if (record !== undefined && !over) record.process = { group, start: own.start, marker };
-						});
-					})
-					.catch((error) => host.log("could not note the process of background command", id, error instanceof Error ? error.message : error));
+	const recorded = noteProcess(child, marker)
+		.then(async (noted) => {
+			if (noted === undefined) return;
+			await save((doc) => {
+				const record = doc.running[id];
+				if (record !== undefined && !over) record.process = noted;
+			});
+		})
+		.catch((error) => host.log("could not note the process of background command", id, error instanceof Error ? error.message : error));
 	announce();
 
 	let sawTheEnd = false;

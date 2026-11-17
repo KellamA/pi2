@@ -50,6 +50,7 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
 | `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
+| `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
 
