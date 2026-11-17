@@ -43,7 +43,7 @@ Agents can hand work to each other. Each handoff opens a sub-chat under the conv
 
 ### Stay in control
 
-Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. A command that runs for more than 2 minutes is stopped, unless the agent asked for longer (up to 10) or left it running in the background, and one that waits for typed input fails at once instead of holding the conversation. For a server or a watching build, an agent can start a command and [leave it running in the background](docs/background.md), read its output later and stop it; Activity lists what is running, each with its output and a Stop button, and the conversation shows the commands it has running above the message field. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
+Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. A command still running after 2 minutes (or up to 10, if the agent asked for longer) is moved to the background, where you can see and stop it, or stopped where starting it there would have needed your approval, and one that waits for typed input fails at once instead of holding the conversation. For a server or a watching build, an agent can start a command and [leave it running in the background](docs/background.md), read its output later and stop it; Activity lists what is running, each with its output and a Stop button, and the conversation shows the commands it has running above the message field. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
 
 <p align="center"><img src="docs/images/inbox.png" alt="The Inbox: a command, a schedule an agent wants to set, a question, and an app action, all waiting" width="820"></p>
 
@@ -106,7 +106,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **A task list**: for work with several steps, the agent keeps a checklist pinned above the message field, so you can see the plan and where it stands.
 - **Documents**: ask for a report or a letter and the agent can write it as a Word, RTF, OpenDocument or HTML file. [What survives the conversion](docs/documents.md).
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
-- **MCP servers**: add tools from other apps and services, per agent.
+- **MCP servers**: add tools from other apps and services, per agent. [What a server's read-only marks do](docs/mcp.md).
 - **Scripts**: let a model chain many tool calls in one step.
 - **Archive**: put a conversation away without losing it. It leaves the sidebar, stays readable and searchable, and can be restored; pi² can archive what has gone unused for a while on its own. [How the Archive works](docs/archive.md).
 - **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).

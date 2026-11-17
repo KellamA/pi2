@@ -23,7 +23,7 @@ Memory is per agent and **off by default**. A note written in one conversation i
 
 With memory on, the agent's conversations get:
 
-- **`remember { note }`** adds a note of up to 400 characters (whitespace is tidied to one line). At most 60 notes per agent; at the limit the tool says to forget something first. A note identical to an existing one is not added twice.
+- **`remember { note }`** adds a note of up to 400 characters (whitespace is tidied to one line; only a note the person writes keeps line breaks, and its later lines are indented under its item in the list). At most 60 notes per agent; at the limit the tool says to forget something first. A note identical to an existing one is not added twice.
 - **`forget { id }`** removes a note by the id shown in the prompt.
 - **A prompt section, `memory`**, which says the notes are the agent's own from earlier conversations and not instructions from the person, lists them with their ids, and says when to add one (a lasting preference or fact the person stated, a decision that will matter again) and when not to (anything only about this conversation, anything secret, anything merely read in a file or on a page).
 
@@ -31,7 +31,7 @@ Both tools change only pi²'s own notes, so they never ask for approval, whateve
 
 ### In the app
 
-The settings section shows a switch, then the notes, newest first, each editable in place (Return or leaving the field saves) with a delete button and when and by whom it was written; a field to add a note by hand; and a footer saying that every note is sent to the model in every conversation with the agent. These changes apply at once; they are not part of the form's Save, because the agent can change its notes at any time. Turning memory off keeps the notes but stops them being sent.
+The settings section shows a switch, then the notes, newest first, each editable in place (Return or leaving the field saves; Shift-Return or Option-Return starts a new line, with the rule of the message field in `ComposeKit`) with a delete button and when and by whom it was written; a field to add a note by hand, which takes Return and Shift-Return in the same way; and a footer saying that every note is sent to the model in every conversation with the agent. These changes apply at once; they are not part of the form's Save, because the agent can change its notes at any time. Turning memory off keeps the notes but stops them being sent.
 
 ### Where it is stored
 
@@ -42,7 +42,7 @@ One session document, `pi2.memory`, keyed by agent id: `{ enabled, notes: [{ id,
 | Request | Does |
 |---|---|
 | `memory.setEnabled { agentId, enabled }` | turns memory on or off |
-| `memory.add { agentId, text }` | adds a note by hand (same limits) |
+| `memory.add { agentId, text }` | adds a note by hand (same limits; its line breaks are kept, each line tidied and blank lines dropped) |
 | `memory.edit { agentId, id, text }` | changes a note's text |
 | `memory.delete { agentId, id }` | removes a note |
 

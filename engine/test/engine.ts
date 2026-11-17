@@ -123,6 +123,34 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 `;
 
+// A stand-in MCP server for the order of an answer's calls (#190). `note` is not marked read-only: it takes a second
+// before it keeps its text, so that a call started beside it would find nothing kept. `peek` and `hold` are read-only:
+// `peek` answers with what is kept, `hold` answers once the file it is given exists.
+const MCP_ORDER_SERVER = `
+import { existsSync } from "node:fs";
+import { createInterface } from "node:readline";
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
+const text = (id, text) => reply(id, { content: [{ type: "text", text }] });
+const kept = [];
+const schema = { type: "object", properties: { text: { type: "string" }, gate: { type: "string" } } };
+createInterface({ input: process.stdin }).on("line", (line) => {
+	const message = JSON.parse(line);
+	if (message.method === "initialize") reply(message.id, { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "notes", version: "1" } });
+	else if (message.method === "tools/list") reply(message.id, { tools: [
+		{ name: "note", description: "Keep a note", inputSchema: schema },
+		{ name: "peek", description: "The notes kept", inputSchema: schema, annotations: { readOnlyHint: true } },
+		{ name: "hold", description: "Answer once a file exists", inputSchema: schema, annotations: { readOnlyHint: true } },
+	] });
+	else if (message.method === "tools/call") {
+		const { name, arguments: args } = message.params;
+		if (name === "note") setTimeout(() => { kept.push(args.text); text(message.id, "kept"); }, 1000);
+		else if (name === "peek") text(message.id, "notes: " + kept.join(","));
+		else { const wait = setInterval(() => { if (existsSync(args.gate)) { clearInterval(wait); text(message.id, "released"); } }, 100); }
+	}
+	else if (message.id !== undefined) reply(message.id, {});
+});
+`;
+
 function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
@@ -1272,6 +1300,10 @@ try {
 		const first = noted()[0]!;
 		await client.call("memory.edit", { agentId: pilot, id: first.id, text: "edited by hand" });
 		await client.until("edit broadcast", () => noted()[0]!.text === "edited by hand");
+		// A note the person writes keeps its line breaks (#198), each line tidied, and its later lines are indented in the prompt.
+		await client.call("memory.edit", { agentId: pilot, id: first.id, text: " edited  by hand \r\n\n   then a second\tline\n" });
+		await client.until("edit with a line break", () => noted()[0]!.text === "edited by hand\nthen a second line");
+		assert.ok((await say(q1, "/system")).includes(`- ${first.id}: edited by hand\n  then a second line\n`), "a note of two lines is one item in the list");
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: first.id, text: "z".repeat(401) }), /400 characters/);
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: "m999", text: "x" }), /gone/);
 		await client.call("memory.delete", { agentId: pilot, id: first.id });
@@ -2218,8 +2250,9 @@ try {
 		const [stopped, longer, input] = [await open(), await open(), await open()];
 		const started = Date.now();
 		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
-		// take, however busy the machine.
-		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 600; echo never-printed" });
+		// take, however busy the machine. It starts with `sleep`, so at its limit it is stopped rather than moved to the
+		// background (#197; test/background.ts has the move).
+		await client.call("submit", { id: stopped, text: "/bash sleep 0.1; echo begun; sleep 600; echo never-printed" });
 		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
 		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
@@ -2322,6 +2355,44 @@ try {
 		await settled(o, results);
 		assert.match(toolResults(o).slice(-2).find((result) => result.name === "background")!.text, /through/);
 		step("order: an answer's calls run one at a time when one changes files, so a read or a background command sees what the call before it wrote; calls that only look still run together");
+	}
+	{
+		// order, with MCP tools (#190): one its server does not mark read-only makes the answer's calls run in order; read-only ones still run together.
+		const serverFile = join(home, "mcp-order-server.mjs");
+		writeFileSync(serverFile, MCP_ORDER_SERVER);
+		const { id: server } = await client.call("mcp.save", { name: "Notes", transport: "stdio", command: process.execPath, args: [serverFile] });
+		const listed = await client.until("notes server connected", () => client.mcp.find((x) => x.id === server && x.status !== "connecting"));
+		assert.equal(listed.status, "connected", listed.error ?? "");
+		assert.deepEqual(listed.tools.map((t) => [t.name, t.readOnly]), [["note", false], ["peek", true], ["hold", true]]);
+		const [note, peek, hold] = listed.tools.map((t) => t.toolName) as [string, string, string];
+		const { id: noter } = await client.call("agents.save", { agent: { name: "Noter", access: "full", mcpServers: [server] } });
+		await client.until("noter", () => client.agents.some((x) => x.id === noter));
+		const { id: n } = await client.call("conversation.create", { agentId: noter });
+		await client.call("conversation.open", { id: n });
+		await client.call("conversation.configure", { id: n, access: "full", cwd: workdir });
+		await client.until("full access", () => client.conversations.get(n)?.state.agent.access === "full");
+		const answer = (...calls: [string, Record<string, unknown>][]) => client.call("submit", { id: n, text: `/tools ${JSON.stringify(calls.map(([name, args]) => ({ name, arguments: args })))}` });
+
+		await answer([note, { text: "fresh" }], [peek, {}]);
+		await settled(n, 2);
+		assert.deepEqual(toolResults(n).map((result) => result.text), ["kept", "notes: fresh"], "the read-only call sees what the one before it did");
+
+		// Two read-only calls: the second is answered while the first still waits for its gate.
+		const gate = join(removedAtEnd(mkdtempSync(join(tmpdir(), "pi2-mcp-order-"))), "gate");
+		await answer([hold, { gate }], [peek, {}]);
+		const first = await client.until("one of the two calls done", () => {
+			const slots = client.conversations.get(n)!.state.tools;
+			const [waiting, looking] = [slots.find((slot) => slot.name === hold), slots.find((slot) => slot.name === peek)];
+			return waiting === undefined || looking === undefined ? undefined : looking.status === "done" ? "peek" : waiting.status === "done" ? "hold" : undefined;
+		});
+		assert.equal(first, "peek", "the second read-only call did not wait for the first");
+		writeFileSync(gate, "");
+		await settled(n, 4);
+		assert.deepEqual(toolResults(n).slice(2).map((result) => result.text).sort(), ["notes: fresh", "released"]);
+
+		await client.call("mcp.delete", { id: server });
+		await client.until("notes server removed", () => !client.mcp.some((x) => x.id === server));
+		step("order: an MCP tool not marked read-only makes an answer's calls run in order; read-only MCP tools still run together");
 	}
 
 	// ---- Schedules
