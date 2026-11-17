@@ -22,6 +22,10 @@
 # - "shot" checks that screen capture is already allowed and refuses otherwise: capturing without it puts a
 #   permission prompt on the person's screen.
 #
+# Clicking in a copy is computer use's, not this script's: an agent whose computer use has "Test copies of pi²" on may
+# work a copy whose suffix begins with test (bundle id dev.pi2.app.test-…), which pi² checks is a copy made here of a
+# development build (docs/computer-use.md). Without that, a copy can only be looked at; nothing here works it.
+#
 # Two copies with different suffixes, from one checkout or several, are independent. A second "start" with a suffix
 # already in use (from this checkout or any other) is refused before it changes anything: the copy's folder here and
 # its data folder are each made with mkdir, which only one caller can win.
@@ -50,7 +54,10 @@ Usage: scripts/test-copy <command> [arguments]
   status [<suffix>]                What is recorded for a copy and whether it runs; without a suffix, every copy this
                                    checkout started.
 
-A suffix is lower-case letters, digits and hyphens, such as your issue number: test-181.
+A suffix is lower-case letters, digits and hyphens, such as test- and your issue number: test-181.
+
+An agent whose computer use has "Test copies of pi²" on may click, type and choose menu commands in a copy whose
+suffix begins with test, by its bundle id (dev.pi2.app.test-181); one without it can only look at a copy.
 EOF
 }
 
@@ -403,6 +410,11 @@ case $cmd in
 		echo "  app pid           $APP_PID"
 		echo "  engine pid        $ENGINE_PID"
 		echo "Capture it with scripts/test-copy shot $SUFFIX <file.png>; stop it with scripts/test-copy stop $SUFFIX."
+		if [[ $SUFFIX == test* ]]; then
+			echo "An agent whose computer use has Test copies of pi² on may click in it as $ID; without that, it can only look."
+		else
+			echo "Computer use can only look at it: the suffix does not begin with test, so it is not a test copy for Test copies of pi²."
+		fi
 		if [[ -n $MENU ]]; then
 			# The app writes the file once the page has settled and it has looked for the element, found or not.
 			waited=0
