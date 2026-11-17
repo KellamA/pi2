@@ -25,8 +25,9 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 // An engine a test starts keeps the PATH the test gave it, and reads nobody's shell profile (src/shellpath.ts).
 process.env.PI2_LOGIN_SHELL ??= "off";
-// Overridable so two copies of the suite can run at once without sharing Keychain items.
-const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
+// This run's own, so that a second run of the suite at the same time neither sees the keys and sign-ins this one stores
+// (its checks start from none) nor removes them under it. PI2_TEST_KEYCHAIN_SERVICE chooses one instead.
+const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? `dev.pi2.credentials.test-engine-${process.pid}`;
 
 type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
 type InboxItem = { id: string; kind: string; conversationId: number; rootConversationId: number; tool: string; question: string | null; agentName: string | null; callId: string };
@@ -208,7 +209,21 @@ function cleanKeychain(): void {
 		} catch {}
 	}
 }
-cleanKeychain(); // anything an earlier failed run left behind
+cleanKeychain(); // anything an earlier failed run with the same service left behind
+// A run's own service is emptied whatever way the run ends, a crash outside the try below included, since no later run
+// will use it again; it holds this test's items only, the second engine's sign-ins among them.
+process.on("exit", () => {
+	if (process.env.PI2_TEST_KEYCHAIN_SERVICE !== undefined) return;
+	for (const service of [KEYCHAIN_SERVICE, `${KEYCHAIN_SERVICE}.limits`]) {
+		for (let i = 0; i < 1000; i++) {
+			try {
+				execFileSync("/usr/bin/security", ["delete-generic-password", "-s", service], { stdio: "ignore" });
+			} catch {
+				break;
+			}
+		}
+	}
+});
 
 let backupPath = "";
 let restoredId = -1;
