@@ -9,8 +9,9 @@ app/Web/transcript/        the page: plain HTML, CSS and JavaScript, no build st
   markdown.js              Markdown to elements (PiMarkdown)
   tools.js                 what a tool call's row says and opens to (PiTools)
   clipboard.js             what a selection copies as (PiClipboard)
+  keys.js                  what Return does in the answer to a question (PiKeys)
   transcript.js            state, rows, scrolling, the bridge
-app/Web/test/              node --test: the three modules above, with a small fake DOM
+app/Web/test/              node --test: the four modules above, with a small fake DOM
 app/Sources/pi2/
   TranscriptPage.swift     the web view: loading, navigation policy, menu, drops; checking the page's messages
   TranscriptFeed.swift     what the page is sent, and only what changed since last time
@@ -29,7 +30,7 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 - Answers are plain prose with full Markdown: headings, emphasis, strikethrough, code, fenced code blocks with a language and a Copy button, nested and task lists, tables, quotes, rules and links. Raw HTML is shown as the text it is.
 - Tool calls are one-line rows: "Ran `npm test`", "Read session.ts", "Edited session.ts +6 −2". A chevron opens the detail: a command and its output, a diff, a file's text, a screenshot. Running rows show a spinner and a present-tense line; a failed row is red and starts open. A call with no result after its run stopped says "No result". A command started with `background: true` reads "Started `npm run dev` in the background" with its id, and the rows that read its output and stop it name the command ([background.md](background.md)).
 - A hand-off names the agent and the task, shows the answer folded to two lines, and has two buttons for the sub-chat: Open shows it in place of the conversation, and Beside splits the pane and shows it next to the conversation.
-- An approval or a question waiting on the person is a card at the call, with the Inbox's words and buttons. An edit's card also shows the change.
+- An approval or a question waiting on the person is a card at the call, with the Inbox's words and buttons. An edit's card also shows the change. A question's answer field grows with its lines: Return sends, Shift-Return or Option-Return starts a new line, and Return while an input method is composing confirms the candidate, as in the app's message field (`keys.js` mirrors ComposeKit's rule).
 - Thinking is a "Thinking…" line while it streams and a "Thought" row afterwards.
 - Hovering over the end of a turn shows Copy (the turn's Markdown) and Fork from here; hovering over a message of the person's shows Copy.
 - The page follows new content while the reader is at the bottom. Scrolling up stops that, and a "Jump to latest" button appears. Sending a message brings the reader back.

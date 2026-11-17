@@ -81,6 +81,12 @@ cd app && swift build -c release --product pi2-layout-check && .build/release/pi
 
 A crash in it prints the step it happened in; `--verbose` prints every step.
 
+What Return does in a field that sends a message (`app/Sources/ComposeKit`: Return sends, Shift-Return or Option-Return starts a new line, and Return while an input method is composing is left to it) is checked by a program of its own. It checks the decision for every combination of modifier keys, then makes a SwiftUI text field as the message field is made, in a window of its own that never comes on screen, and hands key presses straight to that window: no key is posted to the system and no permission is needed. It checks that Shift-Return puts a line break at the cursor in place of the selection and the field grows, that Return sends the text with its line breaks, that Return with marked text (what an input method shows while a candidate is chosen) does not send, and that pasted line breaks are kept. Then it does the same for the answer field of a question on the conversation page, which has its own copy of the rule (`keys.js`): it loads the real page from `app/Web/transcript` in a web view that keeps nothing on disk. It cannot type with a real input method, so that is still worth trying by hand after a change there. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-compose-check && .build/debug/pi2-compose-check
+```
+
 The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page.
 
 ```bash
@@ -132,6 +138,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Web/transcript` is the conversation page the app shows in a web view; `app/Web/test` its tests. See [transcript.md](transcript.md).
 - `app/Sources/BrowserKit` is pi²'s own browser: everything that touches a web page. See [browser.md](browser.md).
 - `app/Sources/PaneKit` is the tree of panes behind the conversation area and the ready-made layouts; the app's `Workspace.swift` keeps it and draws it.
+- `app/Sources/ComposeKit` is what Return does in the fields that send a message (`sendsOnReturn`, used in place of `onSubmit`).
 
 ## Conventions
 
