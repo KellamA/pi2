@@ -4,6 +4,8 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
+
 ## 0.7.8
 
 ### Added

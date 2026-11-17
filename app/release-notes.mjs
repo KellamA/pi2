@@ -1,7 +1,6 @@
 // The one extraction used by release.sh for both GitHub's notes.md and Sparkle's description.
 // Usage: node app/release-notes.mjs <version> [CHANGELOG.md]
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export function releaseNotes(changelog, version) {
@@ -30,7 +29,8 @@ export function releaseNotes(changelog, version) {
 	return text.replace(/\]\((docs\/[^)]*)\)/g, `](https://github.com/KellamA/pi2/blob/v${version}/$1)`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node gives a module its real path, so a checkout under a symbolic link (/tmp, /var) needs one to compare with too.
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	try {
 		if (process.argv.length < 3 || process.argv.length > 4) throw new Error("Usage: node app/release-notes.mjs <version> [CHANGELOG.md]");
 		const changelog = process.argv[3] ?? fileURLToPath(new URL("../CHANGELOG.md", import.meta.url));
