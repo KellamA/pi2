@@ -1,143 +1,10 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import PaneKit
 
 // MARK: - Layout
 
-/// Which way a split lays out what it holds.
-enum SplitAxis: String, Codable {
-    /// Side by side, with dividers that slide left and right.
-    case row
-    /// One above another, with dividers that slide up and down.
-    case column
-}
-
-/// The conversation area as a tree: a pane showing one conversation, or a split dividing its room between the nodes it
-/// holds. A node with no children is a pane.
-struct PaneNode: Codable, Equatable, Identifiable {
-    var id = UUID()
-    /// For a pane: the conversation it shows. Nil is an empty pane, which offers a choice.
-    var conversation: Int?
-    /// For a split: which way it divides.
-    var axis: SplitAxis = .row
-    var children: [PaneNode] = []
-    /// For a split: each child's share of the room, adding up to 1.
-    var fractions: [Double] = []
-
-    var isPane: Bool { children.isEmpty }
-
-    static func pane(_ conversation: Int? = nil) -> PaneNode { PaneNode(conversation: conversation) }
-
-    static func split(_ axis: SplitAxis, _ children: [PaneNode], _ fractions: [Double]? = nil) -> PaneNode {
-        PaneNode(axis: axis, children: children, fractions: fractions ?? Array(repeating: 1 / Double(children.count), count: children.count))
-    }
-
-    /// Panes in reading order: left to right, top to bottom within each split.
-    var leaves: [PaneNode] { isPane ? [self] : children.flatMap(\.leaves) }
-
-    func find(_ id: UUID) -> PaneNode? {
-        if self.id == id { return self }
-        for child in children { if let found = child.find(id) { return found } }
-        return nil
-    }
-
-    /// Changes the node with `id`, wherever it is. Says whether it found it.
-    @discardableResult
-    mutating func modify(_ id: UUID, _ change: (inout PaneNode) -> Void) -> Bool {
-        if self.id == id {
-            change(&self)
-            return true
-        }
-        for index in children.indices where children[index].modify(id, change) { return true }
-        return false
-    }
-
-    /// The split directly holding the node with `id`, and where in it that node is.
-    func parent(of id: UUID) -> (split: PaneNode, index: Int)? {
-        for (index, child) in children.enumerated() {
-            if child.id == id { return (self, index) }
-            if let found = child.parent(of: id) { return found }
-        }
-        return nil
-    }
-
-    /// Takes the pane with `id` out of the tree. Its room goes to the neighbour before it, or the one after. A split
-    /// left with one child is replaced by that child.
-    mutating func remove(_ id: UUID) {
-        if let index = children.firstIndex(where: { $0.id == id }) {
-            children.remove(at: index)
-            let share = fractions.remove(at: index)
-            if !fractions.isEmpty { fractions[max(index - 1, 0)] += share }
-        } else {
-            for index in children.indices { children[index].remove(id) }
-        }
-        for index in children.indices where children[index].children.count == 1 {
-            children[index] = children[index].children[0]
-        }
-        if children.count == 1 { self = children[0] }
-    }
-
-    /// Gives the panes, in reading order, these conversations.
-    mutating func fill(_ conversations: [Int?]) {
-        var next = 0
-        fill(conversations, from: &next)
-    }
-
-    private mutating func fill(_ conversations: [Int?], from next: inout Int) {
-        if isPane {
-            conversation = next < conversations.count ? conversations[next] : nil
-            next += 1
-        } else {
-            for index in children.indices { children[index].fill(conversations, from: &next) }
-        }
-    }
-
-    mutating func equalize(deep: Bool) {
-        guard !isPane else { return }
-        fractions = Array(repeating: 1 / Double(children.count), count: children.count)
-        if deep { for index in children.indices { children[index].equalize(deep: true) } }
-    }
-
-    /// Whether the tree is one this app can lay out: every split's shares match its children and are sensible.
-    var isValid: Bool {
-        if isPane { return true }
-        guard children.count >= 2, fractions.count == children.count, fractions.allSatisfy({ $0 > 0 && $0.isFinite }) else { return false }
-        return children.allSatisfy(\.isValid)
-    }
-}
-
-/// A ready-made arrangement of panes.
-struct PaneLayout: Identifiable, Sendable {
-    let id: String
-    let name: String
-    let make: @Sendable () -> PaneNode
-
-    var count: Int { make().leaves.count }
-
-    private static func row(_ count: Int) -> PaneNode { .split(.row, (0..<count).map { _ in .pane() }) }
-    private static func column(_ count: Int) -> PaneNode { .split(.column, (0..<count).map { _ in .pane() }) }
-    /// Rows of panes, each row with its own dividers.
-    private static func grid(columns: Int, rows: Int) -> PaneNode { .split(.column, (0..<rows).map { _ in row(columns) }) }
-
-    static let all: [PaneLayout] = [
-        PaneLayout(id: "1", name: "Single") { .pane() },
-        PaneLayout(id: "2-row", name: "Side by side") { row(2) },
-        PaneLayout(id: "2-column", name: "One above the other") { column(2) },
-        PaneLayout(id: "3-row", name: "Three columns") { row(3) },
-        PaneLayout(id: "3-big-left", name: "One big, two on the right") { .split(.row, [.pane(), column(2)]) },
-        PaneLayout(id: "3-big-right", name: "Two on the left, one big") { .split(.row, [column(2), .pane()]) },
-        PaneLayout(id: "3-big-top", name: "One big, two below") { .split(.column, [.pane(), row(2)]) },
-        PaneLayout(id: "3-column", name: "Three rows") { column(3) },
-        PaneLayout(id: "4-grid", name: "Two by two") { grid(columns: 2, rows: 2) },
-        PaneLayout(id: "4-row", name: "Four columns") { row(4) },
-        PaneLayout(id: "4-big-left", name: "One big, three on the right") { .split(.row, [.pane(), column(3)]) },
-        PaneLayout(id: "5-big-left", name: "One big, four around it") { .split(.row, [.pane(), grid(columns: 2, rows: 2)]) },
-        PaneLayout(id: "6-grid", name: "Three by two") { grid(columns: 3, rows: 2) },
-        PaneLayout(id: "8-grid", name: "Four by two") { grid(columns: 4, rows: 2) },
-        PaneLayout(id: "9-grid", name: "Three by three") { grid(columns: 3, rows: 3) },
-        PaneLayout(id: "12-grid", name: "Four by three") { grid(columns: 4, rows: 3) },
-        PaneLayout(id: "16-grid", name: "Four by four") { grid(columns: 4, rows: 4) },
-    ]
-}
+// The tree of panes and the ready-made layouts are in PaneKit (`app/Sources/PaneKit`).
 
 /// How the conversation area is split into panes, and which pane has the person's attention. The focused pane's
 /// conversation is the one the sidebar, the toolbar and the Conversation menu act on.
@@ -157,17 +24,11 @@ final class Workspace {
     /// panes are laid out, and nothing on screen depends on it.
     @ObservationIgnored var frames: [UUID: CGRect] = [:]
 
-    private struct Saved: Codable {
-        let root: PaneNode
-        let focused: UUID
-    }
-
     init() {
-        if let data = UserDefaults.standard.data(forKey: Self.key),
-           let saved = try? JSONDecoder().decode(Saved.self, from: data),
-           saved.root.isValid, (1...Self.maxPanes).contains(saved.root.leaves.count) {
+        // A layout that cannot be read, or that was saved damaged, gives a single pane.
+        if let saved = SavedLayout.restore(UserDefaults.standard.data(forKey: Self.key), maxPanes: Self.maxPanes) {
             root = saved.root
-            focused = saved.root.find(saved.focused)?.isPane == true ? saved.focused : saved.root.leaves[0].id
+            focused = saved.focused
         } else {
             let pane = PaneNode.pane()
             root = pane
@@ -181,7 +42,7 @@ final class Workspace {
     var focusedConversation: Int? { root.find(focused)?.conversation }
 
     func save() {
-        if let data = try? JSONEncoder().encode(Saved(root: root, focused: focused)) {
+        if let data = SavedLayout(root: root, focused: focused).encoded() {
             UserDefaults.standard.set(data, forKey: Self.key)
         }
     }
@@ -221,19 +82,7 @@ final class Workspace {
     func split(_ pane: UUID, _ axis: SplitAxis) -> UUID? {
         guard canSplit, root.find(pane)?.isPane == true else { return nil }
         let new = PaneNode.pane()
-        if let (parent, index) = root.parent(of: pane), parent.axis == axis {
-            root.modify(parent.id) { split in
-                let half = split.fractions[index] / 2
-                split.fractions[index] = half
-                split.fractions.insert(half, at: index + 1)
-                split.children.insert(new, at: index + 1)
-            }
-        } else {
-            root.modify(pane) { node in
-                let old = node
-                node = .split(axis, [old, new])
-            }
-        }
+        root.split(pane, axis, adding: new)
         focused = new.id
         save()
         return new.id

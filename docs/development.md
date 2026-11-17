@@ -38,7 +38,7 @@ Signed builds, the update feed and the release workflow are described in [releas
 cd engine && npm test
 ```
 
-This runs side by side the Keychain store's test, the test that commands keep their output when the engine is busy as they exit and get no input, the test that commands get the login shell's `PATH` (with stand-in shells, and a real engine started with the bare one), the test that a login shell too slow for start-up still has its `PATH` taken when it answers (stand-in shells again, and two real engines), the test that an engine told to stop while it is still starting stops cleanly (a real engine held in start-up by a stand-in shell that never answers), the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), the worktrees test (which makes throwaway git repositories and has an engine make and remove worktrees in them), the background commands' test (which has an engine start, read and stop commands, stops and kills that engine with commands running, and checks that nothing it started is left), and the end-to-end test described next.
+This runs side by side the Keychain store's test, the test that commands keep their output when the engine is busy as they exit and get no input, the test that commands get the login shell's `PATH` (with stand-in shells, and a real engine started with the bare one), the test that a login shell too slow for start-up still has its `PATH` taken when it answers (stand-in shells again, and two real engines), the test that MCP servers started before that answer are started again with its `PATH` without cutting off a call (a stand-in shell, a test MCP server and a real engine), the test that an engine told to stop while it is still starting stops cleanly (a real engine held in start-up by a stand-in shell that never answers), the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), the worktrees test (which makes throwaway git repositories and has an engine make and remove worktrees in them), the background commands' test (which has an engine start, read and stop commands, stops and kills that engine with commands running, and checks that nothing it started is left), and the end-to-end test described next.
 
 The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, pictures and files in messages, tools, approvals, delegation and sub-chats, reference files, computer use and the browser (each with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore. It makes the demo model type fast (`PI2_DEMO_TOKENS_PER_SECOND`); a check that needs an answer still on its way, to stop it or kill the engine in the middle of it, sends a message starting with `/slow `, which is answered at the usual pace. `npm run test:engine` runs this test alone.
 
@@ -63,6 +63,14 @@ cd app && swift build --product pi2-browser-probe && .build/debug/pi2-browser-pr
 ```
 
 With the probe built, `cd engine && npm run test:browser` runs a real engine against it, to check that the two agree. See [browser.md](browser.md).
+
+The panes the conversation area is divided into (`app/Sources/PaneKit`) are checked by a program of its own: it splits panes, closes them down to one in every ready-made layout and at random, gives them equal room, saves and reads back each tree, and reads back damaged saved layouts, which must give a single pane. Build it with optimisation, as the app is released; closing a pane once crashed only in an optimised build (#134), and CI runs it this way:
+
+```bash
+cd app && swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
+```
+
+A crash in it prints the step it happened in; `--verbose` prints every step.
 
 The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page.
 
@@ -114,6 +122,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Sources/ComputerKit` is the part of computer use that touches the screen. See [computer-use.md](computer-use.md).
 - `app/Web/transcript` is the conversation page the app shows in a web view; `app/Web/test` its tests. See [transcript.md](transcript.md).
 - `app/Sources/BrowserKit` is pi²'s own browser: everything that touches a web page. See [browser.md](browser.md).
+- `app/Sources/PaneKit` is the tree of panes behind the conversation area and the ready-made layouts; the app's `Workspace.swift` keeps it and draws it.
 
 ## Conventions
 

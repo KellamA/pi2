@@ -48,10 +48,11 @@ struct ActivityView: View {
     private func recoveryBanner(_ recovery: RecoveryReport) -> some View {
         let when = Date(timeIntervalSince1970: recovery.at / 1000).formatted(date: .omitted, time: .shortened)
         let left = recovery.background ?? []
+        let setups = recovery.setups ?? []
         return VStack(alignment: .leading, spacing: 6) {
             Label("The engine restarted after stopping unexpectedly (\(when))", systemImage: "arrow.clockwise.circle.fill")
                 .font(.callout.weight(.semibold))
-            if recovery.conversations.isEmpty && left.isEmpty {
+            if recovery.conversations.isEmpty && left.isEmpty && setups.isEmpty {
                 Text("Nothing was running at the time. Everything is as it was.").font(.callout).foregroundStyle(.secondary)
             }
             if !recovery.conversations.isEmpty {
@@ -69,7 +70,18 @@ struct ActivityView: View {
                     .font(.callout).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, recovery.conversations.isEmpty ? 0 : 4)
-                ForEach(left) { command in leftRow(command) }
+                ForEach(left) { command in
+                    leftRow(title: command.title, conversation: command.rootConversationId, command: command.command, outcome: command.outcome, group: command.group, background: true)
+                }
+            }
+            if !setups.isEmpty {
+                Text(setupsIntro(setups))
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, recovery.conversations.isEmpty && left.isEmpty ? 0 : 4)
+                ForEach(setups) { setup in
+                    leftRow(title: setup.title, conversation: setup.rootConversationId, command: setup.command, outcome: setup.outcome, group: setup.group, background: false)
+                }
             }
             Button("Dismiss") { engine.perform("recovery.dismiss") }
         }
@@ -87,33 +99,44 @@ struct ActivityView: View {
         return unsure ? intro + " pi² leaves alone whatever it cannot be sure belongs to a command, so part of one may still be running." : intro
     }
 
-    /// One command the last engine left: its conversation, the command, and what became of it.
-    private func leftRow(_ left: RecoveryReport.LeftCommand) -> some View {
-        let group = left.group.map { " (process group \($0))" } ?? ""
-        let outcome: String
-        switch left.outcome {
-        case "stopped": outcome = "stopped"
-        case "partly": outcome = "stopped in part; the rest may still be running\(group)"
-        case "gone": outcome = "had already ended"
-        case "unsure", "unknown": outcome = "left alone; it may still be running\(group)"
-        default: outcome = "ended"
+    /// What the notice says of the worktrees' set-up commands that were running when the engine stopped.
+    private func setupsIntro(_ setups: [RecoveryReport.LeftSetup]) -> String {
+        let intro = setups.count == 1
+            ? "A worktree’s set-up command was running. It is not run again; its conversation has a line about it, and its agent is told."
+            : "Set-up commands were running in new worktrees. None is run again; each conversation has a line about it, and its agent is told."
+        let unsure = setups.contains { ["partly", "unsure", "unknown"].contains($0.outcome) }
+        return unsure ? intro + " pi² leaves alone whatever it cannot be sure belongs to a set-up, so part of one may still be running." : intro
+    }
+
+    /// One command the last engine left, in the background or setting up a worktree: its conversation, the command, and
+    /// what became of it.
+    private func leftRow(title: String, conversation: Int, command: String, outcome: String, group: Int?, background: Bool) -> some View {
+        let group = group.map { " (process group \($0))" } ?? ""
+        let said: String
+        switch outcome {
+        case "stopped": said = "stopped"
+        case "partly": said = "stopped in part; the rest may still be running\(group)"
+        // A set-up that was not running any more had not finished: it was cut off.
+        case "gone": said = background ? "had already ended" : "cut off"
+        case "unsure", "unknown": said = "left alone; it may still be running\(group)"
+        default: said = "ended"
         }
-        let settled = left.outcome == "stopped" || left.outcome == "gone"
+        let settled = outcome == "stopped" || outcome == "gone"
         return VStack(alignment: .leading, spacing: 1) {
-            Button(left.title.isEmpty ? "New conversation" : left.title) {
-                model.selection = .conversation(left.rootConversationId)
+            Button(title.isEmpty ? "New conversation" : title) {
+                model.selection = .conversation(conversation)
             }
             .buttonStyle(.plain).foregroundStyle(Theme.acc)
             .lineLimit(1).truncationMode(.tail)
-            .help("Open the conversation that started it")
+            .help(background ? "Open the conversation that started it" : "Open the conversation whose worktree it was setting up")
             // The command is what gets cut short; what became of it keeps its size.
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(left.command.split(whereSeparator: \.isNewline).joined(separator: " "))
+                Text(command.split(whereSeparator: \.isNewline).joined(separator: " "))
                     .font(Theme.mono).foregroundStyle(Theme.tx2)
                     .lineLimit(1).truncationMode(.tail)
-                    .help(left.command)
+                    .help(command)
                 Text("·").foregroundStyle(Theme.tx3)
-                Text(outcome)
+                Text(said)
                     .font(.callout).foregroundStyle(settled ? Theme.tx2 : Theme.warn)
                     .fixedSize()
             }

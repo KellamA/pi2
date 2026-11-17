@@ -13,9 +13,11 @@ let package = Package(
         .target(name: "ComputerKit", path: "Sources/ComputerKit", swiftSettings: [.swiftLanguageMode(.v5)]),
         // pi²'s own browser: loading pages, reading them and acting in them. Its own module for the same reason.
         .target(name: "BrowserKit", path: "Sources/BrowserKit", swiftSettings: [.swiftLanguageMode(.v5)]),
+        // How the conversation area is divided into panes. Its own module so pi2-layout-check can check it.
+        .target(name: "PaneKit", path: "Sources/PaneKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // The app finds Sparkle.framework in Contents/Frameworks.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
@@ -25,5 +27,8 @@ let package = Package(
         .executableTarget(name: "pi2-probe", dependencies: ["ComputerKit"], path: "Sources/pi2-probe", swiftSettings: [.swiftLanguageMode(.v5)]),
         // Checks BrowserKit against pages it serves itself on this Mac. Loads no real website and keeps no profile.
         .executableTarget(name: "pi2-browser-probe", dependencies: ["BrowserKit"], path: "Sources/pi2-browser-probe", swiftSettings: [.swiftLanguageMode(.v5)]),
+        // Checks PaneKit's operations on the pane tree. Meant to be built with optimisation (`swift build -c release`),
+        // as the app is released: a debug build does not show what #134 was.
+        .executableTarget(name: "pi2-layout-check", dependencies: ["PaneKit"], path: "Sources/pi2-layout-check", swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )
