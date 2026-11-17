@@ -10,18 +10,18 @@ import { realpathSync } from "node:fs";
 import { sep } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, defineTool, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
-import { arr, int, obj, opt, str } from "@earendil-works/pi-schema";
+import { arr, bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { isArchived, isDeleted } from "./archive.ts";
 import { elapsed, runningCommandsOf, stopCommandsOf } from "./background.ts";
 import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
-import { type BranchInfo, inspect, type Worktree, worktreeOf } from "./worktrees.ts";
+import { type BranchInfo, inspect, removeWorktree, type Worktree, worktreeOf } from "./worktrees.ts";
 
 /** A line in the calling conversation's transcript: which sub-chats were archived, or restored to be continued. */
 export const SUBCHATS_ENTRY = "pi2.subchats";
 
 type Named = { id: number; title: string };
-type MarkerData = { action: "archived" | "restored"; chats: Named[]; stopped?: number };
+type MarkerData = { action: "archived" | "restored"; chats: Named[]; stopped?: number; removed?: string[] };
 
 /** What the transcript shows for a `SUBCHATS_ENTRY`. */
 export function subChatsMarker(data: unknown): string {
@@ -31,7 +31,10 @@ export function subChatsMarker(data: unknown): string {
 	if (entry.action === "restored") return `The agent restored sub-chat ${named} from the Archive to continue it`;
 	const one = chats.length === 1;
 	const stopped = typeof entry.stopped === "number" && entry.stopped > 0 ? ` ${entry.stopped} background command${entry.stopped === 1 ? "" : "s"} ${one ? "it" : "they"} left running ${entry.stopped === 1 ? "was" : "were"} stopped.` : "";
-	return `The agent archived ${one ? "sub-chat" : `${chats.length} sub-chats:`} ${named}. ${one ? "It is" : "They are"} in the Archive, where you can read or restore ${one ? "it" : "them"}.${stopped}`;
+	const branches = Array.isArray(entry.removed) ? entry.removed.filter((branch) => typeof branch === "string") : [];
+	const removed = branches.length === 0 ? "" : ` The agent removed ${branches.length === 1 ? "a worktree" : `${branches.length} worktrees`} with nothing uncommitted or unmerged; ${branches.length === 1 ? "its branch" : "their branches"} ${branches.join(", ")} ${branches.length === 1 ? "is" : "are"} kept.`;
+	if (chats.length === 0) return removed.trim();
+	return `The agent archived ${one ? "sub-chat" : `${chats.length} sub-chats:`} ${named}. ${one ? "It is" : "They are"} in the Archive, where you can read or restore ${one ? "it" : "them"}.${stopped}${removed}`;
 }
 
 /** Write a `SUBCHATS_ENTRY` into a conversation. Display only: the model reads the tool's answer instead. */
@@ -81,6 +84,20 @@ export function branchWords(info: BranchInfo): string {
 	return parts.join(", ");
 }
 
+/**
+ * Why removing a worktree would lose something, or undefined when it would not: nothing uncommitted, nothing half done,
+ * and no commits that are not on the branch it was made from (or on the default branch).
+ */
+export function keeps(info: BranchInfo | undefined): string | undefined {
+	if (info === undefined) return "pi² could not read how its branch stands";
+	if (info.state === "missing") return undefined;
+	if (info.operation !== null) return `a ${info.operation} is stopped half way in it`;
+	if (info.changes + info.conflicts > 0) return `it has ${plural(info.changes + info.conflicts, "uncommitted change")}`;
+	if (info.unmerged === null || info.base === null) return "pi² cannot tell whether its branch is merged";
+	if (info.unmerged > 0) return `its branch has ${plural(info.unmerged, "commit")} that ${info.unmerged === 1 ? "is" : "are"} not on ${info.base}`;
+	return undefined;
+}
+
 /** Whether a sub-chat or one of its own sub-chats is busy or waiting on the person, and if so, in words. */
 function activity(host: Host, ids: number[]): string | undefined {
 	const waiting = host.inbox.list().filter((item) => ids.includes(item.conversationId));
@@ -115,7 +132,8 @@ export const SUB_CHATS_DESCRIPTION =
 	"See the sub-chats this conversation opened with delegate, and archive the ones whose work is finished. Actions:\n" +
 	"- list: each sub-chat's number, agent and title; whether it is working, waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are named at the end.\n" +
 	"- archive: put away the sub-chats numbered in `chats`. Use it once you have what you needed from a sub-chat and will not continue it, or when the person asks you to tidy up. " +
-	"An archived sub-chat leaves the sidebar for the Archive, where the person can read and restore it; nothing is deleted. Commands it left running in the background are stopped, and the answer says which. A worktree of its own is left as it is. " +
+	"An archived sub-chat leaves the sidebar for the Archive, where the person can read and restore it; nothing is deleted. Commands it left running in the background are stopped, and the answer says which. " +
+	"A worktree of its own is left as it is, unless you pass `remove_worktree: true` and removing it loses nothing: nothing uncommitted and no commits that are not on the branch it was made from (fetch first if it was merged elsewhere). Its branch is kept either way. " +
 	"A sub-chat that is working or waiting on the person is not archived. Continuing an archived sub-chat with delegate and its number restores it.";
 
 /** The `sub_chats` tool. Offered with `delegate`, to conversations that can hand work on. */
@@ -126,6 +144,7 @@ export function subChatsTool(host: Host) {
 		parameters: obj({
 			action: str({ description: "list or archive" }),
 			chats: opt(arr(int(), { description: "For archive: the numbers of the sub-chats to archive" })),
+			remove_worktree: opt(bool({ description: "For archive: also remove each one's worktree of its own, if nothing would be lost (nothing uncommitted, no commits that are not on the branch it was made from). Its branch is kept." })),
 		}),
 		// Listing changes nothing, and archiving what is archived changes nothing.
 		replay: "safe",
@@ -165,6 +184,27 @@ export function subChatsTool(host: Host) {
 			const archived: Named[] = [];
 			const refused: number[] = [];
 			let stopped = 0;
+			/** The branches of worktrees removed on this call; each is kept. */
+			const removed: string[] = [];
+			/** What becomes of an archived sub-chat's worktree of its own: removed when asked and nothing would be lost, else left. */
+			const worktreeAfter = async (id: number, where: Where): Promise<string[]> => {
+				if (where.own === undefined) return [];
+				const own = where.own;
+				const standing = where.info === undefined ? "" : ` (${branchWords(where.info)})`;
+				const why = keeps(where.info);
+				if (args.remove_worktree === true && why === undefined) {
+					try {
+						await removeWorktree(id, { force: false, deleteBranch: false });
+						removed.push(own.branch);
+						return [`Removed its worktree at ${own.path}; the branch ${own.branch} is kept.`];
+					} catch (error) {
+						return [`Its worktree at ${own.path}, branch ${own.branch}${standing}, was left where it is: ${error instanceof Error ? error.message : String(error)}.`];
+					}
+				}
+				const left = `Its worktree at ${own.path}, branch ${own.branch}${standing}, was left where it is`;
+				if (why !== undefined) return [`${left}${args.remove_worktree === true ? `, since ${why}` : ""}; the person can remove it from Branches, where it is listed under Left Behind.`];
+				return [`${left}. Nothing would be lost by removing it: pass remove_worktree: true to remove it.`];
+			};
 			for (const id of asked) {
 				const meta = all[String(id)];
 				if (meta === undefined || !mine.includes(id)) {
@@ -173,7 +213,8 @@ export function subChatsTool(host: Host) {
 					continue;
 				}
 				if (isArchived(meta)) {
-					lines.push(`- ${id}: already archived.`);
+					const own = await whereOf(api, id, parentWorktree, context);
+					lines.push([`- ${id}: already archived.`, ...(await worktreeAfter(id, own))].join(" "));
 					continue;
 				}
 				const busy = activity(host, [id, ...subChatsOf(all, id)]);
@@ -194,14 +235,13 @@ export function subChatsTool(host: Host) {
 				archived.push({ id, title: meta.title });
 				const parts = [`- ${id}: archived (“${meta.title}”).`];
 				if (commands.length > 0) parts.push(`Stopped the background command${commands.length === 1 ? "" : "s"} it left running: ${commands.map((command) => `${command.id} \`${command.command}\``).join(", ")}.`);
-				if (where.own !== undefined) {
-					const standing = where.info === undefined ? "" : ` (${branchWords(where.info)})`;
-					parts.push(`Its worktree at ${where.own.path}, branch ${where.own.branch}${standing}, was left where it is; the person can remove it from Branches, where it is listed under Left Behind.`);
-				}
+				parts.push(...(await worktreeAfter(id, where)));
 				lines.push(parts.join(" "));
 			}
+			if (archived.length > 0 || removed.length > 0) {
+				await noteSubChats(api, api.conversationId, { action: "archived", chats: archived, stopped, removed }, `sub_chats:${String(api.taskId)}`, context);
+			}
 			if (archived.length > 0) {
-				await noteSubChats(api, api.conversationId, { action: "archived", chats: archived, stopped }, `sub_chats:${String(api.taskId)}`, context);
 				lines.push(archived.length === 1 ? "The person can read or restore it from the Archive." : "The person can read or restore them from the Archive.");
 			}
 			return {

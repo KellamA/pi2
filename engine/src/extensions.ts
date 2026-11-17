@@ -14,6 +14,7 @@ import {
 	hook,
 	type HookApi,
 	section,
+	type ToolExecutionApi,
 	type ToolHookCall,
 	ToolTask,
 	type Tx,
@@ -39,7 +40,7 @@ import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isArchived, isPutAway } from "./archive.ts";
 import { noteSubChats, subChatsTool } from "./subchats.ts";
 import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
-import { madeWorktrees, repoOf, subChatFolder } from "./worktrees.ts";
+import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -122,12 +123,31 @@ export function pi2Extension(host: Host): Extension {
 		description:
 			"Hand a self-contained task to another agent and get its answer back. Name one of the agents listed in the <agents> section, and write the task so it stands on its own: the other agent sees none of this conversation. " +
 			"Each call opens a sub-chat the person can watch. To carry on an earlier sub-chat instead of starting a new one, pass its number as `chat`; that agent then still remembers what it did there. " +
-			"Once a sub-chat's work is done and you will not continue it, archive it with sub_chats.",
-		parameters: obj({ agent: str(), task: str(), chat: opt(int({ description: "Number of an earlier sub-chat of this conversation to continue" })) }),
+			"Once a sub-chat's work is done and you will not continue it, archive it with sub_chats.\n" +
+			"A new sub-chat works in this conversation's folder. To give it a git worktree of its own instead, pass `worktree` with a branch name: use it when several sub-chats change the same repository at once, so each works on its own branch in its own checkout and none disturbs the others or this folder. " +
+			"pi² makes the worktree from the repository the sub-chat would work in, as New Worktree… does: the sub-chat works there and is told so, the agent's set-up command runs in it, and the person sees its branch. " +
+			"The new branch starts from the commit this conversation's folder is on, or from `from`: a branch, tag or commit as the repository has it now (it is not fetched first, so fetch first if you need the latest). A branch that already exists is checked out as it is, unless `from` is given. " +
+			"If the worktree cannot be made, the call fails with the reason and nothing is handed over. Continuing a sub-chat keeps the folder it has. Depending on the person's settings, they may be asked before the worktree is made.",
+		parameters: obj({
+			agent: str(),
+			task: str(),
+			chat: opt(int({ description: "Number of an earlier sub-chat of this conversation to continue" })),
+			worktree: opt(str({ description: "For a new sub-chat: the branch for a git worktree of its own, such as \"fix-login-timeout\"" })),
+			from: opt(str({ description: "With worktree: what the new branch starts from, such as \"origin/main\"; by default the commit this conversation's folder is on" })),
+		}),
 		replay: "safe", // a rerun after a crash finds the same child conversation and submission
 		execute: async (args, api, context) => {
 			const parent = api.conversationId as unknown as number;
-			const footer = (id: number, name: string) => `\n\n(Sub-chat ${id} with ${name}. To continue it, call delegate again with chat: ${id}.)`;
+			const footer = async (id: number, name: string) => {
+				const own = await worktreeOf(api, id, context);
+				const where = own === undefined ? "" : `, working in a worktree of its own at ${own.path} on the branch ${own.branch}`;
+				return `\n\n(Sub-chat ${id} with ${name}${where}. To continue it, call delegate again with chat: ${id}.)`;
+			};
+			if (args.from !== undefined && args.worktree === undefined) return { output: text("`from` says where a sub-chat's worktree starts; pass it with `worktree`."), isError: true };
+			if (args.worktree !== undefined && args.chat !== undefined) {
+				return { output: text("`worktree` is for a new sub-chat. A sub-chat that is continued keeps the folder it has; leave `chat` out to start a new one in a worktree."), isError: true };
+			}
+			if (args.worktree !== undefined && args.worktree.trim() === "") return { output: text("`worktree` needs a branch name, such as \"fix-login-timeout\"."), isError: true };
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
 				const agent = host.agent(meta?.agentId);
@@ -142,7 +162,7 @@ export function pi2Extension(host: Host): Extension {
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
 				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
 				if ("reason" in result) return { output: text(`${agent.name} did not finish the task (${result.reason}).`), isError: true };
-				return { output: text(result.answer + footer(args.chat, agent.name)) };
+				return { output: text(result.answer + (await footer(args.chat, agent.name))) };
 			}
 			const allowed = delegatesOf(host, api.conversationId);
 			const target = allowed.find((a) => a.name.toLowerCase() === args.agent.trim().toLowerCase() || a.id === args.agent.trim());
@@ -170,6 +190,10 @@ export function pi2Extension(host: Host): Extension {
 				};
 				return created.id;
 			}, context);
+			if (args.worktree !== undefined) {
+				const failed = await giveWorktree(api, child as unknown as number, args.worktree, args.from, context);
+				if (failed !== undefined) return { output: text(`No worktree could be made for the sub-chat, so nothing was handed over: ${failed}`), isError: true };
+			}
 			// Lets the app open the subagent's transcript from the call's card.
 			await api.details({ conversationId: child as unknown as number, agentId: target.id, agentName: target.name }, context);
 			const handle = (await api.conversation(child, context))!;
@@ -179,9 +203,32 @@ export function pi2Extension(host: Host): Extension {
 				const why = "reason" in settled && settled.reason !== undefined ? ` (${String(settled.reason)})` : "";
 				return { output: text(`${target.name} did not finish the task${why}.`), isError: true };
 			}
-			return { output: text((await host.answerText(child, settled.answer)) + footer(child as unknown as number, target.name)) };
+			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name))) };
 		},
 	});
+
+	/**
+	 * Give a sub-chat just made by `delegate` its own worktree, through the code New Worktree… uses. Returns why it could not,
+	 * having put the empty sub-chat away for good, or undefined once it has one (a call run again after a crash finds it).
+	 */
+	async function giveWorktree(api: ToolExecutionApi, child: number, branch: string, from: string | undefined, context: Context): Promise<string | undefined> {
+		const meta = (await api.snapshot(Library, context))?.conversations[String(child)];
+		if (meta?.deleted === true) return "it failed before, and the sub-chat was removed.";
+		if ((await worktreeOf(api, child, context)) !== undefined) return undefined;
+		try {
+			await makeWorktree(child, branch.trim(), from);
+			return undefined;
+		} catch (error) {
+			// The sub-chat never had a message: nothing in it is worth keeping, so it is not left in the sidebar.
+			await api.commit(async (tx) => {
+				const stored = (await tx.doc(Library)).conversations[String(child)];
+				if (stored !== undefined) stored.deleted = true;
+			}, context);
+			// The reasons are worded for the person making a worktree for the conversation in front of them.
+			const reason = (error instanceof Error ? error.message : String(error)).replace(/^This conversation/, "The sub-chat");
+			return /[.!?]$/.test(reason) ? reason : `${reason}.`;
+		}
+	}
 
 	/** The reference files of the agent a conversation belongs to, as they are listed now. */
 	const filesOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.files ?? [];
@@ -482,6 +529,39 @@ export function pi2Extension(host: Host): Extension {
 	};
 
 	/**
+	 * A worktree for a new sub-chat makes a branch in the repository and runs the other agent's set-up command. That is
+	 * done without asking only where the person has already let it happen: the calling conversation has full access (it
+	 * could run `git worktree add` itself), or the agent handed the work has its conversations given worktrees anyway.
+	 * Otherwise the person is asked, whatever the file access, since an agent without full access could not do it at all.
+	 */
+	const approveWorktree = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> => {
+		const args = call.arguments as { agent?: unknown; worktree?: unknown; from?: unknown; chat?: unknown };
+		// A call that cannot run anyway is not worth a question; the tool explains why itself.
+		if (typeof args.worktree !== "string" || args.worktree.trim() === "" || args.chat !== undefined || typeof args.agent !== "string") return undefined;
+		const meta = host.meta(api.conversationId);
+		if (meta?.access === "full" || meta?.autoApprove?.includes("delegate")) return undefined;
+		const name = args.agent.trim().toLowerCase();
+		const target = delegatesOf(host, api.conversationId).find((a) => a.name.toLowerCase() === name || a.id === args.agent);
+		if (target === undefined || target.worktree === true) return undefined;
+		const from = typeof args.from === "string" && args.from.trim() !== "" ? args.from.trim() : undefined;
+		const decision = await host.inbox.ask(
+			{
+				id: String(api.taskId),
+				kind: "approval",
+				conversationId: api.conversationId as unknown as number,
+				callId: call.id,
+				tool: call.name,
+				arguments: call.arguments,
+				question: `Make a git worktree on the branch ${args.worktree.trim()}, ${from === undefined ? "from the commit this conversation's folder is on" : `from ${from}`}, for a new sub-chat with ${target.name}.`,
+				createdAt: Date.now(),
+			},
+			context,
+		);
+		if (decision === "always") await host.allowAlways(api.conversationId, "delegate");
+		return decision === "deny" ? { block: DECLINED } : undefined;
+	};
+
+	/**
 	 * Commands a rule let through, by tool task, so their results can say so (see `afterTool`). Kept in memory: a command
 	 * cut off by a crash ends as interrupted, and its result then simply goes without the note.
 	 */
@@ -553,6 +633,7 @@ export function pi2Extension(host: Host): Extension {
 				beforeTool: async (call, api, context) => {
 					await awaitWithContext(host.ready, context);
 					if (call.name === "browser") return approveBrowser(call, api, context);
+					if (call.name === "delegate") return approveWorktree(call, api, context);
 					const meta = host.meta(api.conversationId);
 					const isComputer = call.name === "computer";
 					const args = isComputer ? asGiven(api.conversationId, call.arguments as ComputerArgs) : (call.arguments as ComputerArgs);

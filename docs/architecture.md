@@ -67,7 +67,7 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 ### Sub-chats
 
-`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository ([worktrees.md](worktrees.md#sub-chats)). The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one, and restores it first if the agent had archived it. A conversation that can delegate also gets `sub_chats`, to list its sub-chats with how each stands and archive the finished ones ([archive.md](archive.md#sub-chats-an-agent-puts-away)).
+`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository, or the call passes `worktree`, which gives it a worktree of its own made as New Worktree… makes one ([worktrees.md](worktrees.md#sub-chats)); without full access that asks the person first, unless the other agent gets worktrees anyway. The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one, and restores it first if the agent had archived it. A conversation that can delegate also gets `sub_chats`, to list its sub-chats with how each stands and archive the finished ones ([archive.md](archive.md#sub-chats-an-agent-puts-away)).
 
 ### What commands can find
 
