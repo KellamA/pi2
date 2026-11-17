@@ -25,6 +25,7 @@ import { plan } from "./plan.ts";
 import { reads } from "./reading.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
+import { variables } from "./variables.ts";
 import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
@@ -94,6 +95,8 @@ export type FeatureParts = {
 	created?(id: number, agent: AgentProfile): Promise<void>;
 	/** An agent was duplicated: copy person-set feature settings, never its history. */
 	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
+	/** An agent is about to be deleted: remove what this feature keeps for it outside its profile. Throw to keep the agent. */
+	deletingAgent?(agentId: string): Promise<void>;
 	/** A conversation's folder was changed by the person. */
 	folderChanged?(id: number): void;
 	/** Which conversations are archived or deleted has changed; `engine.library()` already says so. */
@@ -124,6 +127,7 @@ export const FEATURES: Feature[] = [
 	commands,
 	reads,
 	scratch,
+	variables,
 	coauthor,
 	background,
 	order,
