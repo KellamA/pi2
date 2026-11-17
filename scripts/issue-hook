@@ -4,7 +4,8 @@
 #   issue-hook edit   PreToolUse on Edit/Write/NotebookEdit: refuse to change a
 #                     file in this repository, in any of its checkouts (the
 #                     main one or a worktree), until the session has an issue
-#                     in progress for the work.
+#                     in progress for the work. "This repository" is the one
+#                     this script is in, wherever the session's folder is.
 #   issue-hook stop   Stop: if the session left an issue marked in progress, ask
 #                     the agent once to close it or say what it is waiting on.
 #
@@ -105,13 +106,19 @@ case $mode in
 		[[ $file == "$top"/.claude/* ]] && exit 0
 
 		# The file is in this repository when its checkout shares a git folder
-		# with the session's: the main checkout's .git, for it and for each of
-		# its worktrees. Otherwise it is another repository's, or the session is
-		# in none. git gives that folder relative to where it was asked in the
-		# main checkout and as it was recorded in a worktree, hence physical.
-		mine=$(git -C "$cwd" rev-parse --git-common-dir 2>/dev/null) || exit 0
+		# with the checkout this script is in: the main checkout's .git, for it
+		# and for each of its worktrees. Otherwise it is another repository's.
+		# The script's place, not the session's folder, says which repository
+		# is this one: a session can move into another repository, or into
+		# none, and still edit files here. git gives that folder relative to
+		# where it was asked in the main checkout and as it was recorded in a
+		# worktree, hence physical.
+		self=${BASH_SOURCE[0]}
+		[[ $self == */* ]] || self=./$self
+		here=$(physical "${self%/*}/.") || exit 0
+		mine=$(git -C "$here" rev-parse --git-common-dir 2>/dev/null) || exit 0
 		[[ $theirs == /* ]] || theirs=$dir/$theirs
-		[[ $mine == /* ]] || mine=$cwd/$mine
+		[[ $mine == /* ]] || mine=$here/$mine
 		theirs=$(physical "$theirs/.") && mine=$(physical "$mine/.") || exit 0
 		[[ $theirs == "$mine" ]] || exit 0
 

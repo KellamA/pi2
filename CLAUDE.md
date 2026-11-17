@@ -23,6 +23,6 @@ The repository is public, and so are its issues. Write them for any reader: no p
 
 Under Claude Code only, two hooks in `.claude/settings.json` (both run `scripts/issue-hook`) catch a step that was missed: an edit to a file in the repository is refused until the session has an issue in progress, and the end of a turn with an issue still marked in progress asks for its status first. Setting `PI2_ISSUES=off` turns the hooks off.
 
-"In the repository" means in any checkout of it, the main one or a worktree, whichever of them the session's own folder is: a session in a worktree is refused an edit in the main checkout, and the other way round. A checkout's own `.git/` and `.claude/` (settings, memory) are left alone, as are files in no repository and files in a different one.
+"In the repository" means in any checkout of it, the main one or a worktree, whichever of them the session's own folder is: a session in a worktree is refused an edit in the main checkout, and the other way round. The hook knows the repository by its own place, not by the session's folder, so a session whose folder has moved into another repository, or out of any, is refused an edit here too. A checkout's own `.git/` and `.claude/` (settings, memory) are left alone, as are files in no repository and files in a different one.
 
 Other tools, pi² among them, have no such hooks. Nothing refuses an edit or asks about an issue left in progress, so take each step above yourself.

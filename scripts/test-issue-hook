@@ -1,13 +1,15 @@
 #!/bin/bash
 # Checks scripts/issue-hook by feeding it the JSON Claude Code sends, against
 # throwaway git repositories in a temporary folder and transcripts written by
-# hand. Touches no GitHub issue and no file outside that folder.
+# hand. Touches no GitHub issue and no file outside that folder. The hook takes
+# "this repository" to be the one it is in, so each throwaway repository gets a
+# copy of it, and the copy that is run is the one the session's project has.
 #
 #   scripts/test-issue-hook
 
 set -uo pipefail
 
-hook="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/issue-hook"
+source_hook="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/issue-hook"
 command -v jq >/dev/null || { echo "test-issue-hook: needs jq" >&2; exit 1; }
 
 T=$(mktemp -d)
@@ -16,10 +18,19 @@ R=$(cd -P -- "$T" && pwd -P) # the real path, in case $T is reached through a li
 
 git_() { git -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
 
+# give_hook <repository>: a copy of the hook in its scripts/, committed, so
+# that its worktrees have one too.
+give_hook() {
+	mkdir -p "$1/scripts"
+	cp "$source_hook" "$1/scripts/issue-hook"
+	git_ -C "$1" add scripts/issue-hook
+	git_ -C "$1" commit -q -m hook
+}
+
 repo=$R/repo
 mkdir -p "$repo/src" "$repo/.claude" "$R/elsewhere"
 git_ init -q "$repo"
-git_ -C "$repo" commit -q --allow-empty -m init
+give_hook "$repo"
 echo x >"$repo/src/a.txt"
 ln -s "$repo" "$R/link"            # the same repository reached through a link
 git_ -C "$repo" worktree add -q "$R/wt"
@@ -29,8 +40,13 @@ mkdir -p "$inner/src" "$inner/.claude"
 echo x >"$inner/src/a.txt"
 mkdir -p "$R/my repo/src"
 git_ init -q "$R/my repo"
+give_hook "$R/my repo"
 mkdir -p "$repo/nested/src"         # another repository, inside this one's folder
 git_ init -q "$repo/nested"
+give_hook "$repo/nested"
+cp "$source_hook" "$R/elsewhere/issue-hook" # a copy in no repository
+
+hook=$repo/scripts/issue-hook       # the hook of the project the session is in
 
 : >"$R/none.jsonl"
 printf '%s\n' '{"text":"[pi2-issue] working on #7 https://example.invalid/7"}' >"$R/active.jsonl"
@@ -42,6 +58,7 @@ ln -s "$R/active.jsonl" "$R/active-link.jsonl"
 pass=0 fail=0
 
 # expect <allow|deny|paused> <description> <cwd> <file> <transcript> [env...]
+# runs $hook, as Claude Code runs the project's own.
 expect() {
 	local want=$1 what=$2 cwd=$3 file=$4 transcript=$5 out got
 	shift 5
@@ -111,10 +128,13 @@ expect deny "new folder then .." "$R/link" "$R/link/new/../b.txt" "$none"
 expect allow "new folder then .. out of the repository" "$R/link" "$R/link/new/../../elsewhere/b.txt" "$none"
 expect deny ".claude/ then .. back into the repository" "$R/link" "$R/link/.claude/../src/b.txt" "$none"
 
-# A worktree is a checkout of its own, with its own top.
+# A worktree is a checkout of its own, with its own top, and a copy of the hook
+# of its own: a session started in it runs that one.
+hook=$R/wt/scripts/issue-hook
 expect deny "worktree, no issue" "$R/wt" "$R/wt/src/a.txt" "$none"
 expect allow "worktree, issue in progress" "$R/wt" "$R/wt/src/a.txt" "$active"
 expect allow "worktree, its .claude/" "$R/wt" "$R/wt/.claude/x.md" "$none"
+hook=$inner/scripts/issue-hook
 expect deny "worktree under .claude/worktrees, no issue" "$inner" "$inner/src/a.txt" "$none"
 expect allow "worktree under .claude/worktrees, issue in progress" "$inner" "$inner/src/a.txt" "$active"
 expect allow "worktree under .claude/worktrees, its .claude/" "$inner" "$inner/.claude/x.md" "$none"
@@ -122,6 +142,7 @@ expect allow "worktree under .claude/worktrees, its .claude/" "$inner" "$inner/.
 # A file is judged by the checkout it is in, whichever one the session is in.
 # From a worktree to the main checkout:
 for from in "$R/wt" "$inner" "$R/link/.claude/worktrees/in" "$T/wt"; do
+	hook=$from/scripts/issue-hook
 	expect deny "session in $from, file in the main checkout" "$from" "$repo/src/a.txt" "$none"
 	expect deny "session in $from, new file in the main checkout" "$from" "$repo/new/deeper/b.txt" "$none"
 	expect allow "session in $from, file in the main checkout, issue in progress" "$from" "$repo/src/a.txt" "$active"
@@ -131,12 +152,15 @@ for from in "$R/wt" "$inner" "$R/link/.claude/worktrees/in" "$T/wt"; do
 	expect allow "session in $from, outside any repository" "$from" "$R/elsewhere/x.txt" "$none"
 	expect allow "session in $from, another repository" "$from" "$R/my repo/src/a.txt" "$none"
 done
+hook=$R/wt/scripts/issue-hook
 expect deny "worktree session, main checkout through the link" "$R/wt" "$R/link/src/a.txt" "$none"
 expect deny "worktree session, relative path into the main checkout" "$R/wt" "../repo/src/a.txt" "$none"
+hook=$inner/scripts/issue-hook
 expect deny "worktree under .claude/worktrees, relative path up into the main checkout" "$inner" "../../../src/a.txt" "$none"
 expect allow "worktree under .claude/worktrees, relative path up into the main checkout's .claude/" "$inner" "../../x.md" "$none"
 
 # From the main checkout to a worktree, also one under its own .claude/:
+hook=$repo/scripts/issue-hook
 for base in "$repo" "$R/link" "$repo/src"; do
 	expect deny "session in $base, file in a worktree under .claude/worktrees" "$base" "$inner/src/a.txt" "$none"
 	expect deny "session in $base, new file in that worktree" "$base" "$inner/new/deeper/b.txt" "$none"
@@ -153,23 +177,59 @@ expect deny "relative path into a worktree under .claude/worktrees" "$repo" ".cl
 expect deny ".claude/ then .. into a worktree's files" "$repo" "$inner/.claude/../src/a.txt" "$none"
 
 # From one worktree to another.
+hook=$R/wt/scripts/issue-hook
 expect deny "worktree session, file in another worktree" "$R/wt" "$inner/src/a.txt" "$none"
-expect deny "worktree session, file in another worktree, the other way" "$inner" "$R/wt/src/a.txt" "$none"
 expect allow "worktree session, file in another worktree, issue in progress" "$R/wt" "$inner/src/a.txt" "$active"
 expect allow "worktree session, another worktree's .claude/" "$R/wt" "$inner/.claude/x.md" "$none"
+hook=$inner/scripts/issue-hook
+expect deny "worktree session, file in another worktree, the other way" "$inner" "$R/wt/src/a.txt" "$none"
+hook=$repo/scripts/issue-hook
 
 # A different repository is not this one's business, wherever it is.
 expect allow "another repository" "$repo" "$R/my repo/src/a.txt" "$none"
 expect allow "another repository, new folders" "$repo" "$R/my repo/new/deeper/b.txt" "$none"
 expect allow "another repository inside this one's folder" "$repo" "$repo/nested/src/a.txt" "$none"
-expect allow "session in another repository, file in this one" "$R/my repo" "$repo/src/a.txt" "$none"
+# The repository is the hook's, not the one the session's folder has moved to:
+# a session can move into another repository, or out of any, and still edit
+# files here.
+for away in "$R/my repo" "$R/my repo/src" "$repo/nested" "$R/elsewhere"; do
+	expect deny "session moved to $away, file in this repository" "$away" "$repo/src/a.txt" "$none"
+	expect deny "session moved to $away, new file in this repository" "$away" "$repo/new/deeper/b.txt" "$none"
+	expect deny "session moved to $away, file in a worktree of it" "$away" "$inner/src/a.txt" "$none"
+	expect allow "session moved to $away, file in this repository, issue in progress" "$away" "$repo/src/a.txt" "$active"
+	expect paused "session moved to $away, file in this repository, issue paused" "$away" "$repo/src/a.txt" "$paused"
+	expect allow "session moved to $away, this repository's .git/" "$away" "$repo/.git/info/exclude" "$none"
+	expect allow "session moved to $away, this repository's .claude/" "$away" "$repo/.claude/settings.local.json" "$none"
+	expect allow "session moved to $away, a file there" "$away" "$away/x.txt" "$none"
+done
+expect deny "session moved to another repository, relative path back" "$R/my repo" "../repo/src/a.txt" "$none"
+hook=$inner/scripts/issue-hook
+expect deny "worktree session moved to another repository, file in the main checkout" "$R/my repo" "$repo/src/a.txt" "$none"
+expect deny "worktree session moved out of any repository, file in its worktree" "$R/elsewhere" "$inner/src/a.txt" "$none"
+expect allow "worktree session moved to another repository, a file there" "$R/my repo" "$R/my repo/src/a.txt" "$none"
+hook=$R/link/scripts/issue-hook
+expect deny "the hook run through a link" "$R/elsewhere" "$repo/src/a.txt" "$none"
+expect allow "the hook run through a link, another repository" "$R/elsewhere" "$R/my repo/src/a.txt" "$none"
+cd "$R/link/src" || exit 1
+hook=../scripts/issue-hook
+expect deny "the hook run by a relative path" "$R/elsewhere" "$repo/src/a.txt" "$none"
+cd "$R" || exit 1
+hook=$R/elsewhere/issue-hook
+expect allow "a hook in no repository" "$repo" "$repo/src/a.txt" "$none"
+
+# The repository inside this one's folder, and the other repository, are other
+# projects, with copies of the hook of their own.
+hook=$repo/nested/scripts/issue-hook
 expect deny "session in the repository inside, its own file" "$repo/nested" "$repo/nested/src/a.txt" "$none"
 expect allow "session in the repository inside, file in the one around it" "$repo/nested" "$repo/src/a.txt" "$none"
+hook="$R/my repo/scripts/issue-hook"
+expect allow "session in another repository, file in this one" "$R/my repo" "$repo/src/a.txt" "$none"
 
 # A path with a space.
 expect deny "space in path, no issue" "$R/my repo" "$R/my repo/src/a b.txt" "$none"
 expect allow "space in path, issue in progress" "$R/my repo" "$R/my repo/src/a b.txt" "$active"
 expect allow "space in path, outside" "$R/my repo" "$R/elsewhere/a b.txt" "$none"
+hook=$repo/scripts/issue-hook
 
 # Not in a repository at all, a missing transcript, and the switches.
 expect allow "cwd not in a repository" "$R/elsewhere" "$R/elsewhere/x.txt" "$none"
