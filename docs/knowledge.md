@@ -31,7 +31,7 @@ Both tools change only pi²'s own notes, so they never ask for approval, whateve
 
 ### In the app
 
-The settings section shows a switch, then the notes, newest first, each editable in place (Return or leaving the field saves; Shift-Return or Option-Return starts a new line, with the rule of the message field in `ComposeKit`) with a delete button and when and by whom it was written; a field to add a note by hand, which takes Return and Shift-Return in the same way; and a footer saying that every note is sent to the model in every conversation with the agent. These changes apply at once; they are not part of the form's Save, because the agent can change its notes at any time. Turning memory off keeps the notes but stops them being sent.
+The settings section shows a switch, then the notes, newest first, each editable in place (Return or leaving the field saves; Shift-Return or Option-Return starts a new line, with the rule of the message field in `ComposeKit`) with a delete button and when and by whom it was written; a field to add a note by hand, which takes Return and Shift-Return in the same way; and a footer saying that every note is sent to the model in every conversation with the agent. These changes apply at once; they are not part of the form's Save, because the agent can change its notes at any time. Turning memory off keeps the notes but stops them being sent. Duplicating an agent copies this on/off switch, but starts the copy with no notes: what the original learned stays with it.
 
 ### Where it is stored
 

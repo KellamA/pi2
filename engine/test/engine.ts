@@ -695,6 +695,74 @@ try {
 	assert.deepEqual(client.agents.find((x) => x.id === "atlas")!.delegates, ["forge"], "deleted agents leave other agents' lists");
 	step("create, edit and delete agents");
 
+	// Duplication copies the saved setup in the engine, not a field list assembled by the app.
+	{
+		const project = realpathSync(removedAtEnd(mkdtempSync(join(tmpdir(), "pi2-duplicate-"))));
+		execFileSync("git", ["init", "--quiet", project]);
+		const reference = join(project, "brief.md");
+		writeFileSync(reference, "A reference for both agents.");
+		const { id: sourceId } = await client.call("agents.save", { agent: {
+			name: "Template", description: "A full setup", color: "pink",
+			model: { provider: "demo", modelId: "demo-1" }, thinkingLevel: "high",
+			instructions: "Keep the same instructions.", access: "ask", cwd: project,
+			worktree: true, setup: "  npm ci  ", delegates: ["forge"], maxTurns: 17,
+			codeMode: true, mcpServers: ["test-server"], files: [{ path: reference, note: "The brief" }],
+			computer: { enabled: true, apps: ["com.example.notes"], ask: false },
+			browser: { enabled: true, ask: false }, schedule: { enabled: true },
+		} });
+		await client.call("rules.add", { agentId: sourceId, folder: project, command: "npm test" });
+		await client.call("memory.setEnabled", { agentId: sourceId, enabled: true });
+		await client.call("memory.add", { agentId: sourceId, text: "This belongs only to the original." });
+		await client.call("agents.save", { agent: { id: "atlas", name: "Atlas", delegates: ["forge", sourceId] } });
+		await client.until("source setup saved", () => (client.agents.find((a) => a.id === sourceId) as any)?.commandRules?.length === 1);
+		const source = structuredClone(client.agents.find((a) => a.id === sourceId)) as any;
+		const { id: copyId } = await client.call("agents.duplicate", { id: sourceId });
+		await client.until("copy available", () => client.agents.some((a) => a.id === copyId));
+		const copy = client.agents.find((a) => a.id === copyId) as any;
+		assert.notEqual(copyId, sourceId);
+		assert.equal(copy.name, "Template copy");
+		assert.deepEqual({ ...copy, id: source.id, name: source.name, createdAt: source.createdAt }, source, "every saved profile setting, including command rules, arrives in the copy");
+		assert.ok(client.agents.every((a) => !a.delegates.includes(copyId)), "nobody gains permission to hand work to the copy");
+		await client.until("copy memory settings", () => (client.events.memory as any)?.agents?.[copyId]);
+		assert.deepEqual((client.events.memory as any).agents[copyId], { enabled: true, notes: [] }, "the memory switch is copied, never notes");
+		assert.equal((client.events.memory as any).agents[sourceId].notes.length, 1);
+
+		await client.call("agents.save", { agent: { name: "TEMPLATE COPY 2" } });
+		const { id: numberedId } = await client.call("agents.duplicate", { id: sourceId });
+		await client.until("numbered copy", () => client.agents.find((a) => a.id === numberedId)?.name === "Template copy 3");
+		const simultaneous = await Promise.all([client.call("agents.duplicate", { id: sourceId }), client.call("agents.duplicate", { id: sourceId })]);
+		await client.until("simultaneous copies", () => simultaneous.every(({ id }) => client.agents.some((a) => a.id === id)));
+		assert.deepEqual(simultaneous.map(({ id }) => client.agents.find((a) => a.id === id)!.name).sort(), ["Template copy 4", "Template copy 5"], "concurrent requests get distinct names and ids");
+		await assert.rejects(client.call("agents.duplicate", { id: "no-such-agent" }), /Unknown agent/);
+		// A saved reference that disappeared is checked again, just as it is by Save.
+		rmSync(reference);
+		await assert.rejects(client.call("agents.duplicate", { id: sourceId }), /Not found/);
+		writeFileSync(reference, "Restored reference.");
+		await client.call("rules.remove", { agentId: copyId, folder: project, words: ["npm", "test"] });
+		await client.until("copy rule removed", () => (client.agents.find((a) => a.id === copyId) as any)?.commandRules?.length === 0);
+		assert.equal((client.agents.find((a) => a.id === sourceId) as any).commandRules.length, 1, "copies do not share mutable rules");
+
+		const conversationsBefore = structuredClone(client.library);
+		const { id: builtinCopy } = await client.call("agents.duplicate", { id: "forge" });
+		await client.until("built-in copied", () => client.agents.some((a) => a.id === builtinCopy));
+		assert.equal(client.agents.find((a) => a.id === builtinCopy)!.name, "Forge copy");
+		await client.call("agents.save", { agent: { id: builtinCopy, name: "Ordinary copy", instructions: "Edited independently" } });
+		await client.until("built-in copy edited", () => client.agents.find((a) => a.id === builtinCopy)?.name === "Ordinary copy");
+		assert.equal(client.agents.find((a) => a.id === "forge")!.name, "Forge");
+		assert.deepEqual(client.library, conversationsBefore, "the built-in's conversations are not copied");
+		const { id: oldSchedule } = await client.call("schedules.save", { schedule: { title: "Old copy's schedule", agentId: builtinCopy, prompt: "Do not run", repeat: { kind: "daily", hour: 9, minute: 0 }, enabled: false } });
+		await client.until("old schedule saved", () => client.schedules.some((s) => s.id === oldSchedule));
+		const schedulesBefore = structuredClone(client.schedules);
+		await client.call("agents.delete", { id: builtinCopy });
+		const { id: replacement } = await client.call("agents.duplicate", { id: "forge" });
+		await client.until("replacement copy", () => client.agents.some((a) => a.id === replacement));
+		assert.notEqual(replacement, builtinCopy, "a fresh identity never inherits a deleted copy's history or schedules");
+		assert.deepEqual(client.schedules, schedulesBefore, "schedules are neither copied nor moved");
+		await client.call("schedules.delete", { id: oldSchedule });
+		for (const id of [copyId, numberedId, ...simultaneous.map(({ id }) => id), replacement, sourceId, client.agents.find((a) => a.name === "TEMPLATE COPY 2")!.id]) await client.call("agents.delete", { id });
+		step("duplicate agents: all settings, empty memory, no incoming handoffs, numbered names, validation and ordinary copies of built-ins");
+	}
+
 	// An ability switched on in the agent's settings reaches a conversation that already exists, at its next message.
 	const { id: late } = await client.call("conversation.create", { agentId: custom });
 	await client.call("conversation.open", { id: late });
