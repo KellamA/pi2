@@ -14,16 +14,26 @@ import {
 	type Provider,
 	type ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
+import { lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { isAttachmentBlock } from "./attachments.ts";
+import type { LocalSetup } from "./localengine.ts";
 import { FileModelsStore, type ListedModel, listerFor } from "./modellists.ts";
 
 export const DEMO_PROVIDER = "demo";
 export const DEMO_MODEL = "demo-1";
+/** The provider of the models set up on this Mac, whether or not one is running (#173). */
+export const LOCAL_PROVIDER = "local";
+export const LOCAL_PROVIDER_NAME = "On this Mac";
+
+/** A model on this Mac, ready to be asked: where, with which key, and until when. `done` lets it go. */
+export type LocalLease = { baseUrl: string; key: string; signal: AbortSignal; done(): void };
+/** What runs the models on this Mac (localrun.ts): what is set up, and a lease on one, started if need be. */
+export type LocalRunner = { setup(): LocalSetup; lease(modelId: string, signal?: AbortSignal): Promise<LocalLease> };
 
 export type EndpointApi = "openai-completions" | "openai-responses" | "anthropic-messages";
 /** `vision`: the model takes pictures. Off unless the person says so, since a server cannot be asked. */
@@ -33,7 +43,7 @@ export type EndpointConfig = { id: string; name: string; baseUrl: string; api: E
 export type ProviderInfo = {
 	id: string;
 	name: string;
-	kind: "builtin" | "custom" | "demo";
+	kind: "builtin" | "custom" | "demo" | "local";
 	keyAuth: boolean;
 	oauth: { name: string; subscription: boolean } | null;
 	/** How the provider is configured right now, or null when it is not. */
@@ -497,8 +507,70 @@ function endpointProvider(config: EndpointConfig): Provider {
 	});
 }
 
+/**
+ * The models set up on this Mac, as a provider: they go through the same OpenAI-compatible path as an endpoint of the
+ * person's own (`endpointProvider`), but pi² runs the server. Each request first takes a lease on its model from the
+ * runner, which starts it if need be and waits until it has loaded, and is then sent to wherever it runs now, with the
+ * key made for that run. The list is read from what is set up each time it is asked for, so it follows the downloads.
+ */
+function localProvider(runner: () => LocalRunner | undefined): Provider {
+	const api = openAICompletionsApi();
+	const built = new Map<string, { stamp: string; model: Model<"openai-completions"> }>();
+	const models = (): Model<"openai-completions">[] =>
+		(runner()?.setup().models ?? []).map((entry) => {
+			const stamp = JSON.stringify(entry);
+			const known = built.get(entry.id);
+			if (known?.stamp === stamp) return known.model;
+			const model = {
+				id: entry.id,
+				name: entry.name,
+				api: "openai-completions",
+				provider: LOCAL_PROVIDER,
+				// Where it runs is known only once it is started: a lease gives it.
+				baseUrl: "http://127.0.0.1",
+				reasoning: false,
+				input: entry.options.vision === true ? ["text", "image"] : ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: entry.contextSize,
+				maxTokens: Math.min(16_384, Math.floor(entry.contextSize / 4)),
+				compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, supportsLongCacheRetention: false },
+			} as Model<"openai-completions">;
+			built.set(entry.id, { stamp, model });
+			return model;
+		});
+	/** A stream that first waits for the model to be ready, then is the endpoint's stream to where it runs. */
+	const leased =
+		(streamOf: ProviderStreamFunction): ProviderStreamFunction =>
+		(model, context, options) =>
+			lazyStream(
+				model,
+				async () => {
+					const local = runner();
+					if (local === undefined) throw new Error("Models on this Mac cannot be run yet: pi²'s engine is still starting.");
+					const lease = await local.lease(model.id, options?.signal);
+					const stream = streamOf({ ...model, baseUrl: lease.baseUrl }, context, { ...options, apiKey: lease.key, signal: lease.signal } as never);
+					void stream.result().finally(() => lease.done());
+					return stream;
+				},
+				undefined,
+				options?.signal,
+			);
+	const base = createProvider({
+		id: LOCAL_PROVIDER,
+		name: LOCAL_PROVIDER_NAME,
+		// Always configured: the key is made for each run of the server, and given with its lease.
+		auth: { apiKey: { name: LOCAL_PROVIDER_NAME, resolve: async () => ({ auth: { apiKey: KEYLESS } }) } },
+		models: [],
+		api: { stream: leased(api.stream), streamSimple: leased(api.streamSimple as ProviderStreamFunction) },
+	});
+	return { ...base, getModels: models, getAllModels: models };
+}
+
+type ProviderStreamFunction = Provider["stream"];
+
 export class Providers {
 	readonly models: MutableModels;
+	#local: LocalRunner | undefined;
 	readonly #credentials: CredentialStore;
 	readonly #endpointsPath: string;
 	#endpoints: EndpointConfig[];
@@ -554,6 +626,12 @@ export class Providers {
 			this.#endpoints = [];
 		}
 		for (const endpoint of this.#endpoints) this.models.setProvider(endpointProvider(endpoint));
+		this.models.setProvider(localProvider(() => this.#local));
+	}
+
+	/** Hands the `local` provider what runs its models (localrun.ts). Until then, it lists none. */
+	connectLocal(runner: LocalRunner): void {
+		this.#local = runner;
 	}
 
 	// ---- Models added by hand to built-in providers
@@ -841,7 +919,7 @@ export class Providers {
 		return Promise.all(
 			providers.map(async (provider): Promise<ProviderInfo> => {
 				const endpoint = this.#endpoints.find((e) => e.id === provider.id) ?? null;
-				const kind = provider.id === DEMO_PROVIDER ? "demo" : endpoint ? "custom" : "builtin";
+				const kind = provider.id === DEMO_PROVIDER ? "demo" : provider.id === LOCAL_PROVIDER ? "local" : endpoint ? "custom" : "builtin";
 				// A broken credential (say, a refresh that failed) reads as not configured; signing in again fixes it.
 				const check = await this.models.checkAuth(provider.id).catch(() => undefined);
 				return {

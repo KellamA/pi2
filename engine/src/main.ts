@@ -240,6 +240,7 @@ const engine: Engine = {
 	library: () => library,
 	providers: () => providers,
 	busy: (id) => working.has(id),
+	shown: () => new Set([...clients].flatMap((client) => [...client.shown])),
 	apps: () => clients.size,
 	stateChanged: (id) => {
 		for (const client of clients) client.subscriptions.get(id)?.push();
@@ -685,7 +686,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 // ---- Clients
 
 type Subscription = { push: () => void; stop: () => Promise<unknown> };
-type Client = { socket: Socket; subscriptions: Map<number, Subscription> };
+/** `shown`: the conversations this app has on screen, in its panes or as chat mode's current chat (`conversations.shown`). */
+type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number> };
 const clients = new Set<Client>();
 /** Clients that registered as the computer host; the host object is kept per client so the right one is dropped. */
 const computerClients = new Set<Client>();
@@ -890,6 +892,19 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const subscription = client.subscriptions.get(params.id as number);
 		client.subscriptions.delete(params.id as number);
 		await subscription?.stop();
+		return {};
+	},
+	/**
+	 * The conversations the app shows now: those open in its panes, and chat mode's current chat. Sent whenever that
+	 * changes, and as it connects. A model on this Mac counts as used while a conversation using it is shown (localrun.ts).
+	 */
+	"conversations.shown": async (params, client) => {
+		const ids = params.ids;
+		if (!Array.isArray(ids) || ids.some((id) => !Number.isSafeInteger(id))) throw new Error("ids must be a list of conversation numbers");
+		const shown = new Set(ids as number[]);
+		if (shown.size === client.shown.size && [...shown].every((id) => client.shown.has(id))) return {};
+		client.shown = shown;
+		for (const feature of host.features) feature.shownChanged?.();
 		return {};
 	},
 	"conversation.rename": async (params) => {
@@ -1164,6 +1179,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			await conv.configure({ model: { provider: model.provider, modelId: model.modelId } }, context);
 			settings.defaultModel = { provider: model.provider, modelId: model.modelId };
 			saveSettings();
+			for (const feature of host.features) feature.modelChanged?.(id);
 		}
 		if (params.thinkingLevel !== undefined) await conv.configure({ thinkingLevel: params.thinkingLevel as never }, context);
 		if (params.cwd !== undefined) {
@@ -1719,7 +1735,7 @@ schedulesWatch.start(async (call) => {
 
 rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
 const server = createServer((socket) => {
-	const client: Client = { socket, subscriptions: new Map() };
+	const client: Client = { socket, subscriptions: new Map(), shown: new Set() };
 	clients.add(client);
 	send(client, libraryEvent());
 	send(client, agentsEvent());
@@ -1771,6 +1787,8 @@ const server = createServer((socket) => {
 		if (computerClients.delete(client)) computer.unregister(computerHostOf.get(client));
 		if (browserClients.delete(client)) browser.unregister(browserHostOf.get(client));
 		for (const subscription of client.subscriptions.values()) void subscription.stop();
+		// An app that quits closes its panes: what they showed is no longer shown (docs/local-models.md).
+		if (client.shown.size > 0) for (const feature of host.features) feature.shownChanged?.();
 	};
 	socket.on("close", drop);
 	socket.on("error", drop);

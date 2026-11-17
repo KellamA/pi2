@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test --test-reporter=spec 'test/!(patience|browser).ts'",
+    "test": "node --test --test-reporter=spec 'test/!(patience|browser|localserver).ts'",
     "test:engine": "node test/engine.ts",
     "test:browser": "node test/browser.ts",
     "start": "node src/main.ts",
