@@ -2057,8 +2057,6 @@ try {
 		await new Promise<void>((resolve) => copilotStandIn.listen(0, "127.0.0.1", resolve));
 		const copilotToken = `tid=limits-test;exp=9999999999;proxy-ep=127.0.0.1:${(copilotStandIn.address() as { port: number }).port};`;
 		let log = "";
-		/** The least time between two requests to one usage address, for this engine. */
-		const LIMITS_INTERVAL_MS = 1500;
 		const startLimitsEngine = () => {
 			const child = spawn(process.execPath, [main], {
 				env: {
@@ -2068,7 +2066,8 @@ try {
 					PI2_LIMITS_ANTHROPIC_URL: `${standInUrl}/api/oauth/usage`,
 					PI2_LIMITS_CODEX_URL: `${standInUrl}/backend-api/wham/usage`,
 					PI2_LIMITS_KIMI_URL: `${standInUrl}/coding/v1/usages`,
-					PI2_LIMITS_MIN_INTERVAL_MS: String(LIMITS_INTERVAL_MS),
+					// The minimum interval is checked on a controlled clock in limits.ts, not with socket round trips.
+					PI2_LIMITS_MIN_INTERVAL_MS: "0",
 					NODE_EXTRA_CA_CERTS: join(limitsHome, "cert.pem"),
 				},
 				stdio: ["ignore", "ignore", "pipe"],
@@ -2114,31 +2113,15 @@ try {
 			assert.deepEqual(rows(limitsOf("github-copilot")), [["premium", "Premium requests", 37.5]]);
 			assert.equal(limitsOf("github-copilot").source, "responses");
 
-			// Asked twice in a row: within the minimum interval the second sends nothing. The interval is waited out first,
-			// so the first always sends, whatever the steps above took on this machine. Whether the second was asked within
-			// the interval is known here from before the first was sent to after the second was answered, which holds both
-			// of the engine's own moments; a machine too busy for that to be shorter than the interval says nothing about it,
-			// so the two are asked again (#133).
-			let answer: any;
-			for (const deadline = Date.now() + PATIENT_MS; ; ) {
-				await sleep(LIMITS_INTERVAL_MS + 100);
-				const beforeHits = { ...hits };
-				const sent = Date.now();
-				await watcher.call("limits.refresh");
-				const firstHits = { ...hits };
-				assert.deepEqual(firstHits, { anthropic: beforeHits.anthropic + 1, codex: beforeHits.codex + 1 }, "the first asks each once");
-				answer = await watcher.call("limits.refresh");
-				if (Date.now() - sent < LIMITS_INTERVAL_MS) {
-					assert.deepEqual(hits, firstHits, "no second request within the interval");
-					break;
-				}
-				assert.ok(Date.now() < deadline, "two refreshes within the interval of each other, at some point in ten minutes");
-			}
+			// The real handler asks each usage address and returns the readings. Suppression within the minimum interval
+			// is checked in limits.ts with the tracker's clock held still, however long a refresh takes on this Mac.
+			const beforeHits = { ...hits };
+			let answer: any = await watcher.call("limits.refresh");
+			assert.deepEqual(hits, { anthropic: beforeHits.anthropic + 1, codex: beforeHits.codex + 1 }, "a refresh asks each once");
 			assert.equal(answer.providers.length, 3);
 			await assert.rejects(watcher.call("limits.refresh", { id: "xai" }), /not signed in/);
 
 			// An answer that cannot be read: said plainly, with when, and the last good figures kept.
-			await sleep(LIMITS_INTERVAL_MS + 100);
 			anthropicMode = "garbage";
 			answer = await watcher.call("limits.refresh", { id: "anthropic" });
 			let now = answer.providers.find((p: any) => p.id === "anthropic");
@@ -2147,12 +2130,10 @@ try {
 			assert.equal(now.windows[0].usedPercent, 47, "the last good reading stays");
 
 			// Too many requests: said plainly, and the address is left alone for minutes, whatever it said.
-			await sleep(LIMITS_INTERVAL_MS + 100);
 			anthropicMode = "busy";
 			answer = await watcher.call("limits.refresh", { id: "anthropic" });
 			assert.match(answer.providers.find((p: any) => p.id === "anthropic").error, /check less often/);
 			const busyHits = hits.anthropic;
-			await sleep(LIMITS_INTERVAL_MS + 100);
 			await watcher.call("limits.refresh", { id: "anthropic" });
 			assert.equal(hits.anthropic, busyHits, "not asked again soon after a 429");
 
