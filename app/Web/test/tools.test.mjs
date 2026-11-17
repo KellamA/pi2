@@ -45,6 +45,36 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("forget", {}), "Forgot something");
 });
 
+test("a read of several files is one row that names them, and opens to a section per file", () => {
+	const files = [{ path: "engine/src/a.ts" }, { path: "docs/b.md", offset: 10, limit: 5 }, { path: "gone.txt" }];
+	assert.equal(line("read", { files }), "Read a.ts, b.md and gone.txt 3 files");
+	assert.equal(line("read", { files }, "running"), "Reading a.ts, b.md and gone.txt… 3 files");
+	assert.equal(line("read", { files: [...files, "c.ts", "d.ts"] }), "Read a.ts, b.md and 3 more 5 files");
+	assert.equal(line("read", { files: ["a.ts", "b.ts"] }), "Read a.ts and b.ts 2 files", "paths alone");
+	assert.equal(line("read", { files: JSON.stringify(["a.ts", "b.ts"]) }), "Read a.ts and b.ts 2 files", "a list sent as a string");
+	assert.equal(line("read", { path: "a.ts", files: ["b.ts"] }), "Read a.ts and b.ts 2 files", "path counts as the first");
+	assert.equal(line("read", { files: [{ path: "x/a.ts", limit: 20 }, { path: "x/a.ts", offset: 300, limit: 20 }] }), "Read a.ts 2 parts", "ranges of one file");
+	assert.equal(line("read", { files: [{ path: "a.ts", offset: 10, limit: 50 }] }), "Read a.ts lines 10–59");
+	assert.equal(line("read", { files: [] }, "preparing"), "Reading files…");
+
+	// What the engine sends back (engine/src/reading.ts): each file under its line, a blank line between them.
+	const text = "==> engine/src/a.ts <==\nconst a = 1;\n\n==> docs/b.md (lines 10-14) <==\n# B\n[20 more lines in file. Use offset=15 to continue.]\n\n==> gone.txt <==\n[ENOENT: no such file or directory]\n";
+	const details = { files: [{ path: "engine/src/a.ts" }, { path: "docs/b.md", offset: 10, limit: 5 }, { path: "gone.txt", failed: true }] };
+	assert.deepEqual(T.detailFor(call("read", { files }), "done", { text, details }, null), [
+		{ kind: "text", label: "engine/src/a.ts", text: "const a = 1;", failed: false, language: "ts" },
+		{ kind: "text", label: "docs/b.md, lines 10–14", text: "# B\n[20 more lines in file. Use offset=15 to continue.]", failed: false, language: "md" },
+		{ kind: "text", label: "gone.txt", text: "[ENOENT: no such file or directory]", failed: true, language: "txt" },
+	]);
+	// A file whose text holds a line like another's header is not cut there: only a header in its place counts.
+	const tricky = "==> a.ts <==\nsee\n==> a.ts <==\n\n==> b.ts <==\nb\n";
+	assert.deepEqual(T.detailFor(call("read", { files: ["a.ts", "b.ts"] }), "done", { text: tricky, details: null }, null).map((s) => s.text), ["see\n==> a.ts <==", "b"]);
+	// Without the lines (an older engine, say), the output is shown whole; while it runs, a placeholder.
+	assert.deepEqual(T.detailFor(call("read", { files: ["a.ts", "b.ts"] }), "done", { text: "something else" }, null), [{ kind: "text", label: "Files", text: "something else", failed: false }]);
+	assert.deepEqual(T.detailFor(call("read", { files: ["a.ts"] }), "running", null, null), [{ kind: "text", label: "Files", text: "", placeholder: "Running…" }]);
+	// A read of one path is shown as before.
+	assert.deepEqual(T.detailFor(call("read", { path: "a.ts" }), "done", { text: "const a = 1;" }, null), [{ kind: "text", label: "a.ts", text: "const a = 1;", failed: false }]);
+});
+
 test("a command left running in the background, and the rows that read and stop it", () => {
 	const dev = { command: "npm run dev", background: true };
 	assert.equal(line("bash", dev, "running"), "Starting npm run dev in the background…");
