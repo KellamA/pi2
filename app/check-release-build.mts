@@ -32,6 +32,12 @@ const ANSWER_MS = 2 * 60_000;
 const STOP_MS = 2 * 60_000;
 const BUNDLE_ID = "dev.pi2.app";
 const inCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
+/**
+ * The variables only a development build reads (docs/development.md). A release build leaves out the code that reads
+ * them at compile time (`PI2_DEVELOPMENT`), so its executable does not name them at all; one that does was built with
+ * a development affordance outside that condition, which anyone could switch on.
+ */
+const DEVELOPMENT_ONLY = ["PI2_SHOW", "PI2_MENU", "PI2_WINDOW_BEHIND", "PI2_WINDOW_ORIGIN", "PI2_DRAW_WHEN_HIDDEN"];
 
 class CheckFailed extends Error {}
 function fail(message: string): never {
@@ -197,6 +203,11 @@ function checkBundle(app: string): Build {
 		fail("The app's engine has no BUILD file, so the app could not tell it from an engine of another build.");
 	}
 	if (engineBuild !== build) fail(`The engine's BUILD file says ${engineBuild}, but the app is ${build}.`);
+	const executable = readFileSync(join(app, "Contents", "MacOS", "pi2"));
+	const named = DEVELOPMENT_ONLY.filter((name) => executable.includes(name));
+	if (named.length > 0) {
+		fail(`The app's executable names ${named.join(", ")}, which only a development build may read. Keep the code that reads ${named.length === 1 ? "it" : "them"} inside #if PI2_DEVELOPMENT.`);
+	}
 	step(`${basename(app)} is ${bundleId} ${version} (build ${buildNumber}), build id ${build}`);
 	return { app, node, main, build, bundleId };
 }

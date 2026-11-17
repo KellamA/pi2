@@ -532,7 +532,7 @@ struct TranscriptView: View {
                         }
                     case "assistant":
                         AssistantRow(engine: engine, conversationID: conversationID, item: item, results: results, live: live, running: state?.busy ?? false)
-                            .contextMenu {
+                            .contextMenu(previewAs: "message \(item.id)") {
                                 Button("Fork From Here") { engine.fork(conversationID, at: item.id) }
                                 Button("Copy") {
                                     NSPasteboard.general.clearContents()

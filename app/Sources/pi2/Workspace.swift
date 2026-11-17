@@ -515,7 +515,7 @@ private struct PaneHeader: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
         .contentShape(.rect)
         .onTapGesture { model.focusPane(pane.id) }
-        .contextMenu { switchMenu }
+        .contextMenu(previewAs: pane.conversation.map { "Pane: \(engine.conversationTitle($0))" } ?? "Empty pane") { switchMenu }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(pane.conversation.map { "Pane: \(engine.conversationTitle($0))" } ?? "Empty pane")
     }

@@ -32,13 +32,15 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/test-copy <command> [arguments]
 
-  start <suffix> [--show <what>] [--welcome]
+  start <suffix> [--show <what>] [--menu <label>] [--welcome]
                                    Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
                                    data folder of its own, behind other windows, parked in a corner, without taking
-                                   the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md).
-                                   The first-run welcome is marked done in the copy's data folder, so it does not
-                                   cover the window; --welcome keeps it. Prints the data folder and the app's and
-                                   engine's process ids.
+                                   the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md),
+                                   such as palette:<query> for the command palette. --menu prints the items of the
+                                   context menu of the element with that label, such as a conversation's title
+                                   (PI2_MENU). The first-run welcome is marked done in the copy's data folder, so it
+                                   does not cover the window; --welcome keeps it. Prints the data folder and the
+                                   app's and engine's process ids.
   shot <suffix> <file.png> [--window <title>]
                                    Capture the copy's largest window (or the one with that title) into a file inside this
                                    checkout. Refuses if screen capture is not already allowed.
@@ -135,7 +137,9 @@ from_bundle() {
 	return 0
 }
 
-APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" WELCOME=0
+APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" WELCOME=0 MENU=""
+# Where a copy started with --menu writes the context menu (ContextMenuPreview.fileName in the app).
+MENU_FILE=context-menu.txt
 
 load_state() {
 	[[ -f $STATE ]] || return 1
@@ -304,10 +308,12 @@ case $cmd in
 			case $1 in
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
 				--welcome) WELCOME=1; shift ;;
+				--menu) [[ -n ${2-} ]] || die "--menu needs the label of what to right-click, such as a conversation's title"; MENU=$2; shift 2 ;;
 				*) die "unknown option $1" ;;
 			esac
 		done
 		[[ $SHOW != *$'\n'* ]] || die "--show takes one line"
+		[[ $MENU != *$'\n'* ]] || die "--menu takes one line"
 
 		if [[ ! -d $SOURCE ]]; then
 			if [[ -d $RELEASE ]]; then
@@ -352,6 +358,7 @@ case $cmd in
 		vars=(--env "PI2_HOME=$DATA" --env "PI2_KEYCHAIN_SERVICE=$SERVICE"
 			--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
 		[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
+		[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
 		env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" TMPDIR="${TMPDIR:-/tmp/}" LANG=en_US.UTF-8 \
 			PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -n -g "$APP" "${vars[@]}"
 
@@ -396,6 +403,20 @@ case $cmd in
 		echo "  app pid           $APP_PID"
 		echo "  engine pid        $ENGINE_PID"
 		echo "Capture it with scripts/test-copy shot $SUFFIX <file.png>; stop it with scripts/test-copy stop $SUFFIX."
+		if [[ -n $MENU ]]; then
+			# The app writes the file once the page has settled and it has looked for the element, found or not.
+			waited=0
+			while [[ ! -f $DATA/$MENU_FILE ]] && ((waited < START_LIMIT * 2)) && is_recorded "$APP_PID" "$APP_START" "$APP_EXE"; do
+				sleep 0.5
+				waited=$((waited + 1))
+			done
+			echo
+			if [[ -f $DATA/$MENU_FILE ]]; then
+				cat "$DATA/$MENU_FILE"
+			else
+				echo "test-copy: the copy wrote no context menu for '$MENU' within $START_LIMIT seconds; $(tidy "$DATA")/app.log may say why" >&2
+			fi
+		fi
 		;;
 	shot)
 		names "${1-}"; shift

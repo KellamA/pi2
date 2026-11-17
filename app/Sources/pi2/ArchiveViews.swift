@@ -138,7 +138,7 @@ struct ArchiveRow: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .panel()
-        .contextMenu {
+        .contextMenu(previewAs: title, String(row.id)) {
             Button("Open") { model.selection = .conversation(row.id) }
             Button("Restore") { engine.perform("conversation.unarchive", ["id": row.id]) }
             Button("Delete", role: .destructive) { model.delete(id: row.id, title: row.title) }
