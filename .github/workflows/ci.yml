@@ -46,6 +46,9 @@ jobs:
           node-version: 26
       # Markdown, escaping, tool summaries, diffs, what a selection copies as and what Return does in an answer. No dependencies to install.
       - run: node --test test/
+      - name: Check release-note extraction (no release)
+        working-directory: app
+        run: node --test test-release-notes.mjs
 
   app:
     name: App (build)

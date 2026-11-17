@@ -1,6 +1,31 @@
 # Changelog
 
-What changed in each version, newest first.
+What changed in each version, newest first. “For contributors” stays here but is left out of the release notes and the update window.
+
+## Unreleased
+
+### Added
+- **Open a background command's output from the conversation.** The rows for starting, reading and stopping a background command, and the line that says it ended, now have an Output button. It opens the same up-to-date output window as Activity and the strip above the message field. A command whose output is no longer kept says so when opened.
+
+### Changed
+- **Shift-Return starts a new line.** In the conversation's message field, Quick Ask, the menu bar's Ask field and answers to an agent's questions, Shift-Return or Option-Return puts a line break at the cursor instead of sending. The field grows with it. Return still sends, but confirms an input method's candidate without sending while you are composing, and holding it down no longer sends again on every repeat.
+- **Branches keeps sub-chats with their parent.** A sub-chat sharing its parent's main checkout is now listed beneath that conversation, indented and oldest first, as one sharing its parent's worktree already was. A sub-chat with a branch of its own stays listed on its own.
+- **Long command output is kept where the agent can read it.** When a command prints more than the answer can show, its result now says how much was left out and where to read the whole output, rather than leaving the agent to run it again. Each conversation keeps its newest 50 such files for up to seven days, with at most the first 64 MB of each; the result says when that limit was reached. They are removed with the conversation and are not included in backups.
+- **Commands that do not finish are stopped sooner.** A command an agent runs now has two minutes by default, rather than 30, and can ask for up to ten. One that needs longer runs in the background, where it has no limit unless the agent gives one. The agent is told how long a command took and, after a minute without output, how long it was quiet; a command stopped at its limit says what to try next and that it may have been waiting for something on your screen.
+- **Less repeated instruction for agents.** Conversations without code mode no longer get its instructions, and those with it get a short guide instead of a second declaration of every tool they already have. Scripts can still call and look up the same tools, MCP tools included.
+- **The engine log says when and whose.** Each line in `engine.log` now starts with the time, and lines about background commands, worktrees and their set-up name the conversation. Errors Node prints before the engine can load are still untimed.
+
+### Fixed
+- Reconnecting an MCP server, or changing its settings while leaving it on, no longer cuts off a tool call running on it: a new copy takes over while the old one finishes its calls, for at most ten minutes. Removing or switching off the server still stops its calls at once, and now tells the agent why and that anything the call already did may have happened.
+- When an agent wrote a file and read it or ran it in the same answer, the read could fail with “No such file or directory”, or the command could run the old contents. An answer containing a call that can change files now runs its calls one at a time, in the order the agent gave them. Calls that only look, or hand work to sub-chats, can still run side by side. What needs your approval is unchanged.
+- A background command stopped by you, the agent or a time limit could say “and what it had left running was stopped with it” only because its child took a moment longer to stop on a busy Mac. Stops pi² carries out now keep the same plain wording; that extra explanation is kept for a command that ended otherwise and left something running.
+
+### For contributors
+- **Development builds keep apart from the installed pi².** `./app/build.sh` now makes `pi² dev.app`, with its own bundle id, data folder and Keychain service, and will not use the installed copy's usual data folder or service even if inherited environment variables name them. A development build never updates itself or changes the installed copy's login item. Give concurrent test copies their own bundle ids as [CONTRIBUTING.md](CONTRIBUTING.md) describes.
+- **Optimised development builds.** `./app/build.sh optimised` compiles with release optimisation but keeps the development build's isolation, window placement, `PI2_SHOW`, hidden drawing and web inspector. `release` still makes the self-contained app with none of those test affordances.
+- **Packaged start-up is checked before a release is drafted.** The release workflow starts the engine from the actual update archive and mounted disk image, checks its build, gets a scripted answer and stops it cleanly; it also opens the app from the archive and checks that it connects. Ordinary CI builds an ad-hoc release app and proves the same check and deliberate missing-file and wrong-build failures. No release keys are needed for that check. See [docs/releasing.md](docs/releasing.md).
+- Engine tests now measure clean shutdown inside the engine, keeping the real five-second deadline, and wait for committed state before crash-recovery checks instead of sleeping. Background-output checks must see new output, not merely reach a wait's time limit.
+- **Keep reader-facing changes first.** New changelog sections can keep build, test and repository changes under For contributors without putting them in GitHub's release notes or the update feed. The extraction is tested in CI; already-published sections are left unchanged.
 
 ## 0.7.6
 
