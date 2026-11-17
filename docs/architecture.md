@@ -61,7 +61,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
-| `src/mcp.ts` | MCP servers and their tools |
+| `src/mcp.ts` | MCP servers and their tools. See [mcp.md](mcp.md) |
 | `src/backup.ts` | Backup and restore |
 | `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |
 
@@ -129,7 +129,7 @@ A command's standard input is `/dev/null`, as pi durable starts it, so a command
 
 A model can make several tool calls in one answer. pi durable starts them all at once, unless one of them is to a tool marked to run in order, in which case the whole answer's calls run one at a time, in the order the model gave them, each starting when the one before it has ended. Started together, a call that uses a file the one before it writes finds nothing there, or the file as it was: a `read` of a screen capture that a `bash` call is taking, or a `bash` with `background: true` that runs a script the call before it is writing (#145, #129).
 
-So `src/order.ts` marks the tools that change files to run in order: `bash` (in the background too), `write`, `edit`, `write_document` and `codemode` (whose scripts can call the others). An answer that calls any of them runs in order; one that only looks (reads, searches, web pages) or hands work to sub-chats still runs its calls side by side, which is where that saves real time. The descriptions of `bash`, `write`, `edit` and `read` tell the model both, so it puts a call after the one whose result it needs, or in a later answer when neither of them changes files (a file a sub-chat writes, say). Under Ask first, a call waiting for approval holds back the calls after it in the same answer. The computer and browser tools were already marked to run in order, each action depending on what the last one left. Calls a code mode script makes run as the script makes them, whatever their tool.
+So `src/order.ts` marks the tools that change files to run in order: `bash` (in the background too), `write`, `edit`, `write_document` and `codemode` (whose scripts can call the others). `src/mcp.ts` marks an MCP tool the same way unless its server marks it read-only (#190; see [mcp.md](mcp.md#read-only-tools)). An answer that calls any of them runs in order; one that only looks (reads, searches, web pages) or hands work to sub-chats still runs its calls side by side, which is where that saves real time. The descriptions of `bash`, `write`, `edit` and `read` tell the model both, so it puts a call after the one whose result it needs, or in a later answer when neither of them changes files (a file a sub-chat writes, say). Under Ask first, a call waiting for approval holds back the calls after it in the same answer. The computer and browser tools were already marked to run in order, each action depending on what the last one left. Calls a code mode script makes run as the script makes them, whatever their tool.
 
 ### An MCP server changed while a call runs on it
 

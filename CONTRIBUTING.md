@@ -19,7 +19,7 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 2. Keep the change to one thing. A small pull request is reviewed sooner.
 3. If you touch the engine, run `npm run check` and `npm test` in `engine/`, and add to `engine/test/engine.ts` when you add behaviour.
 4. If you touch the app, build it and try the change in a throwaway copy, as [Testing safely](#testing-safely) shows. Apart from the browser's page handling, which `pi2-browser-probe` checks, the panes' layout, which `pi2-layout-check` checks, and what Return does in a message field, which `pi2-compose-check` checks, the app has no automated tests, so say in the pull request what you tried by hand.
-5. If you touch `scripts/issue-hook`, run `scripts/test-issue-hook`; if you touch `scripts/issue`, run `scripts/test-issue` and `scripts/test-issue-hook`. They need `jq`, work in a temporary folder and touch no GitHub issue.
+5. If you touch `scripts/issue-hook`, run `scripts/test-issue-hook`; if you touch `scripts/issue`, run `scripts/test-issue` and `scripts/test-issue-hook`. They need `jq`, work in a temporary folder and touch no GitHub issue. If you touch `scripts/test-copy`, run `scripts/test-test-copy`, which checks its refusals in a temporary folder and launches nothing, then start, capture and stop a real copy with it.
 6. Say plainly what is and is not tested.
 7. If you can merge, do not sit waiting for the checks. Once the pull request is open, run `gh pr merge <number> --auto --merge`: GitHub merges it when the three required checks pass, about four minutes later. Use that time for what is left (cleaning up a throwaway copy, the next issue), then make sure it merged before you call the work done: `gh pr view <number> --json state -q .state` says `MERGED`. A pull request with a failed check stays open. Read the log (`gh run view --log-failed`), fix it and push, and check that auto-merge is still on (`gh pr view <number> --json autoMergeRequest`).
 
@@ -47,12 +47,14 @@ pi² is often worked on, by people and by agents, on a Mac where it is also in u
 - **Leave the login item alone, in a test copy too, whether on or off.** There is one per Mac, the launchd agent `dev.pi2.engine`, and it belongs to the copy of pi² on the usual data folder. A copy on a data folder of its own, which every development build is, shows the switch in Settings as unavailable and cannot install, replace or remove the item. Do not work around that: the item starts the person's engine, and removing it stops that engine.
 - **Never run `app/build.sh` in a checkout whose bundle is the one in use.** It deletes `app/build/pi² dev.app` (or, for a release build, `app/build/pi².app`) and builds it again, and a development build runs its engine from that checkout's `engine/src`, so switching branches there changes the running engine too. Build in a clone or a worktree of your own.
 - **When several sessions share one checkout, work in a clone or worktree of your own**, and stage files by name, never `git add -A`: another session may have switched the branch or left work of its own there.
-- **Clean up afterwards**: the copy, its data folder, its preferences, its test Keychain items, and any process you started.
+- **Clean up afterwards**: the copy, its data folder, its preferences, its test Keychain items, and any process you started. `scripts/test-copy stop` does all of it.
 - **Before each commit, check that nothing personal is in it**: no names, email addresses or home folder paths in the files, the message or a screenshot. The repository and its issues are public. Commit with your GitHub no-reply address.
 
 ### A throwaway copy, step by step
 
-In your own clone or worktree, build a development build:
+`scripts/test-copy` does every step, one command each, and keeps the rules above as it goes: it works out the copy's bundle id, data folder and Keychain service from a suffix and refuses any that could be the usual ones, launches the copy with a clean environment, stops only what it started, and cleans up all of it.
+
+In your own clone or worktree, build a development build. The script builds nothing; it copies `app/build/pi² dev.app` and refuses a release build.
 
 ```bash
 (cd engine && npm ci)
@@ -61,63 +63,51 @@ In your own clone or worktree, build a development build:
 
 For a problem that only happens with optimisation, use `./app/build.sh optimised` instead. It uses Swift's release configuration but keeps the development build's isolation and switches, including `PI2_SHOW` and the window placement below. Do not use a release build just to turn optimisation on.
 
-This makes `app/build/pi² dev.app`. Copy it to a temporary folder, give it its own bundle id and name, and sign it again. Choose a suffix of your own for `ID`, in lower-case letters, digits and hyphens, such as your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. The bundle id `dev.pi2.app.$ID` gives the copy the data folder `~/Library/Application Support/pi2-$ID` and the Keychain service `dev.pi2.credentials.$ID`, so there is nothing else to set. `ditto` keeps the symbolic links inside Sparkle's framework; editing `Info.plist` breaks the bundle's signature, so it is signed again ad hoc. The new name tells your copy apart from other copies in the Dock and the menu bar.
+Choose a suffix of your own, in lower-case letters, digits and hyphens, such as your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. Then:
+
+```bash
+scripts/test-copy start test-7 --show inbox
+scripts/test-copy shot test-7 app/build/test-copies/test-7/inbox.png
+scripts/test-copy stop test-7
+```
+
+**`start <suffix> [--show <what>]`** copies the bundle to `app/build/test-copies/<suffix>/pi² <suffix>.app` with `ditto` (which keeps the symbolic links inside Sparkle's framework), gives it the bundle id `dev.pi2.app.<suffix>` and the name `pi² <suffix>` (which tells it apart in the Dock and the menu bar), and signs it again ad hoc, since editing `Info.plist` breaks the signature. The bundle id gives it the data folder `~/Library/Application Support/pi2-<suffix>` and the Keychain service `dev.pi2.credentials.<suffix>`.
+
+It launches the copy with `open -n -g`, so it does not take the focus, and with a clean environment that names that data folder and Keychain service explicitly. A command an agent of pi² runs has `PI2_HOME` naming the usual data folder, inherited from pi²'s engine, and `open` would pass it on; nothing the shell has reaches the copy. The copy's windows open behind every other window and parked in the bottom-right corner of the screen (`PI2_WINDOW_BEHIND=1`, `PI2_WINDOW_ORIGIN=10000,10000`), and keep drawing while covered (`PI2_DRAW_WHEN_HIDDEN=1`); `--show` sets `PI2_SHOW`, what the window opens on (see [docs/development.md](docs/development.md)).
+
+It waits until the copy's own engine, the app's child, is listening in the copy's data folder, then prints the data folder and the app's and the engine's process ids, and keeps them in `app/build/test-copies/<suffix>/state` with each one's start time and executable. If it fails part way, it stops and removes what it made.
+
+**`shot <suffix> <file.png> [--window <title>]`** captures the copy's largest window, or the one with that title (Settings is titled after its tab, such as `General`), with `screencapture -l`, which takes that window only, whatever covers it. It first checks `CGPreflightScreenCaptureAccess()`, and refuses when screen capture is not already allowed, since capturing without it makes macOS ask; say then that the change was not seen on screen. The picture goes inside the checkout: one in `app/build/test-copies/<suffix>` goes with the copy at `stop`. A page settles for a few seconds after the window opens, so wait before capturing it.
+
+**`stop <suffix>`** stops the app first, so that it does not start a new engine when the engine goes, then anything else running from the copy's bundle, then the engine, which outlives the app. It signals only the pids it recorded (or the engine the recorded app started in place of one, named in the copy's data folder), each after checking that the pid is still the process it recorded, by its start time and executable. Then it forgets the copy in Launch Services and removes the copy, its data folder, its preferences (`defaults delete`, and the file, which that can leave behind), every Keychain item under its own service, and the files its browser and macOS leave under its bundle id (`~/Library/WebKit`, `Caches`, `HTTPStorages` and `Saved Application State`), each by its exact path, and checks that none of it is left. If something is still running on the copy's data folder that it did not record, it removes nothing and says so.
+
+**`status [<suffix>]`** shows what is recorded for a copy and whether its app and engine still run; with no suffix, every copy started from this checkout.
+
+What it refuses, before it changes anything:
+
+- a suffix that is empty, not lower-case letters, digits and hyphens, longer than 32 characters (the engine's socket path has a limit), or `dev`, the suffix every development build has as built; and so any bundle id, data folder or Keychain service that could be the usual one;
+- a bundle that is not a development build of this checkout, so never a release build, which runs on the usual data folder;
+- a suffix already in use, by this checkout or any other: the copy's folder in the checkout and its data folder are each made with `mkdir`, which only one of two `start`s at the same moment can do, so a second `start` with the same suffix fails and touches nothing of the first. Copies with different suffixes, from one checkout or several, are independent;
+- a `stop` or `shot` for a copy this checkout did not start, and a signal to a pid it did not record;
+- a picture outside the checkout.
+
+It never uses `pkill` or `killall`, and never passes a pattern to `rm` or `security`. To see that the copy runs on its own folder, not the real one: its data folder holds `engine.sock`, `engine.pid` and an `engine.log` that ends with `listening on` and the path of that socket, and `ps -E -o command= -p <engine pid>` shows the copy's `PI2_KEYCHAIN_SERVICE`.
+
+The files a copy's browser leaves are named one by one, never looked for with a pattern across `~/Library`, such as `ls -d ~/Library/*/dev.pi2.app.$ID*`. To expand it, the shell reads every folder in `~/Library`, and some of those hold other apps' data that macOS protects: reading one can put a privacy prompt on the person's screen, and the command waits until someone answers it. A command like that waited 29 minutes in #160: exactly as long as a system prompt was on the screen. Name the folder, or list one folder you know is not protected (`ls ~/Library/Caches`), never a pattern that reaches into all of them.
+
+#### A copy of a release build
+
+The script copies only development builds. To check the packaging itself (`app/check-release-build.mts --open-app --bundle-id …`, see [docs/releasing.md](docs/releasing.md)), copy the release build by hand, give it a bundle id of its own and sign it again, and never open it without `PI2_HOME` and `PI2_KEYCHAIN_SERVICE` naming a temporary folder and a test service, since a release build takes the usual ones otherwise and does not read the window variables:
 
 ```bash
 ID=test-7
 T=$(mktemp -d)
-APP="$T/pi² $ID.app"
-DATA="$HOME/Library/Application Support/pi2-$ID"
-ditto "app/build/pi² dev.app" "$APP"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier dev.pi2.app.$ID" \
-  -c "Set :CFBundleName pi² $ID" -c "Set :CFBundleDisplayName pi² $ID" "$APP/Contents/Info.plist"
-codesign --force --sign - "$APP"
+ditto "app/build/pi².app" "$T/pi² $ID.app"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier dev.pi2.app.$ID" "$T/pi² $ID.app/Contents/Info.plist"
+codesign --force --sign - "$T/pi² $ID.app"
 ```
 
-Launch it. `-g` keeps it from taking the focus, and the two variables keep its windows out of the way of whoever is at the Mac: behind every other window, and parked in the bottom-right corner of the screen instead of the middle (see [development.md](docs/development.md); a development build reads them, a release build does not). A window kept there can still be captured with `screencapture -l`.
-
-```bash
-open -n -g "$APP" --env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000
-```
-
-Check that it runs on its own folder, not the real one. `$DATA` should now hold `engine.sock`, `engine.pid` and an `engine.log` that ends with `listening on` and the path of that socket. Launched from an agent's shell, whose `PI2_HOME` names the usual data folder, it also has an `app.log` saying the copy set that aside; otherwise `app.log` appears only once the app has had something to note, such as a dropped connection. The engine should be the copy's own child, listening in `$DATA`, with the copy's Keychain service:
-
-```bash
-cat "$DATA/engine.log" "$DATA/app.log"
-ENGINE_PID=$(cat "$DATA/engine.pid")
-APP_PID=$(pgrep -f "$APP/Contents/MacOS/pi2")
-ps -o pid,ppid,command -p "$ENGINE_PID"   # its parent is $APP_PID
-lsof -a -U -p "$ENGINE_PID"                # its engine.sock is in $DATA
-ps -E -o command= -p "$ENGINE_PID" | tr ' ' '\n' | grep '^PI2_KEYCHAIN_SERVICE='
-```
-
-You can still give the copy `--env PI2_HOME=…` and `--env PI2_KEYCHAIN_SERVICE=…` of your own, such as a folder in `$T`; a development build takes any but the usual ones. A copy of a release build needs both, as the rules above say, and does not read the window variables; use an optimised development build unless the packaging or updating itself is what you need to check.
-
-When you are done, stop both by pid. The engine outlives the app, so stopping the app is not enough; stop the app first, so it does not start a new engine when this one goes.
-
-```bash
-kill "$APP_PID"
-kill "$ENGINE_PID"
-```
-
-Then clean up: forget the copy in Launch Services, remove it with its data folder, remove its preferences, and delete any Keychain items it made under its own service.
-
-```bash
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP"
-rm -rf "$T" "$DATA"
-defaults delete "dev.pi2.app.$ID"
-rm -f ~/Library/Preferences/"dev.pi2.app.$ID.plist"
-while security delete-generic-password -s "dev.pi2.credentials.$ID" >/dev/null 2>&1; do :; done
-```
-
-`defaults delete` can leave an empty file behind, hence the `rm`. The copy's browser, and anything else in it that loads from the web, can leave files of its own under its bundle id. Remove them by their exact paths:
-
-```bash
-rm -rf ~/Library/WebKit/"dev.pi2.app.$ID" ~/Library/Caches/"dev.pi2.app.$ID" \
-  ~/Library/HTTPStorages/"dev.pi2.app.$ID" ~/Library/HTTPStorages/"dev.pi2.app.$ID.binarycookies"
-```
-
-Do not look for them with a pattern across `~/Library`, such as `ls -d ~/Library/*/dev.pi2.app.$ID*`. To expand it, the shell reads every folder in `~/Library`, and some of those hold other apps' data that macOS protects: reading one can put a privacy prompt on the person's screen, and the command waits until someone answers it. A command like that waited 29 minutes in #160: exactly as long as a system prompt was on the screen. Name the folder, as above, or list one folder you know is not protected (`ls ~/Library/Caches`), never a pattern that reaches into all of them.
+Clean up after it as `stop` does: the copy and `$T`, its preferences, and its Keychain items, each by its exact name.
 
 ## What fits
 

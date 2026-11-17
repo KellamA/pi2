@@ -7,6 +7,12 @@ What changed in each version, newest first. “For contributors” stays here bu
 ### Changed
 - **A command that ends with a harmless exit code is no longer shown as failed.** A `grep` that found nothing, checks still pending or an `a && b` that stopped where it was meant to now shows its exit code at the end of its row, in a quiet colour, with the row closed, and the agent is told the exit code as a fact rather than as an error. A command that could not be started (exit code 126 or 127), was ended by a signal, or was stopped at its time limit is still shown in red and opened. Scripts in code mode get the exit code as before.
 
+### Fixed
+- An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
+
+### For contributors
+- **`scripts/test-copy` runs a throwaway copy of the app in one command a step.** `start <suffix> [--show <what>]` copies this checkout's development build under a bundle id, data folder and Keychain service of its own, signs it and launches it behind other windows without taking the focus, and prints the app's and the engine's process ids. `shot` captures its window only when screen capture is already allowed, and `stop` stops what it recorded, by pid, and removes the copy and everything it left. It refuses a suffix that could reach the installed copy, a release build, a suffix already in use and a pid it did not record. "A throwaway copy, step by step" in CONTRIBUTING.md now describes it; `scripts/test-test-copy` checks its refusals (#181).
+
 ## 0.7.7
 
 ### Added
