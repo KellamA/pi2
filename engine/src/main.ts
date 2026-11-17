@@ -35,6 +35,7 @@ import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
+import { BUILT_IN_TOOLS, toolsLeftOut, validateToolsOff } from "./builtins.ts";
 import { codemodeExtension } from "./codemode.ts";
 import { holdingPlaces } from "./sections.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
@@ -262,7 +263,8 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * The tools a conversation is given: file and shell tools by access level, asking the person, delegation, and what
  * its agent adds (scripts, MCP servers). A tool whose server is not connected right now is left out, and so is a tool
  * that could do nothing: the computer while no app is allowed, and in a sub-chat (`subChat`), handing work on and
- * whatever a feature leaves out there (scheduling).
+ * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts):
+ * a sub-chat follows its own agent's list.
  */
 function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
@@ -274,7 +276,11 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
 	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
-	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+	const leftOut = toolsLeftOut(agent);
+	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras]
+		.filter((name) => !leftOut.has(name))
+		.map(tool)
+		.filter((t) => t !== undefined);
 }
 
 /**
@@ -418,6 +424,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
 		browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
+		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
 		createdAt: previous?.createdAt ?? Date.now(),
 	};
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
@@ -741,7 +748,8 @@ async function sweepArchive(): Promise<void> {
 }
 
 function agentsEvent() {
-	return { event: "agents", agents: Object.values(agents).sort((a, b) => a.createdAt - b.createdAt) };
+	// The list of built-in tools goes with them, so the settings show what the engine offers without a copy of their own.
+	return { event: "agents", agents: Object.values(agents).sort((a, b) => a.createdAt - b.createdAt), builtInTools: BUILT_IN_TOOLS };
 }
 
 /** Everything waiting on the person, with enough context to answer from anywhere in the app. */

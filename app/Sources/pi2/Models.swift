@@ -281,6 +281,18 @@ struct ScheduleSettings: Codable, Equatable {
     var enabled = false
 }
 
+/// One of the built-in tools an agent's settings list, as the engine describes it (engine/src/builtins.ts).
+struct BuiltInTool: Codable, Equatable, Identifiable {
+    let key: String
+    let tools: [String]
+    let title: String
+    let detail: String
+    /// Where it is offered at all: "files" (any access but none), "changes" (Ask first or Full access), "browser" (the
+    /// browser on); nil for anywhere.
+    let needs: String?
+    var id: String { key }
+}
+
 /// A file or folder an agent may always read, with a note on what it is for.
 struct ReferenceFile: Codable, Equatable, Identifiable {
     var path: String
@@ -324,6 +336,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var browser: BrowserSettings?
     /// Whether the agent may set schedules for itself.
     var schedule: ScheduleSettings?
+    /// Keys of the built-in tools it is not offered, in the engine's order. Nil or empty: all of them.
+    var toolsOff: [String]?
     /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
     var commandRules: [CommandRule]?
     var createdAt: Double
@@ -346,6 +360,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "computer": ["enabled": computer?.enabled ?? false, "apps": computer?.apps ?? [], "ask": computer?.ask ?? true],
             "browser": ["enabled": browser?.enabled ?? false, "ask": browser?.ask ?? true],
             "schedule": ["enabled": schedule?.enabled ?? false],
+            "toolsOff": toolsOff ?? [],
         ]
     }
 
@@ -375,6 +390,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             ask: computer?.ask ?? true)
         agent.browser = browser ?? BrowserSettings()
         agent.schedule = schedule ?? ScheduleSettings()
+        agent.toolsOff = toolsOff ?? []
         agent.commandRules = nil
         return agent
     }

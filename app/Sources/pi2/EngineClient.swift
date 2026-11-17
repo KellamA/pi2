@@ -37,6 +37,8 @@ final class EngineClient {
     /// Whether the first-run welcome has been completed for this data folder. Nil until the engine has said.
     private(set) var onboarded: Bool?
     private(set) var agents: [AgentProfile] = []
+    /// The built-in tools an agent's settings list, sent with the agents. Empty from an engine older than the list.
+    private(set) var builtInTools: [BuiltInTool] = []
     private(set) var inbox: [InboxItem] = [] {
         didSet {
             guard inbox != oldValue else { return }
@@ -346,7 +348,10 @@ final class EngineClient {
         let archived: [ArchivedConversation]?
         let autoArchiveDays: Int?
     }
-    private struct AgentsEvent: Decodable { let agents: [AgentProfile] }
+    private struct AgentsEvent: Decodable {
+        let agents: [AgentProfile]
+        let builtInTools: [BuiltInTool]?
+    }
     private struct BranchesEvent: Decodable {
         let conversations: [String: BranchStatus]
         let leftBehind: [LeftBehindWorktree]?
@@ -389,7 +394,9 @@ final class EngineClient {
                 autoArchiveDays = event.autoArchiveDays
                 hasLoadedLibrary = true
             case "agents":
-                agents = try decoder.decode(AgentsEvent.self, from: line).agents
+                let event = try decoder.decode(AgentsEvent.self, from: line)
+                agents = event.agents
+                builtInTools = event.builtInTools ?? []
             case "inbox":
                 inbox = try decoder.decode(InboxEvent.self, from: line).items
             case "activity":
