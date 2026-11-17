@@ -32,10 +32,13 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/test-copy <command> [arguments]
 
-  start <suffix> [--show <what>]   Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
+  start <suffix> [--show <what>] [--welcome]
+                                   Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
                                    data folder of its own, behind other windows, parked in a corner, without taking
                                    the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md).
-                                   Prints the data folder and the app's and engine's process ids.
+                                   The first-run welcome is marked done in the copy's data folder, so it does not
+                                   cover the window; --welcome keeps it. Prints the data folder and the app's and
+                                   engine's process ids.
   shot <suffix> <file.png> [--window <title>]
                                    Capture the copy's largest window (or the one with that title) into a file inside this
                                    checkout. Refuses if screen capture is not already allowed.
@@ -132,7 +135,7 @@ from_bundle() {
 	return 0
 }
 
-APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW=""
+APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" WELCOME=0
 
 load_state() {
 	[[ -f $STATE ]] || return 1
@@ -300,6 +303,7 @@ case $cmd in
 		while (($#)); do
 			case $1 in
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
+				--welcome) WELCOME=1; shift ;;
 				*) die "unknown option $1" ;;
 			esac
 		done
@@ -331,7 +335,10 @@ case $cmd in
 		# From here on, a failure stops and removes what was started.
 		trap 'echo "test-copy: start failed; removing what it made" >&2; stop_copy >&2' EXIT
 		save_state
-
+		# A new data folder shows the first-run welcome, a sheet over every page a picture would show. Unless asked to
+		# keep it, mark it done as finishing it would (settings.finishOnboarding), in the copy's own settings, which its
+		# engine reads as it starts. Nothing in the app changes, so a release build behaves as before.
+		((WELCOME)) || printf '{\n\t"onboarded": true\n}\n' >"$DATA/settings.json"
 		ditto "$SOURCE" "$APP"
 		"$PLIST" -c "Set :CFBundleIdentifier $ID" -c "Set :CFBundleName $NAME" -c "Set :CFBundleDisplayName $NAME" \
 			"$APP/Contents/Info.plist"
@@ -378,6 +385,11 @@ case $cmd in
 		trap - EXIT
 
 		echo "Started $NAME ($ID)${SHOW:+, showing $SHOW}."
+		if ((WELCOME)); then
+			echo "  The first-run welcome shows, as on any new data folder."
+		else
+			echo "  The first-run welcome is marked done, so it does not show; --welcome keeps it."
+		fi
 		echo "  copy              $(tidy "$APP")"
 		echo "  data folder       $(tidy "$DATA")"
 		echo "  Keychain service  $SERVICE"
