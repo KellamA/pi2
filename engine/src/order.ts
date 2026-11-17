@@ -13,6 +13,10 @@
 // plan.ts), and that calls that do not depend on each other belong together in one answer (#176): models made one call
 // per answer, nine times in ten, and read through the shell to read several files at once. Until then the note was
 // added to the descriptions of bash, write, edit and read, four copies read again on every turn.
+//
+// An MCP tool that its server does not mark read-only counts as one that changes things (#190): src/mcp.ts marks each
+// such tool to run in order as it lists the server's tools, since their names are only known then. Two independent
+// calls to such tools then wait for each other, which costs less than a read that misses what the call before it did.
 
 import type { ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
@@ -23,7 +27,7 @@ export const IN_ORDER = ["bash", "write", "edit", "write_document", "codemode"] 
 /** What a model is told in the system prompt about the calls of one answer. */
 export const ORDER_NOTE =
 	"Calls that do not depend on each other (several files to read, several searches) belong together in one answer: they run at the same time. " +
-	`When any of them is ${IN_ORDER.slice(0, -1).join(", ")} or ${IN_ORDER.at(-1)}, they run one at a time instead, in the order given, so each sees what the ones before it did; ` +
+	`When any of them is ${IN_ORDER.join(", ")} or an MCP tool not marked read-only, they run one at a time instead, in the order given, so each sees what the ones before it did; ` +
 	"otherwise a call that needs another's result belongs in a later answer.";
 
 // Wraps by name, as `wrapTool` makes them, without a copy of each tool to name it by. The tool a wrap is given is
