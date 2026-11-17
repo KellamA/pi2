@@ -272,6 +272,19 @@ export function hasRunningCommands(conversationId: number): boolean {
 	return [...commands.values()].some((command) => command.conversationId === conversationId && isRunning(command));
 }
 
+/** The background commands a conversation has running, oldest first: what the agent is told before they are stopped. */
+export function runningCommandsOf(conversationId: number): { id: string; command: string }[] {
+	return [...commands.values()]
+		.filter((command) => command.conversationId === conversationId && isRunning(command))
+		.sort((a, b) => a.startedAt - b.startedAt)
+		.map((command) => ({ id: command.id, command: commandLine(command.command) }));
+}
+
+/** Stop the background commands a conversation has running, and wait for them: a sub-chat about to be archived. */
+export async function stopCommandsOf(conversationId: number, how: string): Promise<void> {
+	await Promise.all([...commands.values()].filter((command) => command.conversationId === conversationId && isRunning(command)).map((command) => stop(command, how)));
+}
+
 /** Why a conversation is out of the sidebar, itself or through the conversation it is a sub-chat of. */
 function putAway(conversationId: number): "archived" | "deleted" | undefined {
 	const all = engine?.library().conversations ?? {};

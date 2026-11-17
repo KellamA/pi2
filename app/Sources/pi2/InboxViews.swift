@@ -20,10 +20,12 @@ struct InboxCard: View {
     private var isBrowser: Bool { item.tool == "browser" }
     /// A schedule the agent wants to set for itself.
     private var isSchedule: Bool { item.tool == "schedule_task" }
+    /// A worktree the agent wants made for a sub-chat it hands work to (delegate's `worktree`).
+    private var isWorktree: Bool { item.tool == "delegate" }
     /// For a browser action: the site it would act on, when the app could say.
     private var targetSite: String? { isBrowser ? item.site.flatMap { $0.isEmpty ? nil : $0 } : nil }
     /// Whether the action is put in words by the app or the engine, rather than shown as the call was written.
-    private var inWords: Bool { targetApp != nil || isBrowser || isSchedule }
+    private var inWords: Bool { targetApp != nil || isBrowser || isSchedule || isWorktree }
     /// The line that says what would happen. For a schedule, when it would run: its title is in the heading and its
     /// prompt below.
     private var described: String {
@@ -36,6 +38,9 @@ struct InboxCard: View {
         if isSchedule, let prompt = item.arguments["prompt"]?.stringValue {
             return (prompt.trimmingCharacters(in: .whitespacesAndNewlines), "What the agent will be told to do")
         }
+        if isWorktree, let task = item.arguments["task"]?.stringValue {
+            return (task.trimmingCharacters(in: .whitespacesAndNewlines), "The task the sub-chat will be given")
+        }
         guard isBrowser, item.arguments["action"]?.stringValue == "type", let text = item.arguments["text"]?.stringValue, text.count > 80 else { return nil }
         return (text, "The text to be typed")
     }
@@ -45,6 +50,7 @@ struct InboxCard: View {
         if isSchedule { return nil }
         if let targetApp { return ("Always Allow in \(targetApp)", "Stop asking about \(targetApp) for the rest of this conversation") }
         if isBrowser { return targetSite.map { ("Always Allow on \($0)", "Stop asking about actions on \($0) for the rest of this conversation") } }
+        if isWorktree { return ("Always Allow Here", "Stop asking about worktrees for sub-chats in this conversation") }
         return ("Always Allow \(item.tool) Here", "Stop asking about \(item.tool) in this conversation")
     }
 
@@ -53,6 +59,7 @@ struct InboxCard: View {
         let who = item.agentName ?? "The agent"
         if let targetApp { return "\(who) wants to use \(targetApp)" }
         if isBrowser { return "\(who) wants to act on \(targetSite ?? "a web page")" }
+        if isWorktree { return "\(who) wants a worktree for a sub-chat" }
         if isSchedule {
             let title = (item.arguments["title"]?.stringValue ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
             return title.isEmpty ? "\(who) wants to schedule work" : "\(who) wants to schedule “\(title)”"

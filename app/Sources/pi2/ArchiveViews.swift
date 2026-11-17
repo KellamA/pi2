@@ -111,6 +111,10 @@ struct ArchiveRow: View {
     private var detail: String {
         var parts: [String] = []
         if let agent = engine.agent(row.agentId)?.name { parts.append(agent) }
+        if row.parent != nil {
+            let parent = (row.parentTitle ?? "").isEmpty ? "New conversation" : row.parentTitle!
+            parts.append("sub-chat of “\(parent)”")
+        }
         parts.append("archived \(Self.ago(row.archivedAt))")
         if row.subChats > 0 { parts.append(row.subChats == 1 ? "1 sub-chat" : "\(row.subChats) sub-chats") }
         return parts.joined(separator: " · ")

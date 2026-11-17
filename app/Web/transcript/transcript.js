@@ -1028,8 +1028,11 @@
 		const who = str(pending.agentName) || "The agent";
 		const app = pending.tool === "computer" && str(args.app) ? str(names.apps[args.app]) || str(args.app) : "";
 		const schedule = pending.tool === "schedule_task" ? T.scheduleApproval(pending) : null;
+		// A worktree for a sub-chat, which the engine puts in words; the task it would be given follows.
+		const worktree = pending.tool === "delegate";
 		let request;
 		if (app) request = `${who} wants to use ${app}`;
+		else if (worktree) request = `${who} wants a worktree for a sub-chat`;
 		else if (schedule) request = schedule.request;
 		else if (pending.tool === "bash") request = pending.background === true ? `${who} wants to run a command in the background` : `${who} wants to run a command`;
 		else if (pending.tool === "write") request = `${who} wants to write a file`;
@@ -1056,6 +1059,9 @@
 				const caption = el("p", "card-caption", "Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it in Activity.");
 				caption.setAttribute("data-nocopy", "");
 				card.appendChild(caption);
+			} else if (worktree) {
+				card.appendChild(el("p", "card-summary words", str(pending.question) || T.callSummary(args)));
+				if (str(args.task)) card.appendChild(el("p", "card-summary words card-prompt", str(args.task)));
 			} else {
 				// A computer action is described in words by the app that will do it; a command is shown as written.
 				const summary = app ? str(pending.question) || T.callSummary(args) : T.callSummary(args);
@@ -1098,8 +1104,8 @@
 			}
 			// A schedule runs later with no one watching, so each one is a decision of its own: there is no "always".
 			if (!schedule) {
-				const always = button("btn", null, app ? `Always Allow in ${app}` : `Always Allow ${str(pending.tool)} Here`);
-				always.title = app ? `Stop asking about ${app} for the rest of this conversation` : `Stop asking about ${str(pending.tool)} in this conversation`;
+				const always = button("btn", null, app ? `Always Allow in ${app}` : worktree ? "Always Allow Here" : `Always Allow ${str(pending.tool)} Here`);
+				always.title = app ? `Stop asking about ${app} for the rest of this conversation` : worktree ? "Stop asking about worktrees for sub-chats in this conversation" : `Stop asking about ${str(pending.tool)} in this conversation`;
 				always.addEventListener("click", () => decide("always"));
 				choices.appendChild(always);
 			}

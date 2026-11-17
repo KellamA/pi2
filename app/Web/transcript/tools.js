@@ -56,6 +56,11 @@
 		return lines.length > 1 ? lines[0] + " " + ELLIPSIS : lines[0];
 	}
 
+	/** "4", "4 and 7", "4, 7 and 9". */
+	function andList(words) {
+		return words.length <= 1 ? words.join("") : words.slice(0, -1).join(", ") + " and " + words[words.length - 1];
+	}
+
 	function compactJSON(value) {
 		try {
 			return JSON.stringify(value) ?? "";
@@ -445,6 +450,21 @@
 				const when = status === "done" && isObject(details) ? str(details.when) : "";
 				const verb = active ? "Scheduling " : status === "done" ? "Scheduled " : "Schedule ";
 				label = [t(verb), title ? muted(quoted(title)) : t("work"), ...(when ? [t(", " + when)] : []), t(dots)];
+				break;
+			}
+			case "sub_chats": {
+				// Listing an agent's own sub-chats, or archiving finished ones: once done, the numbers it did archive.
+				glyph = "list";
+				if (str(args.action).trim().toLowerCase() !== "archive") {
+					label = [t(active ? "Listing sub-chats" + ELLIPSIS : "Listed sub-chats")];
+					break;
+				}
+				const numbers = (list) => (Array.isArray(list) ? list.filter((n) => typeof n === "number" && Number.isFinite(n)) : []);
+				const done = status === "done" && isObject(details) ? numbers(details.archived) : [];
+				const chats = status === "done" ? done : numbers(args.chats);
+				const verb = active ? "Archiving " : status === "done" ? "Archived " : "Archive ";
+				const which = chats.length === 0 ? "sub-chats" : (chats.length === 1 ? "sub-chat " : "sub-chats ") + andList(chats.map(String));
+				label = [t(verb + which + dots)];
 				break;
 			}
 			case "list_schedules":

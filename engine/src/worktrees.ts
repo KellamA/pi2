@@ -607,8 +607,11 @@ export const worktrees: Feature = (_host, engine) => {
 		setups.set(id, { run, child, output: () => output, stop, settled });
 	}
 
-	/** Make a worktree for conversation `id` from the repository its folder is in, and move the conversation into it. */
-	async function create(id: number, requested?: string): Promise<{ path: string; branch: string }> {
+	/**
+	 * Make a worktree for conversation `id` from the repository its folder is in, and move the conversation into it. A new
+	 * branch starts from the commit the folder is on, or from `from` (a branch, tag or commit as the repository has it now).
+	 */
+	async function create(id: number, requested?: string, from?: string): Promise<{ path: string; branch: string }> {
 		if (mine[String(id)] !== undefined) throw new Error("This conversation already has a worktree of its own");
 		if (changing.has(id)) throw new Error("A worktree is already being made for this conversation");
 		folders.delete(id);
@@ -616,7 +619,10 @@ export const worktrees: Feature = (_host, engine) => {
 		if (cwd === null) throw new Error("Choose a folder in a git repository for this conversation first");
 		const repo = await repoOf(cwd);
 		if (repo === undefined) throw new Error("This conversation's folder is not in a git repository");
-		const start = await tryGit(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], repo.root);
+		const named = from?.trim();
+		if (named !== undefined && (named === "" || named.startsWith("-"))) throw new Error(`“${from}” is not a branch, tag or commit`);
+		const start = await tryGit(["rev-parse", "--verify", "--quiet", `${named ?? "HEAD"}^{commit}`], repo.root);
+		if (named !== undefined && (start === undefined || start === "")) throw new Error(`“${named}” is not a branch, tag or commit in ${basename(repo.main)}`);
 		if (start === undefined || start === "") throw new Error("The repository has no commits yet, so there is nothing to make a worktree from");
 		changing.add(id);
 		try {
@@ -628,6 +634,7 @@ export const worktrees: Feature = (_host, engine) => {
 			const exists = async (name: string) => (await tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`], repo.root)) !== undefined;
 			// A name the person chose that already exists is checked out as it is; a suggested one gets a number instead.
 			const useExisting = requested !== undefined && requested.trim() !== "" && (await exists(branch));
+			if (useExisting && named !== undefined) throw new Error(`The branch ${branch} already exists. Choose another name, or leave out where it starts from to check it out as it is`);
 			if (!useExisting) for (let n = 2, stem = branch; await exists(branch); n++) branch = `${stem}-${n}`;
 			const current = await tryGit(["symbolic-ref", "--quiet", "--short", "HEAD"], repo.root);
 			const parent = join(engine.home, "worktrees", `${basename(repo.main)}-${createHash("sha256").update(realish(repo.commonDir)).digest("hex").slice(0, 6)}`);
@@ -642,7 +649,8 @@ export const worktrees: Feature = (_host, engine) => {
 			const inside = relative(realish(repo.root), realish(cwd));
 			const target = inside !== "" && !inside.startsWith("..") && isFolder(join(path, inside)) ? join(path, inside) : path;
 			await save((doc) => {
-				doc[String(id)] = { path, branch, repo: repo.main, origin: cwd, base: current ?? null, baseCommit, createdAt: Date.now() };
+				// "Merged" is measured against where it started: the ref it was made from, else the branch the folder was on.
+				doc[String(id)] = { path, branch, repo: repo.main, origin: cwd, base: useExisting ? (current ?? null) : (named ?? current ?? null), baseCommit, createdAt: Date.now() };
 			});
 			await setFolder(id, target);
 			engine.log("worktree made for", id, "on", branch);
@@ -743,6 +751,7 @@ export const worktrees: Feature = (_host, engine) => {
 	}
 
 	let timer: ReturnType<typeof setInterval> | undefined;
+	made = { create, remove };
 
 	return {
 		sections: [
@@ -862,6 +871,30 @@ export const worktrees: Feature = (_host, engine) => {
 export async function madeWorktrees(read: DocumentReader, context: Context): Promise<MadeWorktree[]> {
 	const doc = await read.snapshot(Worktrees, context);
 	return Object.values(doc?.conversations ?? {}).map(({ path, repo }) => ({ path, repo }));
+}
+
+/** The worktrees feature's own ways to make and remove a worktree, for the rest of the engine; set once it is made. */
+let made: { create(id: number, branch?: string, from?: string): Promise<{ path: string; branch: string }>; remove(id: number, options: { force: boolean; deleteBranch: boolean }): Promise<{ branchDeleted: boolean; note: string | null }> } | undefined;
+
+/**
+ * Make a worktree for conversation `id` and move it there, exactly as New Worktree… does: the same folder, record, set-up
+ * command and tracking. Throws with the reason when it cannot.
+ */
+export function makeWorktree(id: number, branch: string | undefined, from: string | undefined): Promise<{ path: string; branch: string }> {
+	if (made === undefined) throw new Error("Worktrees are not available");
+	return made.create(id, branch, from);
+}
+
+/** Remove conversation `id`'s worktree with the rules Remove Worktree… has: refused with uncommitted changes unless forced. */
+export function removeWorktree(id: number, options: { force: boolean; deleteBranch: boolean }): Promise<{ branchDeleted: boolean; note: string | null }> {
+	if (made === undefined) throw new Error("Worktrees are not available");
+	return made.remove(id, options);
+}
+
+/** The worktree pi² made for conversation `id`, if it has one of its own. */
+export async function worktreeOf(read: DocumentReader, id: number, context: Context): Promise<Worktree | undefined> {
+	const doc = await read.snapshot(Worktrees, context);
+	return doc?.conversations[String(id)];
 }
 
 /** Whether `folder` is in a git repository, for checking an agent's settings. */

@@ -4,7 +4,7 @@ Archiving puts a conversation away without losing it. It leaves the sidebar, and
 
 ## What archiving does
 
-- The conversation and the sub-chats its agents opened leave the sidebar. A sub-chat cannot be archived on its own; it goes with the conversation it belongs to.
+- The conversation and the sub-chats its agents opened leave the sidebar. You archive a sub-chat together with the conversation it belongs to; its conversation's agent can archive one on its own (below).
 - Any work it is doing is stopped, and anything it was waiting on you for is withdrawn.
 - Commands its agents left running in the background are stopped, its sub-chats' too ([background.md](background.md)). Restoring it does not start them again.
 - It can still be read. Open it from the Archive, or find it with search (⌘K), where it is marked as archived.
@@ -15,6 +15,17 @@ Archive a conversation from its menu in the sidebar, from Conversation › Archi
 ## Restoring
 
 Restore puts the conversation and its sub-chats back in the sidebar as they were. It can then be continued from where it stopped. Work that was stopped when it was archived is not restarted on its own; send a message or choose Continue.
+
+## Sub-chats an agent puts away
+
+An agent that hands work to other agents leaves a sub-chat behind for each task. It can tidy them up itself with its `sub_chats` tool, which it has whenever it can hand work on:
+
+- **list** gives each of its conversation's sub-chats with its number, agent and title; whether it is working, waiting for you, or idle; the folder and branch it works in, and for a [worktree of its own](worktrees.md#sub-chats) whether anything is uncommitted and whether its branch is merged; and the commands it left running in the background.
+- **archive** puts away the sub-chats it names. Only sub-chats of its own conversation (and theirs), never one that is working or waiting for you.
+
+An archived sub-chat leaves the sidebar and is listed in the Archive as a sub-chat of its conversation, which stays where it is. It can be read, found by search, restored or deleted there like any archived conversation. Commands it left running in the background are stopped, and the agent is told which. A worktree of its own is left as it is (see [Worktrees left behind](worktrees.md#worktrees-left-behind)), unless the agent asks for it to go (`remove_worktree`) and nothing would be lost: nothing uncommitted and no commits that are not on the branch it was made from. Then it is removed as **Remove Worktree, Keep Branch** removes one, and the branch stays. The conversation that archived it gets a line saying which sub-chats were put away, how many background commands were stopped, and which worktrees were removed.
+
+If the agent carries on an archived sub-chat (`delegate` with its number), the sub-chat is restored first, and the conversation gets a line saying so. Archiving the whole conversation archives its sub-chats with it as before; one the agent archived on its own stays archived when the conversation is restored.
 
 ## Archiving on its own
 

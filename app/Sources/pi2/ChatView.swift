@@ -129,7 +129,7 @@ struct ChatView: View {
                 Button("Restore") { engine.perform("conversation.unarchive", ["id": root]) }
                     .buttonStyle(.piPrimary)
             } else {
-                Text("This conversation is archived. You can read it; restore it to carry on.").foregroundStyle(Theme.tx2)
+                Text(state?.agent.parent == nil ? "This conversation is archived. You can read it; restore it to carry on." : "This sub-chat is archived. You can read it; restore it to carry on.").foregroundStyle(Theme.tx2)
                 Spacer()
                 Button("Restore") { engine.perform("conversation.unarchive", ["id": id]) }
                     .buttonStyle(.piPrimary)
