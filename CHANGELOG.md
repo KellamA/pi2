@@ -6,6 +6,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ### Changed
 - **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
+- **A read of a background command waits at most four minutes.** An agent's read that waits for a command's output now waits 240 seconds at most, rather than ten minutes, and a longer wait asked for is lowered and the agent told so. The prompt cache lasts five minutes, so the request after a longer pause had to write the whole conversation into it again, which costs much more than reading again.
 
 ### Fixed
 - An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.

@@ -326,6 +326,11 @@ try {
 	await client.until("no longer listed", () => client.running().length === 0);
 	assert.match((await client.background(a, { action: "stop", id: "bg-1" })).text, /^bg-1 \(.*\) was already over: it was stopped by the agent after \d+ seconds\.$/);
 	assert.match((await client.background(a, { action: "read", id: "bg-1" })).text, /: was stopped by the agent after \d+ seconds\.\nNothing new since you last read it\.$/);
+	// A wait is kept under the five minutes the prompt cache lasts (#159); one asked for longer is lowered, and the result says so.
+	assert.ok(MAX_WAIT_SECONDS < 300, `the longest wait, ${MAX_WAIT_SECONDS} seconds, is under five minutes`);
+	const lowered = await client.background(a, { action: "read", id: "bg-1", wait: 600 });
+	assert.match(lowered.text, new RegExp(`\\.\\n\\[The wait was lowered to ${MAX_WAIT_SECONDS} seconds, the most a read waits: a longer pause costs more than reading again\\.\\]\\nNothing new since you last read it\\.$`), lowered.text);
+	assert.doesNotMatch((await client.background(a, { action: "read", id: "bg-1", wait: MAX_WAIT_SECONDS })).text, /lowered/, "a wait within the most is not");
 	told = await client.told(a);
 	assert.match(told, /- bg-1: `echo early; .*` is over: it was stopped by the agent, at \d\d:\d\d\./, told);
 	assert.deepEqual(client.markers(a), [], "a stop the agent asked for is in its own row, not a line of its own");
