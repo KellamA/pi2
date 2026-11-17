@@ -206,7 +206,10 @@ const host: Host = {
 		callerContext.abortSignal?.addEventListener("abort", stop, { once: true });
 		try {
 			const settled = await submission.wait(callerContext);
-			if (settled.status !== "done" || settled.type !== "input") return { reason: "reason" in settled && settled.reason !== undefined ? String(settled.reason) : "no answer" };
+			if (settled.status !== "done" || settled.type !== "input") {
+				const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : "no answer";
+				return "detail" in settled && settled.detail !== undefined ? { reason, detail: String(settled.detail) } : { reason };
+			}
 			const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 			return { answer: textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content) };
 		} finally {

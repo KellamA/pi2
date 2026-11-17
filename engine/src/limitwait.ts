@@ -17,6 +17,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId, defineDoc, GenerationTask, hook, LiveDoc } from "@earendil-works/pi-durable";
 import type { Engine, Feature } from "./features.ts";
+import { CARRY_ON, plainProviderError } from "./providererror.ts";
 
 // ---- Reading a refusal
 
@@ -316,7 +317,7 @@ export class Waits {
 
 	#giveUp(message: AssistantMessage, id: number, current: Wait | undefined, why: string, spent: number): Decision {
 		// The run ends on this message: its error says why it was not waited for, and how to carry on.
-		message.errorMessage = `${message.errorMessage ?? "The request was refused"}\n\n${why}. Continue the conversation to try again.`;
+		message.errorMessage = `${message.errorMessage ?? "The request was refused"}\n\n${why}. ${CARRY_ON}`;
 		this.#callbacks.log(`conversation ${id} ${current === undefined ? "did not wait" : "gave up waiting"}: ${why}; the run ends`);
 		if (current !== undefined) this.#end(id, undefined);
 		return { waitMs: false, spent };
@@ -401,6 +402,23 @@ export const limitWait: Feature = (_host, engine: Engine) => {
 	};
 	/** Whether the runs the last engine left have been looked at for a sleep with no wait noted. */
 	let looked = false;
+	/** The conversations that had work running when last told. */
+	let previous: ReadonlySet<number> = new Set();
+	/** The provider of the model a conversation is on now: the one its last request went to. */
+	const providerOf = async (id: number): Promise<string> => {
+		const agent = (await engine.harness().snapshot(AgentDoc, id as unknown as ConversationId, engine.context())) as { model?: { provider?: string } } | undefined;
+		return agent?.model?.provider ?? "";
+	};
+	/** A run that has just ended: if it ended on an error from the model's provider, engine.log says so, and what it was. */
+	const logProviderError = async (id: number): Promise<void> => {
+		try {
+			const failure = (await engine.harness().snapshot(LiveDoc, id as unknown as ConversationId, engine.context()))?.runFailure;
+			if (failure?.reason !== "model_error") return;
+			const provider = await providerOf(id);
+			const name = provider === "" ? "the provider" : callbacks.providerName(provider);
+			engine.log(`conversation ${id}'s run ended on an error from ${name}: ${plainProviderError(String(failure.detail ?? ""))}`);
+		} catch {}
+	};
 	let waits: Waits | undefined;
 	const waitsOf = () => (waits ??= new Waits(settings, callbacks));
 	return {
@@ -424,6 +442,8 @@ export const limitWait: Feature = (_host, engine: Engine) => {
 		],
 		runsChanged: (working) => {
 			waitsOf().working(working);
+			for (const id of previous) if (!working.has(id)) void logProviderError(id);
+			previous = new Set(working);
 			if (looked) return;
 			looked = true;
 			for (const id of working) {
@@ -432,9 +452,7 @@ export const limitWait: Feature = (_host, engine: Engine) => {
 				void (async () => {
 					const sleep = (await engine.harness().snapshot(LiveDoc, conversation, engine.context()))?.generation?.retry;
 					if (sleep === undefined) return;
-					// The model the conversation is on now, which is the one its sleeping request was made to.
-					const model = ((await engine.harness().snapshot(AgentDoc, conversation, engine.context())) as { model?: { provider?: string } } | undefined)?.model;
-					waitsOf().adopt(id, sleep, model?.provider ?? "");
+					waitsOf().adopt(id, sleep, await providerOf(id));
 				})().catch(() => {});
 			}
 		},

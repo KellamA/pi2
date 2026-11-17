@@ -13,7 +13,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { unfinished } from "../src/extensions.ts";
 import { DEFAULTS, duration, limitOf, namedTime, type Wait, Waits } from "../src/limitwait.ts";
+import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 function step(name: string): void {
@@ -154,6 +156,35 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	assert.equal(waits.decide(message(refused), 2, 13).spent, 2, "the next refusal carries on the adopted wait");
 	assert.equal(duration(3 * 24 * 3_600_000), "3 days");
 	step("how long a run waits: the time named, or a backoff with jitter to 10 minutes, for at most 6 hours; other errors are left alone");
+}
+
+// ---- What an agent and engine.log are told of a provider's error
+{
+	assert.equal(
+		plainProviderError('429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."},"request_id":"req_011CVabcdefghijk"}'),
+		"429 rate_limit_error: This request would exceed your account's rate limit. Please try again later.",
+	);
+	assert.equal(plainProviderError('401 {"error":{"message":"Incorrect API key provided: sk-proj-abcdefghijklmnop1234","code":"invalid_api_key"}}'), "401 invalid_api_key: Incorrect API key provided: [key]");
+	assert.equal(
+		plainProviderError("Rate limit reached for org-AbCdEf123456 in project proj_Zyx987654321 for user someone@example.com, request req_abcdef123456, account 3f2b1c4d-1a2b-4c3d-8e9f-0a1b2c3d4e5f, token Bearer abc.def.ghi"),
+		"Rate limit reached for [id] in project [id] for user [email], request [request], account [id], token Bearer [hidden]",
+	);
+	assert.equal(plainProviderError(`x${"y".repeat(400)}`).length, 300);
+	assert.ok(plainProviderError(`x${"y".repeat(400)}`).endsWith("…"));
+	// pi²'s own words after the provider's, when it stopped waiting for a limit, are kept whole.
+	const gaveUp = `429 ${"Too many requests. ".repeat(30)}\n\npi² waited 6 h for Anthropic's rate limit, the longest it waits by itself when the provider names no time. ${CARRY_ON}`;
+	assert.match(plainProviderError(gaveUp), /^429 Too many requests\..*… pi² waited 6 h for Anthropic's rate limit, the longest it waits by itself when the provider names no time\. Continue the conversation to try again\.$/);
+	step("a provider's error is shortened, and keys, accounts, request ids and addresses are taken out of it");
+
+	assert.equal(
+		unfinished("Scout", 12, "model_error", '401 {"error":{"type":"authentication_error","message":"invalid x-api-key"}}'),
+		"Scout did not finish the task: the model's provider answered with an error: “401 authentication_error: invalid x-api-key”. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12.",
+	);
+	assert.match(unfinished("Scout", 12, "model_error", "429 Too Many Requests"), /”\. The provider refused it for its limit, so carrying on works once the limit has reset\. The sub-chat is kept/);
+	assert.doesNotMatch(unfinished("Scout", 12, "model_error", gaveUp), /once the limit has reset/, "pi² said why itself");
+	assert.equal(unfinished("Scout", 12, "aborted", undefined), "Scout did not finish the task: its run was stopped, by the person or with this conversation. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12.");
+	assert.equal(unfinished("Scout", 12, "turn_limit", undefined), "Scout did not finish the task (turn_limit). The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12.");
+	step("delegate's result for a sub-chat that ended on an error says why, in the provider's words, and how to carry on");
 }
 
 // ---- A real engine, and a stand-in provider that refuses and then answers
@@ -300,7 +331,25 @@ try {
 	assert.match(conv.state.failure!.detail!, /invalid x-api-key/);
 	assert.equal(requests["bad key"], 1, "not retried");
 	assert.doesNotMatch(log, new RegExp(`conversation ${bad} is waiting`));
-	step("an error that is not a limit (a bad key) still ends the run at once");
+	await client.until("the error logged", () => new RegExp(`conversation ${bad}'s run ended on an error from Stand-in: .*invalid x-api-key`).test(log));
+	step("an error that is not a limit (a bad key) still ends the run at once, and engine.log says so");
+
+	// A sub-chat whose run ends on the provider's error: delegate's result says why, and how to carry on.
+	await client.call("agents.save", { agent: { id: "scout", name: "Scout", model: { provider, modelId: "stand-in" } } });
+	const { id: lead } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-1" } });
+	await client.call("conversation.open", { id: lead });
+	await client.call("submit", { id: lead, text: "/delegate Scout: bad key" });
+	const handed = await client.until("delegate's result", () => client.conversations.get(lead)?.items.find((i) => i.kind === "tool"));
+	const said = /^Scout did not finish the task: the model's provider answered with an error: “(.*invalid x-api-key.*)”\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: (\d+)\.$/.exec(handed.text);
+	assert.ok(said !== null, handed.text);
+	const sub = Number(said[2]);
+	await client.until("the sub-chat's error logged", () => new RegExp(`conversation ${sub}'s run ended on an error from Stand-in: .*invalid x-api-key`).test(log));
+	// Continued, and refused again: the same.
+	await client.until("the lead idle", () => !client.conversations.get(lead)!.state.busy);
+	await client.call("submit", { id: lead, text: `/continue ${sub}: bad key` });
+	const again = await client.until("the continued delegate's result", () => client.conversations.get(lead)!.items.filter((i) => i.kind === "tool")[1]);
+	assert.match(again.text, new RegExp(`^Scout did not finish the task: the model's provider answered with an error: “.*invalid x-api-key.*”\\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: ${sub}\\.$`));
+	step("a sub-chat that ends on a provider's error: delegate says why and how to carry on, and engine.log names the sub-chat");
 
 	// An hour named: the wait shows in the conversation and in Activity, with its time.
 	const before = Date.now();

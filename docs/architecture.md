@@ -54,6 +54,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
 | `src/limitwait.ts` | A run refused for a provider's rate limit, or because it is overloaded: how long it waits before it asks again by itself, and what is shown and logged meanwhile. See [limits.md](limits.md#when-a-limit-is-reached) |
+| `src/providererror.ts` | A provider's error as `delegate` and `engine.log` give it: shortened, with keys, account identifiers and request ids taken out |
 | `src/schedules.ts` | Schedule rules and next-run times |
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
@@ -82,6 +83,8 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 `delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository, or the call passes `worktree`, which gives it a worktree of its own made as New Worktree… makes one ([worktrees.md](worktrees.md#sub-chats)); without full access that asks the person first, unless the other agent gets worktrees anyway. The app lists it under its parent, by the `title` the calling agent gave it (80 characters at most), or else as the agent's name and the first words of the task, or the worktree's branch when it has one. Passing `chat` continues an earlier sub-chat instead of starting a new one, and restores it first if the agent had archived it; a `title` passed with it renames it, unless the person renamed it themselves. A conversation that can delegate also gets `sub_chats`, to list its sub-chats with how each stands and archive the finished ones ([archive.md](archive.md#sub-chats-an-agent-puts-away)).
 
 A sub-chat is given its agent's tools, as a conversation of that agent's would be, less what only makes sense in a conversation of its own (`toolsFor` in `main.ts`, and a feature's `toolNames`, which is told whether it is for a sub-chat): handing work on (`delegate`, `sub_chats`) and scheduling its own work ([schedules.md](schedules.md#turning-it-on)). It keeps `ask_user`: a sub-chat that needs the person shows as waiting on them. What a sub-chat is offered follows its agent's settings at each message, as for any conversation.
+
+A sub-chat whose run ends without an answer is kept as it stopped, and `delegate`'s result says why and how to carry on: "Scout did not finish the task: the model's provider answered with an error: “429 rate_limit_error: This request would exceed your account's rate limit. …” The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12." The provider's message is shortened to 300 characters, with keys, account and organisation identifiers, request ids and email addresses taken out (`src/providererror.ts`). A refusal for the provider's limit is waited for before it gets that far ([limits.md](limits.md#when-a-limit-is-reached)); when the run ends on one all the same, the result says that carrying on works once the limit has reset.
 
 ### What commands can find
 
@@ -241,7 +244,13 @@ Every line of both starts with the time it was written, in UTC to the second (IS
 2026-11-16T18:15:02Z [pi2-engine] background command bg-3 of conversation 12 exited with code 1
 ```
 
-The engine's own lines carry the `[pi2-engine]` tag after the time; a line without it came from a dependency or from Node. A line about a background command, a worktree or a set-up command names its conversation by number (`conversation 12`), the number the app shows for it, so `grep "conversation 12"` finds what was done for one conversation.
+The engine's own lines carry the `[pi2-engine]` tag after the time; a line without it came from a dependency or from Node. A line about a background command, a worktree or a set-up command names its conversation by number (`conversation 12`), the number the app shows for it, so `grep "conversation 12"` finds what was done for one conversation. So do the lines about a run that waits for a provider's limit, when the wait starts and ends ([limits.md](limits.md#when-a-limit-is-reached)), and the line written when a run ends on an error from the model's provider, with the provider's message shortened and with keys and account identifiers taken out:
+
+```
+2026-11-17T09:12:40Z [pi2-engine] conversation 14 is waiting for Anthropic's rate limit: until 2026-11-17T10:00:00Z, the time it named
+2026-11-17T10:00:03Z [pi2-engine] conversation 14 carries on: Anthropic answered after 47 min of waiting (2 refusals)
+2026-11-17T10:20:51Z [pi2-engine] conversation 15's run ended on an error from Anthropic: 401 authentication_error: invalid x-api-key
+```
 
 A clean stop ends with its elapsed time measured inside the engine, using a monotonic clock: `stopped cleanly in 1519 ms`. The app gives it five seconds to stop before it restores a backup. Measuring inside the engine avoids charging it for a test process that is slow to notice its exit; it still counts delays within the stop, including time the engine could not run on a busy Mac, which counts toward the app's deadline too.
 
