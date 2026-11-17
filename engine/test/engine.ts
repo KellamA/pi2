@@ -2359,6 +2359,29 @@ try {
 		await client.call("conversation.delete", { id: long });
 		await client.until("its kept output removed", () => !existsSync(join(home, "output", String(long))));
 		step("commands: a long output is shortened to its end and kept whole in a file the result names; a short one keeps none; deleting the conversation removes it");
+
+		// A running command says when it started and when it last printed, on its row and in Activity (issue #196). It
+		// runs until the test lets it end, so only the test ends it.
+		const clocked = await open();
+		const gate = join(workdir, "clock-gate-196");
+		type Clock = { callId: string; command?: string; startedAt: number; lastOutputAt: number | null; output?: string };
+		const submitted = Date.now();
+		await client.call("submit", { id: clocked, text: `/timeout 600 echo started-196; while [ ! -e '${gate}' ]; do sleep 0.1; done; echo done-196` });
+		const row = await client.until("the running command's clock", () =>
+			(client.conversations.get(clocked)?.state.tools as Clock[] | undefined)?.find((tool) => tool.output?.includes("started-196") && typeof tool.startedAt === "number" && typeof tool.lastOutputAt === "number"),
+		);
+		assert.ok(row.startedAt >= submitted && row.lastOutputAt! >= row.startedAt, JSON.stringify(row));
+		const inActivity = await client.until("the command in Activity", () => {
+			const run = (client.activity as { conversationId: number; commands?: Clock[] }[]).find((run) => run.conversationId === clocked);
+			return run?.commands?.length === 1 && run.commands[0]!.lastOutputAt !== null ? run.commands[0] : undefined;
+		});
+		assert.deepEqual(inActivity, { callId: row.callId, command: `echo started-196; while [ ! -e '${gate}' ]; do sleep 0.1; done; echo done-196`, startedAt: row.startedAt, lastOutputAt: inActivity.lastOutputAt });
+		assert.ok(inActivity.lastOutputAt! >= row.startedAt);
+		writeFileSync(gate, "");
+		await settled(clocked, 1);
+		assert.ok(toolResults(clocked)[0]!.text.includes("done-196"));
+		await client.until("the clock gone from Activity", () => !(client.activity as { conversationId: number; commands?: Clock[] }[]).some((run) => run.conversationId === clocked && (run.commands?.length ?? 0) > 0));
+		step("commands: a running command's row and its Activity run say when it started and when it last printed, and stop saying so when it ends");
 	}
 	{
 		// order (engine/src/order.ts): the calls of one answer run in order when one of them changes files (#145, #129)

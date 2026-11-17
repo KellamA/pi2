@@ -194,6 +194,28 @@ try {
 	assert.equal(tookMessage({ ms: 90_000, printed: false, quietAtEndMs: 90_000, longestQuietMs: 90_000 }), "The command took 1 minute 30 seconds, printing nothing until it ended.");
 	assert.equal(tookMessage({ ms: 3 * minute, printed: true, quietAtEndMs: 0, longestQuietMs: 5000 }), "The command took 3 minutes.");
 
+	// The clocks of commands running in the foreground (engine/src/running.ts, issue #196): a start and an end are told at
+	// once, output only later and at most every few seconds; what is listed is what is running, oldest first.
+	const { RunningCommands } = await import("../src/running.ts");
+	const clocks = new RunningCommands();
+	const told: string[] = [];
+	clocks.onChange = (id, why) => void told.push(`${id} ${why}`);
+	const second = clocks.begin(4, "b", "make", 2000);
+	const first = clocks.begin(4, "a", "npm test", 1000);
+	assert.deepEqual(told, ["4 started", "4 started"]);
+	assert.deepEqual(clocks.of(4).map((clock) => clock.callId), ["a", "b"], "oldest first");
+	assert.equal(clocks.clock(4, "a")?.lastOutputAt, null, "nothing printed yet");
+	first.printed();
+	first.printed();
+	assert.ok(clocks.clock(4, "a")!.lastOutputAt! >= 1000);
+	assert.deepEqual(told, ["4 started", "4 started"], "output is not told at once");
+	first.end();
+	first.end();
+	assert.deepEqual(told, ["4 started", "4 started", "4 ended"], "an end is told once");
+	assert.deepEqual(clocks.of(4).map((clock) => clock.callId), ["b"]);
+	second.end();
+	assert.deepEqual([clocks.of(4), clocks.clock(4, "b")], [[], undefined]);
+
 	// Where a long output is kept, and for how long (engine/src/output.ts).
 	const { OutputStore, Recorder, KEEP_PER_CONVERSATION, KEEP_DAYS } = await import("../src/output.ts");
 	const { keptMessage } = await import("../src/commands.ts");

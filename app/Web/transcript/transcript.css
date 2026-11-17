@@ -684,6 +684,24 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	color: var(--tx3);
 }
 
+/* How long a running command has run, and, once it has gone quiet for a while, for how long: a stuck one stands out. */
+.tool-clock {
+	flex: none;
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	color: var(--tx3);
+}
+
+.tool-clock .quiet {
+	margin-left: 6px;
+	color: var(--warn);
+}
+
+.tool-clock .quiet::before {
+	content: "\00b7  ";
+	color: var(--tx3);
+}
+
 /* A command's exit code that is not a failure (a grep that found nothing): there to read, not to alarm. */
 .tool-status.exited {
 	color: var(--tx2);
