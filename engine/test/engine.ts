@@ -1300,6 +1300,10 @@ try {
 		const first = noted()[0]!;
 		await client.call("memory.edit", { agentId: pilot, id: first.id, text: "edited by hand" });
 		await client.until("edit broadcast", () => noted()[0]!.text === "edited by hand");
+		// A note the person writes keeps its line breaks (#198), each line tidied, and its later lines are indented in the prompt.
+		await client.call("memory.edit", { agentId: pilot, id: first.id, text: " edited  by hand \r\n\n   then a second\tline\n" });
+		await client.until("edit with a line break", () => noted()[0]!.text === "edited by hand\nthen a second line");
+		assert.ok((await say(q1, "/system")).includes(`- ${first.id}: edited by hand\n  then a second line\n`), "a note of two lines is one item in the list");
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: first.id, text: "z".repeat(401) }), /400 characters/);
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: "m999", text: "x" }), /gone/);
 		await client.call("memory.delete", { agentId: pilot, id: first.id });
@@ -2246,8 +2250,9 @@ try {
 		const [stopped, longer, input] = [await open(), await open(), await open()];
 		const started = Date.now();
 		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
-		// take, however busy the machine.
-		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 600; echo never-printed" });
+		// take, however busy the machine. It starts with `sleep`, so at its limit it is stopped rather than moved to the
+		// background (#197; test/background.ts has the move).
+		await client.call("submit", { id: stopped, text: "/bash sleep 0.1; echo begun; sleep 600; echo never-printed" });
 		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
 		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
@@ -2287,9 +2292,8 @@ try {
 		const { order, ORDER_NOTE } = await import("../src/order.ts");
 		const wraps = new Map((order(undefined as never, undefined as never).wraps ?? []).flatMap((wrap) => ("tool" in wrap ? [[wrap.tool, wrap.wrap] as const] : [])));
 		const wrapped = (name: string) => wraps.get(name)?.({ name, description: "Its own words." } as never) as { executionMode?: string; description: string } | undefined;
-		for (const name of ["bash", "write", "edit"]) assert.deepEqual(wrapped(name), { name, description: `Its own words. ${ORDER_NOTE}`, executionMode: "sequential" });
-		for (const name of ["write_document", "codemode"]) assert.deepEqual(wrapped(name), { name, description: "Its own words.", executionMode: "sequential" });
-		assert.deepEqual(wrapped("read"), { name: "read", description: `Its own words. ${ORDER_NOTE}` }, "reading alone does not make an answer's calls wait for each other");
+		for (const name of ["bash", "write", "edit", "write_document", "codemode"]) assert.deepEqual(wrapped(name), { name, description: "Its own words.", executionMode: "sequential" });
+		assert.equal(wrapped("read"), undefined, "reading alone does not make an answer's calls wait for each other");
 
 		const { id: o } = await client.call("conversation.create");
 		await client.call("conversation.open", { id: o });
@@ -2317,6 +2321,22 @@ try {
 		// small.png is the picture the read check above left in the folder.
 		[wrote, read] = await together(["bash", { command: `sleep 1; cp small.png '${tmp}/capture.png'` }], ["read", { path: `${real}/capture.png` }]);
 		assert.ok(!read!.isError && (read as any).images === 1, `a picture too: ${read!.text}`);
+
+		// Several files in one read (#176), through the engine: the arguments pass its check, a file that is missing says
+		// why without failing the others, and the page is told which files there were (engine/test/reading.ts has the rest).
+		[read] = await together(["read", { files: [{ path: `${tmp}/note.txt` }, { path: "small.png" }, "no-such-file.txt"] }]);
+		assert.equal(read!.isError, false, read!.text);
+		assert.equal((read as any).images, 1);
+		assert.ok(read!.text.startsWith(`==> ${tmp}/note.txt <==\nfresh\n\n==> small.png <==\n`), read!.text);
+		assert.match(read!.text, /\n\n==> no-such-file\.txt <==\n\[ENOENT: no such file or directory/);
+		assert.deepEqual(read!.details, { files: [{ path: `${tmp}/note.txt` }, { path: "small.png", image: true }, { path: "no-such-file.txt", failed: true }] });
+		// What every conversation with tools is told about the calls of one answer, once, in the system prompt.
+		const answers = () => client.conversations.get(o)!.items.filter((item) => item.kind === "assistant").length;
+		const before = answers();
+		await client.call("submit", { id: o, text: "/system task_list" });
+		await client.until("the prompt's task_list section", () => !client.conversations.get(o)!.state.busy && answers() > before);
+		const prompt = client.conversations.get(o)!.items.findLast((item) => item.kind === "assistant")!.text;
+		assert.ok(prompt.includes(`<<task_list>>\n<task_list>\nUse update_plan`) && prompt.includes(`\n${ORDER_NOTE}\n</task_list>`), prompt);
 
 		// A background command started after a call that writes, or changes, the script it runs.
 		const ranInBackground = async (result: Item) => {

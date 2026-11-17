@@ -104,6 +104,33 @@ function delegatesOf(host: Host, conversationId: ConversationId): AgentProfile[]
 	return (own?.delegates ?? []).map((id) => host.agent(id)).filter((a): a is AgentProfile => a !== undefined);
 }
 
+/**
+ * The person's command rules applied to a `bash` call's `command` where its conversation works (rules.ts), with the folder
+ * and worktrees they were judged against. Undefined when there is no agent or no command to judge.
+ */
+async function judgeShell(host: Host, conversationId: ConversationId, command: unknown, read: DocumentReader, context: Context) {
+	const agent = host.agent(host.meta(conversationId)?.agentId);
+	if (agent === undefined || typeof command !== "string") return undefined;
+	const folder = resolve((await read.snapshot(AgentDoc, conversationId, context))?.cwd ?? host.scratchFolder());
+	const made = await madeWorktrees(read, context);
+	return { command, folder, made, verdict: judgeCommand(command, folder, agent.commandRules ?? [], made) };
+}
+
+/**
+ * Whether a `bash` call running `command` in this conversation would wait for the person's approval, judged as
+ * `beforeTool` judges it, with the settings as they are now: under Ask first, unless Always Allow bash Here or a command
+ * rule covers it. A command in the background is judged exactly as one that is waited for, so this answers for both.
+ * commands.ts asks it before moving a command that reached its time limit to the background: only one that starting
+ * there would not have asked about is moved.
+ */
+export async function commandAsks(host: Host, conversationId: ConversationId, command: string, read: DocumentReader, context: Context): Promise<boolean> {
+	const meta = host.meta(conversationId);
+	// The same three checks as `beforeTool`'s for `bash`, in the same order.
+	if (meta?.access !== "ask") return false;
+	if (meta.autoApprove?.includes("bash")) return false;
+	return (await judgeShell(host, conversationId, command, read, context))?.verdict.allowed !== true;
+}
+
 export function pi2Extension(host: Host): Extension {
 	const askUser = defineTool({
 		name: "ask_user",
@@ -602,12 +629,9 @@ export function pi2Extension(host: Host): Extension {
 	 * repository: a rule offered inside one is for the main checkout's folder (`ruleFolder`).
 	 */
 	const shellRules = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ allowed: boolean; proposal?: RuleProposal }> => {
-		const agent = host.agent(host.meta(api.conversationId)?.agentId);
-		const command = (call.arguments as { command?: unknown }).command;
-		if (agent === undefined || typeof command !== "string") return { allowed: false };
-		const folder = resolve((await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? host.scratchFolder());
-		const made = await madeWorktrees(api, context);
-		const verdict = judgeCommand(command, folder, agent.commandRules ?? [], made);
+		const judged = await judgeShell(host, api.conversationId, (call.arguments as { command?: unknown }).command, api, context);
+		if (judged === undefined) return { allowed: false };
+		const { command, folder, made, verdict } = judged;
 		if (verdict.allowed) {
 			allowedByRule.set(String(api.taskId), verdict.rules);
 			if (allowedByRule.size > 200) allowedByRule.delete(allowedByRule.keys().next().value!);
