@@ -16,6 +16,14 @@ import {
 } from "@earendil-works/pi-mcp";
 import { commandEnvironment } from "./environment.ts";
 import { fromShell } from "./shellpath.ts";
+import type { AgentVariable } from "./state.ts";
+import { MAX_VARIABLES, VariableValues, variableName, variableValue, withValue } from "./variables.ts";
+
+/**
+ * The Keychain item a server's variables are kept in, under the service sign-ins are kept under (variables.ts). "/" is
+ * not allowed in a provider id, so it is never mistaken for one, nor for an agent's `variables/<agent id>`.
+ */
+export const serverVariablesAccount = (serverId: string): string => `mcp-variables/${serverId}`;
 
 export type McpServerConfig = {
 	id: string;
@@ -24,6 +32,11 @@ export type McpServerConfig = {
 	/** stdio: the program and its arguments. */
 	command?: string;
 	args?: string[];
+	/**
+	 * stdio: environment variables of its own (issue #273): names, and whether each has a value. The values are in the
+	 * Keychain (`serverVariablesAccount`), never here. Changed only through `setVariable` and `removeVariable`.
+	 */
+	variables?: AgentVariable[];
 	/** http: the server's URL. A bearer token, when set, is kept in the Keychain, not here. */
 	url?: string;
 	enabled: boolean;
@@ -68,6 +81,7 @@ type Opened = { connection: Connection; tools: McpToolInfo[]; registrations: Too
 export class McpServers {
 	readonly #path: string;
 	readonly #credentials: CredentialStore;
+	readonly #values: VariableValues;
 	#configs: McpServerConfig[];
 	readonly #live = new Map<string, Live>();
 	readonly #tokens = new Set<string>();
@@ -83,9 +97,10 @@ export class McpServers {
 	/** How long a replaced copy of a server may keep running for a call still going on it (tests make it short). */
 	lingerMs = LINGER_MS;
 
-	constructor(home: string, credentials: CredentialStore) {
+	constructor(home: string, credentials: CredentialStore, values = new VariableValues()) {
 		this.#path = join(home, "mcp.json");
 		this.#credentials = credentials;
+		this.#values = values;
 		try {
 			this.#configs = JSON.parse(readFileSync(this.#path, "utf8"));
 		} catch {
@@ -95,7 +110,13 @@ export class McpServers {
 
 	async start(): Promise<void> {
 		for (const info of await this.#credentials.list()) if (info.providerId.startsWith("mcp-")) this.#tokens.add(info.providerId.slice(4));
-		await Promise.all(this.#configs.map((config) => this.#connect(config)));
+		await Promise.all(
+			this.#configs.map(async (config) => {
+				await this.#checkVariables(config);
+				const current = this.#configs.find((c) => c.id === config.id);
+				if (current !== undefined) await this.#connect(current);
+			}),
+		);
 	}
 
 	list(): McpServerStatus[] {
@@ -138,11 +159,14 @@ export class McpServers {
 		} else if (!this.#configs.some((c) => c.id === id)) {
 			throw new Error(`Unknown server: ${id}`);
 		}
+		// Its variables are kept as they are: they change through their own requests.
+		const variables = this.#configs.find((c) => c.id === id)?.variables;
 		const config: McpServerConfig = {
 			id,
 			name,
 			transport: input.transport,
 			...(input.transport === "stdio" ? { command: input.command!.trim(), args: (input.args ?? []).filter((a) => a !== "") } : { url: input.url!.trim() }),
+			...(variables !== undefined && variables.length > 0 ? { variables } : {}),
 			enabled: input.enabled ?? true,
 		};
 		if (input.token !== undefined && input.token.trim() !== "") {
@@ -162,12 +186,51 @@ export class McpServers {
 	async remove(id: string): Promise<void> {
 		const config = this.#configs.find((c) => c.id === id);
 		if (config === undefined) throw new Error(`Unknown server: ${id}`);
+		// Its values first, so that a server whose values could not be removed is still there to try again with.
+		if ((config.variables ?? []).length > 0) {
+			try {
+				await this.#values.forget(serverVariablesAccount(id));
+			} catch (error) {
+				throw new Error(`The server was not removed: its variables could not be removed from the Keychain (${error instanceof Error ? error.message : String(error)}).`);
+			}
+		}
+		const current = this.#configs.find((c) => c.id === id);
+		// Removed meanwhile, by another request.
+		if (current === undefined) return;
 		this.#live.delete(id);
 		this.#configs = this.#configs.filter((c) => c.id !== id);
 		this.#persist();
 		this.onChange();
-		await this.#end(config, "removed");
+		await this.#end(current, "removed");
 		if (this.#tokens.delete(id)) await this.#credentials.delete(`mcp-${id}`);
+	}
+
+	/**
+	 * Set or replace the value of one of the variables of a server run as a program, adding the name if it is new, and
+	 * start the server again with it, as saving it does: a call running on the copy it replaces is not cut off.
+	 */
+	async setVariable(id: string, rawName: unknown, rawValue: unknown): Promise<void> {
+		const config = this.#stdio(id);
+		const name = variableName(rawName);
+		const value = variableValue(rawValue);
+		const list = config.variables ?? [];
+		if (!list.some((variable) => variable.name === name) && list.length >= MAX_VARIABLES) throw new Error(`A server can have ${MAX_VARIABLES} variables at most.`);
+		// The value first: mcp.json never says there is one that the Keychain does not hold.
+		await this.#values.set(serverVariablesAccount(id), name, value);
+		await this.#connect(this.#changeVariables(id, (current) => withValue(current, name)));
+	}
+
+	/** Remove one of a server's variables, its value with it, and start the server again without it. */
+	async removeVariable(id: string, name: unknown): Promise<void> {
+		this.#stdio(id);
+		if (typeof name !== "string") throw new Error("Say which variable to remove.");
+		// The name first: from then on the server is not started with it, even if the Keychain cannot be changed now.
+		const config = this.#changeVariables(id, (current) => current.filter((variable) => variable.name !== name));
+		try {
+			await this.#values.remove(serverVariablesAccount(id), name);
+		} finally {
+			await this.#connect(config);
+		}
 	}
 
 	/**
@@ -203,6 +266,62 @@ export class McpServers {
 	async stop(): Promise<void> {
 		this.#stopped = true;
 		await Promise.all([...this.#connections].map((connection) => this.#close(connection, "pi² stopped while this call was running, so the call was stopped.")));
+	}
+
+	/** A server run as a program, the only kind that has variables. */
+	#stdio(id: string): McpServerConfig {
+		const config = this.#configs.find((c) => c.id === id);
+		if (config === undefined) throw new Error(`Unknown server: ${id}`);
+		if (config.transport !== "stdio") throw new Error("Only a server pi² runs as a program has variables.");
+		return config;
+	}
+
+	/** Change a server's list of variables in mcp.json, and return its configuration as it is then, to start it again with. */
+	#changeVariables(id: string, change: (list: AgentVariable[]) => AgentVariable[]): McpServerConfig {
+		// As it is now: it may have been saved again or removed while the Keychain was being changed.
+		const current = this.#configs.find((c) => c.id === id);
+		if (current === undefined) throw new Error(`Unknown server: ${id}`);
+		const config: McpServerConfig = { ...current, variables: change(current.variables ?? []) };
+		if (config.variables!.length === 0) delete config.variables;
+		this.#configs = this.#configs.map((c) => (c.id === id ? config : c));
+		this.#persist();
+		return config;
+	}
+
+	/**
+	 * A server whose mcp.json says a variable has a value the Keychain does not hold (a backup restored on another Mac or
+	 * in another copy of pi², or an item removed by hand) is put right, so the settings do not show a value that is not
+	 * there. If the Keychain cannot be read, it is left as it is, and starting the server says why.
+	 */
+	async #checkVariables(config: McpServerConfig): Promise<void> {
+		if (!(config.variables ?? []).some((variable) => variable.set)) return;
+		try {
+			const kept = await this.#values.read(serverVariablesAccount(config.id));
+			if (config.variables!.every((variable) => !variable.set || variable.name in kept)) return;
+			const current = this.#configs.find((c) => c.id === config.id);
+			if (current === undefined) return;
+			const fixed = { ...current, variables: (current.variables ?? []).map((variable) => ({ ...variable, set: variable.set && variable.name in kept })) };
+			this.#configs = this.#configs.map((c) => (c.id === config.id ? fixed : c));
+			this.#persist();
+			this.log(`MCP server ${config.name}: some of its variables had no value in the Keychain, and are shown as not set`);
+		} catch (error) {
+			this.log(`MCP server ${config.name}: its variables could not be read from the Keychain:`, error instanceof Error ? error.message : error);
+		}
+	}
+
+	/** The variables a server run as a program is started with. Throws when they cannot be read, rather than start it without them. */
+	async #variablesOf(config: McpServerConfig): Promise<Record<string, string>> {
+		const wanted = (config.variables ?? []).filter((variable) => variable.set);
+		if (wanted.length === 0) return {};
+		let kept: Record<string, string>;
+		try {
+			kept = await this.#values.read(serverVariablesAccount(config.id));
+		} catch (error) {
+			throw new Error(`Its variables could not be read from the Keychain, so it was not started: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		const given: Record<string, string> = {};
+		for (const variable of wanted) if (variable.name in kept) given[variable.name] = kept[variable.name]!;
+		return given;
 	}
 
 	/** Close every copy of a server the person removed or switched off, now, saying so to any call running on one. */
@@ -342,8 +461,9 @@ export class McpServers {
 	async #open(config: McpServerConfig): Promise<Opened> {
 		let transport: McpTransport;
 		if (config.transport === "stdio") {
-			// The engine's environment as it is now (its PATH may have changed since the last start), less pi²'s own settings.
-			transport = new StdioTransport({ command: config.command!, args: config.args ?? [], stderr: "pipe", env: commandEnvironment(), inheritEnv: false });
+			// The engine's environment as it is now (its PATH may have changed since the last start), less pi²'s own
+			// settings, with the server's own variables, which win over the engine's.
+			transport = new StdioTransport({ command: config.command!, args: config.args ?? [], stderr: "pipe", env: commandEnvironment(await this.#variablesOf(config)), inheritEnv: false });
 		} else {
 			const token = this.#tokens.has(config.id) ? (await this.#credentials.read(`mcp-${config.id}`)) : undefined;
 			const key = token?.type === "api_key" ? token.key : undefined;

@@ -12,7 +12,8 @@
 // values from the Keychain.
 //
 // MCP servers do not get them. One server process serves every agent that uses it, so it cannot take one agent's
-// variables, and a server has a configuration of its own, where what it needs belongs.
+// variables. A server run as a program has variables of its own instead (mcp.ts, issue #273), kept the same way by
+// `VariableValues`, in an item per server named `mcp-variables/<server id>`, and refused the same names.
 //
 // The engine sets some variables of commands itself, and a name that would undo or weaken one of them is refused,
 // saying why (`refusal`).
@@ -22,7 +23,7 @@ import { KeychainObjects } from "./credentials.ts";
 import type { Engine, Feature } from "./features.ts";
 import { type AgentProfile, type AgentVariable, Agents } from "./state.ts";
 
-/** At most this many variables an agent. */
+/** At most this many variables an agent, or an MCP server. */
 export const MAX_VARIABLES = 50;
 /** At most this many bytes a value. */
 export const MAX_VALUE_BYTES = 16 * 1024;
@@ -46,6 +47,83 @@ export function refusal(name: string): string | undefined {
 	return undefined;
 }
 
+/** The name a request gives, trimmed, or an error that says why it cannot be a variable's. */
+export function variableName(name: unknown): string {
+	if (typeof name !== "string") throw new Error("Give the variable a name.");
+	const trimmed = name.trim();
+	const refused = refusal(trimmed);
+	if (refused !== undefined) throw new Error(refused);
+	return trimmed;
+}
+
+/** The value a request gives, or an error that says why it cannot be one. */
+export function variableValue(value: unknown): string {
+	if (typeof value !== "string") throw new Error("The value must be text.");
+	if (value.includes("\0")) throw new Error("The value cannot hold a NUL character, which no program can be given.");
+	if (Buffer.byteLength(value) > MAX_VALUE_BYTES) throw new Error(`The value is too long: keep it under ${MAX_VALUE_BYTES / 1024} KB.`);
+	return value;
+}
+
+/** `list` with `name` marked as having a value, added at the end if it is new. */
+export const withValue = (list: readonly AgentVariable[], name: string): AgentVariable[] =>
+	list.some((variable) => variable.name === name) ? list.map((variable) => (variable.name === name ? { name, set: true } : variable)) : [...list, { name, set: true }];
+
+/**
+ * The values of variables in the Keychain, one item to an owner (an agent, an MCP server) named by its account, each
+ * read once and then kept in memory, so that what starts a command or a server does not ask the Keychain each time.
+ * One change to an item at a time.
+ */
+export class VariableValues {
+	readonly #keychain: KeychainObjects;
+	readonly #known = new Map<string, Record<string, string>>();
+
+	constructor(keychain = new KeychainObjects()) {
+		this.#keychain = keychain;
+	}
+
+	/** The values kept for `account`, none if there is no item. Throws if the Keychain cannot be read. */
+	async read(account: string): Promise<Record<string, string>> {
+		const cached = this.#known.get(account);
+		if (cached !== undefined) return cached;
+		const stored = (await this.#keychain.read(account)) ?? {};
+		const values: Record<string, string> = {};
+		for (const [name, value] of Object.entries(stored)) if (typeof value === "string") values[name] = value;
+		this.#known.set(account, values);
+		return values;
+	}
+
+	/** Set or replace one value. */
+	set(account: string, name: string, value: string): Promise<void> {
+		return this.#keychain.exclusive(account, async () => {
+			this.#known.delete(account);
+			const next = { ...(await this.read(account)), [name]: value };
+			await this.#keychain.write(account, next, "the value");
+			this.#known.set(account, next);
+		});
+	}
+
+	/** Remove one value, and the item with the last one. */
+	remove(account: string, name: string): Promise<void> {
+		return this.#keychain.exclusive(account, async () => {
+			this.#known.delete(account);
+			const values = { ...(await this.read(account)) };
+			if (!(name in values)) return;
+			delete values[name];
+			if (Object.keys(values).length === 0) await this.#keychain.delete(account);
+			else await this.#keychain.write(account, values, "the change");
+			this.#known.set(account, values);
+		});
+	}
+
+	/** Remove every value kept for `account`. Nothing kept is not an error. */
+	forget(account: string): Promise<void> {
+		return this.#keychain.exclusive(account, async () => {
+			this.#known.delete(account);
+			await this.#keychain.delete(account);
+		});
+	}
+}
+
 let running: { values(agent: AgentProfile): Promise<Record<string, string>>; meta(id: number): { agentId?: string } | undefined; agents(): Record<string, AgentProfile> } | undefined;
 
 /**
@@ -65,19 +143,8 @@ export async function agentVariables(id: number): Promise<Record<string, string>
 }
 
 export const variables: Feature = (host, engine: Engine) => {
-	const keychain = new KeychainObjects();
-	/** Each agent's values as last read from or written to the Keychain, so a command does not ask the Keychain each time. */
-	const known = new Map<string, Record<string, string>>();
-
-	const read = async (agentId: string): Promise<Record<string, string>> => {
-		const cached = known.get(agentId);
-		if (cached !== undefined) return cached;
-		const stored = (await keychain.read(variablesAccount(agentId))) ?? {};
-		const values: Record<string, string> = {};
-		for (const [name, value] of Object.entries(stored)) if (typeof value === "string") values[name] = value;
-		known.set(agentId, values);
-		return values;
-	};
+	const values = new VariableValues();
+	const read = (agentId: string): Promise<Record<string, string>> => values.read(variablesAccount(agentId));
 
 	/** Change an agent's list of variables in its profile. */
 	const edit = async (agentId: string, change: (list: AgentVariable[]) => AgentVariable[], context: Context = engine.context()) => {
@@ -94,13 +161,6 @@ export const variables: Feature = (host, engine: Engine) => {
 		if (agent === undefined) throw new Error(`Unknown agent: ${String(id)}`);
 		return agent;
 	};
-	const nameOf = (params: Record<string, unknown>): string => {
-		if (typeof params.name !== "string") throw new Error("Give the variable a name.");
-		const name = params.name.trim();
-		const refused = refusal(name);
-		if (refused !== undefined) throw new Error(refused);
-		return name;
-	};
 
 	/**
 	 * A profile that says a variable has a value the Keychain does not hold (a backup restored on another Mac or in
@@ -110,9 +170,9 @@ export const variables: Feature = (host, engine: Engine) => {
 		for (const agent of Object.values(engine.agents())) {
 			if (!(agent.variables ?? []).some((variable) => variable.set)) continue;
 			try {
-				const values = await read(agent.id);
-				if (agent.variables!.every((variable) => !variable.set || variable.name in values)) continue;
-				await edit(agent.id, (list) => list.map((variable) => ({ ...variable, set: variable.set && variable.name in values })));
+				const kept = await read(agent.id);
+				if (agent.variables!.every((variable) => !variable.set || variable.name in kept)) continue;
+				await edit(agent.id, (list) => list.map((variable) => ({ ...variable, set: variable.set && variable.name in kept })));
 				engine.log(`variables of agent ${agent.id}: some had no value in the Keychain, and are shown as not set`);
 			} catch (error) {
 				engine.log(`variables of agent ${agent.id} could not be read from the Keychain:`, error instanceof Error ? error.message : error);
@@ -122,9 +182,9 @@ export const variables: Feature = (host, engine: Engine) => {
 
 	running = {
 		values: async (agent) => {
-			const values = await read(agent.id);
+			const kept = await read(agent.id);
 			const given: Record<string, string> = {};
-			for (const variable of agent.variables ?? []) if (variable.set && variable.name in values) given[variable.name] = values[variable.name]!;
+			for (const variable of agent.variables ?? []) if (variable.set && variable.name in kept) given[variable.name] = kept[variable.name]!;
 			return given;
 		},
 		meta: (id) => host.meta(id as never),
@@ -138,22 +198,13 @@ export const variables: Feature = (host, engine: Engine) => {
 			/** Set or replace the value of one of an agent's variables, adding the name if it is new. */
 			"variables.set": async (params) => {
 				const agent = agentOf(params);
-				const name = nameOf(params);
-				const value = params.value;
-				if (typeof value !== "string") throw new Error("The value must be text.");
-				if (value.includes("\0")) throw new Error("The value cannot hold a NUL character, which no program can be given.");
-				if (Buffer.byteLength(value) > MAX_VALUE_BYTES) throw new Error(`The value is too long: keep it under ${MAX_VALUE_BYTES / 1024} KB.`);
+				const name = variableName(params.name);
+				const value = variableValue(params.value);
 				const list = agent.variables ?? [];
 				if (!list.some((variable) => variable.name === name) && list.length >= MAX_VARIABLES) throw new Error(`An agent can have ${MAX_VARIABLES} variables at most.`);
 				// The value first: the profile never says there is one that the Keychain does not hold.
-				await keychain.exclusive(variablesAccount(agent.id), async () => {
-					known.delete(agent.id);
-					const values = await read(agent.id);
-					const next = { ...values, [name]: value };
-					await keychain.write(variablesAccount(agent.id), next, "the value");
-					known.set(agent.id, next);
-				});
-				await edit(agent.id, (current) => (current.some((variable) => variable.name === name) ? current.map((variable) => (variable.name === name ? { name, set: true } : variable)) : [...current, { name, set: true }]));
+				await values.set(variablesAccount(agent.id), name, value);
+				await edit(agent.id, (current) => withValue(current, name));
 				return {};
 			},
 			/** Remove one of an agent's variables, its value with it. */
@@ -163,15 +214,7 @@ export const variables: Feature = (host, engine: Engine) => {
 				const name = params.name;
 				// The name first: from then on no command gets it, even if the Keychain cannot be changed now.
 				await edit(agent.id, (current) => current.filter((variable) => variable.name !== name));
-				await keychain.exclusive(variablesAccount(agent.id), async () => {
-					known.delete(agent.id);
-					const values = { ...(await read(agent.id)) };
-					if (!(name in values)) return;
-					delete values[name];
-					if (Object.keys(values).length === 0) await keychain.delete(variablesAccount(agent.id));
-					else await keychain.write(variablesAccount(agent.id), values, "the change");
-					known.set(agent.id, values);
-				});
+				await values.remove(variablesAccount(agent.id), name);
 				return {};
 			},
 		},
@@ -182,14 +225,11 @@ export const variables: Feature = (host, engine: Engine) => {
 		},
 		// Before the agent goes, so that an agent whose values could not be removed is still there to try again with.
 		deletingAgent: async (agentId) => {
-			await keychain.exclusive(variablesAccount(agentId), async () => {
-				known.delete(agentId);
-				try {
-					await keychain.delete(variablesAccount(agentId));
-				} catch (error) {
-					throw new Error(`The agent was not deleted: its variables could not be removed from the Keychain (${error instanceof Error ? error.message : String(error)}).`);
-				}
-			});
+			try {
+				await values.forget(variablesAccount(agentId));
+			} catch (error) {
+				throw new Error(`The agent was not deleted: its variables could not be removed from the Keychain (${error instanceof Error ? error.message : String(error)}).`);
+			}
 		},
 	};
 };
