@@ -17,7 +17,7 @@ struct UsageView: View {
                     }
                     LimitsSection(engine: engine)
                     budget(usage)
-                    bars("By model", usage.models.map { (modelName($0.key), $0.tokens, $0.subscription == true ? "\(Formats.tokens($0.tokens)) tokens · subscription" : Formats.usage(tokens: $0.tokens, cost: $0.cost), Color.piAccent) })
+                    bars("By model", usage.models.map { (modelName($0.key), $0.tokens, modelDetail($0), Color.piAccent) })
                     bars("By agent", usage.agents.map { row in
                         let agent = engine.agent(row.agentId)
                         return (agent?.name ?? "Deleted agent", row.tokens, Formats.usage(tokens: row.tokens, cost: row.cost), AgentColor.color(agent?.color))
@@ -37,7 +37,7 @@ struct UsageView: View {
                             }
                         }
                     }
-                    Text("Cost is an estimate for models you pay for by use, such as an API key. Models used through a subscription sign-in, and local models, count tokens only and do not count towards the budget.")
+                    Text("Cost is an estimate for models you pay for by use, such as an API key. Models used through a subscription sign-in, local models, and models added by hand, whose price pi² does not know, count tokens only and do not count towards the budget.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 28).padding(.vertical, 22)
@@ -56,6 +56,13 @@ struct UsageView: View {
     private func modelName(_ key: String) -> String {
         guard let model = engine.allModels.first(where: { "\($0.provider)/\($0.id)" == key }) else { return key }
         return "\(model.providerName) · \(model.name)"
+    }
+
+    /// A model's tokens, and its cost when it has one; why it has none when that is not plain.
+    private func modelDetail(_ row: UsageSummary.ModelRow) -> String {
+        if row.subscription == true { return "\(Formats.tokens(row.tokens)) tokens · subscription" }
+        if row.unpriced == true, row.cost == 0 { return "\(Formats.tokens(row.tokens)) · price unknown" }
+        return Formats.usage(tokens: row.tokens, cost: row.cost)
     }
 
     /// Money when some of the use was metered; otherwise the tokens, since a subscription or a local model has no bill.

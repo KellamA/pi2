@@ -57,9 +57,10 @@ function standIn(folder: string, name: string, body: string): string {
  * left waiting for ever, whatever became of the engine or the check that asked it.
  */
 const waitFor = (gate: string) => `while [ ! -e "${gate}" ]; do [ -d "${scratch}" ] || exit 1; sleep 0.05; done`;
-/** A shell that answers with `path`, but not before the file `gate` is there. */
-function gated(folder: string, gate: string, path: string): string {
-	return standIn(folder, "zsh", `${waitFor(gate)}\necho "Welcome back"\nPATH="${path}"\nexport PATH\neval "$2"`);
+/** A shell that answers with `path`, and `socket` as its SSH_AUTH_SOCK if given, but not before the file `gate` is there. */
+function gated(folder: string, gate: string, path: string, socket?: string): string {
+	const own = socket === undefined ? "" : `SSH_AUTH_SOCK="${socket}"\nexport SSH_AUTH_SOCK\n`;
+	return standIn(folder, "zsh", `${waitFor(gate)}\necho "Welcome back"\nPATH="${path}"\nexport PATH\n${own}eval "$2"`);
 }
 /** A shell that never answers: it starts a program of its own, says in `pidFile` which, and waits for it. */
 function hanging(folder: string, pidFile: string): string {
@@ -129,17 +130,18 @@ try {
 
 	let scenario = 0;
 	/** Starts with `began`, asks a shell that says `said` only once the wait is over, and reports each stage. */
-	const lateAnswer = async (said: string, began: string) => {
+	const lateAnswer = async (said: string, began: string, socket?: string) => {
 		const gate = join(scratch, `gate-${++scenario}`);
-		const env: NodeJS.ProcessEnv = { PATH: began, PI2_LOGIN_SHELL: gated(join(scratch, `late-${scenario}`), gate, said) };
+		const env: NodeJS.ProcessEnv = { PATH: began, PI2_LOGIN_SHELL: gated(join(scratch, `late-${scenario}`), gate, said, socket) };
 		const lines: string[] = [];
 		const listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, PATIENT_MS);
 		assert.ok(listening !== undefined, "a shell still going when the wait runs out is still listened to");
 		const meanwhile = env.PATH;
+		const socketMeanwhile = env.SSH_AUTH_SOCK;
 		const logged = lines.length;
 		writeFileSync(gate, "");
 		await within(PATIENT_MS, "the late answer to be taken", listening.done);
-		return { meanwhile, logged, final: env.PATH, lines };
+		return { meanwhile, socketMeanwhile, logged, final: env.PATH, socket: env.SSH_AUTH_SOCK, lines };
 	};
 
 	const plain = await lateAnswer(`${tools}:/usr/bin:/bin:.::relative/bin`, BARE);
@@ -158,7 +160,12 @@ try {
 	const had = await lateAnswer(`${tools}:/usr/bin:/bin`, `${BARE}:${usualOnly}`);
 	assert.equal(had.meanwhile, fallback(`${BARE}:${usualOnly}`));
 	assert.equal(had.final, `${tools}:${BARE}:${usualOnly}`, "a usual place the engine began with stays, after the shell's folders");
-	step("a shell that answers after the wait has its PATH taken then, the same as an answer in time");
+
+	const socketed = await lateAnswer(`${tools}:/usr/bin:/bin`, BARE, join(scratch, "agent.sock"));
+	assert.equal(socketed.socketMeanwhile, undefined, "until the shell answers, the engine keeps the SSH_AUTH_SOCK it had");
+	assert.equal(socketed.socket, join(scratch, "agent.sock"), "then it takes the shell's");
+	assert.match(socketed.lines[1]!, /^PATH taken from zsh, \d+ seconds? after it was asked: 3 folders, and its SSH_AUTH_SOCK, another than the engine's\. /);
+	step("a shell that answers after the wait has its PATH and SSH_AUTH_SOCK taken then, the same as an answer in time");
 
 	// ---- An answer that is in, but not yet read, when the wait runs out
 

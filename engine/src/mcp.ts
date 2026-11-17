@@ -15,6 +15,7 @@ import {
 	toLlmContent,
 } from "@earendil-works/pi-mcp";
 import { commandEnvironment } from "./environment.ts";
+import { fromShell } from "./shellpath.ts";
 
 export type McpServerConfig = {
 	id: string;
@@ -56,7 +57,10 @@ type Live = {
 	error: string | null;
 	tools: McpToolInfo[];
 	registrations: ToolRegistration[];
-	/** A server run as a program: the PATH it was started with, which it and whatever it starts keep. */
+	/**
+	 * A server run as a program: what of its environment came from the login shell (its PATH and SSH_AUTH_SOCK,
+	 * shellpath.ts `fromShell`), which it and whatever it starts keep.
+	 */
 	path?: string;
 };
 type Opened = { connection: Connection; tools: McpToolInfo[]; registrations: ToolRegistration[] };
@@ -180,8 +184,8 @@ export class McpServers {
 
 	/**
 	 * The PATH the engine gives what it starts has changed: the login shell was too slow for start-up and its PATH was
-	 * taken when it came (shellpath.ts). Bring every server run as a program that was started with another PATH onto
-	 * it, so that it ends up as a quicker start would have left it (issue #98):
+	 * taken when it came (shellpath.ts), with its SSH_AUTH_SOCK. Bring every server run as a program that was started
+	 * with another PATH or SSH_AUTH_SOCK onto them, so that it ends up as a quicker start would have left it (issue #98):
 	 *
 	 * - one that failed to start (its program may only be on the new PATH) is connected again; nothing is using it;
 	 * - one that is connected is started again alongside the one running, and put in its place only once it has
@@ -235,9 +239,9 @@ export class McpServers {
 		connection.linger.unref();
 	}
 
-	/** The PATH a server would be started with now; undefined for one that is not a program. */
+	/** What of the login shell's a server would be started with now (PATH, SSH_AUTH_SOCK); undefined for one that is not a program. */
 	#pathFor(config: McpServerConfig): string | undefined {
-		return config.transport === "stdio" ? process.env.PATH : undefined;
+		return config.transport === "stdio" ? fromShell() : undefined;
 	}
 
 	#follow(config: McpServerConfig): void {

@@ -39,7 +39,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, instructions, files, memory, tools, rules, extras, computer, browser, schedule, delegates
+    case profile, model, instructions, files, memory, tools, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -176,7 +176,7 @@ struct AgentEditor: View {
                         ForEach(engine.modelGroups, id: \.provider) { group in
                             Section(group.name) {
                                 ForEach(group.models, id: \.ref) { item in
-                                    Text(item.name).tag(ModelRef?.some(item.ref))
+                                    Text(item.listName).tag(ModelRef?.some(item.ref))
                                 }
                             }
                         }
@@ -290,6 +290,9 @@ struct AgentEditor: View {
 
                 CommandRulesSection(engine: engine, agentID: agentID, folder: agent.cwd, access: agent.access)
                     .id(AgentSection.rules)
+
+                AgentVariablesSection(engine: engine, agentID: agentID)
+                    .id(AgentSection.variables)
 
                 Section {
                     Toggle("Write scripts that call its tools", isOn: Binding(get: { agent.codeMode ?? false }, set: { draft.wrappedValue.codeMode = $0 }))
@@ -504,6 +507,120 @@ struct CommandRulesSection: View {
         Task {
             do {
                 try await engine.call("rules.remove", ["agentId": agentID, "folder": rule.folder, "words": rule.words])
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// The agent's own environment variables, which every command it runs gets: listed by name, set, replaced and removed
+/// here. A value goes to the engine, which keeps it in the Keychain, and never comes back: it can be replaced, not
+/// shown. Changes apply at once, without Save, as rules do.
+struct AgentVariablesSection: View {
+    let engine: EngineClient
+    let agentID: String
+
+    @State private var name = ""
+    @State private var value = ""
+    /// The variable whose value is being set or replaced, and what is typed for it.
+    @State private var replacing: String?
+    @State private var newValue = ""
+    @State private var problem: String?
+
+    private var variables: [AgentVariable] { engine.agent(agentID)?.variables ?? [] }
+
+    var body: some View {
+        Section {
+            Label("Every command this agent runs can read these values, and so can whatever those commands start.", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(Theme.warn)
+            ForEach(variables) { variable in
+                if replacing == variable.name {
+                    HStack(spacing: 8) {
+                        Text(variable.name).font(Theme.mono).lineLimit(1)
+                        SecureField("Value", text: $newValue, prompt: Text(variable.set ? "New value" : "Value"))
+                            .labelsHidden()
+                            .onSubmit { set(variable.name, newValue) }
+                        Button("Cancel") { replacing = nil; newValue = "" }
+                        Button("Save") { set(variable.name, newValue) }
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        Image(systemName: "key")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        Text(variable.name).font(Theme.mono).lineLimit(1).truncationMode(.middle)
+                        Text(variable.set ? "value set" : "no value: commands do not get it")
+                            .font(.caption)
+                            .foregroundStyle(variable.set ? Color.secondary : Theme.warn)
+                        Spacer(minLength: 8)
+                        Button(variable.set ? "Replace…" : "Set Value…") { replacing = variable.name; newValue = ""; problem = nil }
+                            .buttonStyle(.borderless)
+                            .help(variable.set ? "Give \(variable.name) a new value. The one kept now cannot be shown." : "Give \(variable.name) a value")
+                        Button("Remove", systemImage: "minus.circle") { remove(variable.name) }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .help("Remove \(variable.name) and its value: the agent's commands no longer get it")
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                TextField("Name", text: $name, prompt: Text("GH_TOKEN"))
+                    .labelsHidden()
+                    .font(Theme.mono)
+                    .frame(maxWidth: 180)
+                    .accessibilityLabel("Name of a new variable")
+                SecureField("Value", text: $value, prompt: Text("Value"))
+                    .labelsHidden()
+                    .accessibilityLabel("Its value")
+                    .onSubmit { add() }
+                Button("Add") { add() }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if let problem {
+                Text(problem).foregroundStyle(Theme.bad).font(.callout)
+            }
+        } header: {
+            Text("Variables for its commands")
+        } footer: {
+            Text("Its shell commands, background commands and set-up command get these as environment variables, without asking you: for example a token a command-line tool reads. The agent can print a value or send it anywhere a command can, so give it only what you would let it use. Values are kept in your macOS Keychain, never in pi²’s files or backups, and cannot be shown here again, only replaced. A sub-chat gets the variables of its own agent; MCP servers get none. A copy of this agent gets the names without the values. Changes here apply at once, without Save, from the next command.").formFooter()
+        }
+    }
+
+    private func add() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            do {
+                try await engine.call("variables.set", ["agentId": agentID, "name": trimmed, "value": value])
+                name = ""
+                value = ""
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+
+    private func set(_ variable: String, _ text: String) {
+        Task {
+            do {
+                try await engine.call("variables.set", ["agentId": agentID, "name": variable, "value": text])
+                replacing = nil
+                newValue = ""
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+
+    private func remove(_ variable: String) {
+        Task {
+            do {
+                try await engine.call("variables.remove", ["agentId": agentID, "name": variable])
+                if replacing == variable { replacing = nil; newValue = "" }
                 problem = nil
             } catch {
                 problem = error.localizedDescription

@@ -25,12 +25,40 @@ enum SettingsSection: String {
 struct SettingsLaunch {
     var tab = SettingsTab.general
     var section: SettingsSection?
+    /// On Providers, `#models=<provider>` opens that provider's Models sheet, and `#add-model=<provider>/<id>` its sheet
+    /// for adding a model by id, with the id typed and looked up: the provider and, when asked, the id.
+    var modelsSheet: (provider: String, adding: String?)?
 
     init?(_ value: String?) {
         guard let value, value == "settings" || value.hasPrefix("settings:") else { return nil }
         let asked = value.dropFirst("settings:".count).split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
         if let name = asked.first, let tab = SettingsTab(rawValue: String(name)) { self.tab = tab }
-        if asked.count > 1 { section = SettingsSection(rawValue: String(asked[1])) }
+        if asked.count > 1 {
+            let part = String(asked[1])
+            section = SettingsSection(rawValue: part)
+            if part.hasPrefix("models=") {
+                modelsSheet = (String(part.dropFirst("models=".count)), nil)
+            } else if part.hasPrefix("add-model=") {
+                let target = part.dropFirst("add-model=".count).split(separator: "/", maxSplits: 1)
+                if let provider = target.first { modelsSheet = (String(provider), target.count > 1 ? String(target[1]) : "") }
+            }
+        }
+    }
+
+    /// The provider whose Models sheet was asked for, once.
+    @MainActor private static var sheetShown = false
+    @MainActor static func takeModelsSheet() -> String? {
+        guard !sheetShown, let sheet = asked?.modelsSheet, asked?.tab == .providers else { return nil }
+        sheetShown = true
+        return sheet.provider
+    }
+
+    /// The id to add to `provider` in its Models sheet, once: empty to open the form with none typed.
+    @MainActor private static var addingShown = false
+    @MainActor static func takeAdding(_ provider: String) -> String? {
+        guard !addingShown, let sheet = asked?.modelsSheet, sheet.provider == provider, let adding = sheet.adding else { return nil }
+        addingShown = true
+        return adding
     }
 
     @MainActor static let asked = SettingsLaunch(ProcessInfo.processInfo.environment["PI2_SHOW"])
@@ -302,6 +330,19 @@ struct ProvidersSettings: View {
         .sheet(item: $modelsTarget) { provider in
             ModelsSheet(engine: engine, provider: provider)
         }
+        #if PI2_DEVELOPMENT
+        .task {
+            // The providers arrive a moment after the tab appears.
+            guard let wanted = SettingsLaunch.takeModelsSheet() else { return }
+            for _ in 0..<100 {
+                if let provider = engine.providers.first(where: { $0.id == wanted }), engine.allModels.contains(where: { $0.provider == provider.id }) {
+                    modelsTarget = provider
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        #endif
         .sheet(isPresented: $addingEndpoint) {
             EndpointSheet(engine: engine)
         }
@@ -322,12 +363,18 @@ struct ModelsSheet: View {
     @State private var query = ""
     @FocusState private var searching: Bool
     @Environment(\.dismiss) private var dismiss
+    /// A model to add by its id (an empty id) or one added by hand to change.
+    @State private var adding: AddModelTarget?
+    @State private var removing: ModelInfo?
 
     /// The sheet's own copy of the choice, so quick ticks build on each other without waiting for the engine.
     @State private var hidden: Set<String> = []
 
+    /// By name, those added by hand first, where they can be found again.
     private var models: [ModelInfo] {
-        engine.allModels.filter { $0.provider == provider.id }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        engine.allModels.filter { $0.provider == provider.id }.sorted {
+            ($0.addedByHand == true) != ($1.addedByHand == true) ? $0.addedByHand == true : $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
     private var shown: Int { models.filter { !hidden.contains($0.id) }.count }
     private var filtering: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -345,6 +392,31 @@ struct ModelsSheet: View {
     }
 
     var body: some View {
+        // Adding a model takes the sheet's place rather than opening a sheet over it, which SwiftUI does not always show.
+        Group {
+            if let target = adding {
+                AddModelForm(engine: engine, provider: provider, editing: target.id.isEmpty ? nil : target.id, typed: target.typed) { adding = nil }
+            } else {
+                list
+            }
+        }
+        #if PI2_DEVELOPMENT
+        .task {
+            if let typed = SettingsLaunch.takeAdding(provider.id) { adding = AddModelTarget(id: "", typed: typed) }
+        }
+        #endif
+        .confirmationDialog(
+            "Remove \(removing?.name ?? "this model")?",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+            presenting: removing
+        ) { model in
+            Button("Remove", role: .destructive) { remove(model) }
+        } message: { model in
+            Text(removalNote(model))
+        }
+    }
+
+    private var list: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("\(provider.name) models").font(.headline)
             Text("Ticked models appear in the model menus. A hidden model that a conversation or agent already uses keeps working.")
@@ -385,9 +457,20 @@ struct ModelsSheet: View {
                         apply(["id": provider.id, "hidden": hidden.sorted()])
                     }
                 )) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(model.name)
-                        Text(model.id).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(model.name)
+                            Text(model.id).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        }
+                        if model.addedByHand == true {
+                            Spacer()
+                            Tag("Added by hand", .acc)
+                                .help("Added by its id. Its settings were taken from a model pi² knows; its price is not known.")
+                            Button("Edit…") { adding = AddModelTarget(id: model.id) }
+                                .help("Change what pi² assumes about this model")
+                            Button("Remove") { removing = model }
+                                .help("Remove this model from pi²")
+                        }
                     }
                 }
             }
@@ -395,6 +478,15 @@ struct ModelsSheet: View {
             .frame(height: 320)
             .overlay {
                 if matches.isEmpty, filtering { ContentUnavailableView.search(text: query) }
+            }
+            if provider.kind == "builtin" {
+                HStack(alignment: .firstTextBaseline) {
+                    Button("Add a Model by ID…") { adding = AddModelTarget(id: "") }
+                        .help("Add a model that pi² does not list yet, such as one released today, by the id \(provider.name) gives it")
+                    Text("For a model newer than pi²'s list. It uses this \(provider.status?.type == "oauth" ? "sign-in" : "key").")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             if shown == 0, !models.isEmpty {
                 Text("None are ticked, so \(provider.name) has no models in the model menus.")
@@ -411,10 +503,28 @@ struct ModelsSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 480)
+        .frame(width: 520)
         .onAppear {
             hidden = Set(models.filter { $0.hidden == true }.map(\.id))
             searching = true
+        }
+    }
+
+    /// What removing a model added by hand does to what uses it.
+    private func removalNote(_ model: ModelInfo) -> String {
+        let agents = engine.agents.filter { $0.model == model.ref }.map(\.name)
+        let users = agents.isEmpty ? "" : " \(ListFormatter.localizedString(byJoining: agents)) \(agents.count == 1 ? "uses" : "use") it, and will start new conversations on the default model instead."
+        return "A conversation that uses it stops with a message at its next turn, until another model is chosen.\(users) You can add it again later."
+    }
+
+    private func remove(_ model: ModelInfo) {
+        Task {
+            do {
+                try await engine.call("providers.removeModel", ["provider": provider.id, "id": model.id])
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 
@@ -435,6 +545,194 @@ struct ModelsSheet: View {
             } catch {
                 self.error = error.localizedDescription
                 hidden = Set(models.filter { $0.hidden == true }.map(\.id))
+            }
+        }
+    }
+}
+
+struct AddModelTarget: Identifiable {
+    /// The id of a model added by hand, to change it; empty to add a new one.
+    let id: String
+    /// For a new one, an id already typed and looked up.
+    var typed: String?
+}
+
+/// Adds a model by its id to a built-in provider, or changes one added so: pi² proposes its settings from a model of
+/// the provider it knows, shows them, and the person changes what they know better. Shown in the Models sheet's place.
+struct AddModelForm: View {
+    let engine: EngineClient
+    let provider: ProviderInfo
+    /// The model added by hand being changed; nil when adding one.
+    let editing: String?
+    /// For a new one, an id already typed, to look up at once.
+    var typed: String?
+    /// Back to the list of models, when added or cancelled.
+    let close: () -> Void
+    @State private var id = ""
+    @State private var draft: ModelDraft?
+    @State private var contextText = ""
+    @State private var maxText = ""
+    @State private var thinks = false
+    @State private var levels: Set<String> = []
+    @State private var error: String?
+    @State private var working = false
+    @FocusState private var typingId: Bool
+
+    /// pi-ai's thinking levels, in order.
+    private static let allLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    private static let apiNames = [
+        "openai-responses": "OpenAI Responses", "openai-codex-responses": "OpenAI Codex Responses", "openai-completions": "OpenAI chat completions",
+        "anthropic-messages": "Anthropic Messages", "google-generative-ai": "Google Gemini", "google-vertex": "Google Vertex",
+        "mistral-conversations": "Mistral", "bedrock-converse-stream": "Amazon Bedrock", "azure-openai-responses": "Azure OpenAI Responses",
+    ]
+    private func apiName(_ api: String) -> String { Self.apiNames[api] ?? api }
+
+    private var trimmedId: String { id.trimmingCharacters(in: .whitespaces) }
+    /// The draft is for what is typed, not an id typed before it.
+    private var current: ModelDraft? { draft?.id == trimmedId ? draft : nil }
+    private var contextWindow: Int? { Int(contextText.filter { $0 != "," && $0 != " " }) }
+    private var maxTokens: Int? { Int(maxText.filter { $0 != "," && $0 != " " }) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Section {
+                    HStack {
+                        TextField("Model ID", text: $id, prompt: Text("gpt-6.2-sol"))
+                            .focused($typingId)
+                            .onSubmit { lookUp() }
+                            .disabled(editing != nil)
+                        if editing == nil {
+                            Button("Look Up") { lookUp() }
+                                .disabled(trimmedId.isEmpty || working || current != nil)
+                        }
+                    }
+                } header: {
+                    Text(editing == nil ? "Add a model to \(provider.name)" : "Change a model added to \(provider.name)")
+                } footer: {
+                    Text("The id as \(provider.name) names it, as in its announcement or documentation, such as gpt-6.2-sol rather than GPT 6.2 Sol. pi² does not ask \(provider.name) about it until a conversation uses it.").formFooter()
+                }
+                if let draft = current {
+                    Section {
+                        Picker("Based on", selection: Binding(get: { draft.basedOn }, set: { redraft(["basedOn": $0]) })) {
+                            ForEach(draft.templates) { Text("\($0.name) (\($0.id))").tag($0.id) }
+                        }
+                        if draft.apis.count > 1 {
+                            Picker("API", selection: Binding(get: { draft.api }, set: { redraft(["api": $0]) })) {
+                                ForEach(draft.apis, id: \.self) { Text(apiName($0)).tag($0) }
+                            }
+                        } else {
+                            LabeledContent("API", value: apiName(draft.api))
+                        }
+                        TextField("Name", text: Binding(get: { self.draft?.name ?? "" }, set: { self.draft?.name = $0 }))
+                        TextField("Context size, in tokens", text: $contextText)
+                        TextField("Longest answer, in tokens", text: $maxText)
+                        Toggle("Can see pictures", isOn: Binding(get: { self.draft?.vision ?? false }, set: { self.draft?.vision = $0 }))
+                        Toggle("Thinks before answering", isOn: Binding(get: { thinks }, set: { on in
+                            thinks = on
+                            // Switched on with no level to think at: the usual three.
+                            if on, levels.allSatisfy({ $0 == "off" }) { levels.formUnion(["low", "medium", "high"]) }
+                        }))
+                        if thinks {
+                            LabeledContent("Thinking levels") {
+                                HStack(spacing: 4) {
+                                    ForEach(Self.allLevels, id: \.self) { level in
+                                        Toggle(level.capitalized, isOn: Binding(
+                                            get: { levels.contains(level) },
+                                            set: { if $0 { levels.insert(level) } else { levels.remove(level) } }
+                                        ))
+                                        .toggleStyle(.button)
+                                        .controlSize(.small)
+                                    }
+                                }
+                            }
+                        }
+                    } header: {
+                        Text(takenFrom(draft))
+                    } footer: {
+                        Text("pi² does not know this model's price: Usage counts its tokens and shows no cost. It uses your \(provider.name) \(provider.status?.type == "oauth" ? "sign-in" : "key"). If \(provider.name) does not offer the model to it, a conversation that uses it stops and says so. Once pi²'s own list has the model, that entry takes this one's place.").formFooter()
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            if let error {
+                Text(error).font(.callout).foregroundStyle(.red).padding(.horizontal, 20).padding(.bottom, 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { close() }.keyboardShortcut(.cancelAction)
+                Button(editing == nil ? "Add Model" : "Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(current == nil || contextWindow == nil || maxTokens == nil || working)
+            }
+            .padding(20)
+        }
+        .frame(width: 560, height: 560)
+        .onAppear {
+            if let start = editing ?? typed.flatMap({ $0.isEmpty ? nil : $0 }) {
+                id = start
+                lookUp()
+            } else {
+                typingId = true
+            }
+        }
+    }
+
+    private func takenFrom(_ draft: ModelDraft) -> String {
+        switch draft.match {
+        case "family": "Taken from \(draft.basedOnName), the newest \(draft.providerName) model of the same family. Change anything you know is different."
+        case "nearest": "pi² knows no \(draft.providerName) model of this family. Taken from \(draft.basedOnName), the closest: check these."
+        default: "Taken from \(draft.basedOnName)."
+        }
+    }
+
+    private func lookUp() {
+        guard !trimmedId.isEmpty, current == nil else { return }
+        redraft([:])
+    }
+
+    /// Asks the engine for its proposal for the id typed, based on another model or speaking another API if asked.
+    private func redraft(_ choice: [String: String]) {
+        working = true
+        error = nil
+        var params: [String: Any] = ["provider": provider.id, "id": trimmedId]
+        for (key, value) in choice { params[key] = value }
+        let name = draft?.name
+        Task {
+            defer { working = false }
+            do {
+                let result = try await engine.call("providers.draftModel", params)
+                var proposed = try JSONDecoder().decode(ModelDraft.self, from: JSONEncoder().encode(result))
+                // A name typed already is kept when only what it is based on changes.
+                if !choice.isEmpty, let name, draft?.id == proposed.id { proposed.name = name }
+                draft = proposed
+                contextText = String(proposed.contextWindow)
+                maxText = String(proposed.maxTokens)
+                levels = Set(proposed.thinkingLevels)
+                thinks = !proposed.thinkingLevels.filter { $0 != "off" }.isEmpty
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func save() {
+        guard let draft = current, let contextWindow, let maxTokens else { return }
+        working = true
+        error = nil
+        let chosen = thinks ? Self.allLevels.filter { levels.contains($0) } : []
+        Task {
+            defer { working = false }
+            do {
+                try await engine.call("providers.addModel", [
+                    "provider": provider.id, "id": draft.id, "name": draft.name, "basedOn": draft.basedOn,
+                    "contextWindow": contextWindow, "maxTokens": maxTokens, "vision": draft.vision, "thinkingLevels": chosen,
+                ])
+                close()
+            } catch {
+                self.error = error.localizedDescription
             }
         }
     }
