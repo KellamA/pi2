@@ -5,6 +5,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 ## Unreleased
 
 ### Added
+- **pi² as a co-author of agents' commits, if you want it.** A new switch in Settings › Tools, off by default: "Add pi² as a co-author to agents' commits". When it is on, every agent and sub-chat that can run commands is asked to end the message of each commit it makes with a `Co-authored-by` line, shown under the switch and editable. It defaults to `Co-authored-by: pi² <noreply@pi2.invalid>`, an address that can never belong to anyone. pi² refuses a line that is not a well-formed trailer and says why. This is an instruction to the agent, not something pi² enforces. pi² never changes your git settings, a commit's author or committer, or commits already made. Turning it on or off counts from each conversation's next message.
 - **Agents can read several files in one step.** An agent's `read` now takes a list of files, or of parts of one file, and the conversation shows them as one row that names the files and opens to each. A file that cannot be read says why without stopping the others. A step shows at most 100 KB of text and five pictures, and says where to carry on.
 
 ### Changed
