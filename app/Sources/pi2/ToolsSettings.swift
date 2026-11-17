@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// MCP servers: tool providers the person connects and then gives to the agents they choose.
+/// MCP servers: tool providers the person connects and then gives to the agents they choose. And what agents are asked
+/// to put in the commits they make.
 struct ToolsSettings: View {
     let engine: EngineClient
     @State private var adding = false
@@ -38,6 +39,8 @@ struct ToolsSettings: View {
                 Text("A server's tools go to the agents you tick it for, under Extra tools in the agent's settings. With “Ask first”, tools a server does not mark as read-only wait for your approval. A local server is a program that runs on this Mac with your permissions; only add ones you trust.").formFooter()
             }
             .id(SettingsSection.servers)
+            CoauthorSettings(engine: engine)
+                .id(SettingsSection.commits)
         }
         .formStyle(.grouped)
         .settingsPage(.tools)

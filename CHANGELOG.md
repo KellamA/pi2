@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Added
+- **pi² as a co-author of agents' commits, if you want it.** A new switch in Settings › Tools, off by default: "Add pi² as a co-author to agents' commits". When it is on, every agent and sub-chat that can run commands is asked to end the message of each commit it makes with a `Co-authored-by` line, shown under the switch and editable. It defaults to `Co-authored-by: pi² <noreply@pi2.invalid>`, an address that can never belong to anyone. pi² refuses a line that is not a well-formed trailer and says why. This is an instruction to the agent, not something pi² enforces. pi² never changes your git settings, a commit's author or committer, or commits already made. Turning it on or off counts from each conversation's next message.
+
 ### Changed
 - **Shift-Return starts a new line in a memory note.** In an agent's Memory settings, Shift-Return or Option-Return now puts a line break in a note you are editing or adding, and the field grows with it; Return still saves the note (or adds it), but not while an input method is composing. Before, Return and Shift-Return both saved, and the line breaks of a note were joined into one line. A note you write now keeps its line breaks, and the agent sees it as one item of several lines.
 - **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
