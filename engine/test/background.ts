@@ -6,11 +6,11 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { backgroundMarker, commandLine, elapsed } from "../src/background.ts";
+import { backgroundMarker, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
+import { EngineClient, exited, PATIENT_MS, running, stop, until } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -19,7 +19,6 @@ Object.assign(process.env, { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@ex
 
 const home = mkdtempSync(join(tmpdir(), "pi2-bg-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-bg-work-")));
-const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 process.env.PI2_LOGIN_SHELL ??= "off";
@@ -46,65 +45,12 @@ step("durations, commands on one line and the transcript's line read as expected
 // ---- The engine
 
 type Event = Record<string, any>;
-class Client {
-	socket!: Socket;
-	events: Record<string, Event> = {};
-	conversations = new Map<number, Event>();
-	#next = 1;
-	#replies = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-	static async attach(): Promise<Client> {
-		const client = new Client();
-		for (let attempt = 0; ; attempt++) {
-			try {
-				if (!existsSync(socketPath)) throw new Error("no socket yet");
-				client.socket = connect(socketPath);
-				await new Promise<void>((resolve, reject) => client.socket.once("connect", resolve).once("error", reject));
-				break;
-			} catch (error) {
-				if (attempt >= 200) throw error;
-				await sleep(50);
-			}
-		}
-		let buffer = "";
-		client.socket.setEncoding("utf8").on("data", (chunk: string) => {
-			buffer += chunk;
-			const lines = buffer.split("\n");
-			buffer = lines.pop()!;
-			for (const line of lines) {
-				const message = JSON.parse(line);
-				if (message.event === "conversation") {
-					const conv = client.conversations.get(message.id) ?? { items: [] };
-					if (message.reset) conv.items = [];
-					conv.items.push(...message.items);
-					conv.state = message.state;
-					client.conversations.set(message.id, conv);
-				} else if (typeof message.event === "string") client.events[message.event] = message;
-				else if (message.id !== undefined && message.id !== null) {
-					const reply = client.#replies.get(message.id);
-					client.#replies.delete(message.id);
-					if (message.error !== undefined) reply?.reject(new Error(message.error));
-					else reply?.resolve(message.result);
-				}
-			}
-		});
-		// The socket errors when the engine it talks to is killed, which some of these checks do on purpose.
-		client.socket.on("error", () => {});
+class Client extends EngineClient {
+	/** Connected to `engine` once it listens, and once it has sent what it sends every app that connects. */
+	static async attach(engine: ChildProcess): Promise<Client> {
+		const client = await Client.connect(engine, home);
 		await client.until("first events", () => client.events.providers && client.events.background);
 		return client;
-	}
-	call(method: string, params: Record<string, unknown> = {}): Promise<any> {
-		const id = this.#next++;
-		this.socket.write(`${JSON.stringify({ id, method, params })}\n`);
-		return new Promise((resolve, reject) => this.#replies.set(id, { resolve, reject }));
-	}
-	async until<T>(what: string, check: () => T | undefined | false | null, timeoutMs = 30_000): Promise<T> {
-		const deadline = Date.now() + timeoutMs;
-		for (;;) {
-			const value = check();
-			if (value !== undefined && value !== false && value !== null) return value;
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${what}`);
-			await sleep(50);
-		}
 	}
 	items(id: number, kind: string): Event[] {
 		return this.conversations.get(id)?.items.filter((item: Event) => item.kind === kind) ?? [];
@@ -152,21 +98,21 @@ class Client {
 	}
 	/**
 	 * Starts a command that ends at once, and returns the call that saw it end. The call waits about a second for that; on
-	 * a machine busy enough for the command to take longer, it is started again, a few times at most.
+	 * a machine busy enough for the command to take longer, it is started again until one does.
 	 */
 	async startOver(id: number, command: string): Promise<{ result: Event; bg: string }> {
-		for (let tries = 1; ; tries++) {
+		for (const deadline = Date.now() + PATIENT_MS; ; ) {
 			const started = await this.start(id, command);
 			if (started.result.details.background.status === "ended") return started;
-			assert.ok(tries < 6, `the call that starts a command that ends at once says so: ${started.result.text}`);
+			assert.ok(Date.now() < deadline, `the call that starts a command that ends at once says so: ${started.result.text}`);
 			await this.until("that one over too", () => this.markers(id).some((text) => text.includes(`${started.bg} `)));
 		}
 	}
 	/** What a running command has printed, from the call that started it on, once it includes `needle`. */
 	async printed(id: number, started: { result: Event; bg: string }, needle: string): Promise<string> {
 		let text = started.result.text as string;
-		for (let tries = 0; !text.includes(needle); tries++) {
-			assert.ok(tries < 20, `${started.bg} printed ${needle}: ${text}`);
+		for (const deadline = Date.now() + PATIENT_MS; !text.includes(needle); ) {
+			assert.ok(Date.now() < deadline, `${started.bg} printed ${needle}: ${text}`);
 			text += (await this.background(id, { action: "read", id: started.bg, wait: 5 })).text;
 		}
 		return text;
@@ -198,21 +144,25 @@ const alive = (pid: number) => {
 		return false;
 	}
 };
+/**
+ * How long the commands here that only a stop should end would run: twice as long as any wait, so that a wait for one
+ * to be stopped cannot be met by its ending by itself.
+ */
+const LONG = `sleep ${(2 * PATIENT_MS) / 1000}`;
+/** The same for node, whose environment macOS lets another process read. */
+const LONG_WAIT = `setTimeout(() => {}, ${2 * PATIENT_MS})`;
 /** Every process a command here writes its number down for, so that none outlives the test whatever fails. */
 const started: number[] = [];
 let files = 0;
 /** A command that notes its own process and one it starts, then waits: `[command, file of the first, file of the second]`. */
-function lingering(seconds = 600): [string, string, string] {
+function lingering(): [string, string, string] {
 	const leader = join(scratch, `leader-${++files}.pid`);
 	const child = join(scratch, `child-${files}.pid`);
-	return [`sleep ${seconds} & echo $! > '${child}'; echo $$ > '${leader}'; echo up; wait`, leader, child];
+	return [`${LONG} & echo $! > '${child}'; echo $$ > '${leader}'; echo up; wait`, leader, child];
 }
 /** The process a command wrote down in `file`, once it has. */
 const pidIn = async (file: string): Promise<number> => {
-	for (let tries = 0; !(existsSync(file) && readFileSync(file, "utf8").trim() !== ""); tries++) {
-		assert.ok(tries < 300, `${file} was written`);
-		await sleep(50);
-	}
+	await until(`${file} to be written`, () => existsSync(file) && readFileSync(file, "utf8").trim() !== "");
 	const pid = Number(readFileSync(file, "utf8").trim());
 	assert.ok(pid > 1, `${file}: ${pid}`);
 	started.push(pid);
@@ -225,7 +175,7 @@ function repo(name: string): string {
 	mkdirSync(dir, { recursive: true });
 	run(dir, "init", "-q", "-b", "main");
 	// A stand-in for a server: says it is up, then stays.
-	writeFileSync(join(dir, "serve"), '#!/bin/sh\necho "serving in $(pwd -P)"\nexec sleep 600\n');
+	writeFileSync(join(dir, "serve"), `#!/bin/sh\necho "serving in $(pwd -P)"\nexec ${LONG}\n`);
 	chmodSync(join(dir, "serve"), 0o755);
 	run(dir, "add", ".");
 	run(dir, "commit", "-q", "-m", "first");
@@ -237,7 +187,7 @@ mkdirSync(work);
 const boot = () => spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
 let engine: ChildProcess = boot();
 try {
-	let client = await Client.attach();
+	let client = await Client.attach(engine);
 	const save = async (agent: Record<string, unknown>): Promise<string> => (await client.call("agents.save", { agent })).id;
 	const open = async (agentId: string, cwd?: string): Promise<number> => {
 		const { id } = await client.call("conversation.create", { agentId });
@@ -254,19 +204,21 @@ try {
 	const gate = join(scratch, "gate");
 	const [command, leaderFile, childFile] = lingering();
 	const startedAt = Date.now();
+	// The command cannot end before `gate` is made, which this test does only further down: a call that waited for it would
+	// never come back.
 	const first = await client.start(a, `echo early; ${command.replace("echo up; wait", `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo late; wait`)}`);
 	assert.equal(first.bg, "bg-1");
 	assert.equal(first.result.isError, false);
 	assert.equal(first.result.name, "bash", "starting one is a bash call");
 	assert.match(first.result.text, /^Started in the background as bg-1\. It keeps running after this call, with no time limit\. (What it has printed so far:\nearly\n|It has printed nothing yet\.)\nUse the background tool with id "bg-1" to read what it prints from here on \(action "read"\) and to stop it \(action "stop"\)\.$/);
 	assert.equal(first.result.details.background.status, "running");
-	assert.ok(Date.now() - startedAt < 10_000, "the call does not wait for the command");
+	assert.ok(!existsSync(gate), "the call does not wait for the command");
 	const leader = await pidIn(leaderFile);
 	const child = await pidIn(childFile);
 	assert.ok(alive(leader) && alive(child));
 	const listed = await client.until("listed for Activity", () => client.running()[0]);
 	assert.deepEqual({ ...listed, startedAt: 0 }, { id: "bg-1", conversationId: a, rootConversationId: a, command: listed.command, cwd: work, startedAt: 0 });
-	assert.ok(listed.command.startsWith("echo early; sleep 600 &"), listed.command);
+	assert.ok(listed.command.startsWith(`echo early; ${LONG} &`), listed.command);
 	assert.ok(listed.startedAt >= startedAt && listed.startedAt <= Date.now());
 	step("bash with background: true starts a command, returns with what it printed so far, and the command is listed as running");
 
@@ -278,12 +230,13 @@ try {
 	assert.equal(read.isError, false);
 	assert.match(read.text, /^bg-1 \(`echo early; .*`\): running for \d+ seconds?\.\nNothing new since you last read it\.$/, read.text);
 	assert.deepEqual({ ...read.details, command: "" }, { action: "read", id: "bg-1", command: "", status: "running" });
-	// A read that waits returns when the command prints.
+	// A read that waits returns when the command prints, not when the wait is over: it waits as long as it may, and the
+	// command prints in a moment.
 	setTimeout(() => writeFileSync(gate, ""), 700);
 	const waited = Date.now();
-	read = await client.background(a, { action: "read", id: "1", wait: 60 });
+	read = await client.background(a, { action: "read", id: "1", wait: MAX_WAIT_SECONDS });
 	assert.match(read.text, /running for .*\.\nlate\n$/, `only what is new, and the id may be given as a number: ${read.text}`);
-	assert.ok(Date.now() - waited < 20_000, "the wait ends when there is output");
+	assert.ok(Date.now() - waited < (MAX_WAIT_SECONDS * 1000) / 2, "the wait ends when there is output");
 	read = await client.background(a, { action: "read", id: "bg-1", tail: 5 });
 	assert.match(read.text, /All it has printed:\nearly\nlate$/, read.text);
 	read = await client.background(a, { action: "read", id: "bg-1", tail: 1 });
@@ -316,7 +269,7 @@ try {
 	assert.equal(stopped.isError, false);
 	assert.match(stopped.text, /^Stopped bg-1 \(`echo early; .*`\) and everything it started, after \d+ seconds\.$/, stopped.text);
 	assert.equal(stopped.details.status, "ended");
-	await client.until("stopped, with what it started", () => !alive(leader) && !alive(child), 5_000);
+	await client.until("stopped, with what it started", () => !alive(leader) && !alive(child));
 	await client.until("no longer listed", () => client.running().length === 0);
 	assert.match((await client.background(a, { action: "stop", id: "bg-1" })).text, /^bg-1 \(.*\) was already over: it was stopped by the agent after \d+ seconds\.$/);
 	assert.match((await client.background(a, { action: "read", id: "bg-1" })).text, /: was stopped by the agent after \d+ seconds\.\nNothing new since you last read it\.$/);
@@ -344,14 +297,14 @@ try {
 	assert.ok(exported.includes(`*${marker}*`), "an export has the line too");
 	// What a command leaves running when its own process ends is stopped with it.
 	const leftFile = join(scratch, "left.pid");
-	const leaving = await client.start(a, `sleep 600 & echo $! > '${leftFile}'; echo leaving`);
+	const leaving = await client.start(a, `${LONG} & echo $! > '${leftFile}'; echo leaving`);
 	const leftBehind = await pidIn(leftFile);
 	assert.equal(
 		await client.until("its end shown", () => client.markers(a).find((text) => text.includes(leaving.bg))),
 		// The line shows the command cut to a length, and the temporary folder's path can be long.
-		`Background command ${leaving.bg} finished, and what it had left running was stopped with it: ${commandLine(`sleep 600 & echo $! > '${leftFile}'; echo leaving`)}`,
+		`Background command ${leaving.bg} finished, and what it had left running was stopped with it: ${commandLine(`${LONG} & echo $! > '${leftFile}'; echo leaving`)}`,
 	);
-	await client.until("what it left running is stopped", () => !alive(leftBehind), 5_000);
+	await client.until("what it left running is stopped", () => !alive(leftBehind));
 	step("a command that ends by itself is shown in the transcript and told to the agent at its next request; what it left running is stopped");
 
 	// ---- Only the end of the output is kept
@@ -361,8 +314,8 @@ try {
 	writeFileSync(flood, "");
 	// The flood takes a moment to arrive. Looking at the end does not count as reading, so the read that follows starts
 	// from the oldest output still kept.
-	for (let tries = 0; !/Its last line:\nthe-end$/.test((await client.background(a, { action: "read", id: noisy.bg, tail: 1 })).text); tries++) {
-		assert.ok(tries < 50, "the flood arrived");
+	for (const deadline = Date.now() + PATIENT_MS; !/Its last line:\nthe-end$/.test((await client.background(a, { action: "read", id: noisy.bg, tail: 1 })).text); ) {
+		assert.ok(Date.now() < deadline, "the flood arrived");
 		await sleep(100);
 	}
 	const firstRead = await client.background(a, { action: "read", id: noisy.bg });
@@ -381,7 +334,7 @@ try {
 	const limited = await client.tool(a, '/tool bash {"command":"sleep 600","background":true,"timeout":2}');
 	assert.match(limited.text, /with a time limit of 2 seconds\./);
 	const limitId = limited.details.background.id as string;
-	const timedOut = await client.until("stopped by its own limit", () => client.markers(a).find((text) => text.includes(limitId)), 15_000);
+	const timedOut = await client.until("stopped by its own limit", () => client.markers(a).find((text) => text.includes(limitId)));
 	assert.equal(timedOut, `Background command ${limitId} was stopped after 2 seconds, the \`timeout\` its call gave: sleep 600`);
 	step("a background command has no time limit unless its call gives one, which is kept");
 
@@ -391,7 +344,7 @@ try {
 		const { bg } = await client.start(a, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
 		await client.call("background.stop", { id: bg });
-		await client.until("stopped", () => pids.every((pid) => !alive(pid)) && client.running().length === 0, 5_000);
+		await client.until("stopped", () => pids.every((pid) => !alive(pid)) && client.running().length === 0);
 		assert.equal(await client.until("said in the transcript", () => client.markers(a).find((text) => text.includes(bg))), `Background command ${bg} was stopped by the person: ${commandLine(cmd)}`);
 		await assert.rejects(client.call("background.stop", { id: bg }), /no longer running/);
 		await assert.rejects(client.call("background.stop", { id: "bg-0" }), /no longer running/);
@@ -462,7 +415,7 @@ try {
 		const { bg } = await client.start(c, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
 		await client.call("conversation.archive", { id: c });
-		await client.until("archiving stopped it", () => pids.every((pid) => !alive(pid)) && client.running().length === 0, 5_000);
+		await client.until("archiving stopped it", () => pids.every((pid) => !alive(pid)) && client.running().length === 0);
 		assert.equal(await client.until("said in the transcript", () => client.markers(c).find((text) => text.includes(bg))), `Background command ${bg} was stopped because the conversation was archived: ${commandLine(cmd)}`);
 
 		const [cmd2, leaderPid2] = lingering();
@@ -470,7 +423,7 @@ try {
 		await client.start(d, cmd2);
 		const pid2 = await pidIn(leaderPid2);
 		await client.call("conversation.delete", { id: d });
-		await client.until("deleting stopped it", () => !alive(pid2) && client.running().length === 0, 5_000);
+		await client.until("deleting stopped it", () => !alive(pid2) && client.running().length === 0);
 
 		// A sub-chat's command is stopped when the conversation it belongs to is archived.
 		const helper = await save({ name: "Helper", access: "full", cwd: work });
@@ -483,7 +436,7 @@ try {
 		const ofSub = await client.until("the sub-chat's command listed", () => client.running().find((each) => each.conversationId === sub));
 		assert.equal(ofSub.rootConversationId, p, "listed under the conversation the sub-chat belongs to");
 		await client.call("conversation.archive", { id: p });
-		await client.until("archiving the parent stopped it", () => !alive(pid3) && client.running().length === 0, 5_000);
+		await client.until("archiving the parent stopped it", () => !alive(pid3) && client.running().length === 0);
 		step("archiving or deleting a conversation stops its background commands, and those of its sub-chats");
 
 		const builder = await save({ name: "Builder", access: "full", cwd: project, worktree: true });
@@ -495,7 +448,7 @@ try {
 		const { bg: served } = await client.start(w, "./serve");
 		await client.call("worktree.remove", { id: w, force: true });
 		assert.equal(existsSync(root), false, "the worktree is gone");
-		await client.until("removing its worktree stopped it", () => client.running().length === 0, 5_000);
+		await client.until("removing its worktree stopped it", () => client.running().length === 0);
 		assert.equal(await client.until("said in the transcript", () => client.markers(w).find((text) => text.includes(served))), `Background command ${served} was stopped because its worktree was removed: ./serve`);
 		step("removing the worktree a background command runs in stops it first");
 	}
@@ -506,14 +459,13 @@ try {
 		const [cmd, leaderPid, childPid] = lingering();
 		const { bg } = await client.start(z, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
-		engine.kill("SIGTERM");
 		const took = Date.now();
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine);
 		// The app gives the engine five seconds to stop before it restores a backup; a busy machine is allowed some more here.
 		assert.ok(Date.now() - took < 8_000, `the engine does not take long to stop: ${Date.now() - took} ms`);
 		assert.ok(pids.every((pid) => !alive(pid)), "stopping the engine stopped the command and what it started");
 		engine = boot();
-		client = await Client.attach();
+		client = await Client.attach(engine);
 		assert.deepEqual(client.running(), []);
 		await client.call("conversation.open", { id: z });
 		assert.equal(await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(bg))), `Background command ${bg} ended when pi²’s engine stopped: ${commandLine(cmd)}`);
@@ -531,17 +483,16 @@ try {
 		const [cmd, leaderPid, childPid] = lingering();
 		const { bg } = await client.start(z, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		assert.ok(pids.every(alive), "an engine killed outright does not stop the command");
 		engine = boot();
-		client = await Client.attach();
+		client = await Client.attach(engine);
 		await client.call("conversation.open", { id: z });
 		assert.equal(
 			await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(bg))),
 			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
 		);
-		await client.until("what was left running is stopped", () => pids.every((pid) => !alive(pid)), 10_000);
+		await client.until("what was left running is stopped", () => pids.every((pid) => !alive(pid)));
 		assert.deepEqual(client.running(), []);
 		assert.match((await client.background(z, { action: "list" })).text, new RegExp(`- ${bg}: .*: was left running when pi²’s engine stopped, and was stopped when the engine started again; no unread output\\.`));
 		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.
@@ -560,25 +511,21 @@ try {
 		// A program whose environment macOS lets another process read; `sleep` and the like it does not (docs/worktrees.md).
 		const holderFile = join(scratch, "holder.pid");
 		const leaderFile = join(scratch, "short-leader.pid");
-		const cmd = `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 600000)' '${holderFile}' & echo $$ > '${leaderFile}'; sleep 6`;
+		const cmd = `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${holderFile}' & echo $$ > '${leaderFile}'; sleep 6`;
 		const { bg } = await client.start(z, cmd);
 		const [leader, holder] = [await pidIn(leaderFile), await pidIn(holderFile)];
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		// With no engine running, the command's own process ends, and what it started is left in a group without a leader.
-		for (let tries = 0; alive(leader); tries++) {
-			assert.ok(tries < 200, "the command's own process ended");
-			await sleep(100);
-		}
+		await until("the command's own process to end", () => !alive(leader));
 		assert.ok(alive(holder), "what it started is still running");
 		engine = boot();
-		client = await Client.attach();
+		client = await Client.attach(engine);
 		await client.call("conversation.open", { id: z });
 		assert.equal(
 			await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg} `))),
 			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
 		);
-		await client.until("what it had started is stopped", () => !alive(holder), 10_000);
+		await client.until("what it had started is stopped", () => !alive(holder));
 		step("what a background command started is stopped by the next engine by the run's marker, when the command's own process ended meanwhile");
 	}
 
@@ -587,26 +534,22 @@ try {
 		const markedFile = join(scratch, "marked.pid");
 		const unmarkedFile = join(scratch, "unmarked.pid");
 		const leaderFile = join(scratch, "partly-leader.pid");
-		const holder = (file: string) => `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 600000)' '${file}'`;
+		const holder = (file: string) => `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${file}'`;
 		const cmd = `${holder(markedFile)} & env -u PI2_RUN ${holder(unmarkedFile)} & echo $$ > '${leaderFile}'; sleep 6`;
 		const { bg } = await client.start(z, cmd);
 		const [leader, marked, unmarked] = [await pidIn(leaderFile), await pidIn(markedFile), await pidIn(unmarkedFile)];
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
-		for (let tries = 0; alive(leader); tries++) {
-			assert.ok(tries < 200, "the command's own process ended");
-			await sleep(100);
-		}
+		await stop(engine, "SIGKILL");
+		await until("the command's own process to end", () => !alive(leader));
 		assert.ok(alive(marked) && alive(unmarked), "what it started is still running");
 		engine = boot();
-		client = await Client.attach();
+		client = await Client.attach(engine);
 		await client.call("conversation.open", { id: z });
 		const group = leader;
 		assert.equal(
 			await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg} `))),
 			`Background command ${bg} was left running when pi²’s engine stopped. What pi² could tell it had started was stopped when the engine started again; something else in its process group (${group}) may still be running, and was left alone because pi² could not be sure it is the same: ${commandLine(cmd)}`,
 		);
-		await client.until("the part with the marker is stopped", () => !alive(marked), 10_000);
+		await client.until("the part with the marker is stopped", () => !alive(marked));
 		await sleep(500);
 		assert.ok(alive(unmarked), "the part without the marker is not touched");
 		assert.deepEqual(
@@ -620,16 +563,17 @@ try {
 	console.log("PASS");
 } finally {
 	// A clean stop of the engine stops whatever it still has running in the background.
-	if (engine.exitCode === null && engine.signalCode === null) {
+	if (running(engine)) {
 		engine.kill("SIGTERM");
-		await Promise.race([new Promise((resolve) => engine.once("exit", resolve)), sleep(8_000)]);
+		await Promise.race([exited(engine), sleep(8_000)]);
+		await stop(engine, "SIGKILL");
 	}
 	// And should a check have failed between killing an engine and starting the next, what that engine left running is
 	// stopped here: only a process that is still what this test started, never just a number that was written down.
 	for (const pid of started) {
 		try {
 			const line = execFileSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-			if (line.includes(scratch) || /^sleep (6|60\d)$/.test(line)) process.kill(pid, "SIGKILL");
+			if (line.includes(scratch) || line === LONG || line === "sleep 6") process.kill(pid, "SIGKILL");
 		} catch {
 			// Gone, as it should be.
 		}

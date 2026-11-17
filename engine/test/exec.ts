@@ -18,6 +18,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PATIENT_MS } from "./patience.ts";
 
 // The environment imports spawn from node:child_process; this wraps it before the environment is loaded. The library
 // handles "exit" (and starts its wait for more output) first, then whatever is in busyAfterExit runs.
@@ -46,6 +47,10 @@ const run = async (command: string) => {
 	return { output, ms: Date.now() - started };
 };
 
+/** `promise`, unless it has not settled in ten minutes, which only a command that hangs takes (patience.ts). */
+const hangs = <T>(what: string, promise: Promise<T>): Promise<T> =>
+	Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Timed out: ${what}`)), PATIENT_MS).unref())]);
+
 try {
 	const pause = new Int32Array(new SharedArrayBuffer(4)); // Atomics.wait on it sleeps without letting the loop turn
 	for (let i = 0; i < 5; i++) {
@@ -56,7 +61,7 @@ try {
 		let childWrote = false;
 		busyAfterExit = () => {
 			const until = Date.now() + 150;
-			const giveUp = Date.now() + 30_000;
+			const giveUp = Date.now() + PATIENT_MS;
 			writeFileSync(go, "");
 			while (!(childWrote = existsSync(written)) && Date.now() < giveUp) Atomics.wait(pause, 0, 0, 1);
 			while (Date.now() < until) {}
@@ -67,15 +72,18 @@ try {
 		assert.equal(output, "early\nlate\n", "output already in the pipe when the engine gets to it is kept");
 	}
 	assert.equal((await run("echo plain")).output, "plain\n");
-	// What the wait is for: a background process holding the pipe open does not keep the command from finishing.
-	const held = await run("sleep 5 & echo held");
+	// What the wait is for: a background process holding the pipe open does not keep the command from finishing. This
+	// one holds it until the test lets it go, after the command has finished, so finishing at all shows it: nothing here
+	// depends on how fast the machine is.
+	const held = await hangs("a command whose background child holds its output open still finishes", run("(while [ ! -e held-gate ] && [ -d . ]; do sleep 0.05; done) & echo held"));
 	assert.equal(held.output, "held\n");
-	assert.ok(held.ms < 2_000, `a command whose background child holds its output open still finishes (${held.ms} ms)`);
+	assert.ok(!existsSync(join(folder, "held-gate")), `the child was still holding its output open (${held.ms} ms)`);
+	writeFileSync(join(folder, "held-gate"), "");
 
-	// Standard input is /dev/null: nothing to read, and the end of it straight away.
-	const reading = await run('cat; read -r answer; echo "read: $? [$answer]"; [ -t 0 ] || echo not-a-terminal');
+	// Standard input is /dev/null: nothing to read, and the end of it straight away. A command waiting for input that
+	// never comes would never return.
+	const reading = await hangs("a command that reads its input returns at once", run('cat; read -r answer; echo "read: $? [$answer]"; [ -t 0 ] || echo not-a-terminal'));
 	assert.equal(reading.output, "read: 1 []\nnot-a-terminal\n", "cat and read get no input");
-	assert.ok(reading.ms < 2_000, `a command that reads its input returns at once (${reading.ms} ms)`);
 
 	// What the model reads about bash: there is a default limit, and a larger timeout can be passed.
 	const { commands, DEFAULT_COMMAND_TIMEOUT_SECONDS } = await import("../src/commands.ts");

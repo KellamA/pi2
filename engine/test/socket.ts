@@ -7,8 +7,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync,
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { MAX_SOCKET_PATH, socketPathFor } from "../src/socket.ts";
+import { listening, stop } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -81,25 +81,23 @@ try {
 	const keychain = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 	const engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: keychain }, stdio: ["ignore", "ignore", "inherit"] });
 	try {
-		let greeting = "";
-		for (let attempt = 0; attempt < 100 && greeting === ""; attempt++) {
-			await sleep(100);
-			greeting = await new Promise<string>((resolve) => {
-				const client = connect(enginePath);
-				client.setEncoding("utf8");
-				client.once("data", (chunk: string) => (client.destroy(), resolve(chunk.split("\n")[0]!)));
-				client.once("error", () => resolve(""));
+		// Through the link: the short path is the one `listening` connects to.
+		assert.notEqual(enginePath, join(home, "engine.sock"));
+		const client = await listening(engine, home);
+		const greeting = await new Promise<string>((resolve, reject) => {
+			let text = "";
+			client.setEncoding("utf8").on("data", (chunk: string) => {
+				text += chunk;
+				if (text.includes("\n")) resolve(text.split("\n")[0]!);
 			});
-		}
+			client.once("error", reject).once("close", () => reject(new Error(`the engine closed the connection after: ${text}`)));
+		});
+		client.destroy();
 		assert.ok(greeting.startsWith("{"), "the engine answers on the short path");
 		assert.ok(lstatSync(join(home, "engine.sock")).isSocket());
 		step("the engine starts on a long data folder and answers through the link");
 	} finally {
-		if (engine.exitCode === null && engine.signalCode === null) {
-			const exited = new Promise((resolve) => engine.once("exit", resolve));
-			engine.kill("SIGTERM");
-			await exited;
-		}
+		await stop(engine);
 		rmSync(join(enginePath, ".."), { force: true });
 	}
 } finally {

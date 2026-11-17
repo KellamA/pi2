@@ -380,7 +380,9 @@ export const worktrees: Feature = (_host, engine) => {
 	let last: Record<string, BranchInfo> = {};
 	let leftBehind: LeftBehind[] = [];
 	let lastJSON = "";
-	let ticking = false;
+	/** The look at the folders under way, if any, and the one asked for to follow it. */
+	let looking: Promise<void> | undefined;
+	let lookAgain: Promise<void> | undefined;
 	let gitMissing = false;
 	/** Conversations whose worktree is being made or removed right now. */
 	const changing = new Set<number>();
@@ -427,11 +429,33 @@ export const worktrees: Feature = (_host, engine) => {
 			.map(Number);
 	}
 
-	async function refresh(): Promise<void> {
-		if (ticking || gitMissing) return;
-		ticking = true;
+	/**
+	 * Look at the folders again and tell the apps if anything changed. Asked while a look is under way, it looks once more
+	 * after that one, which may have read the library before whatever change the caller wants seen; however many ask
+	 * meanwhile, once.
+	 */
+	function refresh(): Promise<void> {
+		if (gitMissing) return Promise.resolve();
+		if (looking === undefined) {
+			looking = look().finally(() => (looking = undefined));
+			return looking;
+		}
+		lookAgain ??= looking.then(() => {
+			lookAgain = undefined;
+			return refresh();
+		});
+		return lookAgain;
+	}
+
+	async function look(): Promise<void> {
 		try {
+			// Which conversations are listed and which are put away, at one moment: the library can change while git is
+			// asked below, and the event must not say a conversation is both in the sidebar and left behind (#128).
 			const ids = listed();
+			const putAway = Object.entries(mine).flatMap(([key, own]) => {
+				const reason = away(key);
+				return reason === undefined ? [] : [{ key, own, reason }];
+			});
 			for (const id of folders.keys()) if (!ids.includes(id)) folders.delete(id);
 			const byFolder = new Map<string, Promise<BranchInfo | undefined>>();
 			const next: Record<string, BranchInfo> = {};
@@ -447,9 +471,7 @@ export const worktrees: Feature = (_host, engine) => {
 			}
 			// Worktrees of conversations put away: still on disk until the person removes them.
 			const behind: LeftBehind[] = [];
-			for (const [key, own] of Object.entries(mine)) {
-				const reason = away(key);
-				if (reason === undefined) continue;
+			for (const { key, own, reason } of putAway) {
 				const status = await inspect(own.path, own);
 				if (status !== undefined) behind.push({ id: Number(key), title: engine.library().conversations[key]?.title ?? "", reason, status });
 			}
@@ -464,8 +486,6 @@ export const worktrees: Feature = (_host, engine) => {
 		} catch (error) {
 			if ((error as { code?: unknown }).code === "ENOENT") gitMissing = true;
 			engine.log("branches:", error instanceof Error ? error.message : error);
-		} finally {
-			ticking = false;
 		}
 	}
 
@@ -545,10 +565,16 @@ export const worktrees: Feature = (_host, engine) => {
 		void noteProcess(child, marker)
 			.then(async (noted) => {
 				if (noted === undefined) return;
+				let kept = false;
 				await save((doc) => {
 					const setup = doc[String(id)]?.setup;
-					if (setup?.run === run && setup.status === "running") setup.process = noted;
+					if (setup?.run === run && setup.status === "running") {
+						setup.process = noted;
+						kept = true;
+					}
 				});
+				// Written down: from here on, an engine that comes after this one can stop what the set-up left running.
+				if (kept) engine.log("set-up for", id, "runs as process group", noted.group);
 			})
 			.catch((error) => engine.log("could not note the set-up's process for", id, error instanceof Error ? error.message : error));
 		const settled = ended.then(async ({ code, signal }) => {
@@ -758,8 +784,8 @@ export const worktrees: Feature = (_host, engine) => {
 				for (const setup of setups.values()) signalGroup(setup.child, "SIGKILL");
 			});
 			timer = setInterval(() => {
-				// Nobody to tell: wait for an app to connect.
-				if (engine.apps() > 0) void refresh();
+				// Nobody to tell: wait for an app to connect. A look still under way is enough: the next tick comes soon.
+				if (engine.apps() > 0 && looking === undefined) void refresh();
 			}, POLL_MS);
 			timer.unref?.();
 			void refresh();

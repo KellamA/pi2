@@ -153,10 +153,13 @@ assert.ok(md('[x](https://a.example/ "t\\" onmouseover=\\"alert(1)")').includes(
 assert.ok(md('[x](https://a.example/"onmouseover="alert(1))').includes('href="https://a.example/&quot;onmouseover=&quot;alert(1)"'), "a quote in an address cannot end the attribute");
 assert.ok(documentHtml("x", '"></title><script>alert(1)</script>').includes("<title>&quot;&gt;&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;</title>"), "the title is escaped too");
 // Whatever the input, the output stays well-formed and the converter stays fast: deep nesting and long runs of marks.
+// Fast in the processor time it takes, which other work on a busy machine does not add to, as it does to the time on
+// the clock.
 for (const source of ["> ".repeat(500) + "deep", "- ".repeat(200) + "deep", "*".repeat(5000), "[".repeat(3000), "`".repeat(3000), "a_".repeat(5000), "[a](".repeat(1000), "| a ".repeat(500) + "\n" + "|--".repeat(500)]) {
-	const started = Date.now();
+	const started = process.cpuUsage();
 	assertOnlyOurMarkup(documentHtml(source));
-	assert.ok(Date.now() - started < 3000, `slow on ${source.slice(0, 20)}`);
+	const used = process.cpuUsage(started);
+	assert.ok((used.user + used.system) / 1000 < 3000, `slow on ${source.slice(0, 20)}`);
 }
 
 // ---- A document

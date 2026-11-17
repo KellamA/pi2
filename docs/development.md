@@ -50,6 +50,8 @@ T=$(mktemp -d /tmp/tests.XXXX)
 ls -A "$T"
 ```
 
+No check may depend on how fast the Mac is. With several runs of the suite going at once, an engine can take well over ten seconds to start listening, and anything can take many times longer than on a quiet machine. So a test waits for the thing itself, never for a time, and the limit on a wait (ten minutes, `PATIENT_MS`) is only there so that a hang fails instead of running for ever. A wait the test can tell has failed ends at once: when the engine exits, or the connection to it closes. `engine/test/patience.ts` has this for every test that starts an engine: `listening` connects once the engine listens, `EngineClient` is a connection with requests, events and `until`, and `stop` stops a process and waits for it. A process that only a check should stop (a command's `sleep`, a stand-in shell's program) runs for longer than any wait, so that a wait for it to be stopped cannot be met by its ending by itself. Where a check is about time, it measures what it is about: the processor time the converter took, or the time between a request arriving at a stand-in and the engine giving up on it, rather than the time on the test's clock around them.
+
 ```bash
 cd engine && npm run check
 ```

@@ -10,12 +10,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { adoptLoginPath, askShell, folders, loginShell, readPath, usualFolders } from "../src/shellpath.ts";
 import { socketPathFor } from "../src/socket.ts";
+import { EngineClient, PATIENT_MS, stop } from "./patience.ts";
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-shellpath-")));
 const BARE = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -33,10 +33,9 @@ function script(folder: string, name: string, body: string): string {
 const quiet = () => {};
 /**
  * The limit wherever the limit is not what is checked, and how long the test waits for something that will happen
- * unless what it tests is broken: only a hang reaches it. Ten minutes, since a Mac busy enough can hold a test back
- * for minutes.
+ * unless what it tests is broken: only a hang reaches it (patience.ts).
  */
-const PATIENT_SECONDS = 600;
+const PATIENT_SECONDS = PATIENT_MS / 1000;
 /** Whether a process is gone (a process that has ended but not been collected by its parent still counts as there). */
 function gone(pid: number): boolean {
 	try {
@@ -150,79 +149,32 @@ try {
 		stdio: ["ignore", "ignore", "inherit"],
 	});
 	try {
-		// The engine listens once it has the shell's answer, which on a busy Mac can take a while. The deadline is only
-		// there so that an engine that never listens fails the test instead of hanging it.
-		const socketPath = socketPathFor(home);
-		let socket!: Socket;
-		for (const deadline = Date.now() + patient; ; ) {
-			assert.ok(engine.exitCode === null && engine.signalCode === null, "the engine is still running");
-			try {
-				if (!existsSync(join(home, "engine.sock"))) throw new Error("no socket yet");
-				socket = connect(socketPath);
-				await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject));
-				break;
-			} catch (error) {
-				if (Date.now() > deadline) throw error;
-				await sleep(50);
-			}
-		}
+		// The engine listens once it has the shell's answer, which on a busy Mac can take a while.
+		const client = await EngineClient.connect(engine, home);
 		type Item = { kind: string; text?: string; isError?: boolean };
-		const items: Item[] = [];
-		let busy = false;
-		let next = 1;
-		const replies = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-		let buffer = "";
-		socket.setEncoding("utf8").on("data", (chunk: string) => {
-			buffer += chunk;
-			const received = buffer.split("\n");
-			buffer = received.pop()!;
-			for (const line of received) {
-				const message = JSON.parse(line);
-				if (message.event === "conversation") {
-					if (message.reset) items.length = 0;
-					items.push(...message.items);
-					busy = message.state.busy;
-				} else if (typeof message.id === "number") {
-					const reply = replies.get(message.id);
-					replies.delete(message.id);
-					if (message.error !== undefined) reply?.reject(new Error(message.error));
-					else reply?.resolve(message.result);
-				}
-			}
-		});
-		const call = (method: string, params: Record<string, unknown> = {}): Promise<any> => {
-			const id = next++;
-			socket.write(`${JSON.stringify({ id, method, params })}\n`);
-			return new Promise((resolve, reject) => replies.set(id, { resolve, reject }));
-		};
 		/** Runs a shell command through the demo model and returns its result. */
 		const bash = async (id: number, command: string): Promise<Item> => {
-			const before = items.filter((item) => item.kind === "tool").length;
-			await call("submit", { id, text: `/bash ${command}` });
-			for (const deadline = Date.now() + patient; ; ) {
-				const results = items.filter((item) => item.kind === "tool");
-				if (!busy && results.length > before && items.at(-1)?.kind === "assistant") return results.at(-1)!;
-				if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${command}`);
-				await sleep(50);
-			}
+			const results = (): Item[] => client.conversations.get(id)?.items.filter((item: Item) => item.kind === "tool") ?? [];
+			const before = results().length;
+			await client.call("submit", { id, text: `/bash ${command}` });
+			return await client.until(`the result of ${command}`, () => {
+				const conv = client.conversations.get(id);
+				return conv !== undefined && !conv.state.busy && results().length > before && conv.items.at(-1)?.kind === "assistant" ? results().at(-1) : undefined;
+			});
 		};
 
-		const { id } = await call("conversation.create");
-		await call("conversation.open", { id });
-		await call("conversation.configure", { id, access: "full", cwd: work });
+		const { id } = await client.call("conversation.create");
+		await client.call("conversation.open", { id });
+		await client.call("conversation.configure", { id, access: "full", cwd: work });
 		const found = await bash(id, "pi2-only-here");
 		assert.equal(found.isError, false, `the program is found: ${found.text}`);
 		assert.equal(found.text?.trim(), "found-by-path");
 		const path = await bash(id, "/usr/bin/printenv PATH");
 		assert.equal(path.text?.trim(), `${tools}:${BARE}`, "the command's PATH is the shell's, then the engine's own");
-		socket.destroy();
+		client.close();
 		step("a command run by an engine that started with the bare PATH finds a program on the login shell's PATH");
 	} finally {
-		if (engine.exitCode === null && engine.signalCode === null) {
-			const exited = new Promise((resolve) => engine.once("exit", resolve));
-			engine.kill("SIGTERM");
-			await exited;
-		}
+		await stop(engine);
 		// In a temporary folder with a long path, the socket is reached through a link in /tmp (src/socket.ts).
 		const reached = socketPathFor(home);
 		if (reached !== join(home, "engine.sock")) rmSync(join(reached, ".."), { force: true });

@@ -13,11 +13,10 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { setTimeout as sleep } from "node:timers/promises";
+import { EngineClient, stop } from "./patience.ts";
 
 const probePath = join(import.meta.dirname, "..", "..", "app", ".build", "debug", "pi2-browser-probe");
 if (!existsSync(probePath)) {
@@ -37,40 +36,13 @@ const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.crede
 type Item = { id: number; kind: string; text: string; isError?: boolean };
 type InboxItem = { id: string; tool: string; conversationId: number; question: string | null; site?: string };
 
-class Client {
-	socket!: Socket;
+class Client extends EngineClient {
 	items = new Map<number, Item[]>();
 	busy = new Map<number, boolean>();
 	inbox: InboxItem[] = [];
 	agents: { id: string; browser?: { enabled: boolean } }[] = [];
-	#nextId = 1;
-	#replies = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
 
-	static async attach(): Promise<Client> {
-		const client = new Client();
-		for (let attempt = 0; ; attempt++) {
-			try {
-				if (!existsSync(socketPath)) throw new Error("no socket yet");
-				client.socket = connect(socketPath);
-				await new Promise<void>((resolve, reject) => client.socket.once("connect", resolve).once("error", reject));
-				break;
-			} catch (error) {
-				if (attempt >= 200) throw error;
-				await sleep(50);
-			}
-		}
-		let buffer = "";
-		client.socket.setEncoding("utf8").on("data", (chunk: string) => {
-			buffer += chunk;
-			const lines = buffer.split("\n");
-			buffer = lines.pop()!;
-			for (const line of lines) client.receive(JSON.parse(line));
-		});
-		client.socket.on("error", () => {});
-		return client;
-	}
-
-	receive(message: any): void {
+	override receive(message: any): void {
 		if (message.event === "inbox") this.inbox = message.items;
 		else if (message.event === "agents") this.agents = message.agents;
 		else if (message.event === "conversation") {
@@ -78,27 +50,6 @@ class Client {
 			items.push(...message.items);
 			this.items.set(message.id, items);
 			this.busy.set(message.id, message.state.busy);
-		} else if (message.id !== undefined && message.id !== null) {
-			const reply = this.#replies.get(message.id);
-			this.#replies.delete(message.id);
-			if (message.error !== undefined) reply?.reject(new Error(message.error));
-			else reply?.resolve(message.result);
-		}
-	}
-
-	call(method: string, params: Record<string, unknown> = {}): Promise<any> {
-		const id = this.#nextId++;
-		this.socket.write(`${JSON.stringify({ id, method, params })}\n`);
-		return new Promise((resolve, reject) => this.#replies.set(id, { resolve, reject }));
-	}
-
-	async until<T>(what: string, check: () => T | undefined | false, timeoutMs = 60_000): Promise<T> {
-		const deadline = Date.now() + timeoutMs;
-		for (;;) {
-			const value = check();
-			if (value !== undefined && value !== false) return value;
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${what}`);
-			await sleep(50);
 		}
 	}
 
@@ -121,7 +72,7 @@ function element(view: string, words: string): number {
 const engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE }, stdio: ["ignore", "ignore", "inherit"] });
 let probe: ChildProcess | undefined;
 try {
-	const client = await Client.attach();
+	const client = await Client.connect(engine, home);
 
 	// The probe is the app as far as the browser goes: it registers as the browser host and answers with BrowserKit.
 	probe = spawn(probePath, ["--engine", socketPath], { stdio: ["pipe", "pipe", "inherit"] });
@@ -227,9 +178,8 @@ try {
 	step("an approval does not carry over to a page that has changed since");
 	console.log("PASS");
 } finally {
-	probe?.kill("SIGTERM");
-	engine.kill("SIGTERM");
-	await sleep(400);
+	if (probe !== undefined) await stop(probe);
+	await stop(engine);
 	rmSync(home, { recursive: true, force: true });
 }
 process.exit(0);
