@@ -7,6 +7,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, defineTool, section } from "@earendil-works/pi-durable";
 import { arr, obj, str } from "@earendil-works/pi-schema";
 import type { Feature } from "./features.ts";
+import { ORDER_NOTE } from "./order.ts";
 
 export type PlanStatus = "pending" | "in_progress" | "completed";
 export type PlanItem = { content: string; status: PlanStatus };
@@ -91,7 +92,14 @@ export const plan: Feature = (_host, engine) => {
 	return {
 		tools: [updatePlan],
 		toolNames: () => ["update_plan"],
-		sections: [section("task_list", (input) => (input.agent.tools.some((tool) => tool.name === "update_plan") ? GUIDE : undefined))],
+		// How to work through steps: with the list, and with the calls of one answer (order.ts), which is said here because
+		// this section is in every conversation that has tools. Without update_plan it still says the second.
+		sections: [
+			section("task_list", (input) => {
+				if (input.agent.tools.length === 0) return undefined;
+				return input.agent.tools.some((tool) => tool.name === "update_plan") ? `${GUIDE}\n${ORDER_NOTE}` : ORDER_NOTE;
+			}),
+		],
 		state: (view) => ({ plan: known.get(view.conversation.id as unknown as number) ?? null }),
 	};
 };
