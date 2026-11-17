@@ -11,6 +11,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 - **Agents are steered to the file tools and to working in fewer steps.** Agents are told that steps which do not depend on each other can go together and run at the same time, except when one of them can change files. The shell's instructions now say to read, find, search and change files with their own tools, that commands already start in the conversation's folder, and that output need not be cut short. The instructions are slightly shorter than before.
 
 ### Fixed
+- Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
 - An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
 
 ### For contributors
