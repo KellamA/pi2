@@ -507,6 +507,8 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     let limit: LimitWait?
     /// Its shell commands running in the foreground, oldest first, with their clocks (#196). Absent from an older engine.
     var commands: [RunningCommand]?
+    /// A chat answering, rather than an agent's work (docs/chat.md).
+    var chat: Bool?
     var id: Int { conversationId }
 }
 
@@ -673,6 +675,8 @@ struct ConversationState: Codable, Equatable {
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
     let setup: LiveSetup?
+    /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
+    var chat: Bool? = nil
 }
 
 /// A worktree set-up command still running: which run it is (its transcript entry's `details.run`) and the end of its output.
@@ -829,6 +833,8 @@ struct SearchResult: Codable, Equatable, Identifiable {
     let snippet: String
     /// Found in an archived conversation.
     let archived: Bool?
+    /// Found in a chat rather than an agent's conversation.
+    var chat: Bool? = nil
     var id: Int { entryId }
 }
 

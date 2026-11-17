@@ -1,9 +1,10 @@
 import SwiftUI
 
-// Chat mode (#172): a place to ask pi²'s own assistant questions, beside the agent view. The window shows one side or
-// the other; each keeps what it showed while the other is on screen. A chat is a conversation whose library record says
-// `chat: true`, made with `conversation.create` and `chat: true`; everything else uses the requests every conversation
-// has. The conversation itself is `ChatView`, the same view (and page) as an agent's conversation, told it is a chat.
+// Chat mode (#172, docs/chat.md): a place to ask pi²'s own assistant questions, beside the agent view. The window shows
+// one side or the other; each keeps what it showed while the other is on screen. A chat is a conversation whose library
+// record says `chat: true`, made with `conversation.create` and `chat: true`; everything else uses the requests every
+// conversation has. The conversation itself is `ChatView`, the same view (and page) as an agent's conversation, told it
+// is a chat.
 
 /// Which side the main window shows.
 enum WindowMode: String {
@@ -45,29 +46,13 @@ final class ChatModeState {
 
 // MARK: - Which conversations are chats
 
-/// Until the engine makes chats (#283), a development build can let one agent's conversations stand in for them, to try
-/// chat mode in a throwaway copy: `defaults write <bundle id> chat.standInAgent <agent id>`. Its conversations then show
-/// in chat mode and not in the agent view, and New Chat starts one with it. A release build has no stand-in.
-enum ChatStandIn {
-    static let agentID: String? = {
-        #if PI2_DEVELOPMENT
-        let value = UserDefaults.standard.string(forKey: "chat.standInAgent") ?? ""
-        return value.isEmpty ? nil : value
-        #else
-        return nil
-        #endif
-    }()
-
-    static func covers(_ agentId: String?) -> Bool { agentID != nil && agentId == agentID }
-}
-
 extension ConversationSummary {
-    var isChat: Bool { chat == true || (parent == nil && ChatStandIn.covers(agentId)) }
+    var isChat: Bool { chat == true }
     var isPinned: Bool { pinned == true }
 }
 
 extension ArchivedConversation {
-    var isChat: Bool { chat == true || (parent == nil && ChatStandIn.covers(agentId)) }
+    var isChat: Bool { chat == true }
 }
 
 extension EngineClient {
@@ -76,19 +61,17 @@ extension EngineClient {
         conversations.filter(\.isChat).sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    /// Whether a conversation, listed or archived, is a chat.
+    /// Whether a conversation, listed, archived or open, is a chat.
     func isChat(_ id: Int) -> Bool {
         if let listed = conversations.first(where: { $0.id == id }) { return listed.isChat }
         if let archived = archived.first(where: { $0.id == id }) { return archived.isChat }
-        return false
+        return open[id]?.state?.chat == true
     }
 
-    /// Makes a chat. The engine gives it the model used last in a chat, or the default for chats.
+    /// Makes a chat. The engine gives it the model chosen last in a chat, or chat mode's default model.
     func createChat() async -> Int? {
-        var params: [String: Any] = ["chat": true]
-        if let standIn = ChatStandIn.agentID { params["agentId"] = standIn }
         do {
-            let result = try await call("conversation.create", params)
+            let result = try await call("conversation.create", ["chat": true])
             guard let id = result["id"]?.intValue else { return nil }
             openConversation(id)
             return id

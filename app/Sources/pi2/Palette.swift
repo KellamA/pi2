@@ -64,7 +64,7 @@ struct PaletteView: View {
             })
         }
         for message in messages {
-            let chat = engine.isChat(message.conversationId)
+            let chat = message.chat == true || engine.isChat(message.conversationId)
             result.append(Entry(id: "m-\(message.entryId)", icon: "text.magnifyingglass", title: message.snippet, detail: "In “\(message.title.isEmpty ? (chat ? "New chat" : "New conversation") : message.title)”\(chat ? " · chat" : "")\(message.archived == true ? " · archived" : "")") {
                 model.selection = .conversation(message.conversationId)
             })
