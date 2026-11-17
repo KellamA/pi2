@@ -6,6 +6,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ### For contributors
 - CI runs a job again by itself, up to three times, when GitHub cancelled it because no runner took it in time, as happens to the macOS jobs when GitHub is short of macOS runners. Only that case: a real failure is never retried. A pull request that changes only the docs, the top-level Markdown files or `app/VERSION` skips the two macOS jobs, and their required checks pass. See [docs/development.md](docs/development.md#ci).
+- CI now runs `scripts/test-issue` and `scripts/test-issue-hook` on Linux, in a required check of their own, `Scripts (tests)`, and `scripts/test-test-copy` in the app's macOS job. A pull request that changes only `scripts/issue`, `scripts/issue-hook`, their tests or the docs skips the macOS jobs.
 
 ## 0.7.8
 
