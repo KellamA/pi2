@@ -36,6 +36,7 @@ import { createBackup, restoreBackup } from "./backup.ts";
 import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { codemodeExtension } from "./codemode.ts";
+import { holdingPlaces } from "./sections.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
@@ -245,8 +246,9 @@ const registry = createRegistry();
 const codemode = codemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
 let mcpTools = mcp.extension();
 registry.install(CodingTools);
-registry.install(pi2);
-registry.install(codemode);
+// Their sections keep their places, so one that comes or goes mid-conversation does not send the others again (sections.ts).
+registry.install(holdingPlaces(pi2));
+registry.install(holdingPlaces(codemode));
 registry.install(mcpTools);
 const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemode.tools!, ...mcpTools.tools!].find((t) => t.name === name);
 
@@ -263,6 +265,18 @@ function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undef
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent) ?? []);
 	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+}
+
+/**
+ * `wanted` in the order the conversation already has its tools (`current`, its AgentDoc's), with the new ones after them.
+ * pi durable sends a conversation only the tools that changed while their order stays, and every tool again when it
+ * would not (#186), so a tool that comes, such as computer use switched on, must come last.
+ */
+function keepingOrder<T extends { name: string } | undefined>(current: unknown, wanted: T[]): T[] {
+	if (!Array.isArray(current)) return wanted;
+	const place = new Map(current.map((name, index) => [name, index]));
+	const kept = wanted.filter((t) => place.has(t!.name)).sort((a, b) => place.get(a!.name)! - place.get(b!.name)!);
+	return [...kept, ...wanted.filter((t) => !place.has(t!.name))];
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -333,9 +347,9 @@ async function syncTools(conv: Conversation): Promise<void> {
 	// A conversation whose agent was deleted keeps the setup it has.
 	if (meta === undefined || own === undefined) return;
 	const delegate = meta.parent === undefined && own.delegates.some((other) => agents[other] !== undefined);
-	const wanted = toolsFor(meta.access, delegate, own);
-	const names = wanted.map((t) => t!.name);
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
+	const wanted = keepingOrder(current, toolsFor(meta.access, delegate, own));
+	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
 	for (const client of clients) client.subscriptions.get(id)?.push();
@@ -1012,7 +1026,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			const meta = library.conversations[String(id)];
 			const own = agents[meta?.agentId ?? ""];
 			const delegate = meta?.parent === undefined && (own?.delegates ?? []).some((other) => agents[other] !== undefined);
-			await conv.configure({ tools: toolsFor(access, delegate, own) }, context);
+			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
+			await conv.configure({ tools: keepingOrder(current, toolsFor(access, delegate, own)) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}

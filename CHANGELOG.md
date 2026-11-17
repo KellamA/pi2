@@ -4,6 +4,12 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Fixed
+- When something new reached an agent in the middle of a conversation (its first background command, a worktree, a project's instructions file, or a setting such as code mode, computer use or the browser switched on), the agent could be sent its whole system prompt and tool list again, about 25,000 characters, carried by every later turn. Now only what changed is sent.
+
+### For contributors
+- The demo model's `/system history` lists what each system message of a conversation changed, and `engine/test/sections.ts` checks that a section or tool that arrives or goes is sent alone. [docs/architecture.md](docs/architecture.md#the-system-prompts-sections) lists every section of the system prompt and when it comes and goes.
+
 ## 0.7.7
 
 ### Added
