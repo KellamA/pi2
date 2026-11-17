@@ -14,6 +14,7 @@ import { basename, dirname, extname, isAbsolute, resolve, sep } from "node:path"
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, defineTool, section } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
+import { isChat, makeChatFolder } from "./chat.ts";
 import type { Feature } from "./features.ts";
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -616,7 +617,7 @@ async function targetOf(root: string, path: string): Promise<{ full: string } | 
 	return { full: real };
 }
 
-export type WriteResult = { text: string; isError?: boolean };
+export type WriteResult = { text: string; isError?: boolean; path?: string };
 
 /** Write the document. Every refusal says what to change. `root` is the real path of the conversation's folder. */
 export async function writeDocument(root: string, args: { path: string; markdown: string; title?: string; overwrite?: boolean }, convert: Converter = textutil): Promise<WriteResult> {
@@ -661,7 +662,7 @@ export async function writeDocument(root: string, args: { path: string; markdown
 		return refuse(`The ${kind.name} could not be written: ${error instanceof Error ? error.message : String(error)}.`);
 	}
 	const notes = lean ? " Tables are written as aligned text and link addresses are shown after the link text, because Word files made here cannot hold either." : "";
-	return { text: `Wrote ${shown} (${kind.name}).${notes}` };
+	return { text: `Wrote ${shown} (${kind.name}).${notes}`, path: target.full };
 }
 
 // ---- The feature
@@ -671,7 +672,7 @@ const GUIDE = [
 	"Do not use it for notes, code, data files or anything the person will read as plain text; use write for those. Headings, lists, tables, bold and italic, code blocks, quotes and links are kept; pictures are not. Tell the person where the file is when it is done.",
 ].join(" ");
 
-export const documents: Feature = (host) => {
+export const documents: Feature = (host, engine) => {
 	const writeDocumentTool = defineTool({
 		name: "write_document",
 		description:
@@ -688,9 +689,12 @@ export const documents: Feature = (host) => {
 		replay: "unsafe",
 		execute: async (args, api, context: Context) => {
 			const doc = (await api.snapshot(AgentDoc, api.conversationId, context)) as { cwd?: string | null } | undefined;
-			const root = await realpath(doc?.cwd ?? host.scratchFolder());
+			// A chat has no folder: its documents are kept in one of its own in the data folder (chat.ts).
+			const own = isChat(host.meta(api.conversationId)) ? makeChatFolder(engine.home, api.conversationId as unknown as number) : undefined;
+			const root = await realpath(own ?? doc?.cwd ?? host.scratchFolder());
 			const result = await writeDocument(root, args);
-			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
+			// The full path, so the conversation can offer to open the document.
+			return { output: text(result.text), ...(result.isError ? { isError: true } : {}), ...(result.path === undefined ? {} : { details: { path: result.path } }) };
 		},
 	});
 	return {
