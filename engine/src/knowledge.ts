@@ -290,6 +290,12 @@ export const knowledge: Feature = (host, engine) => {
 			memory = (await engine.harness().snapshot(Memory, engine.context()))?.agents ?? {};
 			memory = JSON.parse(JSON.stringify(memory));
 		},
+		agentDuplicated: async (sourceId, copyId) => {
+			await change((agents) => {
+				// Only the switch is a setting; the notes are what the original learned.
+				agents[copyId] = { enabled: agents[sourceId]?.enabled ?? false, notes: [], next: 1 };
+			});
+		},
 		greeting: () => [event()],
 		handlers: {
 			"memory.setEnabled": async (params) => {

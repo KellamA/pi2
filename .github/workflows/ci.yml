@@ -13,8 +13,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides whether a pull request needs the macOS jobs, which wait for GitHub's scarcer macOS runners (#245). One that
+  # changes only files no macOS job reads (the docs, the changelog, the version) skips them, and a skipped job reports
+  # its check as passed, so their required checks do not hold it up. Anything else, any doubt, and every push to main
+  # runs them: they run unless this job says "false", so if it fails they run too.
+  changes:
+    name: Which jobs the change needs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.files.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2 # the merge commit CI tests, and main's commit it was made on
+          persist-credentials: false
+      - id: files
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ $EVENT != pull_request ]]; then
+            echo "A $EVENT: running every job."
+            echo macos=true >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # What the commit being tested changes from main as it is now, both names of a moved file.
+          changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+          macos=false
+          [[ -n $changed ]] || { echo "No file changed: running every job."; macos=true; }
+          while IFS= read -r file; do
+            case $file in
+              "") ;;
+              # Read by no macOS job. A file one of them starts reading comes off this list.
+              docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
+              # Changelog entries: Transcript page (tests) checks them on Linux.
+              changelog.d/*) ;;
+              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner, auto-merge).
+              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
+              scripts/rerun-if-no-runner | scripts/auto-merge) ;;
+              # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
+              # could break that.
+              app/VERSION)
+                version=$(tr -d '[:space:]' < app/VERSION)
+                [[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
+              *) echo "Needs the macOS jobs: $file"; macos=true ;;
+            esac
+          done <<<"$changed"
+          [[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+
   engine:
     name: Engine (type-check and tests)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: macos-26
     timeout-minutes: 20
     defaults:
@@ -50,12 +103,31 @@ jobs:
         working-directory: app
         run: node --test test-release-notes.mjs
 
+  scripts:
+    name: Scripts (tests)
+    # scripts/issue and its hook need only bash, git and jq, so they are checked on Linux (#235). Neither touches a
+    # GitHub issue: the hook's test has a stand-in gh.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: scripts/test-issue
+      - run: scripts/test-issue-hook
+
   app:
     name: App (build)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: macos-26
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # What scripts/test-copy refuses, in a stand-in checkout: it launches nothing. Here and not on Linux because both
+      # it and its test read and write the bundle's Info.plist with PlistBuddy, which only macOS has (#235).
+      - name: Check what scripts/test-copy refuses
+        run: scripts/test-test-copy
       - uses: actions/setup-node@v7
         with:
           node-version: 26

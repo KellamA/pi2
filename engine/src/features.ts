@@ -86,6 +86,8 @@ export type FeatureParts = {
 	providersChanged?(): void;
 	/** The person started a conversation from `agent` (not a sub-chat, fork or scheduled run). */
 	created?(id: number, agent: AgentProfile): Promise<void>;
+	/** An agent was duplicated: copy person-set feature settings, never its history. */
+	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
 	/** A conversation's folder was changed by the person. */
 	folderChanged?(id: number): void;
 	/** Which conversations are archived or deleted has changed; `engine.library()` already says so. */

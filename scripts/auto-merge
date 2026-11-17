@@ -1,0 +1,95 @@
+#!/bin/bash
+# Turns on auto-merge for a pull request, and, run again, says where it stands and puts right what has gone wrong (#233).
+#
+#   scripts/auto-merge <number>
+#
+# Run it as soon as the pull request is open, instead of `gh pr merge <number> --auto --merge`, and again whenever you
+# look at it, after pushing a fix or merging main into the branch too, until it says the pull request is merged:
+#
+# - auto-merge off (never turned on, or turned off by GitHub): turns it on, with a merge commit. gh merges at once if
+#   nothing is left to wait for;
+# - auto-merge on, every required check passed and nothing merged three minutes after the last one finished: turns
+#   auto-merge off and on again, which merges it. GitHub usually merges within a minute or two of the last check;
+# - a conflict with main, or a required check that failed: says what to do, and whether a check was only cancelled
+#   because no runner took it, which CI runs again by itself.
+#
+# Exit status: 0 merged; 3 waiting for checks, with auto-merge on; 1 something needs you; 2 usage. Needs gh and jq.
+
+set -euo pipefail
+
+STALL_SECONDS=180
+NO_RUNNER='was not acquired by Runner'
+
+n=${1:-}
+[[ $n =~ ^[0-9]+$ && $# == 1 ]] || { echo "usage: scripts/auto-merge <pull request number>" >&2; exit 2; }
+
+view() { gh pr view "$n" --json state,mergeStateStatus,autoMergeRequest,url; }
+pr=$(view)
+state() { jq -r .state <<<"$pr"; }
+echo "#$n $(jq -r .url <<<"$pr")"
+
+case $(state) in
+MERGED) echo "Merged."; exit 0 ;;
+CLOSED) echo "Closed without merging."; exit 1 ;;
+esac
+
+if [[ $(jq -r .autoMergeRequest <<<"$pr") == null ]]; then
+	echo "Auto-merge is off: turning it on."
+	gh pr merge "$n" --auto --merge
+	pr=$(view)
+	[[ $(state) != MERGED ]] || { echo "Merged."; exit 0; }
+fi
+
+if [[ $(jq -r .mergeStateStatus <<<"$pr") == DIRTY ]]; then
+	echo "It conflicts with main. Merge origin/main into the branch, keeping both sides' work, check it, push, and run this again."
+	exit 1
+fi
+
+# The required checks of the newest commit; one not reported yet is not listed, and counts as waiting.
+checks=$(gh pr checks "$n" --required --json name,bucket,completedAt,link 2>/dev/null) || checks='[]'
+if [[ $(jq length <<<"$checks") == 0 ]]; then
+	echo "Auto-merge is on; no required check has reported yet."
+	exit 3
+fi
+failed=0
+unacquired=0
+while IFS=$'\t' read -r name bucket link; do
+	[[ -n $name ]] || continue
+	job=${link##*/job/}
+	run=${link%/job/*}
+	run=${run##*/runs/}
+	if [[ $bucket == cancel && $job =~ ^[0-9]+$ ]] &&
+		gh api "repos/{owner}/{repo}/check-runs/$job/annotations" --jq '.[].message' 2>/dev/null | grep -qF "$NO_RUNNER"; then
+		echo "- $name: cancelled, no runner took it. CI runs it again by itself; if it has not started again in a few minutes: gh run rerun $run --failed"
+		unacquired=$((unacquired + 1))
+	else
+		echo "- $name: $bucket. Read the log (gh run view $run --log-failed), fix it and push."
+		failed=$((failed + 1))
+	fi
+done < <(jq -r '.[] | select(.bucket == "fail" or .bucket == "cancel") | [.name, .bucket, .link] | @tsv' <<<"$checks")
+((failed == 0)) || exit 1
+((unacquired == 0)) || exit 3
+
+waiting=$(jq -r '[.[] | select(.bucket == "pending") | .name] | join(", ")' <<<"$checks")
+if [[ -n $waiting ]]; then
+	echo "Auto-merge is on, waiting for: $waiting."
+	exit 3
+fi
+
+last=$(jq -r '[.[] | .completedAt | select(. != null and (startswith("0001") | not))] | max // empty' <<<"$checks")
+since=$(($(date -u +%s) - $(jq -n --arg t "$last" '$t | fromdateiso8601? // now' | cut -d. -f1)))
+status=$(jq -r .mergeStateStatus <<<"$pr")
+if [[ $status == BLOCKED ]] && ((since >= STALL_SECONDS)); then
+	echo "Every required check reported has passed, but GitHub still blocks it: a required check has not reported. If main"
+	echo "requires a check this branch's CI does not have yet, merge origin/main into the branch and push."
+	exit 1
+fi
+if [[ $status == CLEAN || $status == UNSTABLE || $status == HAS_HOOKS ]] && ((since >= STALL_SECONDS)); then
+	echo "Every required check passed ${since}s ago and it has not merged: turning auto-merge off and on again."
+	gh pr merge "$n" --disable-auto
+	gh pr merge "$n" --auto --merge
+	pr=$(view)
+	[[ $(state) != MERGED ]] || { echo "Merged."; exit 0; }
+fi
+echo "Auto-merge is on and the required checks have passed ($status, ${since}s ago); GitHub merges it shortly. Run this again in a minute or two."
+exit 3
