@@ -59,6 +59,7 @@ import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
+import { type ChatVersions, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
@@ -186,7 +187,6 @@ const host: Host = {
 	browser,
 	scratchFolder: () => workspace,
 	changesThings: (name) => mcp.changesThings(name),
-	meta: (id) => library.conversations[String(id)],
 	agent: (id) => (id === undefined ? undefined : agents[id]),
 	allowAlways: (id, tool) =>
 		editMeta(id, (meta) => {
@@ -221,6 +221,8 @@ const host: Host = {
 	},
 	conversations: () => library.conversations,
 	working: (id) => working.has(id),
+	// A chat's version is the chat as far as approvals and "always allow" go (versions.ts).
+	meta: (id) => library.conversations[String(chatOf(id))],
 	answerText: async (id, entryId) => {
 		const conv = await harness.conversation(id, context);
 		const entry = await conv?.commit((tx) => tx.entry(AssistantEntry, entryId as EntryId), context);
@@ -242,7 +244,7 @@ const engine: Engine = {
 	busy: (id) => working.has(id),
 	apps: () => clients.size,
 	stateChanged: (id) => {
-		for (const client of clients) client.subscriptions.get(id)?.push();
+		for (const client of clients) (client.subscriptions.get(id) ?? client.subscriptions.get(chatOf(id)))?.push();
 	},
 	activityChanged: () => broadcast(activityEvent()),
 };
@@ -358,11 +360,24 @@ function deviceId(): string {
 	return settings.deviceId;
 }
 
+/** Which version of each chat is shown (versions.ts); kept up to date by a watch further down. */
+let versions: { chats: Record<string, ChatVersions> } = (await harness.snapshot(Versions, context)) ?? { chats: {} };
+
+/** A conversation the app names by its id. A chat with several versions is the version it shows. */
 async function conversation(id: unknown): Promise<Conversation> {
-	const found = typeof id === "number" ? await harness.conversation(id as ConversationId, context) : undefined;
+	const shown = typeof id === "number" ? (versions.chats[String(id)]?.current ?? id) : undefined;
+	const found = shown === undefined ? undefined : await harness.conversation(shown as unknown as ConversationId, context);
 	if (found === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
 	return found;
 }
+
+/** The chat a version belongs to, or the conversation itself. */
+function chatOf(id: number | ConversationId): number {
+	const meta = library.conversations[String(id)];
+	return meta?.version === true && meta.parent !== undefined ? meta.parent : (id as number);
+}
+/** A sub-chat, handed work by another conversation; not a chat's version. */
+const isSubChat = (meta: Meta | undefined) => meta?.parent !== undefined && meta.version !== true;
 
 /**
  * Bring a conversation's tools in line with what its agent may do now. A conversation's tools are fixed when it is
@@ -377,16 +392,18 @@ async function syncTools(conv: Conversation): Promise<void> {
 	// A conversation whose agent was deleted keeps the setup it has.
 	if (meta === undefined || own === undefined) return;
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, toolsFor(meta.access, own, meta.parent !== undefined));
+	const wanted = keepingOrder(current, toolsFor(meta.access, own, isSubChat(meta)));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
-	for (const client of clients) client.subscriptions.get(id)?.push();
+	for (const client of clients) client.subscriptions.get(chatOf(id))?.push();
 }
 
+/** Changes a conversation's record in the library; a chat's version changes the chat's. */
 async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promise<void> {
+	const key = chatOf(id);
 	await harness.commit(async (tx) => {
-		const meta = (await tx.doc(Library)).conversations[String(id)];
+		const meta = (await tx.doc(Library)).conversations[String(key)];
 		if (meta !== undefined) change(meta);
 	}, context);
 }
@@ -677,6 +694,10 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 			agentId: meta?.agentId ?? null,
 			parent: meta?.parent ?? null,
 		},
+		// A chat: the page shows Try Again, Edit and sources. Where the versions of what is shown part, and which is shown;
+		// null where they are not offered (versions.ts).
+		chat: (meta as { chat?: unknown } | undefined)?.chat === true,
+		versions: versionsAllowed(meta, build === null) ? points(versions.chats[String(chatOf(id))], chatOf(id), new Set(view.entries.map((entry) => entry.id as unknown as number))) : null,
 		// What features add (see features.ts).
 		...Object.assign({}, ...host.features.map((feature) => feature.state?.(view, meta) ?? {})),
 	};
@@ -684,7 +705,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 
 // ---- Clients
 
-type Subscription = { push: () => void; stop: () => Promise<unknown> };
+/** `follow` watches the version a chat shows now, if that changed (versions.ts). */
+type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void> };
 type Client = { socket: Socket; subscriptions: Map<number, Subscription> };
 const clients = new Set<Client>();
 /** Clients that registered as the computer host; the host object is kept per client so the right one is dropped. */
@@ -716,8 +738,9 @@ let working = new Set<number>();
 
 function libraryEvent() {
 	const conversations = Object.entries(library.conversations)
-		// Sub-chats are listed too, pointing at their parent, unless either of them was archived or deleted.
-		.filter(([, meta]) => !isPutAway(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
+		// Sub-chats are listed too, pointing at their parent, unless either of them was archived or deleted. A chat's
+		// versions are not: the chat stands for them.
+		.filter(([, meta]) => meta.version !== true && !isPutAway(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
 		.map(([id, meta]) => ({
 			id: Number(id),
 			title: meta.title,
@@ -732,7 +755,7 @@ function libraryEvent() {
 	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
 	// the sidebar. A sub-chat of an archived conversation is reached through that conversation.
 	const archived = Object.entries(library.conversations)
-		.filter(([, meta]) => isArchived(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
+		.filter(([, meta]) => meta.version !== true && isArchived(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
 		.map(([id, meta]) => ({
 			id: Number(id),
 			title: meta.title,
@@ -740,7 +763,7 @@ function libraryEvent() {
 			updatedAt: meta.updatedAt,
 			archivedAt: meta.archivedAt as number,
 			agentId: meta.agentId ?? null,
-			subChats: Object.values(library.conversations).filter((child) => child.parent === Number(id) && !isDeleted(child)).length,
+			subChats: Object.values(library.conversations).filter((child) => child.parent === Number(id) && child.version !== true && !isDeleted(child)).length,
 			parent: meta.parent ?? null,
 			parentTitle: meta.parent === undefined ? null : (library.conversations[String(meta.parent)]?.title ?? ""),
 		}))
@@ -785,10 +808,13 @@ function agentsEvent() {
 /** Everything waiting on the person, with enough context to answer from anywhere in the app. */
 function inboxEvent() {
 	const items = inbox.list().map((item) => {
-		const meta = library.conversations[String(item.conversationId)];
-		const root = meta?.parent ?? item.conversationId;
+		// A question from a chat's version is the chat's: the app shows the chat under its own id.
+		const conversationId = chatOf(item.conversationId);
+		const meta = library.conversations[String(conversationId)];
+		const root = meta?.parent ?? conversationId;
 		return {
 			...item,
+			conversationId,
 			title: meta?.title ?? "",
 			agentName: agents[meta?.agentId ?? ""]?.name ?? null,
 			rootConversationId: root,
@@ -825,15 +851,17 @@ async function defaultModel(): Promise<ModelRef> {
 	return { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
 }
 
-async function subscribe(client: Client, conv: Conversation): Promise<void> {
-	const id = conv.id as unknown as number;
+/**
+ * Sends the app a conversation as it changes. A chat with several versions is sent as the version it shows, under the
+ * chat's id, and starts over with that version's entries when another is shown.
+ */
+async function subscribe(client: Client, id: number): Promise<void> {
 	if (client.subscriptions.has(id)) return;
-	const watch = await conv.watch(context, { min: 300, max: 600 });
-	// A feature's own documents are not part of the view; the task list is loaded here so the first state carries it.
-	await preparePlan(id);
-	let view = watch.value;
+	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
+	let view: ConversationView | undefined;
 	let lastSent: unknown;
 	const push = () => {
+		if (view === undefined) return;
 		// Entries never change once committed, so the app is only sent the ones it does not have yet.
 		const index = lastSent === undefined ? -1 : view.entries.findIndex((entry) => entry.id === lastSent);
 		const reset = lastSent === undefined || index === -1;
@@ -842,13 +870,34 @@ async function subscribe(client: Client, conv: Conversation): Promise<void> {
 		const items = fresh.map(toItem).filter((item) => item !== undefined);
 		send(client, { event: "conversation", id, reset, items, state: stateOf(view, library.conversations[String(id)]) });
 	};
-	client.subscriptions.set(id, { push, stop: () => watch.stop() });
-	push();
-	watch.start(async (call) => {
-		if (call.kind !== "value") return;
-		view = call.value;
+	let following = Promise.resolve();
+	const attach = async () => {
+		const conv = await conversation(id);
+		if (watch !== undefined && view?.conversation.id === conv.id) return;
+		const next = await conv.watch(context, { min: 300, max: 600 });
+		// A feature's own documents are not part of the view; the task list is loaded here so the first state carries it.
+		await preparePlan(conv.id as unknown as number);
+		const previous = watch;
+		watch = next;
+		view = next.value;
+		lastSent = undefined;
 		push();
-	});
+		next.start(async (call) => {
+			if (call.kind !== "value" || watch !== next) return;
+			view = call.value;
+			push();
+		});
+		await previous?.stop();
+	};
+	// One at a time, so two quick changes of version never leave two watches.
+	const follow = () => (following = following.then(attach).catch((error) => log("could not follow conversation", id, error instanceof Error ? error.message : "")));
+	client.subscriptions.set(id, { push, stop: async () => watch?.stop(), follow });
+	try {
+		await attach();
+	} catch (error) {
+		client.subscriptions.delete(id);
+		throw error;
+	}
 }
 
 // ---- Requests
@@ -883,7 +932,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return { id: created.id };
 	},
 	"conversation.open": async (params, client) => {
-		await subscribe(client, await conversation(params.id));
+		await conversation(params.id);
+		await subscribe(client, params.id as number);
 		return {};
 	},
 	"conversation.close": async (params, client) => {
@@ -903,7 +953,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"conversation.fork": async (params) => {
 		const conv = await conversation(params.id);
-		const source = library.conversations[String(conv.id)];
+		const source = library.conversations[String(chatOf(conv.id))];
 		const now = Date.now();
 		// The fork sees the conversation up to and including that entry, then goes its own way.
 		const fork = await conv.fork(
@@ -948,7 +998,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			.sort(([, x], [, y]) => y.updatedAt - x.updatedAt)
 			.map(([id]) => Number(id));
 		for (const id of ids) {
-			const conv = await harness.conversation(id as unknown as ConversationId, context);
+			// A chat is searched as it is shown: its version shown.
+			const conv = await conversation(id).catch(() => undefined);
 			if (conv === undefined) continue;
 			let cursor: unknown;
 			// Newest first, at most 2,000 entries of each conversation.
@@ -1080,7 +1131,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"conversation.export": async (params) => {
 		const conv = await conversation(params.id);
-		const meta = library.conversations[String(conv.id)];
+		const meta = library.conversations[String(chatOf(conv.id))];
 		const items: Item[] = [];
 		let cursor: unknown;
 		for (;;) {
@@ -1157,7 +1208,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"conversation.configure": async (params, client) => {
 		const conv = await conversation(params.id);
-		const id = conv.id as unknown as number;
+		const id = chatOf(conv.id);
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
@@ -1178,7 +1229,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			const meta = library.conversations[String(id)];
 			const own = agents[meta?.agentId ?? ""];
 			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, meta?.parent !== undefined)) }, context);
+			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta))) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -1396,6 +1447,26 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 };
+// Try Again, Edit, and stepping between a chat's versions (versions.ts).
+Object.assign(
+	handlers,
+	versionRequests({
+		harness,
+		context,
+		// A development engine, which has no BUILD file, offers them on any conversation until chats exist (#283).
+		development: build === null,
+		library: () => library.conversations,
+		versions: () => versions,
+		busy: (id) => working.has(id),
+		mayStart: (id) => {
+			refuseIfPutAway(id);
+			if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
+		},
+		modelExists: (model) => providers.models.getModel(model.provider, model.modelId) !== undefined,
+		syncTools: (conv) => syncTools(conv).catch((error) => log("could not update the tools of conversation", conv.id, error instanceof Error ? error.message : "")),
+		touched: (id) => editMeta(id as unknown as ConversationId, (meta) => void (meta.updatedAt = Date.now())),
+	}),
+);
 // Requests that features answer.
 for (const feature of host.features) {
 	for (const [method, handler] of Object.entries(feature.handlers ?? {})) handlers[method] = (params) => handler(params);
@@ -1429,6 +1500,17 @@ libraryWatch.start(async (call) => {
 		for (const client of clients) for (const subscription of client.subscriptions.values()) subscription.push();
 		for (const feature of host.features) feature.putAwayChanged?.();
 	}
+});
+
+// Which version each chat shows: an open chat follows it (versions.ts).
+await harness.commit(async (tx) => void (await tx.doc(Versions)), context);
+const versionsWatch = await harness.watchDoc(Versions, context);
+if (versionsWatch === undefined) throw new Error("The versions document could not be opened");
+versions = versionsWatch.value;
+versionsWatch.start(async (call) => {
+	if (call.kind !== "value") return;
+	versions = call.value;
+	for (const client of clients) for (const subscription of client.subscriptions.values()) void subscription.follow().then(() => subscription.push());
 });
 
 // Agents: created with three starters on a first launch, then whatever the person makes of them.
@@ -1472,9 +1554,11 @@ function activityEvent() {
 	const waiting = new Set(inbox.list().map((item) => item.conversationId));
 	const runs = [...working]
 		.map((id) => {
-			const meta = library.conversations[String(id)];
+			// A chat's version shows as the chat, which is what the app can open.
+			const shown = chatOf(id);
+			const meta = library.conversations[String(shown)];
 			return {
-				conversationId: id,
+				conversationId: shown,
 				parent: meta?.parent ?? null,
 				rootConversationId: rootOf(id),
 				title: meta?.title ?? "",
