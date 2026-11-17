@@ -370,7 +370,10 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 	/** Whether the call that started the command said, in its own result, that it was already over. */
 	let answer: (sawTheEnd: boolean) => void = () => {};
 	const answered = new Promise<boolean>((resolve) => (answer = resolve));
-	/** `left` answers whether the command left something running in its group, once that has been looked into and stopped. */
+	/**
+	 * `left` answers whether the command, ending other than by a stop pi² carried out, left something running in its group, once that has been looked
+	 * into and stopped. For a stop pi² carried out it is always false: that stop was of everything the command started.
+	 */
 	const end = async (how: string, failed: boolean, at: number, left: Promise<boolean>) => {
 		if (over) return;
 		over = true;
@@ -402,7 +405,11 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		const at = Date.now();
 		// Its number is free for another process from here on, so nothing more is signalled by it: what it left in its
 		// group is looked up and stopped by what `ps` says is there.
-		const left = signallable(child.pid) ? stopMembers(child.pid, GRACE_MS) : Promise.resolve(false);
+		const swept = signallable(child.pid) ? stopMembers(child.pid, GRACE_MS) : Promise.resolve(false);
+		// A stop pi² carried out (the agent's, the person's, a time limit, archiving) was sent to the whole group at once and
+		// was always meant to take everything the command started. Whether some of it outlived the first process by a moment
+		// depends only on how busy the Mac is, so it is not told: the same stop is worded the same way every time (#168).
+		const left = command.stopping === undefined ? swept : swept.then(() => false);
 		const how = command.stopping ?? (code === 0 ? "finished" : code === null ? `was ended by ${signal ?? "a signal"}` : `exited with code ${code}`);
 		const failed = command.stopping === undefined && code !== 0;
 		// It is over once the rest of its output is in: when its pipes close, or after a moment, should something it left
