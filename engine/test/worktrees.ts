@@ -380,6 +380,7 @@ try {
 	await again.call("conversation.open", { id: h });
 	const cut = await again.until("cut off", () => again.conversations.get(h)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 	assert.equal(cut.details.reason, "was cut off when pi²’s engine stopped");
+	assert.equal((await again.until("recovery event", () => again.events.recovery)).recovery, null, "a clean stop is not an unexpected one: Activity has no notice");
 	assert.match(await again.bash(h, "echo after-restart"), /after-restart/);
 	step("a set-up running when the engine stops is stopped with it, and shown as cut off after a restart");
 
@@ -515,7 +516,11 @@ try {
 		const cut = await third.until("marked", () => third.conversations.get(k)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 		assert.equal(cut.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
 		await third.until("what was left running is stopped", () => !alive(leader) && !alive(started));
-		step("a set-up left running by an engine killed outright is stopped by the next engine, with what it started, and marked");
+		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.
+		const notice: Event[] = (await third.until("recovery event", () => third.events.recovery)).recovery?.setups ?? [];
+		const listed = await third.until("the conversation listed", () => third.events.library?.conversations.find((conversation: Event) => conversation.id === k));
+		assert.deepEqual(notice, [{ conversationId: k, rootConversationId: k, title: listed.title, command: `${LONG_SLEEP} & echo $! > '${childFile}'; echo $$ > '${leaderFile}'; wait`, outcome: "stopped", group: leader }]);
+		step("a set-up left running by an engine killed outright is stopped by the next engine, with what it started, and marked; Activity's notice names it");
 
 		// The same when the command's first process has ended and only something it started in the background is left: the
 		// next engine knows it by the run's marker in its environment. The first process ends once the engine is killed, as
@@ -546,6 +551,11 @@ try {
 		const strayed = await fourth.until("marked", () => fourth.conversations.get(l)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 		assert.equal(strayed.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
 		await fourth.until("what was left without its leader is stopped", () => !alive(stray));
+		assert.deepEqual(
+			(await fourth.until("recovery event", () => fourth.events.recovery)).recovery?.setups.map((left: Event) => [left.conversationId, left.outcome, left.group]),
+			[[l, "stopped", ended]],
+			"the notice names only the set-up this engine found",
+		);
 		step("what a set-up started in the background, left running after its first process ended and the engine was killed, is stopped by the next engine");
 
 		// A number that now belongs to another process, or members of a group whose leader is gone, are left alone.

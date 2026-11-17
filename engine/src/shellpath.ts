@@ -10,7 +10,7 @@
 // the Mac is at its busiest and a shell with a version manager in its profile can take a good while, so a shell that
 // misses the wait is not stopped (issue #86): the engine goes on with the usual folders and keeps listening, and takes
 // the shell's PATH when it comes. What is started before then has the usual folders; what is started after has the
-// person's own PATH.
+// person's own PATH. MCP servers started before then are started again with it (mcp.ts, `followPath`; issue #98).
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync } from "node:fs";

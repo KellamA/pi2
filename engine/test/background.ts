@@ -318,6 +318,14 @@ try {
 		assert.ok(Date.now() < deadline, "the flood arrived");
 		await sleep(100);
 	}
+	// The person reads what is kept, in the app: the last 128 KB, ending with the end. That does not count as the agent
+	// reading it, which the agent's read below shows by starting from the oldest output kept.
+	const kept = await client.call("background.output", { id: noisy.bg });
+	assert.ok(kept.output.length <= 128 * 1024 && kept.output.length > 100_000, `the person is shown at most the last 128 KB: ${kept.output.length}`);
+	assert.ok(kept.output.endsWith("\nthe-end\n"), kept.output.slice(-40));
+	assert.equal(kept.from, kept.total - kept.output.length);
+	assert.equal(kept.dropped, kept.from, "what was let go is counted from the first character printed");
+	assert.equal((await client.call("background.output", { id: noisy.bg, from: kept.total - 8 })).output, "the-end\n", "from a later point, only what follows it");
 	const firstRead = await client.background(a, { action: "read", id: noisy.bg });
 	assert.match(firstRead.text, /\[[\d,]+ characters it printed before this were not kept: only the last 128 KB is\.\]/, firstRead.text.slice(0, 300));
 	assert.match(firstRead.text, /\[[\d,]+ characters more: read again for them\.\]$/);
@@ -350,6 +358,48 @@ try {
 		await assert.rejects(client.call("background.stop", { id: "bg-0" }), /no longer running/);
 		assert.match(await client.told(a), new RegExp(`- ${bg}: .* is over: it was stopped by the person, at `), "the agent is told the person stopped it");
 		step("the person can stop a background command (Activity's Stop), and the conversation and the agent are told");
+	}
+
+	// ---- The person reads a command's output, in Activity or the conversation
+	{
+		const gate2 = join(scratch, "gate-person");
+		const shownCommand = `echo one; while [ ! -e '${gate2}' ]; do sleep 0.1; done; echo two; sleep 600`;
+		const { bg } = await client.start(a, shownCommand);
+		let shown = await client.call("background.output", { id: bg, wait: 10 });
+		for (const deadline = Date.now() + PATIENT_MS; !shown.output.includes("one\n"); ) {
+			assert.ok(Date.now() < deadline, `it printed its first line: ${JSON.stringify(shown)}`);
+			shown = await client.call("background.output", { id: bg, wait: 5 });
+		}
+		assert.deepEqual(
+			{ ...shown, startedAt: 0 },
+			{ id: bg, conversationId: a, rootConversationId: a, command: shownCommand, cwd: work, startedAt: 0, running: true, stopping: false, ended: null, kept: true, total: 4, from: 0, dropped: 0, output: "one\n" },
+		);
+		assert.equal((await client.call("background.output", { id: bg.slice(3) })).id, bg, "the id may be given as a number");
+		// Asked from where it got to, with a wait, the answer comes when there is more.
+		setTimeout(() => writeFileSync(gate2, ""), 700);
+		const asked = Date.now();
+		const more = await client.call("background.output", { id: bg, from: shown.total, wait: 30 });
+		assert.ok(Date.now() - asked < 20_000, "the wait ends when there is output");
+		assert.deepEqual([more.output, more.from, more.dropped, more.total], ["two\n", 4, 0, 8]);
+		const quiet = Date.now();
+		const nothing = await client.call("background.output", { id: bg, from: more.total, wait: 0.5 });
+		assert.ok(nothing.output === "" && nothing.running && Date.now() - quiet >= 400, "with nothing new, it waits as long as asked and says so");
+		// The person reading it changes nothing for the agent: what it has not read is still there for it.
+		const agentRead = await client.background(a, { action: "read", id: bg, wait: 10 });
+		assert.ok(agentRead.text.endsWith("two\n"), `the agent still gets what the person was shown: ${agentRead.text}`);
+		// A wait ends when the command does.
+		const waiting = client.call("background.output", { id: bg, from: more.total, wait: 30 });
+		await client.call("background.stop", { id: bg });
+		const over = await waiting;
+		assert.equal(over.running, false, "a wait ends when the command ends");
+		const after = await client.call("background.output", { id: bg });
+		assert.equal(after.output, "one\ntwo\n", "an ended command's output can still be read");
+		assert.equal(after.running, false);
+		assert.equal(after.ended.failed, false, "stopped is not failed");
+		assert.match(after.ended.how, /^was stopped by the person after \d+ seconds?$/, after.ended.how);
+		await assert.rejects(client.call("background.output", { id: "bg-9999" }), /no longer has this command's output/);
+		await assert.rejects(client.call("background.output", {}), /no longer has this command's output/);
+		step("the person can read a command's output from any point, waiting for more, without changing what the agent has read");
 	}
 
 	// ---- Approvals and command rules
@@ -471,6 +521,8 @@ try {
 		assert.equal(await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(bg))), `Background command ${bg} ended when pi²’s engine stopped: ${commandLine(cmd)}`);
 		assert.match(await client.told(z), new RegExp(`- ${bg}: .* is over: it ended when pi²’s engine stopped\\.`), "the agent is told at its next request");
 		assert.match((await client.background(z, { action: "read", id: bg })).text, /: ended when pi²’s engine stopped\.\nIts output was in the engine that stopped, and was not kept\.$/);
+		const lost = await client.call("background.output", { id: bg });
+		assert.deepEqual([lost.running, lost.kept, lost.output, lost.ended.how], [false, false, "", "ended when pi²’s engine stopped"], "the person is told its output was not kept");
 		const next = await client.start(z, "sleep 600");
 		assert.ok(Number(next.bg.slice(3)) > Number(bg.slice(3)), `ids are not used again after a restart: ${next.bg} after ${bg}`);
 		await client.background(z, { action: "stop", id: next.bg });

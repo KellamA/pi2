@@ -156,6 +156,7 @@ writeFileSync(runningMarker, String(Date.now()));
 const credentials = new KeychainCredentialStore(home);
 const providers = new Providers(home, credentials, () => deviceId());
 const mcp = new McpServers(home, credentials);
+mcp.log = log;
 const inbox = new Inbox();
 const computer = new ComputerHost();
 const browser = new BrowserHost();
@@ -1606,7 +1607,7 @@ const server = createServer((socket) => {
 });
 // Nothing an agent or an MCP server starts may run before the PATH is the person's own, or, if their shell is too slow
 // to wait for, has the usual folders. The shell is then still listened to, and its PATH taken when it comes.
-await pathReady;
+const stillListening = await pathReady;
 // The last wait of start-up: from here on a stop is the ordinary one. One asked for while starting is done now, in place
 // of listening, and before anything is marked ready; stop() ends the process, so nothing below runs.
 phase = "running";
@@ -1619,6 +1620,10 @@ server.listen(socketPath, () => {
 	void tickSchedules(); // and start whatever came due while the engine was not running
 	void mcp.start(); // connect to MCP servers without holding up the app
 });
+// MCP servers run as programs are started just above, so on a start where the login shell was too slow they get the
+// usual folders. When its PATH is taken they are started again with it, without cutting off a call (issue #98). One
+// not started yet by then gets it anyway, and if the PATH did not change nothing is started again.
+void stillListening?.done.then(() => mcp.followPath());
 
 // Conversations left unused for as long as the person chose are archived: a little after start-up, once what was
 // running has had time to show as running, and then a few times a day.
