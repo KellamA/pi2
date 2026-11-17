@@ -11,6 +11,10 @@
 // Rounds of calls that only look (reads, searches, web pages) and rounds of sub-chats still run side by side, which is
 // where running together saves real time. The tools' descriptions say both, so a model puts a call that needs another's
 // result after it, or in a later answer.
+//
+// An MCP tool that its server does not mark read-only counts as one that changes things (#190): src/mcp.ts marks each
+// such tool to run in order as it lists the server's tools, since their names are only known then. Two independent
+// calls to such tools then wait for each other, which costs less than a read that misses what the call before it did.
 
 import type { ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
@@ -20,7 +24,7 @@ export const IN_ORDER = ["bash", "write", "edit", "write_document", "codemode"] 
 
 /** What a model is told, after the description of each tool it most often writes a file with and uses one with. */
 export const ORDER_NOTE =
-	`Calls you make in one answer run one at a time, in the order you give them, when any of them is ${IN_ORDER.slice(0, -1).join(", ")} or ${IN_ORDER.at(-1)}, ` +
+	`Calls you make in one answer run one at a time, in the order you give them, when any of them is ${IN_ORDER.join(", ")} or an MCP tool not marked read-only, ` +
 	"so each sees what the calls before it did. Otherwise they start together, so a call that needs another's result (a file a sub-chat writes, say) belongs in a later answer.";
 
 /** The tools whose descriptions carry the note. */
