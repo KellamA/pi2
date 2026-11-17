@@ -27,13 +27,24 @@ An agent handed issues to finish on its own follows these steps too, with [docs/
 
 ## Changelog entries
 
-Add an entry under **Unreleased** in `CHANGELOG.md` when a change is worth knowing about in the next version:
+When a change is worth knowing about in the next version, add a file for its entry to `changelog.d`, named after its issue: `changelog.d/237.md`. Do not add it to `CHANGELOG.md`, whose Unreleased section holds no entries. With a file each, pull requests merging at the same time never add to the same lines. The file holds the heading the entry goes under, on its first line, then the entry as it will appear:
 
-- Put features, changed behaviour and fixes that affect someone using an installed copy under `### Added`, `### Changed` or `### Fixed`, reader-facing changes first. Say what they can do now or what used to go wrong, not which classes changed. Changes to an agent's tools, limits or instructions count too.
-- Put changes only someone building, testing, contributing to or releasing pi² needs to know under `### For contributors`, after the reader-facing entries. Build modes, CI checks and repository workflows belong there. Use `####` for any subheadings inside it, not `###`.
+```markdown
+### Fixed
+- When a sub-chat stopped on an error from the model's provider, the agent that handed it the work was told only that it “did not finish”. Now it is told the provider's message.
+```
+
+- Put features, changed behaviour and fixes that affect someone using an installed copy under `### Added`, `### Changed` or `### Fixed`. Say what they can do now or what used to go wrong, not which classes changed. Changes to an agent's tools, limits or instructions count too.
+- Put changes only someone building, testing, contributing to or releasing pi² needs to know under `### For contributors`. Build modes, CI checks and repository workflows belong there. The release puts that heading after the reader-facing ones.
+- Every line after the heading is a list item starting with `- `, or indented to continue the one above it: no blank lines and no other headings. One file may hold several items under its heading.
+- A change with entries under two headings has a file for each: `237.md` and `237-contributors.md`. Anything after the number, up to `.md`, is lower-case letters, digits and hyphens.
+- An entry that concerns two issues is one file, named after the issue its pull request fixes, or after either; mention the other in the text if a reader needs it. Do not write the same entry twice.
+- To change or withdraw an entry that is merged but not yet released, edit or delete its file in a pull request of its own, or in the next one about that issue. Once released, an entry is in `CHANGELOG.md`'s section for its version, and stays as it is there.
 - A refactor, test or typo fix with no behaviour or contributor workflow worth explaining needs no entry. Do not list every commit.
 
-Keep Unreleased at the top. When the owner makes a release, its entries become the new version's section and a fresh Unreleased section stays above it. Do not move or rewrite entries in an already-published version to tidy its release notes. The contributor heading and its contents, up to the next `###` heading or version, are omitted from both GitHub's notes and the update feed; they stay in the changelog. `node --test app/test-release-notes.mjs` checks the extraction without packaging or releasing anything. See [docs/releasing.md](docs/releasing.md).
+`node app/changelog.mjs check` says whether every file in `changelog.d` is well formed; CI runs the same check with the release-notes tests (`node --test app/test-release-notes.mjs`), so an entry that is not fails its own pull request. `node app/changelog.mjs notes 0.7.9` shows the release notes the entries would make for version 0.7.9, as GitHub and the update window would show them, and `node app/changelog.mjs release 0.7.9 --dry-run` the whole section, For contributors included. Neither changes anything.
+
+When the owner makes a release, `node app/changelog.mjs release <version>` gathers the entries into the new version's section of `CHANGELOG.md`, below Unreleased: by heading (Added, Changed, Fixed, then For contributors), and under each heading by issue number. It removes their files. The order within a heading can be changed by hand before the release is merged. Do not move or rewrite entries in an already-published version to tidy its release notes. The contributor heading and its contents, up to the next `###` heading or version, are omitted from both GitHub's notes and the update feed; they stay in the changelog. See [docs/releasing.md](docs/releasing.md).
 
 ## Testing safely
 

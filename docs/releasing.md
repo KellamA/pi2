@@ -85,7 +85,13 @@ In the repository's Settings › Environments, make an environment called `relea
 
 ## Making a release
 
-1. Set the version in `app/VERSION`, and move the Unreleased entries in `CHANGELOG.md` into a `## <version>` section, leaving a fresh `## Unreleased` above it. That version's reader-facing entries become the release notes and what the update window shows; `### For contributors` and its contents are left out. Keep contributor subheadings at `####`: the next `###` starts reader-facing notes again. Do not edit already-published sections to tidy their notes.
+1. Set the version in `app/VERSION`, then gather the entries waiting in `changelog.d` into its section of `CHANGELOG.md`:
+
+   ```bash
+   node app/changelog.mjs release 0.7.9
+   ```
+
+   This adds a `## 0.7.9` section below `## Unreleased`, with the entries under `### Added`, `### Changed`, `### Fixed` and `### For contributors`, in that order, and under each heading by issue number, and removes the entry files. It refuses, and changes nothing, when `app/VERSION` says another version, the section exists already, an entry is not well formed, an entry was written into Unreleased instead, or no entry is reader-facing. `--dry-run` prints the section without writing it. Reorder lines within a heading by hand if you like, then commit `CHANGELOG.md`, `app/VERSION` and the removed files. That version's reader-facing entries become the release notes and what the update window shows; `### For contributors` and its contents are left out. Do not edit already-published sections to tidy their notes.
 2. Merge to `main`.
 3. Tag the commit on `main` and push the tag:
 
@@ -103,11 +109,12 @@ If no macOS runner takes the job in time, GitHub cancels it before it starts, an
 ## Previewing the notes without releasing
 
 ```bash
+node app/changelog.mjs notes 0.7.9
 node app/release-notes.mjs 0.7.6
 node --test app/test-release-notes.mjs
 ```
 
-`app/release.sh` uses this same extractor to write `notes.md`, then takes the feed's description from that file, so neither destination includes For contributors. Relative `docs/` links become links to that version's tag. A missing or duplicate version section, or one with no reader-facing notes, fails before packaging. The tests run in ordinary CI, cover the heading at the end and in the middle, and keep the published 0.7.5 and 0.7.6 notes byte-for-byte unchanged. Their old contributor-only entries have not been moved retroactively.
+The first shows the notes the entries in `changelog.d` would make for the next version, here 0.7.9, without changing anything; the second those of a version already in `CHANGELOG.md`. Both use the extractor `app/release.sh` uses. `release.sh` uses it to write `notes.md`, then takes the feed's description from that file, so neither destination includes For contributors. Relative `docs/` links become links to that version's tag. A missing or duplicate version section, or one with no reader-facing notes, fails before packaging. The tests run in ordinary CI, cover the heading at the end and in the middle, and keep the published 0.7.5 and 0.7.6 notes byte-for-byte unchanged. Their old contributor-only entries have not been moved retroactively. The same tests check that every file in `changelog.d` is well formed, and that gathering 0.7.8's entries from files of their own makes its published section byte for byte.
 
 ## Checking the packaged build without releasing
 

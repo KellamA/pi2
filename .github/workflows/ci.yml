@@ -48,6 +48,8 @@ jobs:
               "") ;;
               # Read by no macOS job. A file one of them starts reading comes off this list.
               docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
+              # Changelog entries: Transcript page (tests) checks them on Linux.
+              changelog.d/*) ;;
               # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
               scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook | scripts/rerun-if-no-runner) ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
