@@ -27,7 +27,6 @@ import {
 	UsageDoc,
 } from "@earendil-works/pi-durable";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
@@ -36,6 +35,7 @@ import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BACKGROUND_ENTRY, backgroundMarker, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
+import { codemodeExtension } from "./codemode.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
@@ -234,7 +234,7 @@ host.features = FEATURES.map((feature) => feature(host, engine));
 const CodingTools = createCodingTools({ images: await createNodePhotonImages() });
 const pi2 = pi2Extension(host);
 const registry = createRegistry();
-const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
+const codemode = codemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
 let mcpTools = mcp.extension();
 registry.install(CodingTools);
 registry.install(pi2);
