@@ -42,8 +42,12 @@ const GRACE_MS = 3_000;
 const SETTLE_MS = 1_000;
 /** On a clean stop of the engine, how long commands get between SIGTERM and SIGKILL. The app waits five seconds for the engine. */
 const SHUTDOWN_GRACE_MS = 1_500;
-/** The longest a read waits for new output. Stopping the run ends the wait sooner. */
-export const MAX_WAIT_SECONDS = 600;
+/**
+ * The longest a read waits for new output. Stopping the run ends the wait sooner. Under the five minutes the prompt cache
+ * lasts, so that the request after a wait still reads the conversation from it instead of writing all of it again; an
+ * agent that needs longer asks again, which costs a cache read (#159).
+ */
+export const MAX_WAIT_SECONDS = 240;
 /**
  * The longest a request from the app for a command's output waits for more. The app asks again when it returns.
  * `PI2_OUTPUT_WAIT_SECONDS` sets another, for a test that must tell a wait ended by output from one that ran out.
@@ -658,7 +662,7 @@ export const background: Feature = (_host, running) => {
 		description:
 			"Work with the commands you started in the background in this conversation, with bash and `background: true`. Actions:\n" +
 			"- list: each one's id, its command, whether it is running or how it ended, and how much of its output you have not read.\n" +
-			`- read: what \`id\` has printed since you last read it, standard output and errors together, and whether it is still running. With \`wait\`, when there is nothing new it waits up to that many seconds (${MAX_WAIT_SECONDS} at most) for more output or for the command to end. With \`tail\`, it gives the last \`tail\` lines instead, read or not, and what counts as read stays as it was.\n` +
+			`- read: what \`id\` has printed since you last read it, standard output and errors together, and whether it is still running. With \`wait\`, when there is nothing new it waits up to that many seconds (${MAX_WAIT_SECONDS} at most) for more output or for the command to end; a longer pause costs more than reading again. With \`tail\`, it gives the last \`tail\` lines instead, read or not, and what counts as read stays as it was.\n` +
 			"- stop: stop `id` and everything it started, and give what it printed since you last read it.\n" +
 			`Only the last ${KEEP_CHARS / 1024} KB a command printed is kept, and one read gives at most ${READ_CHARS.toLocaleString("en-US")} characters or ${READ_LINES.toLocaleString("en-US")} lines: read again for the rest.`,
 		parameters: obj({
@@ -728,6 +732,8 @@ export const background: Feature = (_host, running) => {
 			}
 			const part = unread(command);
 			const lines = [head()];
+			// Said whether or not it came to waiting, so that the next read asks for no more than it gets.
+			if ((args.wait ?? 0) > MAX_WAIT_SECONDS) lines.push(`[The wait was lowered to ${MAX_WAIT_SECONDS} seconds, the most a read waits: a longer pause costs more than reading again.]`);
 			if (command.child === undefined) lines.push("Its output was in the engine that stopped, and was not kept.");
 			else {
 				if (part.dropped > 0) lines.push(`[${count(part.dropped)} it printed before this were not kept: only the last ${KEEP_CHARS / 1024} KB is.]`);

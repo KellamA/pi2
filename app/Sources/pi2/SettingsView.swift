@@ -13,7 +13,7 @@ enum SettingsSection: String {
     // Providers
     case subscriptions, endpoints, keys
     // Tools
-    case servers
+    case servers, commits
     // Storage
     case folder, backup
 }

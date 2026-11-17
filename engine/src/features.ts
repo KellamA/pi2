@@ -11,6 +11,7 @@ import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
 import { background } from "./background.ts";
+import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
@@ -81,4 +82,7 @@ export type FeatureParts = {
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
 // `order` wraps tools that `commands` and `reads` wrap too, and adds to what those made of them, so it comes after them.
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, background, order];
+// `coauthor`'s section comes and goes only when the person flips its switch, so it is declared after the sections that
+// stay and before `background`'s, which comes and goes far more often: a section's arrival re-sends every section when
+// it lands before one already shown (#186).
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, coauthor, background, order];

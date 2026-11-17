@@ -1321,6 +1321,74 @@ try {
 	}
 
 	{
+		// pi² as a co-author of agents' commits (engine/src/coauthor.ts, #201)
+		const assistants = (id: number) => client.conversations.get(id)!.items.filter((i) => i.kind === "assistant" && i.stop === "stop").length;
+		const say = async (id: number, text: string): Promise<string> => {
+			const before = assistants(id);
+			await client.call("submit", { id, text });
+			await client.until(`answer to ${text.slice(0, 30)}`, () => !client.conversations.get(id)!.state.busy && assistants(id) > before);
+			return client.conversations.get(id)!.items.findLast((i) => i.kind === "assistant")!.text;
+		};
+		const open = async (agentId: string) => {
+			const { id } = await client.call("conversation.create", { agentId });
+			await client.call("conversation.open", { id });
+			return id as number;
+		};
+		const shown = async (id: number) => /<<commit_coauthor>>\n(.*?)\nTOOLS:/s.exec(await say(id, "/system commit_coauthor"))![1]!;
+		const DEFAULT = "Co-authored-by: pi² <noreply@pi2.invalid>";
+
+		assert.deepEqual(client.events.coauthor, { event: "coauthor", enabled: false, line: DEFAULT, defaultLine: DEFAULT }, "off by default, with the default line, sent on connecting");
+		const forge = await open("forge");
+		assert.equal(await shown(forge), "(none)", "off: no section");
+
+		const refused: [unknown, RegExp][] = [
+			["Co-authored-by: pi²", /name, then an address in angle brackets/],
+			["Co-authored-by: pi² <noreply@pi2.invalid>\nSigned-off-by: someone <a@b.example>", /single line/],
+			["Co-authored-by: pi²\t<noreply@pi2.invalid>", /single line/],
+			["Signed-off-by: pi² <noreply@pi2.invalid>", /Start the line with “Co-authored-by:”/],
+			["pi² <noreply@pi2.invalid>", /Start the line/],
+			["Co-authored-by: <noreply@pi2.invalid>", /a name, then an address/],
+			["Co-authored-by: pi² <not an address>", /angle brackets/],
+			["Co-authored-by: pi² <noreply>", /name@domain; noreply is not/],
+			["Co-authored-by: pi² <noreply@pi2.invalid> and more", /angle brackets/],
+			[`Co-authored-by: ${"x".repeat(200)} <noreply@pi2.invalid>`, /200 characters at most/],
+			["   ", /Write the line/],
+			[42, /Write the line/],
+		];
+		for (const [line, message] of refused) await assert.rejects(client.call("coauthor.set", { enabled: true, line }), message, JSON.stringify(line));
+		await assert.rejects(client.call("coauthor.set", { enabled: "yes" }), /true or false/);
+		assert.equal(client.events.coauthor.enabled, false, "a refused change changes nothing, the switch included");
+
+		const set = await client.call("coauthor.set", { enabled: true, line: "  co-authored-by:   Robot Helper   <robot@example.invalid>  " });
+		assert.equal(set.line, "Co-authored-by: Robot Helper <robot@example.invalid>", "the line is tidied");
+		await client.until("co-author on", () => client.events.coauthor?.enabled === true && client.events.coauthor.line === set.line);
+		let section = await shown(forge);
+		assert.ok(section.includes("\nCo-authored-by: Robot Helper <robot@example.invalid>\n"), `on: the configured line, on a line of its own, from the conversation's next message: ${section}`);
+		assert.ok(/every git commit you make/.test(section) && /do not add it to commits you did not make/.test(section) && /do not amend or rewrite earlier commits/.test(section) && /once/.test(section), "with what to add it to, and what not");
+		const atlas = await open("atlas");
+		assert.equal(await shown(atlas), "(none)", "a conversation that cannot run commands cannot commit, so it is not told");
+
+		await client.call("submit", { id: atlas, text: "/delegate Forge: /system commit_coauthor" });
+		const delegated = await client.until("co-author delegation finished", () => {
+			const v = client.conversations.get(atlas);
+			return v !== undefined && !v.state.busy && v.items.some((i) => i.kind === "tool" && i.name === "delegate") ? v.items.findLast((i) => i.kind === "tool")! : undefined;
+		});
+		const subChat = delegated.details?.conversationId as number;
+		assert.equal(typeof subChat, "number", JSON.stringify(delegated));
+		await client.call("conversation.open", { id: subChat });
+		const subAnswer = await client.until("sub-chat's answer", () => client.conversations.get(subChat)?.items.findLast((i) => i.kind === "assistant" && i.stop === "stop"));
+		assert.ok(subAnswer.text.includes("\nCo-authored-by: Robot Helper <robot@example.invalid>\n"), `a sub-chat that can run commands is told too: ${subAnswer.text}`);
+
+		await client.call("coauthor.set", { enabled: false });
+		await client.until("co-author off", () => client.events.coauthor?.enabled === false);
+		assert.equal(client.events.coauthor.line, set.line, "turning it off keeps the line");
+		assert.equal(await shown(forge), "(none)", "and the section goes at the next message");
+		await assert.rejects(client.call("coauthor.set", { line: "Co-authored-by: nobody" }), /angle brackets/, "a malformed line is refused with the switch off too");
+		await client.call("coauthor.set", { line: DEFAULT });
+		step("co-author: off by default, the line refused unless a well-formed trailer, the section only when on, in conversations and sub-chats that can run commands");
+	}
+
+	{
 		// look (engine/src/look.ts)
 		const { symlinkSync } = await import("node:fs");
 		const tree = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-"))));
@@ -2371,7 +2439,7 @@ try {
 			let text = result.text;
 			const bg = result.details?.background?.id;
 			// On a busy machine the script may not have printed by the time the call returns; then a read waits for it.
-			if (bg !== undefined && !/script/.test(text)) text += (await together(["background", { action: "read", id: bg, wait: 600 }]))[0]!.text;
+			if (bg !== undefined && !/script/.test(text)) text += (await together(["background", { action: "read", id: bg, wait: 240 }]))[0]!.text;
 			return text;
 		};
 		const script = `${tmp}/run.sh`;
@@ -2386,7 +2454,7 @@ try {
 		const gate = join(tmp, "gate");
 		[started] = await together(["bash", { command: `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo through`, background: true }]);
 		const bg = started!.details.background.id;
-		await client.call("submit", { id: o, text: `/tools ${JSON.stringify([{ name: "background", arguments: { action: "read", id: bg, wait: 600 } }, { name: "read", arguments: { path: `${tmp}/note.txt` } }])}` });
+		await client.call("submit", { id: o, text: `/tools ${JSON.stringify([{ name: "background", arguments: { action: "read", id: bg, wait: 240 } }, { name: "read", arguments: { path: `${tmp}/note.txt` } }])}` });
 		const first = await client.until("one of the two calls done", () => {
 			const slots = client.conversations.get(o)!.state.tools;
 			const [waiting, reading] = [slots.find((slot) => slot.name === "background"), slots.find((slot) => slot.name === "read")];

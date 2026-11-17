@@ -110,6 +110,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Scripts**: let a model chain many tool calls in one step.
 - **Archive**: put a conversation away without losing it. It leaves the sidebar, stays readable and searchable, and can be restored; pi² can archive what has gone unused for a while on its own. [How the Archive works](docs/archive.md).
 - **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).
+- **pi² as a co-author**: a switch in Settings, off by default, asks agents to end their commit messages with a `Co-authored-by` line naming pi². It is an instruction to the agent; pi² never changes your git settings or a commit's author. [How it works](docs/commits.md).
 - **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.
 - **Command palette** (⌘K) and **Quick Ask** from anywhere (⌃⌥Space).
 - **Line breaks in a message**: Return sends, and Shift-Return (or Option-Return) starts a new line, in the message field, Quick Ask, the menu bar panel and an answer to an agent's question.
@@ -191,6 +192,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
 - [Worktrees and branches](docs/worktrees.md): working on one repository in parallel, and what the branch colours mean.
+- [pi² as a co-author](docs/commits.md): the setting that asks agents to name pi² in their commits, and what it does not do.
 - [Development](docs/development.md): building, testing, and the layout of the code.
 - [Releasing](docs/releasing.md): signed downloads, updates, and what to set up before the first release.
 - [Changelog](CHANGELOG.md)

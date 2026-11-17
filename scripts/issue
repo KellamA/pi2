@@ -3,9 +3,10 @@
 # record of what was done and a backlog of what might come next.
 #
 # Every command that changes an issue's state prints one line starting with
-# "[pi2-issue]". The hooks in scripts/issue-hook read those lines back from the
-# session transcript to know which issue a session is working on, so keep the
-# wording stable.
+# "[pi2-issue]", at the start of a line. The hooks in scripts/issue-hook read
+# those lines back from the output of the commands in the session transcript
+# that ran this script, to know which issue a session is working on, so keep
+# the wording stable.
 #
 # See CLAUDE.md for when agents use each command.
 
