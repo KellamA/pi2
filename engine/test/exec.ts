@@ -14,7 +14,7 @@
 
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,15 +94,60 @@ try {
 	assert.match(bash.description, /stopped after 30 minutes unless you pass `timeout`; for a command you know takes longer, pass a larger one/);
 	assert.match(bash.description, /Standard input is closed/);
 	assert.doesNotMatch(bash.description, /Optionally provide a timeout/);
+	// That a long output is kept whole, so it need not cut it short itself (issue #161).
+	assert.match(bash.description, /A long output is shortened to its last 2000 lines or 50KB, whichever is less, and then the whole of it is kept in a file whose path the result gives/);
+	assert.match(bash.description, /do not cut a command's output short yourself with `head`, `tail` or `grep`/);
+	assert.doesNotMatch(bash.description, /saved to a temp file/);
 	assert.match(JSON.stringify(bash.parameters), /Timeout in seconds\. Default 1800 \(30 minutes\); pass a larger one/);
 	// And about leaving one running: how to, that the limit is not for it, and where its output is read.
 	assert.match(bash.description, /With `background: true` the command is started and left running/);
 	assert.match(bash.description, /A background command has no time limit unless you pass `timeout`/);
 	assert.match(bash.description, /the background tool reads its later output/);
 	assert.match(JSON.stringify(bash.parameters), /"background":\{[^}]*"type":"boolean"/);
+
+	// Where a long output is kept, and for how long (engine/src/output.ts).
+	const { OutputStore, Recorder, KEEP_PER_CONVERSATION, KEEP_DAYS } = await import("../src/output.ts");
+	const { keptMessage } = await import("../src/commands.ts");
+	const store = new OutputStore(join(folder, "output"));
+	const long = Array.from({ length: 3000 }, (_, i) => `line ${i + 1}\n`);
+	const recorder = store.record(7, "toolu_01/../x");
+	for (const line of long) recorder.add(line);
+	const kept = recorder.end(true);
+	assert.ok(kept.kept && kept.lines === 3000 && !kept.capped, JSON.stringify(kept));
+	assert.equal(kept.path, join(folder, "output", "7", "toolu_01____x.log"), "the call's id cannot lead out of the conversation's folder");
+	assert.equal(readFileSync(kept.path, "utf8"), long.join(""));
+	assert.match(keptMessage(kept, long.slice(-2000).join(""))!, /^The output is 3,000 lines long; only the last 2,000 are shown\. All of it is in `[^`]+`, for 7 days/);
+	// Not shortened: no file, even one started as the output neared the window.
+	const fits = store.record(7, "fits");
+	for (const line of long.slice(0, 2000)) fits.add(line);
+	assert.deepEqual(fits.end(false), { kept: false });
+	assert.ok(!existsSync(join(folder, "output", "7", "fits.log")));
+	// A file holds the beginning of a very long output only, and says so.
+	const capped = new Recorder(join(folder, "output", "7", "capped.log"), 100);
+	for (const line of long) capped.add(line);
+	const cut = capped.end(true);
+	assert.ok(cut.kept && cut.capped && cut.lines === 3000, JSON.stringify(cut));
+	assert.equal(readFileSync(cut.path, "utf8"), long.join("").slice(0, 100));
+	assert.match(keptMessage(cut, "line 3000\n")!, /Its first 64\.0 MB are in `[^`]+` \(the rest was not kept\)/);
+	// Kept: the newest KEEP_PER_CONVERSATION, none older than KEEP_DAYS; a deleted conversation's folder goes.
+	const many = join(folder, "output", "8");
+	mkdirSync(many, { recursive: true });
+	const now = Date.now();
+	for (let i = 0; i < KEEP_PER_CONVERSATION + 5; i++) {
+		writeFileSync(join(many, `${i}.log`), "x");
+		utimesSync(join(many, `${i}.log`), new Date(now - i * 60_000), new Date(now - i * 60_000));
+	}
+	writeFileSync(join(many, "old.log"), "x");
+	utimesSync(join(many, "old.log"), new Date(now - (KEEP_DAYS + 1) * 86_400_000), new Date(now - (KEEP_DAYS + 1) * 86_400_000));
+	const untouched = join(folder, "output", "not-a-conversation");
+	mkdirSync(untouched);
+	store.sweep((id) => id === 7, now);
+	assert.ok(!existsSync(join(folder, "output", "7")), "a deleted conversation's files are removed");
+	assert.deepEqual(readdirSync(many).sort(), Array.from({ length: KEEP_PER_CONVERSATION }, (_, i) => `${i}.log`).sort(), "the newest are kept, the oldest and the week-old one removed");
+	assert.ok(existsSync(untouched), "only folders named for a conversation are touched");
 } finally {
 	rmSync(folder, { recursive: true, force: true });
 }
 
-console.log("exec: ok (output kept when the engine is busy as a command exits; standard input closed; bash tells of its time limit and of running in the background)");
+console.log("exec: ok (output kept when the engine is busy as a command exits; standard input closed; bash tells of its time limit, of running in the background, and of where a long output is kept; kept outputs are bounded)");
 process.exit(0); // the background sleep above still holds a pipe
