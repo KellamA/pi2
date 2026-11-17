@@ -94,6 +94,10 @@ export type Meta = {
 	 * that the call can end while it works; this lets the call, run again after a crash, find it rather than make another.
 	 */
 	madeBy?: string;
+	/** A chat: a conversation of pi²'s built-in chat assistant (chat.ts), with no `agentId`. */
+	chat?: true;
+	/** The person pinned it to the top of its list (`conversation.pin`). */
+	pinned?: true;
 };
 
 /** Index of conversations: titles, order, tool access. */

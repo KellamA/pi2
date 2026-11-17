@@ -1067,7 +1067,8 @@ struct AgentIntro: View {
         }
         if let files = profile?.files, !files.isEmpty { facts.append(("books.vertical", "\(files.count) reference file\(files.count == 1 ? "" : "s") at hand")) }
         if let computer = profile?.computer, computer.enabled {
-            let apps = computer.apps.map(ComputerController.name(of:))
+            var apps = computer.apps.map(ComputerController.name(of:))
+            if computer.testCopies == true { apps.append("test copies of pi²") }
             facts.append(("macwindow.on.rectangle", apps.isEmpty ? "Computer use is on, with no apps chosen yet" : "Can use \(ListFormatter.localizedString(byJoining: apps)) on this Mac"))
         }
         if profile?.browser?.enabled == true { facts.append(("globe", "Can browse the web in pi²’s own browser")) }

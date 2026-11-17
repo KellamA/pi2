@@ -76,7 +76,7 @@ In your own clone or worktree, build a development build. The script builds noth
 
 For a problem that only happens with optimisation, use `./app/build.sh optimised` instead. It uses Swift's release configuration but keeps the development build's isolation and switches, including `PI2_SHOW` and the window placement below. Do not use a release build just to turn optimisation on.
 
-Choose a suffix of your own, in lower-case letters, digits and hyphens, such as your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. Then:
+Choose a suffix of your own, in lower-case letters, digits and hyphens, such as `test-` and your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. Then:
 
 ```bash
 scripts/test-copy start test-7 --show inbox
@@ -91,6 +91,8 @@ It launches the copy with `open -n -g`, so it does not take the focus, and with 
 A new data folder shows the first-run "Welcome to pi²" sheet, which would sit over every page a picture shows. So before launching, `start` marks it done in the copy's own data folder, as finishing it does: it writes `"onboarded": true` into the copy's `settings.json`, which its engine reads as it starts. Nothing in the app changes for this, so a release build shows the welcome as before. To work on the welcome itself, pass `--welcome`, and the copy shows it as a new installation does.
 
 It waits until the copy's own engine, the app's child, is listening in the copy's data folder, then prints the data folder and the app's and the engine's process ids, and keeps them in `app/build/test-copies/<suffix>/state` with each one's start time and executable. If it fails part way, it stops and removes what it made.
+
+An agent whose computer use has **Test copies of pi²** on may click, type and choose menu commands in a copy whose suffix begins with `test`, by its bundle id (`dev.pi2.app.test-7`), with the approvals its settings ask for: pi² checks that the app running under that id is a copy this script made of a development build ([docs/computer-use.md](docs/computer-use.md#clicking-in-test-copies)). An agent without it, and a person checking from the shell, can only look: computer use keeps every other copy of pi² look-only, and working a copy from the shell would need Accessibility, which must not be asked for. Everything below that checks a copy without clicking is for them.
 
 Two things an agent cannot click to see, it can still check. `--show palette:<query>` opens the command palette with that query typed, so a capture shows the entries that match, such as `--show palette:duplicate`. `--menu <label>` sets `PI2_MENU`: the copy writes the items of the context menu on the element with that label (a conversation's title or number, an agent's name or id), in order and with the disabled ones marked, to `context-menu.txt` in its data folder, and `start` prints the file once it is there. A context menu cannot be captured, since macOS draws it only while the app is in front, and a copy must not take the focus. A row made after launch, such as a conversation made through the copy's engine socket, writes the file again when it comes on screen; read it then. [docs/development.md](docs/development.md) says how both work.
 

@@ -31,13 +31,13 @@ If the agent carries on an archived sub-chat (`delegate` with its number), the s
 
 ## Archiving on its own
 
-At the bottom of the Archive you can have pi² archive conversations nothing has happened in for a week, a month, three months or a year. A sub-chat used more recently than its conversation counts. A conversation that is working, waiting for you, or has a command running in the background, is left where it is. The check runs shortly after pi² starts, a few times a day, and at once when you change the setting.
+At the bottom of the Archive you can have pi² archive conversations nothing has happened in for a week, a month, three months or a year. A sub-chat used more recently than its conversation counts. A conversation that is working, waiting for you, or has a command running in the background, is left where it is, and so is one you pinned (`conversation.pin`; chat mode's sidebar pins chats, [chat.md](chat.md)). The check runs shortly after pi² starts, a few times a day, and at once when you change the setting.
 
 This is off until you choose a length of time.
 
 ## Deleting is different
 
-Delete removes a conversation from pi² for good: it is not in the sidebar, the Archive or search, and it cannot be restored. Commands its agents left running in the background are stopped. A conversation can be deleted from the sidebar or from the Archive.
+Delete removes a conversation from pi² for good: it is not in the sidebar, the Archive or search, and it cannot be restored. Commands its agents left running in the background are stopped, and the documents a chat wrote are removed with it. A conversation can be deleted from the sidebar or from the Archive.
 
 Deleting does not erase the conversation's text from pi²'s data file. pi durable, the library that stores conversations, has no way to remove one, so pi² marks it as deleted and stops showing it. A backup made before the deletion still contains it as it was.
 
