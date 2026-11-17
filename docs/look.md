@@ -28,7 +28,7 @@ Offered when the conversation's agent has the **browser** switched on: the same 
 
 `web_fetch { url, offset? }` fetches a public page and answers with its title, final address and readable text. For HTML, scripts, styles, navigation, footers and markup are dropped and the text kept, with headings, lists and tables laid out, and links shown as the text followed by the address in brackets. JSON and plain text come back as they are. PDFs, pictures and other downloads are refused with a message. At most 2 MB is read from the network, about 20,000 characters are returned at a time (`offset` reads on), it gives up after 20 seconds, and it follows at most 5 redirects.
 
-`web_search { query }` answers with up to ten results (title, address, snippet). It fetches DuckDuckGo's script-free results page, the one the browser tool's `search` uses, and picks the results out of it. This is best effort: such a page can change or answer with a check that it is a person asking. When no results can be read, the tool says so and suggests the browser's own `search`.
+`web_search { query }` answers with up to ten results (title, address, snippet). It fetches DuckDuckGo's script-free results page, the one the browser tool's `search` uses, and picks the results out of it. This is best effort: such a page can change or answer with a check that it is a person asking. An explicit empty result suggests fewer words, removing quotes, or `gh search code` for source code; quoted code fragments can find nothing even when the same words without quotes find results. A check or an unreadable results page is reported separately and suggests the browser's own `search`. Queries are sent unchanged, with no automatic retry.
 
 ### Address rules
 
