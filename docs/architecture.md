@@ -52,6 +52,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
+| `src/limitwait.ts` | A run refused for a provider's rate limit, or because it is overloaded: how long it waits before it asks again by itself, and what is shown and logged meanwhile. See [limits.md](limits.md#when-a-limit-is-reached) |
 | `src/schedules.ts` | Schedule rules and next-run times |
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
@@ -144,7 +145,7 @@ A development build uses `~/Library/Application Support/pi2-dev` and the Keychai
 
 A sign-in credential can be several kilobytes, more than one Keychain command can carry, so long ones are split across several items with a checksum. A damaged item reads as "signed out" rather than as an error.
 
-Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 2 minutes; the end-to-end test uses 3; a call's `timeout` may still go up to 10 minutes, or this, if it is longer), `PI2_OUTPUT_WAIT_SECONDS` (the longest the app's request for a background command's output waits for more, in place of 30 seconds; the background commands' test makes it longer than its own patience, so a wait that ends can only have ended for output or the command's end).
+Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 2 minutes; the end-to-end test uses 3; a call's `timeout` may still go up to 10 minutes, or this, if it is longer), `PI2_OUTPUT_WAIT_SECONDS` (the longest the app's request for a background command's output waits for more, in place of 30 seconds; the background commands' test makes it longer than its own patience, so a wait that ends can only have ended for output or the command's end), `PI2_LIMIT_BACKOFF_MS` (the first wait for a provider's limit when it names no time, in place of 15 seconds; later waits double it, up to 40 times it) and `PI2_LIMIT_WAIT_MAX_MS` (the longest a run waits by itself for a limit when no time is named, in place of 6 hours), both for `engine/test/limitwait.ts` ([limits.md](limits.md#when-a-limit-is-reached)).
 
 ## The logs
 
@@ -168,7 +169,7 @@ What reads the log goes by its wording, not by the start of a line: the app's "e
 
 ## Known limits
 
-- pi durable is marked experimental. The engine pins version 1.5.2 exactly.
+- pi durable is marked experimental. The engine pins version 1.5.2 exactly, and patches a few of its files as it is installed (`engine/scripts/patch-dependencies.ts`), among them its retry of a failed model request, so that a provider's rate limit is waited for ([limits.md](limits.md#when-a-limit-is-reached)).
 - Approvals wait inside the running engine and are asked again after a restart. pi durable ends a waiting call after five crashes in a row.
 - Whether a subscription may be used from a third-party app is up to each provider's terms.
 - A background command's output is kept in memory only, its last 128 KB, and is gone when the engine stops. See [background.md](background.md).

@@ -4,6 +4,12 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Changed
+- **A run that meets a provider's rate limit waits and carries on.** When a provider refuses a request for its rate limit or a subscription's usage limit (HTTP 429), or because it is overloaded (529), the run no longer ends after three quick retries. It waits as long as the provider says, or backs off with a little randomness so that sub-chats refused together do not all ask again at once, and then carries on by itself: for up to six hours when no time is named, or until the time named, within eight days. The conversation says who refused and until when, Activity shows "rate limit · until…" for the run, Stop ends the wait like any run, and the wait carries on after the engine restarts. Errors that waiting cannot fix, such as a bad key, an unknown model or used-up billing credit, still end the run at once. Failed attempts in a row now show as one row in the conversation that says how many there were. See [docs/limits.md](docs/limits.md#when-a-limit-is-reached).
+
+### For contributors
+- `engine/scripts/patch-dependencies.ts` patches pi-durable's retry of a failed model request so the engine can choose the wait (`retry.host` in the harness settings). `engine/test/limitwait.ts` checks waits against a local stand-in provider, using `PI2_LIMIT_BACKOFF_MS` and `PI2_LIMIT_WAIT_MAX_MS` to keep them short.
+
 ## 0.7.7
 
 ### Added

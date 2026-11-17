@@ -361,3 +361,23 @@ test("an answer folded onto one line drops block marks and keeps the words", () 
 	assert.equal(T.folded("Run:\n```sh\nnpm test\n```\n---\n| a | b |\n| --- | :-: |\n| 1 | 2 |"), "Run: npm test a, b 1, 2");
 	assert.equal(T.folded(""), "");
 });
+
+test("failed attempts in a row show as one row, the last, with how many there were", () => {
+	const failed = (id, error = "429 rate_limit_error") => ({ id, kind: "assistant", stop: "error", text: "", error });
+	const items = [
+		{ id: 1, kind: "user", text: "go" },
+		failed(2),
+		failed(3, "429 rate_limit_error (req_b)"),
+		failed(4),
+		{ id: 5, kind: "assistant", stop: "stop", text: "Done." },
+		{ id: 6, kind: "user", text: "again" },
+		failed(7),
+		{ id: 8, kind: "assistant", stop: "error", text: "Half an answer", error: "terminated" },
+		failed(9),
+		{ id: 10, kind: "assistant", stop: "error", text: "", error: "x", toolCalls: [{ callId: "c" }] },
+	];
+	const { shown, hidden } = T.failedRuns(items);
+	assert.deepEqual([...hidden], [2, 3]);
+	assert.deepEqual([...shown], [[4, 3], [7, 1], [9, 1]]);
+	assert.deepEqual(T.failedRuns([]), { shown: new Map(), hidden: new Set() });
+});

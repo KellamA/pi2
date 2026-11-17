@@ -249,6 +249,9 @@ private struct RunRow: View {
             Spacer()
             if run.status == "waiting" {
                 Tag("waiting for you", .warn)
+            } else if let wait = run.limit {
+                Tag(wait.tag, .warn)
+                    .help(wait.sentence)
             } else {
                 Tag("running", .acc)
                 Spinner()

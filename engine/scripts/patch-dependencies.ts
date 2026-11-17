@@ -40,6 +40,57 @@ const PATCHES: Patch[] = [
             }, EXIT_STDIO_GRACE_MS);
             postExitTimer = timer;`,
 	},
+	{
+		// A model request that a provider refuses for its rate limit (HTTP 429) or because it is overloaded (529) is retried
+		// three times, 2, 4 and 8 seconds apart, whatever the provider said about when to ask again, and the run then ends:
+		// work handed to ten sub-chats at once stopped until someone typed "continue" in each. These two let the engine
+		// decide the wait for such an answer itself (src/limitwait.ts): as long as the provider says, or a backoff with
+		// jitter, for hours if need be. The wait stays pi-durable's own stored sleep, so it is shown as a retry, survives a
+		// restart and ends with Stop. `policy.host` answers `{ waitMs, spent }`: `waitMs` a wait in milliseconds, `false`
+		// to end the run now, or undefined to leave the error to the policy; `spent`, how many of the attempts were
+		// refusals of that kind, which do not count against `maxRetries`. Issue #183.
+		why: "a provider's rate limit ends a run after three quick retries",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `    const policy = settings.retry;
+    // An overflow is never retried: only a compaction can make the next request fit.
+    const retry = message.stopReason === "error" &&
+        !overflow &&
+        isRetryableAssistantError(message) &&
+        policy.enabled &&
+        attempt <= policy.maxRetries;
+    const until = retry ? runtime.now() + retryDelayMs(policy, attempt) : 0;`,
+		replace: `    const policy = settings.retry;
+    // Patched by pi2 (engine/scripts/patch-dependencies.ts): the host may decide the wait for an error itself, such as
+    // a provider's rate limit, and the attempts it spent on such waits do not count against the retries.
+    const host = typeof policy.host === "function" && policy.enabled
+        ? policy.host(message.stopReason === "error" && !overflow ? message : undefined, attempt, conversationId)
+        : undefined;
+    const counted = Math.max(1, attempt - (host?.spent ?? 0));
+    // An overflow is never retried: only a compaction can make the next request fit.
+    const retry = host?.waitMs !== undefined
+        ? host.waitMs !== false
+        : message.stopReason === "error" &&
+            !overflow &&
+            isRetryableAssistantError(message) &&
+            policy.enabled &&
+            counted <= policy.maxRetries;
+    const until = retry ? runtime.now() + (typeof host?.waitMs === "number" ? Math.max(0, host.waitMs) : retryDelayMs(policy, counted)) : 0;`,
+	},
+	{
+		// The same for a request the engine stopped during: attempts spent waiting for a limit leave the usual retries for
+		// a restart, as if there had been no wait. See the patch above.
+		why: "a restart after waiting for a provider's rate limit ends the run",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `    const policy = runtime.settings.retry;
+    const retry = policy.enabled && attempt <= policy.maxRetries;
+    const until = retry ? runtime.now() + retryDelayMs(policy, attempt) : 0;`,
+		replace: `    const policy = runtime.settings.retry;
+    // Patched by pi2 (engine/scripts/patch-dependencies.ts): attempts spent waiting for a provider's limit do not count.
+    const spent = typeof policy.host === "function" && policy.enabled ? (policy.host(undefined, attempt, runtime.conversationId)?.spent ?? 0) : 0;
+    const counted = Math.max(1, attempt - spent);
+    const retry = policy.enabled && counted <= policy.maxRetries;
+    const until = retry ? runtime.now() + retryDelayMs(policy, counted) : 0;`,
+	},
 ];
 
 const engine = resolve(process.argv[2] ?? join(import.meta.dirname, ".."));

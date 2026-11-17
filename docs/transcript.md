@@ -35,7 +35,7 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 - Hovering over the end of a turn shows Copy (the turn's Markdown) and Fork from here; hovering over a message of the person's shows Copy.
 - The page follows new content while the reader is at the bottom. Scrolling up stops that, and a "Jump to latest" button appears. Sending a message brings the reader back.
 
-Retries, failures, compaction and queued messages are shown outside the transcript by `ChatView`, as before.
+Retries, failures, compaction, a wait for a provider's limit and queued messages are shown outside the transcript by `ChatView`, as before. Inside it, each failed attempt of a request is an answer row that says "This attempt failed" with the error; attempts that failed in a row, with nothing else in them, show as one row, the last, which says how many there were ("6 attempts in a row failed; the last said:"), since a run waiting for a provider's limit can leave dozens ([limits.md](limits.md#when-a-limit-is-reached); `failedRuns` in `tools.js`).
 
 ## Copying
 

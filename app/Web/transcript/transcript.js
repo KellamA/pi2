@@ -310,15 +310,18 @@
 		const visible = visibleItems();
 		const specs = [];
 		const shownCalls = new Set();
+		// Failed attempts in a row show as one row, the last (a run waiting for a provider's limit can leave dozens).
+		const failures = T.failedRuns(visible);
 		visible.forEach((item, index) => {
 			const next = visible[index + 1];
+			if (failures.hidden.has(item.id)) return;
 			if (item.kind === "user") {
 				specs.push({ key: "i" + item.id, sig: "u" + rev(item), build: () => userRow(item) });
 			} else if (item.kind === "assistant") {
 				for (const call of calls(item)) shownCalls.add(call.callId);
 				// A turn ends at the person's next message, or when the run is over; its actions wait until then.
 				const turnEnd = next ? next.kind !== "assistant" : !live.partial && !live.busy;
-				specs.push(assistantSpec(item, turnEnd, visible, index));
+				specs.push(assistantSpec(item, turnEnd, visible, index, failures.shown.get(item.id) ?? 1));
 			} else if (item.kind === "setup") {
 				const spec = setupSpec(item, visible);
 				if (spec) specs.push(spec);
@@ -503,14 +506,14 @@
 		].join(":");
 	}
 
-	function assistantSpec(item, turnEnd, visible, index) {
+	function assistantSpec(item, turnEnd, visible, index, attempts) {
 		const phase = phaseOf(item);
-		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, ...calls(item).map((call) => callSignature(call, phase))].join("|");
+		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, attempts, ...calls(item).map((call) => callSignature(call, phase))].join("|");
 		return {
 			key: "i" + item.id,
 			sig,
 			build: () => article("assistant", names.agentName || "Answer"),
-			update: (row) => fillAnswer(row, item, turnEnd, visible, index),
+			update: (row) => fillAnswer(row, item, turnEnd, visible, index, attempts),
 		};
 	}
 
@@ -523,7 +526,7 @@
 		return parts.join("\n\n");
 	}
 
-	function fillAnswer(row, item, turnEnd, visible, index) {
+	function fillAnswer(row, item, turnEnd, visible, index, attempts) {
 		const stop = str(item.stop);
 		const interrupted = stop === "aborted" || stop === "error";
 		const text = str(item.text);
@@ -531,8 +534,9 @@
 		const itemCalls = calls(item);
 		const parts = [];
 		if (interrupted) {
-			const note = stop === "error" ? "This attempt failed" : `Interrupted ${char(0x2014)} kept in the transcript`;
-			parts.push({ key: "stop", sig: stop, build: () => noteRow("warn", note, "warning") });
+			const failed = attempts > 1 ? `${attempts} attempts in a row failed; the last said:` : "This attempt failed";
+			const note = stop === "error" ? failed : `Interrupted ${char(0x2014)} kept in the transcript`;
+			parts.push({ key: "stop", sig: stop + attempts, build: () => noteRow("warn", note, "warning") });
 		}
 		if (thinking.trim() !== "") parts.push(thinkingSpec("th:" + item.id, thinking, false, rev(item)));
 		if (text !== "") {

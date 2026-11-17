@@ -39,7 +39,7 @@ struct MenuBarView: View {
                         AgentAvatar(agent: engine.agent(run.agentId), size: 16)
                         Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
                         Spacer()
-                        Text(run.status == "waiting" ? "waiting" : "working").font(.caption).foregroundStyle(run.status == "waiting" ? Theme.warn : Theme.tx2)
+                        Text(run.status == "waiting" ? "waiting" : run.limit != nil ? "waiting for limit" : "working").font(.caption).foregroundStyle(run.status == "waiting" || run.limit != nil ? Theme.warn : Theme.tx2)
                     }
                     .contentShape(.rect)
                 }
