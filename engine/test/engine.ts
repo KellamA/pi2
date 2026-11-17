@@ -1499,6 +1499,10 @@ try {
 		const many = await looked(lk, "list_files", { path: "many" });
 		assert.match(many.text, /^many\/ : 320 entries\nf000\.txt/);
 		assert.match(many.text, /… and 20 more not shown/, "the listing is capped and says so");
+		const cursorFrom = (text: string) => JSON.parse(/cursor: (".*")\. Files/.exec(text)![1]!);
+		const manyEnd = await looked(lk, "list_files", { path: "many", cursor: cursorFrom(many.text) });
+		assert.match(manyEnd.text, /f300.txt/);
+		assert.ok(!manyEnd.text.includes("f299.txt") && !manyEnd.text.includes("cursor:"));
 		assert.equal((await looked(lk, "list_files", { path: "src/deep/.." })).isError, false);
 		assert.equal((await looked(lk, "list_files", { path: "src/app.ts" })).isError, true, "a file is not a folder");
 
@@ -1506,7 +1510,11 @@ try {
 		assert.equal(found.isError, false, found.text);
 		assert.ok(found.text.startsWith("2 files match") && found.text.includes("src/app.ts") && found.text.includes("src/deep/test_b.py") && !found.text.includes("x.ts"), found.text);
 		assert.ok(!found.text.includes("secret"), "a link out of the folder is not followed");
-		assert.match((await looked(lk, "find_files", { pattern: "*.txt", path: "many" })).text, /… and 120 more not shown/, "find is capped and says so");
+		const foundMany = await looked(lk, "find_files", { pattern: "*.txt", path: "many" });
+		assert.match(foundMany.text, /200 files match/);
+		const foundEnd = await looked(lk, "find_files", { pattern: "*.txt", path: "many", cursor: cursorFrom(foundMany.text) });
+		assert.match(foundEnd.text, /120 files match/);
+		assert.ok(!foundEnd.text.includes("many/f199.txt") && !foundEnd.text.includes("cursor:"));
 		assert.match((await looked(lk, "find_files", { pattern: "test_*.py", path: "src" })).text, /^1 file matches/);
 
 		const searched = await looked(lk, "search_files", { query: "needle", ignoreCase: true });
@@ -1520,7 +1528,10 @@ try {
 		assert.match((await looked(lk, "search_files", { query: "zzz-nothing" })).text, /^No matches in/);
 		const hits = await looked(lk, "search_files", { query: "cap-me", path: "hits" });
 		assert.match(hits.text, /… 2 more in this file/, "per file cap");
-		assert.match(hits.text, /Stopped at 100 matches/, "total cap");
+		assert.match(hits.text, /Stopped after 100 matches/, "total cap");
+		const hitsEnd = await looked(lk, "search_files", { query: "cap-me", path: "hits", cursor: cursorFrom(hits.text) });
+		assert.match(hitsEnd.text, /^20 matches/);
+		assert.ok(!hitsEnd.text.includes("cursor:"));
 		assert.equal(hits.text.split("\n").filter((l: string) => /^  \d+: /.test(l)).length, 100);
 
 		for (const path of ["..", "../../..", outside, join(outside, "secret.txt"), "link-out", "link-out/secret.txt", "link-file.txt"]) {

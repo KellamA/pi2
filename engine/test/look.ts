@@ -159,9 +159,10 @@ const walked = await look.walk(root, root, never, async (_full, below) => void n
 assert.deepEqual(names, ["e.md", "src/a.ts", "src/deep/b.ts"], "skipped places stay skipped, in name order");
 assert.equal(walked.stopped, undefined);
 const capped = await look.walk(root, root, never, async () => {}, { files: 2, ms: PATIENT_MS });
-assert.deepEqual(capped, { visited: 2, stopped: "files" });
+assert.deepEqual(capped, { visited: 2, stopped: "files", cursor: "1src/0a.ts" });
 const timed = await look.walk(root, root, never, async () => {}, { files: 100, ms: -1 });
 assert.equal(timed.stopped, "time");
+assert.equal(timed.visited, 1, "even an expired budget makes progress");
 const aborted = await look.walk(root, root, { abortSignal: stop.signal }, async () => {});
 assert.equal(aborted.stopped, "cancelled");
 symlinkSync(join(tmpdir()), join(root, "escape"));
@@ -171,6 +172,48 @@ assert.ok("real" in (await look.locate(root, "src/deep/..")));
 assert.match((await look.findFiles(root, "**/*.ts", undefined, never, { files: 1, ms: PATIENT_MS })).text, /Stopped after looking at 1 files/);
 assert.equal(look.clip("a".repeat(1000), 500).length <= look.clip("a".repeat(1000), 500).length && look.clip("a".repeat(1000), 500).length <= 242, true);
 assert.ok(look.clip(`${"a".repeat(500)}NEEDLE${"b".repeat(500)}`, 500).includes("NEEDLE"), "a long line is cut around the match");
+
+// Continuation uses names, not offsets; an earlier insertion/deletion cannot shift it.
+const resume = (text: string) => JSON.parse(/cursor: (".*")\. Files/.exec(text)![1]!) as string;
+const firstSearch = await look.searchFiles(root, { query: "needle" }, never, { files: 1, ms: PATIENT_MS });
+assert.match(firstSearch.text, /e.md\n/);
+const cursor = resume(firstSearch.text);
+writeFileSync(join(root, "a-new.md"), "needle new before cursor");
+rmSync(join(root, "e.md"));
+const nextSearch = await look.searchFiles(root, { query: "needle", cursor }, never);
+assert.match(nextSearch.text, /src\/a.ts\n/);
+assert.match(nextSearch.text, /src\/deep\/b.ts\n/);
+assert.ok(!nextSearch.text.includes("a-new.md"), "earlier new files need a fresh search, as the hint says");
+assert.ok(!nextSearch.text.includes("cursor:"), "completed search has no cursor");
+const resumedNames: string[] = [];
+await look.walk(root, root, never, async (_full, below) => void resumedNames.push(below), undefined, capped.cursor);
+assert.deepEqual(resumedNames, ["src/deep/b.ts"]);
+
+const pages = join(root, "pages");
+mkdirSync(pages);
+for (let i = 0; i < 305; i++) writeFileSync(join(pages, `${String(i).padStart(3, "0")}.txt`), "needle\n".repeat(7));
+const listing = await look.listFiles(root, "pages");
+const listingEnd = await look.listFiles(root, "pages", resume(listing.text));
+assert.match(listingEnd.text, /300.txt/);
+assert.ok(!listingEnd.text.includes("299.txt") && !listingEnd.text.includes("cursor:"));
+const finding = await look.findFiles(root, "*.txt", "pages", never);
+const findingEnd = await look.findFiles(root, "*.txt", "pages", never, undefined, resume(finding.text));
+assert.match(findingEnd.text, /105 files match/);
+assert.ok(!findingEnd.text.includes("pages/199.txt") && !findingEnd.text.includes("cursor:"));
+const matching = await look.searchFiles(root, { query: "needle", path: "pages" }, never);
+assert.match(matching.text, /105 matches/);
+const matchingNext = await look.searchFiles(root, { query: "needle", path: "pages", cursor: resume(matching.text) }, never);
+assert.match(matchingNext.text, /pages\/015.txt/);
+assert.ok(!matchingNext.text.includes("pages/014.txt"), "no partly read file has to be read again");
+// Prefix-like directory names must keep the walk's component order, not full-string order.
+mkdirSync(join(root, "prefix"));
+mkdirSync(join(root, "prefix-2"));
+writeFileSync(join(root, "prefix", "a"), "needle");
+writeFileSync(join(root, "prefix-2", "b"), "needle");
+const afterPrefix: string[] = [];
+await look.walk(root, root, never, async (_full, below) => void afterPrefix.push(below), undefined, "1prefix/0a");
+assert.ok(afterPrefix.includes("prefix-2/b"));
+assert.equal((await look.searchFiles(root, { query: "needle", cursor: "bad" }, never)).isError, true);
 
 server.close();
 console.log("look: ok");
