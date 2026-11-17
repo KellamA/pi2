@@ -1285,11 +1285,15 @@ for (const feature of host.features) {
 await harness.commit(async (tx) => void (await tx.doc(Library)), context);
 const libraryWatch = await harness.watchDoc(Library, context);
 if (libraryWatch === undefined) throw new Error("The library document could not be opened");
-/** Which conversations are put away, as one string: when it changes, open conversations are told their new standing. */
+/**
+ * Which conversations are put away, and which of those are deleted, as one string: when it changes, open conversations
+ * are told their new standing. Deleting an archived conversation changes it too, so that what goes with a deleted one
+ * (its kept outputs, its scratch folder) goes then.
+ */
 const putAway = () =>
 	Object.entries(library.conversations)
 		.filter(([, meta]) => isPutAway(meta))
-		.map(([id]) => id)
+		.map(([id, meta]) => (isDeleted(meta) ? `${id}d` : id))
 		.join(",");
 let wasPutAway = putAway();
 libraryWatch.start(async (call) => {

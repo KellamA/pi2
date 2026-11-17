@@ -60,6 +60,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
 | `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
 | `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
+| `src/scratch.ts` | Each conversation's scratch folder: where it is, making it, the line of the system prompt that names it, and removing it with the conversation. See [A scratch folder](#a-scratch-folder) |
 | `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/reading.ts` | `read` of several files, or several ranges of one, in one call. See [Reading files](#reading-files) |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
@@ -132,6 +133,17 @@ The files are only text a program printed. They live in the data folder, in `out
 
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
 
+### A scratch folder
+
+Each conversation has a scratch folder of its own for temporary files, outside its working folder, which may be a project's (#180). Every command it runs, in the foreground or the background, and its worktree's set-up command get its path in `PI2_SCRATCH`, and the system prompt names it in one line, in a `scratch` section that is there whenever the conversation can run commands, so it does not come and go during a conversation. What one command leaves there the next finds. A sub-chat is a conversation of its own and has its own. An MCP server, which no one conversation has, gets none.
+
+It is `/tmp/pi2-<uid>/scratch-<hash>/<conversation>`, where the hash is the first 8 hex digits of the SHA-256 of the data folder's path, so that copies of pi² on other data folders (a development build, a test's engine) never share one:
+
+- **Short, with no spaces.** The data folder's path has a space in it ("Application Support"), and a command that puts a socket in a temporary folder, as the engine's tests do, has 103 bytes for the socket's whole path. The scratch folder's path is about 32 bytes; the system's per-user temporary folder (`/var/folders/…/T/`) is about 49 before anything is added.
+- **Private.** `/tmp/pi2-<uid>` is the folder the socket's short links are in too ([How they talk](#how-they-talk)). It is made with mode 0700 and checked to be a folder of this user's that nobody else can open, and so is each scratch folder in it, so no other user's process can put files in it or point it elsewhere. If another user made `/tmp/pi2-<uid>` first, no scratch folder is made, commands run without `PI2_SCRATCH`, and `engine.log` says why.
+- **Not in backups.** pi²'s backup copies only the data folder, and Time Machine leaves out `/private/tmp`.
+- **Temporary.** It is made when first needed, as a command of the conversation starts, and removed when the conversation is deleted, or the conversation it is a sub-chat of. An archived conversation keeps it, since it can be restored and continued where it stopped. macOS removes files in `/tmp` that have not been used for three days, so an unused folder does not stay for long either way; one that macOS took away is made again for the next command. The engine looks for folders to remove as it starts, whenever conversations are archived or deleted, and once a day, as it does for kept outputs. There is no limit on its size: it is for temporary files, not for keeping anything.
+
 ### The calls of one answer
 
 A model can make several tool calls in one answer. pi durable starts them all at once, unless one of them is to a tool marked to run in order, in which case the whole answer's calls run one at a time, in the order the model gave them, each starting when the one before it has ended. Started together, a call that uses a file the one before it writes finds nothing there, or the file as it was: a `read` of a screen capture that a `bash` call is taking, or a `bash` with `background: true` that runs a script the call before it is writing (#145, #129).
@@ -168,6 +180,7 @@ The engine counts the tool calls running on each copy of an MCP server it starte
 | Keys and sign-ins | The macOS Keychain, service `dev.pi2.credentials` |
 | Logs | `engine.log` and `app.log` in the data folder. See [The logs](#the-logs) |
 | A shell command's whole output, when its result was shortened | `output/<conversation>/` in the data folder, for 7 days at most |
+| A conversation's scratch folder, for temporary files | `/tmp/pi2-<uid>/scratch-<hash>/<conversation>`, until the conversation is deleted. See [A scratch folder](#a-scratch-folder) |
 
 A development build uses `~/Library/Application Support/pi2-dev` and the Keychain service `dev.pi2.credentials.dev` instead, never the ones above ([development.md](development.md#build-and-run)).
 
