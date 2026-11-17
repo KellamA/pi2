@@ -24,6 +24,8 @@ The engine listens on a Unix socket in the data folder (`engine.sock`). Messages
 
 The app starts the engine if it is not running, and reconnects if it dies. A second engine on the same data folder exits at once.
 
+If the engine ends before the app can reach it three starts in a row (Node or the engine's files missing, an error as it loads), the window says the engine could not be started, shows the end of `engine.log` and what to check, and offers to try again at once. The app keeps trying on its own, waiting twice as long after each further failure, up to a minute between starts, and the notice goes away as soon as an engine answers.
+
 ## The engine
 
 | File | What it holds |

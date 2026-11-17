@@ -59,8 +59,8 @@ struct MenuBarView: View {
                 Button("Open pi²") { show(nil) }
                 Button("Quick Ask") { QuickAsk.shared.show(model: model) }
                 Spacer()
-                Circle().fill(engine.status == .connected ? Theme.ok : Theme.warn).frame(width: 8, height: 8)
-                    .accessibilityLabel(engine.status == .connected ? "Engine running" : "Engine not running")
+                Circle().fill(engine.status == .connected ? Theme.ok : engine.startProblem != nil ? Theme.bad : Theme.warn).frame(width: 8, height: 8)
+                    .accessibilityLabel(engine.status == .connected ? "Engine running" : engine.startProblem != nil ? "Engine could not start" : "Engine not running")
                 Button("Quit") { NSApp.terminate(nil) }
             }
         }
