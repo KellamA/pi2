@@ -54,6 +54,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
 | `src/limitwait.ts` | A run refused for a provider's rate limit, or because it is overloaded: how long it waits before it asks again by itself, and what is shown and logged meanwhile. See [limits.md](limits.md#when-a-limit-is-reached) |
+| `src/cache.ts` | How long a provider keeps a conversation's prompt cache: the long cache for a conversation that hands out work, a refusal of it, and what `engine.log` says. See [limits.md](limits.md#the-prompt-cache) |
 | `src/providererror.ts` | A provider's error as `delegate` and `engine.log` give it: shortened, with keys, account identifiers and request ids taken out |
 | `src/schedules.ts` | Schedule rules and next-run times |
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
@@ -256,6 +257,12 @@ The engine's own lines carry the `[pi2-engine]` tag after the time; a line witho
 2026-11-17T09:12:40Z [pi2-engine] conversation 14 is waiting for Anthropic's rate limit: until 2026-11-17T10:00:00Z, the time it named
 2026-11-17T10:00:03Z [pi2-engine] conversation 14 carries on: Anthropic answered after 47 min of waiting (2 refusals)
 2026-11-17T10:20:51Z [pi2-engine] conversation 15's run ended on an error from Anthropic: 401 authentication_error: invalid x-api-key
+```
+
+The lines about the prompt cache name the conversation too: when one that hands out work starts asking for the long cache, and what a request after more than five minutes without one read from the cache ([limits.md](limits.md#the-prompt-cache)):
+
+```
+2026-11-17T11:02:17Z [pi2-engine] conversation 12 read 143,912 tokens from the prompt cache after 31 min without a request; the request before asked for the long cache
 ```
 
 A clean stop ends with its elapsed time measured inside the engine, using a monotonic clock: `stopped cleanly in 1519 ms`. The app gives it five seconds to stop before it restores a backup. Measuring inside the engine avoids charging it for a test process that is slow to notice its exit; it still counts delays within the stop, including time the engine could not run on a busy Mac, which counts toward the app's deadline too.

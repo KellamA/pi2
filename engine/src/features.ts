@@ -12,6 +12,7 @@ import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
 import { background } from "./background.ts";
+import { promptCache } from "./cache.ts";
 import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
@@ -112,6 +113,7 @@ export const FEATURES: Feature[] = [
 	look,
 	documents,
 	limits,
+	promptCache,
 	selfSchedule,
 	worktrees,
 	commands,

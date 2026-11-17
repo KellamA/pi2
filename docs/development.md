@@ -59,6 +59,7 @@ cd engine && npm test
 This runs, side by side, every file in `engine/test` but two: `patience.ts`, which is not a test but what the tests that start an engine share, and `browser.ts`, which needs the browser probe ([browser.md](browser.md)). A test you add as `engine/test/<name>.ts` is picked up by itself, with nothing to add to `package.json`; `node test/<name>.ts` runs it alone. A file there that is not a test goes in the pattern in `package.json`'s `test` script, beside those two. Give a test you add a line of its own below, in its place by file name, so that two pull requests adding tests rarely touch the same lines. The tests:
 
 - `background.ts`: background commands. An engine starts, reads and stops commands, and is stopped and killed with commands running; nothing they started is left.
+- `cache.ts`: the prompt cache's lifetime. An engine against a stand-in Anthropic endpoint on 127.0.0.1: a conversation asks for the one-hour cache once it has handed out work and the others do not, a refusal of it is sent again with the short cache, and `engine.log` says what a request after a pause read; see [limits.md](limits.md#the-prompt-cache).
 - `codemode.ts`: what a conversation is told about scripts, with a test MCP server of 40 tools. It prints the size of each section of the system prompt; see [codemode.md](codemode.md).
 - `credentials.ts`: the Keychain store.
 - `documents.ts`: the documents tool.
