@@ -9,12 +9,12 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { McpServers } from "../src/mcp.ts";
 import { socketPathFor } from "../src/socket.ts";
+import { listening, running, stop, until } from "./patience.ts";
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-mcppath-")));
 const BARE = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -25,14 +25,6 @@ const startsFile = join(scratch, "starts");
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
-}
-async function until<T>(what: string, met: () => T | undefined | false, ms = 120_000): Promise<T> {
-	for (const deadline = Date.now() + ms; ; ) {
-		const value = met();
-		if (value !== undefined && value !== false) return value;
-		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-		await sleep(25);
-	}
 }
 const alive = (pid: number): boolean => {
 	try {
@@ -126,9 +118,9 @@ try {
 			assert.equal(starts("unit").length, 1, "a server started with the PATH the engine has is not started again");
 			process.env.PATH = `${tools}:${BARE}`;
 			servers.followPath();
-			const second = await until("the server to be started again", () => starts("unit")[1], 60_000);
+			const second = await until("the server to be started again", () => starts("unit")[1]);
 			assert.equal(second.path, process.env.PATH, "it is started with the new PATH");
-			await until("the one it replaces to be closed", () => !alive(first!.pid), 60_000);
+			await until("the one it replaces to be closed", () => !alive(first!.pid));
 			assert.equal(servers.list()[0]!.status, "connected");
 			assert.deepEqual(logged, ["MCP server Unit started again with the new PATH"]);
 			servers.followPath();
@@ -175,11 +167,13 @@ try {
 		log.push(...all);
 	});
 	const logged = (pattern: RegExp) => log.some((line) => pattern.test(line));
-	await until("the engine to listen", () => logged(/listening on /));
+	/** Waits for `met`, unless the engine exits first, when it cannot come. */
+	const whileUp = <T>(what: string, met: () => T | undefined | false): Promise<T> =>
+		until(what, met, { over: () => (running(engine) ? undefined : `the engine exited:\n${log.join("\n")}`) });
+	const socket = await listening(engine, home);
+	await whileUp("the engine to say it listens", () => logged(/listening on /));
 	assert.ok(logged(/PATH not taken from the login shell \(zsh did not answer within 1 second\).*still listening/), log.join("\n"));
 
-	const socket: Socket = connect(socketPathFor(home));
-	await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject));
 	type Item = { kind: string; text?: string; isError?: boolean };
 	type Server = { id: string; status: string; error: string | null; tools: { name: string; toolName: string }[] };
 	const conversations = new Map<number, { items: Item[]; busy: boolean }>();
@@ -220,14 +214,14 @@ try {
 	const mcpCall = async (conversation: number, tool: string, args: object = {}): Promise<Item> => {
 		const before = results(conversation).length;
 		await call("submit", { id: conversation, text: `/mcp ${tool} ${JSON.stringify(args)}` });
-		return until(`the result of ${tool}`, () => {
+		return whileUp(`the result of ${tool}`, () => {
 			const view = conversations.get(conversation);
 			return view !== undefined && !view.busy && results(conversation).length > before && view.items.at(-1)?.kind === "assistant" ? results(conversation).at(-1) : undefined;
 		});
 	};
 
 	// Before the shell answers: the server whose program is only on its PATH failed; the other runs without it.
-	await until("both servers to be tried", () => server("late")?.status === "error" && server("early")?.status === "connected");
+	await whileUp("both servers to be tried", () => server("late")?.status === "error" && server("early")?.status === "connected");
 	assert.match(server("late")!.error ?? "", /ENOENT|not found/i, server("late")!.error ?? "");
 	const [early] = starts("early");
 	assert.ok(early !== undefined && !early.path.split(":").includes(tools), `the early server has the usual folders: ${early?.path}`);
@@ -245,18 +239,18 @@ try {
 	const held = join(scratch, "held");
 	const callGate = join(scratch, "call-gate");
 	await call("submit", { id: holding, text: `/mcp ${toolName("early", "hold")} ${JSON.stringify({ gate: callGate, held })}` });
-	await until("the early server to be holding the call", () => existsSync(held) && readFileSync(held, "utf8") !== "");
+	await whileUp("the early server to be holding the call", () => existsSync(held) && readFileSync(held, "utf8") !== "");
 	assert.equal(Number(readFileSync(held, "utf8")), early.pid);
 	step("an engine whose shell is slow starts its MCP servers with the usual folders");
 
 	writeFileSync(shellGate, "");
-	await until("the engine to take the late PATH", () => logged(/PATH taken from zsh/));
-	const late = await until("the late server to start", () => starts("late")[0]);
+	await whileUp("the engine to take the late PATH", () => logged(/PATH taken from zsh/));
+	const late = await whileUp("the late server to start", () => starts("late")[0]);
 	assert.equal(late.path, `${latePath}:/usr/sbin:/sbin`, "the server whose program is on the late PATH is started with it");
-	const again = await until("the early server to be started again", () => starts("early")[1]);
+	const again = await whileUp("the early server to be started again", () => starts("early")[1]);
 	assert.equal(again.path, late.path, "the early server is started again with the late PATH");
-	await until("the early server to be swapped in", () => logged(/MCP server Early started again with the new PATH; the one it replaces stops once its calls are done/));
-	await until("the late server to connect", () => server("late")?.status === "connected");
+	await whileUp("the early server to be swapped in", () => logged(/MCP server Early started again with the new PATH; the one it replaces stops once its calls are done/));
+	await whileUp("the late server to connect", () => server("late")?.status === "connected");
 	assert.equal(server("early")?.status, "connected");
 	assert.ok(logged(/PATH not taken.*still listening/) && !log.some((line) => line.includes(tools)), "the log does not list the shell's folders");
 
@@ -269,13 +263,13 @@ try {
 	step("when the shell answers, the failed server connects and the early one is started again beside it");
 
 	writeFileSync(callGate, "");
-	const finished = await until("the held call to finish", () => {
+	const finished = await whileUp("the held call to finish", () => {
 		const view = conversations.get(holding);
 		return view !== undefined && !view.busy && view.items.at(-1)?.kind === "assistant" ? results(holding).at(-1) : undefined;
 	});
 	assert.equal(finished.isError, false, finished.text ?? "");
 	assert.equal(finished.text, `held by ${early.pid}`, "the call finishes on the server it started on");
-	await until("the server it replaced to stop once the call was done", () => !alive(early.pid), 60_000);
+	await whileUp("the server it replaced to stop once the call was done", () => !alive(early.pid));
 	assert.equal((await mcpCall(holding, envEarly)).text, `${again.pid} ${late.path}`, "the conversation goes on, with the new server");
 	assert.equal(starts("early").length + starts("late").length, 3, "nothing else was started");
 	step("a call running on the early server is not cut off, and that server stops after it");
@@ -284,16 +278,10 @@ try {
 	const exited = new Promise<number | null>((resolve) => engine.once("exit", resolve));
 	engine.kill("SIGTERM");
 	assert.equal(await exited, 0);
-	await until("the servers to stop with the engine", () => !alive(again.pid) && !alive(late.pid), 30_000);
+	await until("the servers to stop with the engine", () => !alive(again.pid) && !alive(late.pid));
 	step("the servers stop with the engine");
 } finally {
-	for (const engine of engines) {
-		if (engine.exitCode === null && engine.signalCode === null) {
-			const exited = new Promise((resolve) => engine.once("exit", resolve));
-			engine.kill("SIGTERM");
-			await exited;
-		}
-	}
+	for (const engine of engines) await stop(engine);
 	const reached = socketPathFor(join(scratch, "home"));
 	if (reached !== join(scratch, "home", "engine.sock")) rmSync(join(reached, ".."), { force: true });
 	// Had a check failed part-way, a test server could be left: stop any that is still this test's own.

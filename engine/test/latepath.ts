@@ -10,20 +10,25 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { adoptLoginPath, askShell, folders, GIVE_UP_MS, listenToShell, usualFolders } from "../src/shellpath.ts";
 import { socketPathFor } from "../src/socket.ts";
+import { EngineClient, listening as listeningOn, PATIENT_MS, running, stop, until } from "./patience.ts";
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-latepath-")));
 const BARE = "/usr/bin:/bin:/usr/sbin:/sbin";
 /** How long the in-process checks wait before going on without the shell, in place of five seconds. */
 const WAIT_MS = 300;
-/** The far limit for the check that it stops a shell: long enough for a stand-in to have started on a busy Mac. */
+/**
+ * The far limit for the check that it stops a shell, at first: long enough for a stand-in to have started on most busy
+ * Macs. Doubled until it is, on one busier still.
+ */
 const FAR_MS = 8_000;
+/** What a stand-in that never answers runs: longer than any wait here, so that only being stopped ends it. */
+const LONG_SLEEP = `sleep ${(2 * PATIENT_MS) / 1000}`;
 function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
@@ -58,7 +63,7 @@ function gated(folder: string, gate: string, path: string): string {
 }
 /** A shell that never answers: it starts a program of its own, says in `pidFile` which, and waits for it. */
 function hanging(folder: string, pidFile: string): string {
-	return standIn(folder, "bash", `sleep 300 &\necho $! > "${pidFile}"\nwait`);
+	return standIn(folder, "bash", `${LONG_SLEEP} &\necho $! > "${pidFile}"\nwait`);
 }
 const alive = (pid: number): boolean => {
 	try {
@@ -68,17 +73,12 @@ const alive = (pid: number): boolean => {
 		return false;
 	}
 };
-async function until(what: string, met: () => boolean, ms = 30_000): Promise<void> {
-	for (const deadline = Date.now() + ms; !met(); ) {
-		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-		await sleep(25);
-	}
-}
 /** The program a hanging shell started, once it has said which. */
 async function startedBy(pidFile: string): Promise<number> {
 	await until("the stand-in shell to start its program", () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
 	return Number(readFileSync(pidFile, "utf8"));
 }
+/** `promise`, or a failure if it has not settled within `ms`: by default, only if it hangs. */
 const within = <T>(ms: number, what: string, promise: Promise<T>): Promise<T> => {
 	let timer: NodeJS.Timeout;
 	return Promise.race([promise, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`Timed out waiting for ${what}`)), ms)))]).finally(() => clearTimeout(timer));
@@ -116,6 +116,9 @@ try {
 		});
 		return { home, engine, log, logged: (pattern: RegExp) => log.some((line) => pattern.test(line)) };
 	};
+	/** Waits until `started` has logged a line that matches `pattern`; ends at once if it has exited without one. */
+	const logs = (started: ReturnType<typeof startEngine>, what: string, pattern: RegExp) =>
+		until(what, () => started.logged(pattern), { over: () => (running(started.engine) ? undefined : `the engine exited:\n${started.log.join("\n")}`) });
 	const engineGate = join(scratch, "engine-gate");
 	const slow = startEngine("slow", gated(join(scratch, "engine-late"), engineGate, `${tools}:/usr/bin:/bin`));
 	const hungPid = join(scratch, "engine-never.pid");
@@ -130,12 +133,12 @@ try {
 		const gate = join(scratch, `gate-${++scenario}`);
 		const env: NodeJS.ProcessEnv = { PATH: began, PI2_LOGIN_SHELL: gated(join(scratch, `late-${scenario}`), gate, said) };
 		const lines: string[] = [];
-		const listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, 60_000);
+		const listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, PATIENT_MS);
 		assert.ok(listening !== undefined, "a shell still going when the wait runs out is still listened to");
 		const meanwhile = env.PATH;
 		const logged = lines.length;
 		writeFileSync(gate, "");
-		await within(30_000, "the late answer to be taken", listening.done);
+		await within(PATIENT_MS, "the late answer to be taken", listening.done);
 		return { meanwhile, logged, final: env.PATH, lines };
 	};
 
@@ -164,9 +167,9 @@ try {
 	const quickPid = join(scratch, "quick.pid");
 	const quick = standIn(join(scratch, "quick"), "zsh", `echo $$ > "${quickPid}"\nPATH="${tools}:/usr/bin:/bin"\nexport PATH\neval "$2"`);
 	const pause = new Int32Array(new SharedArrayBuffer(4)); // Atomics.wait on it sleeps without letting the loop turn
-	const unread = listenToShell(quick, { PATH: BARE }, WAIT_MS, 60_000);
+	const unread = listenToShell(quick, { PATH: BARE }, WAIT_MS, PATIENT_MS);
 	const asked = Date.now();
-	for (const giveUp = asked + 30_000; ; Atomics.wait(pause, 0, 0, 10)) {
+	for (const giveUp = asked + PATIENT_MS; ; Atomics.wait(pause, 0, 0, 10)) {
 		const finished = existsSync(quickPid) && readFileSync(quickPid, "utf8").trim() !== "" && /Z/.test(spawnSync("/bin/ps", ["-o", "stat=", "-p", readFileSync(quickPid, "utf8").trim()], { encoding: "utf8" }).stdout);
 		if ((finished && Date.now() - asked > WAIT_MS + 200) || Date.now() > giveUp) break;
 	}
@@ -181,18 +184,39 @@ try {
 	let env: NodeJS.ProcessEnv = { PATH: BARE, PI2_LOGIN_SHELL: hanging(join(scratch, "never"), neverPid) };
 	let lines: string[] = [];
 	let started = Date.now();
-	let listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, FAR_MS);
-	assert.ok(listening !== undefined);
-	let settled = false;
-	void listening.done.then(() => (settled = true));
-	const left = await startedBy(neverPid);
-	assert.ok(alive(left) && !settled && lines.length === 1, "start-up goes on after the wait, and the shell is left running");
-	await within(30_000, "the far limit", listening.done);
-	assert.ok(Date.now() - started >= FAR_MS - 50, "until the far limit");
-	await until("what the shell started to be stopped", () => !alive(left), 5_000);
+	let listening: Awaited<ReturnType<typeof adoptLoginPath>>;
+	// On a Mac too busy for the stand-in to start its program before the far limit, it is given up on with nothing of its
+	// own to stop, which checks nothing: then it is asked again with twice the limit, until it has started in time.
+	let far = FAR_MS;
+	let left: number | undefined;
+	for (; ; far *= 2) {
+		assert.ok(far <= 128_000, "the stand-in started its program before the far limit, given two minutes");
+		rmSync(neverPid, { force: true });
+		env = { PATH: BARE, PI2_LOGIN_SHELL: env.PI2_LOGIN_SHELL };
+		lines = [];
+		started = Date.now();
+		listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, far);
+		assert.ok(listening !== undefined);
+		let settled = false;
+		void listening.done.then(() => (settled = true));
+		const written = () => existsSync(neverPid) && readFileSync(neverPid, "utf8").trim() !== "";
+		await until("the stand-in shell to start its program, or the far limit", () => written() || settled);
+		if (!written()) continue;
+		left = Number(readFileSync(neverPid, "utf8"));
+		// Started, but on a Mac this busy perhaps only just before the limit; then it is gone again already.
+		if (settled) {
+			await until("what the shell started to be stopped", () => !alive(left!));
+			continue;
+		}
+		assert.ok(alive(left) && lines.length === 1, "start-up goes on after the wait, and the shell is left running");
+		break;
+	}
+	await within(PATIENT_MS, "the far limit", listening!.done);
+	assert.ok(Date.now() - started >= far - 50, "until the far limit");
+	await until("what the shell started to be stopped", () => !alive(left));
 	assert.equal(env.PATH, fallback(BARE), "the PATH stays as it was");
 	assert.equal(lines.length, 2);
-	assert.match(lines[1]!, /^PATH still not taken from the login shell \(bash had not answered 8 seconds after it was asked, and was stopped\); it stays as it is until the engine starts again$/);
+	assert.match(lines[1]!, new RegExp(`^PATH still not taken from the login shell \\(bash had not answered ${far / 1000} seconds after it was asked, and was stopped\\); it stays as it is until the engine starts again$`));
 	assert.equal(GIVE_UP_MS, 5 * 60_000, "the engine's own far limit is five minutes");
 	step("a shell that never answers is stopped at the far limit, with what it started");
 
@@ -201,10 +225,10 @@ try {
 	const failGate = join(scratch, "fail-gate");
 	env = { PATH: BARE, PI2_LOGIN_SHELL: standIn(join(scratch, "fails-late"), "fish", `${waitFor(failGate)}\nexit 3`) };
 	lines = [];
-	listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, 60_000);
+	listening = await adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, WAIT_MS, PATIENT_MS);
 	assert.ok(listening !== undefined);
 	writeFileSync(failGate, "");
-	await within(30_000, "the late failure", listening.done);
+	await within(PATIENT_MS, "the late failure", listening.done);
 	assert.equal(env.PATH, fallback(BARE));
 	assert.match(lines[1]!, /^PATH still not taken from the login shell \(fish stopped with code 3\)/);
 
@@ -223,10 +247,10 @@ try {
 	// shell's process number is no longer its own, and what a profile leaves running is left running in a terminal too.
 	const keptPid = join(scratch, "kept.pid");
 	pidFiles.push(keptPid);
-	const leaves = standIn(join(scratch, "leaves"), "zsh", `sleep 300 &\necho $! > "${keptPid}"\nPATH="${tools}:/usr/bin:/bin"\nexport PATH\neval "$2"`);
+	const leaves = standIn(join(scratch, "leaves"), "zsh", `${LONG_SLEEP} &\necho $! > "${keptPid}"\nPATH="${tools}:/usr/bin:/bin"\nexport PATH\neval "$2"`);
 	started = Date.now();
-	assert.deepEqual(await askShell(leaves, { PATH: BARE }, 60_000), { path: `${tools}:/usr/bin:/bin` });
-	assert.ok(Date.now() - started < 30_000, "well before the limit");
+	assert.deepEqual(await askShell(leaves, { PATH: BARE }, PATIENT_MS), { path: `${tools}:/usr/bin:/bin` });
+	assert.ok(Date.now() - started < PATIENT_MS / 2, "well before the limit");
 	const kept = await startedBy(keptPid);
 	await sleep(200);
 	assert.ok(alive(kept), "what the shell left running is not stopped");
@@ -245,9 +269,10 @@ try {
 	assert.ok(alive(toStop));
 	started = Date.now();
 	listening.stop();
-	await within(5_000, "the stop to be done", listening.done);
-	await until("what the shell started to be stopped", () => !alive(toStop), 5_000);
-	assert.ok(Date.now() - started < 10_000);
+	await within(PATIENT_MS, "the stop to be done", listening.done);
+	await until("what the shell started to be stopped", () => !alive(toStop));
+	// Not left for the far limit, ten minutes away.
+	assert.ok(Date.now() - started < 5 * 60_000);
 	assert.equal(env.PATH, fallback(BARE));
 	assert.equal(lines.length, 1, "nothing more is logged for a shell the engine stopped itself");
 
@@ -260,8 +285,8 @@ try {
 	const waited = adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, 10 * 60_000, 20 * 60_000, stopping.signal);
 	const waitedFor = await startedBy(waitingPid);
 	stopping.abort();
-	assert.equal(await within(30_000, "the wait to end", waited), undefined, "nothing is left to listen to");
-	await until("what the shell started to be stopped", () => !alive(waitedFor), 5_000);
+	assert.equal(await within(PATIENT_MS, "the wait to end", waited), undefined, "nothing is left to listen to");
+	await until("what the shell started to be stopped", () => !alive(waitedFor));
 	assert.equal(env.PATH, BARE, "the PATH is left as it was");
 	assert.deepEqual(lines, ["PATH not taken from the login shell: the engine is stopping"]);
 	const before = { PATH: BARE, PI2_LOGIN_SHELL: hanging(join(scratch, "never-asked"), join(scratch, "never-asked.pid")) };
@@ -288,103 +313,68 @@ try {
 	const ended = spawn(process.execPath, [ending, hanging(join(scratch, "ended"), endPid), endPid], { stdio: ["ignore", "pipe", "inherit"] });
 	let said = "";
 	ended.stdout!.setEncoding("utf8").on("data", (chunk: string) => (said += chunk));
-	const code = await within(30_000, "a process with a shell still going to end by itself", new Promise<number | null>((resolve) => ended.once("close", resolve))).catch((error) => {
+	const code = await within(PATIENT_MS, "a process with a shell still going to end by itself", new Promise<number | null>((resolve) => ended.once("close", resolve))).catch((error) => {
 		ended.kill("SIGKILL");
 		throw error;
 	});
 	assert.equal(code, 0);
 	assert.equal(said.trim(), "still listening");
 	const orphan = await startedBy(endPid);
-	await until("what the shell started to be stopped", () => !alive(orphan), 5_000);
+	await until("what the shell started to be stopped", () => !alive(orphan));
 	step("a shell still going is stopped when the engine stops, and does not keep the process running");
 
 	// ---- The two engines started above
 
 	// The engine whose shell answers late: commands before the answer have the usual folders, commands after it the
 	// shell's PATH.
-	await until("the engine to listen", () => slow.logged(/listening on /), 120_000);
+	const client = await EngineClient.connect(slow.engine, slow.home);
+	await logs(slow, "the engine to say it listens", /listening on /);
 	assert.ok(slow.logged(/PATH not taken from the login shell \(zsh did not answer within 5 seconds\); added .* still listening/), slow.log.join("\n"));
-	const socket: Socket = connect(socketPathFor(slow.home));
-	await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject));
 	type Item = { kind: string; text?: string; isError?: boolean };
-	const items: Item[] = [];
-	let busy = false;
-	let next = 1;
-	const replies = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
-	let buffer = "";
-	socket.setEncoding("utf8").on("data", (chunk: string) => {
-		buffer += chunk;
-		const received = buffer.split("\n");
-		buffer = received.pop()!;
-		for (const line of received) {
-			const message = JSON.parse(line);
-			if (message.event === "conversation") {
-				if (message.reset) items.length = 0;
-				items.push(...message.items);
-				busy = message.state.busy;
-			} else if (typeof message.id === "number") {
-				const reply = replies.get(message.id);
-				replies.delete(message.id);
-				if (message.error !== undefined) reply?.reject(new Error(message.error));
-				else reply?.resolve(message.result);
-			}
-		}
-	});
-	const call = (method: string, params: Record<string, unknown> = {}): Promise<any> => {
-		const id = next++;
-		socket.write(`${JSON.stringify({ id, method, params })}\n`);
-		return new Promise((resolve, reject) => replies.set(id, { resolve, reject }));
-	};
 	/** Runs a shell command through the demo model and returns its result. */
 	const bash = async (id: number, command: string): Promise<Item> => {
-		const before = items.filter((item) => item.kind === "tool").length;
-		await call("submit", { id, text: `/bash ${command}` });
-		for (const deadline = Date.now() + 30_000; ; ) {
-			const results = items.filter((item) => item.kind === "tool");
-			if (!busy && results.length > before && items.at(-1)?.kind === "assistant") return results.at(-1)!;
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${command}`);
-			await sleep(50);
-		}
+		const results = (): Item[] => client.conversations.get(id)?.items.filter((item: Item) => item.kind === "tool") ?? [];
+		const before = results().length;
+		await client.call("submit", { id, text: `/bash ${command}` });
+		return await client.until(`the result of ${command}`, () => {
+			const conv = client.conversations.get(id);
+			return conv !== undefined && !conv.state.busy && results().length > before && conv.items.at(-1)?.kind === "assistant" ? results().at(-1) : undefined;
+		});
 	};
 	const work = join(scratch, "work");
 	mkdirSync(work);
-	const { id } = await call("conversation.create");
-	await call("conversation.open", { id });
-	await call("conversation.configure", { id, access: "full", cwd: work });
+	const { id } = await client.call("conversation.create");
+	await client.call("conversation.open", { id });
+	await client.call("conversation.configure", { id, access: "full", cwd: work });
 	const early = await bash(id, "pi2-only-late");
 	assert.match(early.text ?? "", /not found/, "before the shell answers, a program only on its PATH is not found");
 	const earlyPath = (await bash(id, "/usr/bin/printenv PATH")).text?.trim() ?? "";
 	assert.ok(!earlyPath.split(":").includes(tools) && earlyPath.endsWith(BARE), `a command then has the engine's PATH and the usual places: ${earlyPath}`);
 	writeFileSync(engineGate, "");
-	await until("the engine to take the late PATH", () => slow.logged(/PATH taken from zsh, \d+ seconds? after it was asked: 3 folders/));
+	await logs(slow, "the engine to take the late PATH", /PATH taken from zsh, \d+ seconds? after it was asked: 3 folders/);
 	assert.ok(!slow.log.some((line) => line.includes(tools)), "the engine's log does not list the shell's folders");
 	const found = await bash(id, "pi2-only-late");
 	assert.equal(found.isError, false, `after it, the program is found: ${found.text}`);
 	assert.equal(found.text?.trim(), "found-by-late-path");
 	assert.equal((await bash(id, "/usr/bin/printenv PATH")).text?.trim(), `${tools}:${BARE}`, "and a command's PATH is the shell's, then the engine's own");
-	socket.destroy();
+	client.close();
 	step("an engine whose shell answers late runs later commands with the shell's PATH");
 
 	// The engine whose shell never answers: it is listening all the same, and stops cleanly, taking the shell and
 	// what the shell started with it.
-	await until("the other engine to listen", () => hung.logged(/listening on /), 120_000);
+	(await listeningOn(hung.engine, hung.home)).destroy();
+	await logs(hung, "the other engine to say it listens", /listening on /);
 	assert.ok(hung.logged(/PATH not taken from the login shell \(bash did not answer within 5 seconds\)/), hung.log.join("\n"));
 	const held = await startedBy(hungPid);
 	assert.ok(alive(held), "the shell is still going while the engine runs");
 	const exited = new Promise<number | null>((resolve) => hung.engine.once("exit", resolve));
 	hung.engine.kill("SIGTERM");
-	assert.equal(await within(60_000, "the engine to stop", exited), 0, "the engine stops cleanly with the shell still going");
-	await until("what the shell started to be stopped", () => !alive(held), 5_000);
+	assert.equal(await within(PATIENT_MS, "the engine to stop", exited), 0, "the engine stops cleanly with the shell still going");
+	await until("what the shell started to be stopped", () => !alive(held));
 	assert.ok(!existsSync(join(hung.home, "engine.running")), "and counts as stopped cleanly");
 	step("an engine whose shell never answers stops cleanly and takes the shell with it");
 } finally {
-	for (const engine of engines) {
-		if (engine.exitCode === null && engine.signalCode === null) {
-			const exited = new Promise((resolve) => engine.once("exit", resolve));
-			engine.kill("SIGTERM");
-			await exited;
-		}
-	}
+	for (const engine of engines) await stop(engine);
 	// In a temporary folder with a long path, an engine's socket is reached through a link in /tmp (src/socket.ts).
 	for (const name of ["slow", "hung"]) {
 		const reached = socketPathFor(join(scratch, name));
@@ -393,7 +383,7 @@ try {
 	// Had a check failed part-way, a stand-in's `sleep` could be left: stop any that is still this test's own.
 	for (const pidFile of pidFiles) {
 		const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : Number.NaN;
-		if (Number.isInteger(pid) && pid > 1 && spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim() === "sleep 300") process.kill(pid, "SIGKILL");
+		if (Number.isInteger(pid) && pid > 1 && spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim() === LONG_SLEEP) process.kill(pid, "SIGKILL");
 	}
 	rmSync(scratch, { recursive: true, force: true });
 }

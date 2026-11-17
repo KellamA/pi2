@@ -2,14 +2,14 @@
 // conversation, over its socket, on a throwaway data folder and throwaway repositories.
 
 import assert from "node:assert/strict";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { newRunMarker, RUN_VARIABLE, stopLeftOver } from "../src/processes.ts";
 import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
+import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -18,7 +18,6 @@ Object.assign(process.env, { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@ex
 
 const home = mkdtempSync(join(tmpdir(), "pi2-wt-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-wt-repos-")));
-const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 // The demo model types slowly for people; every engine this test starts makes it fast.
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
@@ -84,62 +83,12 @@ step("a folder's branch reads as clean, changed, ahead, in conflict or detached"
 // ---- The engine: worktrees for conversations
 
 type Event = Record<string, any>;
-class Client {
-	socket!: Socket;
-	events: Record<string, Event> = {};
-	conversations = new Map<number, Event>();
-	#next = 1;
-	#replies = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-	static async attach(): Promise<Client> {
-		const client = new Client();
-		for (let attempt = 0; ; attempt++) {
-			try {
-				if (!existsSync(socketPath)) throw new Error("no socket yet");
-				client.socket = connect(socketPath);
-				await new Promise<void>((resolve, reject) => client.socket.once("connect", resolve).once("error", reject));
-				break;
-			} catch (error) {
-				if (attempt >= 200) throw error;
-				await sleep(50);
-			}
-		}
-		let buffer = "";
-		client.socket.setEncoding("utf8").on("data", (chunk: string) => {
-			buffer += chunk;
-			const lines = buffer.split("\n");
-			buffer = lines.pop()!;
-			for (const line of lines) {
-				const message = JSON.parse(line);
-				if (message.event === "conversation") {
-					const conv = client.conversations.get(message.id) ?? { items: [] };
-					if (message.reset) conv.items = [];
-					conv.items.push(...message.items);
-					conv.state = message.state;
-					client.conversations.set(message.id, conv);
-				} else if (typeof message.event === "string") client.events[message.event] = message;
-				else if (message.id !== undefined && message.id !== null) {
-					const reply = client.#replies.get(message.id);
-					client.#replies.delete(message.id);
-					if (message.error !== undefined) reply?.reject(new Error(message.error));
-					else reply?.resolve(message.result);
-				}
-			}
-		});
-		return client;
-	}
-	call(method: string, params: Record<string, unknown> = {}): Promise<any> {
-		const id = this.#next++;
-		this.socket.write(`${JSON.stringify({ id, method, params })}\n`);
-		return new Promise((resolve, reject) => this.#replies.set(id, { resolve, reject }));
-	}
-	async until<T>(what: string, check: () => T | undefined | false, timeoutMs = 30_000): Promise<T> {
-		const deadline = Date.now() + timeoutMs;
-		for (;;) {
-			const value = check();
-			if (value !== undefined && value !== false) return value;
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${what}`);
-			await sleep(100);
-		}
+class Client extends EngineClient {
+	/** Every conversation a branches event listed both among the sidebar's branches and as left behind (#128). */
+	both: number[] = [];
+	override receive(message: any): void {
+		super.receive(message);
+		if (message.event === "branches") this.both.push(...(message.leftBehind as Event[]).filter((left) => message.conversations[String(left.id)] !== undefined).map((left) => left.id));
 	}
 	branch(id: number): any {
 		return this.events.branches?.conversations?.[String(id)];
@@ -161,9 +110,37 @@ class Client {
 }
 
 const project = repo("project");
-let engine: ChildProcess = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "inherit"] });
+/** What the engines this test started have logged, line by line. Their log is passed on to the test's own as it comes. */
+const logged: string[] = [];
+const startEngine = (): ChildProcess => {
+	const child = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "pipe"] });
+	let rest = "";
+	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
+		process.stderr.write(chunk);
+		const lines = (rest + chunk).split("\n");
+		rest = lines.pop()!;
+		logged.push(...lines);
+	});
+	return child;
+};
+/** Whether a process is still there (one that has ended but not yet been collected by its parent counts). */
+const alive = (pid: number) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};
+/** Commands' own `sleep`s that must outlive any wait of this test, so that only being stopped ends them; stopped at the end. */
+const LONG_SLEEP = `sleep ${(2 * PATIENT_MS) / 1000}`;
+/** The same for node: a program whose environment macOS lets another process read. */
+const LONG_WAIT = `setTimeout(() => {}, ${2 * PATIENT_MS})`;
+const sleepers: number[] = [];
+const holders: number[] = [];
+let engine = startEngine();
 try {
-	const client = await Client.attach();
+	const client = await Client.connect(engine, home);
 	await client.until("agents", () => client.events.providers);
 
 	const { id: a } = await client.call("conversation.create");
@@ -275,15 +252,19 @@ try {
 	const setups = (id: number) => client.conversations.get(id)?.items.filter((item: Event) => item.kind === "setup") ?? [];
 	const ended = (id: number) => setups(id).find((item: Event) => item.details.status !== "running");
 	await assert.rejects(client.call("agents.save", { agent: { name: "Setter", setup: ["npm", "ci"] } }), /must be text/);
-	const { id: setter } = await client.call("agents.save", {
-		agent: { name: "Setter", access: "full", cwd: tooling, worktree: true, setup: "  sleep 2; echo installing; mkdir -p deps; echo once >> deps/runs; echo a-warning >&2  " },
-	});
+	// The set-up waits for the test to let it finish, so that the first message is certainly sent while it runs.
+	const setterGate = join(scratch, "setter.gate");
+	const setterCommand = `while [ ! -e '${setterGate}' ]; do sleep 0.1; done; echo installing; mkdir -p deps; echo once >> deps/runs; echo a-warning >&2`;
+	const { id: setter } = await client.call("agents.save", { agent: { name: "Setter", access: "full", cwd: tooling, worktree: true, setup: `  ${setterCommand}  ` } });
 	const { id: e } = await client.call("conversation.create", { agentId: setter });
 	await client.call("conversation.open", { id: e });
 	await client.until("set-up shown as running", () => setups(e)[0]?.details.status === "running");
 	assert.equal(ended(e), undefined, "the command takes a while");
 	// The first message, sent while the set-up runs, waits for it.
 	await client.call("submit", { id: e, text: "/system" });
+	await client.until("the message in the transcript", () => client.conversations.get(e)?.items.some((item: Event) => item.kind === "user"));
+	assert.equal(ended(e), undefined, "the set-up is still running");
+	writeFileSync(setterGate, "");
 	const answered = await client.until("answer after the set-up", () => {
 		const conv = client.conversations.get(e);
 		return conv !== undefined && !conv.state.busy && conv.items.at(-1)?.kind === "assistant" ? conv.items : undefined;
@@ -294,12 +275,12 @@ try {
 		"the set-up's end comes before the answer",
 	);
 	const done = ended(e);
-	assert.equal(done.details.command, "sleep 2; echo installing; mkdir -p deps; echo once >> deps/runs; echo a-warning >&2", "the command is kept as typed, trimmed");
+	assert.equal(done.details.command, setterCommand, "the command is kept as typed, trimmed");
 	assert.equal(done.isError, false);
 	assert.match(done.details.output, /installing\n/);
 	assert.match(done.details.output, /a-warning/, "errors are shown with the output");
 	assert.match(done.text, /^The set-up command finished/);
-	assert.match(answered.at(-1).text, /ran the set-up command[^]*`sleep 2; echo installing[^]*It finished without errors/, "the agent is told it ran");
+	assert.match(answered.at(-1).text, /ran the set-up command[^]*`while \[ ! -e '[^']*' \]; do sleep 0\.1; done; echo installing[^]*It finished without errors/, "the agent is told it ran");
 	const setterRoot = await client.until("tracked", () => client.branch(e)?.managed === true && client.branch(e).root);
 	assert.equal(readFileSync(join(setterRoot, "deps", "runs"), "utf8"), "once\n", "it ran in the worktree's top folder");
 	assert.equal(existsSync(join(tooling, "deps")), false, "and not in the main checkout");
@@ -352,7 +333,7 @@ try {
 
 	// Made from the app for a conversation of an agent with a set-up command, then removed while it runs.
 	const pidFile = join(scratch, "setup.pid");
-	const { id: manual } = await client.call("agents.save", { agent: { name: "Manual", access: "full", cwd: tooling, setup: `sleep 30 & echo $! > '${pidFile}'; wait` } });
+	const { id: manual } = await client.call("agents.save", { agent: { name: "Manual", access: "full", cwd: tooling, setup: `${LONG_SLEEP} & echo $! > '${pidFile}'; wait` } });
 	const { id: g } = await client.call("conversation.create", { agentId: manual });
 	await client.call("conversation.open", { id: g });
 	await sleep(300);
@@ -360,22 +341,14 @@ try {
 	await client.call("worktree.create", { id: g });
 	await client.until("set-up running", () => setups(g)[0]?.details.status === "running" && existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
 	const sleeper = Number(readFileSync(pidFile, "utf8"));
+	sleepers.push(sleeper);
 	const madeAt = await client.until("tracked", () => client.branch(g)?.managed === true && client.branch(g).root);
-	const removing = Date.now();
+	// The command would run for twice the test's patience; a remove that waited for it would never be answered in time.
 	await client.call("worktree.remove", { id: g });
-	assert.ok(Date.now() - removing < 10_000, "removing does not wait for the command to finish");
 	const stopped = await client.until("set-up stopped", () => ended(g));
 	assert.equal(stopped.details.reason, "was stopped because the worktree was removed");
 	assert.equal(existsSync(madeAt), false, "the worktree is gone");
-	const gone = () => {
-		try {
-			process.kill(sleeper, 0);
-			return false;
-		} catch {
-			return true;
-		}
-	};
-	await client.until("what the command started was stopped too", gone, 5_000);
+	await client.until("what the command started was stopped too", () => !alive(sleeper));
 	step("a worktree made from the app runs the agent's set-up; removing it mid-run stops the command and everything it started");
 
 	// Its folder deleted by hand: shown as missing, and removing it tidies up.
@@ -393,15 +366,17 @@ try {
 	await client.call("worktree.create", { id: h });
 	await client.until("set-up started", () => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim() !== "");
 	const orphan = Number(readFileSync(pidFile, "utf8"));
+	sleepers.push(orphan);
 
 	// The worktree's record outlives a restart.
-	engine.kill("SIGTERM");
-	await new Promise((resolve) => engine.once("exit", resolve));
-	engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "inherit"] });
-	const again = await Client.attach();
+	await stop(engine);
+	// Killed as the engine exits; gone once launchd has collected it. Checked before the next engine starts, which would
+	// stop it too.
+	await until("stopping the engine stopped the set-up", () => !alive(orphan));
+	engine = startEngine();
+	const again = await Client.connect(engine, home);
 	await again.until("worktree remembered", () => again.branch(c)?.managed === true);
 	step("after a restart the worktree is still known as the conversation's own");
-	assert.throws(() => process.kill(orphan, 0), "stopping the engine stopped the set-up");
 	await again.call("conversation.open", { id: h });
 	const cut = await again.until("cut off", () => again.conversations.get(h)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 	assert.equal(cut.details.reason, "was cut off when pi²’s engine stopped");
@@ -411,9 +386,14 @@ try {
 
 	// Archived or deleted, its worktree stays on disk and is listed as left behind, where it can be removed.
 	const behind = (id: number) => again.events.branches?.leftBehind?.find((w: Event) => w.id === id);
+	// A look at the folders under way as the conversation is archived, as the engine's own every few seconds may be: what
+	// it says must still be true of one moment, and a refresh asked for after the archive must look again after it.
+	const underWay = again.call("branches.refresh");
 	await again.call("conversation.archive", { id: c });
 	await again.call("branches.refresh");
-	let left = await again.until("archived worktree left behind", () => behind(c));
+	await underWay;
+	let left = behind(c);
+	assert.ok(left, "once a refresh asked for after the archive is answered, the worktree is listed as left behind");
 	assert.equal(left.reason, "archived");
 	assert.equal(left.status.managed, true);
 	assert.equal(left.status.state, "clean");
@@ -429,6 +409,7 @@ try {
 	await again.until("no longer left behind", () => behind(c) === undefined);
 	assert.equal(existsSync(left.status.root), false, "removing it deletes the worktree's folder");
 	assert.ok(run(project, "branch").includes(left.status.branch), "and keeps its branch");
+	assert.deepEqual(again.both, [], "no event listed a conversation both among the branches and as left behind");
 	step("an archived or deleted conversation's worktree is listed as left behind, and can be removed");
 
 	{
@@ -515,64 +496,61 @@ try {
 
 	{
 		// An engine killed outright mid set-up leaves the command running; the next engine stops it, and what it started.
-		const alive = (pid: number) => {
-			try {
-				process.kill(pid, 0);
-				return true;
-			} catch {
-				return false;
-			}
-		};
 		const leaderFile = join(scratch, "left.pid");
 		const childFile = join(scratch, "left-child.pid");
-		const { id: lingerer } = await again.call("agents.save", { agent: { name: "Lingerer", access: "full", cwd: tooling, setup: `sleep 120 & echo $! > '${childFile}'; echo $$ > '${leaderFile}'; wait` } });
+		const { id: lingerer } = await again.call("agents.save", { agent: { name: "Lingerer", access: "full", cwd: tooling, setup: `${LONG_SLEEP} & echo $! > '${childFile}'; echo $$ > '${leaderFile}'; wait` } });
 		const { id: k } = await again.call("conversation.create", { agentId: lingerer });
 		await again.call("worktree.create", { id: k });
 		const [leader, started] = await again.until("set-up running", () => {
 			const read = (file: string) => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0);
 			return read(leaderFile) > 0 && read(childFile) > 0 ? [read(leaderFile), read(childFile)] : undefined;
 		});
-		// The engine notes the command's process group just after starting it.
-		await sleep(1_000);
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		sleepers.push(started);
+		// The engine notes the command's process group just after starting it, which the next engine needs to stop it.
+		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for ${k} runs as process group ${leader}`)));
+		await stop(engine, "SIGKILL");
 		assert.ok(alive(leader) && alive(started), "an engine killed outright does not stop the set-up");
-		engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "inherit"] });
-		const third = await Client.attach();
+		engine = startEngine();
+		const third = await Client.connect(engine, home);
 		await third.call("conversation.open", { id: k });
 		const cut = await third.until("marked", () => third.conversations.get(k)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 		assert.equal(cut.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
-		await third.until("what was left running is stopped", () => !alive(leader) && !alive(started), 10_000);
+		await third.until("what was left running is stopped", () => !alive(leader) && !alive(started));
 		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.
 		const notice: Event[] = (await third.until("recovery event", () => third.events.recovery)).recovery?.setups ?? [];
 		const listed = await third.until("the conversation listed", () => third.events.library?.conversations.find((conversation: Event) => conversation.id === k));
-		assert.deepEqual(notice, [{ conversationId: k, rootConversationId: k, title: listed.title, command: `sleep 120 & echo $! > '${childFile}'; echo $$ > '${leaderFile}'; wait`, outcome: "stopped", group: leader }]);
+		assert.deepEqual(notice, [{ conversationId: k, rootConversationId: k, title: listed.title, command: `${LONG_SLEEP} & echo $! > '${childFile}'; echo $$ > '${leaderFile}'; wait`, outcome: "stopped", group: leader }]);
 		step("a set-up left running by an engine killed outright is stopped by the next engine, with what it started, and marked; Activity's notice names it");
 
 		// The same when the command's first process has ended and only something it started in the background is left: the
-		// next engine knows it by the run's marker in its environment. The engine still counts the set-up as running for a
-		// few seconds after its first process ends, while what it started holds its output open; it is killed then. What is
-		// left is node, not `sleep`: macOS does not show the environment of its own programs.
+		// next engine knows it by the run's marker in its environment. The first process ends once the engine is killed, as
+		// it waits for the test to let it; ended while the engine runs, the set-up would soon count as over. What is left
+		// is node, not `sleep`: macOS does not show the environment of its own programs.
 		const strayFile = join(scratch, "stray.pid");
 		const endedFile = join(scratch, "stray-leader.pid");
-		const holder = `'${process.execPath}' -e 'setTimeout(() => {}, 60000)'`;
-		const { id: strayer } = await third.call("agents.save", { agent: { name: "Strayer", access: "full", cwd: tooling, setup: `${holder} & echo $! > '${strayFile}'; echo $$ > '${endedFile}'; sleep 3` } });
+		const strayGate = join(scratch, "stray.gate");
+		const holder = `'${process.execPath}' -e '${LONG_WAIT}'`;
+		const { id: strayer } = await third.call("agents.save", {
+			agent: { name: "Strayer", access: "full", cwd: tooling, setup: `${holder} & echo $! > '${strayFile}'; echo $$ > '${endedFile}'; while [ ! -e '${strayGate}' ]; do sleep 0.1; done` },
+		});
 		const { id: l } = await third.call("conversation.create", { agentId: strayer });
 		await third.call("worktree.create", { id: l });
 		const [ended, stray] = await third.until("set-up running", () => {
 			const read = (file: string) => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0);
 			return read(endedFile) > 0 && read(strayFile) > 0 ? [read(endedFile), read(strayFile)] : undefined;
 		});
-		await third.until("the command's first process ended", () => !alive(ended), 10_000);
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		holders.push(stray);
+		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for ${l} runs as process group ${ended}`)));
+		await stop(engine, "SIGKILL");
+		writeFileSync(strayGate, "");
+		await until("the command's first process ended", () => !alive(ended));
 		assert.ok(alive(stray), "what the set-up started in the background outlives it and the engine");
-		engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "inherit"] });
-		const fourth = await Client.attach();
+		engine = startEngine();
+		const fourth = await Client.connect(engine, home);
 		await fourth.call("conversation.open", { id: l });
 		const strayed = await fourth.until("marked", () => fourth.conversations.get(l)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 		assert.equal(strayed.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
-		await fourth.until("what was left without its leader is stopped", () => !alive(stray), 10_000);
+		await fourth.until("what was left without its leader is stopped", () => !alive(stray));
 		assert.deepEqual(
 			(await fourth.until("recovery event", () => fourth.events.recovery)).recovery?.setups.map((left: Event) => [left.conversationId, left.outcome, left.group]),
 			[[l, "stopped", ended]],
@@ -592,7 +570,7 @@ try {
 		let exited = false;
 		orphaning.stdout!.on("data", (chunk) => (printed += chunk));
 		orphaning.once("exit", () => (exited = true));
-		await third.until("leader gone, member left", () => exited && printed.includes("\n"));
+		await until("leader gone, member left", () => exited && printed.includes("\n"));
 		orphaning.stdout!.destroy();
 		const member = Number(printed.trim());
 		assert.ok(member > 0 && alive(member), printed);
@@ -607,16 +585,17 @@ try {
 		// their own pid when they are up (`waiting`), and answers with the group and those pids, in the order printed. A
 		// variable given as undefined is one the group starts without.
 		const marker = newRunMarker();
-		const waiting = (before = "") => `'${process.execPath}' -e '${before}console.log(process.pid); setTimeout(() => {}, 30000)'`;
+		const waiting = (before = "") => `'${process.execPath}' -e '${before}console.log(process.pid); ${LONG_WAIT}'`;
 		const orphans = async (script: string, env: Record<string, string | undefined>, count = 1) => {
 			const first = spawn("/bin/bash", ["-c", script], { detached: true, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "ignore"] });
 			let out = "";
 			let over = false;
 			first.stdout!.on("data", (chunk) => (out += chunk));
 			first.once("exit", () => (over = true));
-			await fourth.until("leader gone, members up", () => over && out.trim().split("\n").length === count && out.endsWith("\n"));
+			await until("leader gone, members up", () => over && out.trim().split("\n").length === count && out.endsWith("\n"));
 			first.stdout!.destroy();
 			const pids = out.trim().split("\n").map(Number);
+			holders.push(...pids);
 			assert.ok(pids.every((pid) => pid > 0 && alive(pid)) && !alive(first.pid!), out);
 			return { group: first.pid!, pids };
 		};
@@ -624,13 +603,13 @@ try {
 
 		let left = await orphans(`${waiting()} &`, { [RUN_VARIABLE]: marker });
 		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 100), "stopped");
-		await fourth.until("the member with the marker is stopped", () => !alive(left.pids[0]!), 5_000);
+		await until("the member with the marker is stopped", () => !alive(left.pids[0]!));
 		// One that takes no notice of SIGTERM is killed after the grace.
 		left = await orphans(`${waiting('process.on("SIGTERM", () => {}); ')} &`, { [RUN_VARIABLE]: marker });
 		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 1_000), "stopped");
 		await sleep(300);
 		assert.ok(alive(left.pids[0]!), "it took no notice of SIGTERM");
-		await fourth.until("the member that ignored SIGTERM is killed", () => !alive(left.pids[0]!), 5_000);
+		await until("the member that ignored SIGTERM is killed", () => !alive(left.pids[0]!));
 		step("a member left without its leader that carries the run's marker is stopped, and killed if it ignores that");
 
 		// Look-alikes: a group of the same number whose member has no marker, another run's, the marker only in its
@@ -656,7 +635,7 @@ try {
 		// that part was stopped and part left.
 		left = await orphans(`${waiting()} & sleep 1; env -u ${RUN_VARIABLE} ${waiting()} &`, { [RUN_VARIABLE]: marker }, 2);
 		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 100), "partly");
-		await fourth.until("the member with the marker is stopped", () => !alive(left.pids[0]!), 5_000);
+		await until("the member with the marker is stopped", () => !alive(left.pids[0]!));
 		await sleep(400);
 		assert.ok(alive(left.pids[1]!), "the member without the marker is not touched");
 		stopAll([left.pids[1]!]);
@@ -695,8 +674,12 @@ try {
 	}
 	console.log("PASS");
 } finally {
-	engine.kill("SIGTERM");
-	await sleep(300);
+	await stop(engine);
+	// Should a check have failed before they were stopped, the long sleeps of set-ups: only one still running that command.
+	for (const pid of [...sleepers, ...holders]) {
+		const line = spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
+		if (line === LONG_SLEEP || line.endsWith(LONG_WAIT)) process.kill(pid, "SIGKILL");
+	}
 	rmSync(home, { recursive: true, force: true });
 	rmSync(scratch, { recursive: true, force: true });
 }

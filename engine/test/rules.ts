@@ -9,6 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CommandRule, judgeCommand, type MadeWorktree, MAX_WORDS, parseCommandLine, proposeRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "../src/rules.ts";
+import { PATIENT_MS } from "./patience.ts";
 
 const folder = "/work/webapp";
 const rule = (...words: string[]): CommandRule => ({ folder, words, createdAt: 0 });
@@ -385,7 +386,8 @@ function runInBash(line: string): { ran: string[]; problem?: string } {
 	const result = spawnSync("/bin/bash", ["-c", line], {
 		cwd: work,
 		env: { PATH: bin, HOME: home, PI2_RULES_LOG: log, LANG: "en_US.UTF-8" },
-		timeout: 5_000,
+		// Only a hang reaches it: a busy machine can be slow to start bash.
+		timeout: PATIENT_MS,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 	});

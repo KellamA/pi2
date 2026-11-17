@@ -8,11 +8,10 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { socketPathFor } from "../src/socket.ts";
+import { listening, PATIENT_MS, running, stop, until } from "./patience.ts";
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-earlystop-")));
 const home = join(scratch, "home");
@@ -24,12 +23,8 @@ const engines: ChildProcess[] = [];
 function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
-async function until(what: string, met: () => boolean, ms = 120_000): Promise<void> {
-	for (const deadline = Date.now() + ms; !met(); ) {
-		if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-		await sleep(25);
-	}
-}
+/** What the stand-in shell starts: longer than any wait here, so that only being stopped ends it. */
+const LONG_SLEEP = `sleep ${(2 * PATIENT_MS) / 1000}`;
 const pidIn = (file: string): number | undefined => {
 	const text = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
 	return text === "" ? undefined : Number(text);
@@ -63,16 +58,18 @@ try {
 	const shellFolder = join(scratch, "shell");
 	mkdirSync(shellFolder);
 	const shell = join(shellFolder, "zsh");
-	writeFileSync(shell, `#!/bin/sh\n[ "$1" = "-ilc" ] || exit 0\necho $$ > "${shellPidFile}"\nsleep 300 &\necho $! > "${sleepPidFile}"\nwait\n`);
+	writeFileSync(shell, `#!/bin/sh\n[ "$1" = "-ilc" ] || exit 0\necho $$ > "${shellPidFile}"\n${LONG_SLEEP} &\necho $! > "${sleepPidFile}"\nwait\n`);
 	chmodSync(shell, 0o755);
 
 	// ---- Stopped while waiting for the login shell
 
 	const first = startEngine({ PI2_LOGIN_SHELL: shell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: "3600" });
-	await until("the engine to ask its stand-in shell", () => pidIn(shellPidFile) !== undefined && pidIn(sleepPidFile) !== undefined);
+	await until("the engine to ask its stand-in shell", () => pidIn(shellPidFile) !== undefined && pidIn(sleepPidFile) !== undefined, {
+		over: () => (running(first.engine) ? undefined : `the engine exited:\n${first.log.join("\n")}`),
+	});
 	const shellPid = pidIn(shellPidFile)!;
 	const sleepPid = pidIn(sleepPidFile)!;
-	assert.ok(stillRunning(shellPid, shell) && stillRunning(sleepPid, "sleep 300"), "the stand-in is running");
+	assert.ok(stillRunning(shellPid, shell) && stillRunning(sleepPid, LONG_SLEEP), "the stand-in is running");
 	assert.ok(existsSync(join(home, "engine.running")), "the engine has begun: its marker is there");
 	assert.ok(!first.logged(/listening on /), "and it is still starting, waiting for the shell");
 	first.engine.kill("SIGTERM");
@@ -83,14 +80,13 @@ try {
 	assert.ok(!first.logged(/listening on /), "it never listened");
 	assert.ok(first.logged(/told to stop \(SIGTERM\) while starting/), first.log.join("\n"));
 	assert.ok(first.logged(/PATH not taken from the login shell: the engine is stopping/), first.log.join("\n"));
-	await until("the stand-in shell and what it started to be stopped", () => !stillRunning(shellPid, shell) && !stillRunning(sleepPid, "sleep 300"), 10_000);
+	await until("the stand-in shell and what it started to be stopped", () => !stillRunning(shellPid, shell) && !stillRunning(sleepPid, LONG_SLEEP));
 	step("an engine told to stop while waiting for its login shell stops cleanly, and stops the shell");
 
 	// ---- The next start
 
 	const second = startEngine({ PI2_LOGIN_SHELL: "off" });
-	await until("the next engine to listen", () => second.logged(/listening on /));
-	const socket = connect(socketPathFor(home));
+	const socket = await listening(second.engine, home);
 	let buffer = "";
 	const recovery = await new Promise<unknown>((resolve, reject) => {
 		socket.once("error", reject);
@@ -111,20 +107,14 @@ try {
 	assert.ok(!existsSync(join(home, "engine.running")));
 	step("the next start does not take it for a crash");
 } finally {
-	for (const engine of engines) {
-		if (engine.exitCode === null && engine.signalCode === null) {
-			const exited = new Promise((resolve) => engine.once("exit", resolve));
-			engine.kill("SIGKILL");
-			await exited;
-		}
-	}
+	for (const engine of engines) await stop(engine, "SIGKILL");
 	// In a temporary folder with a long path, an engine's socket is reached through a link in /tmp (src/socket.ts).
 	const reached = socketPathFor(home);
 	if (reached !== join(home, "engine.sock")) rmSync(join(reached, ".."), { force: true });
 	// Had a check failed, the stand-in could be left: stop it, if it is still this test's own.
 	for (const [file, command] of [
 		[shellPidFile, join(scratch, "shell", "zsh")],
-		[sleepPidFile, "sleep 300"],
+		[sleepPidFile, LONG_SLEEP],
 	] as const) {
 		const pid = pidIn(file);
 		if (pid !== undefined && pid > 1 && stillRunning(pid, command)) process.kill(pid, "SIGKILL");

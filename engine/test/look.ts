@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { PATIENT_MS } from "./patience.ts";
 
 const server = createServer((request, response) => {
 	const url = request.url ?? "/";
@@ -157,7 +158,7 @@ const names: string[] = [];
 const walked = await look.walk(root, root, never, async (_full, below) => void names.push(below));
 assert.deepEqual(names, ["e.md", "src/a.ts", "src/deep/b.ts"], "skipped places stay skipped, in name order");
 assert.equal(walked.stopped, undefined);
-const capped = await look.walk(root, root, never, async () => {}, { files: 2, ms: 10_000 });
+const capped = await look.walk(root, root, never, async () => {}, { files: 2, ms: PATIENT_MS });
 assert.deepEqual(capped, { visited: 2, stopped: "files" });
 const timed = await look.walk(root, root, never, async () => {}, { files: 100, ms: -1 });
 assert.equal(timed.stopped, "time");
@@ -167,7 +168,7 @@ symlinkSync(join(tmpdir()), join(root, "escape"));
 assert.ok("refused" in (await look.locate(root, "escape")), "a link out of the folder is not followed");
 assert.ok("refused" in (await look.locate(root, "../..")), ".. cannot climb out");
 assert.ok("real" in (await look.locate(root, "src/deep/..")));
-assert.match((await look.findFiles(root, "**/*.ts", undefined, never, { files: 1, ms: 10_000 })).text, /Stopped after looking at 1 files/);
+assert.match((await look.findFiles(root, "**/*.ts", undefined, never, { files: 1, ms: PATIENT_MS })).text, /Stopped after looking at 1 files/);
 assert.equal(look.clip("a".repeat(1000), 500).length <= look.clip("a".repeat(1000), 500).length && look.clip("a".repeat(1000), 500).length <= 242, true);
 assert.ok(look.clip(`${"a".repeat(500)}NEEDLE${"b".repeat(500)}`, 500).includes("NEEDLE"), "a long line is cut around the match");
 

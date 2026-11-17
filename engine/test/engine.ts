@@ -4,12 +4,12 @@ import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 import { newestOnly } from "../src/providers.ts";
+import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
@@ -19,7 +19,6 @@ function removedAtEnd(folder: string): string {
 	scratchFolders.push(folder);
 	return folder;
 }
-const socketPath = join(home, "engine.sock");
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 // The demo model types slowly for people; every engine this test starts makes it fast.
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
@@ -38,9 +37,8 @@ function startEngine(): ChildProcess {
 	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5", PI2_DEMO_TEXT_MODEL: "1", PI2_COMMAND_TIMEOUT_SECONDS: "3" }, stdio: ["ignore", "ignore", "inherit"] });
 }
 
-class Client {
-	socket!: Socket;
-	conversations = new Map<number, Conv>();
+class Client extends EngineClient {
+	override conversations = new Map<number, Conv>();
 	library: { id: number; title: string; busy: boolean; parent: number | null }[] = [];
 	archived: { id: number; title: string; archivedAt: number; subChats: number }[] = [];
 	autoArchiveDays: number | null = null;
@@ -54,44 +52,18 @@ class Client {
 	providers: { id: string; kind: string; status: unknown; oauth: { subscription: boolean } | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	/** As the app does for computer use: what the engine asked this client to do on screen, and how it answers. */
-	/** The latest event of each kind not handled above. */
-	events: Record<string, any> = {};
 	computerRequests: any[] = [];
 	computerReply: ((request: any) => Record<string, unknown> | undefined) | undefined;
 	/** The same for the browser: what the engine asked this client to do in a web page, and how it answers. */
 	browserRequests: any[] = [];
 	browserReply: ((request: any) => Record<string, unknown> | undefined) | undefined;
-	#nextId = 1;
-	#replies = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-	#wake: (() => void) | undefined;
 
-	static async attach(): Promise<Client> {
-		const client = new Client();
-		// A killed engine leaves its socket file behind, so retry until the new one is listening.
-		for (let attempt = 0; ; attempt++) {
-			try {
-				if (!existsSync(socketPath)) throw new Error("no socket yet");
-				client.socket = connect(socketPath);
-				await new Promise<void>((resolve, reject) => client.socket.once("connect", resolve).once("error", reject));
-				break;
-			} catch (error) {
-				if (attempt >= 200) throw error;
-				await sleep(50);
-			}
-		}
-		let buffer = "";
-		client.socket.setEncoding("utf8").on("data", (chunk: string) => {
-			buffer += chunk;
-			const lines = buffer.split("\n");
-			buffer = lines.pop()!;
-			for (const line of lines) client.receive(JSON.parse(line));
-			client.#wake?.();
-		});
-		client.socket.on("error", () => {});
-		return client;
+	/** Connected to the engine this test runs now, once it listens. */
+	static attach(): Promise<Client> {
+		return Client.connect(engine, home);
 	}
 
-	receive(message: any): void {
+	override receive(message: any): void {
 		if (message.event === "library") {
 			this.library = message.conversations;
 			this.archived = message.archived;
@@ -124,27 +96,6 @@ class Client {
 		} else if (typeof message.event === "string") {
 			// Any other event: kept by name, for features that send their own.
 			this.events[message.event] = message;
-		} else if (message.id !== undefined && message.id !== null) {
-			const reply = this.#replies.get(message.id);
-			this.#replies.delete(message.id);
-			if (message.error !== undefined) reply?.reject(new Error(message.error));
-			else reply?.resolve(message.result);
-		}
-	}
-
-	call(method: string, params: Record<string, unknown> = {}): Promise<any> {
-		const id = this.#nextId++;
-		this.socket.write(`${JSON.stringify({ id, method, params })}\n`);
-		return new Promise((resolve, reject) => this.#replies.set(id, { resolve, reject }));
-	}
-
-	async until<T>(what: string, check: () => T | undefined | false, timeoutMs = 60_000): Promise<T> {
-		const deadline = Date.now() + timeoutMs;
-		for (;;) {
-			const value = check();
-			if (value !== undefined && value !== false) return value;
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${what}`);
-			await Promise.race([new Promise<void>((resolve) => (this.#wake = resolve)), sleep(250)]);
 		}
 	}
 
@@ -289,8 +240,7 @@ try {
 	await client.call("submit", { id: c, text: "/slow survive this", requestId: "crash-1" });
 	await client.until("partial answer", () => (client.conversations.get(c)?.state.partial?.text.length ?? 0) > 40);
 	await sleep(1200); // let the deferred partial reach storage
-	engine.kill("SIGKILL");
-	await new Promise((resolve) => engine.once("exit", resolve));
+	await stop(engine, "SIGKILL");
 	engine = startEngine();
 	client = await Client.attach();
 	await client.call("conversation.open", { id: c });
@@ -345,8 +295,7 @@ try {
 	// ---- An approval survives a crash
 	await client.call("submit", { id: f, text: "/bash echo after-crash" });
 	const beforeCrash = await client.until("approval before crash", () => client.inbox.find((i) => i.conversationId === f));
-	engine.kill("SIGKILL");
-	await new Promise((resolve) => engine.once("exit", resolve));
+	await stop(engine, "SIGKILL");
 	engine = startEngine();
 	client = await Client.attach();
 	await client.call("conversation.open", { id: f });
@@ -1042,8 +991,7 @@ try {
 
 		// The list survives the engine being killed and started again.
 		await sleep(1200);
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
 		for (const id of [p, subChat]) await client.call("conversation.open", { id });
@@ -1186,8 +1134,7 @@ try {
 		await say(p3, '/tool remember {"note":"prefers metric units"}');
 		assert.ok(/already have/.test(toolResults(p3).at(-1)!.text) && noted().length === 1, "the same note is not added twice");
 
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
 		await client.until("memory sent on connecting", () => client.events.memory?.agents?.[pilot]?.notes?.length === 1);
@@ -1482,8 +1429,7 @@ try {
 
 		// Kept across a restart, and good for a new conversation of that agent in that folder, other arguments included.
 		await sleep(400);
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
 		await client.until("rules after restart", () => rulesOf(smith).length === 1);
@@ -1612,8 +1558,7 @@ try {
 		await client.until("rule kept", () => rulesOf(keeper).length === 1);
 
 		await sleep(400);
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
 		for (const id of [left, offered, covered]) await client.call("conversation.open", { id });
@@ -1778,6 +1723,8 @@ try {
 		let anthropicMode: "ok" | "garbage" | "busy" = "ok";
 		let codexMode: "ok" | "silent" = "ok";
 		const hits = { anthropic: 0, codex: 0 };
+		/** When the request to the address that never answers came, and when the engine gave up on it and closed it. */
+		const silent: { at?: number; closed?: number } = {};
 		const seen: Record<string, Record<string, unknown>> = {};
 		const json = { "content-type": "application/json" };
 		const standIn = createServer((request, response) => {
@@ -1793,7 +1740,12 @@ try {
 			if (request.url === "/backend-api/wham/usage") {
 				hits.codex++;
 				seen.codex = request.headers;
-				if (codexMode === "silent") return; // never answers
+				if (codexMode === "silent") {
+					// Never answers.
+					silent.at = Date.now();
+					request.socket.once("close", () => (silent.closed = Date.now()));
+					return;
+				}
 				return void response.writeHead(200, json).end(JSON.stringify(codexAnswer));
 			}
 			response.writeHead(404).end();
@@ -1827,6 +1779,8 @@ try {
 		await new Promise<void>((resolve) => copilotStandIn.listen(0, "127.0.0.1", resolve));
 		const copilotToken = `tid=limits-test;exp=9999999999;proxy-ep=127.0.0.1:${(copilotStandIn.address() as { port: number }).port};`;
 		let log = "";
+		/** The least time between two requests to one usage address, for this engine. */
+		const LIMITS_INTERVAL_MS = 1500;
 		const startLimitsEngine = () => {
 			const child = spawn(process.execPath, [main], {
 				env: {
@@ -1836,7 +1790,7 @@ try {
 					PI2_LIMITS_ANTHROPIC_URL: `${standInUrl}/api/oauth/usage`,
 					PI2_LIMITS_CODEX_URL: `${standInUrl}/backend-api/wham/usage`,
 					PI2_LIMITS_KIMI_URL: `${standInUrl}/coding/v1/usages`,
-					PI2_LIMITS_MIN_INTERVAL_MS: "1500",
+					PI2_LIMITS_MIN_INTERVAL_MS: String(LIMITS_INTERVAL_MS),
 					NODE_EXTRA_CA_CERTS: join(limitsHome, "cert.pem"),
 				},
 				stdio: ["ignore", "ignore", "pipe"],
@@ -1844,31 +1798,8 @@ try {
 			child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (log += chunk));
 			return child;
 		};
-		const attachLimits = async () => {
-			const watcher = new Client();
-			const path = join(limitsHome, "engine.sock");
-			for (let attempt = 0; ; attempt++) {
-				try {
-					if (!existsSync(path)) throw new Error("no socket yet");
-					watcher.socket = connect(path);
-					await new Promise<void>((resolve, reject) => watcher.socket.once("connect", resolve).once("error", reject));
-					break;
-				} catch (error) {
-					if (attempt >= 300) throw error;
-					await sleep(50);
-				}
-			}
-			let buffer = "";
-			watcher.socket.setEncoding("utf8").on("data", (chunk: string) => {
-				buffer += chunk;
-				const lines = buffer.split("\n");
-				buffer = lines.pop()!;
-				for (const line of lines) watcher.receive(JSON.parse(line));
-			});
-			watcher.socket.on("error", () => {});
-			return watcher;
-		};
 		let limitsEngine: ChildProcess | undefined;
+		const attachLimits = () => Client.connect(limitsEngine!, limitsHome);
 		try {
 			await store.modify("anthropic", async () => ({ type: "oauth", access: claudeToken, refresh: "limits-test-refresh-a", expires: notDue }));
 			await store.modify("openai-codex", async () => ({ type: "oauth", access: codexToken, refresh: "limits-test-refresh-c", expires: notDue, accountId: "acct-limits-test" }));
@@ -1878,7 +1809,7 @@ try {
 			const limitsOf = (id: string): any => watcher.events.limits?.providers?.find((p: any) => p.id === id);
 			await watcher.until("limits sent on connecting", () => watcher.events.limits !== undefined);
 			// Both signed-in subscriptions are asked at start.
-			await watcher.until("both read", () => limitsOf("anthropic")?.windows.length > 0 && limitsOf("openai-codex")?.windows.length > 0, 20_000);
+			await watcher.until("both read", () => limitsOf("anthropic")?.windows.length > 0 && limitsOf("openai-codex")?.windows.length > 0);
 			const claude = limitsOf("anthropic");
 			assert.deepEqual(rows(claude), [["five_hour", "5-hour window", 47], ["seven_day", "This week", 12.5]]);
 			assert.deepEqual([claude.name, claude.plan, claude.reports, claude.source, claude.error], ["Anthropic", null, "usage", "usage", null]);
@@ -1906,19 +1837,30 @@ try {
 			assert.equal(limitsOf("github-copilot").source, "responses");
 
 			// Asked twice in a row: within the minimum interval the second sends nothing. The interval is waited out first,
-			// so the first always sends, whatever the steps above took on this machine.
-			await sleep(1600);
-			const beforeHits = { ...hits };
-			await watcher.call("limits.refresh");
-			const firstHits = { ...hits };
-			assert.deepEqual(firstHits, { anthropic: beforeHits.anthropic + 1, codex: beforeHits.codex + 1 }, "the first asks each once");
-			let answer = await watcher.call("limits.refresh");
-			assert.deepEqual(hits, firstHits, "no second request within the interval");
+			// so the first always sends, whatever the steps above took on this machine. Whether the second was asked within
+			// the interval is known here from before the first was sent to after the second was answered, which holds both
+			// of the engine's own moments; a machine too busy for that to be shorter than the interval says nothing about it,
+			// so the two are asked again (#133).
+			let answer: any;
+			for (const deadline = Date.now() + PATIENT_MS; ; ) {
+				await sleep(LIMITS_INTERVAL_MS + 100);
+				const beforeHits = { ...hits };
+				const sent = Date.now();
+				await watcher.call("limits.refresh");
+				const firstHits = { ...hits };
+				assert.deepEqual(firstHits, { anthropic: beforeHits.anthropic + 1, codex: beforeHits.codex + 1 }, "the first asks each once");
+				answer = await watcher.call("limits.refresh");
+				if (Date.now() - sent < LIMITS_INTERVAL_MS) {
+					assert.deepEqual(hits, firstHits, "no second request within the interval");
+					break;
+				}
+				assert.ok(Date.now() < deadline, "two refreshes within the interval of each other, at some point in ten minutes");
+			}
 			assert.equal(answer.providers.length, 3);
 			await assert.rejects(watcher.call("limits.refresh", { id: "xai" }), /not signed in/);
 
 			// An answer that cannot be read: said plainly, with when, and the last good figures kept.
-			await sleep(1600);
+			await sleep(LIMITS_INTERVAL_MS + 100);
 			anthropicMode = "garbage";
 			answer = await watcher.call("limits.refresh", { id: "anthropic" });
 			let now = answer.providers.find((p: any) => p.id === "anthropic");
@@ -1927,22 +1869,24 @@ try {
 			assert.equal(now.windows[0].usedPercent, 47, "the last good reading stays");
 
 			// Too many requests: said plainly, and the address is left alone for minutes, whatever it said.
-			await sleep(1600);
+			await sleep(LIMITS_INTERVAL_MS + 100);
 			anthropicMode = "busy";
 			answer = await watcher.call("limits.refresh", { id: "anthropic" });
 			assert.match(answer.providers.find((p: any) => p.id === "anthropic").error, /check less often/);
 			const busyHits = hits.anthropic;
-			await sleep(1600);
+			await sleep(LIMITS_INTERVAL_MS + 100);
 			await watcher.call("limits.refresh", { id: "anthropic" });
 			assert.equal(hits.anthropic, busyHits, "not asked again soon after a 429");
 
-			// An address that never answers is given up on after a few seconds.
+			// An address that never answers is given up on after a few seconds. How long is measured where it is waited on,
+			// at the address, from the request coming to the engine closing it: not the time it takes a busy machine to get
+			// the engine as far as asking.
 			codexMode = "silent";
-			const asked = Date.now();
 			answer = await watcher.call("limits.refresh", { id: "openai-codex" });
 			now = answer.providers.find((p: any) => p.id === "openai-codex");
 			assert.match(now.error, /did not answer within 6 seconds/);
-			assert.ok(Date.now() - asked < 12_000);
+			const gaveUp = await until("the request that was not answered closed", () => silent.closed);
+			assert.ok(silent.at !== undefined && gaveUp - silent.at < 12_000, `given up on after ${gaveUp - silent.at!} ms`);
 			assert.equal(now.windows.length, 3);
 
 			// Signing out takes a subscription off the list.
@@ -1951,13 +1895,12 @@ try {
 
 			// After a restart the last good reading is there at once, and a recent one is not asked for again.
 			await watcher.until("readings saved", () => existsSync(join(limitsHome, "limits.json")) && !readFileSync(join(limitsHome, "limits.json"), "utf8").includes("openai-codex"));
-			limitsEngine.kill("SIGTERM");
-			await new Promise((resolve) => limitsEngine!.once("exit", resolve));
+			await stop(limitsEngine);
 			anthropicMode = "ok";
 			const beforeRestart = hits.anthropic;
 			limitsEngine = startLimitsEngine();
 			watcher = await attachLimits();
-			await watcher.until("readings kept across a restart", () => limitsOf("anthropic")?.windows[0]?.usedPercent === 47 && limitsOf("github-copilot")?.windows[0]?.usedPercent === 37.5, 20_000);
+			await watcher.until("readings kept across a restart", () => limitsOf("anthropic")?.windows[0]?.usedPercent === 47 && limitsOf("github-copilot")?.windows[0]?.usedPercent === 37.5);
 			assert.equal(hits.anthropic, beforeRestart);
 
 			// No token on disk or in the log.
@@ -1968,12 +1911,11 @@ try {
 			}
 			step("limits: each subscription's windows from its usage address or from its answers' headers on a real request; at most once a minute, longer after a 429; unreadable or silent answers said plainly with the last good figures kept; sign-out, restart, no token on disk or in the log");
 		} finally {
-			limitsEngine?.kill("SIGTERM");
+			if (limitsEngine !== undefined) await stop(limitsEngine);
 			standIn.closeAllConnections();
 			standIn.close();
 			copilotStandIn.closeAllConnections();
 			copilotStandIn.close();
-			await sleep(400);
 			for (const id of ["anthropic", "openai-codex", "github-copilot"]) await store.delete(id).catch(() => {});
 			rmSync(limitsHome, { recursive: true, force: true });
 		}
@@ -2057,8 +1999,7 @@ try {
 		// Killed while the question waits: asked again, about the same schedule at the same time, and made once.
 		await client.call("submit", { id: h, text: `/tool schedule_task ${JSON.stringify({ title: "Wrap-up", prompt: "Sum up the day.", repeat: "once", in_minutes: 600 })}` });
 		const beforeCrash = await client.until("approval before the crash", () => asked(h));
-		engine.kill("SIGKILL");
-		await new Promise((resolve) => engine.once("exit", resolve));
+		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
 		await client.call("conversation.open", { id: h });
@@ -2126,7 +2067,7 @@ try {
 		const inner = { title: "Again", prompt: "x", repeat: "once", in_minutes: 30 };
 		answer = await use(h, "schedule_task", { title: "Fire soon", prompt: `/tool schedule_task ${JSON.stringify(inner)}`, repeat: "once", at: stamp(Date.now() + 10_000) }, () => "once");
 		assert.equal(answer.isError, false, answer.text);
-		const fired = await client.until("the schedule fires", () => client.library.find((c) => c.title === "Fire soon"), 30_000);
+		const fired = await client.until("the schedule fires", () => client.library.find((c) => c.title === "Fire soon"));
 		await client.call("conversation.open", { id: fired.id });
 		const nested = await client.until("the scheduled run asks before scheduling", () => asked(fired.id));
 		assert.match(nested.question!, /^Herald wants to schedule “Again”: once, on /);
@@ -2166,8 +2107,9 @@ try {
 		};
 		const [stopped, longer, input] = [await open(), await open(), await open()];
 		const started = Date.now();
-		// At once, so the two waits overlap.
-		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 60; echo never-printed" });
+		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
+		// take, however busy the machine.
+		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 600; echo never-printed" });
 		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
 		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
@@ -2178,7 +2120,7 @@ try {
 		assert.ok(honoured.text.includes("finished-late"), `a larger timeout is honoured: ${honoured.text}`);
 		assert.equal(reader.isError, false, reader.text);
 		assert.ok(reader.text.includes("got []"), `a command reading its input gets none: ${reader.text}`);
-		assert.ok(Date.now() - started < 30_000, "the stopped command did not run its full minute");
+		assert.ok(Date.now() - started < 5 * 60_000, "the stopped command did not run its full ten minutes");
 		step("commands: one without a timeout is stopped at the default and says how to get longer; a larger timeout is honoured; standard input is closed");
 	}
 
@@ -2216,8 +2158,7 @@ try {
 	// ---- A schedule that comes due while the engine is down, and the recovery report
 	await client.call("schedules.save", { schedule: { title: "Missed", agentId: "atlas", prompt: "catch up", repeat: { kind: "once", at: Date.now() + 2000 } } });
 	await client.until("missed saved", () => client.schedules.some((x) => x.title === "Missed"));
-	engine.kill("SIGKILL");
-	await new Promise((resolve) => engine.once("exit", resolve));
+	await stop(engine, "SIGKILL");
 	await sleep(2600);
 	engine = startEngine();
 	client = await Client.attach();
@@ -2497,8 +2438,7 @@ try {
 	const restoreArgs = [main, "--restore", backupPath];
 	const restoreEnv = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE };
 	assert.throws(() => execFileSync(process.execPath, restoreArgs, { env: restoreEnv, stdio: "pipe" }), "restoring is refused while the engine runs");
-	engine.kill("SIGTERM");
-	await new Promise((resolve) => engine.once("exit", resolve));
+	await stop(engine, "SIGTERM");
 	assert.throws(() => execFileSync(process.execPath, [main, "--restore", workdir], { env: restoreEnv, stdio: "pipe" }), "a folder that is not a backup is refused");
 	const restored = JSON.parse(execFileSync(process.execPath, restoreArgs, { env: restoreEnv, encoding: "utf8" }));
 	assert.ok(existsSync(join(restored.previousDataMovedTo, "session.sqlite")), "the data that was replaced is kept aside");
@@ -2508,9 +2448,8 @@ try {
 	step("restore a backup: the conversation archived after it is back, and the replaced data is kept");
 	console.log("PASS");
 } finally {
-	engine.kill("SIGTERM");
+	await stop(engine);
 	mock.close();
-	await sleep(400);
 	cleanKeychain();
 	rmSync(home, { recursive: true, force: true });
 	rmSync(workdir, { recursive: true, force: true });
