@@ -453,7 +453,13 @@ try {
 	assert.ok(dropped >= 600_000 - 2 * 128 * 1024, `most of 600,000 characters were let go: ${dropped}`);
 	const noisyStop = await client.background(a, { action: "stop", id: noisy.bg });
 	assert.ok(noisyStop.text.length < 31_500 && noisyStop.text.includes("What it printed since you last read it:\n") && /more: read again for them\.\]$/.test(noisyStop.text), noisyStop.text.slice(0, 200));
-	assert.match((await client.background(a, { action: "read", id: noisy.bg, tail: 1 })).text, /Its last line:\nthe-end$/, "the end is what is kept");
+	// SIGTERM goes to the whole group, but bash may observe sleep's termination before handling its own signal.
+	// Its diagnostic is real stderr and is kept too (#229): only that known line may follow the end we printed.
+	assert.match(
+		(await client.background(a, { action: "read", id: noisy.bg, tail: 2 })).text,
+		/\nthe-end(?:\n\/bin\/bash: line 1: +\d+ Terminated: 15 +sleep 600)?$/,
+		"the end is what is kept, including bash's termination diagnostic if it printed one",
+	);
 	step("only the end of a command's output is kept, a read is bounded, and what was lost is said");
 
 	// ---- A time limit the call gave
@@ -482,7 +488,10 @@ try {
 	// ---- The person reads a command's output, in Activity or the conversation
 	{
 		const gate2 = join(scratch, "gate-person");
-		const shownCommand = `echo one; while [ ! -e '${gate2}' ]; do sleep 0.1; done; echo two; sleep 600`;
+		// The end-only wait below needs a silent stop. With a shell waiting for sleep, bash can print its child's
+		// termination before it ends, legitimately waking the read on new output instead (#224). Replace the shell
+		// once it has printed, and run longer than the test's patience so only the stop can end the wait.
+		const shownCommand = `echo one; while [ ! -e '${gate2}' ]; do sleep 0.1; done; echo two; exec ${LONG}`;
 		const { bg } = await client.start(a, shownCommand);
 		let shown = await client.call("background.output", { id: bg, wait: 10 });
 		for (const deadline = Date.now() + PATIENT_MS; !shown.output.includes("one\n"); ) {
@@ -509,6 +518,7 @@ try {
 		await client.call("background.stop", { id: bg });
 		const over = await answered("the wait to end when the command does", waiting);
 		assert.equal(over.running, false, "a wait ends when the command ends");
+		assert.equal(over.output, "", "the end, not new output, woke this wait");
 		const after = await client.call("background.output", { id: bg });
 		assert.equal(after.output, "one\ntwo\n", "an ended command's output can still be read");
 		assert.equal(after.running, false);

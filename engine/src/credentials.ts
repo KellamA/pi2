@@ -1,4 +1,6 @@
-// Credentials in the macOS login Keychain, one generic-password item per provider.
+// Credentials in the macOS login Keychain, one generic-password item per provider. The values of the variables a person
+// gives an agent are kept the same way, under the same service, in an item per agent named `variables/<agent>`
+// (variables.ts); "/" is not allowed in a provider id, so that can never be mistaken for a provider either.
 //
 // Secrets never touch the engine's own files or its command line: writes go to `security -i` over stdin as hex.
 // A small index file next to the database lists which providers have a credential and of what type, so listing
@@ -42,13 +44,21 @@ function run(args: string[], stdin?: string): Promise<{ code: number; stdout: st
 	});
 }
 
+/** The Keychain service pi²'s secrets are kept under: the usual one, or the one PI2_KEYCHAIN_SERVICE names. */
+export const keychainService = (env: NodeJS.ProcessEnv = process.env): string => env.PI2_KEYCHAIN_SERVICE ?? "dev.pi2.credentials";
+
 function checkId(providerId: string): void {
 	if (!/^[A-Za-z0-9._-]{1,80}$/.test(providerId)) throw new Error(`Invalid provider id: ${providerId}`);
 }
 
+/** An account is written into a `security -i` command line as it is, so it may hold no space, quote or backslash. */
+function checkAccount(account: string): void {
+	if (!/^[A-Za-z0-9._/-]{1,200}$/.test(account)) throw new Error(`Invalid Keychain account: ${account}`);
+}
+
 /** ASCII-only JSON, so `security -w` prints it back as text and never as hex. */
-function encode(credential: Credential): string {
-	return JSON.stringify(credential).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+function encode(value: object): string {
+	return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 function sha256(text: string): string {
@@ -72,14 +82,120 @@ function isManifest(value: Record<string, unknown>): value is Manifest {
 	return value.format === MANIFEST && Number.isInteger(value.parts) && (value.parts as number) > 0 && (value.parts as number) < 1000 && typeof value.sha256 === "string";
 }
 
-export class KeychainCredentialStore implements CredentialStore {
-	readonly #service: string;
-	readonly #indexPath: string;
+/**
+ * JSON objects in Keychain items of one service, one to an account, in pieces when long (see the top of this file).
+ * The credential store keeps providers' sign-ins with it, and variables.ts the values of agents' variables.
+ */
+export class KeychainObjects {
+	readonly service: string;
 	readonly #locks = new Map<string, Promise<unknown>>();
 
-	constructor(home: string, service = process.env.PI2_KEYCHAIN_SERVICE ?? "dev.pi2.credentials") {
+	constructor(service = keychainService()) {
 		if (!/^[A-Za-z0-9._-]+$/.test(service)) throw new Error("Invalid keychain service name");
-		this.#service = service;
+		this.service = service;
+	}
+
+	/** Run `change` once every change to `account` begun before it has ended: one read-modify-write at a time. */
+	exclusive<T>(account: string, change: () => Promise<T>): Promise<T> {
+		const previous = this.#locks.get(account) ?? Promise.resolve();
+		const next = previous.catch(() => {}).then(change);
+		this.#locks.set(account, next);
+		return next;
+	}
+
+	/**
+	 * The object kept for `account`, or undefined when there is none. A stored item that cannot be understood (damaged,
+	 * cut short, pieces missing) also reads as none, and writing a new one overwrites it.
+	 */
+	async read(account: string): Promise<Record<string, unknown> | undefined> {
+		checkAccount(account);
+		const text = await this.#find(account);
+		if (text === undefined) return undefined;
+		const value = parseObject(text);
+		if (value === undefined) return undefined;
+		if (!isManifest(value)) return value;
+		const parts = await Promise.all(Array.from({ length: value.parts }, (_, i) => this.#find(`${account}:${i}`)));
+		if (parts.some((part) => part === undefined)) return undefined;
+		const json = parts.join("");
+		if (sha256(json) !== value.sha256) return undefined;
+		return parseObject(json);
+	}
+
+	/** Keep `value` for `account`, read it back to be sure it is there whole, and remove the pieces it no longer uses. */
+	async write(account: string, value: object, what = "it"): Promise<void> {
+		checkAccount(account);
+		const json = encode(value);
+		const before = await this.#partCount(account);
+		const parts = await this.#write(account, json);
+		const stored = await this.read(account);
+		if (stored === undefined || encode(stored) !== json) throw new Error(`The Keychain did not accept ${what}`);
+		await this.#deleteParts(account, parts, before);
+	}
+
+	/** Remove what is kept for `account`, all of its pieces too. Nothing kept is not an error. */
+	async delete(account: string): Promise<void> {
+		checkAccount(account);
+		const before = await this.#partCount(account);
+		const result = await run(["delete-generic-password", "-s", this.service, "-a", account]);
+		if (result.code !== 0 && result.code !== NOT_FOUND) throw new Error(`Keychain delete failed: ${result.stderr.trim()}`);
+		await this.#deleteParts(account, 0, before);
+	}
+
+	/** One item's value as `security` prints it, or undefined when there is no such item. */
+	async #find(account: string): Promise<string | undefined> {
+		const result = await run(["find-generic-password", "-s", this.service, "-a", account, "-w"]);
+		if (result.code === NOT_FOUND) return undefined;
+		if (result.code !== 0) throw new Error(`Keychain read failed (${result.code}): ${result.stderr.trim()}`);
+		return result.stdout.trim();
+	}
+
+	/** Stores the JSON, whole if it fits one command and in pieces behind a manifest if not. Returns how many pieces it used. */
+	async #write(account: string, json: string): Promise<number> {
+		const command = (name: string, value: string) => `add-generic-password -U -s ${this.service} -a ${name} -l "pi2: ${name}" -X ${Buffer.from(value, "utf8").toString("hex")}`;
+		const whole = command(account, json);
+		const commands: string[] = [];
+		if (whole.length <= MAX_COMMAND) commands.push(whole);
+		else {
+			// Pieces first, manifest last: until the manifest lands, the old one still names the old checksum.
+			for (let offset = 0; offset < json.length; offset += PART_BYTES) commands.push(command(`${account}:${commands.length}`, json.slice(offset, offset + PART_BYTES)));
+			const manifest: Manifest = { format: MANIFEST, parts: commands.length, sha256: sha256(json) };
+			commands.push(command(account, JSON.stringify(manifest)));
+		}
+		if (commands.some((line) => line.length > MAX_COMMAND)) throw new Error("It is too long for the Keychain");
+		// What `security` prints here can quote its input, so it is never passed on; the caller reads the value back instead.
+		await run(["-i"], commands.map((line) => `${line}\n`).join(""));
+		return commands.length - 1;
+	}
+
+	/** How many pieces the stored object says it has: 0 when it is stored whole, damaged or absent. */
+	async #partCount(account: string): Promise<number> {
+		const value = parseObject((await this.#find(account)) ?? "");
+		return value !== undefined && isManifest(value) ? value.parts : 0;
+	}
+
+	/**
+	 * Removes the pieces numbered `from` and up, which a shorter or removed object no longer uses. It goes on to the
+	 * first number that has no item, and at least as far as `known`, so a gap does not hide later pieces.
+	 */
+	async #deleteParts(account: string, from: number, known: number): Promise<void> {
+		for (let i = from; ; i++) {
+			const result = await run(["delete-generic-password", "-s", this.service, "-a", `${account}:${i}`]);
+			if (result.code === NOT_FOUND && i >= known) return;
+			if (result.code !== 0 && result.code !== NOT_FOUND) throw new Error(`Keychain delete failed: ${result.stderr.trim()}`);
+		}
+	}
+}
+
+/**
+ * Providers' credentials, one object to a provider, its account named by the provider's id. A small index file next to
+ * the database lists which providers have a credential and of what type, so listing never reads a secret.
+ */
+export class KeychainCredentialStore implements CredentialStore {
+	readonly #items: KeychainObjects;
+	readonly #indexPath: string;
+
+	constructor(home: string, service = keychainService()) {
+		this.#items = new KeychainObjects(service);
 		this.#indexPath = join(home, "credentials.json");
 	}
 
@@ -90,16 +206,7 @@ export class KeychainCredentialStore implements CredentialStore {
 	 */
 	async read(providerId: string): Promise<Credential | undefined> {
 		checkId(providerId);
-		const text = await this.#find(providerId);
-		if (text === undefined) return undefined;
-		const value = parseObject(text);
-		if (value === undefined) return undefined;
-		if (!isManifest(value)) return value as unknown as Credential;
-		const parts = await Promise.all(Array.from({ length: value.parts }, (_, i) => this.#find(`${providerId}:${i}`)));
-		if (parts.some((part) => part === undefined)) return undefined;
-		const json = parts.join("");
-		if (sha256(json) !== value.sha256) return undefined;
-		return parseObject(json) as Credential | undefined;
+		return (await this.#items.read(providerId)) as Credential | undefined;
 	}
 
 	async list(): Promise<readonly CredentialInfo[]> {
@@ -109,77 +216,22 @@ export class KeychainCredentialStore implements CredentialStore {
 	modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
 		checkId(providerId);
 		// One read-modify-write at a time per provider, so two requests never refresh a rotated token twice.
-		const previous = this.#locks.get(providerId) ?? Promise.resolve();
-		const next = previous.catch(() => {}).then(async () => {
+		return this.#items.exclusive(providerId, async () => {
 			const current = await this.read(providerId);
 			const updated = await fn(current);
 			if (updated === undefined) return current;
-			const before = await this.#partCount(providerId);
-			const parts = await this.#write(providerId, encode(updated));
-			const stored = await this.read(providerId);
-			if (stored === undefined || encode(stored) !== encode(updated)) throw new Error("The Keychain did not accept the credential");
-			await this.#deleteParts(providerId, parts, before);
+			await this.#items.write(providerId, updated, "the credential");
 			this.#writeIndex({ ...this.#index(), [providerId]: updated.type });
 			return updated;
 		});
-		this.#locks.set(providerId, next);
-		return next;
 	}
 
 	async delete(providerId: string): Promise<void> {
 		checkId(providerId);
-		const before = await this.#partCount(providerId);
-		const result = await run(["delete-generic-password", "-s", this.#service, "-a", providerId]);
-		if (result.code !== 0 && result.code !== NOT_FOUND) throw new Error(`Keychain delete failed: ${result.stderr.trim()}`);
-		await this.#deleteParts(providerId, 0, before);
+		await this.#items.delete(providerId);
 		const index = this.#index();
 		delete index[providerId];
 		this.#writeIndex(index);
-	}
-
-	/** One item's value as `security` prints it, or undefined when there is no such item. */
-	async #find(account: string): Promise<string | undefined> {
-		const result = await run(["find-generic-password", "-s", this.#service, "-a", account, "-w"]);
-		if (result.code === NOT_FOUND) return undefined;
-		if (result.code !== 0) throw new Error(`Keychain read failed (${result.code}): ${result.stderr.trim()}`);
-		return result.stdout.trim();
-	}
-
-	/** Stores the JSON, whole if it fits one command and in pieces behind a manifest if not. Returns how many pieces it used. */
-	async #write(providerId: string, json: string): Promise<number> {
-		const command = (account: string, value: string) =>
-			`add-generic-password -U -s ${this.#service} -a ${account} -l "pi2: ${account}" -X ${Buffer.from(value, "utf8").toString("hex")}`;
-		const whole = command(providerId, json);
-		const commands: string[] = [];
-		if (whole.length <= MAX_COMMAND) commands.push(whole);
-		else {
-			// Pieces first, manifest last: until the manifest lands, the old one still names the old checksum.
-			for (let offset = 0; offset < json.length; offset += PART_BYTES) commands.push(command(`${providerId}:${commands.length}`, json.slice(offset, offset + PART_BYTES)));
-			const manifest: Manifest = { format: MANIFEST, parts: commands.length, sha256: sha256(json) };
-			commands.push(command(providerId, JSON.stringify(manifest)));
-		}
-		if (commands.some((line) => line.length > MAX_COMMAND)) throw new Error("The credential does not fit in the Keychain");
-		// What `security` prints here can quote its input, so it is never passed on; the caller reads the value back instead.
-		await run(["-i"], commands.map((line) => `${line}\n`).join(""));
-		return commands.length - 1;
-	}
-
-	/** How many pieces the stored credential says it has: 0 when it is stored whole, damaged or absent. */
-	async #partCount(providerId: string): Promise<number> {
-		const value = parseObject((await this.#find(providerId)) ?? "");
-		return value !== undefined && isManifest(value) ? value.parts : 0;
-	}
-
-	/**
-	 * Removes the pieces numbered `from` and up, which a shorter or removed credential no longer uses. It goes on to
-	 * the first number that has no item, and at least as far as `known`, so a gap does not hide later pieces.
-	 */
-	async #deleteParts(providerId: string, from: number, known: number): Promise<void> {
-		for (let i = from; ; i++) {
-			const result = await run(["delete-generic-password", "-s", this.#service, "-a", `${providerId}:${i}`]);
-			if (result.code === NOT_FOUND && i >= known) return;
-			if (result.code !== 0 && result.code !== NOT_FOUND) throw new Error(`Keychain delete failed: ${result.stderr.trim()}`);
-		}
 	}
 
 	#index(): Record<string, Credential["type"]> {

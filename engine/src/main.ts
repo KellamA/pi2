@@ -42,6 +42,7 @@ import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { noticingRefusals } from "./limitwait.ts";
+import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
@@ -310,8 +311,9 @@ const storage = await openNodeSqliteStorage(join(home, "session.sqlite"));
 const harness = await Harness.open(
 	storage,
 	{
-		// Every request notes how a provider refused it, so a limit can be waited for as long as the provider says.
-		models: noticingRefusals(providers.models),
+		// Every request notes how a provider refused it, so a limit can be waited for as long as the provider says. A
+		// conversation that hands out work asks for the long prompt cache (src/cache.ts).
+		models: noticingRefusals(promptCacheLifetimes(providers.models)),
 		registry,
 		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
 		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
@@ -442,7 +444,9 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		}
 		// Save never accepts rules from the app. Duplication alone supplies rules from the stored source.
 		const rules: CommandRule[] = JSON.parse(JSON.stringify(copiedRules ?? doc.agents[id]?.commandRules ?? []));
-		doc.agents[id] = { ...agent, commandRules: rules };
+		// Nor variables: they change through their own requests, and a copy gets theirs from variables.ts.
+		const variables = doc.agents[id]?.variables;
+		doc.agents[id] = { ...agent, commandRules: rules, ...(variables === undefined ? {} : { variables: JSON.parse(JSON.stringify(variables)) }) };
 	}, context);
 	// The agent's conversations pick up what it may now do at their next message; see syncTools.
 	return { id };
@@ -1236,6 +1240,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const id = text(params, "id");
 		if (agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
 		if (Object.keys(agents).length === 1) throw new Error("Keep at least one agent");
+		for (const feature of host.features) await feature.deletingAgent?.(id);
 		await harness.commit(async (tx) => {
 			const doc = await tx.doc(Agents);
 			delete doc.agents[id];

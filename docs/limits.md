@@ -60,6 +60,30 @@ A run whose request a provider refuses for its limit does not end. It waits, and
 
 **A sub-chat.** A sub-chat that waits keeps the `delegate` call that started it waiting. One whose run ends on the provider's error all the same gives `delegate` a result that says so in the provider's words, and that the sub-chat can be carried on by passing its number as `chat` ([architecture.md](architecture.md#sub-chats)).
 
+## Telling an agent that hands out work, and the person
+
+An agent that hands out work to sub-chats ([architecture.md](architecture.md#sub-chats)) can run many at once, and so use up a window quickly. Since a refused run waits and carries on (above), nothing is lost when it does, but an agent or the person may want to start fewer runs, or none, on a subscription that is nearly used up. pi² tells them three ways, all from the same readings Usage shows.
+
+**In `delegate`'s result.** When a window of the subscription the sub-chat ran on (its own model's, whatever the agent that handed out the work runs on) is 80% used or more, the result ends with one line that names the subscription, since one agent may hand work to agents on different ones, and each such window, how much of it is used and when it resets, in the Mac's local time and from now:
+
+> Plan limits: the Anthropic subscription (Max), which this sub-chat runs on, has 5-hour window 84% used, resets at 15:30 (in 1 h 12 min). A run the provider refuses for its limit waits for the reset and carries on by itself.
+
+Below 80%, and for a model that is not on a subscription, the result says nothing of the windows. A window whose reset has passed since it was read is not counted. The line comes with a sub-chat that finished and one that did not, new or continued.
+
+**In `sub_chats`' list.** The line above only comes once a sub-chat has finished, so an agent can also ask before it starts any: `sub_chats` with `list` ends with every signed-in subscription's windows, how much of each is used and when it resets, when they were read, and which subscription the conversation itself and each agent it can hand work to runs on (an agent with no model of its own runs on the default one):
+
+```
+Plan limits, as last read. A run the provider refuses for its limit waits for the reset and carries on by itself.
+- Anthropic subscription (Max), which this conversation, Forge and Scout run on: 5-hour window 62% used, resets at 15:30 (in 2 h 10 min); this week 91% used, resets on Friday 20 November at 09:00 (in 3 days). Read 2 min ago.
+- OpenAI Codex subscription (Plus), which Worker runs on: 5-hour window 12% used, resets at 17:02 (in 3 h 42 min). Read 40 s ago, from the answer to a request.
+```
+
+This is not a tool of its own: `sub_chats` is offered only with `delegate`, so an agent that cannot hand out work is sent nothing more in its prompt, and one that can is sent a sentence more in `sub_chats`' description. Listing asks no provider; it says what was last read, and how long ago.
+
+**In the Inbox, for the person.** When a window of a signed-in subscription passes 90% while runs on that subscription are going (conversations whose model is on it, sub-chats included, with work running), a notice goes to the Inbox: which subscription and window, how much is used, when it resets, and which runs were going, each a link to its conversation. It is information, not a request: it says that a run the provider refuses waits for the reset and carries on by itself, and that nothing needs doing. It is not counted in the Dock's badge or the menu bar, which count what waits on the person, and posts no notification; the sidebar's Inbox row counts it in grey. engine.log has a line for it too.
+
+A window is noticed once per reset: not again while it stays above 90%, nor after the notice is dismissed, until its reset time has passed or, for a window whose provider gives none, a reading shows it below 80%. A notice leaves the Inbox by itself when its window resets, and with its subscription when that is signed out. A window past 90% with no run on its subscription is not noticed until a run on it starts. Notices, and which windows were noticed, are kept in `limits.json`, so a restart neither loses nor repeats one.
+
 ### How it works
 
 The retrying is pi durable's: a failed request becomes a stored sleep in the run's checkpoint (`pi.live`'s `generation.retry`), which a restart resumes and Stop ends. Unpatched, it retries three times, 2, 4 and 8 seconds apart, and reads nothing of what the provider said, which only reaches it as the error's text: pi-ai turns a refused response into an error message and drops its status and headers. So:
@@ -70,13 +94,43 @@ The retrying is pi durable's: a failed request becomes a stored sleep in the run
 
 The same knowledge of the plan's windows that **Usage** shows is not used to hold back a run before it is refused; see the Known limits.
 
+## The prompt cache
+
+Every request sends the whole conversation again. A provider with a prompt cache keeps what it read of the last request for a while, and the next request that starts the same way reads it from there instead, at a tenth of the price or less, and counts for less of a subscription's allowance. By default the cache lasts five minutes. A request after a longer pause reads nothing from it and writes the whole conversation into it again: for a conversation of 150,000 tokens on Anthropic's API, that is 1.25 times the price of all of it, where reading it costs 0.1 times (#159).
+
+A conversation that hands out work is the one that pauses longest: it waits for its sub-chats for tens of minutes, then pays for its whole context again. So **from its first `delegate` call on, a conversation asks for the long cache** (pi-ai's `cacheRetention: "long"`). Every other conversation, its sub-chats included, stays on the short one. That is what Claude Code does on a Claude subscription: an hour for the main conversation, five minutes for its subagents ([How Claude Code uses prompt caching](https://code.claude.com/docs/en/prompt-caching#which-ttl-each-request-gets)).
+
+What the long cache is, by provider:
+
+| Provider | Long cache | Costs, against the short one |
+|---|---|---|
+| Anthropic, by key or a Claude subscription | An hour (`cache_control.ttl: "1h"`) | A write costs 2 times the input price instead of 1.25; a read costs the same. On a subscription the cost is part of the plan's allowance; Anthropic does not say how writes and reads weigh in it, and its own Claude Code asks for the hour there by default |
+| Amazon Bedrock, Claude models that have it | An hour (`cachePoint.ttl`) | As Anthropic's |
+| OpenAI's API | Extended retention (`prompt_cache_retention: "24h"` on older models; on GPT-5.6 and later the same 30 minutes as by default) | Nothing more |
+| ChatGPT sign-in (Codex), Google, Mistral, a custom OpenAI-compatible endpoint | Nothing different is sent | — |
+
+A one-hour write costs more only on what a turn adds; a rewrite after a long wait costs the whole context. The first round of `delegate` calls still finds the cache gone when it returns, since the request that made those calls asked for the short cache; the rounds after it do not, as long as each takes less than the hour. A wait of more than an hour loses it all the same.
+
+**A provider that refuses it.** A gateway or endpoint that does not know the long cache may refuse a request that asks for it. A request refused before any answer, with an error that names the cache (`ttl`, `cache`, `retention`) and is not a limit, a bad key or a server error, is sent again at once with the short cache; the conversation sees only the answer. That provider is then not asked for the long cache again until the engine restarts, and `engine.log` says so once: `Stand-in refused a request that asked for the long prompt cache (400 invalid_request_error: cache_control.ttl: Extra inputs are not permitted); it was sent again with the short cache, and Stand-in is not asked for the long one again until the engine restarts`. If the request is refused the same way with the short cache too, the long cache was not the cause, and it is asked for again next time.
+
+**Seeing the effect.** `engine.log` has a line when a conversation starts asking for the long cache (`conversation 12 hands out work: its requests ask Anthropic for the long prompt cache from now on`), and one for each request that comes more than five minutes after the one before it in the same conversation, saying what it read from the cache and which lifetime the request before it asked for:
+
+```
+conversation 12 read 143,912 tokens from the prompt cache after 31 min without a request; the request before asked for the long cache
+conversation 14 read nothing from the prompt cache after 6 min without a request, and wrote 88,301 tokens to it again; the request before asked for the short cache
+```
+
+A provider that reports no cache writes (OpenAI's) shows a miss as input sent again instead. **Usage** shows the cost: pi-ai prices a one-hour write at twice the input price, and each request's `usage` keeps `cacheRead` and `cacheWrite`.
+
+**How it works** (`engine/src/cache.ts`). pi durable sends each conversation's requests with a provider session id of its own (`pi.provider`); a hook before each request notes which conversation it belongs to, and the models the harness is given are wrapped so that a request of a conversation that has a sub-chat is sent with `cacheRetention: "long"`, unless its caller chose a lifetime itself (a compaction asks for none). The wrapper holds the request's events until its answer begins, so a refusal of the long cache can be sent again unseen. `engine/test/cache.ts` runs an engine against a stand-in Anthropic endpoint on 127.0.0.1 that answers, hands out work, and then refuses the one-hour cache; `PI2_CACHE_PAUSE_MS` sets the pause after which a request has a line in `engine.log` (five minutes otherwise).
+
 ## What is kept
 
 The last good reading of each signed-in subscription (plan, windows, when it was read) is kept in `limits.json` in the data folder, so it shows at once after a restart. It holds no token. Signing a subscription out removes its reading.
 
 ## For developers
 
-The engine sends `{ event: "limits", providers: [...] }` to an app as it connects and whenever something changes. Each provider is:
+The engine sends `{ event: "limits", providers: [...], notices: [...] }` to an app as it connects and whenever something changes. Each provider is:
 
 ```
 { id, name, plan, note, reports: "usage" | "responses" | "none",
@@ -84,7 +138,16 @@ The engine sends `{ event: "limits", providers: [...] }` to an app as it connect
   fetchedAt, source: "usage" | "responses" | null, error, errorAt, refreshing }
 ```
 
-Times are milliseconds since 1970; `usedPercent` is 0–100. `limits.refresh` (optionally `{ id }`) asks again, within the limits above, and answers with the same event.
+and each notice:
+
+```
+{ id, provider, name, plan, window, label, usedPercent, resetsAt, at,
+  runs: [{ conversationId, rootConversationId, title, agentName, subChat }], more? }
+```
+
+Times are milliseconds since 1970; `usedPercent` is 0–100. `limits.refresh` (optionally `{ id }`) asks again, within the limits above, and answers with the same event. `limits.dismiss` `{ id }` takes a notice away.
+
+The limits feature answers `planLimits()` ([features.ts](../engine/src/features.ts)) with the providers above, which `delegate` (`engine/src/extensions.ts`) and `sub_chats` (`engine/src/subchats.ts`) put in words with `nearlyUsedUp` and `limitsReport` from `engine/src/limits.ts`. The notices are its own: it looks for a window to notice when a reading comes and when what is running changes, and only reads which model a running conversation is on when some window is past 90% and not yet noticed. `engine/test/planwindows.ts` checks the wording, then runs an engine with two stand-in subscriptions signed in under a test Keychain service: Claude, whose usage address is a stand-in on 127.0.0.1, and GitHub Copilot, whose requests go to a stand-in over TLS that sets the premium requests in its answers' headers and can hold an answer back so a run is going when they arrive.
 
 For tests, the usage addresses can be pointed elsewhere with `PI2_LIMITS_ANTHROPIC_URL`, `PI2_LIMITS_CODEX_URL` and `PI2_LIMITS_KIMI_URL`, and the minimum time between two requests to one provider set with `PI2_LIMITS_MIN_INTERVAL_MS`.
 
@@ -97,5 +160,6 @@ A conversation's state has `limitWait` while its run sleeps for a limit, and its
 - Copilot's figures appear only after a request in pi², and premium requests are the only allowance shown (chat and completions are unlimited on paid plans).
 - The figures from answers are as of the start of that answer.
 - Signing in again to a different account of the same provider, without signing out first, keeps showing the old account's figures until they are next read.
-- Nothing holds a run back before a provider refuses it, however full a window is, and nobody is told that a window is nearly used up while runs are going, nor is an agent that hands out work told how the windows stand: the wait starts with the first refusal (#232).
+- Nothing holds a run back before a provider refuses it, however full a window is: the wait starts with the first refusal. An agent that hands out work and the person are told how the windows stand ([above](#telling-an-agent-that-hands-out-work-and-the-person)), and what to do about it is theirs.
+- What a conversation runs on is read when a notice is considered and kept while its work goes on, so a model changed in the middle of a run counts from that run's end.
 - A summary of earlier messages (compaction) that a provider refuses for its limit is still retried only three times, and then fails as it did before.

@@ -26,6 +26,7 @@ import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { scratchVariable } from "./scratch.ts";
+import { agentVariables } from "./variables.ts";
 import { killLater, killRemaining, type Listed, type LeftOver, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
@@ -368,7 +369,9 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 	const marker = newRunMarker();
 	let child: ChildProcess;
 	try {
-		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ ...scratchVariable(conversationId), [RUN_VARIABLE]: marker }), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		// With the variables the person gave the conversation's agent (variables.ts).
+		const variables = await agentVariables(conversationId);
+		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: marker }), detached: true, stdio: ["ignore", "pipe", "pipe"] });
 	} catch (error) {
 		await forget();
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);

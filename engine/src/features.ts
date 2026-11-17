@@ -12,11 +12,12 @@ import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
 import { background } from "./background.ts";
+import { promptCache } from "./cache.ts";
 import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
-import { limits } from "./limits.ts";
+import { limits, type ProviderLimits } from "./limits.ts";
 import { limitWait } from "./limitwait.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
@@ -24,6 +25,7 @@ import { plan } from "./plan.ts";
 import { reads } from "./reading.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
+import { variables } from "./variables.ts";
 import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
@@ -73,6 +75,11 @@ export type FeatureParts = {
 	 * Only one feature answers it. See engine/scripts/patch-dependencies.ts.
 	 */
 	retry?(message: AssistantMessage | undefined, attempt: number, conversationId: number): { waitMs?: number | false; spent: number };
+	/**
+	 * How every signed-in subscription's windows stand, as Usage shows them: for `delegate`'s result and `sub_chats`' list,
+	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
+	 */
+	planLimits?(): ProviderLimits[];
 	/** Runs once when the harness is open, before the engine listens or runs anything: load what the rest needs at once. */
 	start?(): Promise<void>;
 	/**
@@ -88,6 +95,8 @@ export type FeatureParts = {
 	created?(id: number, agent: AgentProfile): Promise<void>;
 	/** An agent was duplicated: copy person-set feature settings, never its history. */
 	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
+	/** An agent is about to be deleted: remove what this feature keeps for it outside its profile. Throw to keep the agent. */
+	deletingAgent?(agentId: string): Promise<void>;
 	/** A conversation's folder was changed by the person. */
 	folderChanged?(id: number): void;
 	/** Which conversations are archived or deleted has changed; `engine.library()` already says so. */
@@ -112,11 +121,13 @@ export const FEATURES: Feature[] = [
 	look,
 	documents,
 	limits,
+	promptCache,
 	selfSchedule,
 	worktrees,
 	commands,
 	reads,
 	scratch,
+	variables,
 	coauthor,
 	background,
 	order,

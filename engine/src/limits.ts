@@ -21,7 +21,10 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelAuth, Provider, ProviderResponse } from "@earendil-works/pi-ai";
+import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
 import type { Engine, Feature } from "./features.ts";
+import { duration } from "./limitwait.ts";
+import { plainMoment } from "./selfschedule.ts";
 
 // ---- What the app is sent
 
@@ -61,6 +64,37 @@ export type ProviderLimits = {
 };
 
 export const UNREADABLE = "Could not read the limits";
+
+/**
+ * A window passed `NOTICE_PERCENT` while runs on its subscription were going: shown in the Inbox, once per window per
+ * reset, until the person dismisses it or the window resets. Information, not a request: a run the provider refuses
+ * waits for the reset and carries on by itself (limitwait.ts).
+ */
+export type LimitNotice = {
+	id: string;
+	/** The subscription's provider id, and its name as Usage shows it. */
+	provider: string;
+	name: string;
+	plan: string | null;
+	window: string;
+	label: string;
+	usedPercent: number;
+	resetsAt: number | null;
+	/** When it was noticed. */
+	at: number;
+	/** The conversations with work going on that subscription then, sub-chats included; `more` counts those left out. */
+	runs: NoticeRun[];
+	more?: number;
+};
+
+export type NoticeRun = { conversationId: number; rootConversationId: number; title: string; agentName: string | null; subChat: boolean };
+
+/** A window this full or more is named in `delegate`'s result. */
+export const NEARLY_USED_UP = 80;
+/** A window this full or more, with runs on its subscription going, leaves a notice in the Inbox. */
+export const NOTICE_PERCENT = 90;
+/** At most this many runs are named in a notice; the rest are counted. */
+const NOTICE_RUNS = 12;
 
 // ---- Reading values
 
@@ -553,6 +587,69 @@ export function observed(provider: Provider, observers: Observers): Provider {
 	});
 }
 
+// ---- In words, for an agent that hands out work (delegate's result, sub_chats' list)
+
+/** "the Anthropic subscription (Max)": a subscription, as an agent that may hand work to several is told it. */
+export function subscriptionWords(view: Pick<ProviderLimits, "name" | "plan">): string {
+	return `the ${view.name} subscription${view.plan === null ? "" : ` (${view.plan})`}`;
+}
+
+/** "at 15:30 (in 1 h 12 min)", "on Friday 21 November at 09:00 (in 3 days)", in the Mac's local time. */
+export function resetWords(resetsAt: number, now: number): string {
+	const at = new Date(resetsAt);
+	const today = at.toDateString() === new Date(now).toDateString();
+	const when = today ? `at ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}` : `on ${plainMoment(resetsAt, now)}`;
+	return `${when} (in ${duration(resetsAt - now)})`;
+}
+
+/** "5-hour window 84% used, resets at 15:30 (in 1 h 12 min)". */
+export function windowWords(window: LimitWindow, now: number): string {
+	const label = /^[A-Z][a-z]/.test(window.label) ? window.label.charAt(0).toLowerCase() + window.label.slice(1) : window.label;
+	const used = window.usedPercent >= 100 ? "used up" : `${window.usedPercent}% used`;
+	if (window.resetsAt === null) return `${label} ${used}, reset time not reported`;
+	if (window.resetsAt <= now) return `${label} reset ${duration(now - window.resetsAt)} ago (it read ${window.usedPercent}% before that; not read again since)`;
+	return `${label} ${used}, resets ${resetWords(window.resetsAt, now)}`;
+}
+
+/** What a run refused for a limit does, so that an agent does not take a full window for work lost. */
+const REFUSED = "A run the provider refuses for its limit waits for the reset and carries on by itself.";
+
+/**
+ * The line `delegate`'s result ends with when a window of the subscription the sub-chat ran on is `NEARLY_USED_UP` or
+ * more; undefined otherwise. A window whose reset has passed since it was read is not counted.
+ */
+export function nearlyUsedUp(view: ProviderLimits | undefined, now: number): string | undefined {
+	const full = (view?.windows ?? []).filter((window) => window.usedPercent >= NEARLY_USED_UP && (window.resetsAt === null || window.resetsAt > now));
+	if (view === undefined || full.length === 0) return undefined;
+	return `Plan limits: ${subscriptionWords(view)}, which this sub-chat runs on, has ${full.map((window) => windowWords(window, now)).join("; ")}. ${REFUSED}`;
+}
+
+/**
+ * How every signed-in subscription's windows stand, for `sub_chats`' list: `users` names, by provider id, who among the
+ * caller and the agents it can hand work to runs on each.
+ */
+export function limitsReport(views: ProviderLimits[], users: ReadonlyMap<string, string[]>, now: number): string[] {
+	if (views.length === 0) return ["Plan limits: no subscription is signed in, so there are no plan windows to watch."];
+	const lines = [`Plan limits, as last read. ${REFUSED}`];
+	for (const view of views) {
+		const who = users.get(view.id) ?? [];
+		const name = `${subscriptionWords(view).replace(/^the /, "")}${who.length === 0 ? ", which none of your agents runs on" : `, which ${listWords(who)} run${who.length === 1 ? "s" : ""} on`}`;
+		let standing: string;
+		if (view.reports === "none") standing = "it does not report its limits.";
+		else if (view.windows.length > 0) standing = `${view.windows.map((window) => windowWords(window, now)).join("; ")}. Read ${view.fetchedAt === null ? "at an unknown time" : `${duration(now - view.fetchedAt)} ago`}${view.source === "responses" ? ", from the answer to a request" : ""}.`;
+		else if (view.fetchedAt !== null) standing = `${view.note ?? "no limits reported right now."}`;
+		else standing = view.reports === "responses" ? "not known until a request on it has been answered." : "not read yet.";
+		const failed = view.error === null ? "" : ` The last check failed: ${view.error.replace(/\.$/, "")}.`;
+		lines.push(`- ${name.charAt(0).toUpperCase()}${name.slice(1)}: ${standing}${failed}`);
+	}
+	return lines;
+}
+
+/** "Forge", "Forge and Scout", "this conversation, Forge and Scout". */
+function listWords(names: string[]): string {
+	return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
 // ---- The tracker
 
 /** The least time between two requests to one provider's usage address. Shorter only in tests. */
@@ -662,6 +759,23 @@ class LimitsTracker {
 	#signedIn: string[] = [];
 	#broadcastTimer: ReturnType<typeof setTimeout> | undefined;
 	#saveTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Notices in the Inbox, oldest first. */
+	#notices: LimitNotice[] = [];
+	/**
+	 * The windows noticed, by `provider:window`, with the reset they were noticed before: one is not noticed again until
+	 * that reset has passed, or a reading shows it below `NEARLY_USED_UP` (a reset nobody said the time of).
+	 */
+	#noticed = new Map<string, number | null>();
+	/** The conversations with work going, as the engine last said. */
+	#working: ReadonlySet<number> = new Set();
+	/**
+	 * The provider each of those runs on, once looked up: a window past `NOTICE_PERCENT` with no run on it is looked at
+	 * again at every change in what is running, and that should not read every conversation's settings each time.
+	 */
+	readonly #providerOf = new Map<number, string>();
+	#checking = false;
+	#checkAgain = false;
+	#expiryTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(engine: Engine) {
 		this.#engine = engine;
@@ -689,8 +803,31 @@ class LimitsTracker {
 		void this.#start().catch((error) => engine.log("limits: first look failed:", error instanceof Error ? error.name : "error"));
 	}
 
-	event(): { event: "limits"; providers: ProviderLimits[] } {
-		return { event: "limits", providers: this.#signedIn.map((id) => this.#view(id)) };
+	event(): { event: "limits"; providers: ProviderLimits[]; notices: LimitNotice[] } {
+		return { event: "limits", providers: this.views(), notices: this.#notices };
+	}
+
+	/** Every signed-in subscription's windows, as Usage shows them. */
+	views(): ProviderLimits[] {
+		return this.#signedIn.map((id) => this.#view(id));
+	}
+
+	/** `limits.dismiss` `{ id }`: the person has read a notice. Its window is not noticed again before it resets. */
+	dismiss(params: Record<string, unknown>): Promise<unknown> {
+		const before = this.#notices.length;
+		this.#notices = this.#notices.filter((notice) => notice.id !== params.id);
+		if (this.#notices.length !== before) {
+			this.#saveSoon();
+			this.#broadcastNow();
+		}
+		return Promise.resolve({});
+	}
+
+	/** Which conversations have work going changed. */
+	runsChanged(working: ReadonlySet<number>): void {
+		this.#working = working;
+		for (const id of this.#providerOf.keys()) if (!working.has(id)) this.#providerOf.delete(id);
+		if (working.size > 0 && this.#due(Date.now()).length > 0) this.#checkSoon();
 	}
 
 	/** `limits.refresh`: ask every signed-in subscription, or the one named, subject to the usual limits on asking. */
@@ -745,7 +882,146 @@ class LimitsTracker {
 			this.#states.delete(id);
 			dropped = true;
 		}
+		// A subscription signed out takes its notices with it.
+		const notices = this.#notices.filter((notice) => ids.has(notice.provider));
+		if (notices.length !== this.#notices.length) {
+			this.#notices = notices;
+			dropped = true;
+		}
+		for (const key of this.#noticed.keys()) {
+			if (ids.has(key.slice(0, key.indexOf(":")))) continue;
+			this.#noticed.delete(key);
+			dropped = true;
+		}
 		if (dropped) this.#saveSoon();
+	}
+
+	// ---- Notices: a window past NOTICE_PERCENT with runs on its subscription going
+
+	/** The windows past `NOTICE_PERCENT` and not yet noticed in this reset. */
+	#due(now: number): { id: string; window: LimitWindow }[] {
+		const due: { id: string; window: LimitWindow }[] = [];
+		for (const id of this.#signedIn) {
+			for (const window of this.#states.get(id)?.reading?.windows ?? []) {
+				if (window.usedPercent < NOTICE_PERCENT || (window.resetsAt !== null && window.resetsAt <= now)) continue;
+				const noticed = this.#noticed.get(`${id}:${window.id}`);
+				if (noticed !== undefined && (noticed === null || noticed > now)) continue;
+				due.push({ id, window });
+			}
+		}
+		return due;
+	}
+
+	/** Look for windows to notice, one look at a time: one asked for meanwhile follows the one under way. */
+	#checkSoon(): void {
+		if (this.#checking) {
+			this.#checkAgain = true;
+			return;
+		}
+		this.#checking = true;
+		void (async () => {
+			try {
+				do {
+					this.#checkAgain = false;
+					await this.#check();
+				} while (this.#checkAgain);
+			} catch (error) {
+				this.#engine.log("limits: could not look for a window nearly used up:", error instanceof Error ? error.message : String(error));
+			} finally {
+				this.#checking = false;
+			}
+		})();
+	}
+
+	async #check(): Promise<void> {
+		const now = Date.now();
+		let changed = this.#expire(now);
+		const due = this.#due(now);
+		if (due.length > 0 && this.#working.size > 0) {
+			const runs = await this.#runsByProvider([...this.#working]);
+			for (const { id, window } of due) {
+				const on = runs.get(id) ?? [];
+				if (on.length === 0) continue;
+				const view = this.#view(id);
+				this.#noticed.set(`${id}:${window.id}`, window.resetsAt);
+				this.#notices.push({
+					id: `${id}:${window.id}:${now}`,
+					provider: id,
+					name: view.name,
+					plan: view.plan,
+					window: window.id,
+					label: window.label,
+					usedPercent: window.usedPercent,
+					resetsAt: window.resetsAt,
+					at: now,
+					runs: on.slice(0, NOTICE_RUNS),
+					...(on.length > NOTICE_RUNS ? { more: on.length - NOTICE_RUNS } : {}),
+				});
+				const reset = window.resetsAt === null ? "no reset time reported" : `resets ${new Date(window.resetsAt).toISOString()}`;
+				this.#engine.log(`limits: ${view.name}, ${window.label.toLowerCase()} ${window.usedPercent}% used (${reset}), with ${on.length} conversation${on.length === 1 ? "" : "s"} working on it: ${on.map((run) => run.conversationId).join(", ")}; a notice is in the Inbox`);
+				changed = true;
+			}
+		}
+		if (!changed) return;
+		this.#saveSoon();
+		this.#broadcastSoon();
+		this.#armExpiry(now);
+	}
+
+	/** Forget what has reset: notices of a window whose reset has passed go, and the window can be noticed again. */
+	#expire(now: number): boolean {
+		let changed = false;
+		for (const [key, resetsAt] of this.#noticed) {
+			if (resetsAt === null || resetsAt > now) continue;
+			this.#noticed.delete(key);
+			changed = true;
+		}
+		const notices = this.#notices.filter((notice) => notice.resetsAt === null || notice.resetsAt > now);
+		if (notices.length !== this.#notices.length) {
+			this.#notices = notices;
+			changed = true;
+		}
+		return changed;
+	}
+
+	/** Look again when the first notice's window resets, so that it leaves the Inbox then. */
+	#armExpiry(now: number): void {
+		clearTimeout(this.#expiryTimer);
+		const next = Math.min(...this.#notices.map((notice) => notice.resetsAt ?? Number.POSITIVE_INFINITY));
+		if (!Number.isFinite(next)) return;
+		// At most a day at a time: a timer cannot wait a week, and the clock may have been changed meanwhile.
+		this.#expiryTimer = setTimeout(() => this.#checkSoon(), Math.min(Math.max(0, next - now) + 1_000, 86_400_000));
+		this.#expiryTimer.unref();
+	}
+
+	/** The conversations among `ids` working on a model of each provider, with what a notice says of each. */
+	async #runsByProvider(ids: number[]): Promise<Map<string, NoticeRun[]>> {
+		const conversations = this.#engine.library().conversations;
+		const agents = this.#engine.agents();
+		const byProvider = new Map<string, NoticeRun[]>();
+		for (const id of ids.sort((a, b) => a - b)) {
+			let provider = this.#providerOf.get(id);
+			if (provider === undefined) {
+				const doc = (await this.#engine
+					.harness()
+					.snapshot(AgentDoc, id as unknown as ConversationId, this.#engine.context())
+					.catch(() => undefined)) as { model?: { provider?: string } } | undefined;
+				provider = doc?.model?.provider;
+				if (provider !== undefined && this.#working.has(id)) this.#providerOf.set(id, provider);
+			}
+			const meta = conversations[String(id)];
+			if (provider === undefined || meta === undefined) continue;
+			const runs = byProvider.get(provider) ?? [];
+			runs.push({
+				conversationId: id,
+				rootConversationId: meta.parent ?? id,
+				title: meta.title,
+				agentName: (meta.agentId === undefined ? undefined : agents[meta.agentId]?.name) ?? null,
+				subChat: meta.parent !== undefined,
+			});
+			byProvider.set(provider, runs);
+		}
+		return byProvider;
 	}
 
 	/** What an answer to a request said, if anything. A run on a subscription also leads to asking, once it is over. */
@@ -781,8 +1057,11 @@ class LimitsTracker {
 		const note = reading.note ?? (source === "responses" && windows.length === 0 ? previous?.note : undefined);
 		state.reading = { plan: reading.plan ?? previous?.plan ?? null, windows, ...(note === undefined ? {} : { note }), fetchedAt: Date.now(), source };
 		state.error = undefined;
+		// A window read well below where it was noticed has reset, whether or not anyone said when it would.
+		for (const window of windows) if (window.usedPercent < NEARLY_USED_UP) this.#noticed.delete(`${id}:${window.id}`);
 		this.#broadcastSoon();
 		this.#saveSoon();
+		if (this.#working.size > 0 && this.#due(Date.now()).length > 0) this.#checkSoon();
 	}
 
 	/** Asks the provider's usage address, unless it was asked within the minute, asked to be left alone, or is being asked. */
@@ -851,11 +1130,20 @@ class LimitsTracker {
 
 	#load(): void {
 		try {
-			const readings = object(object(JSON.parse(readFileSync(this.#path, "utf8")))?.readings) ?? {};
+			const stored = object(JSON.parse(readFileSync(this.#path, "utf8")));
+			const readings = object(stored?.readings) ?? {};
 			for (const [id, raw] of Object.entries(readings)) {
 				const reading = storedReading(raw);
 				if (reading !== undefined) this.#state(id).reading = reading;
 			}
+			for (const [key, resetsAt] of Object.entries(object(stored?.noticed) ?? {})) {
+				if (key.includes(":") && (resetsAt === null || typeof resetsAt === "number")) this.#noticed.set(key, resetsAt);
+			}
+			// Written by this file; one that is not what it wrote is left out rather than shown half.
+			const notices = Array.isArray(stored?.notices) ? (stored.notices as LimitNotice[]) : [];
+			this.#notices = notices.filter((notice) => typeof notice?.id === "string" && typeof notice.provider === "string" && typeof notice.label === "string" && Array.isArray(notice.runs));
+			this.#expire(Date.now());
+			this.#armExpiry(Date.now());
 		} catch {
 			// No file yet, or one that cannot be read: start empty.
 		}
@@ -867,7 +1155,7 @@ class LimitsTracker {
 			this.#saveTimer = undefined;
 			const readings = Object.fromEntries([...this.#states].filter(([, state]) => state.reading !== undefined).map(([id, state]) => [id, state.reading]));
 			try {
-				writeFileSync(this.#path, JSON.stringify({ version: 1, readings }, null, "\t"));
+				writeFileSync(this.#path, JSON.stringify({ version: 1, readings, noticed: Object.fromEntries(this.#noticed), notices: this.#notices }, null, "\t"));
 			} catch (error) {
 				this.#engine.log("limits: could not save the last readings:", error instanceof Error ? error.message : String(error));
 			}
@@ -879,8 +1167,10 @@ class LimitsTracker {
 export const limits: Feature = (_host, engine) => {
 	const tracker = new LimitsTracker(engine);
 	return {
-		handlers: { "limits.refresh": (params) => tracker.refresh(params) },
+		handlers: { "limits.refresh": (params) => tracker.refresh(params), "limits.dismiss": (params) => tracker.dismiss(params) },
 		greeting: () => [tracker.event()],
+		planLimits: () => tracker.views(),
+		runsChanged: (working) => tracker.runsChanged(working),
 		providersChanged: () => void tracker.providersChanged().catch((error) => engine.log("limits: after a sign-in change:", error instanceof Error ? error.name : "error")),
 	};
 };

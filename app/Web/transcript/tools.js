@@ -408,6 +408,9 @@
 					break;
 				}
 				label = command ? [t(active ? "Running " : "Ran "), code(command), t(dots)] : [t(active ? "Running a command" + ELLIPSIS : "Ran a command")];
+				// A foreground call can return before its command ends: the engine moved it at its time limit.
+				const moved = status === "done" ? backgroundCommand(call, result) : "";
+				if (moved) label.push(t(", moved to the background as "), code(moved));
 				break;
 			}
 			case "background": {

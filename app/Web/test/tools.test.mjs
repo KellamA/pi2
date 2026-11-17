@@ -104,6 +104,24 @@ test("a command left running in the background, and the rows that read and stop 
 	assert.equal(T.detailFor(call("background", { action: "list" }), "done", { text: "none" }, null)[0].label, "Background commands");
 });
 
+test("a foreground command moved at its limit says so, with the engine's background id (#226)", () => {
+	const args = { command: "npm test", timeout: 120 };
+	const result = { text: "The command was moved to the background.", details: { background: { id: "bg-4", status: "running" } } };
+	const moved = T.describe(call("bash", args), "done", result, null);
+	assert.equal(moved.title, "Ran npm test, moved to the background as bg-4");
+	assert.equal(moved.label.map((piece) => piece.text).join(""), moved.title);
+	assert.equal(moved.stats, "", "the id is not repeated after the label");
+	assert.equal(T.backgroundCommand(call("bash", args), result), "bg-4", "the same id opens Output");
+	assert.equal(line("bash", { ...args, background: false }, "done", result), moved.title);
+	assert.equal(line("bash", {}, "done", result), "Ran a command, moved to the background as bg-4");
+	assert.equal(line("bash", args, "running", null, result), "Running npm test…", "not before the call returns");
+	assert.equal(line("bash", args, "done", { text: "moved as bg-4" }), "Ran npm test", "never infer a move from output text");
+	for (const id of [undefined, "", "bg-0", "bg-4\n", "bg-4><script>", 4]) {
+		assert.equal(line("bash", args, "done", { details: { background: { id } } }), "Ran npm test", String(id));
+	}
+	assert.equal(line("bash", args, "failed", { text: "Stopped at its limit", isError: true }), "Ran npm test", "a stopped command was not moved");
+});
+
 test("a background command's rows name it for its output window only as the engine answered", () => {
 	const dev = call("bash", { command: "npm run dev", background: true });
 	assert.equal(T.backgroundCommand(dev, { details: { background: { id: "bg-3", status: "running" } } }), "bg-3");
