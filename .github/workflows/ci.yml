@@ -44,7 +44,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      # Markdown, escaping, tool summaries, diffs and what a selection copies as. No dependencies to install.
+      # Markdown, escaping, tool summaries, diffs, what a selection copies as and what Return does in an answer. No dependencies to install.
       - run: node --test test/
 
   app:
@@ -60,3 +60,7 @@ jobs:
       - name: Check the pane layout (optimised build)
         working-directory: app
         run: swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
+      # What Return does in a message field (#174): the decision, then a real SwiftUI field in an off-screen window.
+      - name: Check Return in the message field
+        working-directory: app
+        run: .build/debug/pi2-compose-check

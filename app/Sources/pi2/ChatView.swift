@@ -1,3 +1,4 @@
+import ComposeKit
 import ComputerKit
 import SwiftUI
 import WebKit
@@ -201,7 +202,8 @@ struct ChatView: View {
                 .font(.system(size: 13.5))
                 .lineLimit(1...10)
                 .focused($composerFocused)
-                .onSubmit(send)
+                // Return sends; Shift-Return or Option-Return starts a new line.
+                .sendsOnReturn(send)
                 .accessibilityIdentifier("composer")
                 .padding(.horizontal, 2).padding(.top, 2)
                 // ⌘V with a picture, files or a very long text on the pasteboard attaches them.
@@ -244,7 +246,7 @@ struct ChatView: View {
                 .opacity(canSend ? 1 : 0.35)
                 .disabled(!canSend)
                 .keyboardShortcut(active ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                .help("Send (Return)")
+                .help("Send (Return). Shift-Return starts a new line.")
                 .accessibilityLabel("Send")
             }
         }

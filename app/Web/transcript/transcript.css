@@ -71,7 +71,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
 	font: inherit;
 	color: inherit;
 }
@@ -1134,14 +1135,23 @@ pre.card-diff {
 	flex-wrap: wrap;
 }
 
+.card-answer {
+	align-items: flex-end;
+}
+
+/* Grows with its lines up to about six, then scrolls. */
 .answer-field {
 	flex: 1;
 	min-width: 0;
+	max-height: 9.5em;
 	padding: 6px 10px;
 	border: 1px solid var(--line2);
 	border-radius: 8px;
 	background: var(--sunken);
 	outline: none;
+	line-height: 1.4;
+	resize: none;
+	overflow-y: auto;
 }
 
 .answer-field:focus {

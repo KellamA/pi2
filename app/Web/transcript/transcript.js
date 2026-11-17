@@ -16,6 +16,7 @@
 	const MD = window.PiMarkdown;
 	const T = window.PiTools;
 	const C = window.PiClipboard;
+	const K = window.PiKeys;
 	const char = String.fromCharCode;
 	const ELLIPSIS = char(0x2026);
 	const RSQUO = char(0x2019);
@@ -1140,8 +1141,9 @@
 			card.appendChild(el("p", "card-question", str(pending.question)));
 			const form = el("div", "card-answer");
 			form.setAttribute("data-nocopy", "");
-			const field = el("input", "answer-field");
-			field.type = "text";
+			// A text area, so an answer can have line breaks; it starts one line high and grows with them.
+			const field = el("textarea", "answer-field");
+			field.rows = 1;
 			field.placeholder = "Type an answer" + ELLIPSIS;
 			field.setAttribute("aria-label", "Your answer");
 			const send = button("btn primary", null, "Send");
@@ -1152,11 +1154,30 @@
 				field.disabled = true;
 				send.disabled = true;
 			};
-			field.addEventListener("input", () => (send.disabled = field.value.trim() === ""));
+			const fit = () => {
+				field.style.height = "auto";
+				field.style.height = field.scrollHeight + 2 + "px";
+			};
+			field.addEventListener("input", () => {
+				send.disabled = field.value.trim() === "";
+				fit();
+			});
+			// Return sends; Shift-Return or Option-Return starts a new line, as in the app's message field.
 			field.addEventListener("keydown", (event) => {
-				if (event.key === "Enter" && !event.isComposing) {
+				const action = K.returnKey(event);
+				if (action === "send") {
 					event.preventDefault();
 					submit();
+				} else if (action === "newLine") {
+					// Inserted here rather than left to WebKit, which does not break the line for every one of these keys.
+					// insertText replaces the selection, can be undone and fires `input`.
+					event.preventDefault();
+					if (!document.execCommand("insertText", false, "\n")) {
+						field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
+						field.dispatchEvent(new Event("input"));
+					}
+				} else if (action === "nothing") {
+					event.preventDefault();
 				}
 			});
 			send.addEventListener("click", submit);
@@ -1313,7 +1334,7 @@
 	);
 	window.addEventListener("keydown", (event) => {
 		if (["PageUp", "ArrowUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
-			if (!(event.target instanceof HTMLInputElement)) {
+			if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
 				pinned = false;
 				ignoreScrollUntil = 0;
 			}

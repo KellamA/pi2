@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import ComposeKit
 import SwiftUI
 
 /// The menu bar popover: what needs the person, what is running, what is next, and a quick way to ask.
@@ -15,9 +16,10 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Ask \(engine.agents.first?.name ?? "an agent")…", text: $draft)
+            TextField("Ask \(engine.agents.first?.name ?? "an agent")…", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
-                .onSubmit(ask)
+                .lineLimit(1...6)
+                .sendsOnReturn(ask)
                 .disabled(engine.status != .connected)
 
             if !engine.inbox.isEmpty {
@@ -186,11 +188,12 @@ struct QuickAskView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 AgentAvatar(agent: engine.agents.first, size: 22)
-                TextField(conversationID == nil ? "Ask anything…" : "Follow up…", text: $draft)
+                TextField(conversationID == nil ? "Ask anything…" : "Follow up…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.title3)
+                    .lineLimit(1...6)
                     .focused($focused)
-                    .onSubmit(send)
+                    .sendsOnReturn(send)
                     .accessibilityIdentifier("quick-ask-field")
                 if data?.state?.busy == true { ProgressView().controlSize(.small) }
             }
