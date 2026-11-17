@@ -90,6 +90,31 @@ const socketPath = (() => {
 	}
 })();
 
+// A stop (the app quitting, launchd, Ctrl-C) is listened for from the very start, not only once the engine is running:
+// start-up can take seconds, most of them waiting for the login shell's PATH, and a signal with no handler kills the
+// engine outright, leaving the marker that makes the next start report a crash, and the shell running (issue #100).
+// Before anything is written there is nothing to undo and the engine just exits. Once it has begun, the shell is
+// stopped so start-up does not wait for it, the rest of start-up (local work, a moment) is let finish, and the engine
+// then stops the way a running one does instead of listening.
+let phase: "probing" | "starting" | "running" = "probing";
+let stopWhenStarted = false;
+/** Set by stop(), at the end of this file. Declared up here, since stop() can run before start-up has got that far. */
+let stopping = false;
+const stopLoginShell = new AbortController();
+function askToStop(signal: NodeJS.Signals): void {
+	if (phase === "running") return void stop();
+	if (phase === "probing") {
+		if (process.argv.includes("--restore")) console.error("Stopped before restoring the backup.");
+		process.exit(process.argv.includes("--restore") ? 1 : 0);
+	}
+	if (stopWhenStarted) return;
+	stopWhenStarted = true;
+	log(`told to stop (${signal}) while starting: stopping as soon as start-up is done`);
+	stopLoginShell.abort();
+}
+process.on("SIGINT", askToStop);
+process.on("SIGTERM", askToStop);
+
 // One process writes a storage at a time. If an engine already answers on the socket, this one must not start.
 const alreadyRunning = await new Promise<boolean>((resolve) => {
 	const probe = connect(socketPath);
@@ -116,9 +141,10 @@ if (alreadyRunning) {
 	log("another engine is already running on", socketPath);
 	process.exit(0); // not a failure: launchd must not keep restarting a second copy
 }
+phase = "starting";
 writeFileSync(join(home, "engine.pid"), String(process.pid));
 // Asked now, so the answer is there by the time anything is run; see shellpath.ts.
-const pathReady = adoptLoginPath(log);
+const pathReady = adoptLoginPath(log, process.env, undefined, undefined, stopLoginShell.signal);
 
 // A marker that is only removed by a clean stop: finding it at start means the last engine was killed or crashed.
 const runningMarker = join(home, "engine.running");
@@ -1570,7 +1596,11 @@ const server = createServer((socket) => {
 });
 // Nothing an agent or an MCP server starts may run before the PATH is the person's own, or, if their shell is too slow
 // to wait for, has the usual folders. The shell is then still listened to, and its PATH taken when it comes.
-const slowShell = await pathReady;
+await pathReady;
+// The last wait of start-up: from here on a stop is the ordinary one. One asked for while starting is done now, in place
+// of listening; stop() ends the process, so nothing below runs.
+phase = "running";
+if (stopWhenStarted) await stop();
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished
@@ -1585,12 +1615,13 @@ const sweepOften = setInterval(() => void sweepArchive(), 6 * 3_600_000);
 sweepSoon.unref();
 sweepOften.unref();
 
-// A clean stop closes the Harness. SIGKILL is the crash case and needs no handler: reopening recovers.
-let stopping = false;
+// A clean stop closes the Harness. SIGKILL is the crash case and needs no handler: reopening recovers. SIGINT and
+// SIGTERM come here through askToStop, near the top, and only once start-up is done, so everything below exists; the
+// server may never have listened, if the stop came while starting.
 async function stop(): Promise<void> {
 	if (stopping) return;
 	stopping = true;
-	slowShell?.stop();
+	stopLoginShell.abort(); // a shell too slow for start-up and still being listened to
 	server.close();
 	for (const client of clients) client.socket.destroy();
 	clearTimeout(scheduleTimer);
@@ -1603,5 +1634,3 @@ async function stop(): Promise<void> {
 	rmSync(runningMarker, { force: true });
 	process.exit(0);
 }
-process.on("SIGINT", () => void stop());
-process.on("SIGTERM", () => void stop());
