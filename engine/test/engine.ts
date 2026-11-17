@@ -2246,8 +2246,9 @@ try {
 		const [stopped, longer, input] = [await open(), await open(), await open()];
 		const started = Date.now();
 		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
-		// take, however busy the machine.
-		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 600; echo never-printed" });
+		// take, however busy the machine. It starts with `sleep`, so at its limit it is stopped rather than moved to the
+		// background (#197; test/background.ts has the move).
+		await client.call("submit", { id: stopped, text: "/bash sleep 0.1; echo begun; sleep 600; echo never-printed" });
 		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
 		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));

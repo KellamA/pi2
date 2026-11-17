@@ -120,7 +120,7 @@ async function whereOf(api: ToolExecutionApi, id: number, parentWorktree: Worktr
 function whereWords(where: Where): string {
 	if (where.own !== undefined) {
 		const standing = where.info === undefined ? "" : `: ${branchWords(where.info)}`;
-		return `works in a worktree of its own at ${where.own.path}, on the branch ${where.own.branch}${where.own.base ? ` (made from ${where.own.base})` : ""}${standing}`;
+		return `works in a worktree of its own at ${where.own.path}, on the branch ${where.info?.branch ?? where.own.branch}${where.own.base ? ` (made from ${where.own.base})` : ""}${standing}`;
 	}
 	if (where.cwd === null) return "works in pi²'s scratch folder";
 	if (where.shared !== undefined) return `works in this conversation's worktree, ${where.cwd}, on the branch ${where.info?.branch ?? where.shared.branch}`;
@@ -190,18 +190,20 @@ export function subChatsTool(host: Host) {
 			const worktreeAfter = async (id: number, where: Where): Promise<string[]> => {
 				if (where.own === undefined) return [];
 				const own = where.own;
+				// The branch it is on now: it may have gone on to a new one after its first was merged (#206).
+				const branch = where.info?.branch ?? own.branch;
 				const standing = where.info === undefined ? "" : ` (${branchWords(where.info)})`;
 				const why = keeps(where.info);
 				if (args.remove_worktree === true && why === undefined) {
 					try {
 						await removeWorktree(id, { force: false, deleteBranch: false });
-						removed.push(own.branch);
-						return [`Removed its worktree at ${own.path}; the branch ${own.branch} is kept.`];
+						removed.push(branch);
+						return [`Removed its worktree at ${own.path}; the branch ${branch} is kept.`];
 					} catch (error) {
-						return [`Its worktree at ${own.path}, branch ${own.branch}${standing}, was left where it is: ${error instanceof Error ? error.message : String(error)}.`];
+						return [`Its worktree at ${own.path}, branch ${branch}${standing}, was left where it is: ${error instanceof Error ? error.message : String(error)}.`];
 					}
 				}
-				const left = `Its worktree at ${own.path}, branch ${own.branch}${standing}, was left where it is`;
+				const left = `Its worktree at ${own.path}, branch ${branch}${standing}, was left where it is`;
 				if (why !== undefined) return [`${left}${args.remove_worktree === true ? `, since ${why}` : ""}; the person can remove it from Branches, where it is listed under Left Behind.`];
 				return [`${left}. Nothing would be lost by removing it: pass remove_worktree: true to remove it.`];
 			};

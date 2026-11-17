@@ -11,6 +11,14 @@
 // still going. The default was 30 minutes, and a command waiting on a system prompt nobody had seen (by the timing, a
 // privacy prompt) held its conversation for 29 of them with nothing to show for it.
 //
+// At the limit, as in Claude Code, a command is moved to the background rather than stopped (issue #197), so the time it
+// ran is not lost: it becomes a background command like one started with `background: true` (background.ts `adopt`).
+// Only where starting it in the background would not have asked the person (extensions.ts `commandAsks`), so moving it
+// never lets something run on that was approved only to be waited for; otherwise, and for a command that only sleeps,
+// it is stopped as before. pi durable's `exec` still starts it and passes on its output; the wrap gives it a run marker,
+// by which its process is known as it starts (processes.ts `lookOutFor`), keeps the limit itself, and stops it when the
+// run is stopped only until it is moved.
+//
 // The result shows the end of a long output only. The wrap runs the command itself, as pi durable's `bash` does but
 // without its spill file in the system's temporary folder (never removed), and keeps the whole output in a file of its
 // own instead (output.ts), which the result names whenever it had to shorten the output.
@@ -18,15 +26,17 @@
 // The same wrap gives `bash` its other way of running a command: with `background: true` it is started and left
 // running, with no time limit of its own (background.ts).
 
-import type { Context } from "@earendil-works/chord/context";
+import { type Context, withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
 import { type ToolExecutionApi, type ToolExecutionResult, wrapTool } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { join } from "node:path";
 import { isDeleted } from "./archive.ts";
-import { BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, startInBackground } from "./background.ts";
+import { adopt, BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, KEEP_CHARS, startInBackground } from "./background.ts";
+import { commandAsks } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
-import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore } from "./output.ts";
+import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore, type Recorder } from "./output.ts";
+import { lookOutFor, newRunMarker, RUN_VARIABLE } from "./processes.ts";
 
 /** How long a command in the foreground may run, in seconds: `fallback` when its call names no `timeout`, and `most` whatever it names. */
 export type Limits = { fallback: number; most: number };
@@ -71,7 +81,9 @@ export function describe(limits: Limits): string {
 		"Not for reading files (`read` takes several at once), finding or searching them (`find_files`, `search_files`), or changing them (`edit`, `write`). " +
 		`A long output is shortened to its last 2000 lines or 50KB, and the whole of it is kept for ${KEEP_DAYS} days in a file the result names, to read with \`read\` or search with \`grep\`: ` +
 		"so do not cut an output short with `head`, `tail` or `grep`, which loses the rest. " +
-		`A command is stopped after ${duration(limits.fallback)} unless you pass \`timeout\` in seconds, up to ${duration(limits.most)}; for longer (a full test suite, a build) use \`background: true\`, which has no time limit. ` +
+		`A command has ${duration(limits.fallback)} unless you pass \`timeout\` in seconds, up to ${duration(limits.most)}. ` +
+		"One not finished by then is moved to the background, and the result gives its id for the background tool; it is stopped instead where that would need the person's approval, or when it starts with `sleep`. " +
+		`For one you know may take longer (a full test suite, a build), use \`background: true\` from the start, which has no time limit. ` +
 		"Standard input is closed, so a command that asks a question fails instead of waiting for an answer: give answers as options or through a pipe. " +
 		BACKGROUND_DESCRIPTION
 	);
@@ -102,14 +114,8 @@ const QUIET_MS = 60_000;
  * What the model reads when the limit stopped a command, under whatever output it had written: which limit, whether it
  * had gone quiet, and what to do instead. `given` is the call's own `timeout`, if it gave one.
  */
-export function stoppedMessage(limits: Limits, given: number | undefined, timing?: Timing): string {
-	const capped = given !== undefined && given > limits.most;
-	const why =
-		given === undefined
-			? `${duration(limits.fallback)}, the default time limit for a command`
-			: capped
-				? `${duration(limits.most)}, the longest a command may run unless it is in the background (this call asked for ${duration(given)})`
-				: `${duration(given)}, the \`timeout\` this call gave`;
+export function stoppedMessage(limits: Limits, given: number | undefined, timing?: Timing, notMoved?: string): string {
+	const why = limitOf(limits, given);
 	const quiet =
 		timing === undefined || timing.ms < QUIET_MS
 			? ""
@@ -123,7 +129,58 @@ export function stoppedMessage(limits: Limits, given: number | undefined, timing
 		(given ?? limits.fallback) >= limits.most
 			? "If it needs longer, run it again with `background: true`, which has no time limit, and read its output with the background tool."
 			: `If it needs longer, run it again with a larger \`timeout\` (in seconds, up to ${limits.most}), or with \`background: true\`, which has no time limit, and read its output with the background tool.`;
-	return `The command was stopped after ${why}.${quiet}${waiting} ${instead}`;
+	return `The command was stopped after ${why}.${quiet}${waiting}${notMoved === undefined ? "" : ` ${notMoved}`} ${instead}`;
+}
+
+/** Which limit a command reached: "2 minutes, the default time limit for a command". `given` is the call's own `timeout`. */
+function limitOf(limits: Limits, given: number | undefined): string {
+	if (given === undefined) return `${duration(limits.fallback)}, the default time limit for a command`;
+	if (given > limits.most) return `${duration(limits.most)}, the longest a command may run unless it is in the background (this call asked for ${duration(given)})`;
+	return `${duration(given)}, the \`timeout\` this call gave`;
+}
+
+/**
+ * What the model reads when a command reached its limit and was moved to the background instead of being stopped, under
+ * what it had printed by then (issue #197). Claude Code says "Command did not complete within its 120s timeout and was
+ * moved to the background", with the task's id; this says the same, and how to go on with it.
+ */
+export function movedMessage(limits: Limits, given: number | undefined, id: string, printed: boolean): string {
+	return (
+		`The command did not complete within ${limitOf(limits, given)}, and was moved to the background as ${id} rather than stopped. ` +
+		"It keeps running there, with no time limit, until it ends, you or the person stop it, the conversation is archived, or pi² stops. " +
+		`${printed ? "What it printed until now is above." : "It has printed nothing so far."} ` +
+		`Use the background tool with id "${id}" to read what it prints from here on (action "read", with \`wait\` to wait for more) and to stop it (action "stop").`
+	);
+}
+
+/** The result of a command moved to the background at its limit: what it printed until then, and what became of it. */
+async function moved(
+	store: OutputStore | undefined,
+	limits: Limits,
+	given: number | undefined,
+	adopted: { id: string; recorded: Promise<void>; answer: (sawTheEnd: boolean) => void },
+	api: ToolExecutionApi,
+	conversationId: number,
+	recorder: Recorder | undefined,
+): Promise<ToolExecutionResult> {
+	try {
+		// As the call that starts a background command does, this one answers once the command's process is on record.
+		await adopted.recorded;
+		const retained = api.retainedOutput();
+		// The file has what it printed in the foreground; what it prints from here on is the background tool's to read.
+		const kept = recorder?.end(retained.truncated);
+		if (kept?.kept) store?.prune(conversationId);
+		const message = kept === undefined ? undefined : keptMessage(kept, retained.text);
+		if (message !== undefined) api.diagnostic({ severity: "info", code: "full_output", message });
+		api.diagnostic({ severity: "info", code: "moved_to_background", message: movedMessage(limits, given, adopted.id, retained.text !== "") });
+		return {
+			details: { background: { id: adopted.id, status: "running" } },
+			// What a script calling `bash` gets, as for a command started in the background.
+			structuredOutput: { output: retained.text, truncated: retained.truncated, ...(kept?.kept ? { fullOutputPath: kept.path } : {}), exitCode: 0, background: adopted.id },
+		};
+	} finally {
+		adopted.answer(false);
+	}
 }
 
 /** What the result of a command that ended by itself says about a long run: how long, and how long it went quiet. */
@@ -149,8 +206,17 @@ export function keptMessage(kept: Kept, shown: string): string | undefined {
 	return `${part} ${where}, for ${KEEP_DAYS} days: read it with \`read\` (\`offset\`, \`limit\`) or search it with \`grep\`, rather than running the command again.`;
 }
 
+/**
+ * What `bash` needs to move a command that reached its time limit to the background rather than stop it: whether
+ * starting it there would ask the person (extensions.ts). Without it, as in a test of the wrap alone, it is stopped.
+ */
+export type HandOver = { asks(api: ToolExecutionApi, command: string, context: Context): Promise<boolean> };
+
+/** A command that only waits, which Claude Code stops at its limit rather than move: nothing is gained by keeping it. */
+const onlyWaits = (command: string) => /^\s*sleep(\s|$)/.test(command);
+
 /** pi durable's `bash`, run without its spill file: the output goes to `store` as well as to the result. */
-async function run(store: OutputStore | undefined, limits: Limits, args: { command: string; timeout?: number }, api: ToolExecutionApi, context: Context): Promise<ToolExecutionResult> {
+async function run(store: OutputStore | undefined, limits: Limits, args: { command: string; timeout?: number }, api: ToolExecutionApi, context: Context, handOver?: HandOver): Promise<ToolExecutionResult> {
 	const given = args.timeout;
 	if (given !== undefined && (!Number.isFinite(given) || given <= 0)) throw new Error("Invalid timeout: must be a finite number of seconds");
 	// A longer one is lowered to the most, as Claude Code does: a call asking for more is often only being generous.
@@ -162,24 +228,91 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	const started = Date.now();
 	let lastPrinted: number | undefined;
 	let longestQuietMs = 0;
-	const result = await env.exec(
+	// A marker of this run in the command's environment, as a background command has (background.ts): it tells this
+	// command's process apart as it is started, and is what the next engine knows what it started by, should the command
+	// move to the background and this engine die.
+	const marker = newRunMarker();
+	const watched = handOver === undefined ? undefined : lookOutFor(marker);
+	// The end of what it has printed, and how much in all: where its output starts from should it move to the background.
+	let tail = "";
+	let total = 0;
+	/** Where its output goes once it is in the background. */
+	let movedTo: ((chunk: string) => void) | undefined;
+	// What stops it: the run being stopped, until it moves to the background and no longer belongs to the run, and the
+	// time limit, which this wrap keeps rather than `exec`, so that at the limit it can be moved instead.
+	const own = new AbortController();
+	const forward = () => own.abort();
+	if (context.abortSignal?.aborted) own.abort();
+	else context.abortSignal?.addEventListener("abort", forward, { once: true });
+	const execution = env.exec(
 		args.command,
 		{
 			cwd: env.cwd,
-			env: {},
+			env: { [RUN_VARIABLE]: marker },
 			inheritEnv: true,
-			timeout,
 			// No `window`: every chunk is wanted for the file, not only the tail the result keeps.
 			onOutput: (text, _context, info) => {
+				if (movedTo !== undefined) return movedTo(text);
 				const now = Date.now();
 				longestQuietMs = Math.max(longestQuietMs, now - (lastPrinted ?? started));
 				lastPrinted = now;
 				api.output(text, info.skipped);
 				recorder?.add(text);
+				if (watched === undefined) return;
+				tail += text;
+				total += text.length;
+				if (tail.length > 2 * KEEP_CHARS) tail = tail.slice(-KEEP_CHARS);
 			},
 		},
-		context,
+		withAbortSignal(own.signal, withoutAbortSignal(context)),
 	);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const limit = new Promise<"limit">((resolve) => (timer = setTimeout(() => resolve("limit"), timeout * 1000)));
+	let timedOut = false;
+	let notMoved: string | undefined;
+	let result: Awaited<typeof execution>;
+	try {
+		const first = await Promise.race([execution, limit]);
+		if (first !== "limit") result = first;
+		else {
+			const child = watched?.child();
+			if (child !== undefined && (child.exitCode !== null || child.signalCode !== null)) {
+				// It ended just as the limit came: its result is on its way.
+				result = await execution;
+			} else {
+				const asks = handOver === undefined || child === undefined || onlyWaits(args.command) ? undefined : await handOver.asks(api, args.command, context).catch(() => true);
+				if (asks === true) notMoved = "It was not moved to the background, as starting a command there needs the person's approval in this conversation.";
+				const adopted =
+					asks !== false || child === undefined
+						? undefined
+						: await adopt({
+								child,
+								marker,
+								command: args.command,
+								cwd: env.cwd,
+								conversationId,
+								startedAt: started,
+								printed: () => ({ output: tail, total }),
+								route: (keep) => {
+									movedTo = keep;
+									context.abortSignal?.removeEventListener("abort", forward);
+								},
+								wanted: () => !own.signal.aborted,
+							});
+				if (adopted !== undefined) return await moved(store, limits, given, adopted, api, conversationId, recorder);
+				if (child !== undefined && (child.exitCode !== null || child.signalCode !== null)) result = await execution;
+				else {
+					timedOut = true;
+					own.abort();
+					result = await execution;
+				}
+			}
+		}
+	} finally {
+		clearTimeout(timer);
+		watched?.done();
+		if (movedTo === undefined) context.abortSignal?.removeEventListener("abort", forward);
+	}
 	const ended = Date.now();
 	const quietAtEndMs = ended - (lastPrinted ?? started);
 	const timing: Timing = { ms: ended - started, printed: lastPrinted !== undefined, quietAtEndMs, longestQuietMs: Math.max(longestQuietMs, quietAtEndMs) };
@@ -190,7 +323,7 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	if (message !== undefined) api.diagnostic({ severity: "info", code: "full_output", message });
 	if (!result.ok) {
 		if (result.error.code === "aborted" && context.abortSignal?.aborted) throw result.error;
-		if (result.error.code === "timeout") throw new Error(stoppedMessage(limits, given, timing));
+		if (timedOut || result.error.code === "timeout") throw new Error(stoppedMessage(limits, given, timing, notMoved));
 		if (result.error.code === "aborted") throw new Error("Command aborted");
 		throw result.error;
 	}
@@ -203,8 +336,11 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	return { structuredOutput, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: `Command exited with code ${exitCode}` }] };
 }
 
-/** The wrap of `bash` with these limits, keeping long outputs in `store`. Tests make one with limits of their own. */
-export const shell = (store: OutputStore | undefined, limits: Limits = LIMITS) =>
+/**
+ * The wrap of `bash` with these limits, keeping long outputs in `store`, and moving a command that reaches its limit to
+ * the background when `handOver` says it may. Tests make one with limits of their own.
+ */
+export const shell = (store: OutputStore | undefined, limits: Limits = LIMITS, handOver?: HandOver) =>
 	wrapTool(createBashTool(), (bash) => ({
 		...bash,
 		description: describe(limits),
@@ -213,13 +349,15 @@ export const shell = (store: OutputStore | undefined, limits: Limits = LIMITS) =
 			// Left running rather than waited for, so the limits are not for it.
 			// (The library's own type for the arguments does not know the parameter this wrap adds.)
 			if ((args as { background?: unknown }).background === true) return await startInBackground(args, api, context);
-			return await run(store, limits, args, api, context);
+			return await run(store, limits, args, api, context, handOver);
 		},
 	}));
 
-export const commands: Feature = (_host, engine: Engine | undefined) => {
-	// Without an engine (a test of the description), nothing is kept.
+export const commands: Feature = (host, engine: Engine | undefined) => {
+	// Without an engine (a test of the description), nothing is kept, and a command is never moved to the background.
 	const store = engine === undefined ? undefined : new OutputStore(join(engine.home, "output"));
+	const handOver: HandOver | undefined =
+		engine === undefined || host === undefined ? undefined : { asks: (api, command, context) => commandAsks(host, api.conversationId, command, api, context) };
 	const sweep = () => {
 		try {
 			store?.sweep((id) => isDeleted(engine?.library().conversations[String(id)]));
@@ -229,7 +367,7 @@ export const commands: Feature = (_host, engine: Engine | undefined) => {
 	};
 	let daily: NodeJS.Timeout | undefined;
 	return {
-		wraps: [shell(store)],
+		wraps: [shell(store, LIMITS, handOver)],
 		start: async () => {
 			sweep();
 			daily = setInterval(sweep, 86_400_000);

@@ -86,13 +86,17 @@ try {
 	assert.equal(reading.output, "read: 1 []\nnot-a-terminal\n", "cat and read get no input");
 
 	// What the model reads about bash: there is a default limit, and a larger timeout can be passed, up to a most.
-	const { commands, DEFAULT_COMMAND_TIMEOUT_SECONDS, MAX_COMMAND_TIMEOUT_SECONDS, shell, stoppedMessage, tookMessage } = await import("../src/commands.ts");
+	const { commands, DEFAULT_COMMAND_TIMEOUT_SECONDS, MAX_COMMAND_TIMEOUT_SECONDS, movedMessage, shell, stoppedMessage, tookMessage } = await import("../src/commands.ts");
 	const { createBashTool } = await import("@earendil-works/pi-durable/tools");
+	const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
 	const wrap = commands(undefined as never, undefined as never).wraps![0]!;
 	const bash = (wrap as { wrap(tool: unknown): { description: string; parameters: unknown } }).wrap(createBashTool());
 	assert.equal(DEFAULT_COMMAND_TIMEOUT_SECONDS, 120, "the default is 2 minutes, as Claude Code's (issue #160)");
 	assert.equal(MAX_COMMAND_TIMEOUT_SECONDS, 600, "a call may ask for 10 minutes at most, as in Claude Code");
-	assert.match(bash.description, /A command is stopped after 2 minutes unless you pass `timeout` in seconds, up to 10 minutes; for longer \(a full test suite, a build\) use `background: true`, which has no time limit\./);
+	assert.match(
+		bash.description,
+		/A command has 2 minutes unless you pass `timeout` in seconds, up to 10 minutes\. One not finished by then is moved to the background, and the result gives its id for the background tool; it is stopped instead where that would need the person's approval, or when it starts with `sleep`\. For one you know may take longer \(a full test suite, a build\), use `background: true` from the start, which has no time limit\./,
+	);
 	assert.match(bash.description, /Standard input is closed/);
 	assert.doesNotMatch(bash.description, /Optionally provide a timeout/);
 	// That a long output is kept whole, so it need not cut it short itself (issue #161).
@@ -117,7 +121,8 @@ try {
 		let printed = "";
 		const api = { env, conversationId: 1, callId: "limited", output: (text: string) => void (printed += text), retainedOutput: () => ({ text: printed, truncated: false }), diagnostic: () => {} };
 		try {
-			return { result: await hangs("a command the limit stops", limited.execute(args, api, {})), printed };
+			// A wrap made without an engine moves nothing to the background: the limit stops the command.
+			return { result: await hangs("a command the limit stops", limited.execute(args, api, BACKGROUND_CONTEXT)), printed };
 		} catch (error) {
 			return { error: (error as Error).message, printed };
 		}
@@ -149,6 +154,11 @@ try {
 		/^The command was stopped after 2 minutes, the default time limit for a command\. It printed nothing in that time\. A command that goes quiet for that long may be waiting on something, such as a permission prompt on the person's screen/,
 	);
 	assert.match(stoppedMessage(real, 600), /after 10 minutes, the `timeout` this call gave\. If it needs longer, run it again with `background: true`/);
+	// A command moved to the background at its limit (#197) is told which limit, its id, and how to go on with it.
+	assert.equal(
+		movedMessage(real, 3600, "bg-3", false),
+		'The command did not complete within 10 minutes, the longest a command may run unless it is in the background (this call asked for 60 minutes), and was moved to the background as bg-3 rather than stopped. It keeps running there, with no time limit, until it ends, you or the person stop it, the conversation is archived, or pi² stops. It has printed nothing so far. Use the background tool with id "bg-3" to read what it prints from here on (action "read", with `wait` to wait for more) and to stop it (action "stop").',
+	);
 	assert.equal(tookMessage({ ms: 59_000, printed: false, quietAtEndMs: 59_000, longestQuietMs: 59_000 }), undefined, "a command under a minute says nothing of its time");
 	assert.equal(tookMessage({ ms: 1722_000, printed: true, quietAtEndMs: 0, longestQuietMs: 1721_000 }), "The command took 28 minutes 42 seconds, and went 28 minutes 41 seconds without printing anything.");
 	assert.equal(tookMessage({ ms: 90_000, printed: false, quietAtEndMs: 90_000, longestQuietMs: 90_000 }), "The command took 1 minute 30 seconds, printing nothing until it ended.");
