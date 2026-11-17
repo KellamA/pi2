@@ -5,7 +5,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 ## Unreleased
 
 ### Changed
+- **Shift-Return starts a new line in a memory note.** In an agent's Memory settings, Shift-Return or Option-Return now puts a line break in a note you are editing or adding, and the field grows with it; Return still saves the note (or adds it), but not while an input method is composing. Before, Return and Shift-Return both saved, and the line breaks of a note were joined into one line. A note you write now keeps its line breaks, and the agent sees it as one item of several lines.
 - **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
+- **A command that reaches its time limit moves to the background.** A command an agent waits for that is still running after its two minutes (or the up to ten it asked for) now keeps running in the background instead of being stopped, so a long test suite or build does not have to start again from nothing. The agent is told it was moved and gets its id, and you see it in Activity and above the message field with its Stop button, like any background command. This happens only where starting it in the background would not have asked you: under Ask first, a command you allowed once is still stopped at its limit. A command that starts with `sleep` is stopped too.
 
 ### Fixed
 - When something new reached an agent in the middle of a conversation (its first background command, a worktree, a project's instructions file, or a setting such as code mode, computer use or the browser switched on), the agent could be sent its whole system prompt and tool list again, about 25,000 characters, carried by every later turn. Now only what changed is sent.
@@ -13,7 +15,11 @@ What changed in each version, newest first. “For contributors” stays here bu
 - Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
 
 ### For contributors
+<<<<<<< HEAD
 - The demo model's `/system history` lists what each system message of a conversation changed, and `engine/test/sections.ts` checks that a section or tool that arrives or goes is sent alone. [docs/architecture.md](docs/architecture.md#the-system-prompts-sections) lists every section of the system prompt and when it comes and goes.
+=======
+- `pi2-compose-check` also checks a field made as a memory note is: a field of a grouped form that saves with Return and keeps its text.
+>>>>>>> origin/main
 - **`scripts/test-copy` runs a throwaway copy of the app in one command a step.** `start <suffix> [--show <what>]` copies this checkout's development build under a bundle id, data folder and Keychain service of its own, signs it and launches it behind other windows without taking the focus, and prints the app's and the engine's process ids. `shot` captures its window only when screen capture is already allowed, and `stop` stops what it recorded, by pid, and removes the copy and everything it left. It refuses a suffix that could reach the installed copy, a release build, a suffix already in use and a pid it did not record. "A throwaway copy, step by step" in CONTRIBUTING.md now describes it; `scripts/test-test-copy` checks its refusals (#181).
 
 ## 0.7.7
