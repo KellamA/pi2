@@ -5,7 +5,11 @@ What changed in each version, newest first. “For contributors” stays here bu
 ## Unreleased
 
 ### Changed
+<<<<<<< HEAD
 - **Shift-Return starts a new line in a memory note.** In an agent's Memory settings, Shift-Return or Option-Return now puts a line break in a note you are editing or adding, and the field grows with it; Return still saves the note (or adds it), but not while an input method is composing. Before, Return and Shift-Return both saved, and the line breaks of a note were joined into one line. A note you write now keeps its line breaks, and the agent sees it as one item of several lines.
+=======
+- **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
+>>>>>>> origin/main
 
 ### Fixed
 - Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
