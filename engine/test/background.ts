@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -23,7 +23,18 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 process.env.PI2_LOGIN_SHELL ??= "off";
 // A command that is waited for is stopped after two seconds here, so one in the background visibly outlives the limit.
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-background", PI2_COMMAND_TIMEOUT_SECONDS: "2" };
+// A request from the app for a command's output may wait for longer than this test waits for anything, so that an answer
+// to one can only have come because there was output, or because the command ended: never because the wait ran out.
+const OUTPUT_WAIT_SECONDS = (2 * PATIENT_MS) / 1000;
+const env = {
+	...process.env,
+	PI2_HOME: home,
+	PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-background",
+	PI2_COMMAND_TIMEOUT_SECONDS: "2",
+	PI2_OUTPUT_WAIT_SECONDS: String(OUTPUT_WAIT_SECONDS),
+};
+/** What the engines write, as the app's engine.log has it. A file, so that a line written just before an engine exits is not lost, as it can be in a pipe. */
+const engineLog = join(home, "engine.log");
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -169,6 +180,25 @@ function stubborn(): [string, string, string] {
 	const child = join(scratch, `child-${files}.pid`);
 	return [`trap '' TERM; ${LONG} & echo $! > '${child}'; trap - TERM; echo $$ > '${leader}'; echo up; wait`, leader, child];
 }
+/**
+ * A command none of whose processes heeds SIGTERM: only the SIGKILL that follows ends it, so whatever stops it has to
+ * give up on it by a bound of its own.
+ */
+function deaf(): [string, string, string] {
+	const leader = join(scratch, `leader-${++files}.pid`);
+	const child = join(scratch, `child-${files}.pid`);
+	return [`trap '' TERM; ${LONG} & echo $! > '${child}'; echo $$ > '${leader}'; echo up; wait`, leader, child];
+}
+/** Waits for an answer that should come, but fails rather than wait past the test's patience. */
+async function answered<T>(what: string, pending: Promise<T>): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`Timed out waiting for: ${what}`)), PATIENT_MS)));
+	try {
+		return await Promise.race([pending, late]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 /** The process a command wrote down in `file`, once it has. */
 const pidIn = async (file: string): Promise<number> => {
 	await until(`${file} to be written`, () => existsSync(file) && readFileSync(file, "utf8").trim() !== "");
@@ -193,7 +223,15 @@ function repo(name: string): string {
 
 const work = join(scratch, "work");
 mkdirSync(work);
-const boot = () => spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
+const boot = () => {
+	const log = openSync(engineLog, "a");
+	try {
+		return spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", log] });
+	} finally {
+		closeSync(log);
+	}
+};
+let passed = false;
 let engine: ChildProcess = boot();
 try {
 	let client = await Client.attach(engine);
@@ -403,9 +441,7 @@ try {
 		assert.equal((await client.call("background.output", { id: bg.slice(3) })).id, bg, "the id may be given as a number");
 		// Asked from where it got to, with a wait, the answer comes when there is more.
 		setTimeout(() => writeFileSync(gate2, ""), 700);
-		const asked = Date.now();
-		const more = await client.call("background.output", { id: bg, from: shown.total, wait: 30 });
-		assert.ok(Date.now() - asked < 20_000, "the wait ends when there is output");
+		const more = await answered("the wait to end when there is output", client.call("background.output", { id: bg, from: shown.total, wait: OUTPUT_WAIT_SECONDS }));
 		assert.deepEqual([more.output, more.from, more.dropped, more.total], ["two\n", 4, 0, 8]);
 		const quiet = Date.now();
 		const nothing = await client.call("background.output", { id: bg, from: more.total, wait: 0.5 });
@@ -414,9 +450,9 @@ try {
 		const agentRead = await client.background(a, { action: "read", id: bg, wait: 10 });
 		assert.ok(agentRead.text.endsWith("two\n"), `the agent still gets what the person was shown: ${agentRead.text}`);
 		// A wait ends when the command does.
-		const waiting = client.call("background.output", { id: bg, from: more.total, wait: 30 });
+		const waiting = client.call("background.output", { id: bg, from: more.total, wait: OUTPUT_WAIT_SECONDS });
 		await client.call("background.stop", { id: bg });
-		const over = await waiting;
+		const over = await answered("the wait to end when the command does", waiting);
 		assert.equal(over.running, false, "a wait ends when the command ends");
 		const after = await client.call("background.output", { id: bg });
 		assert.equal(after.output, "one\ntwo\n", "an ended command's output can still be read");
@@ -532,14 +568,20 @@ try {
 	// ---- The engine stops, cleanly: its commands stop with it, and the next engine says so
 	const z = await open(worker);
 	{
-		const [cmd, leaderPid, childPid] = lingering();
+		// One that heeds no SIGTERM, so that the stop has to give up on it by its own bound and end it with SIGKILL.
+		const [cmd, leaderPid, childPid] = deaf();
 		const { bg } = await client.start(z, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
-		const took = Date.now();
 		await stop(engine);
-		// The app gives the engine five seconds to stop before it restores a backup; a busy machine is allowed some more here.
-		assert.ok(Date.now() - took < 8_000, `the engine does not take long to stop: ${Date.now() - took} ms`);
-		assert.ok(pids.every((pid) => !alive(pid)), "stopping the engine stopped the command and what it started");
+		// The app gives the engine five seconds to stop before it restores a backup. The engine's own account of its stop
+		// is the time it spent waiting and the processor time it used, without the time a busy Mac kept it from running
+		// (src/stopwatch.ts): what the stop takes on a quiet Mac.
+		const stopped = [...readFileSync(engineLog, "utf8").matchAll(/stopped cleanly in (\d+) ms: (\d+) ms of it waiting, and (\d+) ms of processor time/g)].at(-1);
+		assert.ok(stopped !== undefined, "the engine says how long its stop took");
+		const [total, waited, worked] = stopped.slice(1).map(Number) as [number, number, number];
+		assert.ok(waited <= total, stopped[0]);
+		assert.ok(waited + worked < 5_000, `the engine's stop fits in the five seconds the app gives it: ${stopped[0]}`);
+		await until("stopping the engine to stop the command and what it started", () => pids.every((pid) => !alive(pid)));
 		engine = boot();
 		client = await Client.attach(engine);
 		assert.deepEqual(client.running(), []);
@@ -553,7 +595,7 @@ try {
 		assert.ok(Number(next.bg.slice(3)) > Number(bg.slice(3)), `ids are not used again after a restart: ${next.bg} after ${bg}`);
 		await client.background(z, { action: "stop", id: next.bg });
 		assert.equal(client.events.recovery?.recovery, null, "a clean stop is not an unexpected one: Activity has no notice");
-		step("a clean stop of the engine stops its background commands; the next engine writes that down and tells the agent");
+		step(`a clean stop of the engine stops its background commands, even ones that ignore SIGTERM, within the app's five seconds (${stopped[0]}); the next engine writes that down and tells the agent`);
 	}
 
 	// ---- The engine is killed outright: the command is left running, and the next engine stops it
@@ -639,6 +681,7 @@ try {
 		step("when only part of what a background command started carries the run's marker, that part is stopped, the rest is left alone, and its line says both");
 	}
 	console.log("PASS");
+	passed = true;
 } finally {
 	// A clean stop of the engine stops whatever it still has running in the background.
 	if (running(engine)) {
@@ -656,6 +699,8 @@ try {
 			// Gone, as it should be.
 		}
 	}
+	// What the engines said, should a check have failed.
+	if (!passed && existsSync(engineLog)) process.stderr.write(readFileSync(engineLog, "utf8"));
 	rmSync(home, { recursive: true, force: true });
 	rmSync(scratch, { recursive: true, force: true });
 }

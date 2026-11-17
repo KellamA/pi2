@@ -41,8 +41,14 @@ const SETTLE_MS = 1_000;
 const SHUTDOWN_GRACE_MS = 1_500;
 /** The longest a read waits for new output. Stopping the run ends the wait sooner. */
 export const MAX_WAIT_SECONDS = 600;
-/** The longest a request from the app for a command's output waits for more. The app asks again when it returns. */
-export const APP_WAIT_SECONDS = 30;
+/**
+ * The longest a request from the app for a command's output waits for more. The app asks again when it returns.
+ * `PI2_OUTPUT_WAIT_SECONDS` sets another, for a test that must tell a wait ended by output from one that ran out.
+ */
+export const APP_WAIT_SECONDS = (() => {
+	const given = Number(process.env.PI2_OUTPUT_WAIT_SECONDS);
+	return Number.isFinite(given) && given > 0 ? given : 30;
+})();
 /** How many ended commands are remembered, across all conversations, for their output to be read. */
 const ENDED_KEPT = 50;
 /** How many of a conversation's ended commands its agent is reminded of. */
