@@ -2,7 +2,7 @@
 
 What changed in each version, newest first.
 
-## Unreleased
+## 0.7.5
 
 ### Added
 - **Commands left running in the background.** An agent can start a command and carry on while it runs (a development server, a watching build, a test copy of an app), read what it prints later, and stop it. Starting one asks the way any command does under Ask first, says in the approval that it will keep running, and is covered by Always Allow and by command rules. It has no time limit; it runs until it ends, the agent or you stop it, its conversation is archived or deleted, its worktree is removed, or pi² stops. Activity lists what is running, each with a Stop button, and the conversation says when one ends. After a crash, the next engine stops what the last one left running. See [docs/background.md](docs/background.md).
