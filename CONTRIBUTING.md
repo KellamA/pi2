@@ -21,6 +21,7 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 4. If you touch the app, build it and try the change in a throwaway copy, as [Testing safely](#testing-safely) shows. Apart from the browser's page handling, which `pi2-browser-probe` checks, and the panes' layout, which `pi2-layout-check` checks, the app has no automated tests, so say in the pull request what you tried by hand.
 5. If you touch `scripts/issue-hook`, run `scripts/test-issue-hook`; if you touch `scripts/issue`, run `scripts/test-issue` and `scripts/test-issue-hook`. They need `jq`, work in a temporary folder and touch no GitHub issue.
 6. Say plainly what is and is not tested.
+7. If you can merge, do not sit waiting for the checks. Once the pull request is open, run `gh pr merge <number> --auto --merge`: GitHub merges it when the three required checks pass, about four minutes later. Use that time for what is left (cleaning up a throwaway copy, the next issue), then make sure it merged before you call the work done: `gh pr view <number> --json state -q .state` says `MERGED`. A pull request with a failed check stays open. Read the log (`gh run view --log-failed`), fix it and push, and check that auto-merge is still on (`gh pr view <number> --json autoMergeRequest`).
 
 ## Testing safely
 
