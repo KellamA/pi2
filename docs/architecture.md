@@ -53,7 +53,8 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
-| `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
+| `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
+| `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/mcp.ts` | MCP servers and their tools |
@@ -82,7 +83,7 @@ Whatever is started after that gets the shell's `PATH`, because each of these re
 MCP servers run as programs are connected as the engine starts listening, so on such a start they get the usual folders. When the shell's `PATH` is taken, each one that was started with another `PATH` is started again with it, without anyone pressing Reconnect (`McpServers.followPath` in `src/mcp.ts`):
 
 - One that failed to start, as one whose program (`npx`, `uvx`, a `node` from a version manager) is only on the shell's `PATH` does, is connected again at once. Nothing was using it. A conversation is given its tools at its next message, as after any reconnect.
-- One that is connected is started again beside the one running, and takes its place only once it has connected and listed its tools. Its tools never drop out of what conversations are offered meanwhile, so a conversation in the middle of an answer carries on. A call already running on the old process finishes there; the old process is closed once no call is left on it. A call that was resolved before the swap but runs after it (one waiting for an approval, say) goes to the new process. If the server will not start with the new `PATH`, the one running is kept, and `engine.log` says so.
+- One that is connected is started again beside the one running, and takes its place only once it has connected and listed its tools. Its tools never drop out of what conversations are offered meanwhile, so a conversation in the middle of an answer carries on. A call already running on the old process finishes there; the old process is closed once no call is left on it, or after ten minutes at most (see [below](#an-mcp-server-changed-while-a-call-runs-on-it)). A call that was resolved before the swap but runs after it (one waiting for an approval, say) goes to the new process. If the server will not start with the new `PATH`, the one running is kept, and `engine.log` says so.
 - One still connecting is looked at again once it has connected or failed.
 
 A server started with the `PATH` the engine has by then (one connected after the answer, or a `PATH` the answer did not change) is left alone, and so are servers reached over HTTP. `engine.log` has a line for each server started again.
@@ -95,7 +96,25 @@ A shell command is stopped after 30 minutes unless the call that runs it passes 
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
+### A long output
+
+A command's result shows the end of its output only: the last 2000 lines or 50 KB, whichever is less, as pi durable's `bash` keeps it. When that leaves some of the output out, the whole output is kept in a file, and the result says so under the output, in a line such as "The output is 4,812 lines long; only the last 2,000 are shown. All of it is in `…/output/12/toolu_….log`, for 7 days: read it with `read` (`offset`, `limit`) or search it with `grep`, rather than running the command again." The tool's description says the same, and tells the agent not to cut an output short itself with `head`, `tail` or `grep`: what it cuts is not kept, and getting it back means running the command again (#161). An output shown whole keeps no file.
+
+The files are only text a program printed. They live in the data folder, in `output/<conversation>/`, one per call, named after the call's id, readable by the person's user only; never in the conversation's folder, which may be a project's. A conversation keeps the files of its last 50 shortened commands, each for 7 days at most, and a file holds at most the first 64 MB of an output (the result says so when it holds less). A deleted conversation's folder is removed. The engine tidies them as it starts, whenever conversations are archived or deleted, whenever a conversation keeps a new one, and once a day. They are not part of a backup.
+
+`src/commands.ts` runs the command itself rather than through pi durable's `bash`, the same way but without that tool's own file of the output, which goes to the system's temporary folder and is never removed. A script in code mode that calls `bash` gets the file's path as `fullOutputPath`, as before.
+
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
+
+### An MCP server changed while a call runs on it
+
+The engine counts the tool calls running on each copy of an MCP server it started (a process, or a session with a server over HTTP), so that a change to the server in Settings does not cut off a call it did not mean to (`src/mcp.ts`):
+
+- **Reconnect**, and **saving the server** with it still on (a new command, URL or token), start a new copy beside the one running. Until the new copy has connected and listed its tools, Settings shows the server as connecting, its tools stay in what conversations are offered, and a call made meanwhile goes to the copy running. Then the new copy takes over, and the old one is closed once no call is left on it. If the new copy fails to start, the server shows why and offers no tools, and the old copy is closed in the same way, once its calls are done.
+- **Removing** the server, or **switching it off**, closes every copy of it at once, an old one still finishing a call included: the person asked for it to go, and a call left to finish could still change things on a server they took away. A call cut off this way ends with an error that tells the agent so ("The MCP server Name was removed while this call was running, so the call was stopped. Whatever it did before then may have happened.") rather than the protocol's "connection closed". A server that stops on its own says that it stopped, in the same way.
+- An old copy is kept for its calls for **ten minutes at most** (`LINGER_MS`). A call usually ends far sooner, since a request with no word from the server for a minute times out, but a server that keeps reporting progress can hold one open for ever. When the ten minutes are up, the copy is closed and the call ends with an error that says why.
+
+`engine.log` has a line when an old copy is kept for a call, when one is closed with a call still running, and when removing or switching off a server stopped a call. Settings says nothing about an old copy finishing a call: the call shows, and can be stopped, in its conversation, and stopping it closes that copy at once.
 
 ## Where things live
 
@@ -104,6 +123,7 @@ A command's standard input is `/dev/null`, as pi durable starts it, so a command
 | Conversations, agents, schedules, settings | `~/Library/Application Support/pi2` (one SQLite database and a few small files) |
 | Keys and sign-ins | The macOS Keychain, service `dev.pi2.credentials` |
 | Logs | `engine.log` and `app.log` in the data folder |
+| A shell command's whole output, when its result was shortened | `output/<conversation>/` in the data folder, for 7 days at most |
 
 A development build uses `~/Library/Application Support/pi2-dev` and the Keychain service `dev.pi2.credentials.dev` instead, never the ones above ([development.md](development.md#build-and-run)).
 

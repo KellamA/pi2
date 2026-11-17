@@ -30,8 +30,25 @@ export type McpServerConfig = {
 export type McpToolInfo = { name: string; toolName: string; description: string; readOnly: boolean };
 export type McpServerStatus = McpServerConfig & { status: "connected" | "connecting" | "off" | "error"; error: string | null; hasToken: boolean; tools: McpToolInfo[] };
 
+/**
+ * How long a copy of a server that another has replaced may keep running for a call still going on it. A call usually
+ * ends far sooner (a request times out after a minute without word from the server), but one the server keeps reporting
+ * progress on has no end of its own.
+ */
+export const LINGER_MS = 10 * 60_000;
+
 /** A server process (or HTTP session) the engine is talking to, and how many tool calls it is answering right now. */
-type Connection = { client: McpClient; calls: number; retired: boolean };
+type Connection = {
+	/** The id of the server it is a copy of. */
+	server: string;
+	client: McpClient;
+	calls: number;
+	retired: boolean;
+	/** Why it was closed, for a call it cut off: set once it is closed, by the engine or on its own. */
+	ended?: string;
+	/** Closes it, retired with a call still running, once that has gone on for `lingerMs`. */
+	linger?: NodeJS.Timeout;
+};
 type Live = {
 	connection?: Connection;
 	status: McpServerStatus["status"];
@@ -56,8 +73,10 @@ export class McpServers {
 	#stopped = false;
 	/** Called whenever a server's status or tools change. */
 	onChange: () => void = () => {};
-	/** Where to say what was done without being asked: a server started again with a new PATH. */
+	/** Where to say what was done without being asked: a server started again with a new PATH, a call cut off. */
 	log: (...parts: unknown[]) => void = () => {};
+	/** How long a replaced copy of a server may keep running for a call still going on it (tests make it short). */
+	lingerMs = LINGER_MS;
 
 	constructor(home: string, credentials: CredentialStore) {
 		this.#path = join(home, "mcp.json");
@@ -131,16 +150,27 @@ export class McpServers {
 		return config;
 	}
 
+	/**
+	 * The person asked for the server to go, so it goes at once, with every copy of it still running: a call running on
+	 * one ends with an error that says why, rather than finishing on a server that is no longer there.
+	 */
 	async remove(id: string): Promise<void> {
-		if (!this.#configs.some((c) => c.id === id)) throw new Error(`Unknown server: ${id}`);
-		await this.#disconnect(id);
+		const config = this.#configs.find((c) => c.id === id);
+		if (config === undefined) throw new Error(`Unknown server: ${id}`);
 		this.#live.delete(id);
 		this.#configs = this.#configs.filter((c) => c.id !== id);
 		this.#persist();
-		if (this.#tokens.delete(id)) await this.#credentials.delete(`mcp-${id}`);
 		this.onChange();
+		await this.#end(config, "removed");
+		if (this.#tokens.delete(id)) await this.#credentials.delete(`mcp-${id}`);
 	}
 
+	/**
+	 * Start the server again, as saving it does. The copy running, if any, goes on answering until the new one has
+	 * connected and listed its tools, and is then closed once no call is left on it (or after `lingerMs`), so a call
+	 * running on it is not cut off and its tools do not drop out meanwhile. If the new one fails, the server shows why,
+	 * and the old copy is closed in the same way.
+	 */
 	async reconnect(id: string): Promise<void> {
 		const config = this.#configs.find((c) => c.id === id);
 		if (config === undefined) throw new Error(`Unknown server: ${id}`);
@@ -167,24 +197,41 @@ export class McpServers {
 
 	async stop(): Promise<void> {
 		this.#stopped = true;
-		await Promise.all([...this.#connections].map((connection) => this.#close(connection)));
+		await Promise.all([...this.#connections].map((connection) => this.#close(connection, "pi² stopped while this call was running, so the call was stopped.")));
 	}
 
-	async #disconnect(id: string): Promise<void> {
-		const connection = this.#live.get(id)?.connection;
-		if (connection !== undefined) await this.#close(connection);
+	/** Close every copy of a server the person removed or switched off, now, saying so to any call running on one. */
+	async #end(config: McpServerConfig, how: "removed" | "switched off"): Promise<void> {
+		const ending = [...this.#connections].filter((connection) => connection.server === config.id);
+		const calls = ending.reduce((sum, connection) => sum + connection.calls, 0);
+		if (calls > 0) this.log(`MCP server ${config.name} ${how}; ${calls === 1 ? "the call" : `the ${calls} calls`} running on it stopped`);
+		const reason = `The MCP server ${config.name} was ${how} while this call was running, so the call was stopped. Whatever it did before then may have happened.`;
+		await Promise.all(ending.map((connection) => this.#close(connection, reason)));
 	}
 
-	async #close(connection: Connection): Promise<void> {
+	/** `reason` is what a call still running on it is told. */
+	async #close(connection: Connection, reason?: string): Promise<void> {
+		connection.ended ??= reason;
+		clearTimeout(connection.linger);
 		this.#connections.delete(connection);
 		await connection.client.close().catch(() => {});
 	}
 
-	/** A connection another has replaced: closed as soon as no tool call is running on it. */
-	#retire(connection: Connection | undefined): void {
-		if (connection === undefined) return;
+	/**
+	 * A connection another has replaced: closed as soon as no tool call is running on it, and in any case after
+	 * `lingerMs`, so that a call that never ends does not keep it running.
+	 */
+	#retire(connection: Connection | undefined, name: string): void {
+		if (connection === undefined || connection.retired) return;
 		connection.retired = true;
-		if (connection.calls === 0) void this.#close(connection);
+		if (connection.calls === 0) return void this.#close(connection);
+		const [count, unit] = this.lingerMs >= 60_000 ? [Math.round(this.lingerMs / 60_000), "minute"] : [Math.round(this.lingerMs / 1000), "second"];
+		const after = `${count} ${unit}${count === 1 ? "" : "s"}`;
+		connection.linger = setTimeout(() => {
+			this.log(`MCP server ${name}: the copy it replaced closed after ${after} with ${connection.calls === 1 ? "a call" : `${connection.calls} calls`} still running`);
+			void this.#close(connection, `The MCP server ${name} was started again while this call was running, and the call was stopped after ${after} so that the copy it ran on could close. Whatever it did before then may have happened.`);
+		}, this.lingerMs);
+		connection.linger.unref();
 	}
 
 	/** The PATH a server would be started with now; undefined for one that is not a program. */
@@ -216,10 +263,8 @@ export class McpServers {
 			}
 			// Reconnected, removed or switched off meanwhile, or the engine is stopping: this one is not wanted.
 			if (this.#stopped || this.#live.get(config.id) !== old) return void this.#close(opened.connection);
-			const live: Live = { status: "connected", error: null, path, ...opened };
-			this.#live.set(config.id, live);
-			this.#watch(config, live);
-			this.#retire(old.connection);
+			this.#live.set(config.id, { status: "connected", error: null, path, ...opened });
+			this.#retire(old.connection, config.name);
 			this.log(`MCP server ${config.name} started again with the new PATH${old.connection !== undefined && old.connection.calls > 0 ? "; the one it replaces stops once its calls are done" : ""}`);
 			this.onChange();
 		} finally {
@@ -227,41 +272,63 @@ export class McpServers {
 		}
 	}
 
+	/** Connect `config`, in place of the copy running if there is one (see `reconnect`), or switch it off. */
 	async #connect(config: McpServerConfig): Promise<void> {
-		await this.#disconnect(config.id);
+		const before = this.#live.get(config.id);
 		if (!config.enabled) {
 			this.#live.set(config.id, { status: "off", error: null, tools: [], registrations: [] });
 			this.onChange();
+			await this.#end(config, "switched off");
 			return;
 		}
-		const live: Live = { status: "connecting", error: null, tools: [], registrations: [], path: this.#pathFor(config) };
+		// A connection on a Live is one that is open (`#watch` takes it off when it closes), so it can go on answering.
+		const running = before?.connection;
+		const live: Live = {
+			status: "connecting",
+			error: null,
+			tools: running !== undefined ? before!.tools : [],
+			registrations: running !== undefined ? before!.registrations : [],
+			...(running !== undefined ? { connection: running } : {}),
+			path: this.#pathFor(config),
+		};
 		this.#live.set(config.id, live);
 		this.onChange();
 		try {
 			const opened = await this.#open(config);
 			// Reconnected or removed meanwhile, or the engine is stopping: this connection is not wanted.
 			if (this.#stopped || this.#live.get(config.id) !== live) return void this.#close(opened.connection);
-			Object.assign(live, opened);
-			live.status = "connected";
-			this.#watch(config, live);
+			this.#live.set(config.id, { status: "connected", error: null, path: live.path, ...opened });
 		} catch (error) {
 			if (this.#live.get(config.id) !== live) return;
-			live.status = "error";
-			live.error = error instanceof Error ? error.message : String(error);
+			this.#live.set(config.id, { status: "error", error: error instanceof Error ? error.message : String(error), tools: [], registrations: [], path: live.path });
 		}
+		// `live.connection`, not `running`: the copy that was running may have gone on its own meanwhile.
+		const replaced = live.connection;
+		if (replaced !== undefined && replaced.calls > 0) this.log(`MCP server ${config.name} started again; the copy it replaces stops once its calls are done`);
+		this.#retire(replaced, config.name);
 		this.onChange();
 		// The PATH may have changed while it was starting.
 		this.#follow(config);
 	}
 
-	/** Shows a server that went away on its own (not replaced by a reconnect), and drops its tools. */
-	#watch(config: McpServerConfig, live: Live): void {
-		live.connection?.client.onClose(() => {
-			if (this.#live.get(config.id) !== live || live.status !== "connected") return;
-			live.status = "error";
-			live.error = "The server disconnected.";
+	/**
+	 * Notes a connection that closed, by the engine or on its own. One a server is using goes off it: a server that went
+	 * away on its own shows so and its tools drop out; one being started again keeps waiting for its new copy.
+	 */
+	#watch(config: McpServerConfig, connection: Connection): void {
+		connection.client.onClose(() => {
+			connection.ended ??= `The MCP server ${config.name} stopped while this call was running.`;
+			clearTimeout(connection.linger);
+			this.#connections.delete(connection);
+			const live = this.#live.get(config.id);
+			if (live?.connection !== connection) return;
+			delete live.connection;
 			live.tools = [];
 			live.registrations = [];
+			if (live.status === "connected") {
+				live.status = "error";
+				live.error = "The server disconnected.";
+			}
 			this.onChange();
 		});
 	}
@@ -277,7 +344,7 @@ export class McpServers {
 			transport = new StreamableHttpTransport({ url: config.url!, ...(key ? { headers: { authorization: `Bearer ${key}` } } : {}) });
 		}
 		const client = new McpClient({ name: "pi2", version: "0.1.0", requestTimeoutMs: 60_000 });
-		const connection: Connection = { client, calls: 0, retired: false };
+		const connection: Connection = { server: config.id, client, calls: 0, retired: false };
 		this.#connections.add(connection);
 		let tools: Awaited<ReturnType<McpClient["listTools"]>>;
 		try {
@@ -287,6 +354,7 @@ export class McpServers {
 			await this.#close(connection);
 			throw error;
 		}
+		this.#watch(config, connection);
 		const taken = new Set<string>();
 		const opened: Opened = { connection, tools: [], registrations: [] };
 		for (const tool of tools) {
@@ -311,6 +379,11 @@ export class McpServers {
 							const limited = await limitMcpContent(toLlmContent(result));
 							// MCP reports tool failures in the result, not as a protocol error.
 							return { output: limited.content as never, isError: result.isError === true };
+						} catch (error) {
+							// Cut off because the server went (removed, switched off, replaced long ago, or gone on its own):
+							// say so, rather than "MCP connection closed". A call the conversation stopped stays as it was.
+							if (current.ended !== undefined && context.abortSignal?.aborted !== true) throw new Error(current.ended);
+							throw error;
 						} finally {
 							current.calls--;
 							if (current.retired && current.calls === 0) void this.#close(current);
