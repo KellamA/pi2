@@ -165,7 +165,7 @@ follow_engine() {
 	is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || return 0
 	is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" && return 0
 	local pid
-	pid=$(tr -d '[:space:]' <"$DATA/engine.pid" 2>/dev/null || true)
+	pid=$(tr -d '[:space:]' 2>/dev/null <"$DATA/engine.pid" || true)
 	[[ $pid =~ ^[0-9]+$ && $(parent_of "$pid") == "$APP_PID" ]] || return 0
 	ENGINE_PID=$pid ENGINE_START=$(started_at "$pid") ENGINE_EXE=$(executable "$pid")
 	[[ -n $ENGINE_START ]] && save_state
@@ -202,7 +202,7 @@ stop_process() {
 # Whether a process named in the copy's data folder as its engine is still running there.
 engine_on_data() {
 	local pid
-	pid=$(tr -d '[:space:]' <"$DATA/engine.pid" 2>/dev/null || true)
+	pid=$(tr -d '[:space:]' 2>/dev/null <"$DATA/engine.pid" || true)
 	[[ $pid =~ ^[0-9]+$ && -n $(started_at "$pid") && $(executable "$pid") == *node ]] && echo "$pid"
 	return 0
 }
@@ -363,7 +363,8 @@ case $cmd in
 		while :; do
 			is_recorded "$APP_PID" "$APP_START" "$APP_EXE" ||
 				die "the copy quit as it started; $(tidy "$DATA")/app.log may say why (it is removed with the rest)"
-			pid=$(tr -d '[:space:]' <"$DATA/engine.pid" 2>/dev/null || true)
+			# Redirect stderr first: a missing pid file is expected while the engine starts.
+			pid=$(tr -d '[:space:]' 2>/dev/null <"$DATA/engine.pid" || true)
 			if [[ $pid =~ ^[0-9]+$ && $(parent_of "$pid") == "$APP_PID" ]] &&
 				grep -qF "listening on $DATA/engine.sock" "$DATA/engine.log" 2>/dev/null; then
 				break
