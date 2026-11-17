@@ -82,6 +82,9 @@ mkdir -p "$root/app/build/test-copies/test-7"
 expect "is already started, or starting, from this checkout" start test-7
 expect "unknown option --bogus" start test-8 --bogus
 expect "--show needs what to open on" start test-8 --show
+# --welcome is an option of start's, taking no value: the option after it is still read, and refused.
+expect "unknown option --bogus" start test-8 --welcome --bogus
+expect "unknown option --bogus" start test-8 --show inbox --welcome --bogus
 rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 
 expect "no copy named test-7 was started from this checkout" stop test-7
@@ -93,11 +96,41 @@ expect "refusing to write" shot test-7 /tmp/outside.png
 expect "there is no folder" shot test-7 "$root/no/such/folder/picture.png"
 expect "no copy named test-7 was started from this checkout" shot test-7 "$root/picture.png"
 
+# start skips the first-run welcome by writing the engine's own setting into the copy's settings.json, as
+# settings.finishOnboarding does. If the engine ever names it otherwise, the welcome comes back over every picture.
+engine="$(dirname -- "$script")/../engine/src/main.ts"
+if ! grep -qF 'settings.onboarded = true;' "$engine"; then
+	echo "FAIL: engine/src/main.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
+	failures=$((failures + 1))
+elif ! grep -qF 'const settingsPath = join(home, "settings.json");' "$engine"; then
+	echo "FAIL: engine/src/main.ts no longer keeps its settings in settings.json; change where test-copy start writes them"
+	failures=$((failures + 1))
+elif ! grep -qF "printf '{\n\t\"onboarded\": true\n}\n' >\"\$DATA/settings.json\"" "$script"; then
+	echo "FAIL: test-copy start no longer writes onboarded: true into the copy's settings.json"
+	failures=$((failures + 1))
+else
+	echo "ok: test-copy start marks the welcome done as the engine reads it"
+fi
+
 out=$("$copy" status 2>&1)
 if [[ $out == "No copies started from this checkout." ]]; then
 	echo "ok: test-copy status with no copies"
 else
 	echo "FAIL: test-copy status with no copies said: $out"
+	failures=$((failures + 1))
+fi
+
+# An app can be recorded before its engine writes engine.pid. Status must treat that as not ready yet, quietly.
+# Use this shell as the recorded app and a stand-in home, so no real copy or data folder is needed.
+mkdir -p "$root/app/build/test-copies/test-7" "$T/home"
+printf '%s\n' "app_pid=$$" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
+	"app_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
+out=$(HOME="$T/home" "$copy" status test-7 2>&1)
+status=$?
+if ((status == 0)) && [[ $out == *"engine pid        none recorded"* && $out != *"engine.pid"* ]]; then
+	echo "ok: test-copy status before engine.pid exists is quiet"
+else
+	echo "FAIL: test-copy status before engine.pid exists (exit $status): $out"
 	failures=$((failures + 1))
 fi
 

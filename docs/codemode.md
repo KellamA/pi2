@@ -34,6 +34,6 @@ The tool's description says a call "rejects with an Error on failure", and that 
 
 ## Checking it
 
-`engine/test/codemode.ts` (`npm run test:codemode`) starts an engine and checks the section for a plain agent with and without code mode, an agent with everything switched on, and one with a test MCP server of 40 tools, and that a script calls, lists, finds and describes an MCP tool the section does not show. It checks the full listing on the section itself, with a tool the model was not given. It also prints how long each section of the system prompt is in those conversations. The demo model's `/system sizes` answers with those lengths, and `/system codemode` with the section itself and the tools offered (see [development.md](development.md)).
+`engine/test/codemode.ts` (`node test/codemode.ts` from `engine/`) starts an engine and checks the section for a plain agent with and without code mode, an agent with everything switched on, and one with a test MCP server of 40 tools, and that a script calls, lists, finds and describes an MCP tool the section does not show. It checks the full listing on the section itself, with a tool the model was not given. It also prints how long each section of the system prompt is in those conversations. The demo model's `/system sizes` answers with those lengths, and `/system codemode` with the section itself and the tools offered (see [development.md](development.md)).
 
 Whether a real model writes scripts as well from these few lines as from the declarations has not been measured: the tests use the scripted demo model.
