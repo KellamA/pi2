@@ -693,9 +693,13 @@ export const worktrees: Feature = (_host, engine) => {
 				if (cwd !== null && within(cwd, own.path)) joined.push(Number(key));
 			}
 			const repoRoot = isFolder(own.repo) ? own.repo : undefined;
+			// The branch it is on now, which is what Branches names: an agent may have started a new one here after its
+			// first was merged (#206). The one it was made on, when it cannot be read.
+			let branch = own.branch;
 			if (isFolder(own.path)) {
+				const status = parseStatus((await tryGit(["status", "--porcelain=v2", "--branch"], own.path)) ?? "");
+				branch = status.head ?? own.branch;
 				if (!options.force) {
-					const status = parseStatus((await tryGit(["status", "--porcelain=v2", "--branch"], own.path)) ?? "");
 					if (status.changes > 0 || status.conflicts > 0) {
 						throw new Error(`The worktree has ${status.changes + status.conflicts} uncommitted change${status.changes + status.conflicts === 1 ? "" : "s"}. Commit them, or remove it anyway to lose them`);
 					}
@@ -712,12 +716,12 @@ export const worktrees: Feature = (_host, engine) => {
 			let branchDeleted = false;
 			let note: string | null = null;
 			if (options.deleteBranch && repoRoot !== undefined) {
-				const deleted = await git(["branch", options.force ? "-D" : "-d", own.branch], repoRoot).then(
+				const deleted = await git(["branch", options.force ? "-D" : "-d", branch], repoRoot).then(
 					() => true,
 					() => false,
 				);
 				branchDeleted = deleted;
-				if (!deleted) note = `The branch ${own.branch} was kept: it has commits that are not merged yet.`;
+				if (!deleted) note = `The branch ${branch} was kept: it has commits that are not merged yet.`;
 			}
 			const back = isFolder(own.origin) ? own.origin : repoRoot;
 			await save((doc) => void delete doc[String(id)]);
@@ -733,7 +737,12 @@ export const worktrees: Feature = (_host, engine) => {
 	const guide = (own: Worktree, cwd: string | null, shared: boolean) =>
 		[
 			`${shared ? "This sub-chat works in the git worktree of the conversation that handed it this task" : "This conversation works in a git worktree of its own"}: ${cwd ?? own.path}, on the branch ${own.branch}${own.base ? `, made from ${own.base}` : ""}.`,
-			`Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to ${own.branch}, do not check out another branch here, and do not change the main checkout at ${own.repo}.`,
+			// A conversation with a worktree of its own may go on to a new branch once its first is merged, so that an agent
+			// given several pieces of work in turn can make a pull request of each (#206): the tracker, sub_chats and
+			// removing the worktree all go by the branch it is on now. A sub-chat sharing its parent's worktree may not.
+			shared
+				? `Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to ${own.branch}, do not check out another branch here, and do not change the main checkout at ${own.repo}.`
+				: `Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to its branch, do not check out a branch another worktree has, and do not change the main checkout at ${own.repo}. Once ${own.branch} is merged, you may start a new branch here from ${own.base ?? "the default branch"} for your next piece of work.`,
 			"Files git ignores (installed packages, build output, local settings) are not copied into a new worktree; set them up here if the work needs them.",
 			...setupNote(own.setup),
 		].join(" ");

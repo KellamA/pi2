@@ -6,8 +6,10 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ### Changed
 - **Agents' commands no longer inherit pi²'s own settings.** Shell commands, background commands, worktree set-up commands and MCP servers are no longer given `PI2_HOME`, `PI2_KEYCHAIN_SERVICE` or any other `PI2_` variable pi² was started with, so a copy of pi² or its engine that an agent starts no longer opens your data folder and sign-ins unless it is told to. Their `PATH` and everything else are as before.
+- **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
 
 ### Fixed
+- Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
 - An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
 
 ### For contributors
