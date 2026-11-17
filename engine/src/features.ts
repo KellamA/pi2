@@ -20,6 +20,7 @@ import { look } from "./look.ts";
 import { order } from "./order.ts";
 import { plan } from "./plan.ts";
 import { reads } from "./reading.ts";
+import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
 import { worktrees } from "./worktrees.ts";
 
@@ -84,4 +85,4 @@ export type Feature = (host: Host, engine: Engine) => FeatureParts;
 // `order` wraps tools that `commands` and `reads` wrap too, and adds to what those made of them, so it comes after them.
 // The order of the sections no longer matters for what is sent: each keeps its place in a conversation (sections.ts,
 // #186), so one that comes or goes is sent alone wherever it is declared.
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, coauthor, background, order];
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, scratch, coauthor, background, order];
