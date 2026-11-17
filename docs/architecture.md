@@ -47,7 +47,8 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/reference.ts` | An agent's reference files |
 | `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
-| `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out. See [Built-in tools](#built-in-tools) |
+| `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out, and the chat assistant's fixed set. See [Built-in tools](#built-in-tools) |
+| `src/chat.ts` | Chat mode's built-in assistant: its settings, the folder its documents go in, and what it is told. See [chat.md](chat.md) |
 | `src/plan.ts` | The agent's task list |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
@@ -102,6 +103,8 @@ Every conversation with tools used to be offered the same few tools whatever its
 - **From the next message.** An existing conversation is changed at its next message, as for any switch: the tools that went are taken away, and the sections that changed are sent alone ([The system prompt's sections](#the-system-prompts-sections)).
 
 The engine sends the list, with each entry's title, line and what it needs, in the `agents` event (`builtInTools`), so the app has no copy of it.
+
+Chat mode's assistant is offered the entries `CHAT_TOOLS` names, and nothing else, whatever any agent's settings say ([chat.md](chat.md#the-assistant)).
 
 ### Approvals
 
@@ -264,7 +267,8 @@ The sections, in the order they are declared:
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
 | `memory` | `knowledge.ts` | memory is on for the agent | Comes and goes with the agent's settings |
 | `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out) | Comes and goes with the agent's settings |
-| `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full, and not left out) | Changes with the conversation's access level, and comes and goes with the agent's built-in tools |
+| `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full, and not left out; always in a chat) | Changes with the conversation's access level, and comes and goes with the agent's built-in tools |
+| `chat` | `chat.ts` | the conversation is a chat ([chat.md](chat.md)) | Steady; changes in place as the web is turned off or on |
 | `scheduling` | `selfschedule.ts` | the scheduling tools are offered: scheduling on, not in a sub-chat (#177) | Comes and goes with the agent's settings |
 | `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
 | `scratch` | `scratch.ts` | `bash` is offered: it names the conversation's [scratch folder](#a-scratch-folder) | Steady; changes only with the conversation's access level |
