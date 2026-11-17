@@ -618,10 +618,9 @@ struct SidebarView: View {
             if needsYou {
                 Tag("needs you", .warn).accessibilityLabel("Needs you")
             }
-            // Which branch the conversation's folder is on, coloured by how it stands. A sub-chat in the same checkout
-            // as its parent leaves it to the parent's row.
-            if let branch = engine.branches[conversation.id],
-               conversation.parent.flatMap({ engine.branches[$0]?.root }) != branch.root {
+            // Which branch the conversation's folder is on, coloured by how it stands. On every row, sub-chats too, so
+            // each one's branch can be followed from the sidebar; one in its parent's checkout draws it faded.
+            if let branch = engine.branches[conversation.id] {
                 BranchBadge(engine: engine, conversationID: conversation.id, status: branch)
             }
             if subChats > 0 {

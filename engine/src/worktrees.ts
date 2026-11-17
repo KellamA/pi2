@@ -464,15 +464,20 @@ export const worktrees: Feature = (_host, engine) => {
 			for (const id of folders.keys()) if (!ids.includes(id)) folders.delete(id);
 			const byFolder = new Map<string, Promise<BranchInfo | undefined>>();
 			const next: Record<string, BranchInfo> = {};
+			const worktreeFolders = Object.entries(mine).map(([key, own]) => ({ key, folder: realish(own.path) + sep }));
 			for (const id of ids) {
 				const cwd = await folderOf(id);
 				if (cwd === null) continue;
-				const own = mine[String(id)];
-				// Two conversations in the same folder share one look at it, unless one of them owns the worktree.
-				const key = own === undefined ? cwd : `${cwd}\u0000${id}`;
+				// A conversation working in a worktree pi² made for another one, as a sub-chat does in its parent's, is looked
+				// at as that worktree: one look for the folder however many work in it, and the same state the owner shows
+				// (merged is measured against where the worktree started). Only the owner is told the worktree is its own.
+				const inside = mine[String(id)] === undefined ? realish(cwd) + sep : "";
+				const ownerKey = mine[String(id)] !== undefined ? String(id) : worktreeFolders.find(({ folder }) => inside.startsWith(folder))?.key;
+				const own = ownerKey === undefined ? undefined : mine[ownerKey];
+				const key = ownerKey === undefined ? cwd : `${cwd}\u0000${ownerKey}`;
 				if (!byFolder.has(key)) byFolder.set(key, inspect(cwd, own));
 				const info = await byFolder.get(key)!;
-				if (info !== undefined) next[String(id)] = info;
+				if (info !== undefined) next[String(id)] = ownerKey === String(id) || !info.managed ? info : { ...info, managed: false };
 			}
 			// Worktrees of conversations put away: still on disk until the person removes them.
 			const behind: LeftBehind[] = [];
