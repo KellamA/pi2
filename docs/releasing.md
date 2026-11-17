@@ -16,6 +16,23 @@ Nothing reaches anyone until you publish the draft. Installed copies read the fe
 
 Builds are for Apple silicon only: the Node copied into the app is the runner's arm64 build.
 
+## Release builds and development builds
+
+`./app/build.sh release`, which the workflow runs, makes the build that is released. `./app/build.sh` alone makes a development build, which is kept apart from an installed release so that trying one never touches the installed copy's data ([development.md](development.md#build-and-run)):
+
+| | Release build | Development build |
+|---|---|---|
+| Bundle | `app/build/pi².app` | `app/build/pi² dev.app` |
+| Bundle id and name | `dev.pi2.app`, "pi²" | `dev.pi2.app.dev`, "pi² dev" |
+| Engine and Node | inside the app | the checkout's `engine/src` and the Node on the `PATH` |
+| Data folder | `~/Library/Application Support/pi2`, unless `PI2_HOME` names another | `~/Library/Application Support/pi2-dev`, unless `PI2_HOME` names another; never the release's |
+| Keychain service | `dev.pi2.credentials`, unless `PI2_KEYCHAIN_SERVICE` names another | `dev.pi2.credentials.dev`, unless `PI2_KEYCHAIN_SERVICE` names another; never the release's |
+| Login item | can be turned on in Settings, on the usual data folder | never |
+| Updates | with `SPARKLE_PUBLIC_KEY`, from the feed | never |
+| `engine.info` check | replaces an engine from another build | leaves it running, noted in `app.log` |
+
+The app tells which it is by whether it carries its own engine (`DevelopmentBuild.swift`), not by how it was compiled. A development build's data folder and Keychain service follow its bundle id, so a test copy given `dev.pi2.app.test-7` uses `pi2-test-7` and `dev.pi2.credentials.test-7`.
+
 ## Setting up, once
 
 ### 1. A Developer ID
@@ -85,7 +102,7 @@ The workflow refuses a tag that does not match `app/VERSION`, a commit that is n
 - **Checking the download.** Sparkle refuses a feed or an archive not signed with the updates key, and checks the new app's code signature against the installed one.
 - **The engine.** The engine runs Node and the engine's files from inside the app, and can outlive it. Just before Sparkle replaces the app, pi² stops the engine cleanly. If agents are meant to keep running without the app (Settings › General › In the background), the engine is started again 20 seconds later from the new copy. When the new app opens, it asks the engine which build it belongs to (`engine.info`). If the engine is from another build (left over from before the update, or from a copy of the app that has since moved), the app stops it and starts its own, and points the login item at itself. Runs pick up where they stopped.
 - **Sheets.** While a sheet is open (the welcome, the command palette, a confirmation), macOS ignores a request to quit, so "Install and Relaunch" would do nothing. pi² closes sheets just before the update installs and, if the app has not quit two seconds later, closes them again and quits.
-- **Development builds** never update themselves and do not check engine builds: they run from the source folder.
+- **Development builds** never update themselves, and never replace the engine they find: they run from the source folder, on a data folder of their own, so the engine there is their own or another development build's. One pointed at another copy's data folder on purpose would otherwise stop that copy's engine. An engine started from another checkout is noted in `app.log`.
 
 ## Building a signed copy on your own Mac
 
@@ -103,7 +120,7 @@ SPARKLE_PRIVATE_KEY="$(cat sparkle-private-key.txt)" SIGN_IDENTITY="Developer ID
 
 This is how updating was first tested. Keep it away from the copy of pi² you use: give the test copy its own bundle identifier, data folder and Keychain service, and turn off its Quick Ask shortcut so it does not take the shortcut from your own copy.
 
-1. In a throwaway clone, change `CFBundleIdentifier` in `app/build.sh` (for example to `dev.pi2.app.updtest`). In `EngineClient.init`, `setenv` `PI2_HOME` to a short folder of its own and `PI2_KEYCHAIN_SERVICE` to a test service, so they hold even when Sparkle relaunches the app without your environment.
+1. In a throwaway clone, change the release build's `BUNDLE_ID` in `app/build.sh` (for example to `dev.pi2.app.updtest`). A release build keeps the usual data folder whatever its bundle id, hence the next step. In `EngineClient.init`, `setenv` `PI2_HOME` to a short folder of its own and `PI2_KEYCHAIN_SERVICE` to a test service, so they hold even when Sparkle relaunches the app without your environment.
 2. Make a throwaway updates key without touching the Keychain:
 
    ```bash

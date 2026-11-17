@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { backgroundMarker, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
+import { backgroundMarker, backgroundMarkerDetails, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
 import { EngineClient, exited, PATIENT_MS, running, stop, until } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
@@ -40,6 +40,8 @@ assert.equal(commandLine("npm run dev\n  -- --port 3000"), "npm run dev -- --por
 assert.equal(commandLine("x".repeat(200)).length, 121);
 assert.equal(backgroundMarker({ id: "bg-2", command: "npm run dev", how: "exited with code 1" }), "Background command bg-2 exited with code 1: npm run dev");
 assert.equal(backgroundMarker(null), "Background command ended", "an entry this engine cannot read still says something");
+assert.deepEqual(backgroundMarkerDetails({ id: "bg-2", command: "npm run dev", how: "exited with code 1" }), { background: { id: "bg-2" } });
+for (const data of [null, {}, { id: 2 }, { id: "bg-0" }, { id: "x" }, { id: "bg-2 " }]) assert.equal(backgroundMarkerDetails(data), undefined, JSON.stringify(data));
 step("durations, commands on one line and the transcript's line read as expected");
 
 // ---- The engine
@@ -193,7 +195,21 @@ function repo(name: string): string {
 
 const work = join(scratch, "work");
 mkdirSync(work);
-const boot = () => spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
+/** What the engines this test started have logged, line by line. Their log is passed on to the test's own as it comes. */
+const logged: string[] = [];
+const boot = () => {
+	const child = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "pipe"] });
+	let rest = "";
+	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
+		process.stderr.write(chunk);
+		const lines = (rest + chunk).split("\n");
+		rest = lines.pop()!;
+		logged.push(...lines);
+	});
+	return child;
+};
+/** Waits for engine.log to have a line that ends with `text`, after the line's time and the engine's tag. */
+const logs = (text: string) => until(`engine.log to say: ${text}`, () => logged.some((line) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \[pi2-engine\] /.test(line) && line.endsWith(text)));
 let engine: ChildProcess = boot();
 try {
 	let client = await Client.attach(engine);
@@ -314,6 +330,7 @@ try {
 	assert.equal(later.result.details.background.status, "running");
 	const marker = await client.until("its end shown in the transcript", () => client.markers(a).find((text) => text.includes(later.bg)));
 	assert.equal(marker, `Background command ${later.bg} exited with code 4: sleep 2; echo done-late; exit 4`);
+	assert.deepEqual(client.items(a, "marker").find((item) => item.text === marker)?.details, { background: { id: later.bg } }, "the line names its command, for its output window");
 	assert.ok(!client.markers(a).some((text) => text.includes(`${quick.bg} `) || text.includes(`${fine.bg} `)), "an end the call that started the command saw is in that call's row, not in a line of its own");
 	told = await client.told(a);
 	assert.ok(told.includes(`- ${later.bg}: \`sleep 2; echo done-late; exit 4\` is over: it exited with code 4, at `), `the agent is told at its next request: ${told}`);
@@ -330,6 +347,9 @@ try {
 		`Background command ${leaving.bg} finished, and what it had left running was stopped with it: ${commandLine(`${LONG} & echo $! > '${leftFile}'; echo leaving`)}`,
 	);
 	await client.until("what it left running is stopped", () => !alive(leftBehind));
+	// engine.log names each command with its conversation, since an id alone does not say whose it was.
+	await logs(`background command ${later.bg} of conversation ${a} exited with code 4`);
+	await logs(`background command ${leaving.bg} of conversation ${a} finished, and what it had left running was stopped with it`);
 	step("a command that ends by itself is shown in the transcript and told to the agent at its next request; what it left running is stopped");
 
 	// ---- Only the end of the output is kept
@@ -571,6 +591,7 @@ try {
 			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
 		);
 		await client.until("what was left running is stopped", () => pids.every((pid) => !alive(pid)));
+		await logs(`background command ${bg} of conversation ${z} left by the last engine was stopped`);
 		assert.deepEqual(client.running(), []);
 		assert.match((await client.background(z, { action: "list" })).text, new RegExp(`- ${bg}: .*: was left running when pi²’s engine stopped, and was stopped when the engine started again; no unread output\\.`));
 		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.

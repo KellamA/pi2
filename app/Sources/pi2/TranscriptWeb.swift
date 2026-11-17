@@ -63,6 +63,8 @@ struct TranscriptWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: TranscriptWebKitView, context: Context) {
+        let openWindow = context.environment.openWindow
+        context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
         context.coordinator.show(conversationID: conversationID, items: items, state: state, inbox: inbox, names: names)
     }
 
@@ -84,6 +86,8 @@ final class TranscriptBridge {
     private var state: ConversationState?
     private var inbox: [InboxItem] = []
     private var names: TranscriptFeed.Names?
+    /// Opens the window with a background command's output, as Activity's Output does.
+    var showOutput: (String) -> Void = { _ in }
 
     init(engine: EngineClient, conversationID: Int) {
         self.engine = engine
@@ -161,7 +165,28 @@ final class TranscriptBridge {
         case .picture(let entry, let index):
             guard let item = items.first(where: { $0.id == entry }), index < (item.images ?? 0) else { return }
             sendPicture(entry: entry, index: index)
+        case .output(let id):
+            // A command whose output pi² no longer has opens all the same: the window says so.
+            guard backgroundCommands.contains(id) else { return }
+            showOutput(id)
         }
+    }
+
+    /// The background commands this conversation's rows are about, as the engine named them: the ones its calls started,
+    /// read or stopped, and the ones whose end has a line of its own. Never the id an agent asked for, which may be
+    /// another conversation's.
+    private var backgroundCommands: Set<String> {
+        var ids = Set<String>()
+        for item in items {
+            let id: String?
+            switch (item.kind, item.name) {
+            case ("tool", "bash"), ("marker", _): id = item.details?["background"]?["id"]?.stringValue
+            case ("tool", "background"): id = item.details?["id"]?.stringValue
+            default: id = nil
+            }
+            if let id { ids.insert(id) }
+        }
+        return ids
     }
 
     /// The sub-chats this conversation's hand-offs opened, as their calls' results (or live state) name them.

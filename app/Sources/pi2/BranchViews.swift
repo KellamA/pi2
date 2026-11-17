@@ -404,10 +404,17 @@ struct BranchesView: View {
         let status: BranchStatus
         /// For a sub-chat in its parent's checkout: whose it is.
         let sharing: CheckoutSharing?
+        /// Listed under the conversation whose checkout it shares, and indented.
+        var nested = false
         var id: Int { conversation.id }
-        /// For a sub-chat in the worktree of a conversation further up: that conversation. Listed under it.
-        var owner: ConversationSummary? {
-            if case .worktree(let owner) = sharing { owner } else { nil }
+        /// For a sub-chat in its parent's checkout, the conversation it is listed under: the one its worktree was made
+        /// for, or the parent whose main checkout (or worktree pi² did not make) it works in.
+        var listedUnder: ConversationSummary? {
+            switch sharing {
+            case .worktree(let owner): owner
+            case .checkout(let parent): parent
+            case nil: nil
+            }
         }
     }
 
@@ -423,11 +430,17 @@ struct BranchesView: View {
                     let a = Self.order.firstIndex(of: $0.status.state) ?? 99, b = Self.order.firstIndex(of: $1.status.state) ?? 99
                     return a != b ? a < b : $0.conversation.updatedAt > $1.conversation.updatedAt
                 }
-                // Sub-chats in a worktree follow the conversation it was made for (always listed too, as it has a branch
-                // and is in the sidebar), oldest first, as in the sidebar.
-                let under = Dictionary(grouping: sorted.filter { $0.owner != nil }, by: { $0.owner!.id })
-                return (repo: repo, rows: sorted.filter { $0.owner == nil }.flatMap { row in
-                    [row] + (under[row.id] ?? []).sorted { ($0.conversation.createdAt ?? 0) < ($1.conversation.createdAt ?? 0) }
+                // Sub-chats in their parent's checkout follow the conversation whose checkout it is, oldest first, as in
+                // the sidebar: under the one a worktree was made for, or under the parent whose main checkout they share.
+                // That conversation has the same checkout, so it is in this repository's rows too; should it not be, the
+                // sub-chat is listed on its own rather than not at all.
+                let tops = Set(sorted.filter { $0.listedUnder == nil }.map(\.id))
+                let isNested = { (row: Row) in row.listedUnder.map { tops.contains($0.id) } ?? false }
+                let under = Dictionary(grouping: sorted.filter(isNested), by: { $0.listedUnder!.id })
+                return (repo: repo, rows: sorted.filter { !isNested($0) }.flatMap { row in
+                    [row] + (under[row.id] ?? [])
+                        .sorted { ($0.conversation.createdAt ?? 0) < ($1.conversation.createdAt ?? 0) }
+                        .map { var nested = $0; nested.nested = true; return nested }
                 })
             }
             .sorted { $0.repo.localizedCaseInsensitiveCompare($1.repo) == .orderedAscending }
@@ -449,7 +462,7 @@ struct BranchesView: View {
                             let worktrees = group.rows.filter { $0.status.managed }.count
                             if worktrees > 0 { Text("\(worktrees) worktree\(worktrees == 1 ? "" : "s")").font(.caption).foregroundStyle(Theme.tx3) }
                         }
-                        ForEach(group.rows) { row in rowView(row).padding(.leading, row.owner == nil ? 0 : 16) }
+                        ForEach(group.rows) { row in rowView(row).padding(.leading, row.nested ? 16 : 0) }
                     }
                 }
                 if !engine.leftBehind.isEmpty { leftBehindSection }
