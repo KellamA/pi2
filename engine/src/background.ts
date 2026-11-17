@@ -21,7 +21,7 @@ import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Engine, Feature } from "./features.ts";
-import { killLater, type LeftOver, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
+import { killLater, killRemaining, type Listed, type LeftOver, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
 export const KEEP_CHARS = 128 * 1024;
@@ -738,8 +738,22 @@ export const background: Feature = (_host, running) => {
 		stopping: async () => {
 			shuttingDown = true;
 			const live = [...commands.values()].filter(isRunning);
-			await Promise.race([Promise.all(live.map((command) => stop(command, "was stopped when pi²’s engine stopped", SHUTDOWN_GRACE_MS))), new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS + 500).unref())]);
+			if (live.length === 0) return;
+			const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
+			// Everything in their groups, listed before the stop. A command's own first process can end at SIGTERM and be
+			// reaped at once while what it started ignores it (`server & wait`); its group can then no longer be signalled
+			// through it, and the SIGKILL that `stopMembers` arranges for later would come after the engine is gone (#199).
+			// So whatever of this list is still there, and still the same process, is ended here, before the engine exits.
+			const listed = await processes().catch(() => undefined);
+			const own = listed?.get(process.pid)?.group;
+			const groups = new Set(live.map((command) => command.child?.pid).filter(signallable));
+			const members: [number, Listed][] = listed === undefined || own === undefined ? [] : [...listed].filter(([pid, each]) => signallable(pid) && each.group !== own && groups.has(each.group));
+			const ended = Promise.all(live.map((command) => stop(command, "was stopped when pi²’s engine stopped", SHUTDOWN_GRACE_MS)));
+			await Promise.race([ended, pause(SHUTDOWN_GRACE_MS)]);
 			for (const command of live) if (command.child !== undefined) signalGroup(command.child, "SIGKILL");
+			await killRemaining(members);
+			// A moment for their ends to come in, so engine.log has them.
+			await Promise.race([ended, pause(500)]);
 		},
 		recovery: () => ({ background: leftBehind }),
 		greeting: () => [event()],
