@@ -104,6 +104,13 @@ jobs:
           xcrun stapler validate "build/pi².app"
           xcrun stapler validate build/release/pi2-*.dmg
 
+      - name: Start the packaged app and engine before drafting
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          build="$(git rev-list --count HEAD)"
+          node app/check-release-build.mts "app/build/release/pi2-$version.zip" --version "$version" --build-number "$build" --commit "$GITHUB_SHA" --open-app
+          node app/check-release-build.mts "app/build/release/pi2-$version.dmg" --version "$version" --build-number "$build" --commit "$GITHUB_SHA"
+
       - name: Draft the GitHub release
         working-directory: app/build/release
         env:
