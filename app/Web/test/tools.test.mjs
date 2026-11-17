@@ -431,3 +431,19 @@ test("failed attempts in a row show as one row, the last, with how many there we
 	assert.deepEqual([...shown], [[4, 3], [7, 1], [9, 1]]);
 	assert.deepEqual(T.failedRuns([]), { shown: new Map(), hidden: new Set() });
 });
+
+test("a running command's clock: how long it has run, and how long it has been quiet once that is a while (#196)", () => {
+	const start = 1_000_000;
+	assert.deepEqual(T.commandClock(start, null, start), { elapsed: "0s", quiet: "" });
+	assert.deepEqual(T.commandClock(start, null, start + 12_400), { elapsed: "12s", quiet: "" });
+	assert.deepEqual(T.commandClock(start, null, start + 29_999), { elapsed: "29s", quiet: "" }, "quiet only after half a minute");
+	assert.deepEqual(T.commandClock(start, null, start + 45_000), { elapsed: "45s", quiet: "quiet for 45s" }, "printing nothing at all counts from the start");
+	assert.deepEqual(T.commandClock(start, start + 60_000, start + 72_000), { elapsed: "1m 12s", quiet: "" }, "a busy one is not quiet");
+	assert.deepEqual(T.commandClock(start, start + 10_000, start + 192_000), { elapsed: "3m 12s", quiet: "quiet for 3m 2s" });
+	assert.deepEqual(T.commandClock(start, start - 5000, start + 31_000), { elapsed: "31s", quiet: "quiet for 31s" }, "an output time before the start counts as the start");
+	assert.equal(T.commandClock(start, null, start + 3_840_000).elapsed, "1h 4m");
+	assert.equal(T.commandClock(start, null, start - 2000).elapsed, "0s", "a clock a little ahead never goes below zero");
+	assert.equal(T.commandClock(undefined, null, start), null, "no start time, no clock");
+	assert.equal(T.commandClock("1000", null, start), null);
+	assert.equal(T.QUIET_MS, 30_000);
+});

@@ -23,6 +23,7 @@ import { sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
+import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { killLater, killRemaining, type Listed, type LeftOver, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
@@ -359,13 +360,13 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 	const forget = () => save((doc) => void delete doc.running[id]).catch((error) => host.log("could not forget", logName(id, conversationId), error instanceof Error ? error.message : error));
 
 	// As a command that is waited for is run: through bash, in the conversation's folder, with the engine's environment
-	// and no input. In a process group of its own, so that stopping it stops whatever it started too. One variable is
+	// less pi²'s own settings (environment.ts), and no input. In a process group of its own, so that stopping it stops whatever it started too. One variable is
 	// added to that environment: a marker of this run, which what it starts inherits, so that the next engine can know
 	// them if this one dies, even once the command's own first process has ended (`stopLeftOver`).
 	const marker = newRunMarker();
 	let child: ChildProcess;
 	try {
-		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: { ...process.env, [RUN_VARIABLE]: marker }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ [RUN_VARIABLE]: marker }), detached: true, stdio: ["ignore", "pipe", "pipe"] });
 	} catch (error) {
 		await forget();
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);

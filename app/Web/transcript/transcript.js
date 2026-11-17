@@ -89,7 +89,7 @@
 			const tools = new Map();
 			for (const tool of Array.isArray(message.live.tools) ? message.live.tools : []) {
 				if (!isObject(tool) || typeof tool.callId !== "string") continue;
-				const key = JSON.stringify([tool.status, tool.output, tool.details]);
+				const key = JSON.stringify([tool.status, tool.output, tool.details, tool.startedAt, tool.lastOutputAt]);
 				const previous = live.tools.get(tool.callId);
 				const next = { ...tool, key };
 				if (previous && previous.key === key) revisions.set(next, rev(previous));
@@ -765,6 +765,18 @@
 			note.setAttribute("data-nocopy", "");
 			head.appendChild(note);
 		}
+		// A command still running: how long it has run, and how long it has been quiet once that is a while (#196). The
+		// page ticks it; the engine sends only the times.
+		if (status === "running" && liveTool && typeof liveTool.startedAt === "number") {
+			const clock = el("span", "tool-clock");
+			clock.setAttribute("data-nocopy", "");
+			clock.dataset.started = String(liveTool.startedAt);
+			clock.dataset.printed = typeof liveTool.lastOutputAt === "number" ? String(liveTool.lastOutputAt) : "";
+			head.appendChild(document.createTextNode(" "));
+			head.appendChild(clock);
+			setClock(clock, Date.now());
+			tickClocks();
+		}
 		// A command's exit code that is not a failure (#182): said, in a quiet colour, and the row stays closed.
 		if (info.exit) {
 			head.appendChild(document.createTextNode(" "));
@@ -821,6 +833,38 @@
 				apply(value);
 			});
 		};
+	}
+
+	// MARK: Clocks of running commands
+
+	let clockTimer = 0;
+
+	function setClock(element, now) {
+		const printed = element.dataset.printed;
+		const clock = T.commandClock(Number(element.dataset.started), printed ? Number(printed) : null, now);
+		if (!clock) return;
+		const elapsed = element.firstChild || element.appendChild(el("span", "elapsed"));
+		if (elapsed.textContent !== clock.elapsed) elapsed.textContent = clock.elapsed;
+		let quiet = elapsed.nextSibling;
+		if (clock.quiet && !quiet) quiet = element.appendChild(el("span", "quiet"));
+		if (quiet && !clock.quiet) quiet.remove();
+		else if (quiet && quiet.textContent !== clock.quiet) quiet.textContent = clock.quiet;
+		element.title = clock.quiet ? "Running for " + clock.elapsed + ", and nothing printed for " + clock.quiet.replace(/^quiet for /, "") + ". It may be waiting on something, such as a prompt on the screen." : "Running for " + clock.elapsed;
+	}
+
+	/** Once a second while a running command's clock is on the page, and not at all otherwise. */
+	function tickClocks() {
+		if (clockTimer) return;
+		clockTimer = setInterval(() => {
+			const clocks = document.querySelectorAll(".tool-clock");
+			if (clocks.length === 0) {
+				clearInterval(clockTimer);
+				clockTimer = 0;
+				return;
+			}
+			const now = Date.now();
+			for (const clock of clocks) setClock(clock, now);
+		}, 1000);
 	}
 
 	/** The content behind a row's chevron. */

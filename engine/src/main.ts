@@ -53,6 +53,7 @@ import { socketPathFor } from "./socket.ts";
 import { timeLines } from "./log.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
+import { runningCommands } from "./running.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
@@ -519,12 +520,18 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 	const agent = (view.docs["pi.agent"] ?? {}) as { model?: ModelRef; thinkingLevel?: string; cwd?: string };
 	const inbox = (view.docs["pi.inbox"] ?? {}) as { items?: { id: number; mode: string; content?: unknown; entry?: { kind?: unknown; data?: unknown } }[] };
 	const partial = live.generation?.message;
+	const id = view.conversation.id as unknown as number;
+	/** A command running in the foreground: when it started and last printed, for the clock on its row (running.ts). */
+	const clock = (callId: string) => {
+		const running = runningCommands.clock(id, callId);
+		return running === undefined ? {} : { startedAt: running.startedAt, lastOutputAt: running.lastOutputAt };
+	};
 	return {
 		busy: live.run !== undefined,
 		turns: live.run?.turns ?? 0,
 		partial: partial === undefined ? null : assistantParts(partial),
 		retry: live.generation?.retry ?? null,
-		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "", details: slot.details ?? null })),
+		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "", details: slot.details ?? null, ...clock(slot.callId) })),
 		failure: live.runFailure === undefined ? null : { reason: live.runFailure.reason, detail: live.runFailure.detail ?? null },
 		usage: usageTotals(view.docs["pi.usage"] as UsageDocShape | undefined),
 		context: contextOf(view, agent.model),
@@ -1370,6 +1377,8 @@ function activityEvent() {
 				since: since.get(id) ?? Date.now(),
 				// What features add (a wait for a provider's limit, say).
 				...Object.assign({}, ...host.features.map((feature) => feature.activity?.(id) ?? {})),
+				// Its shell commands running in the foreground, with their clocks (running.ts).
+				commands: runningCommands.of(id),
 			};
 		})
 		.sort((x, y) => x.since - y.since);
@@ -1400,6 +1409,12 @@ graphWatch.start(async (call) => {
 	broadcast(activityEvent());
 	scheduleUsageRefresh();
 });
+// A command starting or ending changes its row in the conversation, which the live document may already have shown
+// without its clock; its output reaches the conversation on its own, and only Activity needs telling of it.
+runningCommands.onChange = (id, why) => {
+	if (why !== "printed") engine.stateChanged(id);
+	broadcast(activityEvent());
+};
 
 // ---- MCP servers: their tools are one extension, replaced whenever a server connects or drops
 
