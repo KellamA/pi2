@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Changed
+- **Agents' commands no longer inherit pi²'s own settings.** Shell commands, background commands, worktree set-up commands and MCP servers are no longer given `PI2_HOME`, `PI2_KEYCHAIN_SERVICE` or any other `PI2_` variable pi² was started with, so a copy of pi² or its engine that an agent starts no longer opens your data folder and sign-ins unless it is told to. Their `PATH` and everything else are as before.
+
 ## 0.7.7
 
 ### Added

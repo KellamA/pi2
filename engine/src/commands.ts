@@ -25,6 +25,7 @@ import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { join } from "node:path";
 import { isDeleted } from "./archive.ts";
 import { BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, startInBackground } from "./background.ts";
+import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore } from "./output.ts";
 
@@ -162,8 +163,9 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 		args.command,
 		{
 			cwd: env.cwd,
-			env: {},
-			inheritEnv: true,
+			// The engine's environment less pi²'s own settings, such as its data folder (issue #195).
+			env: commandEnvironment(),
+			inheritEnv: false,
 			timeout,
 			// No `window`: every chunk is wanted for the file, not only the tail the result keeps.
 			onOutput: (text, _context, info) => {

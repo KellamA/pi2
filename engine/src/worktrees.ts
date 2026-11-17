@@ -20,6 +20,7 @@ import { basename, dirname, join, relative, sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentReader } from "@earendil-works/pi-durable";
 import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
+import { commandEnvironment } from "./environment.ts";
 import type { Feature } from "./features.ts";
 import type { MadeWorktree } from "./rules.ts";
 import type { AgentProfile } from "./state.ts";
@@ -191,7 +192,7 @@ export function git(args: string[], cwd: string): Promise<string> {
 				cwd,
 				timeout: GIT_TIMEOUT_MS,
 				maxBuffer: 8 * 1024 * 1024,
-				env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+				env: commandEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }),
 			},
 			(error, stdout, stderr) => {
 				if (error) {
@@ -526,7 +527,7 @@ export const worktrees: Feature = (_host, engine) => {
 
 	/**
 	 * Run the agent's set-up command in a worktree just made for conversation `id`, without waiting for it. It runs as
-	 * the person typed it, through bash, with the engine's environment, in a process group of its own so that stopping
+	 * the person typed it, through bash, with the engine's environment less pi²'s own settings (environment.ts), in a process group of its own so that stopping
 	 * it stops whatever it started too. One variable is added to that environment: a marker of this run, which what it
 	 * starts inherits, so that the next engine can know them if this one dies (`stopLeftOver`).
 	 */
@@ -539,7 +540,7 @@ export const worktrees: Feature = (_host, engine) => {
 		let output = "";
 		let stopped: string | undefined;
 		let failedToStart: string | undefined;
-		const child = spawn("/bin/bash", ["-c", command], { cwd: root, env: { ...process.env, [RUN_VARIABLE]: marker }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("/bin/bash", ["-c", command], { cwd: root, env: commandEnvironment({ [RUN_VARIABLE]: marker }), detached: true, stdio: ["ignore", "pipe", "pipe"] });
 		// Its output goes to the apps with the conversation's state as it arrives, a few times a second at most. Not as
 		// transcript entries, which are kept for good: the one written when it ends holds the output's end.
 		let pushing: ReturnType<typeof setTimeout> | undefined;
