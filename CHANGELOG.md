@@ -2,6 +2,27 @@
 
 What changed in each version, newest first.
 
+## 0.7.6
+
+### Added
+- **Read what a background command prints.** Activity's rows for background commands have an Output button, which opens a window with the command, its conversation, whether it is still running or how it ended, and what it has printed so far, kept up to date as more arrives. You can select and search the text, and stop the command from there. Reading it does not take anything away from what the agent has yet to read.
+- **A conversation shows the commands it has running.** Above the message field, a strip names the background commands the conversation and its sub-chats have running, each with how long it has run, Output and Stop. The menu bar's Running list names them too.
+- **An agent can put away its finished sub-chats.** An agent that hands out work can list its sub-chats, with whether each is working, waiting on you or idle and which folder and branch it works in, and archive the ones that are finished. It cannot archive one that is working or waiting on you, and nothing is deleted: they are in the Archive, where you can read or restore them. Background commands they left running are stopped first, and the conversation says what was archived.
+- **A sub-chat can have a worktree of its own.** When an agent hands work to another, it can ask for a git worktree and branch for the new sub-chat, starting from the commit its own folder is on or from one it names. The sub-chat works there, the receiving agent's set-up command runs first, and the sidebar and Branches show it as the sub-chat's own worktree.
+- **Sub-chats have names.** An agent can name a sub-chat as it starts it, so the sidebar, the Archive, the Inbox and search tell them apart. One it gives a worktree and no name is named after the agent and its branch. A name you give a sub-chat yourself is kept.
+
+### Changed
+- **Every sub-chat shows its branch in the sidebar.** A sub-chat working in the same checkout as its parent used to show no branch icon. It now shows one, faded, in the colour of how the branch stands; a sub-chat with a worktree of its own, or in another repository, shows it at full strength.
+- **When the engine cannot be started, the window says so.** After three starts in a row have failed, a notice at the top of the window says how the last one ended and shows the end of `engine.log`, with what to check, Try Again and a way to find the log. pi² keeps trying on its own, less and less often, and the notice goes as soon as an engine answers. Before, the footer said "Starting engine…" for ever.
+- **After an unexpected engine stop, Activity names the commands that were left.** Its notice now lists the background commands and worktree set-up commands the last engine left running, and what became of each: stopped, already over, or left alone because pi² could not be sure it was the same. It no longer says nothing was running when such a command was. When only part of what a command started could be stopped, its line in the conversation says so.
+
+### Fixed
+- Closing a pane crashed pi² 0.7.5 whenever the close left a split holding a single pane, which includes closing either pane of two.
+- An approval asked again after the engine restarted could come back without its "always allow" choice, and a command a saved rule covers could be asked about anyway. It happened when the last engine had left a background command or a set-up command running.
+- An engine told to stop while it was still starting (quitting pi² right after opening it, say) was killed outright, so the next start reported a crash that had not happened and the login shell it was asking for its `PATH` was left running. It now stops cleanly.
+- When your login shell took more than five seconds to give its `PATH`, MCP servers started meanwhile kept the stand-in one: a server whose program is only on your `PATH`, such as `npx` or `uvx`, stayed failed until you pressed Reconnect. They are now started again with your `PATH` when it comes, without cutting off a tool call that is running.
+- Opening pi² could show "Something went wrong: Unknown conversation" when a pane restored from the saved layout named a conversation the data folder does not have, as after restoring an older backup. The pane is now emptied quietly.
+
 ## 0.7.5
 
 ### Added
