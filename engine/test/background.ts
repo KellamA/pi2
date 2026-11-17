@@ -317,7 +317,9 @@ try {
 	// Two seconds is this engine's limit for a command that is waited for; this one has run for longer.
 	await sleep(Math.max(0, 3_500 - (Date.now() - startedAt)));
 	assert.ok(alive(leader) && client.running().length === 1, "the default time limit is not for background commands");
+	// One that only sleeps is stopped at the limit, as in Claude Code, rather than moved to the background.
 	assert.match((await client.tool(a, "/bash sleep 30")).text, /stopped after 2 seconds, the default time limit/, "it still is for a command that is waited for");
+	assert.equal(client.running().length, 1, "a command that only sleeps is not moved to the background");
 	const stopped = await client.background(a, { action: "stop", id: "bg-1" });
 	assert.equal(stopped.isError, false);
 	assert.match(stopped.text, /^Stopped bg-1 \(`echo early; .*`\) and everything it started, after \d+ seconds\.$/, stopped.text);
@@ -350,6 +352,44 @@ try {
 		assert.match(await client.told(a), new RegExp(`- ${bg}: .* is over: it was stopped by the agent, at \\d\\d:\\d\\d\\.`));
 		assert.deepEqual(client.markers(a), [], "still no line of its own");
 		step("a stop the agent asked for is worded the same when something the command started outlives its first process");
+	}
+
+	// ---- A command that reaches its time limit in the foreground is moved to the background (#197)
+	{
+		const gate = join(scratch, "gate-moved");
+		const [cmd, leaderPid, childPid] = lingering();
+		// It prints, then waits for a gate this test opens only after the call has returned: only the move can return it.
+		const line = `echo before; ${cmd.replace("echo up; wait", `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo after; wait`)}`;
+		const moved = await client.tool(a, `/bash ${line}`);
+		const id = moved.details?.background?.id as string;
+		assert.match(id ?? "", /^bg-\d+$/, `the call names the command it moved: ${JSON.stringify(moved)}`);
+		assert.equal(moved.isError, false, moved.text);
+		assert.ok(moved.text.startsWith("before\n"), `what it printed until the move is the call's output: ${moved.text}`);
+		assert.ok(
+			moved.text.includes(
+				`The command did not complete within 2 seconds, the default time limit for a command, and was moved to the background as ${id} rather than stopped. It keeps running there, with no time limit, until it ends, you or the person stop it, the conversation is archived, or pi² stops. What it printed until now is above. Use the background tool with id "${id}" to read what it prints from here on`,
+			),
+			moved.text,
+		);
+		assert.ok(!existsSync(gate), "the call did not wait for the command");
+		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
+		assert.ok(pids.every(alive), "it is still running");
+		const listed = await client.until("listed as running, for Activity and the conversation's strip", () => client.running().find((each) => each.id === id));
+		assert.deepEqual([listed.conversationId, listed.command, listed.cwd], [a, line, work]);
+		assert.match(await client.told(a), new RegExp(`- ${id}: .*, running since \\d\\d:\\d\\d\\.`), "the agent is told it is running in the background");
+		// Its output goes on in the same place: what came with the call counts as read, so a read has only what follows.
+		writeFileSync(gate, "");
+		const after = await client.printed(a, { result: { text: "" }, bg: id }, "after\n");
+		assert.ok(!after.includes("before\n"), `a read starts where the call's output ended: ${after}`);
+		const shown = await client.call("background.output", { id });
+		assert.ok(shown.output.startsWith("before\n") && shown.output.endsWith("after\n") && shown.running, `the person is shown all of it: ${JSON.stringify(shown)}`);
+		// The answer that ran it is over (`tool` waits for it), and it is still running.
+		assert.ok(pids.every(alive) && client.running().some((each) => each.id === id), "it outlives its answer");
+		const stopped = await client.background(a, { action: "stop", id });
+		assert.match(stopped.text, new RegExp(`^Stopped ${id} \\(.*\\) and everything it started, after \\d+ seconds?\\.$`), stopped.text);
+		await client.until("stopped, with what it started", () => pids.every((pid) => !alive(pid)));
+		await logs(`background command ${id} of conversation ${a} reached its time limit in the foreground and was moved to the background`);
+		step("a command that reaches its time limit in the foreground is moved to the background: an id, its output so far and on, listed, told to the agent, outliving its answer, stopped like any other");
 	}
 
 	// ---- Ending by itself
@@ -499,6 +539,20 @@ try {
 		assert.equal(client.running().length, 0, "denied, nothing was started");
 		const plain = await client.attempt(e, "/bash echo hello");
 		assert.equal(plain.asked?.background, undefined, "a command that is waited for does not say so");
+		// Allowed once, as a command that is waited for, and still running at its limit: starting it in the background would
+		// ask, so it is stopped, not moved there (#197).
+		const once = await client.attempt(e, `/bash echo waiting; ${LONG}`, "once");
+		assert.ok(once.asked !== null && once.asked.background === undefined, "it asks, as a command that is waited for");
+		assert.equal(once.result.isError, true, once.result.text);
+		assert.ok(once.result.text.includes("waiting\n"), once.result.text);
+		assert.ok(
+			once.result.text.includes(
+				"The command was stopped after 2 seconds, the default time limit for a command. It was not moved to the background, as starting a command there needs the person's approval in this conversation. If it needs longer, run it again with a larger `timeout` (in seconds, up to 600), or with `background: true`",
+			),
+			once.result.text,
+		);
+		assert.equal(once.result.details?.background, undefined);
+		assert.equal(client.running().length, 0, "nothing was moved to the background");
 
 		outcome = await client.attempt(e, "/background ./serve", "rule");
 		assert.equal(outcome.asked?.background, true);
@@ -515,6 +569,11 @@ try {
 		assert.ok(served.includes(`serving in ${realpathSync(client.conversations.get(f)!.state.agent.cwd)}`), `it runs in the conversation's own worktree: ${served}`);
 		outcome = await client.attempt(f, "/background ./serve & sleep 1");
 		assert.ok(outcome.asked !== null && outcome.asked.rule === undefined, "a line the rules cannot judge still asks");
+		// The rule covers it in the background too, so waited for, it is moved there at its limit without asking.
+		const ruled = await client.attempt(f, "/bash ./serve --port 3002");
+		assert.equal(ruled.asked, null, "the rule covers it");
+		assert.match(ruled.result.text, /and was moved to the background as bg-\d+ rather than stopped\./, ruled.result.text);
+		await client.attempt(f, `/tool background {"action":"stop","id":"${ruled.result.details.background.id}"}`);
 		// Reading, listing and stopping are not asked about, under Ask first.
 		for (const args of [{ action: "list" }, { action: "read", id: secondServer }, { action: "stop", id: secondServer }]) {
 			const unasked = await client.attempt(f, `/tool background ${JSON.stringify(args)}`);
@@ -529,10 +588,17 @@ try {
 		const third = outcome.result.details.background.id as string;
 		outcome = await client.attempt(g, "/background sleep 601");
 		assert.equal(outcome.asked, null, "allowed for the conversation, the next one does not ask");
+		// Always Allow covers a background start, so a command waited for is moved there at its limit.
+		const always = await client.attempt(g, `/bash echo held; ${LONG}`);
+		assert.equal(always.asked, null);
+		assert.match(always.result.text, /and was moved to the background as bg-\d+ rather than stopped\./, always.result.text);
+		await client.attempt(g, `/tool background {"action":"stop","id":"${always.result.details.background.id}"}`);
 		await client.attempt(g, `/tool background {"action":"stop","id":"${third}"}`);
 		await client.attempt(g, `/tool background {"action":"stop","id":"${outcome.result.details.background.id}"}`);
 		await client.until("all stopped", () => client.running().length === 0);
-		step("under Ask first a background command asks as a command does and says it keeps running; a rule, also across worktrees, and Always Allow cover it; reading and stopping never ask");
+		step(
+			"under Ask first a background command asks as a command does and says it keeps running; a rule, also across worktrees, and Always Allow cover it, and a command they cover is moved to the background at its limit, one allowed once stopped; reading and stopping never ask",
+		);
 	}
 
 	// ---- Archiving, deleting, and removing a worktree
@@ -592,6 +658,11 @@ try {
 		const [cmd2, leaderPid2, childPid2] = stubborn();
 		const { bg: bg2 } = await client.start(z, cmd2);
 		pids.push(await pidIn(leaderPid2), await pidIn(childPid2));
+		// And one moved to the background at its limit (#197), which stops with the rest.
+		const [cmd3, leaderPid3, childPid3] = lingering();
+		// (Not starting with `sleep`, which would be stopped at its limit instead.)
+		assert.match((await client.tool(z, `/bash echo moving; ${cmd3}`)).text, /was moved to the background as bg-\d+ rather than stopped/);
+		pids.push(await pidIn(leaderPid3), await pidIn(childPid3));
 		await stop(engine);
 		// The app gives the engine five seconds before a restore. Measure inside the engine, so time this test spends
 		// unscheduled after the engine exits is not charged to it. Delays inside the engine still count: the app's deadline
@@ -623,8 +694,14 @@ try {
 		const [cmd, leaderPid, childPid] = lingering();
 		const { bg } = await client.start(z, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
+		// One moved to the background at its limit is on record as any other is (#197).
+		const [movedCmd, movedLeader, movedChild] = lingering();
+		const movedResult = await client.tool(z, `/bash echo moving; ${movedCmd}`);
+		const moved = movedResult.details?.background?.id as string;
+		assert.match(movedResult.text, /was moved to the background as bg-\d+ rather than stopped/);
+		const movedPids = [await pidIn(movedLeader), await pidIn(movedChild)];
 		await stop(engine, "SIGKILL");
-		assert.ok(pids.every(alive), "an engine killed outright does not stop the command");
+		assert.ok([...pids, ...movedPids].every(alive), "an engine killed outright does not stop the command");
 		engine = boot();
 		client = await Client.attach(engine);
 		await client.call("conversation.open", { id: z });
@@ -634,13 +711,21 @@ try {
 		);
 		await client.until("what was left running is stopped", () => pids.every((pid) => !alive(pid)));
 		await logs(`background command ${bg} of conversation ${z} left by the last engine was stopped`);
+		await client.until("the moved one too", () => movedPids.every((pid) => !alive(pid)));
+		assert.equal(
+			await client.until("its line", () => client.markers(z).find((text) => text.includes(`${moved} `))),
+			`Background command ${moved} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(`echo moving; ${movedCmd}`)}`,
+		);
 		assert.deepEqual(client.running(), []);
 		assert.match((await client.background(z, { action: "list" })).text, new RegExp(`- ${bg}: .*: was left running when pi²’s engine stopped, and was stopped when the engine started again; no unread output\\.`));
 		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.
 		const notice: Event[] = client.events.recovery?.recovery?.background ?? [];
 		assert.deepEqual(
 			notice.map(({ title: _title, ...rest }) => rest),
-			[{ id: bg, conversationId: z, rootConversationId: z, command: cmd, outcome: "stopped", group: pids[0] }],
+			[
+				{ id: bg, conversationId: z, rootConversationId: z, command: cmd, outcome: "stopped", group: pids[0] },
+				{ id: moved, conversationId: z, rootConversationId: z, command: `echo moving; ${movedCmd}`, outcome: "stopped", group: movedPids[0] },
+			],
 		);
 		const listed = await client.until("the conversation listed", () => client.events.library?.conversations.find((conversation: Event) => conversation.id === z));
 		assert.equal(notice[0]!.title, listed.title, "with its conversation's title");

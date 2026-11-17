@@ -11,6 +11,9 @@
 // engine started after one that died can stop what was left running, and only what is provably the same (`stopLeftOver`
 // in processes.ts).
 //
+// A command the agent waits for that reaches its time limit can become one too (`adopt`, issue #197): commands.ts moves
+// it here, where starting it would not have asked the person, and from then on it is followed exactly as one started here.
+//
 // Nothing here limits how many there are or how long they run. A command runs until it ends, the agent or the person
 // stops it, its conversation is archived or deleted, the worktree it runs in is removed, or the engine stops.
 
@@ -367,23 +370,90 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		await forget();
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	let finish: () => void = () => {};
-	const command: Command = { id, conversationId, command: args.command, cwd, startedAt, child, output: "", total: 0, read: 0, settled: new Promise<void>((resolve) => (finish = resolve)), waiters: new Set() };
+	const command: Command = { id, conversationId, command: args.command, cwd, startedAt, child, output: "", total: 0, read: 0, settled: Promise.resolve(), waiters: new Set() };
 	commands.set(id, command);
+	const followed = follow(host, command, child, marker, args.timeout, forget);
+	child.stdout?.setEncoding("utf8").on("data", followed.keep);
+	child.stderr?.setEncoding("utf8").on("data", followed.keep);
+	announce();
 
+	let sawTheEnd = false;
+	try {
+		// A moment to see whether it fails at once: a program that is not there, a port already taken.
+		await Promise.race([command.settled, new Promise<void>((resolve) => setTimeout(resolve, SETTLE_MS).unref())]);
+		await followed.recorded;
+		sawTheEnd = command.ended !== undefined;
+		return started(command, args.timeout, followed.neverStarted());
+	} finally {
+		followed.answer(sawTheEnd);
+	}
+}
+
+/**
+ * Make a foreground command that reached its time limit a background command, as if it had been started as one: what
+ * `bash` does at the limit when starting the command in the background would not have asked the person (commands.ts).
+ * `child` is its process, which leads a group of its own and was started with `marker` in its environment; its output
+ * keeps coming through the caller, which `route` points at the command's from then on. `printed` is what it has printed
+ * so far: the end of it, and how many characters in all. The agent is given that in the call's result, so it counts as
+ * read. Undefined, and nothing changed, when the command can no longer be moved: it has ended, `wanted` says no (the
+ * call was stopped), its conversation was put away, or the engine is stopping.
+ */
+export async function adopt(given: {
+	child: ChildProcess;
+	marker: string;
+	command: string;
+	cwd: string;
+	conversationId: number;
+	startedAt: number;
+	printed: () => { output: string; total: number };
+	route: (keep: (chunk: string) => void) => void;
+	wanted: () => boolean;
+}): Promise<{ id: string; recorded: Promise<void>; answer: (sawTheEnd: boolean) => void } | undefined> {
+	if (engine === undefined) return undefined;
+	const host = engine;
+	const { child, conversationId } = given;
+	const movable = () => !shuttingDown && signallable(child.pid) && !reaped(child) && putAway(conversationId) === undefined && given.wanted();
+	if (!movable()) return undefined;
+	let id = "";
+	await save((doc) => {
+		id = `bg-${doc.next}`;
+		doc.next += 1;
+		doc.running[id] = { id, conversationId, command: given.command, cwd: given.cwd, startedAt: given.startedAt };
+	});
+	const forget = () => save((doc) => void delete doc.running[id]).catch((error) => host.log("could not forget", logName(id, conversationId), error instanceof Error ? error.message : error));
+	if (!movable()) {
+		await forget();
+		return undefined;
+	}
+	// From here to `route` nothing waits, so no output can come in between and be lost or counted twice.
+	const { output, total } = given.printed();
+	const command: Command = { id, conversationId, command: given.command, cwd: given.cwd, startedAt: given.startedAt, child, output: output.slice(-KEEP_CHARS), total, read: total, settled: Promise.resolve(), waiters: new Set() };
+	commands.set(id, command);
+	const followed = follow(host, command, child, given.marker, undefined, forget);
+	given.route(followed.keep);
+	host.log(logName(id, conversationId), "reached its time limit in the foreground and was moved to the background");
+	announce();
+	return { id, recorded: followed.recorded, answer: followed.answer };
+}
+
+/**
+ * Follow a background command's process from its start, or from its move to the background, to its end: what ends it,
+ * its record for the next engine, and what is said of its end. `keep` takes its output as it comes; `answer` is told
+ * whether the call that started it said, in its own result, that it was already over.
+ */
+function follow(host: Engine, command: Command, child: ChildProcess, marker: string, timeout: number | undefined, forget: () => Promise<void>) {
+	const { id, conversationId } = command;
+	let finish: () => void = () => {};
+	command.settled = new Promise<void>((resolve) => (finish = resolve));
 	const keep = (chunk: string) => {
 		command.output += chunk;
 		command.total += chunk.length;
 		if (command.output.length > 2 * KEEP_CHARS) command.output = command.output.slice(-KEEP_CHARS);
 		wake(command);
 	};
-	child.stdout?.setEncoding("utf8").on("data", keep);
-	child.stderr?.setEncoding("utf8").on("data", keep);
 	const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
 	const timer =
-		args.timeout === undefined
-			? undefined
-			: setTimeout(() => void stop(command, `was stopped after ${elapsed(args.timeout! * 1000)}, the \`timeout\` its call gave`), args.timeout * 1000);
+		timeout === undefined ? undefined : setTimeout(() => void stop(command, `was stopped after ${elapsed(timeout * 1000)}, the \`timeout\` its call gave`), timeout * 1000);
 	timer?.unref();
 
 	let over = false;
@@ -450,18 +520,7 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 			});
 		})
 		.catch((error) => host.log("could not note the process of", logName(id, conversationId), error instanceof Error ? error.message : error));
-	announce();
-
-	let sawTheEnd = false;
-	try {
-		// A moment to see whether it fails at once: a program that is not there, a port already taken.
-		await Promise.race([command.settled, new Promise<void>((resolve) => setTimeout(resolve, SETTLE_MS).unref())]);
-		await recorded;
-		sawTheEnd = command.ended !== undefined;
-		return started(command, args.timeout, neverStarted);
-	} finally {
-		answer(sawTheEnd);
-	}
+	return { keep, recorded, answer, neverStarted: () => neverStarted };
 }
 
 /** What the call that started a command answers: its id, how it stands after a moment, and what it has printed. */
@@ -746,18 +805,24 @@ export const background: Feature = (_host, running) => {
 			const live = [...commands.values()].filter(isRunning);
 			if (live.length === 0) return;
 			const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref());
-			// Everything in their groups, listed before the stop. A command's own first process can end at SIGTERM and be
-			// reaped at once while what it started ignores it (`server & wait`); its group can then no longer be signalled
-			// through it, and the SIGKILL that `stopMembers` arranges for later would come after the engine is gone (#199).
-			// So whatever of this list is still there, and still the same process, is ended here, before the engine exits.
-			const listed = await processes().catch(() => undefined);
-			const own = listed?.get(process.pid)?.group;
-			const groups = new Set(live.map((command) => command.child?.pid).filter(signallable));
-			const members: [number, Listed][] = listed === undefined || own === undefined ? [] : [...listed].filter(([pid, each]) => signallable(pid) && each.group !== own && groups.has(each.group));
 			const ended = Promise.all(live.map((command) => stop(command, "was stopped when pi²’s engine stopped", SHUTDOWN_GRACE_MS)));
+			// Everything in their groups, listed while the grace runs. A command's own first process can end at SIGTERM and
+			// be reaped at once while what it started ignores it (`server & wait`); its group can then no longer be signalled
+			// through it, and the SIGKILL that `stopMembers` arranges for later would come after the engine is gone (#199).
+			// So whatever of this list is still there, and still the same process, is ended here, before the engine exits. A
+			// group's number is not given to another while it has members, so a member listed under it is the command's own.
+			const groups = new Set(live.map((command) => command.child?.pid).filter(signallable));
+			const listing = processes()
+				.then((listed): [number, Listed][] => {
+					const own = listed.get(process.pid)?.group;
+					return own === undefined ? [] : [...listed].filter(([pid, each]) => signallable(pid) && each.group !== own && groups.has(each.group));
+				})
+				.catch((): [number, Listed][] => []);
 			await Promise.race([ended, pause(SHUTDOWN_GRACE_MS)]);
 			for (const command of live) if (command.child !== undefined) signalGroup(command.child, "SIGKILL");
-			await killRemaining(members);
+			// Only groups whose first process is gone: the others were just ended whole through it.
+			const leaderless = new Set(live.filter((command) => command.child !== undefined && reaped(command.child)).map((command) => command.child!.pid));
+			await killRemaining((await listing).filter(([, each]) => leaderless.has(each.group)));
 			// A moment for their ends to come in, so engine.log has them.
 			await Promise.race([ended, pause(500)]);
 		},

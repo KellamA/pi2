@@ -9,6 +9,7 @@
 
 import { type ChildProcess, execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { subscribe } from "node:diagnostics_channel";
 
 /**
  * A command's process group: its id, which is the pid of the process that leads it, and when that process started, as
@@ -23,6 +24,35 @@ export type RunProcess = { group: number; start: string; marker?: string };
 export const RUN_VARIABLE = "PI2_RUN";
 /** A marker for a new run: 128 random bits, which nothing else has by chance. */
 export const newRunMarker = (): string => randomBytes(16).toString("hex");
+/** The processes being looked out for, by the marker they are to be started with. */
+const lookedFor = new Map<string, (child: ChildProcess) => void>();
+let looking = false;
+
+/**
+ * Look out for the process this engine is about to start with `marker` as `RUN_VARIABLE` in its environment, for a
+ * command started by code that does not hand back its process: a foreground command, which pi durable's `exec` starts
+ * (commands.ts). Node announces each process it starts on the `child_process.spawn` tracing channel, with the options it
+ * was started with, before it runs; the marker tells this one apart from any other, whatever its command. `child()` is
+ * undefined until it is seen, and stays so should Node not announce it; `done()` stops looking.
+ */
+export function lookOutFor(marker: string): { child(): ChildProcess | undefined; done(): void } {
+	if (!looking) {
+		looking = true;
+		subscribe("tracing:child_process.spawn:start", (message) => {
+			if (lookedFor.size === 0) return;
+			const { process: child, options } = message as { process?: ChildProcess; options?: { env?: Record<string, string | undefined> } };
+			const given = options?.env?.[RUN_VARIABLE];
+			if (child !== undefined && typeof given === "string") lookedFor.get(given)?.(child);
+		});
+	}
+	let found: ChildProcess | undefined;
+	lookedFor.set(marker, (child) => {
+		found = child;
+		lookedFor.delete(marker);
+	});
+	return { child: () => found, done: () => void lookedFor.delete(marker) };
+}
+
 /** Whether a stored marker is one `newRunMarker` could have made. Anything else, a short or spaced one say, proves nothing. */
 const isRunMarker = (marker: unknown): marker is string => typeof marker === "string" && /^[0-9a-f]{32}$/.test(marker);
 

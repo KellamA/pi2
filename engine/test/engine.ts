@@ -1300,6 +1300,10 @@ try {
 		const first = noted()[0]!;
 		await client.call("memory.edit", { agentId: pilot, id: first.id, text: "edited by hand" });
 		await client.until("edit broadcast", () => noted()[0]!.text === "edited by hand");
+		// A note the person writes keeps its line breaks (#198), each line tidied, and its later lines are indented in the prompt.
+		await client.call("memory.edit", { agentId: pilot, id: first.id, text: " edited  by hand \r\n\n   then a second\tline\n" });
+		await client.until("edit with a line break", () => noted()[0]!.text === "edited by hand\nthen a second line");
+		assert.ok((await say(q1, "/system")).includes(`- ${first.id}: edited by hand\n  then a second line\n`), "a note of two lines is one item in the list");
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: first.id, text: "z".repeat(401) }), /400 characters/);
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: "m999", text: "x" }), /gone/);
 		await client.call("memory.delete", { agentId: pilot, id: first.id });
@@ -2246,8 +2250,9 @@ try {
 		const [stopped, longer, input] = [await open(), await open(), await open()];
 		const started = Date.now();
 		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
-		// take, however busy the machine.
-		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 600; echo never-printed" });
+		// take, however busy the machine. It starts with `sleep`, so at its limit it is stopped rather than moved to the
+		// background (#197; test/background.ts has the move).
+		await client.call("submit", { id: stopped, text: "/bash sleep 0.1; echo begun; sleep 600; echo never-printed" });
 		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
 		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));

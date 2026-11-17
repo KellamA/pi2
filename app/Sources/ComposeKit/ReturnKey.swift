@@ -37,8 +37,9 @@ public enum ReturnKey {
 
 extension View {
     /// Makes a text field send with Return and start a new line with Shift-Return or Option-Return, leaving Return
-    /// to an input method while it composes. Use it in place of `onSubmit` on a field that sends a message, and give
-    /// the field `axis: .vertical` so a line break has somewhere to go.
+    /// to an input method while it composes. Use it in place of `onSubmit` on a field that sends a message, or on any
+    /// other field of several lines that acts on Return (a memory note saves with it), and give the field
+    /// `axis: .vertical` so a line break has somewhere to go.
     public func sendsOnReturn(_ send: @escaping () -> Void) -> some View {
         modifier(SendsOnReturn(send: send))
     }
