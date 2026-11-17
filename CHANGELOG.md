@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Fixed
+- Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
+
 ## 0.7.7
 
 ### Added
