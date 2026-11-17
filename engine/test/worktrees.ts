@@ -228,6 +228,22 @@ try {
 		const cwdOf = (id: number) => client.conversations.get(id)?.state.agent.cwd;
 		for (const id of [helped.sub, neighboured.sub, outsided.sub]) await client.call("conversation.open", { id });
 		await client.until("sub-chats open", () => cwdOf(helped.sub) === shared.path && cwdOf(neighboured.sub) === shared.path && cwdOf(outsided.sub) === outside);
+
+		// The sub-chats in the worktree show how its branch stands exactly as their parent does, merged included, which is
+		// measured from where the worktree started; only the parent is told the worktree is its own.
+		await client.bash(e, "echo from-the-lead > lead.txt && git add lead.txt && git commit -q -m 'from the lead'");
+		run(project, "merge", "-q", "--ff-only", shared.branch);
+		await client.call("branches.refresh");
+		await client.until("all merged", () => [e, helped.sub, neighboured.sub].every((id) => client.branch(id)?.state === "merged"));
+		for (const id of [helped.sub, neighboured.sub]) {
+			const { managed, ...rest } = client.branch(id);
+			const { managed: owns, ...parents } = client.branch(e);
+			assert.equal(owns, true, "the parent owns the worktree");
+			assert.equal(managed, false, "a sub-chat in it does not");
+			assert.deepEqual(rest, parents, "a sub-chat in the worktree shows what its parent shows");
+		}
+		assert.equal(client.branch(outsided.sub).root, outside, "a sub-chat elsewhere shows its own folder's branch");
+		step("a sub-chat in its parent's worktree is tracked with it: the same branch and state, merged too, but not its own");
 		await client.call("worktree.remove", { id: e });
 		await client.until("sub-chats back with their parent", () => cwdOf(e) === project && cwdOf(helped.sub) === project && cwdOf(neighboured.sub) === project);
 		assert.equal(cwdOf(outsided.sub), outside, "a sub-chat elsewhere stays where it is");

@@ -51,7 +51,11 @@ Continuing an earlier sub-chat keeps the folder it has. Removing a worktree move
 
 An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, as for any archived conversation (below), unless the agent asks for it to be removed and nothing would be lost: nothing uncommitted, nothing half done, and no commits that are not on what it started from. The removal is the same as **Remove Worktree, Keep Branch**: the branch stays.
 
-The app shows a sub-chat working in its parent's worktree as such: **Branches** lists it under the conversation whose worktree it is, marked "parent's worktree", and its tooltip and branch menu name that conversation. A sub-chat can still be given a worktree of its own with **New Worktree…**: it starts from the parent's branch, and the sub-chat stops working in its parent's worktree.
+Every sub-chat whose folder is in a git repository shows its branch icon on its own row in the sidebar, so each one's branch and how it stands can be followed without opening Branches. One working in its parent's checkout, whether that is a worktree or the main checkout, has the icon faded and drawn lighter, still in the colour of how the branch stands; one with a worktree of its own, or working in another repository, has it at full strength like any conversation. So among a conversation's sub-chats, the ones on a branch of their own stand out, and a faded icon says "the same branch as the conversation above".
+
+The app shows a sub-chat in its parent's worktree as working there: **Branches** lists it under the conversation whose worktree it is, marked "parent's worktree", and its tooltip and branch menu name that conversation. One sharing its parent's main checkout is marked "parent's checkout", and its tooltip and branch menu name the parent too. A sub-chat can still be given a worktree of its own with **New Worktree…**: it starts from the parent's branch, and the sub-chat stops working in its parent's checkout.
+
+The tracker looks at a sub-chat in its parent's worktree as that worktree, so it shows the same state as the parent, merged included, and however many sub-chats work in one folder, the folder is looked at once.
 
 ### A worktree of its own, from the agent
 
@@ -86,7 +90,7 @@ If a worktree's folder is deleted by hand, its icon turns grey and says it is mi
 
 ## The branch tracker
 
-Every few seconds while the app is open, pi² looks at the folder of each conversation in the sidebar. For one in a git repository it shows a branch icon on the conversation's row: a plain branch for the repository's main checkout, a branch in a box for a worktree. Click it for the details; the conversation's toolbar shows the branch name too, and **Branches** in the sidebar lists every conversation by repository.
+Every few seconds while the app is open, pi² looks at the folder of each conversation in the sidebar. For one in a git repository it shows a branch icon on the conversation's row: a plain branch for the repository's main checkout, a branch in a box for a worktree, faded for a sub-chat working in its parent's checkout (see [Sub-chats](#sub-chats)). Click it for the details; the conversation's toolbar shows the branch name too, and **Branches** in the sidebar lists every conversation by repository.
 
 The icon's colour says how the branch stands, the most pressing first:
 
@@ -100,5 +104,7 @@ The icon's colour says how the branch stands, the most pressing first:
 | Green | Clean, and nothing to push or merge |
 
 "Merged" is only said of worktrees pi² made, because only for those does it know where the branch started; any other branch with nothing of its own may simply be new.
+
+Conversations working in the same folder share one look at it each time, and so do all that work in one worktree pi² made, sub-chats included.
 
 Looking never changes the repository: git is run without taking its index lock, so it cannot get in the way of an agent's own git commands, and nothing is fetched, so "behind" is as of the last fetch.

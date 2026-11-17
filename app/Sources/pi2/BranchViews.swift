@@ -69,20 +69,40 @@ extension BranchStatus {
         return lines
     }
 
-    /// `owner`: the conversation whose worktree this one, a sub-chat, works in (see `EngineClient.worktreeOwner`).
-    func whereText(owner: ConversationSummary?) -> String {
+    /// `sharing`: whose checkout this one, a sub-chat, works in (see `EngineClient.sharing`).
+    func whereText(sharing: CheckoutSharing?) -> String {
         if managed { return "Its own worktree of \(repo)" }
-        if let owner { return "Works in the worktree of “\(owner.title.isEmpty ? "New conversation" : owner.title)”" }
-        if worktree { return "A worktree of \(repo)" }
-        return "The main checkout of \(repo)"
+        switch sharing {
+        case .worktree(let owner): return "Works in the worktree of “\(owner.displayTitle)”"
+        case .checkout(let parent):
+            return "Works in the same \(worktree ? "worktree" : "main checkout") of \(repo) as “\(parent.displayTitle)”"
+        case nil: return worktree ? "A worktree of \(repo)" : "The main checkout of \(repo)"
+        }
     }
 
     /// The checkout in a few words, after the branch's name.
-    func kindText(owner: ConversationSummary?) -> String {
-        managed ? "· own worktree" : owner != nil ? "· parent’s worktree" : worktree ? "· worktree" : "· main checkout"
+    func kindText(sharing: CheckoutSharing?) -> String {
+        if managed { return "· own worktree" }
+        switch sharing {
+        case .worktree: return "· parent’s worktree"
+        case .checkout: return worktree ? "· parent’s worktree" : "· parent’s checkout"
+        case nil: return worktree ? "· worktree" : "· main checkout"
+        }
     }
 
-    func help(owner: ConversationSummary?) -> String { ([name, whereText(owner: owner)] + facts).joined(separator: "\n") }
+    func help(sharing: CheckoutSharing?) -> String { ([name, whereText(sharing: sharing)] + facts).joined(separator: "\n") }
+}
+
+/// A sub-chat working in a checkout that is not its own, as most do: the one the conversation that opened it works in.
+enum CheckoutSharing {
+    /// The worktree pi² made for a conversation further up (docs/worktrees.md, Sub-chats).
+    case worktree(owner: ConversationSummary)
+    /// Any other checkout its parent works in: the repository's main checkout, or a worktree pi² did not make.
+    case checkout(parent: ConversationSummary)
+}
+
+extension ConversationSummary {
+    var displayTitle: String { title.isEmpty ? "New conversation" : title }
 }
 
 extension EngineClient {
@@ -99,24 +119,42 @@ extension EngineClient {
         }
         return nil
     }
+
+    /// For a sub-chat working in the same checkout as the conversation that opened it, or in a worktree pi² made for one
+    /// further up: whose it is. Nil for a conversation in a checkout of its own, which is every one that is not a sub-chat.
+    func sharing(of id: Int) -> CheckoutSharing? {
+        if let owner = worktreeOwner(of: id) { return .worktree(owner: owner) }
+        guard let status = branches[id], !status.managed,
+              let parentID = conversations.first(where: { $0.id == id })?.parent,
+              let parent = conversations.first(where: { $0.id == parentID }),
+              branches[parentID]?.root == status.root else { return nil }
+        return .checkout(parent: parent)
+    }
 }
 
-/// The branch icon: a plain branch for a repository's main checkout, a boxed one for a worktree.
+/// The branch icon: a plain branch for a repository's main checkout, a boxed one for a worktree. `shared` draws it
+/// faded and lighter, for a sub-chat working in its parent's checkout rather than one of its own. It keeps the colour of
+/// how the branch stands, which is what the sidebar shows it for; fading, rather than another shape, leaves plain and
+/// boxed meaning the same thing everywhere, and lets a sub-chat on a branch of its own stand out among its siblings.
 struct BranchIcon: View {
     let status: BranchStatus
     var size: CGFloat = 11
+    var shared = false
+
+    static let sharedOpacity = 0.5
 
     var body: some View {
         Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: status.worktree ? size - 2.5 : size, weight: .semibold))
+            .font(.system(size: status.worktree ? size - 2.5 : size, weight: shared ? .regular : .semibold))
             .foregroundStyle(status.color)
             .frame(width: size + 4, height: size + 4)
             .overlay {
                 if status.worktree {
-                    RoundedRectangle(cornerRadius: 3.5).strokeBorder(status.color.opacity(0.85), lineWidth: 1.2)
+                    RoundedRectangle(cornerRadius: 3.5).strokeBorder(status.color.opacity(0.85), lineWidth: shared ? 1 : 1.2)
                 }
             }
-            .accessibilityLabel("\(status.worktree ? "Worktree" : "Branch") \(status.name), \(status.stateTitle)")
+            .opacity(shared ? Self.sharedOpacity : 1)
+            .accessibilityLabel("\(status.worktree ? "Worktree" : "Branch") \(status.name), \(status.stateTitle)\(shared ? ", in its parent’s checkout" : "")")
     }
 }
 
@@ -128,11 +166,12 @@ struct BranchBadge: View {
     @State private var showing = false
 
     var body: some View {
+        let sharing = engine.sharing(of: conversationID)
         Button { showing.toggle() } label: {
-            BranchIcon(status: status).contentShape(.rect)
+            BranchIcon(status: status, shared: sharing != nil).contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .help(status.help(owner: engine.worktreeOwner(of: conversationID)))
+        .help(status.help(sharing: sharing))
         .popover(isPresented: $showing, arrowEdge: .trailing) {
             BranchDetails(engine: engine, conversationID: conversationID, status: status) { showing = false }
         }
@@ -147,15 +186,16 @@ struct BranchDetails: View {
     var done: () -> Void = {}
 
     var body: some View {
+        let sharing = engine.sharing(of: conversationID)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                BranchIcon(status: status, size: 13)
+                BranchIcon(status: status, size: 13, shared: sharing != nil)
                 Text(status.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 8)
                 Tag(status.stateTitle, status.tone)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(status.whereText(owner: engine.worktreeOwner(of: conversationID))).foregroundStyle(Theme.tx2)
+                Text(status.whereText(sharing: sharing)).foregroundStyle(Theme.tx2)
                 Text(status.root).font(Theme.mono).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.head).textSelection(.enabled)
             }
             if !status.facts.isEmpty {
@@ -217,8 +257,9 @@ struct BranchMenu: View {
     let status: BranchStatus
 
     var body: some View {
+        let sharing = engine.sharing(of: id)
         Menu {
-            Text(status.whereText(owner: engine.worktreeOwner(of: id)))
+            Text(status.whereText(sharing: sharing))
             ForEach(status.facts, id: \.self) { Text($0) }
             Divider()
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: status.root)]) }
@@ -237,11 +278,11 @@ struct BranchMenu: View {
             }
         } label: {
             HStack(spacing: 5) {
-                BranchIcon(status: status)
+                BranchIcon(status: status, shared: sharing != nil)
                 Text(status.branch ?? status.head ?? "detached").lineLimit(1).truncationMode(.middle).frame(maxWidth: 170)
             }
         }
-        .help(status.help(owner: engine.worktreeOwner(of: id)))
+        .help(status.help(sharing: sharing))
     }
 }
 
@@ -254,7 +295,7 @@ struct BranchMenu: View {
 final class WorktreeDialogs {
     static let shared = WorktreeDialogs()
 
-    /// `subChat`: said when the conversation is a sub-chat working in its parent's worktree.
+    /// `subChat`: said when the conversation is a sub-chat working in its parent's checkout.
     struct Creating: Equatable { let id: Int; var branch: String; var subChat: String? }
     struct Removing: Equatable { let id: Int; let status: BranchStatus }
 
@@ -265,9 +306,10 @@ final class WorktreeDialogs {
 
     func create(_ id: Int, engine: EngineClient) {
         var subChat: String?
-        if engine.worktreeOwner(of: id) != nil, let status = engine.branches[id] {
-            let start = status.branch.map { "the parent’s branch \($0)" } ?? "the commit the parent’s worktree is on"
-            subChat = "The new worktree starts from \(start), and this sub-chat stops working in its parent’s worktree."
+        if engine.sharing(of: id) != nil, let status = engine.branches[id] {
+            let checkout = status.worktree ? "worktree" : "checkout"
+            let start = status.branch.map { "the parent’s branch \($0)" } ?? "the commit the parent’s \(checkout) is on"
+            subChat = "The new worktree starts from \(start), and this sub-chat stops working in its parent’s \(checkout)."
         }
         creating = Creating(id: id, branch: "", subChat: subChat)
         Task {
@@ -360,16 +402,20 @@ struct BranchesView: View {
     private struct Row: Identifiable {
         let conversation: ConversationSummary
         let status: BranchStatus
-        /// For a sub-chat in the worktree of a conversation further up: that conversation. Listed under it.
-        let owner: ConversationSummary?
+        /// For a sub-chat in its parent's checkout: whose it is.
+        let sharing: CheckoutSharing?
         var id: Int { conversation.id }
+        /// For a sub-chat in the worktree of a conversation further up: that conversation. Listed under it.
+        var owner: ConversationSummary? {
+            if case .worktree(let owner) = sharing { owner } else { nil }
+        }
     }
 
     private static let order = ["conflict", "changes", "missing", "ahead", "behind", "detached", "merged", "clean"]
 
     private var groups: [(repo: String, rows: [Row])] {
         let rows = engine.conversations.compactMap { conversation in
-            engine.branches[conversation.id].map { Row(conversation: conversation, status: $0, owner: engine.worktreeOwner(of: conversation.id)) }
+            engine.branches[conversation.id].map { Row(conversation: conversation, status: $0, sharing: engine.sharing(of: conversation.id)) }
         }
         return Dictionary(grouping: rows, by: \.status.repo)
             .map { repo, rows in
@@ -444,9 +490,9 @@ struct BranchesView: View {
                 .buttonStyle(.plain)
                 .lineLimit(1)
                 HStack(spacing: 6) {
-                    BranchIcon(status: row.status, size: 10)
+                    BranchIcon(status: row.status, size: 10, shared: row.sharing != nil)
                     Text(row.status.name).font(Theme.mono).lineLimit(1).truncationMode(.middle)
-                    Text(row.status.kindText(owner: row.owner))
+                    Text(row.status.kindText(sharing: row.sharing))
                         .font(.caption).foregroundStyle(Theme.tx3)
                 }
                 .foregroundStyle(Theme.tx2)
@@ -472,7 +518,7 @@ struct BranchesView: View {
         }
         .padding(10)
         .panel()
-        .help(row.status.help(owner: row.owner))
+        .help(row.status.help(sharing: row.sharing))
     }
 
     /// Worktrees whose conversations were archived or deleted. They stay on disk, with any work in them, until removed.
@@ -565,6 +611,12 @@ struct BranchesView: View {
                 Text("A boxed branch is a worktree; a plain one is the repository’s main checkout.").font(.callout).foregroundStyle(Theme.tx2)
             }
             .padding(.top, 3)
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch").font(.system(size: 10, weight: .regular)).frame(width: 15, height: 15)
+                    .foregroundStyle(Theme.tx2)
+                    .opacity(BranchIcon.sharedOpacity)
+                Text("A faded one is a sub-chat working in its parent’s checkout rather than one of its own.").font(.callout).foregroundStyle(Theme.tx2)
+            }
         }
     }
 }
