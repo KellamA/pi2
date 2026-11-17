@@ -73,7 +73,7 @@ final class EngineClient {
     /// Works pages in pi²'s own browser for agents; the app holds the web views.
     let browser = BrowserSession()
 
-    private let home: URL
+    let home: URL
     private var connection: NWConnection?
     private var buffer = Data()
     private var nextRequestID = 1

@@ -106,7 +106,13 @@ struct PaletteView: View {
             }
         }
         .frame(width: 620, height: 420)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            #if PI2_DEVELOPMENT
+            // Typed after it appears, so the message search below runs for it as for any typing.
+            if let asked = PaletteLaunch.takeQuery() { query = asked }
+            #endif
+        }
         .onChange(of: query) { _, text in
             selected = 0
             searchTask?.cancel()

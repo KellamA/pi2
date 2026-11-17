@@ -669,7 +669,7 @@ struct SidebarView: View {
             Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left")
                 .padding(6)
         }
-        .contextMenu {
+        .contextMenu(previewAs: conversation.title.isEmpty ? "New conversation" : conversation.title, String(conversation.id)) {
             Button("Rename…") { model.beginRename(conversation) }
             if model.workspace.canSplit {
                 Button("Open in New Pane") {
@@ -729,7 +729,7 @@ private struct AgentRow: View {
             }
         }
         .onHover { hovering = $0 }
-        .contextMenu {
+        .contextMenu(previewAs: agent.name, agent.id) {
             Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agent.id) }
         }
     }
@@ -905,6 +905,18 @@ private struct WindowOpener: View {
             guard model.engine.hasLoadedLibrary, let id = OutputLaunch.asked else { return }
             try? await Task.sleep(for: .seconds(1))
             if !Task.isCancelled, OutputLaunch.take() { openWindow(id: BackgroundOutputScene.id, value: id) }
+        }
+        // `PI2_SHOW=palette:<query>` opens the command palette with that query, once the sidebar has what it lists.
+        .task(id: model.engine.hasLoadedLibrary) {
+            guard model.engine.hasLoadedLibrary, PaletteLaunch.asked != nil else { return }
+            try? await Task.sleep(for: .seconds(1))
+            if !Task.isCancelled, PaletteLaunch.takeOpen() { model.showingPalette = true }
+        }
+        // `PI2_MENU=<label>` writes what that element's context menu holds, once the page `PI2_SHOW` opened has settled.
+        .task(id: model.engine.hasLoadedLibrary) {
+            guard model.engine.hasLoadedLibrary, ContextMenuPreview.asked != nil else { return }
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled { await ContextMenuPreview.start(home: model.engine.home) }
         }
         #endif
     }
