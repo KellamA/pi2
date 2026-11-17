@@ -4,6 +4,8 @@ These are the project's instructions for any agent working in this repository, w
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md), [docs/development.md](docs/development.md) and [docs/architecture.md](docs/architecture.md). Before you build, run or test anything, read [Testing safely](CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md: the Mac you are working on may be running pi² for real work.
 
+If you were handed issues to finish on your own, in a worktree of your own (as a worker of an orchestrating agent), also read [docs/agents.md](docs/agents.md) and follow it: where you are, what is not yours to touch, when to stop and what to report.
+
 ## Issues: one for every piece of work
 
 Every task an agent does in this repository gets a GitHub issue, so there is a record of what was done and a backlog to choose from. This is the rule whichever tool you run in. `scripts/issue` does the bookkeeping with `gh`.

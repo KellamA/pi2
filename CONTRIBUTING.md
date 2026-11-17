@@ -15,6 +15,8 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 
 ## Making a change
 
+An agent handed issues to finish on its own follows these steps too, with [docs/agents.md](docs/agents.md) for what is particular to working that way.
+
 1. Read [docs/development.md](docs/development.md) to build and run the project, and [docs/architecture.md](docs/architecture.md) for how it fits together.
 2. Keep the change to one thing. A small pull request is reviewed sooner.
 3. If you touch the engine, run `npm run check` and `npm test` in `engine/`, and add to `engine/test/engine.ts` when you add behaviour.
