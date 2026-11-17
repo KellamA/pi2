@@ -297,27 +297,31 @@ struct RootView: View {
         } detail: {
             // One branch for every way the conversation area shows, so moving between panes, or to an empty one, keeps
             // the panes' pages loaded.
-            if showsWorkspace {
-                WorkspaceView(model: model)
-            } else {
-                switch model.selection {
-                case .inbox:
-                    InboxView(model: model)
-                case .activity:
-                    ActivityView(model: model)
-                case .usage:
-                    UsageView(model: model)
-                case .archive:
-                    ArchiveView(model: model)
-                case .branches:
-                    BranchesView(model: model)
-                case .agent(let id):
-                    AgentEditor(model: model, agentID: id)
-                        .id(id)
-                case .conversation, nil:
-                    WelcomeView(model: model)
+            Group {
+                if showsWorkspace {
+                    WorkspaceView(model: model)
+                } else {
+                    switch model.selection {
+                    case .inbox:
+                        InboxView(model: model)
+                    case .activity:
+                        ActivityView(model: model)
+                    case .usage:
+                        UsageView(model: model)
+                    case .archive:
+                        ArchiveView(model: model)
+                    case .branches:
+                        BranchesView(model: model)
+                    case .agent(let id):
+                        AgentEditor(model: model, agentID: id)
+                            .id(id)
+                    case .conversation, nil:
+                        WelcomeView(model: model)
+                    }
                 }
             }
+            // An engine that keeps failing to start is said so above whatever is showing, until one starts.
+            .safeAreaInset(edge: .top, spacing: 0) { EngineTroubleBanner(engine: engine) }
         }
         .background(WindowOpener(model: model))
         .worktreeDialogs(engine: engine)
@@ -623,7 +627,8 @@ struct SidebarView: View {
     }
 
     private var statusText: String {
-        switch engine.status {
+        if engine.startProblem != nil { return "Engine could not start" }
+        return switch engine.status {
         case .connecting: "Starting engine…"
         case .connected: "Engine running"
         case .restarting: "Engine stopped — restarting…"
@@ -631,7 +636,8 @@ struct SidebarView: View {
     }
 
     private var statusColor: Color {
-        switch engine.status {
+        if engine.startProblem != nil { return Theme.bad }
+        return switch engine.status {
         case .connecting: Theme.tx3
         case .connected: Theme.ok
         case .restarting: Theme.warn

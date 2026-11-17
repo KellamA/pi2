@@ -133,8 +133,13 @@ export function killLater(members: [number, Listed][], graceMs: number, group?: 
 	}, graceMs).unref();
 }
 
-/** What became of a command an engine that died left behind. */
-export type LeftOver = "stopped" | "gone" | "unsure";
+/**
+ * What became of a command an engine that died left behind: all of it stopped, some of it stopped and the rest left
+ * alone, nothing of it running, or something that may be its left alone.
+ */
+export type LeftOver = "stopped" | "partly" | "gone" | "unsure";
+/** What the engine's log says of each, after "left by the last engine". */
+export const leftOverLog: Record<LeftOver, string> = { stopped: "was stopped", partly: "was stopped in part; the rest may still be running", gone: "is not running", unsure: "may still be running" };
 
 /**
  * Stop what is left of a command's process group after the engine that started it died, but only what is provably the
@@ -148,8 +153,9 @@ export type LeftOver = "stopped" | "gone" | "unsure";
  * run's marker (`carrying`), and those that have it are signalled one by one, by pid. A member without it is left alone.
  *
  * "stopped" is answered once SIGTERM is sent to everything found; whatever of it is still there, and still the same
- * process, gets SIGKILL after `graceMs`. "unsure" means something that may be the run's was left alone, whether or not
- * other members were stopped. "gone" means nothing of it is running.
+ * process, gets SIGKILL after `graceMs`. "partly" means the members with the marker were stopped so, and others that may
+ * be the run's were left alone; "unsure", that something that may be the run's was left alone and nothing was stopped.
+ * "gone" means nothing of it is running.
  */
 export async function stopLeftOver(left: RunProcess, graceMs = GRACE_MS): Promise<LeftOver> {
 	// The record comes from a stored document, and a group number of 1 would signal every process the person owns, and 0
@@ -183,6 +189,6 @@ export async function stopLeftOver(left: RunProcess, graceMs = GRACE_MS): Promis
 	// ended by then: whoever is in a group of that number now, without the marker, is not of it. Otherwise the members
 	// without the marker may be the run's (one whose environment cannot be read, say) or may not: they cannot be told.
 	const reused = leader !== undefined && leader.start !== left.start;
-	if (!reused && marked.length < members.length) return "unsure";
+	if (!reused && marked.length < members.length) return marked.length > 0 ? "partly" : "unsure";
 	return marked.length > 0 ? "stopped" : "gone";
 }

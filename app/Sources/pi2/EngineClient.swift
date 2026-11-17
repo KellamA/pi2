@@ -63,6 +63,9 @@ final class EngineClient {
     var onOpenBeside: (_ id: Int, _ beside: Int) -> Void = { id, _ in }
     var signIn: SignInFlow?
     var lastError: String?
+    /// Set once several starts of the engine in a row have ended without an engine to connect to, and cleared as soon
+    /// as one answers. The window says so instead of "Starting engine…" for ever.
+    private(set) var startProblem: EngineStartProblem?
     /// The latest event of each kind that a feature in a file of its own reads ("limits", "memory"), as sent.
     private(set) var extras: [String: JSONValue] = [:]
     /// Does what agents ask of other apps' windows; the app holds the macOS permissions for it.
@@ -76,6 +79,16 @@ final class EngineClient {
     private var nextRequestID = 1
     private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
     private var lastLaunch = Date.distantPast
+    /// Starts tried since the app last reached an engine. A start is only tried when no engine is running, so each one
+    /// after the first means the one before it ended without an engine (or never began).
+    private var startsWithoutConnecting = 0
+    /// Why the app itself could not start the last engine, when it could not.
+    private var launchFailure: String?
+    /// How the last engine the app started ended before the app reached it, such as "exited with status 1".
+    private var lastExit: String?
+    /// Failed starts in a row before the window says the engine cannot be started. Each takes about three seconds, so a
+    /// slow start is not mistaken for a failed one.
+    private static let startsBeforeProblem = 3
     /// Set while a backup is being restored, so the engine is not started underneath it.
     private var holdEngine = false
 
@@ -267,6 +280,10 @@ final class EngineClient {
                 switch state {
                 case .ready:
                     self.status = .connected
+                    self.startsWithoutConnecting = 0
+                    self.launchFailure = nil
+                    self.lastExit = nil
+                    self.startProblem = nil
                     self.receive(on: connection)
                     // Offer this app as the one that sees and works other apps for agents.
                     Task { _ = try? await self.call("computer.register") }
@@ -473,8 +490,10 @@ final class EngineClient {
         for continuation in pending.values { continuation.resume(throwing: EngineError(message: "The engine stopped before it answered.")) }
         pending.removeAll()
         launchEngineIfNeeded()
+        // While the engine cannot be started, keep looking for one (it may be started some other way) but calmly.
+        let delay: Duration = startProblem == nil ? .milliseconds(250) : .seconds(2)
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: delay)
             guard let self, self.connection == nil else { return }
             self.connect()
         }
@@ -489,14 +508,25 @@ final class EngineClient {
         return pid
     }
 
+    /// How long to wait between starts: three seconds at first, then twice as long after each failure past the few that
+    /// show the problem, up to a minute, so an engine that cannot start is not started over and over.
+    private var launchInterval: TimeInterval {
+        let beyond = startsWithoutConnecting - Self.startsBeforeProblem
+        return beyond > 0 ? min(60, 3 * pow(2, Double(beyond))) : 3
+    }
+
     private func launchEngineIfNeeded() {
-        guard !holdEngine, enginePID == nil, Date().timeIntervalSince(lastLaunch) > 3 else { return }
+        guard !holdEngine, enginePID == nil, Date().timeIntervalSince(lastLaunch) > launchInterval else { return }
+        // No engine is running, so every start tried since the last connection has ended without one.
+        if startsWithoutConnecting >= Self.startsBeforeProblem { reportStartProblem() }
+        lastLaunch = Date()
+        startsWithoutConnecting += 1
+        launchFailure = nil
         let environment = ProcessInfo.processInfo.environment
         guard let (node, main) = Self.enginePaths else {
-            lastError = "The app does not know where the engine is. Build it with app/build.sh."
+            launchFailure = "This build does not know where its engine is. Build it again with app/build.sh."
             return
         }
-        lastLaunch = Date()
         // When the login item starts this engine, start it through launchd, so it is still restarted after a crash.
         if let item = EngineLoginItem.current, item.serves(home: home.path), item.arguments == [node, main],
            EngineLoginItem.start(home: home.path) {
@@ -514,11 +544,51 @@ final class EngineClient {
             process.standardOutput = log
             process.standardError = log
         }
+        process.terminationHandler = { [weak self] process in
+            let ending = process.terminationReason == .uncaughtSignal
+                ? "was stopped by signal \(process.terminationStatus)"
+                : "exited with status \(process.terminationStatus)"
+            Task { @MainActor in
+                guard let self, self.status != .connected else { return }
+                self.lastExit = ending
+            }
+        }
         do {
             try process.run()
         } catch {
-            lastError = "Could not start the engine: \(error.localizedDescription)"
+            launchFailure = "Node could not be run from \(node): \(error.localizedDescription)"
         }
+    }
+
+    /// Say that the engine cannot be started, with the end of its log as it is now.
+    private func reportStartProblem() {
+        startProblem = EngineStartProblem(
+            attempts: startsWithoutConnecting,
+            reason: launchFailure,
+            lastExit: lastExit,
+            logTail: Self.tail(of: home.appendingPathComponent("engine.log")),
+            checkedAt: Date()
+        )
+    }
+
+    /// Start the engine now rather than when the slowed-down retries come round, after the person changed something.
+    func tryStartingAgain() {
+        startsWithoutConnecting = min(startsWithoutConnecting, Self.startsBeforeProblem)
+        lastLaunch = .distantPast
+        launchEngineIfNeeded()
+    }
+
+    /// The last lines of a log, enough to hold a stack trace.
+    private static func tail(of url: URL, lines: Int = 16) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 8192 ? size - 8192 : 0)
+        let text = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
+        var kept = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if size > 8192, !kept.isEmpty { kept.removeFirst() }
+        while kept.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { kept.removeLast() }
+        return kept.suffix(lines).joined(separator: "\n")
     }
 
     /// Where Node and the engine's entry point are: inside the app for a self-contained build, otherwise the

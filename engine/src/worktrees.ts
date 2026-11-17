@@ -24,7 +24,7 @@ import type { Feature } from "./features.ts";
 import type { MadeWorktree } from "./rules.ts";
 import type { AgentProfile } from "./state.ts";
 import { stopCommandsIn } from "./background.ts";
-import { type LeftOver, newRunMarker, noteProcess, RUN_VARIABLE, type RunProcess, stopLeftOver } from "./processes.ts";
+import { type LeftOver, leftOverLog, newRunMarker, noteProcess, RUN_VARIABLE, type RunProcess, stopLeftOver } from "./processes.ts";
 
 /** A worktree pi² made for a conversation. */
 export type Worktree = {
@@ -740,13 +740,15 @@ export const worktrees: Feature = (_host, engine) => {
 				if (own.setup?.status !== "running") continue;
 				const { process: left, ...was } = own.setup;
 				const found: LeftOver = left === undefined ? "gone" : await stopLeftOver(left).catch(() => "unsure" as const);
-				if (left !== undefined) engine.log("set-up left by the last engine for", key, found === "stopped" ? "was stopped" : found === "unsure" ? "may still be running" : "is not running");
+				if (left !== undefined) engine.log("set-up left by the last engine for", key, leftOverLog[found]);
 				const reason =
 					found === "stopped"
 						? "was left running when pi²’s engine stopped, and was stopped when the engine started again"
-						: found === "unsure"
-							? `was cut off when pi²’s engine stopped. Something it started may still be running (process group ${left?.group}), and was left alone because pi² could not be sure it belongs to this set-up`
-							: "was cut off when pi²’s engine stopped";
+						: found === "partly"
+							? `was left running when pi²’s engine stopped. What pi² could tell it had started was stopped when the engine started again; something else in its process group (${left?.group}) may still be running, and was left alone because pi² could not be sure it belongs to this set-up`
+							: found === "unsure"
+								? `was cut off when pi²’s engine stopped. Something it started may still be running (process group ${left?.group}), and was left alone because pi² could not be sure it belongs to this set-up`
+								: "was cut off when pi²’s engine stopped";
 				const setup: Setup = { ...was, status: "failed", reason };
 				await recordSetup(Number(key), setup);
 				await noteSetup(Number(key), setup);
