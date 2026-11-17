@@ -7,6 +7,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 ### Changed
 - **Agents' commands no longer inherit pi²'s own settings.** Shell commands, background commands, worktree set-up commands and MCP servers are no longer given `PI2_HOME`, `PI2_KEYCHAIN_SERVICE` or any other `PI2_` variable pi² was started with, so a copy of pi² or its engine that an agent starts no longer opens your data folder and sign-ins unless it is told to. Their `PATH` and everything else are as before.
 
+### Fixed
+- An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
+
 ## 0.7.7
 
 ### Added

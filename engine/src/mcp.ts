@@ -362,12 +362,17 @@ export class McpServers {
 		for (const tool of tools) {
 			const toolName = createMcpToolName(config.id, tool.name, (candidate) => taken.has(candidate));
 			taken.add(toolName);
-			opened.tools.push({ name: tool.name, toolName, description: tool.description ?? tool.title ?? tool.name, readOnly: tool.annotations?.readOnlyHint === true });
+			const readOnly = tool.annotations?.readOnlyHint === true;
+			opened.tools.push({ name: tool.name, toolName, description: tool.description ?? tool.title ?? tool.name, readOnly });
 			opened.registrations.push(
 				defineTool({
 					name: toolName,
 					description: `[${config.name}] ${tool.description ?? tool.title ?? tool.name}`,
 					parameters: normalizeMcpInputSchema(tool.inputSchema) as never,
+					// A tool its server does not mark read-only may change things, as the tools in IN_ORDER do, so an
+					// answer with a call to one runs its calls in order (src/order.ts, #190): a read of what it wrote,
+					// through the same server or another tool, comes after it. Read-only ones still run side by side.
+					...(readOnly ? {} : { executionMode: "sequential" as const }),
 					execute: async (args, _api, context) => {
 						// The server as it is when the call runs, not as it was when this tool was listed: a call
 						// that was waiting (for an approval, say) while the server was started again goes to the new
