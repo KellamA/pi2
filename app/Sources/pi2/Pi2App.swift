@@ -11,7 +11,7 @@ enum Selection: Hashable {
     case conversation(Int)
 }
 
-#if DEBUG
+#if PI2_DEVELOPMENT
 extension Selection {
     /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
     /// a conversation's number or title. For taking pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the
@@ -380,7 +380,7 @@ struct RootView: View {
             // Panes kept from last time that show conversations since deleted are emptied.
             model.workspace.forget { id in !engine.conversations.contains { $0.id == id } && !model.isArchived(id) }
             guard model.selection == nil else { return }
-            #if DEBUG
+            #if PI2_DEVELOPMENT
             if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations) {
                 model.selection = asked
                 return
@@ -858,7 +858,7 @@ struct LiftButtonStyle: ButtonStyle {
 private struct WindowOpener: View {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
-    #if DEBUG
+    #if PI2_DEVELOPMENT
     @Environment(\.openSettings) private var openSettings
     #endif
 
@@ -867,7 +867,7 @@ private struct WindowOpener: View {
             model.showMainWindow = { openWindow(id: "main") }
             model.engine.browser.showWindow = { openWindow(id: "browser") }
         }
-        #if DEBUG
+        #if PI2_DEVELOPMENT
         // `PI2_SHOW=settings…` opens the Settings window, but not while the app is launching: a development build once
         // overflowed its stack there, inside the Settings scene, as the first window came on screen and the scenes'
         // phases changed (#74). So it waits until the engine has answered with the library, which is after the main

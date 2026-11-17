@@ -6,6 +6,9 @@
 #                         It keeps apart from an installed pi²: its bundle id is dev.pi2.app.dev and its name "pi² dev",
 #                         and unless PI2_HOME and PI2_KEYCHAIN_SERVICE say otherwise it uses a data folder and a
 #                         Keychain service of its own; never the usual ones, even when told to (DevelopmentBuild.swift).
+#   ./build.sh optimised  The same development build, compiled with optimisation as a release build is, for a problem
+#                         that only shows with it (#134). It keeps what only a development build has: PI2_SHOW, the
+#                         window variables, PI2_DRAW_WHEN_HIDDEN and the web inspector (docs/development.md).
 #   ./build.sh release    Self-contained build, build/pi².app, bundle id dev.pi2.app, on the usual data folder. Node and
 #                         the engine are copied into the app, which can then be moved anywhere on this Mac (or another
 #                         Mac with the same chip).
@@ -27,8 +30,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MODE="${1:-dev}"
-CONFIG=debug
-[[ "$MODE" == release ]] && CONFIG=release
+# What only a development build has is compiled in under PI2_DEVELOPMENT, which Package.swift defines for a debug
+# build. An optimised development build defines it itself; a release build never does.
+case "$MODE" in
+  dev) CONFIG=debug; SWIFT_FLAGS=() ;;
+  optimised) CONFIG=release; SWIFT_FLAGS=(-Xswiftc -DPI2_DEVELOPMENT) ;;
+  release) CONFIG=release; SWIFT_FLAGS=() ;;
+  *) echo "Unknown kind of build: $MODE. Use no argument (a development build), optimised or release." >&2; exit 1 ;;
+esac
 
 if [[ "$MODE" == release ]]; then
   APP="build/pi².app"
@@ -101,8 +110,8 @@ if [[ "$MODE" == release ]]; then
   fi
 fi
 
-swift build -c "$CONFIG" --product pi2
-BIN="$(swift build -c "$CONFIG" --show-bin-path)"
+swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --product pi2
+BIN="$(swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --show-bin-path)"
 rm -rf "${REPLACED[@]}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN/pi2" "$APP/Contents/MacOS/pi2"

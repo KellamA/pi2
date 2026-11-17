@@ -53,6 +53,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
       - name: Build the app, ComputerKit and the probe
         working-directory: app
         run: swift build
@@ -60,6 +63,11 @@ jobs:
       - name: Check the pane layout (optimised build)
         working-directory: app
         run: swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
+      - name: Build and start the packaged release engine
+        run: |
+          ./app/build.sh release
+          node app/check-release-build.mts "app/build/pi².app" --commit "$(git rev-parse HEAD)" --build-number "$(git rev-list --count HEAD)" --open-app
+          node app/test-release-build.mts "app/build/pi².app"
       # What Return does in a message field (#174): the decision, then a real SwiftUI field in an off-screen window.
       - name: Check Return in the message field
         working-directory: app

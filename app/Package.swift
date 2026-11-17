@@ -21,6 +21,10 @@ let package = Package(
             name: "pi2",
             dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
+            // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
+            // inspector (docs/development.md). On in a debug build, and in an optimised development build, which
+            // build.sh makes with `-Xswiftc -DPI2_DEVELOPMENT`; never in a release build.
+            swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))],
             // The app finds Sparkle.framework in Contents/Frameworks.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
         ),
