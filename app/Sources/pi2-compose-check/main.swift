@@ -7,6 +7,7 @@
 // the system, no other app sees them, and no permission is needed. It checks that Return sends, that Shift-Return and
 // Option-Return put a line break at the cursor in place of the selection and the field grows, that Return with
 // marked text (what an input method shows while composing) does not send, and that pasted line breaks are kept.
+// Then a field made as a memory note is (#198), in a grouped form, which saves with Return instead of sending.
 // Last, the same for the answer field of a question on the conversation page, a web page with its own copy of the
 // rule, loaded from `Web/transcript` (run it from `app/`, or pass `--page <folder>`).
 //
@@ -110,17 +111,42 @@ struct Field: View {
     }
 }
 
+/// Made as a memory note is in an agent's settings (#198): a field of the form's own style in a grouped form, up to
+/// five lines, saving with Return. Saving keeps the text in the field, where sending a message empties it.
+struct NoteField: View {
+    @Bindable var draft: Draft
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Note", text: $draft.text, axis: .vertical)
+                    .labelsHidden()
+                    .lineLimit(1...5)
+                    .sendsOnReturn { draft.sent.append(draft.text) }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 360, height: 300)
+    }
+}
+
 @MainActor
 final class Live {
+    enum Kind { case message, oldMessage, note }
+
     let draft = Draft()
     let window: NSWindow
     var editor: NSTextView? { window.firstResponder as? NSTextView }
 
-    init(old: Bool = false) {
+    init(_ kind: Kind = .message) {
         // Far off every screen and never ordered in: the field works without being seen.
         window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 360, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: Field(draft: draft, old: old))
+        switch kind {
+        case .message: window.contentView = NSHostingView(rootView: Field(draft: draft, old: false))
+        case .oldMessage: window.contentView = NSHostingView(rootView: Field(draft: draft, old: true))
+        case .note: window.contentView = NSHostingView(rootView: NoteField(draft: draft))
+        }
     }
 
     func field(in view: NSView) -> NSTextField? {
@@ -249,18 +275,49 @@ final class Live {
             check("and is sent with them", draft.sent.last == "one\ntwo\n\nthree", "sent \(draft.sent)")
         }
     }
+
+    /// The memory note field, which saves with Return (#198).
+    func runNote() async {
+        guard await focus() else { return }
+        await group("a memory note: Shift-Return starts a new line, Return saves") {
+            await set("Prefers metric units", cursor: NSRange(location: 20, length: 0))
+            let oneLine = height
+            await press(.shift)
+            check("Shift-Return puts a line break in the note", draft.text == "Prefers metric units\n", "text is \(draft.text.debugDescription)")
+            check("Shift-Return does not save", draft.sent.isEmpty, "saved \(draft.sent)")
+            check("the note's field grows", height > oneLine, "height \(height), one line \(oneLine)")
+            editor?.insertText("and the 24-hour clock", replacementRange: editor?.selectedRange() ?? NSRange(location: NSNotFound, length: 0))
+            await settle()
+            await press(.option)
+            check("Option-Return puts a line break in the note too", draft.text == "Prefers metric units\nand the 24-hour clock\n", "text is \(draft.text.debugDescription)")
+            check("Option-Return does not save", draft.sent.isEmpty, "saved \(draft.sent)")
+            await set("Prefers metric units\nand the 24-hour clock", cursor: NSRange(location: 42, length: 0))
+            editor?.setMarkedText("にほん", selectedRange: NSRange(location: 3, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            await settle()
+            await press()
+            check("Return while an input method is composing does not save", draft.sent.isEmpty, "saved \(draft.sent)")
+            editor?.unmarkText()
+            await set("Prefers metric units\nand the 24-hour clock", cursor: NSRange(location: 42, length: 0))
+            await press()
+            check("Return saves the note with its line break", draft.sent == ["Prefers metric units\nand the 24-hour clock"], "saved \(draft.sent)")
+            check("and leaves it in the field", draft.text == "Prefers metric units\nand the 24-hour clock", "text is \(draft.text.debugDescription)")
+        }
+    }
 }
 
 let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
-    let old = Live(old: true)
+    let old = Live(.oldMessage)
     await old.baseline()
     old.window.close()
     let live = Live()
     await live.run()
     live.window.close()
+    let note = Live(.note)
+    await note.runNote()
+    note.window.close()
     let arguments = CommandLine.arguments
     let folder = arguments.firstIndex(of: "--page").flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } ?? "Web/transcript"
     let url = URL(fileURLWithPath: folder, isDirectory: true)

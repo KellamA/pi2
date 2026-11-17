@@ -1,3 +1,4 @@
+import ComposeKit
 import SwiftUI
 
 /// One thing an agent keeps in mind between conversations.
@@ -64,10 +65,12 @@ struct AgentMemorySection: View {
             }
             if memory.enabled {
                 HStack(spacing: 8) {
-                    TextField("Add a note", text: $newNote, prompt: Text("Add a note by hand"))
+                    // Return adds the note, Shift-Return or Option-Return starts a new line in it, as in a message (#198).
+                    TextField("Add a note", text: $newNote, prompt: Text("Add a note by hand"), axis: .vertical)
                         .labelsHidden()
+                        .lineLimit(1...5)
                         .accessibilityLabel("New note")
-                        .onSubmit { add() }
+                        .sendsOnReturn { add() }
                     Button("Add") { add() }
                         .disabled(newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
@@ -118,7 +121,8 @@ struct AgentMemorySection: View {
     }
 }
 
-/// A note, editable in place: the change is sent when the person presses Return or leaves the field.
+/// A note, editable in place: the change is sent when the person presses Return or leaves the field. Shift-Return or
+/// Option-Return starts a new line, as in a message (#198).
 private struct MemoryNoteRow: View {
     let note: MemoryNote
     let save: (String) -> Void
@@ -149,7 +153,7 @@ private struct MemoryNoteRow: View {
                     .accessibilityLabel("Note")
                     .accessibilityValue(text)
                     .accessibilityHint(origin)
-                    .onSubmit { commit() }
+                    .sendsOnReturn { commit() }
                 Text(origin).font(.caption).foregroundStyle(.secondary)
             }
             Button("Delete note", systemImage: "trash") { remove() }

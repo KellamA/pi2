@@ -1272,6 +1272,10 @@ try {
 		const first = noted()[0]!;
 		await client.call("memory.edit", { agentId: pilot, id: first.id, text: "edited by hand" });
 		await client.until("edit broadcast", () => noted()[0]!.text === "edited by hand");
+		// A note the person writes keeps its line breaks (#198), each line tidied, and its later lines are indented in the prompt.
+		await client.call("memory.edit", { agentId: pilot, id: first.id, text: " edited  by hand \r\n\n   then a second\tline\n" });
+		await client.until("edit with a line break", () => noted()[0]!.text === "edited by hand\nthen a second line");
+		assert.ok((await say(q1, "/system")).includes(`- ${first.id}: edited by hand\n  then a second line\n`), "a note of two lines is one item in the list");
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: first.id, text: "z".repeat(401) }), /400 characters/);
 		await assert.rejects(client.call("memory.edit", { agentId: pilot, id: "m999", text: "x" }), /gone/);
 		await client.call("memory.delete", { agentId: pilot, id: first.id });

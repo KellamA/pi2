@@ -4,6 +4,12 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Changed
+- **Shift-Return starts a new line in a memory note.** In an agent's Memory settings, Shift-Return or Option-Return now puts a line break in a note you are editing or adding, and the field grows with it; Return still saves the note (or adds it), but not while an input method is composing. Before, Return and Shift-Return both saved, and the line breaks of a note were joined into one line. A note you write now keeps its line breaks, and the agent sees it as one item of several lines.
+
+### For contributors
+- `pi2-compose-check` also checks a field made as a memory note is: a field of a grouped form that saves with Return and keeps its text.
+
 ## 0.7.7
 
 ### Added
