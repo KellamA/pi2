@@ -453,7 +453,13 @@ try {
 	assert.ok(dropped >= 600_000 - 2 * 128 * 1024, `most of 600,000 characters were let go: ${dropped}`);
 	const noisyStop = await client.background(a, { action: "stop", id: noisy.bg });
 	assert.ok(noisyStop.text.length < 31_500 && noisyStop.text.includes("What it printed since you last read it:\n") && /more: read again for them\.\]$/.test(noisyStop.text), noisyStop.text.slice(0, 200));
-	assert.match((await client.background(a, { action: "read", id: noisy.bg, tail: 1 })).text, /Its last line:\nthe-end$/, "the end is what is kept");
+	// SIGTERM goes to the whole group, but bash may observe sleep's termination before handling its own signal.
+	// Its diagnostic is real stderr and is kept too (#229): only that known line may follow the end we printed.
+	assert.match(
+		(await client.background(a, { action: "read", id: noisy.bg, tail: 2 })).text,
+		/\nthe-end(?:\n\/bin\/bash: line 1: +\d+ Terminated: 15 +sleep 600)?$/,
+		"the end is what is kept, including bash's termination diagnostic if it printed one",
+	);
 	step("only the end of a command's output is kept, a read is bounded, and what was lost is said");
 
 	// ---- A time limit the call gave
