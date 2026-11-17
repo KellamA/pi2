@@ -74,6 +74,34 @@ test("a command left running in the background, and the rows that read and stop 
 	assert.equal(T.detailFor(call("background", { action: "list" }), "done", { text: "none" }, null)[0].label, "Background commands");
 });
 
+test("a background command's rows name it for its output window only as the engine answered", () => {
+	const dev = call("bash", { command: "npm run dev", background: true });
+	assert.equal(T.backgroundCommand(dev, { details: { background: { id: "bg-3", status: "running" } } }), "bg-3");
+	assert.equal(T.backgroundCommand(dev, { isError: true, details: { background: { id: "bg-3", status: "ended" } } }), "bg-3", "one already over still has its output");
+	assert.equal(T.backgroundCommand(dev, null), "", "not before the engine has answered");
+	assert.equal(T.backgroundCommand(dev, { text: "The command could not be started: …", isError: true }), "", "one that never started has none");
+	assert.equal(T.backgroundCommand(call("bash", { command: "ls" }), { details: {} }), "");
+	const read = (args, details) => T.backgroundCommand(call("background", args), details === undefined ? null : { details });
+	assert.equal(read({ action: "read", id: "3" }, { action: "read", id: "bg-3", command: "npm run dev" }), "bg-3", "the engine's id, not the agent's");
+	assert.equal(read({ action: "stop", id: "bg-3" }, { action: "stop", id: "bg-3" }), "bg-3");
+	assert.equal(read({ action: "read", id: "bg-9" }), "", "an id the agent asked for counts for nothing until the engine answers");
+	assert.equal(read({ action: "read", id: "bg-9" }, {}), "", "nor once it has refused it");
+	assert.equal(read({ action: "list" }, { action: "list", count: 2, running: 1 }), "", "a list is about no one command");
+	// Anything that is not an id the engine makes is not passed on.
+	for (const id of ["bg-0", "bg-01", "bg-", "BG-3", "3", " bg-3", "bg-3 ", "bg-3\n", "bg-3\"><img src=x>", "bg-1234567890", 3, null, { id: "bg-3" }]) {
+		assert.equal(read({ action: "read" }, { id }), "", JSON.stringify(id));
+		assert.equal(T.backgroundCommand(dev, { details: { background: { id } } }), "", JSON.stringify(id));
+		assert.equal(T.markerCommand({ kind: "marker", text: "x", details: { background: { id } } }), "", JSON.stringify(id));
+	}
+	assert.equal(T.backgroundCommand(call("web_fetch", {}), { details: { id: "bg-3", background: { id: "bg-3" } } }), "", "only bash and background rows");
+
+	const ended = { id: 12, kind: "marker", text: "Background command bg-2 exited with code 1: npm run dev", details: { background: { id: "bg-2" } } };
+	assert.equal(T.markerCommand(ended), "bg-2");
+	assert.equal(T.markerCommand({ id: 13, kind: "marker", text: "Context reset" }), "", "other lines have none");
+	assert.equal(T.markerCommand({ id: 14, kind: "marker", text: "Background command bg-2 exited" }), "", "never read from the words");
+	assert.equal(T.markerCommand(null), "");
+});
+
 test("an approval for a background command says it keeps running", () => {
 	const caption = T.backgroundCaption({ tool: "bash", background: true });
 	assert.match(caption, /^It is started and left running, with no time limit, until it ends, the agent or you stop it/);

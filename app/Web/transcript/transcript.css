@@ -984,6 +984,12 @@ ul.plan .muted {
 	margin-left: 0;
 }
 
+/* Output on the line that says a background command ended: beside its words, between the rules. */
+.marker .link-button {
+	margin-left: -4px;
+	font-size: 11px;
+}
+
 .link-button:hover {
 	background: color-mix(in srgb, var(--acc) 14%, transparent);
 }

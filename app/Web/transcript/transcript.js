@@ -322,7 +322,7 @@
 				const spec = setupSpec(item, visible);
 				if (spec) specs.push(spec);
 			} else {
-				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(item.text) });
+				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(str(item.text), T.markerCommand(item)) });
 			}
 		});
 		if (live.partial) {
@@ -363,12 +363,31 @@
 		return row;
 	}
 
-	function markerRow(text) {
+	/** A line of its own across the transcript; one saying a background command ended has a way to its output. */
+	function markerRow(text, command = "") {
 		const row = el("div", "marker");
-		row.setAttribute("role", "separator");
+		// A separator's contents are not reachable, so a line with a button in it is a group instead.
+		row.setAttribute("role", command ? "group" : "separator");
 		row.setAttribute("aria-label", text);
 		row.appendChild(el("span", "", text));
+		if (command) row.appendChild(outputButton(command));
 		return row;
+	}
+
+	/**
+	 * Output, for a row about a background command: asks the app to open the window with what the command printed. The
+	 * app checks the id is one this conversation's rows name; for one pi² no longer has, the window says so.
+	 */
+	function outputButton(command) {
+		const what = `Show what ${command} printed, in a window of its own`;
+		const b = button("link-button output-button", what, "Output");
+		b.title = what;
+		b.appendChild(glyph("open", "open-glyph"));
+		b.addEventListener("click", (event) => {
+			event.stopPropagation();
+			post({ type: "output", id: command });
+		});
+		return b;
 	}
 
 	function workingRow() {
@@ -752,13 +771,17 @@
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status none", "No result"));
 		}
+		// A background command's Output, at the end of the line as a hand-off's Open is, after the chevron.
+		const command = fixed ? "" : T.backgroundCommand(call, result);
+		const outputLink = command ? outputButton(command) : null;
+		if (outputLink) head.appendChild(outputLink);
 		row.appendChild(head);
 		if (sections.length === 0) return;
 
 		const body = el("div", "row-body tool-body");
 		body.id = "body-" + ++bodyCount;
 		const toggle = chevron(body.id, info.title);
-		head.appendChild(toggle);
+		head.insertBefore(toggle, outputLink);
 		row.appendChild(body);
 		const liveOutput = liveTool && str(liveTool.output) !== "";
 		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode", "pi2_setup"].includes(call.name));

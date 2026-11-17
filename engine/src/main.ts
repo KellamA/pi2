@@ -34,7 +34,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
-import { BACKGROUND_ENTRY, backgroundMarker, hasRunningCommands } from "./background.ts";
+import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
@@ -391,7 +391,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string }
+	| { id: number; kind: "marker"; text: string; details?: { background: { id: string } } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -417,7 +417,11 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
-	if (entry.kind === BACKGROUND_ENTRY) return { id, kind: "marker", text: backgroundMarker(entry.data) };
+	if (entry.kind === BACKGROUND_ENTRY) {
+		// With the command's id, so the line can open the window with its output.
+		const details = backgroundMarkerDetails(entry.data);
+		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
+	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
