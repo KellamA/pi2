@@ -45,6 +45,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/plan.ts` | The agent's task list |
+| `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
@@ -53,7 +54,8 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
-| `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
+| `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
+| `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
 | `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
@@ -96,6 +98,14 @@ A shell command is stopped after 30 minutes unless the call that runs it passes 
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
+### A long output
+
+A command's result shows the end of its output only: the last 2000 lines or 50 KB, whichever is less, as pi durable's `bash` keeps it. When that leaves some of the output out, the whole output is kept in a file, and the result says so under the output, in a line such as "The output is 4,812 lines long; only the last 2,000 are shown. All of it is in `…/output/12/toolu_….log`, for 7 days: read it with `read` (`offset`, `limit`) or search it with `grep`, rather than running the command again." The tool's description says the same, and tells the agent not to cut an output short itself with `head`, `tail` or `grep`: what it cuts is not kept, and getting it back means running the command again (#161). An output shown whole keeps no file.
+
+The files are only text a program printed. They live in the data folder, in `output/<conversation>/`, one per call, named after the call's id, readable by the person's user only; never in the conversation's folder, which may be a project's. A conversation keeps the files of its last 50 shortened commands, each for 7 days at most, and a file holds at most the first 64 MB of an output (the result says so when it holds less). A deleted conversation's folder is removed. The engine tidies them as it starts, whenever conversations are archived or deleted, whenever a conversation keeps a new one, and once a day. They are not part of a backup.
+
+`src/commands.ts` runs the command itself rather than through pi durable's `bash`, the same way but without that tool's own file of the output, which goes to the system's temporary folder and is never removed. A script in code mode that calls `bash` gets the file's path as `fullOutputPath`, as before.
+
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
 
 ### The calls of one answer
@@ -121,6 +131,7 @@ The engine counts the tool calls running on each copy of an MCP server it starte
 | Conversations, agents, schedules, settings | `~/Library/Application Support/pi2` (one SQLite database and a few small files) |
 | Keys and sign-ins | The macOS Keychain, service `dev.pi2.credentials` |
 | Logs | `engine.log` and `app.log` in the data folder |
+| A shell command's whole output, when its result was shortened | `output/<conversation>/` in the data folder, for 7 days at most |
 
 A sign-in credential can be several kilobytes, more than one Keychain command can carry, so long ones are split across several items with a checksum. A damaged item reads as "signed out" rather than as an error.
 

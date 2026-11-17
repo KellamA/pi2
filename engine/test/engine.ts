@@ -2227,6 +2227,27 @@ try {
 		assert.ok(reader.text.includes("got []"), `a command reading its input gets none: ${reader.text}`);
 		assert.ok(Date.now() - started < 5 * 60_000, "the stopped command did not run its full ten minutes");
 		step("commands: one without a timeout is stopped at the default and says how to get longer; a larger timeout is honoured; standard input is closed");
+
+		// A long output is shortened to its end, and all of it is kept in a file in the data folder, which the result names
+		// (issue #161). A short one keeps no file. Deleting the conversation removes its files.
+		const [long, short] = [await open(), await open()];
+		await client.call("submit", { id: long, text: "/bash seq 1 5000" });
+		await client.call("submit", { id: short, text: "/bash seq 1 10" });
+		const [shortened, whole] = await Promise.all([long, short].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
+		assert.equal(shortened.isError, false, shortened.text);
+		assert.ok(shortened.text.includes("\n5000\n") && !shortened.text.includes("\n2999\n"), "the end of the output is shown");
+		assert.match(shortened.text, /The output is 5,000 lines long; only the last 2,000 are shown\. All of it is in `[^`]+`, for 7 days: read it with `read`/);
+		const kept = /All of it is in `([^`]+)`/.exec(shortened.text)![1]!;
+		assert.ok(kept.startsWith(join(realpathSync(home), "output", String(long))) || kept.startsWith(join(home, "output", String(long))), `kept in the data folder, under the conversation: ${kept}`);
+		assert.equal(readFileSync(kept, "utf8"), `${Array.from({ length: 5000 }, (_, i) => i + 1).join("\n")}\n`, "the file holds the whole output");
+		assert.equal(statSync(kept).mode & 0o777, 0o600, "only this user can read it");
+		assert.doesNotMatch(shortened.text, /Full output: /, "pi durable's own spill file in the temporary folder is not made");
+		assert.equal(whole.isError, false, whole.text);
+		assert.doesNotMatch(whole.text, /The output is|All of it is in/);
+		assert.ok(!existsSync(join(home, "output", String(short))), "nothing is kept for an output shown whole");
+		await client.call("conversation.delete", { id: long });
+		await client.until("its kept output removed", () => !existsSync(join(home, "output", String(long))));
+		step("commands: a long output is shortened to its end and kept whole in a file the result names; a short one keeps none; deleting the conversation removes it");
 	}
 	{
 		// order (engine/src/order.ts): the calls of one answer run in order when one of them changes files (#145, #129)

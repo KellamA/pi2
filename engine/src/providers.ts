@@ -178,20 +178,33 @@ function demoProvider(): Provider {
 			const [name, ...rest] = prompt.slice(6).split(" ");
 			return fauxAssistantMessage([fauxText("Calling that tool."), fauxToolCall(name!, JSON.parse(rest.join(" ") || "{}"))], { stopReason: "toolUse" });
 		}
-		if (prompt === "/system") {
+		if (prompt === "/system" || prompt.startsWith("/system ")) {
 			// Answers with the system prompt and the tools the model was offered, so tests can see what reaches it.
 			// Later system messages replace sections by name (null removes one) and add or remove tools.
 			const sections = new Map<string, string>();
-			const offered = new Set<string>();
-			for (const message of request.messages as readonly { role?: string; sections?: Record<string, string | null>; toolsAdded?: { name: string }[]; toolsRemoved?: { name: string }[] }[]) {
+			const offered = new Map<string, { name: string }>();
+			let content = "";
+			for (const message of request.messages as readonly { role?: string; content?: unknown; sections?: Record<string, string | null>; toolsAdded?: { name: string }[]; toolsRemoved?: { name: string }[] }[]) {
 				if (message.role !== "system") continue;
+				content += textOf(message.content);
 				for (const [key, value] of Object.entries(message.sections ?? {})) value === null ? sections.delete(key) : sections.set(key, value);
-				for (const added of message.toolsAdded ?? []) offered.add(added.name);
+				for (const added of message.toolsAdded ?? []) offered.set(added.name, added);
 				for (const removed of message.toolsRemoved ?? []) offered.delete(removed.name);
+			}
+			const asked = prompt.slice(8).trim();
+			if (asked === "sizes") {
+				// "/system sizes": the characters of each part of the prompt and of the tool definitions, to measure them.
+				const parts = [["(base)", content.length], ...[...sections].map(([key, value]) => [key, value.length]), [`(tools: ${offered.size})`, JSON.stringify([...offered.values()]).length]];
+				return fauxAssistantMessage(`SIZES\n${parts.map(([key, size]) => `${key} ${size}`).join("\n")}`);
+			}
+			if (asked !== "") {
+				// "/system <section> ...": those sections as they are, and every tool offered, by name.
+				const named = asked.split(/\s+/).map((key) => `<<${key}>>\n${sections.get(key) ?? "(none)"}`);
+				return fauxAssistantMessage(`SYSTEM PROMPT\n${named.join("\n")}\nTOOLS: ${[...offered.keys()].join(", ")}`);
 			}
 			// Only the sections about what the agent knows and where it works, and the tools for memory: the demo model speaks slowly.
 			const prompts = [...sections].filter(([key]) => key === "project_instructions" || key === "memory" || key === "worktree" || key === "background_commands").map(([key, value]) => `<${key}>\n${value}\n</${key}>`).join("\n");
-			return fauxAssistantMessage(`SYSTEM PROMPT\n${prompts}\nTOOLS: ${[...offered].filter((name) => name === "remember" || name === "forget").join(", ")}`);
+			return fauxAssistantMessage(`SYSTEM PROMPT\n${prompts}\nTOOLS: ${[...offered.keys()].filter((name) => name === "remember" || name === "forget").join(", ")}`);
 		}
 		if (prompt.startsWith("/mcp ")) {
 			// "/mcp <tool name> <json arguments>"
