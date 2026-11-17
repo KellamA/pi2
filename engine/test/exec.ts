@@ -104,7 +104,9 @@ try {
 	assert.match(bash.description, /do not cut an output short with `head`, `tail` or `grep`/);
 	// What it is not for, and that it starts in the folder (issue #162).
 	assert.match(bash.description, /Every command starts in the conversation's folder, so there is no need to `cd` to it/);
-	assert.match(bash.description, /Not for reading files \(`read` takes several at once\), finding or searching them \(`find_files`, `search_files`\), or changing them \(`edit`, `write`\)/);
+	assert.match(bash.description, /Not for reading files \(`read` takes several at once\) or changing them \(`edit`, `write`\)/);
+	// Not the look tools, which an agent's settings may leave out (#221): they point away from the shell themselves.
+	assert.doesNotMatch(bash.description, /find_files|search_files/);
 	assert.doesNotMatch(bash.description, /saved to a temp file/);
 	assert.match(JSON.stringify(bash.parameters), /Timeout in seconds\. Default 120 \(2 minutes\), at most 600 \(10 minutes\); pass a larger one/);
 	// And about leaving one running: how to, that the limit is not for it, and where its output is read.

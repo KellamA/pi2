@@ -49,6 +49,8 @@ export type AgentProfile = {
 	browser?: BrowserSettings;
 	/** Whether the agent may set schedules for itself, each approved by the person. Off when absent. */
 	schedule?: ScheduleSettings;
+	/** Keys of the built-in tools it is not offered (builtins.ts). Absent or empty: all of them. */
+	toolsOff?: string[];
 	/**
 	 * Shell commands it may run without asking under "ask first", folder by folder (see rules.ts). Changed only through
 	 * `rules.add`, `rules.remove` and an approval's "rule" answer, never by saving the agent.
