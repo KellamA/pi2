@@ -58,7 +58,7 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 		key: "web",
 		tools: ["web_fetch", "web_search"],
 		title: "Read the web",
-		detail: "Searches the web and reads pages without the browser. Offered only while the browser is on.",
+		detail: "Searches the web and reads pages without opening the browser.",
 		needs: "browser",
 	},
 ];

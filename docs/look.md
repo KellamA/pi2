@@ -6,7 +6,7 @@ The code is `engine/src/look.ts`.
 
 ## Files: `list_files`, `find_files`, `search_files`
 
-Offered when the conversation's tool access is anything but **none**. Without them an agent with "Read files" could open a file whose path it knew, but not list a folder or search it.
+Offered when the conversation's tool access is anything but **none**, unless the agent's settings leave them out under **Built-in tools** ("List, find and search files", [architecture.md](architecture.md#built-in-tools)). Without them an agent with "Read files" could open a file whose path it knew, but not list a folder or search it. `find_files` and `search_files` each say to use them rather than `find` or `grep` in the shell; the shell's own description does not name them, since an agent may not be offered them.
 
 | Tool | Arguments | Answers with |
 | --- | --- | --- |
@@ -24,7 +24,7 @@ Offered when the conversation's tool access is anything but **none**. Without th
 
 ## The web: `web_fetch`, `web_search`
 
-Offered when the conversation's agent has the **browser** switched on: the same "this agent may use the web" switch as in [the browser](browser.md). There is no setting of their own. They are for reading; a page that needs JavaScript, a sign-in or a form is for the browser, which the prompt says.
+Offered when the conversation's agent has the **browser** switched on: the same "this agent may use the web" switch as in [the browser](browser.md). They have no switch of their own to offer them without the browser, but the agent's **Built-in tools** can leave them out ("Read the web") while the browser stays. They are for reading; a page that needs JavaScript, a sign-in or a form is for the browser, which the prompt says.
 
 `web_fetch { url, offset? }` fetches a public page and answers with its title, final address and readable text. For HTML, scripts, styles, navigation, footers and markup are dropped and the text kept, with headings, lists and tables laid out, and links shown as the text followed by the address in brackets. JSON and plain text come back as they are. PDFs, pictures and other downloads are refused with a message. At most 2 MB is read from the network, about 20,000 characters are returned at a time (`offset` reads on), it gives up after 20 seconds, and it follows at most 5 redirects.
 

@@ -454,7 +454,7 @@ struct BuiltInToolsSection: View {
         switch tool.needs {
         case "files" where agent.access == "none": "Not offered with tool access off."
         case "changes" where agent.access != "ask" && agent.access != "full": "Offered only with Ask first or Full access."
-        case "browser" where agent.browser?.enabled != true: "The browser is off."
+        case "browser" where agent.browser?.enabled != true: "Offered only while the browser is on."
         default: nil
         }
     }

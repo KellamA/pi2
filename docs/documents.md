@@ -30,7 +30,7 @@ The prompt tells the model to use it when the person asks for a document to send
 
 It writes a file, so it follows the built-in `write` tool:
 
-- It is given to a conversation only when the access level allows writing (**Ask first** or **Full access**), never with **No tools** or **Read files**.
+- It is given to a conversation only when the access level allows writing (**Ask first** or **Full access**), never with **No tools** or **Read files**, and not when the agent's settings leave it out under **Built-in tools** ("Write documents"), which takes the prompt's section about it away too.
 - Under **Ask first**, a call waits for the person like `write` and `edit` do (`write_document` is in the same list in `extensions.ts`), and the approval card reads "wants to write a Word document" (or an RTF document, OpenDocument file or HTML page) over the file name. **Always allow** covers the tool for the rest of that conversation.
 - It writes only inside the conversation's folder (the scratch folder when none was chosen). A path that lands outside once every link is resolved is refused, and it never writes through a link: an existing link at the target is refused even with `overwrite`. This is stricter than `write`, which accepts any path the person's account can reach.
 - A crash during a write is not repeated on restart; the agent is told, and can check the file.

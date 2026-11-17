@@ -4,11 +4,11 @@ When an agent takes on something with several steps, it can keep a short checkli
 
 ## For the agent
 
-The `update_plan` tool is offered in every conversation, sub-chats included, and never asks for approval. It takes the whole list each time: `items`, each `{ content, status }` with status `pending`, `in_progress` or `completed`. It replaces the previous list and answers "3 of 5 done".
+The `update_plan` tool is offered in every conversation with tools, sub-chats included, unless the agent's settings leave it out under **Built-in tools** ("Keep a task list"; the person then sees no plan while the agent works). It never asks for approval. It takes the whole list each time: `items`, each `{ content, status }` with status `pending`, `in_progress` or `completed`. It replaces the previous list and answers "3 of 5 done".
 
 A list is refused, and the old one kept, when it has no items, more than 20, an item with no text or more than 120 characters, an unknown status, or more than one `in_progress`. The refusal says what to fix.
 
-A short section of the prompt tells the model to use it for work of three or more steps, to write the list first, to keep one item in progress, to tick items off as they are done, and not to use it for a quick answer.
+A short section of the prompt tells the model to use it for work of three or more steps, to write the list first, to keep one item in progress, to tick items off as they are done, and not to use it for a quick answer. The same section, `task_list`, also says how the calls of one answer run ([architecture.md](architecture.md#the-calls-of-one-answer)); without `update_plan` it says only that.
 
 ## Where it lives
 
