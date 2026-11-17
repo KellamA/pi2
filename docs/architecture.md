@@ -60,6 +60,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
 | `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
 | `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
+| `src/running.ts` | When each shell command running in the foreground started and last printed, for the clocks on its row and in Activity |
 | `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/reading.ts` | `read` of several files, or several ranges of one, in one call. See [Reading files](#reading-files) |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
@@ -109,6 +110,12 @@ At its limit, as in Claude Code, a command is moved to the background rather tha
 The tool's description gives both limits, and says that a command is moved at its limit. A command the limit stopped has, under what it had printed by then, a line saying which limit stopped it (the default, the call's own `timeout`, or the most, with what the call asked for), and what to do instead: a larger `timeout`, or `background: true`. One that was not moved because starting it in the background would ask says that too. When it had printed nothing at all, or nothing for the last minute or more, in a run of a minute or more, the line says so, and that a command that goes quiet that long may be waiting on something, such as a permission prompt on the person's screen, and may wait again if it is run again. A command that ends by itself after a minute or more says how long it took, and how long it went without printing anything when that was a minute or more.
 
 The default was 30 minutes until #160, in which a command waiting on a system prompt that nobody had seen (by the timing, a macOS privacy prompt) held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
+
+### A running command's clock
+
+A command that is stuck (on a privacy prompt, a network folder, a lock) would otherwise look like one that is busy: a spinner and "Running…" (#196). So the person sees how long each command running in the foreground has been going and, once it has printed nothing for 30 seconds, how long it has been quiet: on its row in the conversation ("1m 12s · quiet for 45s") and under its run in Activity. Quiet is shown only after 30 seconds, so a busy command's row does not flicker.
+
+pi durable's live document says which calls are running, not since when, so the shell tool notes it as it runs a command, after any approval (`src/running.ts`, in memory only). The engine adds `startedAt` and `lastOutputAt` (ms since 1970; `lastOutputAt` is null until the command prints) to each such call in the conversation state's `tools`, and a `commands` list (`callId`, `command`, `startedAt`, `lastOutputAt`, oldest first) to each run in the `activity` event. It sends the conversation's state again when a command starts or ends, and the `activity` event then too, and while a command prints, at most every five seconds; its output reaches the conversation on its own. The page and the app tick the clocks themselves, once a second, from those times, so nothing is sent each second. A command started with `background: true`, or moved to the background at its time limit, has its own row in Activity ([background.md](background.md)) and no clock here; a command a code mode script runs is listed under its run in Activity but has no row of its own in the conversation.
 
 ### A command's exit code
 

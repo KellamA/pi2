@@ -39,6 +39,7 @@ import { commandAsks } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore, type Recorder } from "./output.ts";
 import { lookOutFor, newRunMarker, RUN_VARIABLE } from "./processes.ts";
+import { runningCommands } from "./running.ts";
 
 /** How long a command in the foreground may run, in seconds: `fallback` when its call names no `timeout`, and `most` whatever it names. */
 export type Limits = { fallback: number; most: number };
@@ -270,6 +271,8 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	const forward = () => own.abort();
 	if (context.abortSignal?.aborted) own.abort();
 	else context.abortSignal?.addEventListener("abort", forward, { once: true });
+	// For the person: how long it has run, and how long since it printed (running.ts). Ended in the `finally` below.
+	const clock = runningCommands.begin(conversationId, api.callId, args.command, started);
 	const execution = env.exec(
 		args.command,
 		{
@@ -285,6 +288,7 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 				lastPrinted = now;
 				api.output(text, info.skipped);
 				recorder?.add(text);
+				clock.printed();
 				if (watched === undefined) return;
 				tail += text;
 				total += text.length;
@@ -339,6 +343,8 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 		clearTimeout(timer);
 		watched?.done();
 		if (movedTo === undefined) context.abortSignal?.removeEventListener("abort", forward);
+		// Ended, stopped, or moved to the background, where it has a row of its own: no longer running here.
+		clock.end();
 	}
 	const ended = Date.now();
 	const quietAtEndMs = ended - (lastPrinted ?? started);

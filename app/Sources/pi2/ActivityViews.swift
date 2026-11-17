@@ -245,6 +245,9 @@ private struct RunRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
                 Text(engine.agent(run.agentId)?.name ?? "Agent").font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+                if let command = run.commands?.first {
+                    CommandClockLine(command: command, more: (run.commands?.count ?? 1) - 1)
+                }
             }
             Spacer()
             if run.status == "waiting" {
@@ -273,6 +276,37 @@ private struct RunRow: View {
         let seconds = max(0, Int(now.timeIntervalSince1970 - run.since / 1000))
         if seconds >= 3600 { return "\(seconds / 3600)h \(seconds % 3600 / 60)m" }
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+/// The shell command a run is waiting on: what it runs, for how long, and how long it has printed nothing once that is
+/// a while (#196), so a stuck command can be told from a slow one. Ticks by itself; the engine sends only the times.
+private struct CommandClockLine: View {
+    let command: RunningCommand
+    /// Other commands of the same run running beside it.
+    let more: Int
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let quiet = command.quiet(at: context.date)
+            HStack(spacing: 6) {
+                Image(systemName: "terminal").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.tx3)
+                Text(command.command.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? command.command)
+                    .font(Theme.mono).foregroundStyle(Theme.tx2)
+                    .lineLimit(1).truncationMode(.tail)
+                Text(command.elapsed(at: context.date)).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(Theme.tx3)
+                    .fixedSize()
+                if let quiet {
+                    Text(quiet).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(Theme.warn).fixedSize()
+                }
+                if more > 0 {
+                    Text("and \(more) more").font(.system(size: 11.5)).foregroundStyle(Theme.tx3).fixedSize()
+                }
+            }
+            .help(quiet == nil
+                ? "Running for \(command.elapsed(at: context.date)): \(command.command)"
+                : "Running for \(command.elapsed(at: context.date)), and nothing printed for a while. It may be waiting on something, such as a prompt on the screen. Stop stops the run.")
+        }
     }
 }
 

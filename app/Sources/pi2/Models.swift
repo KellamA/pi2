@@ -180,6 +180,10 @@ struct LiveTool: Codable, Equatable {
     let status: String
     let output: String
     let details: JSONValue?
+    /// For a shell command running in the foreground: when it started, and when it last printed (nil until it has),
+    /// in ms since 1970. The conversation page ticks its clock from them (#196).
+    var startedAt: Double?
+    var lastOutputAt: Double?
 }
 
 struct RetryInfo: Codable, Equatable {
@@ -431,7 +435,38 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     let agentId: String?
     let status: String
     let since: Double
+    /// Its shell commands running in the foreground, oldest first, with their clocks (#196). Absent from an older engine.
+    var commands: [RunningCommand]?
     var id: Int { conversationId }
+}
+
+/// A shell command running in the foreground: what it runs, when it started and when it last printed, in ms since 1970.
+struct RunningCommand: Codable, Equatable {
+    let callId: String
+    let command: String
+    let startedAt: Double
+    let lastOutputAt: Double?
+
+    /// A command shows how long it has been quiet only after this long, so a busy one's row is still.
+    static let quietAfter: TimeInterval = 30
+
+    /// "45s", "3m 12s", "1h 4m", as the conversation page writes them.
+    static func short(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds))
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \(s % 3600 / 60)m"
+    }
+
+    /// How long it has run at `now`.
+    func elapsed(at now: Date) -> String { Self.short(now.timeIntervalSince1970 - startedAt / 1000) }
+
+    /// "quiet for 45s" once it has printed nothing for `quietAfter`, else nil.
+    func quiet(at now: Date) -> String? {
+        let since = max(startedAt, lastOutputAt ?? startedAt) / 1000
+        let seconds = now.timeIntervalSince1970 - since
+        return seconds >= Self.quietAfter ? "quiet for \(Self.short(seconds))" : nil
+    }
 }
 
 struct Repeat: Codable, Equatable {
