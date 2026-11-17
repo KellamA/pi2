@@ -240,14 +240,17 @@ test("broken and half-arrived Markdown never throws and stays readable", () => {
 });
 
 test("pathological input stays fast", () => {
-	const started = Date.now();
+	// Count only this process's work, not time it could not run while the Mac was busy.
+	const started = process.cpuUsage();
 	render("*a ".repeat(4000));
 	render("**".repeat(4000));
 	render("_".repeat(10000));
 	render("[](".repeat(3000));
 	render("<".repeat(10000));
 	render(("- " + "  ".repeat(40) + "x\n").repeat(200));
-	assert.ok(Date.now() - started < 3000, "took " + (Date.now() - started) + " ms");
+	const used = process.cpuUsage(started);
+	const cpuMs = (used.user + used.system) / 1000;
+	assert.ok(cpuMs < 3000, `took ${cpuMs} ms of CPU time`);
 });
 
 // MARK: Streaming
