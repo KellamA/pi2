@@ -14,6 +14,7 @@ import {
 	StreamableHttpTransport,
 	toLlmContent,
 } from "@earendil-works/pi-mcp";
+import { commandEnvironment } from "./environment.ts";
 
 export type McpServerConfig = {
 	id: string;
@@ -337,7 +338,8 @@ export class McpServers {
 	async #open(config: McpServerConfig): Promise<Opened> {
 		let transport: McpTransport;
 		if (config.transport === "stdio") {
-			transport = new StdioTransport({ command: config.command!, args: config.args ?? [], stderr: "pipe" });
+			// The engine's environment as it is now (its PATH may have changed since the last start), less pi²'s own settings.
+			transport = new StdioTransport({ command: config.command!, args: config.args ?? [], stderr: "pipe", env: commandEnvironment(), inheritEnv: false });
 		} else {
 			const token = this.#tokens.has(config.id) ? (await this.#credentials.read(`mcp-${config.id}`)) : undefined;
 			const key = token?.type === "api_key" ? token.key : undefined;
