@@ -160,6 +160,15 @@ function lingering(): [string, string, string] {
 	const child = join(scratch, `child-${files}.pid`);
 	return [`${LONG} & echo $! > '${child}'; echo $$ > '${leader}'; echo up; wait`, leader, child];
 }
+/**
+ * The same, but what it starts ignores SIGTERM, so a stop ends the command's own process at once and leaves the rest in
+ * its group until the SIGKILL that follows: what a busy Mac can make of any stop, made certain (#168).
+ */
+function stubborn(): [string, string, string] {
+	const leader = join(scratch, `leader-${++files}.pid`);
+	const child = join(scratch, `child-${files}.pid`);
+	return [`trap '' TERM; ${LONG} & echo $! > '${child}'; trap - TERM; echo $$ > '${leader}'; echo up; wait`, leader, child];
+}
 /** The process a command wrote down in `file`, once it has. */
 const pidIn = async (file: string): Promise<number> => {
 	await until(`${file} to be written`, () => existsSync(file) && readFileSync(file, "utf8").trim() !== "");
@@ -292,6 +301,22 @@ try {
 	assert.deepEqual(client.markers(a), [], "a stop the agent asked for is in its own row, not a line of its own");
 	step("a background command outlives the default time limit; stop ends it and everything it started, and its output can still be read");
 
+	// Something the command started outlives its first process during the stop. The stop was of everything it started all
+	// the same, and is worded as any stop the agent asked for.
+	{
+		const [cmd, leaderPid, childPid] = stubborn();
+		const { bg } = await client.start(a, cmd);
+		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
+		const answer = await client.background(a, { action: "stop", id: bg });
+		assert.match(answer.text, new RegExp(`^Stopped ${bg} \\(.*\\) and everything it started, after \\d+ seconds?\\.`), answer.text);
+		await client.until("stopped, with what outlived it", () => pids.every((pid) => !alive(pid)));
+		const again = new RegExp(`^${bg} \\(.*\\) was already over: it was stopped by the agent after \\d+ seconds?\\.$`);
+		assert.match((await client.background(a, { action: "stop", id: bg })).text, again);
+		assert.match(await client.told(a), new RegExp(`- ${bg}: .* is over: it was stopped by the agent, at \\d\\d:\\d\\d\\.`));
+		assert.deepEqual(client.markers(a), [], "still no line of its own");
+		step("a stop the agent asked for is worded the same when something the command started outlives its first process");
+	}
+
 	// ---- Ending by itself
 	const quick = await client.startOver(a, "echo no-such-port >&2; exit 3");
 	assert.equal(quick.result.isError, true, "one that fails at once is an error");
@@ -365,7 +390,8 @@ try {
 
 	// ---- The person stops one from Activity
 	{
-		const [cmd, leaderPid, childPid] = lingering();
+		// What it started outlives its first process during the stop, which is still worded as the person's stop (#168).
+		const [cmd, leaderPid, childPid] = stubborn();
 		const { bg } = await client.start(a, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
 		await client.call("background.stop", { id: bg });
