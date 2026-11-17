@@ -23,6 +23,16 @@ For a security problem, do not open an issue. See [SECURITY.md](SECURITY.md).
 6. Say plainly what is and is not tested.
 7. If you can merge, do not sit waiting for the checks. Once the pull request is open, run `gh pr merge <number> --auto --merge`: GitHub merges it when the three required checks pass, about four minutes later. Use that time for what is left (cleaning up a throwaway copy, the next issue), then make sure it merged before you call the work done: `gh pr view <number> --json state -q .state` says `MERGED`. A pull request with a failed check stays open. Read the log (`gh run view --log-failed`), fix it and push, and check that auto-merge is still on (`gh pr view <number> --json autoMergeRequest`).
 
+## Changelog entries
+
+Add an entry under **Unreleased** in `CHANGELOG.md` when a change is worth knowing about in the next version:
+
+- Put features, changed behaviour and fixes that affect someone using an installed copy under `### Added`, `### Changed` or `### Fixed`, reader-facing changes first. Say what they can do now or what used to go wrong, not which classes changed. Changes to an agent's tools, limits or instructions count too.
+- Put changes only someone building, testing, contributing to or releasing pi² needs to know under `### For contributors`, after the reader-facing entries. Build modes, CI checks and repository workflows belong there. Use `####` for any subheadings inside it, not `###`.
+- A refactor, test or typo fix with no behaviour or contributor workflow worth explaining needs no entry. Do not list every commit.
+
+Keep Unreleased at the top. When the owner makes a release, its entries become the new version's section and a fresh Unreleased section stays above it. Do not move or rewrite entries in an already-published version to tidy its release notes. The contributor heading and its contents, up to the next `###` heading or version, are omitted from both GitHub's notes and the update feed; they stay in the changelog. `node --test app/test-release-notes.mjs` checks the extraction without packaging or releasing anything. See [docs/releasing.md](docs/releasing.md).
+
 ## Testing safely
 
 pi² is often worked on, by people and by agents, on a Mac where it is also in use for real work. That person's data folder, Keychain items, login item and macOS permissions are theirs. A test must never touch them.

@@ -85,7 +85,7 @@ In the repository's Settings › Environments, make an environment called `relea
 
 ## Making a release
 
-1. Set the version in `app/VERSION`, and give it a `## <version>` section in `CHANGELOG.md`. That section becomes the release notes and what the update window shows.
+1. Set the version in `app/VERSION`, and move the Unreleased entries in `CHANGELOG.md` into a `## <version>` section, leaving a fresh `## Unreleased` above it. That version's reader-facing entries become the release notes and what the update window shows; `### For contributors` and its contents are left out. Keep contributor subheadings at `####`: the next `###` starts reader-facing notes again. Do not edit already-published sections to tidy their notes.
 2. Merge to `main`.
 3. Tag the commit on `main` and push the tag:
 
@@ -97,6 +97,15 @@ In the repository's Settings › Environments, make an environment called `relea
 5. Publish the draft. Installed copies see the update the next time they check.
 
 The workflow refuses a tag that does not match `app/VERSION`, a commit that is not on `main`, and a version with no changelog section. The build number is the number of commits on `main`, which is what Sparkle compares, so it only goes up as long as releases come from `main`.
+
+## Previewing the notes without releasing
+
+```bash
+node app/release-notes.mjs 0.7.6
+node --test app/test-release-notes.mjs
+```
+
+`app/release.sh` uses this same extractor to write `notes.md`, then takes the feed's description from that file, so neither destination includes For contributors. Relative `docs/` links become links to that version's tag. A missing or duplicate version section, or one with no reader-facing notes, fails before packaging. The tests run in ordinary CI, cover the heading at the end and in the middle, and keep the published 0.7.5 and 0.7.6 notes byte-for-byte unchanged. Their old contributor-only entries have not been moved retroactively.
 
 ## Checking the packaged build without releasing
 

@@ -5,7 +5,7 @@
 #   pi2-<version>.dmg    what people download: the app and a link to Applications, signed and notarized
 #   pi2-<version>.zip    what Sparkle downloads to update an installed copy
 #   appcast.xml          the update feed, pointing at the zip, with the release notes; signed with the updates key
-#   notes.md             this version's section of CHANGELOG.md, for the GitHub release
+#   notes.md             this version's reader-facing section of CHANGELOG.md, for the GitHub release
 #
 #   SPARKLE_PRIVATE_KEY      the updates key, as `generate_keys -x` exports it (required)
 #   SIGN_IDENTITY            sign the disk image with it; then NOTARY_PROFILE, or NOTARY_KEY, NOTARY_KEY_ID and
@@ -30,6 +30,9 @@ OUT=build/release
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
+# Leave For contributors out of both the GitHub notes and the feed; keep repository links absolute.
+node release-notes.mjs "$VERSION" > "$OUT/notes.md"
+
 # The update archive. Sparkle unpacks it and checks the app's signature against the one installed.
 ZIP="$OUT/pi2-$VERSION.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
@@ -51,13 +54,6 @@ if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     xcrun stapler staple "$DMG"
   fi
 fi
-
-# This version's notes, from its section of the changelog, with links into the repository made absolute.
-awk -v version="$VERSION" '
-  /^## / { inside = ($2 == version); next }
-  inside { print }
-' ../CHANGELOG.md | sed -E "s#\]\((docs/[^)]*)\)#]($REPO/blob/v$VERSION/\1)#g" > "$OUT/notes.md"
-[[ -s "$OUT/notes.md" ]] || { echo "CHANGELOG.md has no section for $VERSION." >&2; exit 1; }
 
 # The feed. One item, the newest release: every copy updates straight to it.
 ENCLOSURE="$(echo "$SPARKLE_PRIVATE_KEY" | "$SPARKLE_BIN/sign_update" --ed-key-file - "$ZIP")"
