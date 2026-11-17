@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Fixed
+- An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
+
 ### For contributors
 - **The issue hooks go by what `scripts/issue` printed, and by GitHub.** Under Claude Code, `scripts/issue-hook` now counts only the `[pi2-issue]` lines in the output of a command that ran `scripts/issue`, so a line the session merely read or printed (another session's transcript, an issue comment) no longer counts as its own issue. Before holding up the end of a turn, it asks GitHub whether the issue is still open and in progress; when GitHub does not answer, the turn ends and the person is told. See [CLAUDE.md](CLAUDE.md) (#184).
 
