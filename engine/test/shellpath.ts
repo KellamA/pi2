@@ -8,12 +8,12 @@
 // busy Mac a script can take more than the usual 5 seconds just to start (issue #84).
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { adoptLoginPath, askShell, folders, loginShell, readPath, usualFolders } from "../src/shellpath.ts";
+import { ASK_COMMAND, adoptLoginPath, askShell, FROM_SHELL, folders, fromShell, loginShell, readPath, readSocket, usualFolders } from "../src/shellpath.ts";
 import { socketPathFor } from "../src/socket.ts";
 import { EngineClient, PATIENT_MS, stop } from "./patience.ts";
 
@@ -54,19 +54,39 @@ try {
 	assert.equal(readPath("Welcome back\n\n/opt/tools/bin:/usr/bin\n"), "/opt/tools/bin:/usr/bin", "the last line, after whatever a profile printed");
 	assert.equal(readPath(""), undefined);
 	assert.equal(readPath("/usr/bin\nzsh: command not found: printenv\n"), undefined, "a last line that is not a PATH is no answer");
+	assert.equal(readSocket("Welcome\npi2-ssh-auth-sock=/tmp/agent.sock\n/usr/bin\n"), "/tmp/agent.sock", "SSH_AUTH_SOCK from the marked line before the PATH");
+	assert.equal(readSocket("pi2-ssh-auth-sock=\n/usr/bin\n"), undefined, "a shell without one gives none");
+	assert.equal(readSocket("pi2-ssh-auth-sock=relative.sock\n/usr/bin\n"), undefined, "nor one that is not a full path");
+	assert.equal(readSocket("pi2-ssh-auth-sock=/tmp/a.sock\nnot a path\n/usr/bin\n"), undefined, "only the line just before the PATH counts");
+	assert.equal(readPath("pi2-ssh-auth-sock=/tmp/a.sock\n/usr/bin:/bin\n"), "/usr/bin:/bin");
+	assert.deepEqual(FROM_SHELL, ["PATH", "SSH_AUTH_SOCK"], "nothing else is taken from the shell");
+	assert.equal(fromShell({ PATH: "/bin", SSH_AUTH_SOCK: "/s", GH_TOKEN: "t" }), "/bin\n/s");
+	// What every shell runs: the same command in bash, zsh and fish (fish only where it is installed), each without
+	// reading anyone's profile.
+	const noProfile: Record<string, string[]> = { "/bin/bash": ["--noprofile", "--norc"], "/bin/zsh": ["-f"], "/opt/homebrew/bin/fish": ["--no-config"], "/usr/local/bin/fish": ["--no-config"] };
+	for (const [real, quiet] of Object.entries(noProfile).filter(([path]) => existsSync(path))) {
+		const out = spawnSync(real, [...quiet, "-c", ASK_COMMAND], { env: { PATH: "/usr/bin:/bin", SSH_AUTH_SOCK: "/tmp/some agent.sock" }, encoding: "utf8" }).stdout;
+		assert.equal(out, "pi2-ssh-auth-sock=/tmp/some agent.sock\n/usr/bin:/bin\n", `${real} runs the question as it is meant`);
+	}
 	assert.equal(loginShell({ SHELL: "/bin/zsh" }), "/bin/zsh");
 	assert.equal(loginShell({ SHELL: "/bin/zsh", PI2_LOGIN_SHELL: "/tmp/other/bash" }), "/tmp/other/bash");
 	assert.equal(loginShell({ SHELL: "/bin/zsh", PI2_LOGIN_SHELL: "off" }), undefined);
-	step("a PATH is read from a shell's output, and only full paths are kept");
+	step("a PATH and SSH_AUTH_SOCK are read from a shell's output, and only full paths are kept");
 
 	// ---- Asking a shell
 
 	const tools = join(scratch, "tools");
 	script(tools, "pi2-only-here", "echo found-by-path");
 	// Prints a line of its own first, as a profile might, and has entries no command should be looked up in.
-	const shell = script(join(scratch, "good"), "zsh", `echo "Welcome back"\n[ "$1" = "-ilc" ] || exit 9\nPATH="${tools}:/usr/bin:/bin:.::relative/bin"\nexport PATH\neval "$2"`);
+	// Its profile points SSH_AUTH_SOCK at an SSH agent of its own, as one for 1Password or Secretive does.
+	const socket = join(scratch, "agent.sock");
+	const shell = script(join(scratch, "good"), "zsh", `echo "Welcome back"\n[ "$1" = "-ilc" ] || exit 9\nPATH="${tools}:/usr/bin:/bin:.::relative/bin"\nSSH_AUTH_SOCK="${socket}"\nexport PATH SSH_AUTH_SOCK\neval "$2"`);
 	const patient = PATIENT_SECONDS * 1000;
-	assert.deepEqual(await askShell(shell, { PATH: BARE }, patient), { path: `${tools}:/usr/bin:/bin` });
+	assert.deepEqual(await askShell(shell, { PATH: BARE, SSH_AUTH_SOCK: "/private/tmp/launchd-1/Listeners" }, patient), { path: `${tools}:/usr/bin:/bin`, socket });
+	// One whose profile leaves it alone answers with the one it was given, which is the engine's.
+	const plainShell = script(join(scratch, "plain"), "bash", `PATH="${tools}:/usr/bin:/bin"\nexport PATH\neval "$2"`);
+	assert.deepEqual(await askShell(plainShell, { PATH: BARE, SSH_AUTH_SOCK: "/private/tmp/launchd-1/Listeners" }, patient), { path: `${tools}:/usr/bin:/bin`, socket: "/private/tmp/launchd-1/Listeners" });
+	assert.deepEqual(await askShell(plainShell, { PATH: BARE }, patient), { path: `${tools}:/usr/bin:/bin` }, "and one with none, none");
 
 	// Starts a child that would run as long as the test's patience, writes down its number (all at once, by renaming
 	// the file), and waits for it. Its limit is what is checked here, so it is short. On a busy Mac the stand-in may be
@@ -102,9 +122,17 @@ try {
 	// ---- Taking it as the engine's own
 
 	const patientSeconds = String(PATIENT_SECONDS);
-	let env: NodeJS.ProcessEnv = { PATH: BARE, PI2_LOGIN_SHELL: shell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: patientSeconds };
-	await adoptLoginPath(quiet, env);
+	let env: NodeJS.ProcessEnv = { PATH: BARE, PI2_LOGIN_SHELL: shell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: patientSeconds, SSH_AUTH_SOCK: "/private/tmp/launchd-1/Listeners", GH_TOKEN: "the engine's" };
+	const taken: string[] = [];
+	await adoptLoginPath((...parts) => void taken.push(parts.join(" ")), env);
 	assert.equal(env.PATH, `${tools}:${BARE}`, "the shell's folders first, then any the engine had that it did not name");
+	assert.equal(env.SSH_AUTH_SOCK, socket, "and the shell's SSH_AUTH_SOCK");
+	assert.equal(env.GH_TOKEN, "the engine's", "and nothing else");
+	assert.deepEqual(taken, ["PATH taken from zsh: 3 folders, and its SSH_AUTH_SOCK, another than the engine's"], "the log says so, without the path");
+
+	env = { PATH: BARE, PI2_LOGIN_SHELL: plainShell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: patientSeconds };
+	await adoptLoginPath(quiet, env);
+	assert.equal(env.SSH_AUTH_SOCK, undefined, "a shell with no SSH_AUTH_SOCK gives the engine none");
 
 	env = { PATH: BARE, PI2_LOGIN_SHELL: "off", SHELL: shell };
 	await adoptLoginPath(quiet, env);
@@ -127,7 +155,7 @@ try {
 	await listening?.done;
 	assert.equal(env.PATH, usualThenBare);
 	assert.ok(lines.length === 1 && /\(bash did not answer within 1 second/.test(lines[0]!), `the wait is the one given: ${lines[0]}`);
-	step("the engine's PATH becomes the shell's, or gains the usual places when the shell gives none");
+	step("the engine's PATH and SSH_AUTH_SOCK become the shell's, or the PATH gains the usual places when the shell gives none");
 
 	// ---- A real engine, started the way the app starts it
 
@@ -171,8 +199,9 @@ try {
 		assert.equal(found.text?.trim(), "found-by-path");
 		const path = await bash(id, "/usr/bin/printenv PATH");
 		assert.equal(path.text?.trim(), `${tools}:${BARE}`, "the command's PATH is the shell's, then the engine's own");
+		assert.equal((await bash(id, "/usr/bin/printenv SSH_AUTH_SOCK")).text?.trim(), socket, "and its SSH_AUTH_SOCK the shell's");
 		client.close();
-		step("a command run by an engine that started with the bare PATH finds a program on the login shell's PATH");
+		step("a command run by an engine that started with the bare PATH finds a program on the login shell's PATH, and its SSH agent");
 	} finally {
 		await stop(engine);
 		// In a temporary folder with a long path, the socket is reached through a link in /tmp (src/socket.ts).

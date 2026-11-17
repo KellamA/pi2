@@ -56,8 +56,17 @@ export type AgentProfile = {
 	 * `rules.add`, `rules.remove` and an approval's "rule" answer, never by saving the agent.
 	 */
 	commandRules?: CommandRule[];
+	/**
+	 * Environment variables of its own, which its shell, background and set-up commands get (variables.ts). Names only,
+	 * and whether each has a value: the values are in the Keychain. Changed only through `variables.set` and
+	 * `variables.remove`, never by saving the agent.
+	 */
+	variables?: AgentVariable[];
 	createdAt: number;
 };
+
+/** A variable of an agent's own: its name, and whether a value is kept for it in the Keychain. */
+export type AgentVariable = { name: string; set: boolean };
 
 export type Meta = {
 	title: string;

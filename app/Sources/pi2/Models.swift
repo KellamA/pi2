@@ -309,6 +309,14 @@ struct CommandRule: Codable, Equatable, Identifiable {
     var command: String { words.joined(separator: " ") }
 }
 
+/// An environment variable of an agent's own: its name, and whether a value is kept for it. The value stays in the
+/// Keychain and never comes to the app.
+struct AgentVariable: Codable, Equatable, Identifiable {
+    let name: String
+    let set: Bool
+    var id: String { name }
+}
+
 /// A saved setup that conversations start from.
 struct AgentProfile: Codable, Equatable, Identifiable {
     var id: String
@@ -340,6 +348,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var toolsOff: [String]?
     /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
     var commandRules: [CommandRule]?
+    /// Variables its commands get. Changed through their own requests, never by saving the agent.
+    var variables: [AgentVariable]?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -392,6 +402,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
         agent.schedule = schedule ?? ScheduleSettings()
         agent.toolsOff = toolsOff ?? []
         agent.commandRules = nil
+        agent.variables = nil
         return agent
     }
 }

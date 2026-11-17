@@ -450,7 +450,9 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		}
 		// Save never accepts rules from the app. Duplication alone supplies rules from the stored source.
 		const rules: CommandRule[] = JSON.parse(JSON.stringify(copiedRules ?? doc.agents[id]?.commandRules ?? []));
-		doc.agents[id] = { ...agent, commandRules: rules };
+		// Nor variables: they change through their own requests, and a copy gets theirs from variables.ts.
+		const variables = doc.agents[id]?.variables;
+		doc.agents[id] = { ...agent, commandRules: rules, ...(variables === undefined ? {} : { variables: JSON.parse(JSON.stringify(variables)) }) };
 	}, context);
 	// The agent's conversations pick up what it may now do at their next message; see syncTools.
 	return { id };
@@ -1197,6 +1199,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const id = text(params, "id");
 		if (agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
 		if (Object.keys(agents).length === 1) throw new Error("Keep at least one agent");
+		for (const feature of host.features) await feature.deletingAgent?.(id);
 		await harness.commit(async (tx) => {
 			const doc = await tx.doc(Agents);
 			delete doc.agents[id];

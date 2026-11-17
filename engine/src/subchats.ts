@@ -12,6 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, defineTool, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { arr, bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { isArchived, isDeleted } from "./archive.ts";
+import { limitsReport } from "./limits.ts";
 import { elapsed, runningCommandsOf, stopCommandsOf } from "./background.ts";
 import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
@@ -128,9 +129,31 @@ function whereWords(where: Where): string {
 	return `works in ${where.cwd}${branch}`;
 }
 
+/**
+ * The end of `sub_chats`' list: how much of each signed-in subscription's windows is used and when each resets, and
+ * which subscription this conversation and each agent it can hand work to runs on. Nothing when no feature knows.
+ */
+async function limitsOf(host: Host, api: ToolExecutionApi, context: Context): Promise<string[]> {
+	const views = host.features.find((feature) => feature.planLimits !== undefined)?.planLimits?.();
+	if (views === undefined) return [];
+	const users = new Map<string, string[]>();
+	const add = (provider: string | undefined, who: string) => {
+		if (provider === undefined) return;
+		users.set(provider, [...(users.get(provider) ?? []), who]);
+	};
+	add((await api.snapshot(AgentDoc, api.conversationId, context))?.model?.provider, "this conversation");
+	for (const id of host.agent(host.meta(api.conversationId)?.agentId)?.delegates ?? []) {
+		const agent = host.agent(id);
+		// What a new sub-chat with that agent would run on: its own model, or the default one.
+		if (agent !== undefined) add((await host.agentChange(agent, { subChat: true }).catch(() => undefined))?.model?.provider, agent.name);
+	}
+	return ["", ...limitsReport(views, users, Date.now())];
+}
+
 export const SUB_CHATS_DESCRIPTION =
 	"See the sub-chats this conversation opened with delegate, and archive the ones whose work is finished. Actions:\n" +
-	"- list: each sub-chat's number, agent and title; whether it is working, waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are named at the end.\n" +
+	"- list: each sub-chat's number, agent and title; whether it is working, waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are named at the end. " +
+	"Then how much of each signed-in subscription's allowance is used and when each window resets, and which subscription you and each of your agents run on: list before starting more sub-chats when a window may be nearly used up.\n" +
 	"- archive: put away the sub-chats numbered in `chats`. Use it once you have what you needed from a sub-chat and will not continue it, or when the person asks you to tidy up. " +
 	"An archived sub-chat leaves the sidebar for the Archive, where the person can read and restore it; nothing is deleted. Commands it left running in the background are stopped, and the answer says which. " +
 	"A worktree of its own is left as it is, unless you pass `remove_worktree: true` and removing it loses nothing: nothing uncommitted and no commits that are not on the branch it was made from (fetch first if it was merged elsewhere). Its branch is kept either way. " +
@@ -161,7 +184,8 @@ export function subChatsTool(host: Host) {
 				// Those archived on their own; a sub-chat of an archived one goes with it.
 				const archived = mine.filter((id) => isArchived(all[String(id)]));
 				const listed = mine.filter((id) => !archived.includes(id) && !archived.includes(all[String(id)]?.parent ?? -1));
-				if (mine.length === 0) return { output: text("This conversation has no sub-chats. delegate opens one."), details: { action, count: 0 } };
+				const limits = await limitsOf(host, api, context);
+				if (mine.length === 0) return { output: text(["This conversation has no sub-chats. delegate opens one.", ...limits].join("\n")), details: { action, count: 0 } };
 				const lines: string[] = [];
 				for (const id of listed) {
 					const meta = all[String(id)]!;
@@ -174,7 +198,7 @@ export function subChatsTool(host: Host) {
 				}
 				const head = listed.length === 0 ? "Every sub-chat of this conversation is archived." : "Sub-chats of this conversation:";
 				const tail = archived.length === 0 ? [] : [`Archived: ${archived.map((id) => `${id} (“${titleOf(id)}”)`).join(", ")}. Continuing one with delegate restores it.`];
-				return { output: text([head, ...lines, ...tail].join("\n")), details: { action, count: listed.length, archived: archived.length } };
+				return { output: text([head, ...lines, ...tail, ...limits].join("\n")), details: { action, count: listed.length, archived: archived.length } };
 			}
 
 			if (action !== "archive") return { output: text(`Unknown action "${args.action}". Use list or archive.`), isError: true };

@@ -60,6 +60,30 @@ A run whose request a provider refuses for its limit does not end. It waits, and
 
 **A sub-chat.** A sub-chat that waits keeps the `delegate` call that started it waiting. One whose run ends on the provider's error all the same gives `delegate` a result that says so in the provider's words, and that the sub-chat can be carried on by passing its number as `chat` ([architecture.md](architecture.md#sub-chats)).
 
+## Telling an agent that hands out work, and the person
+
+An agent that hands out work to sub-chats ([architecture.md](architecture.md#sub-chats)) can run many at once, and so use up a window quickly. Since a refused run waits and carries on (above), nothing is lost when it does, but an agent or the person may want to start fewer runs, or none, on a subscription that is nearly used up. pi² tells them three ways, all from the same readings Usage shows.
+
+**In `delegate`'s result.** When a window of the subscription the sub-chat ran on (its own model's, whatever the agent that handed out the work runs on) is 80% used or more, the result ends with one line that names the subscription, since one agent may hand work to agents on different ones, and each such window, how much of it is used and when it resets, in the Mac's local time and from now:
+
+> Plan limits: the Anthropic subscription (Max), which this sub-chat runs on, has 5-hour window 84% used, resets at 15:30 (in 1 h 12 min). A run the provider refuses for its limit waits for the reset and carries on by itself.
+
+Below 80%, and for a model that is not on a subscription, the result says nothing of the windows. A window whose reset has passed since it was read is not counted. The line comes with a sub-chat that finished and one that did not, new or continued.
+
+**In `sub_chats`' list.** The line above only comes once a sub-chat has finished, so an agent can also ask before it starts any: `sub_chats` with `list` ends with every signed-in subscription's windows, how much of each is used and when it resets, when they were read, and which subscription the conversation itself and each agent it can hand work to runs on (an agent with no model of its own runs on the default one):
+
+```
+Plan limits, as last read. A run the provider refuses for its limit waits for the reset and carries on by itself.
+- Anthropic subscription (Max), which this conversation, Forge and Scout run on: 5-hour window 62% used, resets at 15:30 (in 2 h 10 min); this week 91% used, resets on Friday 20 November at 09:00 (in 3 days). Read 2 min ago.
+- OpenAI Codex subscription (Plus), which Worker runs on: 5-hour window 12% used, resets at 17:02 (in 3 h 42 min). Read 40 s ago, from the answer to a request.
+```
+
+This is not a tool of its own: `sub_chats` is offered only with `delegate`, so an agent that cannot hand out work is sent nothing more in its prompt, and one that can is sent a sentence more in `sub_chats`' description. Listing asks no provider; it says what was last read, and how long ago.
+
+**In the Inbox, for the person.** When a window of a signed-in subscription passes 90% while runs on that subscription are going (conversations whose model is on it, sub-chats included, with work running), a notice goes to the Inbox: which subscription and window, how much is used, when it resets, and which runs were going, each a link to its conversation. It is information, not a request: it says that a run the provider refuses waits for the reset and carries on by itself, and that nothing needs doing. It is not counted in the Dock's badge or the menu bar, which count what waits on the person, and posts no notification; the sidebar's Inbox row counts it in grey. engine.log has a line for it too.
+
+A window is noticed once per reset: not again while it stays above 90%, nor after the notice is dismissed, until its reset time has passed or, for a window whose provider gives none, a reading shows it below 80%. A notice leaves the Inbox by itself when its window resets, and with its subscription when that is signed out. A window past 90% with no run on its subscription is not noticed until a run on it starts. Notices, and which windows were noticed, are kept in `limits.json`, so a restart neither loses nor repeats one.
+
 ### How it works
 
 The retrying is pi durable's: a failed request becomes a stored sleep in the run's checkpoint (`pi.live`'s `generation.retry`), which a restart resumes and Stop ends. Unpatched, it retries three times, 2, 4 and 8 seconds apart, and reads nothing of what the provider said, which only reaches it as the error's text: pi-ai turns a refused response into an error message and drops its status and headers. So:
@@ -106,7 +130,7 @@ The last good reading of each signed-in subscription (plan, windows, when it was
 
 ## For developers
 
-The engine sends `{ event: "limits", providers: [...] }` to an app as it connects and whenever something changes. Each provider is:
+The engine sends `{ event: "limits", providers: [...], notices: [...] }` to an app as it connects and whenever something changes. Each provider is:
 
 ```
 { id, name, plan, note, reports: "usage" | "responses" | "none",
@@ -114,7 +138,16 @@ The engine sends `{ event: "limits", providers: [...] }` to an app as it connect
   fetchedAt, source: "usage" | "responses" | null, error, errorAt, refreshing }
 ```
 
-Times are milliseconds since 1970; `usedPercent` is 0–100. `limits.refresh` (optionally `{ id }`) asks again, within the limits above, and answers with the same event.
+and each notice:
+
+```
+{ id, provider, name, plan, window, label, usedPercent, resetsAt, at,
+  runs: [{ conversationId, rootConversationId, title, agentName, subChat }], more? }
+```
+
+Times are milliseconds since 1970; `usedPercent` is 0–100. `limits.refresh` (optionally `{ id }`) asks again, within the limits above, and answers with the same event. `limits.dismiss` `{ id }` takes a notice away.
+
+The limits feature answers `planLimits()` ([features.ts](../engine/src/features.ts)) with the providers above, which `delegate` (`engine/src/extensions.ts`) and `sub_chats` (`engine/src/subchats.ts`) put in words with `nearlyUsedUp` and `limitsReport` from `engine/src/limits.ts`. The notices are its own: it looks for a window to notice when a reading comes and when what is running changes, and only reads which model a running conversation is on when some window is past 90% and not yet noticed. `engine/test/planwindows.ts` checks the wording, then runs an engine with two stand-in subscriptions signed in under a test Keychain service: Claude, whose usage address is a stand-in on 127.0.0.1, and GitHub Copilot, whose requests go to a stand-in over TLS that sets the premium requests in its answers' headers and can hold an answer back so a run is going when they arrive.
 
 For tests, the usage addresses can be pointed elsewhere with `PI2_LIMITS_ANTHROPIC_URL`, `PI2_LIMITS_CODEX_URL` and `PI2_LIMITS_KIMI_URL`, and the minimum time between two requests to one provider set with `PI2_LIMITS_MIN_INTERVAL_MS`.
 
@@ -127,5 +160,6 @@ A conversation's state has `limitWait` while its run sleeps for a limit, and its
 - Copilot's figures appear only after a request in pi², and premium requests are the only allowance shown (chat and completions are unlimited on paid plans).
 - The figures from answers are as of the start of that answer.
 - Signing in again to a different account of the same provider, without signing out first, keeps showing the old account's figures until they are next read.
-- Nothing holds a run back before a provider refuses it, however full a window is, and nobody is told that a window is nearly used up while runs are going, nor is an agent that hands out work told how the windows stand: the wait starts with the first refusal (#232).
+- Nothing holds a run back before a provider refuses it, however full a window is: the wait starts with the first refusal. An agent that hands out work and the person are told how the windows stand ([above](#telling-an-agent-that-hands-out-work-and-the-person)), and what to do about it is theirs.
+- What a conversation runs on is read when a notice is considered and kept while its work goes on, so a model changed in the middle of a run counts from that run's end.
 - A summary of earlier messages (compaction) that a provider refuses for its limit is still retried only three times, and then fails as it did before.

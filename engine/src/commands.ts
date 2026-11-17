@@ -41,6 +41,7 @@ import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore, type Rec
 import { lookOutFor, newRunMarker, RUN_VARIABLE } from "./processes.ts";
 import { runningCommands } from "./running.ts";
 import { scratchVariable } from "./scratch.ts";
+import { agentVariables } from "./variables.ts";
 
 /** How long a command in the foreground may run, in seconds: `fallback` when its call names no `timeout`, and `most` whatever it names. */
 export type Limits = { fallback: number; most: number };
@@ -253,6 +254,9 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	const env = api.env;
 	if (env === undefined) throw new Error("No execution environment is configured");
 	const conversationId = api.conversationId as unknown as number;
+	// The variables the person gave the conversation's agent (variables.ts); read before anything starts, since reading
+	// them can fail, and then the command is not run.
+	const variables = await agentVariables(conversationId);
 	const recorder = store?.record(conversationId, api.callId);
 	const started = Date.now();
 	let lastPrinted: number | undefined;
@@ -279,9 +283,9 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 		args.command,
 		{
 			cwd: env.cwd,
-			// The engine's environment less pi²'s own settings, such as its data folder (issue #195), and the conversation's
-			// scratch folder (issue #180).
-			env: commandEnvironment({ ...scratchVariable(conversationId), [RUN_VARIABLE]: marker }),
+			// The engine's environment less pi²'s own settings, such as its data folder (issue #195), with the agent's own
+			// variables (issue #96) and the conversation's scratch folder (issue #180).
+			env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: marker }),
 			inheritEnv: false,
 			// No `window`: every chunk is wanted for the file, not only the tail the result keeps.
 			onOutput: (text, _context, info) => {
