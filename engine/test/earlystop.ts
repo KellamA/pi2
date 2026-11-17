@@ -64,13 +64,15 @@ try {
 	// ---- Stopped while waiting for the login shell
 
 	const first = startEngine({ PI2_LOGIN_SHELL: shell, PI2_LOGIN_SHELL_TIMEOUT_SECONDS: "3600" });
-	await until("the engine to ask its stand-in shell", () => pidIn(shellPidFile) !== undefined && pidIn(sleepPidFile) !== undefined, {
-		over: () => (running(first.engine) ? undefined : `the engine exited:\n${first.log.join("\n")}`),
-	});
+	const firstGone = () => (running(first.engine) ? undefined : `the engine exited:\n${first.log.join("\n")}`);
+	await until("the engine to ask its stand-in shell", () => pidIn(shellPidFile) !== undefined && pidIn(sleepPidFile) !== undefined, { over: firstGone });
 	const shellPid = pidIn(shellPidFile)!;
 	const sleepPid = pidIn(sleepPidFile)!;
-	assert.ok(stillRunning(shellPid, shell) && stillRunning(sleepPid, LONG_SLEEP), "the stand-in is running");
-	assert.ok(existsSync(join(home, "engine.running")), "the engine has begun: its marker is there");
+	// Waited for, not checked once: the stand-in writes down the process it started before that process has become
+	// `sleep` (until then it is still a copy of the shell), and the engine asks the shell just before it writes its
+	// marker. With several runs of the suite starting at once, a single look came between the two often enough to fail.
+	await until("the stand-in shell and what it started to be running", () => stillRunning(shellPid, shell) && stillRunning(sleepPid, LONG_SLEEP), { over: firstGone });
+	await until("the engine's marker, which says it has begun", () => existsSync(join(home, "engine.running")), { over: firstGone });
 	assert.ok(!first.logged(/listening on /), "and it is still starting, waiting for the shell");
 	first.engine.kill("SIGTERM");
 	first.engine.kill("SIGTERM"); // a second signal while stopping changes nothing
