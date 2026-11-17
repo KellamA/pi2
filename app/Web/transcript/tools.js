@@ -838,6 +838,29 @@
 		return { agentName, task: str(args.task), chat, continued, agentId: isObject(details) ? str(details.agentId) : "" };
 	}
 
+	/** A running command shows how long it has gone without printing only after this long, so a busy one's row is still. */
+	const QUIET_MS = 30_000;
+
+	/** A short time: "45s", "3m 12s", "1h 4m". */
+	function shortDuration(ms) {
+		const seconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+		if (seconds < 60) return seconds + "s";
+		if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+		return Math.floor(seconds / 3600) + "h " + Math.floor((seconds % 3600) / 60) + "m";
+	}
+
+	/**
+	 * What a running command's clock says at `now` (#196), from the engine's `startedAt` and `lastOutputAt` (ms since the
+	 * epoch; `lastOutputAt` null until it prints): `elapsed`, how long it has run, and `quiet`, "quiet for 45s" once it
+	 * has printed nothing for QUIET_MS, else "". Null without a start time.
+	 */
+	function commandClock(startedAt, lastOutputAt, now) {
+		if (typeof startedAt !== "number" || !Number.isFinite(startedAt)) return null;
+		const since = typeof lastOutputAt === "number" && Number.isFinite(lastOutputAt) ? Math.max(startedAt, lastOutputAt) : startedAt;
+		const quietMs = now - since;
+		return { elapsed: shortDuration(now - startedAt), quiet: quietMs >= QUIET_MS ? "quiet for " + shortDuration(quietMs) : "" };
+	}
+
 	/** Bytes as Finder shows a file's size. */
 	function formatBytes(bytes) {
 		const n = Number(bytes) || 0;
@@ -875,5 +898,8 @@
 		delegation,
 		formatBytes,
 		prettyJSON,
+		shortDuration,
+		commandClock,
+		QUIET_MS,
 	};
 });
