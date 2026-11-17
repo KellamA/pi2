@@ -583,15 +583,14 @@ try {
 		const { bg } = await client.start(z, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
 		await stop(engine);
-		// The app gives the engine five seconds to stop before it restores a backup. The engine's own account of its stop
-		// is the time it spent waiting and the processor time it used, without the time a busy Mac kept it from running
-		// (src/stopwatch.ts): what the stop takes on a quiet Mac.
-		const stopped = [...readFileSync(engineLog, "utf8").matchAll(/stopped cleanly in (\d+) ms: (\d+) ms of it waiting, and (\d+) ms of processor time/g)].at(-1);
+		// The app gives the engine five seconds before a restore. Measure inside the engine, so time this test spends
+		// unscheduled after the engine exits is not charged to it. Delays inside the engine still count: the app's deadline
+		// counts them too. CPU time or subtracting late timer ticks would hide a real wait and weaken this check (#144).
+		const stopped = [...readFileSync(engineLog, "utf8").matchAll(/stopped cleanly in (\d+) ms/g)].at(-1);
 		assert.ok(stopped !== undefined, "the engine says how long its stop took");
-		const [total, waited, worked] = stopped.slice(1).map(Number) as [number, number, number];
-		assert.ok(waited <= total, stopped[0]);
-		assert.ok(waited + worked < 5_000, `the engine's stop fits in the five seconds the app gives it: ${stopped[0]}`);
-		await until("stopping the engine to stop the command and what it started", () => pids.every((pid) => !alive(pid)));
+		assert.equal(engine.exitCode, 0, "the engine exited cleanly");
+		assert.ok(Number(stopped[1]) < 5_000, `the engine's stop fits in the five seconds the app gives it: ${stopped[0]}`);
+		assert.ok(pids.every((pid) => !alive(pid)), "stopping the engine stopped the command and what it started");
 		engine = boot();
 		client = await Client.attach(engine);
 		assert.deepEqual(client.running(), []);

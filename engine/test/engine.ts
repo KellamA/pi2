@@ -1651,7 +1651,7 @@ try {
 		const askedIn = (id: number) => client.inbox.find((i) => i.conversationId === id) as (InboxItem & { rule?: Rule }) | undefined;
 		const [left, offered, covered] = [await open(), await open(), await open()];
 
-		await client.call("submit", { id: left, text: "/background sleep 120" });
+		await client.call("submit", { id: left, text: `/background sleep ${(2 * PATIENT_MS) / 1000}` });
 		await client.call("inbox.decide", { id: (await client.until("approval to leave a command running", () => askedIn(left))).id, decision: "once" });
 		// The call that started it returns once the command's process is on record, which the next engine needs to stop it:
 		// the event that lists it as running comes before that.

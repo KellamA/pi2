@@ -49,7 +49,6 @@ import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
-import { stopwatch } from "./stopwatch.ts";
 import { timeLines } from "./log.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
@@ -1661,8 +1660,9 @@ sweepOften.unref();
 async function stop(): Promise<void> {
 	if (stopping) return;
 	stopping = true;
-	// The app waits five seconds for this before it restores a backup, so the log says how long it took (stopwatch.ts).
-	const took = stopwatch();
+	// Measure here, not around the signal in another process: that process may not get to run when this one exits.
+	// Scheduling delays inside this stop still count, just as they do toward the app's five-second restore deadline.
+	const began = performance.now();
 	stopLoginShell.abort(); // a shell too slow for start-up and still being listened to
 	server.close();
 	for (const client of clients) client.socket.destroy();
@@ -1674,7 +1674,6 @@ async function stop(): Promise<void> {
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
 	rmSync(runningMarker, { force: true });
-	const { total, waiting, processor } = took();
-	log(`stopped cleanly in ${total} ms: ${waiting} ms of it waiting, and ${processor} ms of processor time`);
+	log(`stopped cleanly in ${Math.ceil(performance.now() - began)} ms`);
 	process.exit(0);
 }

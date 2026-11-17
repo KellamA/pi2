@@ -60,7 +60,6 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
 | `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
-| `src/stopwatch.ts` | How long a clean stop of the engine took, without the time a busy Mac kept it from running, for `engine.log` |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
@@ -161,7 +160,7 @@ Every line of both starts with the time it was written, in UTC to the second (IS
 
 The engine's own lines carry the `[pi2-engine]` tag after the time; a line without it came from a dependency or from Node. A line about a background command, a worktree or a set-up command names its conversation by number (`conversation 12`), the number the app shows for it, so `grep "conversation 12"` finds what was done for one conversation.
 
-A clean stop ends with a line saying how long it took, since the app gives the engine five seconds to stop before it restores a backup: `stopped cleanly in 1519 ms: 1438 ms of it waiting, and 12 ms of processor time`. The waiting (for its own timers, for what it started, for storage) and the processor time leave out the time a busy Mac kept the engine from running (`engine/src/stopwatch.ts`), so together they are what the stop would take on a quiet Mac, while the first figure is the time on the clock.
+A clean stop ends with its elapsed time measured inside the engine, using a monotonic clock: `stopped cleanly in 1519 ms`. The app gives it five seconds to stop before it restores a backup. Measuring inside the engine avoids charging it for a test process that is slow to notice its exit; it still counts delays within the stop, including time the engine could not run on a busy Mac, which counts toward the app's deadline too.
 
 The time is put on in one place, `engine/src/log.ts`, where the lines leave the engine, not by each line's writer: so a line a dependency writes, a warning from Node, and the trace of an error that stops the engine (which the engine writes itself, as a `fatal:` line) get one too, and so does each line of a message that runs over several. A line written in several pieces gets the time of its first piece. Only what Node writes before the engine's own code has started has no time: an engine file that cannot be read or has an error in it, which Node reports as it loads the files and stops. `--restore`, which the app runs to put a backup back, writes its output as it is: the app reads it, and shows its error to the person.
 
