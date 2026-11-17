@@ -1,0 +1,108 @@
+#!/bin/bash
+# Checks what scripts/test-copy refuses before it changes anything, in a stand-in checkout in a temporary folder:
+# suffixes that are not its own, a missing build, a release build, a build of another checkout, a suffix already
+# started, a stop or a picture for a copy that was not started, and a picture outside the checkout. Launches no
+# app and touches nothing outside the temporary folder. Starting, capturing and stopping a real copy is checked by
+# hand, as CONTRIBUTING.md says.
+#
+#   scripts/test-test-copy
+
+set -uo pipefail
+
+script="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/test-copy"
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+T=$(cd -P -- "$T" && pwd -P)
+
+root=$T/checkout
+mkdir -p "$root/scripts" "$root/app/build"
+cp "$script" "$root/scripts/test-copy"
+copy=$root/scripts/test-copy
+
+failures=0
+# expect <what it should say> <arguments...>: the command must fail, say that, and leave the stand-in as it was.
+expect() {
+	local want=$1; shift
+	local before after out
+	before=$(cd "$T" && find . | sort)
+	out=$("$copy" "$@" 2>&1)
+	local status=$?
+	after=$(cd "$T" && find . | sort)
+	if ((status == 0)) || [[ $out != *"$want"* ]]; then
+		echo "FAIL: test-copy $*"
+		echo "  wanted a refusal saying: $want"
+		echo "  got (exit $status): $out"
+		failures=$((failures + 1))
+	elif [[ $before != "$after" ]]; then
+		echo "FAIL: test-copy $* changed the stand-in checkout"
+		diff <(echo "$before") <(echo "$after") | sed 's/^/  /'
+		failures=$((failures + 1))
+	else
+		echo "ok: test-copy $* ($want)"
+	fi
+}
+
+expect "a suffix is required" start
+expect "a suffix is required" start ""
+expect "is not a suffix" start Test-7
+expect "is not a suffix" start ../pi2
+expect "is not a suffix" start "a b"
+expect "is not a suffix" start -x
+expect "is not a suffix" start test-7-
+expect "is not a suffix" start "test.7"
+expect "is too long" start test-7-with-a-suffix-much-too-long-for-a-socket
+expect "'dev' is the suffix every development build has" start dev
+expect "a suffix is required" stop
+expect "a suffix is required" shot
+
+expect "there is no development build" start test-7
+
+mkdir -p "$root/app/build/pi².app/Contents"
+expect "there is only a release build here" start test-7
+rm -rf "$root/app/build/pi².app"
+
+dev="$root/app/build/pi² dev.app"
+mkdir -p "$dev/Contents/Resources/engine"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string dev.pi2.app" "$dev/Contents/Info.plist" >/dev/null
+expect "is not a development build" start test-7
+rmdir "$dev/Contents/Resources/engine"
+expect "is not a development build" start test-7
+/usr/libexec/PlistBuddy -c "Add :PI2EngineMain string /elsewhere/engine/src/main.ts" "$dev/Contents/Info.plist"
+expect "not this checkout's" start test-7
+
+mkdir -p "$root/engine/src"
+touch "$root/engine/src/main.ts"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
+expect "the engine's packages are not installed" start test-7
+mkdir "$root/engine/node_modules"
+
+# A copy of that name started from this checkout already, or starting: its folder is there.
+mkdir -p "$root/app/build/test-copies/test-7"
+expect "is already started, or starting, from this checkout" start test-7
+expect "unknown option --bogus" start test-8 --bogus
+expect "--show needs what to open on" start test-8 --show
+rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
+
+expect "no copy named test-7 was started from this checkout" stop test-7
+expect "no copy named test-7 was started from this checkout" status test-7
+expect "say where to put the picture" shot test-7
+expect "give a file name ending in .png" shot test-7 "$root/picture.jpg"
+expect "refusing to write" shot test-7 "$T/outside.png"
+expect "refusing to write" shot test-7 /tmp/outside.png
+expect "there is no folder" shot test-7 "$root/no/such/folder/picture.png"
+expect "no copy named test-7 was started from this checkout" shot test-7 "$root/picture.png"
+
+out=$("$copy" status 2>&1)
+if [[ $out == "No copies started from this checkout." ]]; then
+	echo "ok: test-copy status with no copies"
+else
+	echo "FAIL: test-copy status with no copies said: $out"
+	failures=$((failures + 1))
+fi
+
+if ((failures)); then
+	echo "$failures check(s) failed."
+	exit 1
+fi
+echo "All checks passed."

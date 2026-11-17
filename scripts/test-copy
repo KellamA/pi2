@@ -1,0 +1,447 @@
+#!/bin/bash
+# Starts, captures and stops a throwaway copy of this checkout's development build, so that a change can be seen in
+# the app on a Mac where pi² is in real use without touching the installed copy (CONTRIBUTING.md, "Testing safely").
+#
+# A copy is named by a suffix of your own, such as test-181. The suffix gives it everything of its own: the bundle id
+# dev.pi2.app.<suffix> (preferences, permissions, Launch Services), the data folder
+# ~/Library/Application Support/pi2-<suffix> and the Keychain service dev.pi2.credentials.<suffix>. The copy, its
+# state file and anything else this script keeps for it are in app/build/test-copies/<suffix> in this checkout; that
+# folder existing is what makes a copy this checkout's own, and "stop" removes only what it names.
+#
+# The rules this keeps, so they do not depend on care:
+# - It never builds, and only copies a development build (one that runs its engine from this checkout). A release
+#   build would run on the usual data folder.
+# - Every path, bundle id and Keychain service is worked out from the suffix, which is checked first; none can be the
+#   usual ones. Nothing is removed by a pattern, and nothing outside the copy's own paths is removed at all.
+# - The copy is launched with a clean environment and its data folder and Keychain service named explicitly, so the
+#   PI2_HOME an agent's shell inherits from the installed pi² (the usual data folder) never reaches it.
+# - It stops only the processes it recorded, by pid, after checking that each pid is still the process it recorded
+#   (same start time, same executable), and any process running from the copy's own bundle. Never pkill or killall.
+#   An engine it did not record is followed only when it is the recorded app's own child, named in the copy's data
+#   folder; anything else running there makes "stop" remove nothing.
+# - "shot" checks that screen capture is already allowed and refuses otherwise: capturing without it puts a
+#   permission prompt on the person's screen.
+#
+# Two copies with different suffixes, from one checkout or several, are independent. A second "start" with a suffix
+# already in use (from this checkout or any other) is refused before it changes anything: the copy's folder here and
+# its data folder are each made with mkdir, which only one caller can win.
+
+set -euo pipefail
+
+usage() {
+	cat <<'EOF'
+Usage: scripts/test-copy <command> [arguments]
+
+  start <suffix> [--show <what>]   Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
+                                   data folder of its own, behind other windows, parked in a corner, without taking
+                                   the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md).
+                                   Prints the data folder and the app's and engine's process ids.
+  shot <suffix> <file.png> [--window <title>]
+                                   Capture the copy's largest window (or the one with that title) into a file inside this
+                                   checkout. Refuses if screen capture is not already allowed.
+  stop <suffix>                    Stop the copy's app, then its engine, by the pids recorded at start, and remove the
+                                   copy, its data folder, preferences, Keychain items, Launch Services registration
+                                   and the files its browser leaves.
+  status [<suffix>]                What is recorded for a copy and whether it runs; without a suffix, every copy this
+                                   checkout started.
+
+A suffix is lower-case letters, digits and hyphens, such as your issue number: test-181.
+EOF
+}
+
+die() { echo "test-copy: $*" >&2; exit 1; }
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+SOURCE="$ROOT/app/build/pi² dev.app"
+RELEASE="$ROOT/app/build/pi².app"
+COPIES="$ROOT/app/build/test-copies"
+SUPPORT="$HOME/Library/Application Support"
+USUAL_ID=dev.pi2.app
+USUAL_HOME="$SUPPORT/pi2"
+USUAL_SERVICE=dev.pi2.credentials
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+PLIST=/usr/libexec/PlistBuddy
+# Generous limits: under the load of several agents' builds and tests an engine can take well over ten seconds to
+# start. They are there so that a hang fails instead of waiting for ever.
+START_LIMIT=180
+STOP_LIMIT=30
+
+# Sets the names of everything that belongs to the copy with this suffix, after checking the suffix.
+names() {
+	local s=${1-}
+	[[ -n $s ]] || die "a suffix is required, such as test-181 (your issue number)"
+	[[ $s =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] ||
+		die "'$s' is not a suffix: use lower-case letters, digits and hyphens, such as test-181"
+	# The engine's socket is in the data folder, and a socket's path is limited to 104 bytes.
+	((${#s} <= 32)) || die "'$s' is too long: keep a suffix to 32 characters"
+	[[ $s != dev ]] || die "'dev' is the suffix every development build has as built; choose one of your own, such as test-181"
+	SUFFIX=$s
+	ID="$USUAL_ID.$s"
+	NAME="pi² $s"
+	DIR="$COPIES/$s"
+	APP="$DIR/$NAME.app"
+	STATE="$DIR/state"
+	DATA="$SUPPORT/pi2-$s"
+	SERVICE="$USUAL_SERVICE.$s"
+	PREFS="$HOME/Library/Preferences/$ID.plist"
+	# What the copy's web views (its browser, the conversation page) and macOS leave under its bundle id. Named one by
+	# one: a pattern across ~/Library would read folders macOS protects, and that can put a privacy prompt on screen.
+	LEFT_BY_ID=(
+		"$HOME/Library/WebKit/$ID"
+		"$HOME/Library/Caches/$ID"
+		"$HOME/Library/HTTPStorages/$ID"
+		"$HOME/Library/HTTPStorages/$ID.binarycookies"
+		"$HOME/Library/Saved Application State/$ID.savedState"
+	)
+	# Checked again, in another way, in case the rules above are ever loosened.
+	local lower_id lower_data
+	lower_id=$(tr '[:upper:]' '[:lower:]' <<<"$ID")
+	lower_data=$(tr '[:upper:]' '[:lower:]' <<<"$DATA")
+	[[ $lower_id != "$USUAL_ID" && $lower_id != "$USUAL_ID.dev" ]] || die "refusing the bundle id $ID"
+	[[ $lower_data != "$(tr '[:upper:]' '[:lower:]' <<<"$USUAL_HOME")" ]] || die "refusing the data folder $DATA"
+	[[ $SERVICE != "$USUAL_SERVICE" && $SERVICE == "$USUAL_SERVICE".?* ]] || die "refusing the Keychain service $SERVICE"
+}
+
+# Removes one of the copy's own paths. Anything else is refused, so a mistake here cannot reach further.
+remove() {
+	local p=$1 ok=0 q
+	for q in "$DIR" "$DATA" "$PREFS" "${LEFT_BY_ID[@]}"; do [[ $p == "$q" ]] && ok=1; done
+	((ok)) || die "refusing to remove $p: it is not one of the copy's own paths"
+	[[ -e $p || -L $p ]] || return 0
+	rm -rf -- "$p"
+	echo "  removed $(tidy "$p")"
+}
+
+tidy() { local s=$1 t='~'; printf '%s' "${s/#"$HOME"/$t}"; }
+
+# A process's start time and executable, which together tell it apart from a later process given the same pid.
+# Empty when there is no such process. In UTF-8, or ps writes the ² as an escape sequence.
+started_at() { LC_ALL=en_US.UTF-8 ps -o lstart= -p "$1" 2>/dev/null || true; }
+executable() { LC_ALL=en_US.UTF-8 ps -o comm= -p "$1" 2>/dev/null || true; }
+parent_of() { ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+
+# Whether pid $1 is still the process recorded as started at $2 from executable $3.
+is_recorded() { [[ -n $1 && -n $2 && $(started_at "$1") == "$2" && $(executable "$1") == "$3" ]]; }
+
+# The pids of processes whose executable is inside the copy's bundle.
+from_bundle() {
+	local pid exe
+	LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm= | while read -r pid exe; do
+		[[ $exe == "$APP/"* ]] && echo "$pid"
+	done
+	return 0
+}
+
+APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW=""
+
+load_state() {
+	[[ -f $STATE ]] || return 1
+	local key value
+	while IFS='=' read -r key value; do
+		case $key in
+			app_pid) APP_PID=$value ;;
+			app_start) APP_START=$value ;;
+			app_exe) APP_EXE=$value ;;
+			engine_pid) ENGINE_PID=$value ;;
+			engine_start) ENGINE_START=$value ;;
+			engine_exe) ENGINE_EXE=$value ;;
+			show) SHOW=$value ;;
+		esac
+	done <"$STATE"
+	[[ -z $APP_PID || $APP_PID =~ ^[0-9]+$ ]] || die "$STATE is damaged: app_pid is '$APP_PID'"
+	[[ -z $ENGINE_PID || $ENGINE_PID =~ ^[0-9]+$ ]] || die "$STATE is damaged: engine_pid is '$ENGINE_PID'"
+}
+
+save_state() {
+	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" \
+		"app_pid=$APP_PID" "app_start=$APP_START" "app_exe=$APP_EXE" \
+		"engine_pid=$ENGINE_PID" "engine_start=$ENGINE_START" "engine_exe=$ENGINE_EXE" >"$STATE.new"
+	mv "$STATE.new" "$STATE"
+}
+
+# The app starts a new engine when its engine goes (Debug › Kill Engine, a crash). The new one is the copy's too when
+# it is the recorded app's own child and is named in the copy's data folder, so take it in place of the old one.
+follow_engine() {
+	is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || return 0
+	is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" && return 0
+	local pid
+	pid=$(tr -d '[:space:]' <"$DATA/engine.pid" 2>/dev/null || true)
+	[[ $pid =~ ^[0-9]+$ && $(parent_of "$pid") == "$APP_PID" ]] || return 0
+	ENGINE_PID=$pid ENGINE_START=$(started_at "$pid") ENGINE_EXE=$(executable "$pid")
+	[[ -n $ENGINE_START ]] && save_state
+	return 0
+}
+
+# Stops one recorded process: TERM, then KILL if it is still there after STOP_LIMIT seconds. Checks before each
+# signal that the pid is still the process recorded.
+stop_process() {
+	local label=$1 pid=$2 start=$3 exe=$4 waited=0
+	[[ -n $pid ]] || return 0
+	if [[ -z $(started_at "$pid") ]]; then
+		echo "  the $label ($pid) had already exited"
+		return 0
+	fi
+	if ! is_recorded "$pid" "$start" "$exe"; then
+		echo "  not signalling process $pid: it is not the $label this script recorded"
+		return 0
+	fi
+	kill -TERM "$pid" 2>/dev/null || true
+	while is_recorded "$pid" "$start" "$exe" && ((waited < STOP_LIMIT * 10)); do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	if is_recorded "$pid" "$start" "$exe"; then
+		kill -KILL "$pid" 2>/dev/null || true
+		sleep 0.5
+		echo "  stopped the $label ($pid) with KILL: it was still running $STOP_LIMIT seconds after TERM"
+	else
+		echo "  stopped the $label ($pid)"
+	fi
+}
+
+# Whether a process named in the copy's data folder as its engine is still running there.
+engine_on_data() {
+	local pid
+	pid=$(tr -d '[:space:]' <"$DATA/engine.pid" 2>/dev/null || true)
+	[[ $pid =~ ^[0-9]+$ && -n $(started_at "$pid") && $(executable "$pid") == *node ]] && echo "$pid"
+	return 0
+}
+
+# Stops the copy and removes everything that is its own. Used by "stop", and by "start" when it fails part way.
+stop_copy() {
+	load_state || true
+	follow_engine
+	# The app first, and everything else running from the copy's bundle (which can only be the copy's own), so that
+	# nothing is left to start a new engine when this one goes.
+	stop_process app "$APP_PID" "$APP_START" "$APP_EXE"
+	local pid left
+	for pid in $(from_bundle); do
+		stop_process "process from the copy's bundle" "$pid" "$(started_at "$pid")" "$(executable "$pid")"
+	done
+	stop_process engine "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE"
+	left=$(from_bundle | tr '\n' ' ')
+	[[ -z $left ]] || die "processes are still running from the copy's bundle ($left); nothing was removed"
+	left=$(engine_on_data)
+	[[ -z $left ]] ||
+		die "process $left is named in $(tidy "$DATA")/engine.pid and is running, but was not recorded by this script; nothing was removed"
+
+	[[ -d $APP ]] && "$LSREGISTER" -u "$APP" 2>/dev/null && echo "  unregistered $(tidy "$APP") from Launch Services"
+	remove "$DATA"
+	defaults delete "$ID" >/dev/null 2>&1 || true
+	# defaults delete can leave an empty file behind.
+	remove "$PREFS"
+	local deleted=0
+	while ((deleted < 100)) && security delete-generic-password -s "$SERVICE" >/dev/null 2>&1; do
+		deleted=$((deleted + 1))
+	done
+	((deleted == 0)) || echo "  deleted $deleted Keychain item(s) of $SERVICE"
+	local p
+	for p in "${LEFT_BY_ID[@]}"; do remove "$p"; done
+	remove "$DIR"
+	rmdir "$COPIES" 2>/dev/null || true
+
+	left=$(leftovers)
+	[[ -z $left ]] || die "still there after stopping:"$'\n'"$left"
+}
+
+# What is still there of the copy, a line for each; nothing once it is all gone.
+leftovers() {
+	local p
+	[[ -z $(from_bundle) ]] || echo "  a process running from the copy's bundle"
+	is_recorded "$APP_PID" "$APP_START" "$APP_EXE" && echo "  the app, process $APP_PID"
+	is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" && echo "  the engine, process $ENGINE_PID"
+	for p in "$DIR" "$DATA" "$PREFS" "${LEFT_BY_ID[@]}"; do
+		[[ -e $p || -L $p ]] && echo "  $(tidy "$p")"
+	done
+	security find-generic-password -s "$SERVICE" >/dev/null 2>&1 && echo "  a Keychain item of $SERVICE"
+	p=$(ask_macos registered "$ID")
+	[[ -z $p ]] || echo "  a Launch Services entry for $ID, at $(tidy "$p")"
+	return 0
+}
+
+# Asks macOS what only its frameworks can tell: whether screen capture is allowed, where the copy's windows are, and
+# where Launch Services has an app with a bundle id. JavaScript for Automation starts in a moment, where a Swift
+# script can take half a minute to compile on a busy Mac; it sends no Apple event to any app, so it cannot set off an
+# Automation prompt either.
+# "preflight" prints true or false, and never asks. "window <pid> [title]" waits up to 30 seconds for a window of that
+# process on screen and prints the id of the largest one (or of the one with that title); nothing if there is none.
+# "registered <bundle id>" prints the path Launch Services has for it; nothing if none.
+ask_macos() {
+	osascript -l JavaScript - "$@" <<'JS'
+ObjC.import('AppKit');
+ObjC.import('CoreGraphics');
+ObjC.bindFunction('CGPreflightScreenCaptureAccess', ['bool', []]);
+function run(argv) {
+	if (argv[0] === 'preflight') return String($.CGPreflightScreenCaptureAccess());
+	if (argv[0] === 'registered') {
+		const url = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier(argv[1]);
+		return url.isNil() ? '' : ObjC.unwrap(url.path);
+	}
+	const pid = Number(argv[1]), title = argv[2];
+	const area = w => w.kCGWindowBounds.Width * w.kCGWindowBounds.Height;
+	for (const deadline = Date.now() + 30000; Date.now() < deadline;) {
+		const all = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(
+			$.kCGWindowListOptionAll | $.kCGWindowListExcludeDesktopElements, 0))) || [];
+		const windows = all.filter(w => w.kCGWindowOwnerPID === pid && w.kCGWindowIsOnscreen && w.kCGWindowLayer <= 0
+			&& w.kCGWindowBounds.Width >= 100 && w.kCGWindowBounds.Height >= 100
+			&& (title === undefined || w.kCGWindowName === title));
+		if (windows.length) return String(windows.sort((a, b) => area(b) - area(a))[0].kCGWindowNumber);
+		delay(0.5);
+	}
+	return '';
+}
+JS
+}
+
+cmd=${1-}; shift || true
+case $cmd in
+	start)
+		names "${1-}"; shift
+		while (($#)); do
+			case $1 in
+				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
+				*) die "unknown option $1" ;;
+			esac
+		done
+		[[ $SHOW != *$'\n'* ]] || die "--show takes one line"
+
+		if [[ ! -d $SOURCE ]]; then
+			if [[ -d $RELEASE ]]; then
+				die "there is only a release build here ($(tidy "$RELEASE")), and this script copies only a development build: a release build runs on the usual data folder. Build one with ./app/build.sh, or ./app/build.sh optimised for optimisation"
+			fi
+			die "there is no development build in this checkout. Build one first: (cd engine && npm ci) && ./app/build.sh, or ./app/build.sh optimised for optimisation. This script builds nothing"
+		fi
+		# A development build is one that runs its engine from a checkout instead of carrying its own; that is how
+		# the app tells, and what keeps it off the usual data folder.
+		main=$("$PLIST" -c 'Print :PI2EngineMain' "$SOURCE/Contents/Info.plist" 2>/dev/null || true)
+		[[ -n $main && ! -e "$SOURCE/Contents/Resources/engine" ]] ||
+			die "$(tidy "$SOURCE") is not a development build (it carries its own engine); build one with ./app/build.sh"
+		[[ $main == "$ROOT/engine/src/main.ts" && -f $main ]] ||
+			die "$(tidy "$SOURCE") runs the engine at $(tidy "$main"), not this checkout's; build it again here with ./app/build.sh"
+		[[ -d "$ROOT/engine/node_modules" ]] || die "the engine's packages are not installed: run (cd engine && npm ci)"
+
+		# Claim the suffix: first in this checkout, then on the Mac. mkdir succeeds for one caller only.
+		mkdir -p "$COPIES"
+		mkdir "$DIR" 2>/dev/null ||
+			die "a copy named $SUFFIX is already started, or starting, from this checkout: scripts/test-copy status $SUFFIX shows it, scripts/test-copy stop $SUFFIX stops and removes it"
+		if [[ -n $(lsappinfo find "bundleid=$ID" 2>/dev/null) ]] || ! mkdir "$DATA" 2>/dev/null; then
+			rmdir "$DIR"
+			die "the suffix $SUFFIX is in use outside this checkout: $(tidy "$DATA") exists, or an app with the bundle id $ID is running. It is not this checkout's to stop or remove; choose another suffix, such as $SUFFIX-2"
+		fi
+		# From here on, a failure stops and removes what was started.
+		trap 'echo "test-copy: start failed; removing what it made" >&2; stop_copy >&2' EXIT
+		save_state
+
+		ditto "$SOURCE" "$APP"
+		"$PLIST" -c "Set :CFBundleIdentifier $ID" -c "Set :CFBundleName $NAME" -c "Set :CFBundleDisplayName $NAME" \
+			"$APP/Contents/Info.plist"
+		[[ $("$PLIST" -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist") == "$ID" ]] ||
+			die "the copy's bundle id did not change"
+		# Editing Info.plist breaks the signature; sign it again, ad hoc. ditto kept Sparkle's symbolic links.
+		codesign --force --sign - "$APP" 2>/dev/null || die "could not sign the copy: codesign --force --sign - failed"
+
+		# A clean environment, so nothing the caller's shell has (PI2_HOME naming the usual data folder, above all)
+		# reaches the copy; what it needs is named here. -g keeps it from taking the focus, -n makes a new instance.
+		vars=(--env "PI2_HOME=$DATA" --env "PI2_KEYCHAIN_SERVICE=$SERVICE"
+			--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
+		[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
+		env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" TMPDIR="${TMPDIR:-/tmp/}" LANG=en_US.UTF-8 \
+			PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -n -g "$APP" "${vars[@]}"
+
+		waited=0
+		while [[ -z $APP_PID ]]; do
+			APP_PID=$(from_bundle | head -n 1 || true)
+			((waited < START_LIMIT * 2)) || die "the copy did not start within $START_LIMIT seconds"
+			[[ -n $APP_PID ]] || { sleep 0.5; waited=$((waited + 1)); }
+		done
+		APP_START=$(started_at "$APP_PID") APP_EXE=$(executable "$APP_PID")
+		[[ $APP_EXE == "$APP/Contents/MacOS/pi2" ]] || die "process $APP_PID runs $APP_EXE, not the copy"
+		save_state
+
+		# Ready once the copy's own engine is named in its data folder and listening there.
+		waited=0
+		while :; do
+			is_recorded "$APP_PID" "$APP_START" "$APP_EXE" ||
+				die "the copy quit as it started; $(tidy "$DATA")/app.log may say why (it is removed with the rest)"
+			pid=$(tr -d '[:space:]' <"$DATA/engine.pid" 2>/dev/null || true)
+			if [[ $pid =~ ^[0-9]+$ && $(parent_of "$pid") == "$APP_PID" ]] &&
+				grep -qF "listening on $DATA/engine.sock" "$DATA/engine.log" 2>/dev/null; then
+				break
+			fi
+			((waited < START_LIMIT * 2)) || die "the copy's engine was not listening within $START_LIMIT seconds"
+			sleep 0.5
+			waited=$((waited + 1))
+		done
+		ENGINE_PID=$pid ENGINE_START=$(started_at "$pid") ENGINE_EXE=$(executable "$pid")
+		save_state
+		trap - EXIT
+
+		echo "Started $NAME ($ID)${SHOW:+, showing $SHOW}."
+		echo "  copy              $(tidy "$APP")"
+		echo "  data folder       $(tidy "$DATA")"
+		echo "  Keychain service  $SERVICE"
+		echo "  app pid           $APP_PID"
+		echo "  engine pid        $ENGINE_PID"
+		echo "Capture it with scripts/test-copy shot $SUFFIX <file.png>; stop it with scripts/test-copy stop $SUFFIX."
+		;;
+	shot)
+		names "${1-}"; shift
+		file=${1-} title=""
+		shift || true
+		while (($#)); do
+			case $1 in
+				--window) [[ -n ${2-} ]] || die "--window needs a window's title"; title=$2; shift 2 ;;
+				*) die "unknown option $1" ;;
+			esac
+		done
+		[[ -n $file ]] || die "say where to put the picture: scripts/test-copy shot $SUFFIX <file.png>"
+		[[ $file == *.png ]] || die "the picture is a PNG: give a file name ending in .png"
+		folder=$(cd "$(dirname "$file")" 2>/dev/null && pwd -P) || die "there is no folder $(dirname "$file")"
+		[[ $folder == "$ROOT" || $folder == "$ROOT/"* ]] ||
+			die "refusing to write $file: a picture goes inside this checkout (app/build is ignored by git; $(tidy "$DIR") goes with the copy at stop)"
+		file="$folder/$(basename "$file")"
+		load_state || die "no copy named $SUFFIX was started from this checkout"
+		is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || die "the copy $SUFFIX is not running (its app, $APP_PID, has exited)"
+		[[ $(ask_macos preflight) == true ]] ||
+			die "screen capture is not allowed for this shell, so nothing was captured. Do not ask for it: the prompt would appear on the person's screen. Say that the change was not seen on screen"
+		wid=$(ask_macos window "$APP_PID" ${title:+"$title"})
+		[[ $wid =~ ^[0-9]+$ ]] || die "the copy has no window${title:+ called '$title'} on screen"
+		# -l captures that window only, wherever it is and whatever covers it; -o leaves out its shadow, -x the sound.
+		screencapture -x -o -l "$wid" "$file"
+		echo "Captured window $wid of $NAME into $(tidy "$file")."
+		;;
+	stop)
+		names "${1-}"
+		[[ -d $DIR ]] ||
+			die "no copy named $SUFFIX was started from this checkout ($(tidy "$DIR") is not there). A copy is stopped from the checkout that started it"
+		echo "Stopping $NAME ($ID):"
+		stop_copy
+		echo "Stopped and removed $NAME. Nothing of it is left: no process, copy, data folder, preferences, Keychain item,"
+		echo "Launch Services entry or browser files."
+		;;
+	status)
+		if [[ -z ${1-} ]]; then
+			found=0
+			for d in "$COPIES"/*/; do
+				[[ -d $d ]] || continue
+				found=1
+				"$0" status "$(basename "$d")" || true
+			done
+			((found)) || echo "No copies started from this checkout."
+			exit 0
+		fi
+		names "$1"
+		[[ -d $DIR ]] || die "no copy named $SUFFIX was started from this checkout"
+		load_state || true
+		follow_engine
+		state() { if is_recorded "$1" "$2" "$3"; then echo "$1, running"; elif [[ -n $1 ]]; then echo "$1, exited"; else echo "none recorded"; fi; }
+		echo "$NAME ($ID)${SHOW:+, showing $SHOW}"
+		echo "  copy              $(tidy "$APP")"
+		echo "  data folder       $(tidy "$DATA")"
+		echo "  Keychain service  $SERVICE"
+		echo "  app pid           $(state "$APP_PID" "$APP_START" "$APP_EXE")"
+		echo "  engine pid        $(state "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE")"
+		;;
+	""|-h|--help|help) usage ;;
+	*) usage >&2; exit 1 ;;
+esac
