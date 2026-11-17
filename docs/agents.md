@@ -21,7 +21,7 @@ A new worktree has none of the files git ignores, installed packages among them.
 ## Using your tools
 
 - Read files with `read` (a range of lines, for a long file) and change them with `edit` or `write`, not with `cat`, `sed -i` or a script in the shell. The person then sees what you changed as a diff, and you get back less text.
-- Do not cut a command's output with `head`, `tail` or `grep` to keep it short: what you cut is gone, and you end up running the command again. Let the tool shorten it (it keeps the whole output in a file and says where), or send a long run's output to a file in the temporary folder and read the part you need.
+- Do not cut a command's output with `head`, `tail` or `grep` to keep it short: what you cut is gone, and you end up running the command again. Let the tool shorten it (it keeps the whole output in a file and says where), or send a long run's output to a file in your conversation's scratch folder (`$PI2_SCRATCH`, which the system prompt names; see [architecture.md](architecture.md#a-scratch-folder)) and read the part you need.
 - A command in the foreground is stopped after two minutes unless you pass `timeout` (ten minutes at most). A long run, such as the whole test suite or a build, goes in the background with `background: true`; read it with the `background` tool and `wait`. Keep each `wait` to 240 seconds or less and ask again: a longer pause loses the prompt cache, and the whole conversation is paid for again.
 - When you need several files, or several lookups that do not depend on each other, send the calls together in one answer instead of one a turn. Each turn reads the whole conversation again.
 

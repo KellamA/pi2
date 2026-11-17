@@ -10,7 +10,16 @@
 import type { ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
+import { rmSync } from "node:fs";
+import { scratchRoot } from "../src/scratch.ts";
 import { socketPathFor } from "../src/socket.ts";
+
+/** The data folders of the engines a test talked to, whose scratch folders (outside the data folder) go when it ends. */
+const homes = new Set<string>();
+// On exit, so they go whether the test passed or failed; a test's data folder is its own, and so are these.
+process.on("exit", () => {
+	for (const home of homes) rmSync(scratchRoot(home), { recursive: true, force: true });
+});
 
 /** How long a wait for something that will happen, unless what is tested is broken, may take: only a hang reaches it. */
 export const PATIENT_MS = 10 * 60_000;
@@ -75,6 +84,7 @@ export async function until<T>(
  * at once if the engine exits first.
  */
 export async function listening(engine: ChildProcess, home: string, patience = PATIENT_MS): Promise<Socket> {
+	homes.add(home);
 	const path = socketPathFor(home);
 	const ended = exited(engine);
 	for (const deadline = Date.now() + patience; ; ) {
