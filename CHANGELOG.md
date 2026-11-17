@@ -4,9 +4,6 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
-### Added
-- **Duplicate an agent's setup.** Choose Duplicate in its sidebar context menu or settings, or find Duplicate agent in the command palette. The copy opens in settings with “copy” added to its name (numbered if needed), with the same model, instructions, tools, access and other settings, including command rules. Memory notes, conversations, schedules and worktrees stay with the original. Other agents cannot hand work to the copy until you enable it in their settings. Built-in agents can be duplicated too.
-
 ## 0.7.8
 
 ### Added
