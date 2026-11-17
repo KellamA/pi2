@@ -27,15 +27,15 @@ import {
 	UsageDoc,
 } from "@earendil-works/pi-durable";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
-import { BACKGROUND_ENTRY, backgroundMarker, hasRunningCommands } from "./background.ts";
+import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
+import { codemodeExtension } from "./codemode.ts";
 import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
@@ -49,10 +49,18 @@ import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
+import { timeLines } from "./log.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
+
+// Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
+// goes to the app, which reads its output and shows its error to the person as it is.
+if (!process.argv.includes("--restore")) {
+	timeLines(process.stdout);
+	timeLines(process.stderr);
+}
 
 const context = BACKGROUND_CONTEXT;
 const home = process.env.PI2_HOME ?? join(homedir(), "Library", "Application Support", "pi2");
@@ -234,7 +242,7 @@ host.features = FEATURES.map((feature) => feature(host, engine));
 const CodingTools = createCodingTools({ images: await createNodePhotonImages() });
 const pi2 = pi2Extension(host);
 const registry = createRegistry();
-const codemode = createCodemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
+const codemode = codemodeExtension({ sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }) });
 let mcpTools = mcp.extension();
 registry.install(CodingTools);
 registry.install(pi2);
@@ -391,7 +399,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string }
+	| { id: number; kind: "marker"; text: string; details?: { background: { id: string } } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -417,7 +425,11 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
-	if (entry.kind === BACKGROUND_ENTRY) return { id, kind: "marker", text: backgroundMarker(entry.data) };
+	if (entry.kind === BACKGROUND_ENTRY) {
+		// With the command's id, so the line can open the window with its output.
+		const details = backgroundMarkerDetails(entry.data);
+		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
+	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;

@@ -1,10 +1,14 @@
 #!/bin/zsh
 # Builds pi².app.
 #
-#   ./build.sh            Development build. The app runs the engine from ../engine with the Node on your PATH, so
-#                         engine edits take effect on the next engine start. Only works on this machine.
-#   ./build.sh release    Self-contained build. Node and the engine are copied into the app, which can then be
-#                         moved anywhere on this Mac (or another Mac with the same chip).
+#   ./build.sh            Development build, build/pi² dev.app. The app runs the engine from ../engine with the Node on
+#                         your PATH, so engine edits take effect on the next engine start. Only works on this machine.
+#                         It keeps apart from an installed pi²: its bundle id is dev.pi2.app.dev and its name "pi² dev",
+#                         and unless PI2_HOME and PI2_KEYCHAIN_SERVICE say otherwise it uses a data folder and a
+#                         Keychain service of its own; never the usual ones, even when told to (DevelopmentBuild.swift).
+#   ./build.sh release    Self-contained build, build/pi².app, bundle id dev.pi2.app, on the usual data folder. Node and
+#                         the engine are copied into the app, which can then be moved anywhere on this Mac (or another
+#                         Mac with the same chip).
 #
 # The version is in app/VERSION. The build number is the number of commits on the branch, so it only goes up as long as
 # releases are made from main; set PI2_BUILD_NUMBER to override it.
@@ -17,44 +21,70 @@
 #   SPARKLE_FEED_URL="https://…/appcast.xml"      where to look for updates; defaults to the newest GitHub release
 # Without SIGN_IDENTITY the app gets an ad-hoc signature, which is enough to run it on this Mac.
 #
-# The build replaces build/pi².app, so it stops before doing anything if a copy of pi² is running from that bundle.
-# Build in a clone or a git worktree instead, or quit that copy; PI2_REPLACE_RUNNING=1 replaces it anyway.
+# The build replaces the bundle it makes, so it stops before doing anything if a copy of pi² is running from that
+# bundle. Build in a clone or a git worktree instead, or quit that copy; PI2_REPLACE_RUNNING=1 replaces it anyway.
 set -euo pipefail
 cd "$(dirname "$0")"
-APP="build/pi².app"
-
-# Deleting a running app's bundle pulls its files out from under it, and re-signing the new one resets the
-# permissions macOS gave the old one. Processes are matched by their executable's real path, so Sparkle's helpers
-# count too, and by the open executable file, which finds a copy started by a relative path.
-if [[ -e "$APP" && "${PI2_REPLACE_RUNNING:-}" != 1 ]]; then
-  BUNDLE="${APP:A}"
-  typeset -A RUNNING
-  # In UTF-8, or ps writes the ² as an escape sequence.
-  LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm= | while read -r pid exe; do
-    if [[ "$exe" == /* && "${exe:A}" == "$BUNDLE"/* ]]; then RUNNING[$pid]="$exe"; fi
-  done
-  if [[ -f "$APP/Contents/MacOS/pi2" ]]; then
-    for pid in $(lsof -t -a -d txt -- "$APP/Contents/MacOS/pi2" 2>/dev/null || true); do
-      if [[ -z "${RUNNING[$pid]:-}" ]]; then RUNNING[$pid]="$(LC_ALL=en_US.UTF-8 ps -p "$pid" -o comm= || true)"; fi
-    done
-  fi
-  if (( ${#RUNNING} )); then
-    {
-      echo "build.sh stopped before building anything: it would delete and replace $BUNDLE,"
-      echo "and a copy of pi² is running from that bundle:"
-      for pid in ${(kon)RUNNING}; do echo "  process $pid  ${RUNNING[$pid]}"; done
-      echo "Replacing it would delete the files of a running app, and the new build would lose the Accessibility and"
-      echo "Screen Recording permissions given to this one. A development build also runs its engine from this checkout."
-      echo "Build in a separate clone or a git worktree instead (docs/development.md, \"Working on pi² with pi²\"),"
-      echo "or quit that copy of pi² and run build.sh again. To replace it anyway: PI2_REPLACE_RUNNING=1 $0${1:+ $*}"
-    } >&2
-    exit 1
-  fi
-fi
 
 MODE="${1:-dev}"
 CONFIG=debug
 [[ "$MODE" == release ]] && CONFIG=release
+
+if [[ "$MODE" == release ]]; then
+  APP="build/pi².app"
+  BUNDLE_ID=dev.pi2.app
+  NAME="pi²"
+else
+  # A name of its own tells it apart from the installed pi²: the bundle's file name in the Dock and Finder, its
+  # CFBundleName in the menu bar. The bundle id gives it its own preferences and macOS permissions, and names its
+  # data folder and Keychain service.
+  APP="build/pi² dev.app"
+  BUNDLE_ID=dev.pi2.app.dev
+  NAME="pi² dev"
+fi
+
+# Bundles this run deletes: the one it makes, and a development build left at build/pi².app by build.sh before
+# development builds had a name of their own, so that nobody tries out that one by mistake. A release build there
+# is left alone.
+REPLACED=("$APP")
+OLD_DEV="build/pi².app"
+if [[ "$MODE" != release && -f "$OLD_DEV/Contents/Info.plist" ]] \
+  && /usr/libexec/PlistBuddy -c 'Print :PI2EngineMain' "$OLD_DEV/Contents/Info.plist" >/dev/null 2>&1; then
+  REPLACED+=("$OLD_DEV")
+fi
+
+# Deleting a running app's bundle pulls its files out from under it, and re-signing the new one resets the
+# permissions macOS gave the old one. Processes are matched by their executable's real path, so Sparkle's helpers
+# count too, and by the open executable file, which finds a copy started by a relative path.
+if [[ "${PI2_REPLACE_RUNNING:-}" != 1 ]]; then
+  for TARGET in "${REPLACED[@]}"; do
+    [[ -e "$TARGET" ]] || continue
+    BUNDLE="${TARGET:A}"
+    typeset -A RUNNING
+    RUNNING=()
+    # In UTF-8, or ps writes the ² as an escape sequence.
+    LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm= | while read -r pid exe; do
+      if [[ "$exe" == /* && "${exe:A}" == "$BUNDLE"/* ]]; then RUNNING[$pid]="$exe"; fi
+    done
+    if [[ -f "$TARGET/Contents/MacOS/pi2" ]]; then
+      for pid in $(lsof -t -a -d txt -- "$TARGET/Contents/MacOS/pi2" 2>/dev/null || true); do
+        if [[ -z "${RUNNING[$pid]:-}" ]]; then RUNNING[$pid]="$(LC_ALL=en_US.UTF-8 ps -p "$pid" -o comm= || true)"; fi
+      done
+    fi
+    if (( ${#RUNNING} )); then
+      {
+        echo "build.sh stopped before building anything: it would delete and replace $BUNDLE,"
+        echo "and a copy of pi² is running from that bundle:"
+        for pid in ${(kon)RUNNING}; do echo "  process $pid  ${RUNNING[$pid]}"; done
+        echo "Replacing it would delete the files of a running app, and the new build would lose the Accessibility and"
+        echo "Screen Recording permissions given to this one. A development build also runs its engine from this checkout."
+        echo "Build in a separate clone or a git worktree instead (docs/development.md, \"Working on pi² with pi²\"),"
+        echo "or quit that copy of pi² and run build.sh again. To replace it anyway: PI2_REPLACE_RUNNING=1 $0${1:+ $*}"
+      } >&2
+      exit 1
+    fi
+  done
+fi
 
 VERSION="$(tr -d '[:space:]' < VERSION)"
 BUILD_NUMBER="${PI2_BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
@@ -73,7 +103,7 @@ fi
 
 swift build -c "$CONFIG" --product pi2
 BIN="$(swift build -c "$CONFIG" --show-bin-path)"
-rm -rf "$APP"
+rm -rf "${REPLACED[@]}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN/pi2" "$APP/Contents/MacOS/pi2"
 # Sparkle, for updates. ditto keeps the framework's symbolic links.
@@ -126,9 +156,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>pi2</string>
-  <key>CFBundleIdentifier</key><string>dev.pi2.app</string>
-  <key>CFBundleName</key><string>pi²</string>
-  <key>CFBundleDisplayName</key><string>pi²</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleName</key><string>$NAME</string>
+  <key>CFBundleDisplayName</key><string>$NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>

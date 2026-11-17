@@ -1,3 +1,4 @@
+import ComposeKit
 import ComputerKit
 import SwiftUI
 
@@ -165,11 +166,12 @@ struct InboxCard: View {
             } else {
                 Text(item.question ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 8) {
-                    TextField("Type an answer…", text: $answer)
+                    TextField("Type an answer…", text: $answer, axis: .vertical)
                         .textFieldStyle(.plain)
+                        .lineLimit(1...6)
+                        .sendsOnReturn(send)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .panel(radius: 8, fill: Color.black.opacity(0.15), border: Theme.line2)
-                        .onSubmit(send)
                     Button("Send") { send() }
                         .buttonStyle(.piPrimary)
                         .disabled(answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

@@ -11,6 +11,8 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/pi2-browser-probe   checks BrowserKit against pages it serves itself; not part of the app
           Sources/PaneKit       the tree of panes the conversation area is divided into, and the ready-made layouts
           Sources/pi2-layout-check    checks PaneKit, built with optimisation; not part of the app
+          Sources/ComposeKit    what Return does in a field that sends a message: send, start a new line, or leave it to an input method
+          Sources/pi2-compose-check   checks ComposeKit, with a real text field in a window of its own; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
 ```
@@ -45,6 +47,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/plan.ts` | The agent's task list |
+| `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
@@ -53,11 +56,14 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
-| `src/commands.ts` | How long a shell command may run: the default time limit, and what the model is told about it |
+| `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
+| `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
+| `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
+| `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |
 
 Conversations, runs and tool calls are pi durable's. pi² adds a few documents of its own on top: the list of conversations with their titles and settings, the agents, the schedules, and a per-day record of spend.
 
@@ -82,7 +88,7 @@ Whatever is started after that gets the shell's `PATH`, because each of these re
 MCP servers run as programs are connected as the engine starts listening, so on such a start they get the usual folders. When the shell's `PATH` is taken, each one that was started with another `PATH` is started again with it, without anyone pressing Reconnect (`McpServers.followPath` in `src/mcp.ts`):
 
 - One that failed to start, as one whose program (`npx`, `uvx`, a `node` from a version manager) is only on the shell's `PATH` does, is connected again at once. Nothing was using it. A conversation is given its tools at its next message, as after any reconnect.
-- One that is connected is started again beside the one running, and takes its place only once it has connected and listed its tools. Its tools never drop out of what conversations are offered meanwhile, so a conversation in the middle of an answer carries on. A call already running on the old process finishes there; the old process is closed once no call is left on it. A call that was resolved before the swap but runs after it (one waiting for an approval, say) goes to the new process. If the server will not start with the new `PATH`, the one running is kept, and `engine.log` says so.
+- One that is connected is started again beside the one running, and takes its place only once it has connected and listed its tools. Its tools never drop out of what conversations are offered meanwhile, so a conversation in the middle of an answer carries on. A call already running on the old process finishes there; the old process is closed once no call is left on it, or after ten minutes at most (see [below](#an-mcp-server-changed-while-a-call-runs-on-it)). A call that was resolved before the swap but runs after it (one waiting for an approval, say) goes to the new process. If the server will not start with the new `PATH`, the one running is kept, and `engine.log` says so.
 - One still connecting is looked at again once it has connected or failed.
 
 A server started with the `PATH` the engine has by then (one connected after the answer, or a `PATH` the answer did not change) is left alone, and so are servers reached over HTTP. `engine.log` has a line for each server started again.
@@ -91,11 +97,39 @@ A shell that has still not answered five minutes after it was asked is stopped, 
 
 ### How long a command may run
 
-A shell command is stopped after 30 minutes unless the call that runs it passes a `timeout` in seconds; the model can pass a larger one for a command it knows takes longer, such as a full build. The tool's description says so, and so does the result of a command the limit stopped, under what it had written by then. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.
+A shell command is stopped after 2 minutes unless the call that runs it passes a `timeout` in seconds, which can give it up to 10 minutes; a call that asks for more gets 10 minutes. These are Claude Code's limits for its Bash tool (its `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`). A command that may take longer than that, such as a full test suite on a busy Mac, runs with `background: true`, where the agent and the person can see it is still going. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.
+
+The tool's description gives both limits. A command the limit stopped has, under what it had printed by then, a line saying which limit stopped it (the default, the call's own `timeout`, or the most, with what the call asked for), and what to do instead: a larger `timeout`, or `background: true`. When it had printed nothing at all, or nothing for the last minute or more, in a run of a minute or more, the line says so, and that a command that goes quiet that long may be waiting on something, such as a permission prompt on the person's screen, and may wait again if it is run again. A command that ends by itself after a minute or more says how long it took, and how long it went without printing anything when that was a minute or more.
+
+The default was 30 minutes until #160, in which a command waiting on a system prompt that nobody had seen (by the timing, a macOS privacy prompt) held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
+### A long output
+
+A command's result shows the end of its output only: the last 2000 lines or 50 KB, whichever is less, as pi durable's `bash` keeps it. When that leaves some of the output out, the whole output is kept in a file, and the result says so under the output, in a line such as "The output is 4,812 lines long; only the last 2,000 are shown. All of it is in `…/output/12/toolu_….log`, for 7 days: read it with `read` (`offset`, `limit`) or search it with `grep`, rather than running the command again." The tool's description says the same, and tells the agent not to cut an output short itself with `head`, `tail` or `grep`: what it cuts is not kept, and getting it back means running the command again (#161). An output shown whole keeps no file.
+
+The files are only text a program printed. They live in the data folder, in `output/<conversation>/`, one per call, named after the call's id, readable by the person's user only; never in the conversation's folder, which may be a project's. A conversation keeps the files of its last 50 shortened commands, each for 7 days at most, and a file holds at most the first 64 MB of an output (the result says so when it holds less). A deleted conversation's folder is removed. The engine tidies them as it starts, whenever conversations are archived or deleted, whenever a conversation keeps a new one, and once a day. They are not part of a backup.
+
+`src/commands.ts` runs the command itself rather than through pi durable's `bash`, the same way but without that tool's own file of the output, which goes to the system's temporary folder and is never removed. A script in code mode that calls `bash` gets the file's path as `fullOutputPath`, as before.
+
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
+
+### The calls of one answer
+
+A model can make several tool calls in one answer. pi durable starts them all at once, unless one of them is to a tool marked to run in order, in which case the whole answer's calls run one at a time, in the order the model gave them, each starting when the one before it has ended. Started together, a call that uses a file the one before it writes finds nothing there, or the file as it was: a `read` of a screen capture that a `bash` call is taking, or a `bash` with `background: true` that runs a script the call before it is writing (#145, #129).
+
+So `src/order.ts` marks the tools that change files to run in order: `bash` (in the background too), `write`, `edit`, `write_document` and `codemode` (whose scripts can call the others). An answer that calls any of them runs in order; one that only looks (reads, searches, web pages) or hands work to sub-chats still runs its calls side by side, which is where that saves real time. The descriptions of `bash`, `write`, `edit` and `read` tell the model both, so it puts a call after the one whose result it needs, or in a later answer when neither of them changes files (a file a sub-chat writes, say). Under Ask first, a call waiting for approval holds back the calls after it in the same answer. The computer and browser tools were already marked to run in order, each action depending on what the last one left. Calls a code mode script makes run as the script makes them, whatever their tool.
+
+### An MCP server changed while a call runs on it
+
+The engine counts the tool calls running on each copy of an MCP server it started (a process, or a session with a server over HTTP), so that a change to the server in Settings does not cut off a call it did not mean to (`src/mcp.ts`):
+
+- **Reconnect**, and **saving the server** with it still on (a new command, URL or token), start a new copy beside the one running. Until the new copy has connected and listed its tools, Settings shows the server as connecting, its tools stay in what conversations are offered, and a call made meanwhile goes to the copy running. Then the new copy takes over, and the old one is closed once no call is left on it. If the new copy fails to start, the server shows why and offers no tools, and the old copy is closed in the same way, once its calls are done.
+- **Removing** the server, or **switching it off**, closes every copy of it at once, an old one still finishing a call included: the person asked for it to go, and a call left to finish could still change things on a server they took away. A call cut off this way ends with an error that tells the agent so ("The MCP server Name was removed while this call was running, so the call was stopped. Whatever it did before then may have happened.") rather than the protocol's "connection closed". A server that stops on its own says that it stopped, in the same way.
+- An old copy is kept for its calls for **ten minutes at most** (`LINGER_MS`). A call usually ends far sooner, since a request with no word from the server for a minute times out, but a server that keeps reporting progress can hold one open for ever. When the ten minutes are up, the copy is closed and the call ends with an error that says why.
+
+`engine.log` has a line when an old copy is kept for a call, when one is closed with a call still running, and when removing or switching off a server stopped a call. Settings says nothing about an old copy finishing a call: the call shows, and can be stopped, in its conversation, and stopping it closes that copy at once.
 
 ## Where things live
 
@@ -103,11 +137,32 @@ A command's standard input is `/dev/null`, as pi durable starts it, so a command
 |---|---|
 | Conversations, agents, schedules, settings | `~/Library/Application Support/pi2` (one SQLite database and a few small files) |
 | Keys and sign-ins | The macOS Keychain, service `dev.pi2.credentials` |
-| Logs | `engine.log` and `app.log` in the data folder |
+| Logs | `engine.log` and `app.log` in the data folder. See [The logs](#the-logs) |
+| A shell command's whole output, when its result was shortened | `output/<conversation>/` in the data folder, for 7 days at most |
+
+A development build uses `~/Library/Application Support/pi2-dev` and the Keychain service `dev.pi2.credentials.dev` instead, never the ones above ([development.md](development.md#build-and-run)).
 
 A sign-in credential can be several kilobytes, more than one Keychain command can carry, so long ones are split across several items with a checksum. A damaged item reads as "signed out" rather than as an error.
 
-Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 30 minutes; the end-to-end test uses 3).
+Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 2 minutes; the end-to-end test uses 3; a call's `timeout` may still go up to 10 minutes, or this, if it is longer).
+
+## The logs
+
+`engine.log` is what the engine prints: the app, or the login item, sends its standard output and standard error there, and adds to the file rather than starting it again, so the lines of an engine that crashed are still there after the next start. `app.log` has the app's own notes, such as a dropped connection.
+
+Every line of both starts with the time it was written, in UTC to the second (ISO 8601, as Swift's `.iso8601` writes it), then a space:
+
+```
+2026-11-16T18:03:12Z [pi2-engine] listening on …/engine.sock
+2026-11-16T18:09:40Z [pi2-engine] worktree made for conversation 12 on fix-login
+2026-11-16T18:15:02Z [pi2-engine] background command bg-3 of conversation 12 exited with code 1
+```
+
+The engine's own lines carry the `[pi2-engine]` tag after the time; a line without it came from a dependency or from Node. A line about a background command, a worktree or a set-up command names its conversation by number (`conversation 12`), the number the app shows for it, so `grep "conversation 12"` finds what was done for one conversation.
+
+The time is put on in one place, `engine/src/log.ts`, where the lines leave the engine, not by each line's writer: so a line a dependency writes, a warning from Node, and the trace of an error that stops the engine (which the engine writes itself, as a `fatal:` line) get one too, and so does each line of a message that runs over several. A line written in several pieces gets the time of its first piece. Only what Node writes before the engine's own code has started has no time: an engine file that cannot be read or has an error in it, which Node reports as it loads the files and stops. `--restore`, which the app runs to put a backup back, writes its output as it is: the app reads it, and shows its error to the person.
+
+What reads the log goes by its wording, not by the start of a line: the app's "engine could not be started" notice shows its last lines as they are, and tests wait for a line such as `listening on` anywhere in a line. A new reader should do the same, or allow for the time.
 
 ## Known limits
 

@@ -43,7 +43,7 @@ Agents can hand work to each other. Each handoff opens a sub-chat under the conv
 
 ### Stay in control
 
-Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. A command that runs for more than 30 minutes is stopped, unless the agent asked for longer, and one that waits for typed input fails at once instead of holding the conversation. For a server or a watching build, an agent can start a command and [leave it running in the background](docs/background.md), read its output later and stop it; Activity lists what is running, each with its output and a Stop button, and the conversation shows the commands it has running above the message field. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
+Tool access is set per conversation: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. A command that runs for more than 2 minutes is stopped, unless the agent asked for longer (up to 10) or left it running in the background, and one that waits for typed input fails at once instead of holding the conversation. For a server or a watching build, an agent can start a command and [leave it running in the background](docs/background.md), read its output later and stop it; Activity lists what is running, each with its output and a Stop button, and the conversation shows the commands it has running above the message field. Approvals and questions from every conversation collect in one Inbox, and they are still there after a restart.
 
 <p align="center"><img src="docs/images/inbox.png" alt="The Inbox: a command, a schedule an agent wants to set, a question, and an app action, all waiting" width="820"></p>
 
@@ -112,6 +112,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).
 - **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.
 - **Command palette** (⌘K) and **Quick Ask** from anywhere (⌃⌥Space).
+- **Line breaks in a message**: Return sends, and Shift-Return (or Option-Return) starts a new line, in the message field, Quick Ask, the menu bar panel and an answer to an agent's question.
 - **Backup and restore** of everything except your keys.
 - **Dark and light**, dark by default.
 
@@ -140,10 +141,10 @@ cd engine && npm ci && cd ..
 ```
 
 ```bash
-open "app/build/pi².app"
+open "app/build/pi² dev.app"
 ```
 
-That is a development build: it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. For an app that carries its own engine and can be moved to Applications:
+That is a development build, "pi² dev": it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. It keeps its conversations, sign-ins and settings apart from an installed pi². For an app that carries its own engine and can be moved to Applications:
 
 ```bash
 ./app/build.sh release

@@ -93,6 +93,9 @@ type Command = {
 type LeftBehind = { id: string; conversationId: number; rootConversationId: number; title: string; command: string; outcome: LeftOver | "unknown"; group: number | null };
 const leftBehind: LeftBehind[] = [];
 
+/** A command as engine.log names it: with its conversation, since a command's id alone does not say whose it was. */
+const logName = (id: string, conversationId: number) => `background command ${id} of conversation ${conversationId}`;
+
 /** Every command this engine knows of, running and recently ended, by id. */
 const commands = new Map<string, Command>();
 let engine: Engine | undefined;
@@ -138,6 +141,15 @@ export function backgroundMarker(data: unknown): string {
 	const how = typeof entry.how === "string" && entry.how.trim() !== "" ? entry.how : "ended";
 	const command = typeof entry.command === "string" ? commandLine(entry.command) : "";
 	return `Background command${id} ${how}${command === "" ? "" : `: ${command}`}`;
+}
+
+/**
+ * What the app is given with that line besides its words: the command's id, for a way to the window with its output.
+ * Nothing for an entry with no id this engine could have given.
+ */
+export function backgroundMarkerDetails(data: unknown): { background: { id: string } } | undefined {
+	const id = data !== null && typeof data === "object" ? (data as { id?: unknown }).id : undefined;
+	return typeof id === "string" && /^bg-[1-9][0-9]{0,8}$/.test(id) ? { background: { id } } : undefined;
 }
 
 // ---- Process groups
@@ -222,7 +234,7 @@ async function note(command: Command, how: string): Promise<void> {
 		const data = { id: command.id, command: command.command, how, seconds: Math.round(((command.ended?.at ?? Date.now()) - command.startedAt) / 1000) };
 		await conv?.submit({ type: "write", entry: { kind: BACKGROUND_ENTRY, data } }, engine.context());
 	} catch (error) {
-		engine.log("could not note the end of background command", command.id, error instanceof Error ? error.message : error);
+		engine.log("could not note the end of", logName(command.id, command.conversationId), error instanceof Error ? error.message : error);
 	}
 }
 
@@ -331,7 +343,7 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		doc.next += 1;
 		doc.running[id] = { id, conversationId, command: args.command, cwd, startedAt };
 	});
-	const forget = () => save((doc) => void delete doc.running[id]).catch((error) => host.log("could not forget background command", id, error instanceof Error ? error.message : error));
+	const forget = () => save((doc) => void delete doc.running[id]).catch((error) => host.log("could not forget", logName(id, conversationId), error instanceof Error ? error.message : error));
 
 	// As a command that is waited for is run: through bash, in the conversation's folder, with the engine's environment
 	// and no input. In a process group of its own, so that stopping it stops whatever it started too. One variable is
@@ -370,7 +382,10 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 	/** Whether the call that started the command said, in its own result, that it was already over. */
 	let answer: (sawTheEnd: boolean) => void = () => {};
 	const answered = new Promise<boolean>((resolve) => (answer = resolve));
-	/** `left` answers whether the command left something running in its group, once that has been looked into and stopped. */
+	/**
+	 * `left` answers whether the command, ending other than by a stop pi² carried out, left something running in its group, once that has been looked
+	 * into and stopped. For a stop pi² carried out it is always false: that stop was of everything the command started.
+	 */
 	const end = async (how: string, failed: boolean, at: number, left: Promise<boolean>) => {
 		if (over) return;
 		over = true;
@@ -385,7 +400,7 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		announce();
 		const leftSomething = await left.catch(() => false);
 		if (leftSomething) ended.how = `${how}, and what it had left running was stopped with it`;
-		host.log("background command", id, ended.how);
+		host.log(logName(id, conversationId), ended.how);
 		// Stopped with the engine, its record stays: the next engine writes its end down, and tells the agent.
 		if (shuttingDown) return;
 		await forget();
@@ -402,7 +417,11 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		const at = Date.now();
 		// Its number is free for another process from here on, so nothing more is signalled by it: what it left in its
 		// group is looked up and stopped by what `ps` says is there.
-		const left = signallable(child.pid) ? stopMembers(child.pid, GRACE_MS) : Promise.resolve(false);
+		const swept = signallable(child.pid) ? stopMembers(child.pid, GRACE_MS) : Promise.resolve(false);
+		// A stop pi² carried out (the agent's, the person's, a time limit, archiving) was sent to the whole group at once and
+		// was always meant to take everything the command started. Whether some of it outlived the first process by a moment
+		// depends only on how busy the Mac is, so it is not told: the same stop is worded the same way every time (#168).
+		const left = command.stopping === undefined ? swept : swept.then(() => false);
 		const how = command.stopping ?? (code === 0 ? "finished" : code === null ? `was ended by ${signal ?? "a signal"}` : `exited with code ${code}`);
 		const failed = command.stopping === undefined && code !== 0;
 		// It is over once the rest of its output is in: when its pipes close, or after a moment, should something it left
@@ -420,7 +439,7 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 				if (record !== undefined && !over) record.process = noted;
 			});
 		})
-		.catch((error) => host.log("could not note the process of background command", id, error instanceof Error ? error.message : error));
+		.catch((error) => host.log("could not note the process of", logName(id, conversationId), error instanceof Error ? error.message : error));
 	announce();
 
 	let sawTheEnd = false;
@@ -674,7 +693,7 @@ export const background: Feature = (_host, running) => {
 			for (const record of left) {
 				// Without its process on record, the engine stopped in the instant between starting it and noting it down.
 				const found: LeftOver | "unknown" = record.process === undefined ? "unknown" : await stopLeftOver(record.process).catch(() => "unsure" as const);
-				running.log("background command", record.id, "left by the last engine", found === "unknown" ? leftOverLog.unsure : leftOverLog[found]);
+				running.log(logName(record.id, record.conversationId), "left by the last engine", found === "unknown" ? leftOverLog.unsure : leftOverLog[found]);
 				const how =
 					found === "stopped"
 						? "was left running when pi²’s engine stopped, and was stopped when the engine started again"

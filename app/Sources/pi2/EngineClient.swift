@@ -93,6 +93,8 @@ final class EngineClient {
     private var holdEngine = false
 
     init() {
+        // A development build's own data folder and Keychain service, unless the environment names others.
+        let setAside = DevelopmentBuild.applyDefaults()
         if let override = ProcessInfo.processInfo.environment["PI2_HOME"] {
             home = URL(fileURLWithPath: override, isDirectory: true)
         } else {
@@ -100,6 +102,7 @@ final class EngineClient {
                 .appendingPathComponent("pi2", isDirectory: true)
         }
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        if let setAside { note(setAside) }
     }
 
     // MARK: - Requests
@@ -291,6 +294,7 @@ final class EngineClient {
                     Task { _ = try? await self.call("browser.register") }
                     // After an update the engine that answered may be the one from before.
                     Task { await self.replaceEngineFromAnotherBuild() }
+                    Task { await self.noteEngineFromAnotherCheckout() }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.requestOpen(id) }
                 case .waiting(let error), .failed(let error):
@@ -691,6 +695,16 @@ final class EngineClient {
                 lastError = "Could not update the login item: \(error.localizedDescription)"
             }
         }
+    }
+
+    /// A development build never replaces the engine it finds: pointed at another copy's data folder on purpose, it
+    /// would stop that copy's engine. On its own data folder, the engine can still be one another development build
+    /// with the same bundle id started from another checkout, which runs that checkout's code rather than this one's,
+    /// so app.log says so.
+    private func noteEngineFromAnotherCheckout() async {
+        guard !Self.isSelfContained, let (_, main) = Self.enginePaths else { return }
+        guard let info = try? await call("engine.info"), let theirs = info["main"]?.stringValue, theirs != main else { return }
+        note("connected to an engine started from \(theirs), not this build's \(main); it is left running")
     }
 
     /// Called just before an update replaces the app. Stops the engine cleanly, so it is not left running from files

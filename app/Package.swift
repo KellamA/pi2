@@ -15,9 +15,11 @@ let package = Package(
         .target(name: "BrowserKit", path: "Sources/BrowserKit", swiftSettings: [.swiftLanguageMode(.v5)]),
         // How the conversation area is divided into panes. Its own module so pi2-layout-check can check it.
         .target(name: "PaneKit", path: "Sources/PaneKit"),
+        // What Return does in a field that sends a message. Its own module so pi2-compose-check can check it.
+        .target(name: "ComposeKit", path: "Sources/ComposeKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // The app finds Sparkle.framework in Contents/Frameworks.
             linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
@@ -30,5 +32,7 @@ let package = Package(
         // Checks PaneKit's operations on the pane tree. Meant to be built with optimisation (`swift build -c release`),
         // as the app is released: a debug build does not show what #134 was.
         .executableTarget(name: "pi2-layout-check", dependencies: ["PaneKit"], path: "Sources/pi2-layout-check", swiftSettings: [.swiftLanguageMode(.v5)]),
+        // Checks ComposeKit's Return key: the decision, then a real SwiftUI field in an off-screen window of its own.
+        .executableTarget(name: "pi2-compose-check", dependencies: ["ComposeKit"], path: "Sources/pi2-compose-check"),
     ]
 )

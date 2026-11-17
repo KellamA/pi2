@@ -16,6 +16,7 @@
 	const MD = window.PiMarkdown;
 	const T = window.PiTools;
 	const C = window.PiClipboard;
+	const K = window.PiKeys;
 	const char = String.fromCharCode;
 	const ELLIPSIS = char(0x2026);
 	const RSQUO = char(0x2019);
@@ -322,7 +323,7 @@
 				const spec = setupSpec(item, visible);
 				if (spec) specs.push(spec);
 			} else {
-				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(item.text) });
+				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(str(item.text), T.markerCommand(item)) });
 			}
 		});
 		if (live.partial) {
@@ -363,12 +364,31 @@
 		return row;
 	}
 
-	function markerRow(text) {
+	/** A line of its own across the transcript; one saying a background command ended has a way to its output. */
+	function markerRow(text, command = "") {
 		const row = el("div", "marker");
-		row.setAttribute("role", "separator");
+		// A separator's contents are not reachable, so a line with a button in it is a group instead.
+		row.setAttribute("role", command ? "group" : "separator");
 		row.setAttribute("aria-label", text);
 		row.appendChild(el("span", "", text));
+		if (command) row.appendChild(outputButton(command));
 		return row;
+	}
+
+	/**
+	 * Output, for a row about a background command: asks the app to open the window with what the command printed. The
+	 * app checks the id is one this conversation's rows name; for one pi² no longer has, the window says so.
+	 */
+	function outputButton(command) {
+		const what = `Show what ${command} printed, in a window of its own`;
+		const b = button("link-button output-button", what, "Output");
+		b.title = what;
+		b.appendChild(glyph("open", "open-glyph"));
+		b.addEventListener("click", (event) => {
+			event.stopPropagation();
+			post({ type: "output", id: command });
+		});
+		return b;
 	}
 
 	function workingRow() {
@@ -752,13 +772,17 @@
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status none", "No result"));
 		}
+		// A background command's Output, at the end of the line as a hand-off's Open is, after the chevron.
+		const command = fixed ? "" : T.backgroundCommand(call, result);
+		const outputLink = command ? outputButton(command) : null;
+		if (outputLink) head.appendChild(outputLink);
 		row.appendChild(head);
 		if (sections.length === 0) return;
 
 		const body = el("div", "row-body tool-body");
 		body.id = "body-" + ++bodyCount;
 		const toggle = chevron(body.id, info.title);
-		head.appendChild(toggle);
+		head.insertBefore(toggle, outputLink);
 		row.appendChild(body);
 		const liveOutput = liveTool && str(liveTool.output) !== "";
 		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode", "pi2_setup"].includes(call.name));
@@ -1117,8 +1141,9 @@
 			card.appendChild(el("p", "card-question", str(pending.question)));
 			const form = el("div", "card-answer");
 			form.setAttribute("data-nocopy", "");
-			const field = el("input", "answer-field");
-			field.type = "text";
+			// A text area, so an answer can have line breaks; it starts one line high and grows with them.
+			const field = el("textarea", "answer-field");
+			field.rows = 1;
 			field.placeholder = "Type an answer" + ELLIPSIS;
 			field.setAttribute("aria-label", "Your answer");
 			const send = button("btn primary", null, "Send");
@@ -1129,11 +1154,30 @@
 				field.disabled = true;
 				send.disabled = true;
 			};
-			field.addEventListener("input", () => (send.disabled = field.value.trim() === ""));
+			const fit = () => {
+				field.style.height = "auto";
+				field.style.height = field.scrollHeight + 2 + "px";
+			};
+			field.addEventListener("input", () => {
+				send.disabled = field.value.trim() === "";
+				fit();
+			});
+			// Return sends; Shift-Return or Option-Return starts a new line, as in the app's message field.
 			field.addEventListener("keydown", (event) => {
-				if (event.key === "Enter" && !event.isComposing) {
+				const action = K.returnKey(event);
+				if (action === "send") {
 					event.preventDefault();
 					submit();
+				} else if (action === "newLine") {
+					// Inserted here rather than left to WebKit, which does not break the line for every one of these keys.
+					// insertText replaces the selection, can be undone and fires `input`.
+					event.preventDefault();
+					if (!document.execCommand("insertText", false, "\n")) {
+						field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
+						field.dispatchEvent(new Event("input"));
+					}
+				} else if (action === "nothing") {
+					event.preventDefault();
 				}
 			});
 			send.addEventListener("click", submit);
@@ -1290,7 +1334,7 @@
 	);
 	window.addEventListener("keydown", (event) => {
 		if (["PageUp", "ArrowUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
-			if (!(event.target instanceof HTMLInputElement)) {
+			if (!(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement)) {
 				pinned = false;
 				ignoreScrollUntil = 0;
 			}
