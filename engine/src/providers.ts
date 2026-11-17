@@ -3,6 +3,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	type AnyModel,
+	type Api,
 	type AuthInteraction,
 	createProvider,
 	type CredentialStore,
@@ -10,6 +12,7 @@ import {
 	type Model,
 	type MutableModels,
 	type Provider,
+	type ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -49,7 +52,76 @@ export type ModelInfo = {
 	vision: boolean;
 	/** Left out of the model pickers by the person's choice in settings. */
 	hidden?: boolean;
+	/** Added by hand to a built-in provider whose library does not list it (see `AddedModel`). */
+	addedByHand?: boolean;
 };
+
+/**
+ * A model the person added by its id to a built-in provider, for one newer than the library's catalog: kept in
+ * `added-models.json`, by provider. What pi² cannot know about it is taken from a model of the provider's catalog
+ * (`basedOn`) and may be changed. It has no known price.
+ */
+export type AddedModel = {
+	id: string;
+	name: string;
+	basedOn: string;
+	contextWindow: number;
+	maxTokens: number;
+	vision: boolean;
+	/** As `getSupportedThinkingLevels` gives them; empty for a model that does not think. */
+	thinkingLevels: string[];
+	addedAt: number;
+	/** The model as it was built when added: what it is built from if the library no longer has `basedOn`. */
+	model: Model<Api>;
+};
+
+/** What pi² would add for an id, before the person changes any of it, or what an added model has now. */
+export type ModelDraft = {
+	provider: string;
+	providerName: string;
+	id: string;
+	name: string;
+	basedOn: string;
+	basedOnName: string;
+	/** How `basedOn` was chosen: the newest of the id's family, the closest other one, or the person's or an earlier choice. */
+	match: "family" | "nearest" | "chosen";
+	api: string;
+	/** The APIs the provider's catalog models speak, for a provider with more than one. */
+	apis: string[];
+	contextWindow: number;
+	maxTokens: number;
+	vision: boolean;
+	thinkingLevels: string[];
+	/** The catalog models it can be based on, newest first. */
+	templates: { id: string; name: string; api: string }[];
+	/** The id is already added by hand: saving it changes that model. */
+	editing: boolean;
+};
+
+/** Every thinking level pi-ai knows, in order. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * A model id's family and version: the id without its version numbers and dates ("claude-opus", "gpt-mini"), and those
+ * numbers. Date stamps ("-20251101", "-2024-05-13", "-04-2026") say which build, not which version.
+ */
+function familyOf(id: string): { family: string[]; version: number[] } {
+	const family: string[] = [];
+	const version: number[] = [];
+	for (const token of id.replace(/-(\d{4}-\d{2}-\d{2}|\d{2}-\d{4}|\d{6,})(?=-|$)/g, "").split("-")) {
+		if (/^\d+(\.\d+)*$/.test(token)) version.push(...token.split(".").map(Number));
+		else if (token !== "latest" && token !== "preview") family.push(token);
+	}
+	return { family, version };
+}
+
+function compareVersions(a: readonly number[], b: readonly number[]): number {
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const order = (a[i] ?? 0) - (b[i] ?? 0);
+		if (order !== 0) return order;
+	}
+	return 0;
+}
 
 /**
  * Of a provider's model ids, the newest of each family, for the "newest only" shortcut in settings.
@@ -59,25 +131,131 @@ export type ModelInfo = {
 export function newestOnly(ids: readonly string[]): Set<string> {
 	const best = new Map<string, { id: string; version: number[] }>();
 	for (const id of ids) {
-		const family: string[] = [];
-		const version: number[] = [];
-		// Date stamps ("-20251101", "-2024-05-13", "-04-2026") say which build, not which version.
-		for (const token of id.replace(/-(\d{4}-\d{2}-\d{2}|\d{2}-\d{4}|\d{6,})(?=-|$)/g, "").split("-")) {
-			if (/^\d+(\.\d+)*$/.test(token)) version.push(...token.split(".").map(Number));
-			else if (token !== "latest" && token !== "preview") family.push(token);
-		}
+		const { family, version } = familyOf(id);
 		const key = family.join("-");
 		const held = best.get(key);
 		let newer = held === undefined;
 		if (held !== undefined) {
-			let order = 0;
-			for (let i = 0; i < Math.max(version.length, held.version.length) && order === 0; i++) order = (version[i] ?? 0) - (held.version[i] ?? 0);
+			const order = compareVersions(version, held.version);
 			// The same version twice is one model under two ids (a dated one and its alias): keep the shorter.
 			newer = order > 0 || (order === 0 && id.length < held.id.length);
 		}
 		if (newer) best.set(key, { id, version });
 	}
 	return new Set([...best.values()].map((entry) => entry.id));
+}
+
+/**
+ * The model of `models` a new id is most like: the newest of its own family ("gpt-6.1-sol" for "gpt-6.2-sol"), else
+ * the newest of those sharing the most of its family's first words ("gpt-…" for "gpt-7-nova"), else the newest of all.
+ * Newest by version, then by a shorter id (an alias rather than a dated build).
+ */
+export function nearestModel<T extends { id: string }>(id: string, models: readonly T[]): { model: T; sameFamily: boolean } | undefined {
+	const wanted = familyOf(id).family;
+	let best: { model: T; shared: number; version: number[] } | undefined;
+	for (const model of models) {
+		const { family, version } = familyOf(model.id);
+		const same = family.join("-") === wanted.join("-");
+		let shared = 0;
+		while (shared < Math.min(family.length, wanted.length) && family[shared] === wanted[shared]) shared++;
+		// The whole family alike outranks any number of first words alike.
+		const score = same ? Number.MAX_SAFE_INTEGER : shared;
+		const order = best === undefined ? 1 : score - best.shared || compareVersions(version, best.version) || best.model.id.length - model.id.length;
+		if (order > 0) best = { model, shared: score, version };
+	}
+	return best === undefined ? undefined : { model: best.model, sameFamily: best.shared === Number.MAX_SAFE_INTEGER };
+}
+
+/**
+ * A name for a new id from its template's: "GPT-6.1 Sol" for "gpt-6.1-sol" gives "GPT-6.2 Sol" for "gpt-6.2-sol". The
+ * id itself when the template's name does not show its version the same way.
+ */
+export function nameLike(id: string, template: { id: string; name: string }): string {
+	const from = familyOf(template.id);
+	const to = familyOf(id);
+	if (from.family.join("-") !== to.family.join("-") || from.version.length === 0 || to.version.length === 0) return id;
+	const version = from.version.join(".");
+	if (!template.name.includes(version)) return id;
+	return template.name.replace(version, to.version.join("."));
+}
+
+/** The thinking-level map that gives `levels` (in pi-ai's sense) on top of a template's map. */
+function thinkingMap(template: Model<Api>, levels: readonly string[]): ThinkingLevelMap {
+	const map: Record<string, string | null | undefined> = { ...(template.reasoning ? template.thinkingLevelMap : {}) };
+	for (const level of THINKING_LEVELS) {
+		if (!levels.includes(level)) map[level] = null;
+		// The two highest exist only when mapped; the others, mapped to nothing, take the provider's default.
+		else if (level === "xhigh" || level === "max") map[level] = typeof map[level] === "string" ? map[level] : level;
+		else if (map[level] === null) delete map[level];
+	}
+	return map as ThinkingLevelMap;
+}
+
+/** A model id as typed, or why it cannot be one. Ids may hold "/", ":" and "@" ("anthropic/claude-x", "qwen3:32b"). */
+function checkModelId(raw: unknown): string {
+	const id = typeof raw === "string" ? raw.trim() : "";
+	if (id === "") throw new Error("Type the model's id, as the provider names it, such as gpt-6.2-sol");
+	if (/\s/.test(id)) throw new Error("A model id has no spaces. Type the id the provider uses, such as gpt-6.2-sol, rather than its name");
+	if (id.length > 200) throw new Error("That model id is too long");
+	return id;
+}
+
+/** A model added by hand, built from its template with the person's choices. Its price is not known, so it is none. */
+function buildAdded(template: Model<Api>, entry: Omit<AddedModel, "addedAt" | "model" | "basedOn">, provider: string): Model<Api> {
+	const reasoning = entry.thinkingLevels.some((level) => level !== "off");
+	const { thinkingLevelMap: _map, ...rest } = template;
+	return {
+		...rest,
+		id: entry.id,
+		name: entry.name,
+		provider,
+		reasoning,
+		...(reasoning ? { thinkingLevelMap: thinkingMap(template, entry.thinkingLevels) } : {}),
+		input: entry.vision ? ["text", "image"] : ["text"],
+		contextWindow: entry.contextWindow,
+		maxTokens: entry.maxTokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	} as Model<Api>;
+}
+
+/**
+ * A built-in provider with the models added to it by hand after its own. One the catalog has come to know (a library
+ * update, or a provider's refreshed list) is left out: the catalog's own entry takes its place. Added models are offered
+ * whatever the credential: a provider's own filter only knows its catalog.
+ */
+function withAddedModels(provider: Provider, added: () => readonly Model<Api>[]): Provider {
+	const extra = (): readonly Model<Api>[] => {
+		const list = added();
+		if (list.length === 0) return list;
+		const known = new Set(provider.getModels().map((model) => model.id));
+		return list.filter((model) => !known.has(model.id));
+	};
+	const apart = <M extends AnyModel>(models: readonly M[]) => {
+		const mine = new Set<AnyModel>(extra());
+		return { theirs: models.filter((model) => !mine.has(model)), mine: models.filter((model) => mine.has(model)) };
+	};
+	const { getAllModels, filterModels, filterAllModels } = provider;
+	return {
+		...provider,
+		getModels: () => [...provider.getModels(), ...extra()],
+		...(getAllModels === undefined ? {} : { getAllModels: () => [...getAllModels(), ...extra()] }),
+		...(filterModels === undefined
+			? {}
+			: {
+					filterModels: (models, credential) => {
+						const { theirs, mine } = apart(models);
+						return [...filterModels(theirs, credential), ...mine];
+					},
+				}),
+		...(filterAllModels === undefined
+			? {}
+			: {
+					filterAllModels: (models, credential) => {
+						const { theirs, mine } = apart(models);
+						return [...filterAllModels(theirs, credential), ...mine];
+					},
+				}),
+	};
 }
 
 const ENDPOINT_APIS: readonly EndpointApi[] = ["openai-completions", "openai-responses", "anthropic-messages"];
@@ -302,13 +480,42 @@ export class Providers {
 	#endpoints: EndpointConfig[];
 	readonly #builtinIds: Set<string>;
 	readonly #deviceId: () => string;
+	/** Each built-in provider as the library made it, without the models added by hand: its catalog. */
+	readonly #catalogs = new Map<string, Provider>();
+	readonly #addedPath: string;
+	#added: Record<string, AddedModel[]>;
+	/** The added models as built, by provider: the same objects each time, until they change. */
+	#built = new Map<string, Model<Api>[]>();
+	readonly #log: (...parts: unknown[]) => void;
 
-	/** `deviceId` returns this installation's stable UUID; some sign-ins (ChatGPT) identify the app by it. */
-	constructor(home: string, credentials: CredentialStore, deviceId: () => string) {
+	/**
+	 * `deviceId` returns this installation's stable UUID; some sign-ins (ChatGPT) identify the app by it. `builtins`
+	 * makes the collection of built-in providers, which tests replace with stand-ins.
+	 */
+	constructor(
+		home: string,
+		credentials: CredentialStore,
+		deviceId: () => string,
+		options: { builtins?: typeof builtinModels; log?: (...parts: unknown[]) => void } = {},
+	) {
 		this.#credentials = credentials;
 		this.#deviceId = deviceId;
-		this.models = builtinModels({ credentials, identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } } });
+		this.#log = options.log ?? (() => {});
+		this.models = (options.builtins ?? builtinModels)({ credentials, identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } } });
 		this.#builtinIds = new Set(this.models.getProviders().map((p) => p.id));
+		this.#addedPath = join(home, "added-models.json");
+		try {
+			this.#added = JSON.parse(readFileSync(this.#addedPath, "utf8"));
+		} catch {
+			this.#added = {};
+		}
+		for (const provider of this.models.getProviders()) {
+			// Every built-in provider is a plain object of functions; one that is not is left as it is, without added models.
+			if (typeof provider.getModels !== "function" || Object.getPrototypeOf(provider) !== Object.prototype) continue;
+			this.#catalogs.set(provider.id, provider);
+			this.models.setProvider(withAddedModels(provider, () => this.#builtModels(provider.id)));
+		}
+		this.giveWay();
 		this.models.setProvider(demoProvider());
 		this.#endpointsPath = join(home, "endpoints.json");
 		try {
@@ -317,6 +524,202 @@ export class Providers {
 			this.#endpoints = [];
 		}
 		for (const endpoint of this.#endpoints) this.models.setProvider(endpointProvider(endpoint));
+	}
+
+	// ---- Models added by hand to built-in providers
+
+	#builtModels(providerId: string): Model<Api>[] {
+		let built = this.#built.get(providerId);
+		if (built === undefined) {
+			const catalog = this.#catalogs.get(providerId);
+			built = (this.#added[providerId] ?? []).map((entry) => {
+				// From the catalog's model as it is now, so a library update's fixes reach it; from the stored one if it is gone.
+				const template = catalog?.getModels().find((model) => model.id === entry.basedOn) ?? entry.model;
+				return buildAdded(template, entry, providerId);
+			});
+			this.#built.set(providerId, built);
+		}
+		return built;
+	}
+
+	/** Whether `id` is a model added by hand to `providerId` that its catalog does not list, so is in use as added. */
+	isAddedByHand(providerId: string, id: string): boolean {
+		const catalog = this.#catalogs.get(providerId);
+		return (this.#added[providerId] ?? []).some((entry) => entry.id === id) && catalog?.getModels().some((model) => model.id === id) !== true;
+	}
+
+	/**
+	 * Forgets the models added by hand that their provider's catalog now lists, whose own entry has taken their place.
+	 * At start (a library update) and after a provider's list is refreshed. Returns what it forgot.
+	 */
+	giveWay(): { provider: string; id: string }[] {
+		const forgotten: { provider: string; id: string }[] = [];
+		for (const [providerId, entries] of Object.entries(this.#added)) {
+			const known = new Set(this.#catalogs.get(providerId)?.getModels().map((model) => model.id) ?? []);
+			for (const entry of entries) if (known.has(entry.id)) forgotten.push({ provider: providerId, id: entry.id });
+		}
+		if (forgotten.length > 0) {
+			for (const { provider, id } of forgotten) {
+				this.#added[provider] = this.#added[provider]!.filter((entry) => entry.id !== id);
+				if (this.#added[provider]!.length === 0) delete this.#added[provider];
+				this.#built.delete(provider);
+				this.#log(`${provider}/${id} was added by hand and is now in the provider's own list, which takes its place`);
+			}
+			this.#persistAdded();
+		}
+		return forgotten;
+	}
+
+	#catalog(providerId: string): Provider {
+		const catalog = this.#catalogs.get(providerId);
+		if (catalog === undefined) {
+			const endpoint = this.#endpoints.some((e) => e.id === providerId);
+			throw new Error(endpoint ? "Models are added to an endpoint of your own in its settings: Edit…" : `Unknown provider: ${providerId}`);
+		}
+		return catalog;
+	}
+
+	/**
+	 * What pi² would add for `id` on a built-in provider: settings taken from a model of its catalog, the newest of the same
+	 * family unless `basedOn` names another, or the newest that speaks `api`. For an id already added, what it has now.
+	 */
+	draftModel(providerId: string, rawId: string, choice: { basedOn?: string; api?: string } = {}): ModelDraft {
+		const catalog = this.#catalog(providerId);
+		const id = checkModelId(rawId);
+		const models = catalog.getModels();
+		const listed = models.find((model) => model.id === id);
+		if (listed !== undefined) throw new Error(`${catalog.name} already has ${id} (${listed.name}). If it is not in the model menus, tick it in Models….`);
+		if (models.length === 0) throw new Error(`pi² knows no models of ${catalog.name} to take this one's settings from`);
+		const apis = [...new Set(models.map((model) => model.api))];
+		const templates = [...models].sort((a, b) => compareVersions(familyOf(b.id).version, familyOf(a.id).version) || a.id.localeCompare(b.id)).map((model) => ({ id: model.id, name: model.name, api: model.api }));
+		const existing = this.#added[providerId]?.find((entry) => entry.id === id);
+		let template: Model<Api> | undefined;
+		let match: ModelDraft["match"] = "chosen";
+		if (choice.basedOn !== undefined) {
+			template = models.find((model) => model.id === choice.basedOn);
+			if (template === undefined) throw new Error(`${catalog.name} has no model ${choice.basedOn} to take settings from`);
+		} else if (existing !== undefined && choice.api === undefined) {
+			const built = this.#builtModels(providerId).find((model) => model.id === id)!;
+			const base = models.find((model) => model.id === existing.basedOn);
+			return {
+				provider: providerId,
+				providerName: catalog.name,
+				id,
+				name: existing.name,
+				basedOn: existing.basedOn,
+				basedOnName: base?.name ?? existing.basedOn,
+				match,
+				api: built.api,
+				apis,
+				contextWindow: existing.contextWindow,
+				maxTokens: existing.maxTokens,
+				vision: existing.vision,
+				thinkingLevels: existing.thinkingLevels,
+				templates,
+				editing: true,
+			};
+		} else {
+			const speaking = choice.api === undefined ? models : models.filter((model) => model.api === choice.api);
+			if (speaking.length === 0) throw new Error(`None of ${catalog.name}'s models speak ${choice.api}`);
+			const nearest = nearestModel(id, speaking)!;
+			template = nearest.model;
+			match = nearest.sameFamily ? "family" : "nearest";
+		}
+		return {
+			provider: providerId,
+			providerName: catalog.name,
+			id,
+			name: existing?.name ?? nameLike(id, template),
+			basedOn: template.id,
+			basedOnName: template.name,
+			match,
+			api: template.api,
+			apis,
+			contextWindow: template.contextWindow,
+			maxTokens: template.maxTokens,
+			vision: template.input.includes("image"),
+			thinkingLevels: template.reasoning ? getSupportedThinkingLevels(template) : [],
+			templates,
+			editing: existing !== undefined,
+		};
+	}
+
+	/**
+	 * Adds a model by its id to a built-in provider that is signed in or has a key, or changes one added before. It is
+	 * then offered wherever the provider's models are, on the same sign-in.
+	 */
+	async addModel(input: {
+		provider: string;
+		id: string;
+		name?: string;
+		basedOn: string;
+		contextWindow: number;
+		maxTokens: number;
+		vision: boolean;
+		thinkingLevels: string[];
+	}): Promise<ModelInfo> {
+		const catalog = this.#catalog(input.provider);
+		const id = checkModelId(input.id);
+		if (catalog.getModels().some((model) => model.id === id)) throw new Error(`${catalog.name} already has ${id}`);
+		if ((await this.models.checkAuth(input.provider).catch(() => undefined)) === undefined) {
+			throw new Error(`Sign in to ${catalog.name} or add its key first: the model is used with that sign-in or key.`);
+		}
+		const template = catalog.getModels().find((model) => model.id === input.basedOn);
+		if (template === undefined) throw new Error(`${catalog.name} has no model ${String(input.basedOn)} to take settings from`);
+		const whole = (value: unknown, what: string) => {
+			if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new Error(`${what} must be a whole number of tokens`);
+			return value;
+		};
+		const contextWindow = whole(input.contextWindow, "The context size");
+		const maxTokens = whole(input.maxTokens, "The longest answer");
+		if (maxTokens > contextWindow) throw new Error("The longest answer cannot be more than the context size");
+		if (!Array.isArray(input.thinkingLevels) || input.thinkingLevels.some((level) => !(THINKING_LEVELS as readonly string[]).includes(level))) {
+			throw new Error(`Thinking levels are some of: ${THINKING_LEVELS.join(", ")}`);
+		}
+		const thinks = input.thinkingLevels.some((level) => level !== "off");
+		const choices = {
+			id,
+			name: input.name?.trim() || id,
+			contextWindow,
+			maxTokens,
+			vision: input.vision === true,
+			// In pi-ai's order, and "off" alone is no thinking at all.
+			thinkingLevels: thinks ? THINKING_LEVELS.filter((level) => input.thinkingLevels.includes(level)) : [],
+		};
+		const model = buildAdded(template, choices, input.provider);
+		const earlier = this.#added[input.provider]?.find((entry) => entry.id === id);
+		const entry: AddedModel = { ...choices, basedOn: template.id, addedAt: earlier?.addedAt ?? Date.now(), model };
+		this.#added[input.provider] = [...(this.#added[input.provider] ?? []).filter((e) => e.id !== id), entry];
+		this.#built.delete(input.provider);
+		this.#persistAdded();
+		this.#log(`${earlier === undefined ? "added" : "changed"} ${input.provider}/${id} by hand, based on ${template.id}`);
+		return this.#info(this.#builtModels(input.provider).find((m) => m.id === id)!);
+	}
+
+	removeModel(providerId: string, id: string): void {
+		if (!this.#added[providerId]?.some((entry) => entry.id === id)) throw new Error(`${id} was not added by hand to ${this.models.getProvider(providerId)?.name ?? providerId}`);
+		this.#added[providerId] = this.#added[providerId]!.filter((entry) => entry.id !== id);
+		if (this.#added[providerId]!.length === 0) delete this.#added[providerId];
+		this.#built.delete(providerId);
+		this.#persistAdded();
+		this.#log(`removed ${providerId}/${id}, which was added by hand`);
+	}
+
+	#persistAdded(): void {
+		writeFileSync(this.#addedPath, JSON.stringify(this.#added, null, "\t"));
+	}
+
+	#info(model: Model<Api>, names?: Map<string, string>): ModelInfo {
+		return {
+			provider: model.provider,
+			providerName: names?.get(model.provider) ?? this.models.getProvider(model.provider)?.name ?? model.provider,
+			id: model.id,
+			name: model.name,
+			thinkingLevels: model.reasoning ? getSupportedThinkingLevels(model) : [],
+			contextWindow: model.contextWindow,
+			vision: model.input.includes("image"),
+			...(this.isAddedByHand(model.provider, model.id) ? { addedByHand: true } : {}),
+		};
 	}
 
 	async listProviders(): Promise<ProviderInfo[]> {
@@ -356,15 +759,7 @@ export class Providers {
 	async listModels(): Promise<ModelInfo[]> {
 		const names = new Map(this.models.getProviders().map((p) => [p.id, p.name]));
 		const available = await this.models.getAvailable();
-		return available.map((model) => ({
-			provider: model.provider,
-			providerName: names.get(model.provider) ?? model.provider,
-			id: model.id,
-			name: model.name,
-			thinkingLevels: model.reasoning ? getSupportedThinkingLevels(model) : [],
-			contextWindow: model.contextWindow,
-			vision: model.input.includes("image"),
-		}));
+		return available.map((model) => this.#info(model, names));
 	}
 
 	async setKey(providerId: string, key: string): Promise<void> {

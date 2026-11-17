@@ -732,6 +732,8 @@ struct UsageSummary: Codable, Equatable {
         let cost: Double
         /// Paid for by a subscription sign-in, so there is no per-use cost to show.
         var subscription: Bool? = nil
+        /// Added by hand, so pi² does not know its price: the tokens are counted, the cost is not.
+        var unpriced: Bool? = nil
         var id: String { key }
     }
     struct AgentRow: Codable, Equatable, Identifiable {
@@ -866,8 +868,37 @@ struct ModelInfo: Codable, Equatable, Identifiable {
     var hidden: Bool? = nil
     /// Whether the model can be sent pictures. Nil from an engine that does not say.
     var vision: Bool? = nil
+    /// Added by its id to a built-in provider whose list pi² has does not have it yet (Settings › Providers › Models…).
+    var addedByHand: Bool? = nil
 
     var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
+    /// The name as a model menu lists it, marked when it was added by hand.
+    var listName: String { addedByHand == true ? "\(name) (added by hand)" : name }
+}
+
+/// What the engine's `providers.draftModel` proposes for a model added by its id: settings taken from a model it knows.
+struct ModelDraft: Codable, Equatable {
+    struct Template: Codable, Equatable, Identifiable {
+        let id: String
+        let name: String
+        let api: String
+    }
+    let provider: String
+    let providerName: String
+    let id: String
+    var name: String
+    let basedOn: String
+    let basedOnName: String
+    /// "family": the newest of the id's family; "nearest": no model of that family, so the closest; "chosen": picked.
+    let match: String
+    let api: String
+    let apis: [String]
+    var contextWindow: Int
+    var maxTokens: Int
+    var vision: Bool
+    var thinkingLevels: [String]
+    let templates: [Template]
+    let editing: Bool
 }
 
 /// What a sign-in flow tells or asks the person, as pi-ai's provider-neutral events and prompts.

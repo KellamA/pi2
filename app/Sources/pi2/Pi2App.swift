@@ -771,7 +771,7 @@ struct ConversationCommands: View {
             ForEach(engine.modelGroups, id: \.provider) { group in
                 Menu(group.name) {
                     ForEach(group.models, id: \.ref) { item in
-                        Button(item.name) {
+                        Button(item.listName) {
                             if let id { engine.configure(id, ["model": ["provider": item.provider, "modelId": item.id]]) }
                         }
                     }
