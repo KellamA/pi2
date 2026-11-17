@@ -8,8 +8,8 @@
 //
 // The limits are Claude Code's (issue #160): 2 minutes unless the call passes `timeout`, and no more than 10 minutes
 // whatever it passes. A command that needs longer runs in the background, where the agent and the person can see it is
-// still going. The default was 30 minutes, and a command blocked on a privacy prompt nobody had seen held its
-// conversation for 29 of them with nothing to show for it.
+// still going. The default was 30 minutes, and a command waiting on a system prompt nobody had seen (by the timing, a
+// privacy prompt) held its conversation for 29 of them with nothing to show for it.
 //
 // The result shows the end of a long output only. The wrap runs the command itself, as pi durable's `bash` does but
 // without its spill file in the system's temporary folder (never removed), and keeps the whole output in a file of its

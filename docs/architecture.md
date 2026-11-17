@@ -100,7 +100,7 @@ A shell command is stopped after 2 minutes unless the call that runs it passes a
 
 The tool's description gives both limits. A command the limit stopped has, under what it had printed by then, a line saying which limit stopped it (the default, the call's own `timeout`, or the most, with what the call asked for), and what to do instead: a larger `timeout`, or `background: true`. When it had printed nothing at all, or nothing for the last minute or more, in a run of a minute or more, the line says so, and that a command that goes quiet that long may be waiting on something, such as a permission prompt on the person's screen, and may wait again if it is run again. A command that ends by itself after a minute or more says how long it took, and how long it went without printing anything when that was a minute or more.
 
-The default was 30 minutes until #160, in which a command blocked on a macOS privacy prompt that nobody had seen held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
+The default was 30 minutes until #160, in which a command waiting on a system prompt that nobody had seen (by the timing, a macOS privacy prompt) held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
