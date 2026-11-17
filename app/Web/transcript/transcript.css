@@ -684,6 +684,11 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	color: var(--tx3);
 }
 
+/* A command's exit code that is not a failure (a grep that found nothing): there to read, not to alarm. */
+.tool-status.exited {
+	color: var(--tx2);
+}
+
 /* A step the person declined is crossed out: it was asked for and did not happen. */
 .tool.denied .tool-label {
 	text-decoration: line-through;

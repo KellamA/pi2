@@ -50,6 +50,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
+| `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
 | `src/schedules.ts` | Schedule rules and next-run times |
@@ -105,6 +106,16 @@ At its limit, as in Claude Code, a command is moved to the background rather tha
 The tool's description gives both limits, and says that a command is moved at its limit. A command the limit stopped has, under what it had printed by then, a line saying which limit stopped it (the default, the call's own `timeout`, or the most, with what the call asked for), and what to do instead: a larger `timeout`, or `background: true`. One that was not moved because starting it in the background would ask says that too. When it had printed nothing at all, or nothing for the last minute or more, in a run of a minute or more, the line says so, and that a command that goes quiet that long may be waiting on something, such as a permission prompt on the person's screen, and may wait again if it is run again. A command that ends by itself after a minute or more says how long it took, and how long it went without printing anything when that was a minute or more.
 
 The default was 30 minutes until #160, in which a command waiting on a system prompt that nobody had seen (by the timing, a macOS privacy prompt) held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
+
+### A command's exit code
+
+A command that ran to its end is not an error because its exit code is not 0 (#182). A command line's exit code is that of its last command, and that is often no failure at all: a `grep` that found nothing, `gh pr checks` with checks still pending, `a && b` stopping where it was meant to. So the result tells the model the code as a fact, under the output (`[info] Exit code 1`), and its `details.exitCode` lets the conversation show it on the row, which stays closed, in a quiet colour ([transcript.md](transcript.md#how-it-is-drawn)). A result is still an error, with a red row that starts open, when the command:
+
+- was stopped at its time limit, or stopped or aborted (it has no exit code: the call throws, as above);
+- could not be started: exit code 127 ("a command it ran was not found") or 126 ("could not be run (it is not executable, or not allowed)");
+- was ended by a signal: 128 and the signal's number, as the shell and pi durable report it ("The command was ended by SIGKILL (exit code 137)."), with the signal's name in `details.signal`.
+
+`exitResult` in `src/commands.ts` decides. Nothing else reads a shell result's error flag to decide what to do: Activity, notifications and the Inbox go by runs and approvals, not by tool results; a Markdown export says "Result:" rather than "Result (error):" for these. A script in code mode gets `{ output, exitCode, … }` from `tools.bash()` for any command that ran to its end, failure or not, as before; it rejects only when the command was stopped, aborted or could not be run at all ([codemode.md](codemode.md)). Results stored before this change keep the error they were given.
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
