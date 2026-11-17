@@ -211,8 +211,9 @@ final class EngineClient {
         return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
     }
 
-    /// Conversations that are not sub-chats, newest first.
-    var rootConversations: [ConversationSummary] { conversations.filter { $0.parent == nil } }
+    /// Conversations that are not sub-chats, newest first. Chats are chat mode's own (`chats`), so the agent view never
+    /// lists them.
+    var rootConversations: [ConversationSummary] { conversations.filter { $0.parent == nil && !$0.isChat } }
 
     /// The sub-chats an agent opened from a conversation, oldest first.
     func subChats(of id: Int) -> [ConversationSummary] {

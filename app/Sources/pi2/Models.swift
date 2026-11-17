@@ -73,6 +73,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let createdAt: Double?
     /// Set for a sub-chat: the conversation whose agent opened it.
     let parent: Int?
+    /// A chat with pi²'s own assistant, shown in chat mode only (ChatMode.swift), rather than an agent's conversation.
+    var chat: Bool? = nil
+    /// A chat kept at the top of chat mode's sidebar.
+    var pinned: Bool? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
@@ -129,6 +133,8 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
     /// For a sub-chat its conversation's agent archived on its own: that conversation, which stays in the sidebar.
     let parent: Int?
     let parentTitle: String?
+    /// An archived chat with pi²'s own assistant.
+    var chat: Bool? = nil
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {
