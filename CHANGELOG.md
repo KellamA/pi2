@@ -7,6 +7,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 ### Changed
 - **Shift-Return starts a new line in a memory note.** In an agent's Memory settings, Shift-Return or Option-Return now puts a line break in a note you are editing or adding, and the field grows with it; Return still saves the note (or adds it), but not while an input method is composing. Before, Return and Shift-Return both saved, and the line breaks of a note were joined into one line. A note you write now keeps its line breaks, and the agent sees it as one item of several lines.
 
+### Fixed
+- An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
+
 ### For contributors
 - `pi2-compose-check` also checks a field made as a memory note is: a field of a grouped form that saves with Return and keeps its text.
 
