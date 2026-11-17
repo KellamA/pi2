@@ -58,6 +58,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
 | `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
 | `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
+| `src/order.ts` | Which calls of one answer run one at a time, in order, and what the model is told about it |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/stopwatch.ts` | How long a clean stop of the engine took, without the time a busy Mac kept it from running, for `engine.log` |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
@@ -97,7 +98,11 @@ A shell that has still not answered five minutes after it was asked is stopped, 
 
 ### How long a command may run
 
-A shell command is stopped after 30 minutes unless the call that runs it passes a `timeout` in seconds; the model can pass a larger one for a command it knows takes longer, such as a full build. The tool's description says so, and so does the result of a command the limit stopped, under what it had written by then. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.
+A shell command is stopped after 2 minutes unless the call that runs it passes a `timeout` in seconds, which can give it up to 10 minutes; a call that asks for more gets 10 minutes. These are Claude Code's limits for its Bash tool (its `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`). A command that may take longer than that, such as a full test suite on a busy Mac, runs with `background: true`, where the agent and the person can see it is still going. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.
+
+The tool's description gives both limits. A command the limit stopped has, under what it had printed by then, a line saying which limit stopped it (the default, the call's own `timeout`, or the most, with what the call asked for), and what to do instead: a larger `timeout`, or `background: true`. When it had printed nothing at all, or nothing for the last minute or more, in a run of a minute or more, the line says so, and that a command that goes quiet that long may be waiting on something, such as a permission prompt on the person's screen, and may wait again if it is run again. A command that ends by itself after a minute or more says how long it took, and how long it went without printing anything when that was a minute or more.
+
+The default was 30 minutes until #160, in which a command waiting on a system prompt that nobody had seen (by the timing, a macOS privacy prompt) held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
@@ -110,6 +115,12 @@ The files are only text a program printed. They live in the data folder, in `out
 `src/commands.ts` runs the command itself rather than through pi durable's `bash`, the same way but without that tool's own file of the output, which goes to the system's temporary folder and is never removed. A script in code mode that calls `bash` gets the file's path as `fullOutputPath`, as before.
 
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
+
+### The calls of one answer
+
+A model can make several tool calls in one answer. pi durable starts them all at once, unless one of them is to a tool marked to run in order, in which case the whole answer's calls run one at a time, in the order the model gave them, each starting when the one before it has ended. Started together, a call that uses a file the one before it writes finds nothing there, or the file as it was: a `read` of a screen capture that a `bash` call is taking, or a `bash` with `background: true` that runs a script the call before it is writing (#145, #129).
+
+So `src/order.ts` marks the tools that change files to run in order: `bash` (in the background too), `write`, `edit`, `write_document` and `codemode` (whose scripts can call the others). An answer that calls any of them runs in order; one that only looks (reads, searches, web pages) or hands work to sub-chats still runs its calls side by side, which is where that saves real time. The descriptions of `bash`, `write`, `edit` and `read` tell the model both, so it puts a call after the one whose result it needs, or in a later answer when neither of them changes files (a file a sub-chat writes, say). Under Ask first, a call waiting for approval holds back the calls after it in the same answer. The computer and browser tools were already marked to run in order, each action depending on what the last one left. Calls a code mode script makes run as the script makes them, whatever their tool.
 
 ### An MCP server changed while a call runs on it
 
@@ -134,7 +145,7 @@ A development build uses `~/Library/Application Support/pi2-dev` and the Keychai
 
 A sign-in credential can be several kilobytes, more than one Keychain command can carry, so long ones are split across several items with a checksum. A damaged item reads as "signed out" rather than as an error.
 
-Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 30 minutes; the end-to-end test uses 3), `PI2_OUTPUT_WAIT_SECONDS` (the longest the app's request for a background command's output waits for more, in place of 30 seconds; the background commands' test makes it longer than its own patience, so a wait that ends can only have ended for output).
+Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 2 minutes; the end-to-end test uses 3; a call's `timeout` may still go up to 10 minutes, or this, if it is longer), `PI2_OUTPUT_WAIT_SECONDS` (the longest the app's request for a background command's output waits for more, in place of 30 seconds; the background commands' test makes it longer than its own patience, so a wait that ends can only have ended for output or the command's end).
 
 ## The logs
 

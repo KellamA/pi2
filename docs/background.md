@@ -6,7 +6,7 @@ The code is `engine/src/background.ts`.
 
 ## What the agent has
 
-- **Starting one** is the ordinary command tool with one more argument: `bash` with `background: true`. The call returns after about a second with the command's id (`bg-1`, `bg-2`, …) and what it has printed by then, so a command that fails at once (a program that is not there, a port already taken) is reported as failed right away.
+- **Starting one** is the ordinary command tool with one more argument: `bash` with `background: true`. The call returns after about a second with the command's id (`bg-1`, `bg-2`, …) and what it has printed by then, so a command that fails at once (a program that is not there, a port already taken) is reported as failed right away. Like any `bash` call, it is started only once the calls before it in the same answer have ended, so it sees a script the call before it wrote ([architecture.md](architecture.md#the-calls-of-one-answer)).
 - **The `background` tool** works with the commands the conversation started:
   - `list`: each command's id, whether it is running or how it ended, and how much of its output has not been read.
   - `read`: what a command has printed since the last read, standard output and errors together, and whether it is still running. With `wait`, a read that finds nothing new waits up to that many seconds (600 at most) for more output or for the command to end. With `tail`, it gives the last lines instead, read or not; looking at the end does not change what counts as read.
@@ -29,7 +29,7 @@ Listing, reading and stopping never ask. They change nothing but the commands th
 
 ## How long it runs
 
-There is no limit on how many background commands there are, or on how long one runs. The [30-minute limit](architecture.md#how-long-a-command-may-run) for a command is not for them. A call can give one a limit of its own by passing `timeout`.
+There is no limit on how many background commands there are, or on how long one runs. The [limits](architecture.md#how-long-a-command-may-run) for a command in the foreground (2 minutes, or up to 10 with `timeout`) are not for them. A call can give one a limit of its own by passing `timeout`.
 
 A background command runs until one of these:
 

@@ -168,6 +168,11 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/code ")) {
 			return fauxAssistantMessage([fauxText("Running a script."), fauxToolCall("codemode", { code: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
+		if (prompt.startsWith("/tools ")) {
+			// "/tools [{"name": …, "arguments": {…}}, …]": several tool calls in one answer, as a real model makes them.
+			const calls = JSON.parse(prompt.slice(7)) as { name: string; arguments?: Parameters<typeof fauxToolCall>[1] }[];
+			return fauxAssistantMessage([fauxText("Calling those tools."), ...calls.map((call) => fauxToolCall(call.name, call.arguments ?? {}))], { stopReason: "toolUse" });
+		}
 		if (prompt.startsWith("/tool ")) {
 			// "/tool <tool name> <json arguments>": call any tool the conversation has, by name.
 			const [name, ...rest] = prompt.slice(6).split(" ");
