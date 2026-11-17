@@ -482,7 +482,10 @@ try {
 	// ---- The person reads a command's output, in Activity or the conversation
 	{
 		const gate2 = join(scratch, "gate-person");
-		const shownCommand = `echo one; while [ ! -e '${gate2}' ]; do sleep 0.1; done; echo two; sleep 600`;
+		// The end-only wait below needs a silent stop. With a shell waiting for sleep, bash can print its child's
+		// termination before it ends, legitimately waking the read on new output instead (#224). Replace the shell
+		// once it has printed, and run longer than the test's patience so only the stop can end the wait.
+		const shownCommand = `echo one; while [ ! -e '${gate2}' ]; do sleep 0.1; done; echo two; exec ${LONG}`;
 		const { bg } = await client.start(a, shownCommand);
 		let shown = await client.call("background.output", { id: bg, wait: 10 });
 		for (const deadline = Date.now() + PATIENT_MS; !shown.output.includes("one\n"); ) {
@@ -509,6 +512,7 @@ try {
 		await client.call("background.stop", { id: bg });
 		const over = await answered("the wait to end when the command does", waiting);
 		assert.equal(over.running, false, "a wait ends when the command ends");
+		assert.equal(over.output, "", "the end, not new output, woke this wait");
 		const after = await client.call("background.output", { id: bg });
 		assert.equal(after.output, "one\ntwo\n", "an ended command's output can still be read");
 		assert.equal(after.running, false);
