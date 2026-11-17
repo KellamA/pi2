@@ -39,8 +39,8 @@ import { commandAsks } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore, type Recorder } from "./output.ts";
 import { lookOutFor, newRunMarker, RUN_VARIABLE } from "./processes.ts";
-import { scratchVariable } from "./scratch.ts";
 import { runningCommands } from "./running.ts";
+import { scratchVariable } from "./scratch.ts";
 
 /** How long a command in the foreground may run, in seconds: `fallback` when its call names no `timeout`, and `most` whatever it names. */
 export type Limits = { fallback: number; most: number };
