@@ -1,6 +1,6 @@
 import SwiftUI
 
-#if DEBUG
+#if PI2_DEVELOPMENT
 /// Where a development build was asked to keep its windows, for a throwaway copy that a check launches over and over,
 /// so they stop coming up in the middle of the screen of the person at the Mac (docs/development.md):
 ///
@@ -113,7 +113,7 @@ extension View {
     /// For the content of a window: in a development build, keeps the window where `PI2_WINDOW_ORIGIN` and
     /// `PI2_WINDOW_BEHIND` asked.
     func launchWindow() -> some View {
-        #if DEBUG
+        #if PI2_DEVELOPMENT
         background(LaunchWindowPlacer())
         #else
         self

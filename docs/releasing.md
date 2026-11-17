@@ -31,6 +31,8 @@ Builds are for Apple silicon only: the Node copied into the app is the runner's 
 | Updates | with `SPARKLE_PUBLIC_KEY`, from the feed | never |
 | `engine.info` check | replaces an engine from another build | leaves it running, noted in `app.log` |
 
+`./app/build.sh optimised` makes a development build with Swift's release configuration (`-O`), for checking optimisation-only problems without losing `PI2_SHOW`, hidden drawing, window placement or isolation. It is not a release candidate: it still runs the engine from the checkout. Those development affordances use the compile-time condition `PI2_DEVELOPMENT` (defined for debug builds in `Package.swift`, passed explicitly by the script for optimised development builds). A release build never defines it, so there is no environment switch a person could be tricked into setting to enable them.
+
 The app tells which it is by whether it carries its own engine (`DevelopmentBuild.swift`), not by how it was compiled. A development build's data folder and Keychain service follow its bundle id, so a test copy given `dev.pi2.app.test-7` uses `pi2-test-7` and `dev.pi2.credentials.test-7`.
 
 ## Setting up, once

@@ -18,7 +18,7 @@ enum SettingsSection: String {
     case folder, backup
 }
 
-#if DEBUG
+#if PI2_DEVELOPMENT
 /// The Settings window as `PI2_SHOW` asked a development build for it: "settings", "settings:<tab>" or
 /// "settings:<tab>#<section>". A tab it does not know is General, and a section the tab does not have leaves the tab
 /// at its top.
@@ -63,7 +63,7 @@ extension View {
     /// For the form of a Settings tab, whose sections carry a `SettingsSection` as their id: lets a development build
     /// open the tab with one of them at the top.
     func settingsPage(_ tab: SettingsTab) -> some View {
-        #if DEBUG
+        #if PI2_DEVELOPMENT
         ScrollViewReader { proxy in
             task { await SettingsLaunch.scroll(tab, with: proxy) }
         }
@@ -76,7 +76,7 @@ extension View {
 struct SettingsView: View {
     let engine: EngineClient
     @State private var tab: SettingsTab = {
-        #if DEBUG
+        #if PI2_DEVELOPMENT
         if let asked = SettingsLaunch.asked { return asked.tab }
         #endif
         return .general

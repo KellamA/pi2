@@ -170,14 +170,14 @@ final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate 
         allowsLinkPreview = false
         allowsBackForwardNavigationGestures = false
         allowsMagnification = false
-        #if DEBUG
+        #if PI2_DEVELOPMENT
         isInspectable = true
         if ProcessInfo.processInfo.environment["PI2_DRAW_WHEN_HIDDEN"] != nil { drawWhenHidden() }
         #endif
         load()
     }
 
-    #if DEBUG
+    #if PI2_DEVELOPMENT
     /// WebKit stops drawing a page nobody can see: one in a covered window, or behind a locked screen. For taking
     /// pictures of the app in those conditions (docs/development.md), a development build can be told to keep drawing.
     /// It uses a WebKit switch that is not public, so it is never compiled into a release build.
@@ -253,7 +253,7 @@ final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate 
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
-        #if DEBUG
+        #if PI2_DEVELOPMENT
         let unwanted = Self.unwantedMenuItems.subtracting(["WKMenuItemIdentifierInspectElement"])
         #else
         let unwanted = Self.unwantedMenuItems
