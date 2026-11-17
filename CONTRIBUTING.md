@@ -49,6 +49,8 @@ In your own clone or worktree, build a development build:
 ./app/build.sh
 ```
 
+For a problem that only happens with optimisation, use `./app/build.sh optimised` instead. It uses Swift's release configuration but keeps the development build's isolation and switches, including `PI2_SHOW` and the window placement below. Do not use a release build just to turn optimisation on.
+
 This makes `app/build/pi² dev.app`. Copy it to a temporary folder, give it its own bundle id and name, and sign it again. Choose a suffix of your own for `ID`, in lower-case letters, digits and hyphens, such as your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. The bundle id `dev.pi2.app.$ID` gives the copy the data folder `~/Library/Application Support/pi2-$ID` and the Keychain service `dev.pi2.credentials.$ID`, so there is nothing else to set. `ditto` keeps the symbolic links inside Sparkle's framework; editing `Info.plist` breaks the bundle's signature, so it is signed again ad hoc. The new name tells your copy apart from other copies in the Dock and the menu bar.
 
 ```bash
@@ -79,7 +81,7 @@ lsof -a -U -p "$ENGINE_PID"                # its engine.sock is in $DATA
 ps -E -o command= -p "$ENGINE_PID" | tr ' ' '\n' | grep '^PI2_KEYCHAIN_SERVICE='
 ```
 
-You can still give the copy `--env PI2_HOME=…` and `--env PI2_KEYCHAIN_SERVICE=…` of your own, such as a folder in `$T`; a development build takes any but the usual ones. A copy of a release build needs both, as the rules above say, and does not read the window variables.
+You can still give the copy `--env PI2_HOME=…` and `--env PI2_KEYCHAIN_SERVICE=…` of your own, such as a folder in `$T`; a development build takes any but the usual ones. A copy of a release build needs both, as the rules above say, and does not read the window variables; use an optimised development build unless the packaging or updating itself is what you need to check.
 
 When you are done, stop both by pid. The engine outlives the app, so stopping the app is not enough; stop the app first, so it does not start a new engine when this one goes.
 

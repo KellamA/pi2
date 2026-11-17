@@ -32,6 +32,14 @@ A development build keeps apart from a pi² installed on the same Mac, so openin
 - It cannot turn the login item on or off: the switch in Settings › General shows as unavailable, as in any copy on a data folder of its own.
 - It never updates itself, and it never replaces the engine it finds on its data folder: that is only done by a release build, after an update. An engine started by another development build with the same bundle id, from another checkout, is noted in `app.log` and left running.
 
+To check a problem that only happens with optimisation (such as #134), build an **optimised development build**:
+
+```bash
+./app/build.sh optimised
+```
+
+This compiles with Swift's release configuration (`-O`), but otherwise makes the same `app/build/pi² dev.app`: its own identity and data, the source engine, and all the development affordances below, including `PI2_SHOW` and keeping its windows out of the way. Use it in a throwaway copy just as for the ordinary development build. It defines `PI2_DEVELOPMENT` at compile time; debug builds define it through `Package.swift`. A release build never defines it, so those switches and the web inspector are compiled out, not enabled by an environment variable. `swift build -c release` alone is not an optimised development build; use the script.
+
 For an app that carries its own Node and engine and can be moved:
 
 ```bash
@@ -111,7 +119,7 @@ open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_
 
 On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the steps and the rules.
 
-A development build (not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
+A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `rules` (commands it may run without asking), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
 

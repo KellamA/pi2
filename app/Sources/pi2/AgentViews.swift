@@ -42,7 +42,7 @@ enum AgentSection: String, CaseIterable {
     case profile, model, instructions, files, memory, tools, rules, extras, computer, browser, schedule, delegates
 }
 
-#if DEBUG
+#if PI2_DEVELOPMENT
 extension AgentSection {
     /// The agent and section `PI2_SHOW` asked for, until the page for that agent first opens and takes it: coming back
     /// to the page later opens it at the top, as usual.
@@ -84,7 +84,7 @@ struct AgentEditor: View {
             if let draft = Binding($draft) {
                 ScrollViewReader { proxy in
                     form(draft)
-                        #if DEBUG
+                        #if PI2_DEVELOPMENT
                         .task { await scroll(to: AgentSection.take(for: agentID), with: proxy) }
                         #endif
                 }
@@ -128,7 +128,7 @@ struct AgentEditor: View {
         turnsText = saved?.maxTurns.map(String.init) ?? ""
     }
 
-    #if DEBUG
+    #if PI2_DEVELOPMENT
     /// Brings the section `PI2_SHOW` asked for to the top of the page. Parts of the page fill in after it first appears
     /// (models, memory, MCP servers), which moves the sections below them, so it scrolls again while the page settles.
     private func scroll(to section: AgentSection?, with proxy: ScrollViewProxy) async {
