@@ -52,8 +52,8 @@ export type FeatureParts = {
 	/** Changes to tools from elsewhere (pi durable's coding tools, say), applied wherever they are offered. */
 	// biome-ignore lint/suspicious/noExplicitAny: tools of any parameter shape
 	wraps?: Wrap<any>[];
-	/** Which of this feature's tools a conversation with this access and agent is given. */
-	toolNames?(access: Access, agent: AgentProfile | undefined): string[];
+	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
+	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean }): string[];
 	/** Requests from the app, by method name. Throw an Error with a plain message to refuse. */
 	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
@@ -82,7 +82,6 @@ export type FeatureParts = {
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
 // `order` wraps tools that `commands` and `reads` wrap too, and adds to what those made of them, so it comes after them.
-// `coauthor`'s section comes and goes only when the person flips its switch, so it is declared after the sections that
-// stay and before `background`'s, which comes and goes far more often: a section's arrival re-sends every section when
-// it lands before one already shown (#186).
+// The order of the sections no longer matters for what is sent: each keeps its place in a conversation (sections.ts,
+// #186), so one that comes or goes is sent alone wherever it is declared.
 export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, coauthor, background, order];

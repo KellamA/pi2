@@ -255,16 +255,20 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
 
 /**
  * The tools a conversation is given: file and shell tools by access level, asking the person, delegation, and what
- * its agent adds (scripts, MCP servers). A tool whose server is not connected right now is left out.
+ * its agent adds (scripts, MCP servers). A tool whose server is not connected right now is left out, and so is a tool
+ * that could do nothing: the computer while no app is allowed, and in a sub-chat (`subChat`), handing work on and
+ * whatever a feature leaves out there (scheduling).
  */
-function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undefined) {
+function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
-	const screen = agent?.computer?.enabled === true ? ["computer"] : [];
+	// Computer use with no app allowed could only refuse; the tool comes with the first app the person allows (#177).
+	const screen = agent?.computer?.enabled === true && agent.computer.apps.length > 0 ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
-	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent) ?? []);
+	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
+	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
 	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
@@ -280,14 +284,14 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 	return [...kept, ...wanted.filter((t) => !place.has(t!.name))];
 }
 
-/** How a conversation that starts from `agent` is configured. */
-async function agentChange(agent: AgentProfile, options: { delegate: boolean }): Promise<AgentChange> {
+/** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
+async function agentChange(agent: AgentProfile, options: { subChat: boolean }): Promise<AgentChange> {
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
 		thinkingLevel: (agent.thinkingLevel as never) ?? null,
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
-		tools: toolsFor(agent.access, options.delegate && agent.delegates.some((id) => agents[id] !== undefined), agent),
+		tools: toolsFor(agent.access, agent, options.subChat),
 		cwd: agent.cwd,
 		maxTurns: agent.maxTurns,
 	};
@@ -347,9 +351,8 @@ async function syncTools(conv: Conversation): Promise<void> {
 	const own = agents[meta?.agentId ?? ""];
 	// A conversation whose agent was deleted keeps the setup it has.
 	if (meta === undefined || own === undefined) return;
-	const delegate = meta.parent === undefined && own.delegates.some((other) => agents[other] !== undefined);
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, toolsFor(meta.access, delegate, own));
+	const wanted = keepingOrder(current, toolsFor(meta.access, own, meta.parent !== undefined));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -743,7 +746,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"conversation.create": async (params) => {
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
-		const change = await agentChange(agent, { delegate: true });
+		const change = await agentChange(agent, { subChat: false });
 		const now = Date.now();
 		const created = await harness.createConversation(
 			{
@@ -1032,9 +1035,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			if (!ACCESS_LEVELS.includes(access)) throw new Error(`Unknown access level: ${String(access)}`);
 			const meta = library.conversations[String(id)];
 			const own = agents[meta?.agentId ?? ""];
-			const delegate = meta?.parent === undefined && (own?.delegates ?? []).some((other) => agents[other] !== undefined);
 			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-			await conv.configure({ tools: keepingOrder(current, toolsFor(access, delegate, own)) }, context);
+			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, meta?.parent !== undefined)) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -1533,7 +1535,7 @@ async function fire(id: string, manual: boolean): Promise<void> {
 	try {
 		const agent = agents[schedule.agentId] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) return;
-		const change = await agentChange(agent, { delegate: true });
+		const change = await agentChange(agent, { subChat: false });
 		const now = Date.now();
 		const due = schedule.nextRunAt;
 		await harness.createConversation(
