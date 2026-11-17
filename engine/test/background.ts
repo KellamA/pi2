@@ -195,7 +195,21 @@ function repo(name: string): string {
 
 const work = join(scratch, "work");
 mkdirSync(work);
-const boot = () => spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
+/** What the engines this test started have logged, line by line. Their log is passed on to the test's own as it comes. */
+const logged: string[] = [];
+const boot = () => {
+	const child = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "pipe"] });
+	let rest = "";
+	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
+		process.stderr.write(chunk);
+		const lines = (rest + chunk).split("\n");
+		rest = lines.pop()!;
+		logged.push(...lines);
+	});
+	return child;
+};
+/** Waits for engine.log to have a line that ends with `text`, after the line's time and the engine's tag. */
+const logs = (text: string) => until(`engine.log to say: ${text}`, () => logged.some((line) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \[pi2-engine\] /.test(line) && line.endsWith(text)));
 let engine: ChildProcess = boot();
 try {
 	let client = await Client.attach(engine);
@@ -333,6 +347,9 @@ try {
 		`Background command ${leaving.bg} finished, and what it had left running was stopped with it: ${commandLine(`${LONG} & echo $! > '${leftFile}'; echo leaving`)}`,
 	);
 	await client.until("what it left running is stopped", () => !alive(leftBehind));
+	// engine.log names each command with its conversation, since an id alone does not say whose it was.
+	await logs(`background command ${later.bg} of conversation ${a} exited with code 4`);
+	await logs(`background command ${leaving.bg} of conversation ${a} finished, and what it had left running was stopped with it`);
 	step("a command that ends by itself is shown in the transcript and told to the agent at its next request; what it left running is stopped");
 
 	// ---- Only the end of the output is kept
@@ -574,6 +591,7 @@ try {
 			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
 		);
 		await client.until("what was left running is stopped", () => pids.every((pid) => !alive(pid)));
+		await logs(`background command ${bg} of conversation ${z} left by the last engine was stopped`);
 		assert.deepEqual(client.running(), []);
 		assert.match((await client.background(z, { action: "list" })).text, new RegExp(`- ${bg}: .*: was left running when pi²’s engine stopped, and was stopped when the engine started again; no unread output\\.`));
 		// Activity's notice after the unexpected stop names it, with its conversation and what became of it.
