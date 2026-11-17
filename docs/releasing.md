@@ -4,7 +4,7 @@ How pi² is built for download, how installed copies update, and what has to be 
 
 ## What a release is
 
-Pushing a tag such as `v0.7.0` runs [.github/workflows/release.yml](../.github/workflows/release.yml). It tests the engine, builds a self-contained app, signs it with a Developer ID, has Apple notarize it, and makes a **draft** GitHub release with three files:
+Pushing a tag such as `v0.7.0` runs [.github/workflows/release.yml](../.github/workflows/release.yml). It tests the engine, builds a self-contained app, signs it with a Developer ID, has Apple notarize it, packages and starts it, and makes a **draft** GitHub release with three files:
 
 | File | For |
 |---|---|
@@ -78,6 +78,19 @@ In the repository's Settings › Environments, make an environment called `relea
 5. Publish the draft. Installed copies see the update the next time they check.
 
 The workflow refuses a tag that does not match `app/VERSION`, a commit that is not on `main`, and a version with no changelog section. The build number is the number of commits on `main`, which is what Sparkle compares, so it only goes up as long as releases come from `main`.
+
+## Checking the packaged build without releasing
+
+```bash
+./app/build.sh release
+node app/check-release-build.mts "app/build/pi².app"
+```
+
+This does not tag, publish, draft or use release secrets. Without `SIGN_IDENTITY`, the build is signed ad hoc. The check starts **the Node and engine inside the app**, from `/` with macOS's bare `PATH`, a temporary `PI2_HOME`, its own Keychain service and `PI2_LOGIN_SHELL=off`. It checks the bundle's version, build number, build id and signature, asks `engine.info` and compares its build, entry point and process id, gets an answer from the scripted demo model without a provider, and stops the engine cleanly. A failure names what was wrong and shows the end of the engine log; the temporary data and processes go away on failure too.
+
+`--version`, `--build-number` and `--commit` pin the expected release. A `.zip` or `.dmg` instead of an app checks the app **inside that package** (and that the disk image has its Applications link). The release workflow runs this after packaging and Gatekeeper's checks, before drafting: it opens the app from the unpacked update archive too (`--open-app`), verifies that it started its own packaged engine and connected to it, and checks the engine from the mounted disk image. Any failure stops the run before a draft exists. The owner's download-and-try step above stays: this is not a check of every feature or an actual Sparkle update.
+
+Ordinary CI's existing **App (build)** job builds a release-configuration app without a Developer ID and runs the same script with `--open-app`. Thus the start-up check is exercised on GitHub's macOS before the next release depends on it. Only the Developer-ID-signed, notarized packages are first checked at that next release. On a Mac where pi² is in use, do **not** open the release bundle as-is: `--open-app` refuses its real bundle id outside CI. Use a throwaway copy with its own id as [Testing safely](../CONTRIBUTING.md#testing-safely) describes, and pass that id with `--bundle-id`.
 
 ## How updating works in the app
 
