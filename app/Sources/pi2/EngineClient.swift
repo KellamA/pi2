@@ -142,7 +142,26 @@ final class EngineClient {
         // Panes restored at launch appear before the app has connected. Connecting asks for every open conversation,
         // so one opened before then waits for that rather than failing.
         guard status == .connected else { return }
-        perform("conversation.open", ["id": id])
+        requestOpen(id)
+    }
+
+    /// Asks the engine for a conversation's entries and to keep sending them. A pane kept from last time can name a
+    /// conversation this data folder does not have (the layout is kept with the app's settings, not in the data folder),
+    /// and it asks before the library has been seen. The engine sends the library before it answers anything, so when it
+    /// does not know the conversation and the library does not list it, the request is let go quietly: the window empties
+    /// that pane once the library is in. A conversation the library lists that fails to open is still reported.
+    private func requestOpen(_ id: Int) {
+        Task {
+            do {
+                try await call("conversation.open", ["id": id])
+            } catch {
+                if hasLoadedLibrary, !conversations.contains(where: { $0.id == id }), !archived.contains(where: { $0.id == id }) {
+                    open[id] = nil
+                    return
+                }
+                lastError = error.localizedDescription
+            }
+        }
     }
 
     /// Sends a message. Returns false, after showing why, when the engine refused it.
@@ -273,7 +292,7 @@ final class EngineClient {
                     // After an update the engine that answered may be the one from before.
                     Task { await self.replaceEngineFromAnotherBuild() }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
-                    for id in self.open.keys { self.perform("conversation.open", ["id": id]) }
+                    for id in self.open.keys { self.requestOpen(id) }
                 case .waiting(let error), .failed(let error):
                     if self.status == .connected { self.note("connection failed: \(error)") }
                     self.retry()
