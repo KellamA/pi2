@@ -28,17 +28,116 @@ struct PlanLimits: Decodable, Equatable {
         let refreshing: Bool?
     }
 
+    /// A window that passed 90% while runs on its subscription were going: shown in the Inbox until dismissed or reset.
+    struct Notice: Decodable, Equatable, Identifiable {
+        struct Run: Decodable, Equatable {
+            let conversationId: Int
+            /// The conversation in the sidebar it belongs to; differs from `conversationId` for a sub-chat.
+            let rootConversationId: Int
+            let title: String
+            let agentName: String?
+            let subChat: Bool
+        }
+
+        let id: String
+        let provider: String
+        let name: String
+        let plan: String?
+        let label: String
+        /// 0–100.
+        let usedPercent: Double
+        /// Milliseconds since 1970.
+        let resetsAt: Double?
+        /// When it was noticed.
+        let at: Double
+        /// The runs going on that subscription then; `more` counts those left out.
+        let runs: [Run]
+        let more: Int?
+    }
+
     let providers: [Provider]
+    let notices: [Notice]
 
     /// Nil when there is no event yet or it cannot be read.
     init?(_ value: JSONValue?) {
         guard let value, let data = try? JSONEncoder().encode(value),
               let decoded = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
         providers = decoded.providers
+        notices = decoded.notices ?? []
     }
 
     private struct Payload: Decodable {
         let providers: [Provider]
+        let notices: [Notice]?
+    }
+}
+
+/// A window nearly used up while runs on its subscription were going, in the Inbox. Information, not a request: a run the
+/// provider refuses waits for the reset and carries on by itself, so the card is calm and only offers to put it away.
+struct LimitNoticeCard: View {
+    let engine: EngineClient
+    let notice: PlanLimits.Notice
+    /// Show a conversation, by its id in the sidebar.
+    let open: (Int) -> Void
+    let showUsage: () -> Void
+
+    var body: some View {
+        // Re-drawn every half minute so "in 2 h" and "noticed" stay true.
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            content(now: context.date)
+        }
+    }
+
+    private func content(now: Date) -> some View {
+        let reset = notice.resetsAt.map { LimitsFormat.date($0) }
+        let when = reset.map { "It resets \(LimitsFormat.exact($0)), in \(LimitsFormat.duration($0.timeIntervalSince(now)))." } ?? "\(notice.name) did not say when it resets."
+        let count = notice.runs.count + (notice.more ?? 0)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "gauge.with.dots.needle.67percent").foregroundStyle(Theme.acc)
+                Text("\(notice.name)\(notice.plan.map { " \($0)" } ?? ""): \(notice.label) \(LimitsFormat.percent(notice.usedPercent))% used")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 6)
+                Text("noticed \(LimitsFormat.ago(LimitsFormat.date(notice.at), now: now))")
+                    .font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                    .help(LimitsFormat.exact(LimitsFormat.date(notice.at)))
+            }
+            Text("\(when) \(count == 1 ? "One run was" : "\(count) runs were") going on this subscription when it passed 90%:")
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(notice.runs, id: \.conversationId) { run in
+                    Button { open(run.rootConversationId) } label: {
+                        HStack(spacing: 6) {
+                            Text("“\(run.title.isEmpty ? "New conversation" : run.title)”").foregroundStyle(Theme.acc).lineLimit(1)
+                            Text([run.agentName, run.subChat ? "sub-chat" : nil].compactMap { $0 }.joined(separator: " · "))
+                                .foregroundStyle(Theme.tx3).lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the conversation")
+                }
+                if let more = notice.more, more > 0 {
+                    Text("and \(more) more").foregroundStyle(Theme.tx3)
+                }
+            }
+            .padding(.leading, 4)
+            Text("If \(notice.name) refuses a request before then, that run waits for the reset and carries on by itself. Nothing needs doing.")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Dismiss") { engine.perform("limits.dismiss", ["id": notice.id]) }
+                    .buttonStyle(.piSecondary)
+                    .help("Put this notice away. It is not shown again for this window before it resets.")
+                Button("Show Usage") { showUsage() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.acc)
+            }
+        }
+        .font(.system(size: 12.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 13).padding(.vertical, 11)
+        .panel(fill: Theme.panel, border: Theme.line2)
+        .accessibilityElement(children: .contain)
     }
 }
 
