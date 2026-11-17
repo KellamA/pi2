@@ -8,7 +8,8 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { inspect, newRunMarker, parseStatus, RUN_VARIABLE, stopLeftOver, suggestBranch } from "../src/worktrees.ts";
+import { newRunMarker, RUN_VARIABLE, stopLeftOver } from "../src/processes.ts";
+import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
