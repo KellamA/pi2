@@ -41,6 +41,7 @@ import { KeychainCredentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
+import { noticingRefusals } from "./limitwait.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
@@ -237,6 +238,7 @@ const engine: Engine = {
 	stateChanged: (id) => {
 		for (const client of clients) client.subscriptions.get(id)?.push();
 	},
+	activityChanged: () => broadcast(activityEvent()),
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
 // `read` shrinks a picture larger than the model takes (a Retina screenshot, say) and converts BMP, rather than refusing
@@ -304,8 +306,19 @@ const storage = await openNodeSqliteStorage(join(home, "session.sqlite"));
 const harness = await Harness.open(
 	storage,
 	{
-		models: providers.models,
+		// Every request notes how a provider refused it, so a limit can be waited for as long as the provider says.
+		models: noticingRefusals(providers.models),
 		registry,
+		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
+		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
+		settings: {
+			retry: {
+				host: (message: never, attempt: number, id: unknown) => {
+					const feature = host.features.find((candidate) => candidate.retry !== undefined);
+					return feature?.retry?.(message, attempt, id as number) ?? { spent: 0 };
+				},
+			} as never,
+		},
 		// A conversation without a chosen folder works in the app's own scratch folder, never the home folder.
 		env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? workspace }),
 		identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
@@ -1366,6 +1379,8 @@ const refreshBusy = () => {
 	busyConversations = new Set([...working].map(rootOf));
 };
 refreshBusy();
+// A wait the last engine noted for a run that has since ended (it stopped between the two) is let go.
+for (const feature of host.features) feature.runsChanged?.(working);
 
 /** What is running right now, one row per conversation with live work; subagents point at their parent. */
 function activityEvent() {
@@ -1381,6 +1396,8 @@ function activityEvent() {
 				agentId: meta?.agentId ?? null,
 				status: waiting.has(id) ? "waiting" : "working",
 				since: since.get(id) ?? Date.now(),
+				// What features add (a wait for a provider's limit, say).
+				...Object.assign({}, ...host.features.map((feature) => feature.activity?.(id) ?? {})),
 				// Its shell commands running in the foreground, with their clocks (running.ts).
 				commands: runningCommands.of(id),
 			};
@@ -1407,6 +1424,7 @@ graphWatch.start(async (call) => {
 	const before = working;
 	working = conversationsWithWork(call.value as never);
 	refreshBusy();
+	for (const feature of host.features) feature.runsChanged?.(working);
 	const changed = before.size !== working.size || [...working].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
 	broadcast(activityEvent());

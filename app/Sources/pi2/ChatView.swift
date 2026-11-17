@@ -53,7 +53,9 @@ struct ChatView: View {
             if let error = state?.compactionError, state?.compacting != true {
                 banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: Theme.warn)
             }
-            if let retry = state?.retry {
+            if let wait = state?.limitWait {
+                banner(wait.sentence, systemImage: "hourglass", color: Theme.warn)
+            } else if let retry = state?.retry {
                 banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: Theme.warn)
             }
             if let failure = state?.failure, !busy {

@@ -820,6 +820,33 @@
 		return BACKGROUND_ID.test(id) ? id : "";
 	}
 
+	/** An answer that is only an error: an attempt that failed before the model said or called anything. */
+	function bareFailure(item) {
+		if (!isObject(item) || item.kind !== "assistant" || item.stop !== "error") return false;
+		return str(item.text).trim() === "" && str(item.thinking).trim() === "" && !(Array.isArray(item.toolCalls) && item.toolCalls.length > 0);
+	}
+
+	/**
+	 * Failed attempts in a row, as a request retried, or refused again and again while a run waits for a provider's limit,
+	 * leaves them: they show as one row, the last, which says how many there were. For each item shown that way, the
+	 * number of attempts in its run (1 for one on its own); the attempts before the last of a run are not in it.
+	 */
+	function failedRuns(items) {
+		const shown = new Map();
+		const hidden = new Set();
+		let run = [];
+		for (let index = 0; index < items.length; index++) {
+			const item = items[index];
+			if (!bareFailure(item)) continue;
+			run.push(item);
+			if (bareFailure(items[index + 1])) continue;
+			for (const before of run.slice(0, -1)) hidden.add(before.id);
+			shown.set(item.id, run.length);
+			run = [];
+		}
+		return { shown, hidden };
+	}
+
 	/** A delegation's answer without the footer the engine adds for the model ("(Sub-chat 4 with Atlas. …)"). */
 	function subagentAnswer(output) {
 		const text = readable(output);
@@ -891,6 +918,7 @@
 		backgroundCaption,
 		backgroundCommand,
 		markerCommand,
+		failedRuns,
 		detailFor,
 		subagentAnswer,
 		scheduleApproval,

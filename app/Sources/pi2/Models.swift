@@ -191,6 +191,41 @@ struct RetryInfo: Codable, Equatable {
     let error: String
 }
 
+/// A run waiting for a provider's rate limit, or for it to stop being overloaded, before it asks again by itself.
+struct LimitWait: Codable, Equatable {
+    /// "rate_limit" or "overloaded".
+    let kind: String
+    /// When the first refusal of this wait came, and when the run asks again, in milliseconds since 1970.
+    let since: Double
+    let until: Double
+    /// Whether the provider named that time; otherwise it is pi²'s own backoff.
+    let told: Bool
+    let refusals: Int
+    /// The provider's name, as Settings shows it.
+    let provider: String
+
+    /// "14:32", or with the day when it is not today.
+    var untilText: String {
+        let date = Date(timeIntervalSince1970: until / 1000)
+        return Calendar.current.isDateInToday(date) ? date.formatted(date: .omitted, time: .shortened) : date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// What the conversation says while it waits.
+    var sentence: String {
+        let what = kind == "overloaded" ? "\(provider) is overloaded" : "\(provider) refused the request for its rate limit"
+        let refused = refusals > 1 ? ", \(refusals) times so far" : ""
+        if told {
+            return "\(what)\(refused). The run waits until \(untilText), the time it named, then carries on by itself. Stop ends it."
+        }
+        return "\(what)\(refused), and named no time. The run asks again at \(untilText) and carries on by itself. Stop ends it."
+    }
+
+    /// The short form, for a row in Activity.
+    var tag: String {
+        kind == "overloaded" ? "provider overloaded · until \(untilText)" : "rate limit · until \(untilText)"
+    }
+}
+
 struct RunFailure: Codable, Equatable {
     let reason: String
     let detail: String?
@@ -435,6 +470,8 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     let agentId: String?
     let status: String
     let since: Double
+    /// Set while the run waits for a provider's limit; nil otherwise, and from an engine older than this field.
+    let limit: LimitWait?
     /// Its shell commands running in the foreground, oldest first, with their clocks (#196). Absent from an older engine.
     var commands: [RunningCommand]?
     var id: Int { conversationId }
@@ -579,6 +616,8 @@ struct ConversationState: Codable, Equatable {
     let turns: Int
     let partial: PartialAnswer?
     let retry: RetryInfo?
+    /// Set while the run waits for a provider's limit; nil otherwise, and from an engine older than this field.
+    let limitWait: LimitWait?
     let tools: [LiveTool]
     let failure: RunFailure?
     let queued: [QueuedInput]

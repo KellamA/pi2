@@ -5,6 +5,7 @@
 // bottom is the only place that names them. Nothing else in the engine needs to change to add one.
 
 import type { Context } from "@earendil-works/chord/context";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Providers } from "./providers.ts";
@@ -16,6 +17,7 @@ import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits } from "./limits.ts";
+import { limitWait } from "./limitwait.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
 import { plan } from "./plan.ts";
@@ -43,6 +45,8 @@ export type Engine = {
 	apps(): number;
 	/** Send a conversation's state again to the apps showing it: for a change to what a feature's `state` reads from outside the conversation's documents. */
 	stateChanged(id: number): void;
+	/** Send Activity again to every app: for a change to what a feature's `activity` says. */
+	activityChanged(): void;
 };
 
 export type FeatureParts = {
@@ -59,6 +63,16 @@ export type FeatureParts = {
 	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
 	state?(view: ConversationView, meta: Meta | undefined): Record<string, unknown>;
+	/** Extra fields of a conversation's row in Activity, while it has work running. */
+	activity?(id: number): Record<string, unknown>;
+	/** Which conversations have work running changed (a run started, ended or was stopped). */
+	runsChanged?(working: ReadonlySet<number>): void;
+	/**
+	 * Asked by pi-durable before it retries a failed model request (`message`), or one the engine stopped during (no
+	 * message): how long to wait instead (`waitMs`; false ends the run), and how many attempts were spent on such waits.
+	 * Only one feature answers it. See engine/scripts/patch-dependencies.ts.
+	 */
+	retry?(message: AssistantMessage | undefined, attempt: number, conversationId: number): { waitMs?: number | false; spent: number };
 	/** Runs once when the harness is open, before the engine listens or runs anything: load what the rest needs at once. */
 	start?(): Promise<void>;
 	/**
@@ -84,5 +98,6 @@ export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
 // `order` wraps tools that `commands` and `reads` wrap too, and adds to what those made of them, so it comes after them.
 // The order of the sections no longer matters for what is sent: each keeps its place in a conversation (sections.ts,
-// #186), so one that comes or goes is sent alone wherever it is declared.
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, scratch, coauthor, background, order];
+// #186), so one that comes or goes is sent alone wherever it is declared. `limitWait` starts first, so the waits it
+// keeps are loaded before what another feature's start sets going can ask about one.
+export const FEATURES: Feature[] = [limitWait, plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, reads, scratch, coauthor, background, order];
