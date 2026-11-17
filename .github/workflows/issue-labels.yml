@@ -1,0 +1,50 @@
+name: Issue labels
+
+# Keeps the status labels (in progress, waiting, blocked, backlog) true to an issue's state however it changed: takes
+# them off an issue when it is closed, by a merged pull request or by hand, and puts "backlog" on one reopened with no
+# status label. scripts/issue does the rest of the bookkeeping. See #147.
+#
+# Anyone can open, close and reopen issues here, so nothing written in an issue reaches the shell: the job uses only
+# the issue's number, and reads its state and labels back from GitHub. No code is checked out, and the token can only
+# touch issues.
+
+on:
+  issues:
+    types: [closed, reopened]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-labels-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  labels:
+    name: Status labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Match the status labels to the issue's state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[0-9]+$ ]] || { echo "Not an issue number: $NUMBER"; exit 1; }
+          # The state now, not the one in the event: the issue may have been reopened or closed again since.
+          issue=$(gh api "repos/$REPO/issues/$NUMBER")
+          state=$(jq -r .state <<<"$issue")
+          labels=$(jq -r '.labels[].name' <<<"$issue")
+          if [[ $state == closed ]]; then
+            for label in "in progress" waiting blocked backlog; do
+              grep -qxF "$label" <<<"$labels" || continue
+              gh api -X DELETE "repos/$REPO/issues/$NUMBER/labels/${label// /%20}" >/dev/null
+              echo "Took \"$label\" off #$NUMBER, which is closed."
+            done
+          elif ! grep -qxE 'in progress|waiting|blocked|backlog' <<<"$labels"; then
+            gh api -X POST "repos/$REPO/issues/$NUMBER/labels" -f "labels[]=backlog" >/dev/null
+            echo "Put \"backlog\" on #$NUMBER, which is open with no status label."
+          fi
+          echo "#$NUMBER is $state."

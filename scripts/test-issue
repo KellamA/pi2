@@ -1,0 +1,242 @@
+#!/bin/bash
+# Checks scripts/issue against a stand-in for gh, put first on the PATH, which
+# writes down each command it is given and answers from canned issues. Runs in
+# a throwaway git repository in a temporary folder, and touches no GitHub issue.
+#
+#   scripts/test-issue
+
+set -uo pipefail
+
+issue="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/issue"
+command -v jq >/dev/null || { echo "test-issue: needs jq" >&2; exit 1; }
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+T=$(cd -P -- "$T" && pwd -P)
+
+repo=$T/repo
+git init -q -b work "$repo"
+git -C "$repo" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false \
+	commit -q --allow-empty -m start
+# The labels exist: scripts/issue skips creating them.
+touch "$(git -C "$repo" rev-parse --absolute-git-dir)/pi2-issue-labels"
+
+# The stand-in. It answers "issue view N" from $CANNED/N.json, "issue list"
+# from $CANNED/list.json, and applies -q as gh does. A command named in
+# $CANNED/fail (such as "comment") fails. Every call goes into $GH_LOG, one
+# line each, its arguments quoted as the shell would.
+mkdir -p "$T/bin"
+cat >"$T/bin/gh" <<'EOF'
+#!/bin/bash
+{ printf 'gh'; printf ' %q' "$@"; echo; } >>"$GH_LOG"
+query=
+for ((i = 1; i <= $#; i++)); do
+	case ${!i} in -q|--jq) j=$((i + 1)); query=${!j} ;; esac
+done
+if [[ -f $CANNED/fail ]] && grep -qxF "$2" "$CANNED/fail"; then
+	echo "gh: $2 failed" >&2
+	exit 1
+fi
+case "$1 $2" in
+	"issue view") file=$CANNED/$3.json ;;
+	"issue list") file=$CANNED/list.json ;;
+	*) exit 0 ;;
+esac
+[[ -f $file ]] || { echo "gh: no canned answer in $file" >&2; exit 1; }
+if [[ -n $query ]]; then jq -r "$query" "$file"; else cat "$file"; fi
+EOF
+chmod +x "$T/bin/gh"
+
+export PATH="$T/bin:$PATH" GH_LOG CANNED
+pass=0 fail=0
+
+report() {
+	if [[ $1 == "$2" ]]; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		echo "FAIL $3: expected $1, got $2"
+	fi
+}
+
+# check <description> <condition...>: passes when the condition holds.
+check() {
+	local what=$1; shift
+	if "$@"; then report yes yes "$what"; else report yes no "$what"; fi
+}
+
+# run <name> <scripts/issue arguments...>: runs it in the throwaway repository
+# with a fresh log and canned answers in $T/<name>, into $out and $status.
+run() {
+	CANNED=$T/$1; shift
+	GH_LOG=$CANNED/log
+	mkdir -p "$CANNED"
+	: >"$GH_LOG"
+	out=$(cd "$repo" && "$issue" "$@" 2>&1)
+	status=$?
+}
+
+logged() { grep -qF -- "$1" "$GH_LOG"; }
+not_logged() { ! grep -qF -- "$1" "$GH_LOG"; }
+said() { grep -qF -- "$1" <<<"$out"; }
+# The line scripts/issue-hook reads to know an issue is closed.
+hook_sees_closed() { grep -qE "^\[pi2-issue\] closed #$1( |$)" <<<"$out"; }
+# Whether the first call containing $1 comes before the first containing $2.
+before() {
+	local a b
+	a=$(grep -nF -- "$1" "$GH_LOG" | head -1 | cut -d: -f1)
+	b=$(grep -nF -- "$2" "$GH_LOG" | head -1 | cut -d: -f1)
+	[[ -n $a && -n $b ]] && ((a < b))
+}
+canned() { mkdir -p "$T/$1"; cat >"$T/$1/$2.json"; }
+
+open='{"state": "OPEN", "stateReason": ""}'
+completed='{"state": "CLOSED", "stateReason": "COMPLETED"}'
+not_planned='{"state": "CLOSED", "stateReason": "NOT_PLANNED"}'
+
+# done on an open issue: the summary, the labels off, then closed.
+canned done-open 5 <<<"$open"
+run done-open done 5 "Fixed it in $HOME/somewhere."
+report 0 "$status" "done on an open issue: exit status"
+check "done on an open issue: summary posted" logged "gh issue comment 5 --body \$'**Done.** Fixed it in ~/somewhere."
+check "done on an open issue: summary names the branch" logged 'Branch `work`, at '
+check "done on an open issue: home folder left out" not_logged "$HOME"
+check "done on an open issue: status labels off" logged "gh issue edit 5 --remove-label in\\ progress --remove-label waiting --remove-label blocked --remove-label backlog"
+check "done on an open issue: closed as completed" logged "gh issue close 5 --reason completed"
+check "done on an open issue: summary before closing" before "gh issue comment 5" "gh issue close 5"
+check "done on an open issue: no summary on the close" not_logged "--comment"
+check "done on an open issue: the hook sees it closed" hook_sees_closed 5
+check "done on an open issue: says so" said "[pi2-issue] closed #5 (completed)"
+
+# done on an issue a pull request closed: the summary still goes on, and it is
+# not closed again.
+canned done-closed 6 <<<"$completed"
+run done-closed done 6 "Merged."
+report 0 "$status" "done on a closed issue: exit status"
+check "done on a closed issue: summary posted" logged "gh issue comment 6 --body \$'**Done.** Merged."
+check "done on a closed issue: status labels off" logged "gh issue edit 6 --remove-label"
+check "done on a closed issue: not closed again" not_logged "gh issue close"
+check "done on a closed issue: reason left alone" not_logged "gh api"
+check "done on a closed issue: the hook sees it closed" hook_sees_closed 6
+check "done on a closed issue: says the summary is posted" said "was already closed; summary posted"
+
+# done on an issue closed as not planned: the reason becomes completed.
+canned done-not-planned 7 <<<"$not_planned"
+run done-not-planned done 7 "Done after all."
+report 0 "$status" "done on an issue closed as not planned: exit status"
+check "done on an issue closed as not planned: summary posted" logged "gh issue comment 7 --body \$'**Done.** Done after all."
+check "done on an issue closed as not planned: reason made completed" logged "gh api -X PATCH repos/\\{owner\\}/\\{repo\\}/issues/7 -f state=closed -f state_reason=completed"
+check "done on an issue closed as not planned: not closed again" not_logged "gh issue close"
+
+# drop on an open issue, and on one closed as completed.
+canned drop-open 8 <<<"$open"
+run drop-open drop 8 "Not needed."
+report 0 "$status" "drop on an open issue: exit status"
+check "drop on an open issue: reason posted" logged "gh issue comment 8 --body \\*\\*Not\\ going\\ ahead.\\*\\*\\ Not\\ needed."
+check "drop on an open issue: status labels off" logged "gh issue edit 8 --remove-label"
+check "drop on an open issue: closed as not planned" logged "gh issue close 8 --reason not\\ planned"
+check "drop on an open issue: reason before closing" before "gh issue comment 8" "gh issue close 8"
+check "drop on an open issue: the hook sees it closed" hook_sees_closed 8
+check "drop on an open issue: says so" said "[pi2-issue] closed #8 (not planned)"
+canned drop-closed 9 <<<"$completed"
+run drop-closed drop 9 "Superseded."
+report 0 "$status" "drop on a closed issue: exit status"
+check "drop on a closed issue: reason posted" logged "gh issue comment 9 --body \\*\\*Not\\ going\\ ahead.\\*\\*\\ Superseded."
+check "drop on a closed issue: reason made not planned" logged "gh api -X PATCH repos/\\{owner\\}/\\{repo\\}/issues/9 -f state=closed -f state_reason=not_planned"
+check "drop on a closed issue: not closed again" not_logged "gh issue close"
+check "drop on a closed issue: the hook sees it closed" hook_sees_closed 9
+
+# When the summary cannot be posted, the issue is not closed, and nothing says it is.
+canned done-fails 10 <<<"$open"
+echo comment >"$T/done-fails/fail"
+run done-fails done 10 "Fixed."
+check "done when the summary fails: exit status not 0" test "$status" -ne 0
+check "done when the summary fails: not closed" not_logged "gh issue close"
+check "done when the summary fails: the hook does not see it closed" eval '! hook_sees_closed 10'
+
+# No summary, or no number: nothing is asked of GitHub.
+run done-no-summary done 11
+check "done with no summary: exit status not 0" test "$status" -ne 0
+check "done with no summary: no gh call" test ! -s "$GH_LOG"
+run drop-no-number drop "" "why"
+check "drop with no number: exit status not 0" test "$status" -ne 0
+check "drop with no number: no gh call" test ! -s "$GH_LOG"
+
+# take on a closed issue labels it before reopening it, so the workflow that
+# puts "backlog" on a reopened issue finds it labelled.
+canned take-closed 12 <<<"$completed"
+run take-closed take 12
+check "take on a closed issue: labelled in progress" logged "--add-label in\\ progress"
+check "take on a closed issue: reopened" logged "gh issue reopen 12"
+check "take on a closed issue: labelled before reopening" before "--add-label in\\ progress" "gh issue reopen 12"
+
+# audit, on a board with one of each kind of problem and some issues that are fine.
+ago() { jq -nr --argjson s "$1" 'now - $s | floor | todate'; }
+hour=$(ago 3600) twodays=$(ago 172800)
+jq -n --arg hour "$hour" --arg twodays "$twodays" '
+	def i(n; s; r; l; u; c): {number: n, state: s, stateReason: r, labels: [l[] | {name: .}], updatedAt: u, closedAt: c};
+	[
+		i(20; "CLOSED"; "COMPLETED"; ["bug", "waiting"]; $hour; $hour),
+		i(21; "OPEN"; ""; ["bug"]; $hour; null),
+		i(22; "OPEN"; ""; ["in progress", "waiting"]; $hour; null),
+		i(23; "OPEN"; ""; ["in progress"]; $twodays; null),
+		i(24; "OPEN"; ""; ["in progress"]; $hour; null),
+		i(25; "CLOSED"; "COMPLETED"; ["agent"]; $hour; "2026-11-10T10:00:00Z"),
+		i(26; "CLOSED"; "COMPLETED"; ["agent"]; $hour; "2026-11-10T10:00:00Z"),
+		i(27; "CLOSED"; "COMPLETED"; ["agent"]; $hour; "2026-06-01T10:00:00Z"),
+		i(28; "CLOSED"; "NOT_PLANNED"; ["agent"]; $hour; "2026-11-10T10:00:00Z"),
+		i(29; "CLOSED"; "COMPLETED"; ["bug"]; $hour; "2026-11-10T10:00:00Z"),
+		i(30; "OPEN"; ""; ["backlog", "agent"]; $twodays; null),
+		i(31; "CLOSED"; "COMPLETED"; ["agent"]; $hour; "2026-11-10T10:00:00Z"),
+		i(32; "OPEN"; ""; ["waiting", "blocked", "backlog"]; $hour; null)
+	]' | canned audit list
+comments() { jq -n '{comments: [$ARGS.positional[] | {body: .}]}' --args "$@"; }
+comments "Picked up." "**Done.** Fixed." | canned audit 26
+comments "Picked up." | canned audit 25
+comments "This is **Done.** but not a summary." | canned audit 31
+comments | canned audit 27
+run audit audit --since 2026-11-01
+check "audit: exit status not 0" test "$status" -ne 0
+check "audit: closed with a status label" said '#20  closed, but still labelled "waiting"'
+check "audit: open with no status label" said "#21  open with no status label"
+check "audit: open with two status labels" said "#22  open with 2 status labels: in progress, waiting"
+check "audit: open with three status labels" said "#32  open with 3 status labels: waiting, blocked, backlog"
+check "audit: in progress for two days untouched" said "#23  in progress, but nothing has happened on it since $twodays"
+check "audit: agent issue closed as completed with no summary" said "#25  closed as completed, but has no **Done.** summary"
+check "audit: a comment that is not a summary does not count" said "#31  closed as completed, but has no **Done.** summary"
+check "audit: counts the problems" said "7 problems on the board."
+for n in 24 26 27 28 29 30; do
+	check "audit: #$n is fine" eval "! grep -q '^#$n ' <<<\"\$out\""
+done
+check "audit: in order of number" test "$(grep -oE '^#[0-9]+' <<<"$out" | tr -d '#' | tr '\n' ' ')" == "20 21 22 23 25 31 32 "
+check "audit: changes nothing" eval "! grep -vE '^gh issue (list|view) ' \"\$GH_LOG\" | grep -q ."
+check "audit: fetches comments only for agent issues closed as completed since the date" \
+	test "$(grep -oE '^gh issue view [0-9]+' "$GH_LOG" | awk '{print $4}' | tr '\n' ' ')" == "25 26 31 "
+
+# An earlier date takes in the older issue too.
+run audit audit --since 2026-01-01
+check "audit --since earlier: the older issue is reported" said "#27  closed as completed, but has no **Done.** summary"
+check "audit --since earlier: counts it" said "8 problems on the board."
+
+# The default date is after all these closings: none of them is checked for a summary.
+run audit audit
+check "audit with the default date: no summary is looked for" eval "! grep -q 'gh issue view' \"\$GH_LOG\""
+
+# A bad date is refused before anything is asked of GitHub.
+run audit-bad-date audit --since yesterday
+check "audit with a bad date: exit status not 0" test "$status" -ne 0
+check "audit with a bad date: no gh call" test ! -s "$GH_LOG"
+check "audit with a bad date: says what it takes" said "--since takes a date"
+
+# A board with nothing wrong.
+jq -n --arg hour "$hour" '[
+	{number: 40, state: "OPEN", stateReason: "", labels: [{name: "backlog"}], updatedAt: $hour, closedAt: null},
+	{number: 41, state: "CLOSED", stateReason: "COMPLETED", labels: [{name: "agent"}], updatedAt: $hour, closedAt: $hour}
+]' | canned audit-clean list
+comments "**Done.** All good." | canned audit-clean 41
+run audit-clean audit --since 2026-01-01
+report 0 "$status" "audit on a clean board: exit status"
+check "audit on a clean board: says so" said "The board is in order."
+
+echo "$pass passed, $fail failed"
+((fail == 0))
