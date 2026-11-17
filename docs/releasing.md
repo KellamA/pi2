@@ -98,6 +98,8 @@ In the repository's Settings › Environments, make an environment called `relea
 
 The workflow refuses a tag that does not match `app/VERSION`, a commit that is not on `main`, and a version with no changelog section. The build number is the number of commits on `main`, which is what Sparkle compares, so it only goes up as long as releases come from `main`.
 
+If no macOS runner takes the job in time, GitHub cancels it before it starts, and it is run again by itself, as CI's jobs are ([CI](development.md#ci)). Nothing has been built, signed or drafted by then, so running it again is safe.
+
 ## Previewing the notes without releasing
 
 ```bash

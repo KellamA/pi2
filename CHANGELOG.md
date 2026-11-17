@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### For contributors
+- CI runs a job again by itself, up to three times, when GitHub cancelled it because no runner took it in time, as happens to the macOS jobs when GitHub is short of macOS runners. Only that case: a real failure is never retried. A pull request that changes only the docs, the top-level Markdown files or `app/VERSION` skips the two macOS jobs, and their required checks pass. See [docs/development.md](docs/development.md#ci).
+
 ## 0.7.8
 
 ### Added

@@ -1,0 +1,36 @@
+name: Rerun jobs no runner took
+
+# GitHub cancels a job that no runner picked up in time ("The job was not acquired by Runner of type hosted even after
+# multiple attempts"), which happens to the macOS jobs when GitHub is short of macOS runners. The check then counts as
+# failed, and a pull request waiting to merge waits until someone runs it again. This runs those jobs again by
+# themselves, a few times at most, and nothing else: scripts/rerun-if-no-runner says exactly when (#245).
+#
+# A workflow_run workflow runs as the default branch has it, with a token that can write, whoever's pull request the
+# finished run tested. Nothing of that pull request reaches the shell: the script is the default branch's, and it takes
+# only the run's number and reads the rest back from GitHub.
+
+on:
+  workflow_run:
+    workflows: [CI, Release]
+    types: [completed]
+
+permissions:
+  actions: write # read runs and jobs, and run them again
+  checks: read # read a job's annotations
+  contents: read
+
+jobs:
+  rerun:
+    name: Run again what no runner took
+    if: github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: scripts/rerun-if-no-runner "$RUN_ID"

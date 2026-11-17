@@ -1,0 +1,82 @@
+#!/bin/bash
+# Runs a workflow run's jobs again when they ended only because no runner took them (#245). GitHub cancels a job that
+# no runner picked up in time, with the annotation "The job was not acquired by Runner of type hosted even after
+# multiple attempts"; the check counts as failed and stays failed until someone runs it again. macOS runners are the
+# ones that run short.
+#
+#   scripts/rerun-if-no-runner <run-id> [--dry-run]
+#
+# Runs the failed jobs again only if every job of the run's latest attempt that did not pass ended that way: cancelled,
+# never started (no runner, no steps), with that annotation. A job that failed, or was cancelled for another reason
+# (a newer push, a person), is left alone, and so is the whole run then. So is a run that is not the newest of its
+# workflow on its branch (the newer one tests a newer commit, and running the old one again would cancel it), and one
+# already at its fourth attempt. The workflow "Rerun jobs no runner took" calls it each time CI or Release ends badly;
+# a person can run it too. --dry-run says what it would do and does nothing. Needs gh and jq; the repository is the
+# one gh finds here, or GH_REPO.
+
+set -euo pipefail
+
+usage() { echo "usage: scripts/rerun-if-no-runner <run-id> [--dry-run]" >&2; exit 2; }
+id=${1:-}
+[[ $id =~ ^[0-9]+$ ]] || usage
+dry=false
+case ${2:-} in "") ;; --dry-run) dry=true ;; *) usage ;; esac
+
+MAX_ATTEMPTS=4 # three runs again after the first, about 45 minutes of waiting for a runner at most
+NO_RUNNER='was not acquired by Runner'
+
+run=$(gh api "repos/{owner}/{repo}/actions/runs/$id")
+status=$(jq -r .status <<<"$run")
+attempt=$(jq -r .run_attempt <<<"$run")
+name=$(jq -r .name <<<"$run")
+echo "Run $id ($name), attempt $attempt: $status, $(jq -r '.conclusion // "no conclusion"' <<<"$run")."
+
+if [[ $status != completed ]]; then
+	echo "It has not finished (or has been started again already): nothing to do."
+	exit 0
+fi
+
+# The newest run of the same workflow, for the same event on the same branch (or tag). CI cancels a run when a newer one
+# starts on the same branch, and the reverse would happen here: an older run started again would cancel the newer one.
+newest=$(gh api -X GET "repos/{owner}/{repo}/actions/workflows/$(jq -r .workflow_id <<<"$run")/runs" \
+	-f branch="$(jq -r .head_branch <<<"$run")" -f event="$(jq -r .event <<<"$run")" -f per_page=1 --jq '.workflow_runs[0].id // empty')
+if [[ $newest != "$id" ]]; then
+	echo "Run ${newest:-?} is newer on the same branch: leaving this one."
+	exit 0
+fi
+
+jobs=$(gh api --paginate "repos/{owner}/{repo}/actions/runs/$id/attempts/$attempt/jobs?per_page=100" --jq '.jobs[]' | jq -s .)
+unacquired=0
+other=0
+while IFS=$'\t' read -r job conclusion runner steps jobname; do
+	[[ -n $job ]] || continue
+	reason="$conclusion"
+	if [[ $conclusion == cancelled && $runner == 0 && $steps == 0 ]] &&
+		gh api "repos/{owner}/{repo}/check-runs/$job/annotations" --jq '.[].message' | grep -qF "$NO_RUNNER"; then
+		unacquired=$((unacquired + 1))
+		reason="cancelled: no runner took it"
+	else
+		other=$((other + 1))
+	fi
+	echo "- $jobname: $reason"
+done < <(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")
+	| [.id, (.conclusion // "unfinished"), (.runner_id // 0), (.steps | length), .name] | @tsv' <<<"$jobs")
+
+if ((unacquired == 0)); then
+	echo "No job ended for want of a runner: nothing to do."
+	exit 0
+fi
+if ((other > 0)); then
+	echo "Another job did not pass for another reason, which running the failed jobs again would retry too: leaving it to a person."
+	exit 0
+fi
+if ((attempt >= MAX_ATTEMPTS)); then
+	echo "This was attempt $attempt, the last one run again by itself: leaving it to a person (gh run rerun $id --failed)."
+	exit 0
+fi
+if $dry; then
+	echo "Would run the $unacquired job(s) again (--dry-run)."
+	exit 0
+fi
+gh api -X POST "repos/{owner}/{repo}/actions/runs/$id/rerun-failed-jobs" >/dev/null
+echo "Running the $unacquired job(s) again, as attempt $((attempt + 1))."
