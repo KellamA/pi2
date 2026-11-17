@@ -16,6 +16,7 @@ import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits } from "./limits.ts";
 import { look } from "./look.ts";
+import { order } from "./order.ts";
 import { plan } from "./plan.ts";
 import { selfSchedule } from "./selfschedule.ts";
 import { worktrees } from "./worktrees.ts";
@@ -78,4 +79,5 @@ export type FeatureParts = {
 
 export type Feature = (host: Host, engine: Engine) => FeatureParts;
 
-export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, background];
+// `order` wraps tools that `commands` wraps too, and adds to what that made of them, so it comes after it.
+export const FEATURES: Feature[] = [plan, knowledge, look, documents, limits, selfSchedule, worktrees, commands, background, order];

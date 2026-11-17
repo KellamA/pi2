@@ -2249,6 +2249,75 @@ try {
 		await client.until("its kept output removed", () => !existsSync(join(home, "output", String(long))));
 		step("commands: a long output is shortened to its end and kept whole in a file the result names; a short one keeps none; deleting the conversation removes it");
 	}
+	{
+		// order (engine/src/order.ts): the calls of one answer run in order when one of them changes files (#145, #129)
+		const { order, ORDER_NOTE } = await import("../src/order.ts");
+		const wraps = new Map((order(undefined as never, undefined as never).wraps ?? []).flatMap((wrap) => ("tool" in wrap ? [[wrap.tool, wrap.wrap] as const] : [])));
+		const wrapped = (name: string) => wraps.get(name)?.({ name, description: "Its own words." } as never) as { executionMode?: string; description: string } | undefined;
+		for (const name of ["bash", "write", "edit"]) assert.deepEqual(wrapped(name), { name, description: `Its own words. ${ORDER_NOTE}`, executionMode: "sequential" });
+		for (const name of ["write_document", "codemode"]) assert.deepEqual(wrapped(name), { name, description: "Its own words.", executionMode: "sequential" });
+		assert.deepEqual(wrapped("read"), { name: "read", description: `Its own words. ${ORDER_NOTE}` }, "reading alone does not make an answer's calls wait for each other");
+
+		const { id: o } = await client.call("conversation.create");
+		await client.call("conversation.open", { id: o });
+		await client.call("conversation.configure", { id: o, access: "full", cwd: workdir });
+		await client.until("full access", () => client.conversations.get(o)?.state.agent.access === "full");
+		// Under /tmp, as in the reports, and read by the link's name when written by the folder's own, and the other way round.
+		const tmp = removedAtEnd(mkdtempSync("/tmp/pi2-order-"));
+		const real = realpathSync(tmp);
+		assert.notEqual(real, tmp, "/tmp is a link");
+		let results = 0;
+		/** Sends one answer's worth of calls, `[tool, arguments]` each, and gives their results once the answer is in. */
+		const together = async (...calls: [string, Record<string, unknown>][]) => {
+			await client.call("submit", { id: o, text: `/tools ${JSON.stringify(calls.map(([name, args]) => ({ name, arguments: args })))}` });
+			results += calls.length;
+			await settled(o, results);
+			// In the order of the calls, whatever order they ended in.
+			const asked = client.conversations.get(o)!.items.findLast((item) => item.kind === "assistant" && item.toolCalls?.length === calls.length)!;
+			return asked.toolCalls!.map((call) => toolResults(o).find((result) => result.callId === call.callId)!);
+		};
+		// The writing call takes a second before it writes, so that a read started beside it would find nothing.
+		let [wrote, read] = await together(["bash", { command: `sleep 1; printf fresh > '${real}/note.txt'` }], ["read", { path: `${tmp}/note.txt` }]);
+		assert.equal(wrote!.isError, false, wrote!.text);
+		assert.equal(read!.isError, false, `the read sees what the call before it wrote: ${read!.text}`);
+		assert.equal(read!.text, "fresh");
+		// small.png is the picture the read check above left in the folder.
+		[wrote, read] = await together(["bash", { command: `sleep 1; cp small.png '${tmp}/capture.png'` }], ["read", { path: `${real}/capture.png` }]);
+		assert.ok(!read!.isError && (read as any).images === 1, `a picture too: ${read!.text}`);
+
+		// A background command started after a call that writes, or changes, the script it runs.
+		const ranInBackground = async (result: Item) => {
+			let text = result.text;
+			const bg = result.details?.background?.id;
+			// On a busy machine the script may not have printed by the time the call returns; then a read waits for it.
+			if (bg !== undefined && !/script/.test(text)) text += (await together(["background", { action: "read", id: bg, wait: 600 }]))[0]!.text;
+			return text;
+		};
+		const script = `${tmp}/run.sh`;
+		let [, started] = await together(["bash", { command: `sleep 1; printf '#!/bin/sh\\necho first-script\\n' > '${script}'; chmod +x '${script}'` }], ["bash", { command: script, background: true }]);
+		let printed = await ranInBackground(started!);
+		assert.ok(printed.includes("first-script") && !printed.includes("No such file"), `the background command finds the script just written: ${printed}`);
+		[, started] = await together(["bash", { command: `sleep 1; sed -i '' s/first-script/changed-script/ '${script}'` }], ["bash", { command: script, background: true }]);
+		printed = await ranInBackground(started!);
+		assert.ok(printed.includes("changed-script"), `and runs it as just changed: ${printed}`);
+
+		// Calls that only look still run side by side: a read is answered while a read of a command's output waits for it.
+		const gate = join(tmp, "gate");
+		[started] = await together(["bash", { command: `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo through`, background: true }]);
+		const bg = started!.details.background.id;
+		await client.call("submit", { id: o, text: `/tools ${JSON.stringify([{ name: "background", arguments: { action: "read", id: bg, wait: 600 } }, { name: "read", arguments: { path: `${tmp}/note.txt` } }])}` });
+		const first = await client.until("one of the two calls done", () => {
+			const slots = client.conversations.get(o)!.state.tools;
+			const [waiting, reading] = [slots.find((slot) => slot.name === "background"), slots.find((slot) => slot.name === "read")];
+			return waiting === undefined || reading === undefined ? undefined : reading.status === "done" ? "read" : waiting.status === "done" ? "background" : undefined;
+		});
+		assert.equal(first, "read", "the read did not wait for the other call");
+		writeFileSync(gate, "");
+		results += 2;
+		await settled(o, results);
+		assert.match(toolResults(o).slice(-2).find((result) => result.name === "background")!.text, /through/);
+		step("order: an answer's calls run one at a time when one changes files, so a read or a background command sees what the call before it wrote; calls that only look still run together");
+	}
 
 	// ---- Schedules
 	const { nextRun } = await import("../src/schedules.ts");
