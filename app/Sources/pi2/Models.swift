@@ -126,6 +126,9 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
     let createdAt: Double?
     /// How many sub-chats went into the Archive with it.
     let subChats: Int
+    /// For a sub-chat its conversation's agent archived on its own: that conversation, which stays in the sidebar.
+    let parent: Int?
+    let parentTitle: String?
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {

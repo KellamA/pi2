@@ -361,7 +361,7 @@ struct AgentEditor: View {
                 } header: {
                     Text("Can hand work to")
                 } footer: {
-                    Text("The other agent runs with its own model, instructions and tools, and reports back.").formFooter()
+                    Text("The other agent runs with its own model, instructions and tools, and reports back. Each handoff opens a sub-chat; this agent can archive the ones that are finished, never one that is working or waiting for you, and you can restore them from the Archive.").formFooter()
                 }
                 .id(AgentSection.delegates)
             }

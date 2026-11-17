@@ -151,6 +151,14 @@ test("scheduling: one-line summaries, what a row opens to, and the approval card
 	assert.equal(line("cancel_schedule", { id: "s1" }, "running"), "Cancelling schedule s1…");
 	assert.equal(line("cancel_schedule", { id: "s9" }, "failed", { text: "not yours" }), "Cancel schedule s9");
 	assert.equal(line("cancel_schedule", {}), "Cancelled a schedule");
+	// An agent's own sub-chats: the line says which it archived, once the engine has said.
+	assert.equal(line("sub_chats", { action: "list" }, "running"), "Listing sub-chats…");
+	assert.equal(line("sub_chats", { action: "list" }), "Listed sub-chats");
+	assert.equal(line("sub_chats", { action: "archive", chats: [4, 7] }, "running"), "Archiving sub-chats 4 and 7…");
+	assert.equal(line("sub_chats", { action: "archive", chats: [4, 7, 9] }, "done", { text: "", details: { archived: [4, 9] } }), "Archived sub-chats 4 and 9");
+	assert.equal(line("sub_chats", { action: "archive", chats: [4, 7, 9] }, "done", { text: "", details: { archived: [4, 7, 9] } }), "Archived sub-chats 4, 7 and 9");
+	assert.equal(line("sub_chats", { action: "archive", chats: [4] }, "done", { text: "", details: { archived: [4] } }), "Archived sub-chat 4");
+	assert.equal(line("sub_chats", { action: "archive", chats: [4] }, "failed", { text: "working" }), "Archive sub-chat 4");
 	for (const name of ["schedule_task", "list_schedules", "cancel_schedule"]) assert.equal(T.describe(call(name, {}), "done", null, null).glyph, "clock");
 
 	const opens = T.detailFor(call("schedule_task", args), "done", made, null);
@@ -308,7 +316,7 @@ test("sizes as Finder shows them", () => {
 
 test("hostile arguments never break a summary", () => {
 	for (const args of [null, "string", 5, [], { command: 5 }, { path: {} }, { edits: [{ oldText: 1, newText: null }] }, { action: {} }]) {
-		for (const name of ["bash", "read", "write", "write_document", "edit", "computer", "delegate", "ask_user", "update_plan", "schedule_task", "list_schedules", "cancel_schedule", "mcp__a__b", "x"]) {
+		for (const name of ["bash", "read", "write", "write_document", "edit", "computer", "delegate", "ask_user", "update_plan", "schedule_task", "list_schedules", "cancel_schedule", "sub_chats", "mcp__a__b", "x"]) {
 			const described = T.describe(call(name, args), "done", { text: null, details: "x" }, null);
 			assert.equal(typeof described.title, "string");
 			assert.ok(Array.isArray(T.detailFor(call(name, args), "done", { text: null }, null)));

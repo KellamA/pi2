@@ -859,6 +859,12 @@ export async function madeWorktrees(read: DocumentReader, context: Context): Pro
 	return Object.values(doc?.conversations ?? {}).map(({ path, repo }) => ({ path, repo }));
 }
 
+/** The worktree pi² made for conversation `id`, if it has one of its own. */
+export async function worktreeOf(read: DocumentReader, id: number, context: Context): Promise<Worktree | undefined> {
+	const doc = await read.snapshot(Worktrees, context);
+	return doc?.conversations[String(id)];
+}
+
 /** Whether `folder` is in a git repository, for checking an agent's settings. */
 export async function inRepository(folder: string): Promise<boolean> {
 	return (await repoOf(folder)) !== undefined;

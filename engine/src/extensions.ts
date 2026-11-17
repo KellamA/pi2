@@ -36,7 +36,8 @@ import { ACTIONS, type ComputerHost, describeComputer, givenApp, isNever, isView
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
-import { isPutAway } from "./archive.ts";
+import { isArchived, isPutAway } from "./archive.ts";
+import { noteSubChats, subChatsTool } from "./subchats.ts";
 import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
 import { madeWorktrees, repoOf, subChatFolder } from "./worktrees.ts";
 
@@ -75,6 +76,10 @@ export type Host = {
 	 * the sub-chat's run too. Resolves with the answer, or `undefined` with a reason when there was none.
 	 */
 	continueChat(conversationId: number, content: string, requestId: string, context: Context): Promise<{ answer: string } | { reason: string }>;
+	/** Every conversation pi² keeps, by id: sub-chats, archived and deleted ones included. */
+	conversations(): Record<string, Meta>;
+	/** Whether a conversation has work running: a run, a tool call, a question or approval it waits on. */
+	working(conversationId: number): boolean;
 };
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -116,7 +121,8 @@ export function pi2Extension(host: Host): Extension {
 		name: "delegate",
 		description:
 			"Hand a self-contained task to another agent and get its answer back. Name one of the agents listed in the <agents> section, and write the task so it stands on its own: the other agent sees none of this conversation. " +
-			"Each call opens a sub-chat the person can watch. To carry on an earlier sub-chat instead of starting a new one, pass its number as `chat`; that agent then still remembers what it did there.",
+			"Each call opens a sub-chat the person can watch. To carry on an earlier sub-chat instead of starting a new one, pass its number as `chat`; that agent then still remembers what it did there. " +
+			"Once a sub-chat's work is done and you will not continue it, archive it with sub_chats.",
 		parameters: obj({ agent: str(), task: str(), chat: opt(int({ description: "Number of an earlier sub-chat of this conversation to continue" })) }),
 		replay: "safe", // a rerun after a crash finds the same child conversation and submission
 		execute: async (args, api, context) => {
@@ -125,8 +131,13 @@ export function pi2Extension(host: Host): Extension {
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
 				const agent = host.agent(meta?.agentId);
-				if (meta === undefined || meta.parent !== parent || isPutAway(meta) || agent === undefined) {
+				if (meta === undefined || meta.parent !== parent || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
+				}
+				// One this conversation archived (sub_chats) comes back to be continued; the line says so.
+				if (isArchived(meta)) {
+					await api.commit(async (tx) => void delete (await tx.doc(Library)).conversations[String(args.chat)]?.archivedAt, context);
+					await noteSubChats(api, api.conversationId, { action: "restored", chats: [{ id: args.chat, title: meta.title }] }, `delegate:${String(api.taskId)}:restored`, context);
 				}
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
 				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
@@ -504,7 +515,7 @@ export function pi2Extension(host: Host): Extension {
 
 	return defineExtension({
 		name: "pi2",
-		tools: [askUser, delegate, readReferenceTool, computerTool, browserTool, ...host.features.flatMap((feature) => feature.tools ?? [])],
+		tools: [askUser, delegate, subChatsTool(host), readReferenceTool, computerTool, browserTool, ...host.features.flatMap((feature) => feature.tools ?? [])],
 		wraps: host.features.flatMap((feature) => feature.wraps ?? []),
 		sections: [
 			section("computer_use", (input) => {
@@ -526,7 +537,8 @@ export function pi2Extension(host: Host): Extension {
 				return [
 					"You can hand work to these agents with the delegate tool:",
 					...agents.map((a) => `- ${a.name}: ${a.description}`),
-					"Each delegation opens a sub-chat under this conversation. Start a new one for a new piece of work; continue an existing one (pass its number as `chat`) when the work builds on what that agent already did.",
+					"Each delegation opens a sub-chat under this conversation. Start a new one for a new piece of work; continue an existing one (pass its number as `chat`) when the work builds on what that agent already did. " +
+						"sub_chats lists them with how each stands, and archives the ones that are finished, so the person's sidebar shows only work still going.",
 				].join("\n");
 			}),
 			...host.features.flatMap((feature) => feature.sections ?? []),

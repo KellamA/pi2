@@ -41,6 +41,7 @@ import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { preparePlan } from "./plan.ts";
+import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
@@ -201,6 +202,8 @@ const host: Host = {
 			callerContext.abortSignal?.removeEventListener("abort", stop);
 		}
 	},
+	conversations: () => library.conversations,
+	working: (id) => working.has(id),
 	answerText: async (id, entryId) => {
 		const conv = await harness.conversation(id, context);
 		const entry = await conv?.commit((tx) => tx.entry(AssistantEntry, entryId as EntryId), context);
@@ -251,7 +254,7 @@ function toolsFor(access: Access, delegate: boolean, agent: AgentProfile | undef
 	const screen = agent?.computer?.enabled === true ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent) ?? []);
-	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate"] : []), ...extras].map(tool).filter((t) => t !== undefined);
+	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras].map(tool).filter((t) => t !== undefined);
 }
 
 /** How a conversation that starts from `agent` is configured. */
@@ -415,6 +418,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
 	if (entry.kind === BACKGROUND_ENTRY) return { id, kind: "marker", text: backgroundMarker(entry.data) };
+	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -571,9 +575,10 @@ function libraryEvent() {
 			parent: meta.parent ?? null,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
-	// The Archive: top-level conversations only; a sub-chat is reached through the conversation it belongs to.
+	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
+	// the sidebar. A sub-chat of an archived conversation is reached through that conversation.
 	const archived = Object.entries(library.conversations)
-		.filter(([, meta]) => isArchived(meta) && meta.parent === undefined)
+		.filter(([, meta]) => isArchived(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
 		.map(([id, meta]) => ({
 			id: Number(id),
 			title: meta.title,
@@ -582,6 +587,8 @@ function libraryEvent() {
 			archivedAt: meta.archivedAt as number,
 			agentId: meta.agentId ?? null,
 			subChats: Object.values(library.conversations).filter((child) => child.parent === Number(id) && !isDeleted(child)).length,
+			parent: meta.parent ?? null,
+			parentTitle: meta.parent === undefined ? null : (library.conversations[String(meta.parent)]?.title ?? ""),
 		}))
 		.sort((a, b) => b.archivedAt - a.archivedAt);
 	return { event: "library", conversations, archived, autoArchiveDays: settings.autoArchiveDays ?? null };
