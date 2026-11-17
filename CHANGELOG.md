@@ -6,6 +6,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ### Fixed
 - When something new reached an agent in the middle of a conversation (its first background command, a worktree, a project's instructions file, or a setting such as code mode, computer use or the browser switched on), the agent could be sent its whole system prompt and tool list again, about 25,000 characters, carried by every later turn. Now only what changed is sent.
+- An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
 
 ### For contributors
 - The demo model's `/system history` lists what each system message of a conversation changed, and `engine/test/sections.ts` checks that a section or tool that arrives or goes is sent alone. [docs/architecture.md](docs/architecture.md#the-system-prompts-sections) lists every section of the system prompt and when it comes and goes.
