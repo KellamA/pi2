@@ -61,7 +61,10 @@ export type Meta = {
 	title: string;
 	createdAt: number;
 	updatedAt: number;
-	/** When the person archived it: out of the sidebar, kept in the Archive, and restorable (archive.ts). */
+	/**
+	 * When it was archived: out of the sidebar, kept in the Archive, and restorable (archive.ts). The person archives a
+	 * conversation with its sub-chats; an agent can archive a sub-chat of its own conversation on its own (subchats.ts).
+	 */
 	archivedAt?: number;
 	/** The person deleted it: it is shown nowhere again. */
 	deleted?: boolean;

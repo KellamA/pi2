@@ -30,7 +30,7 @@ const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? `dev.pi2.crede
 
 type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
 type InboxItem = { id: string; kind: string; conversationId: number; rootConversationId: number; tool: string; question: string | null; agentName: string | null; callId: string };
-type State = { usage: { cost: number; tokens: number }; context: { used: number; window: number | null }; busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null; agentId: string | null; parent: number | null }; tools: { name: string; status: string }[] };
+type State = { archived?: boolean; usage: { cost: number; tokens: number }; context: { used: number; window: number | null }; busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null; agentId: string | null; parent: number | null }; tools: { name: string; status: string }[] };
 type Conv = { items: Item[]; state: State };
 
 function startEngine(): ChildProcess {
@@ -372,6 +372,88 @@ try {
 	await client.call("submit", { id: m, text: "/delegate Scout: a second piece of work" });
 	await client.until("second sub-chat", () => subChats() === 2 && !client.conversations.get(m)!.state.busy);
 	step("sub-chats: listed under their parent, continued by number, and a new one for new work");
+
+	{
+		// ---- An agent's own sub-chats: listed with how each stands, the finished ones archived, and one restored by continuing it (#150)
+		const { id: lead } = await client.call("conversation.create", { agentId: "atlas" });
+		await client.call("conversation.open", { id: lead });
+		const ask = async (text: string) => {
+			const before = toolResults(lead).length;
+			await client.call("submit", { id: lead, text });
+			await client.until(`an answer to ${text}`, () => !client.conversations.get(lead)!.state.busy && toolResults(lead).length === before + 1);
+			return toolResults(lead)[before]!;
+		};
+		const subChats = (args: object) => ask(`/tool sub_chats ${JSON.stringify(args)}`);
+		const markers = () => client.conversations.get(lead)!.items.filter((i) => i.kind === "marker").map((i) => i.text);
+		const running = (id: number) => (client.events.background?.commands ?? []).filter((c: { conversationId: number }) => c.conversationId === id);
+
+		assert.match((await subChats({ action: "list" })).text, /no sub-chats/);
+		const scout = (await ask("/delegate Scout: look around")).details.conversationId as number;
+		const forge = (await ask("/delegate Forge: say hello")).details.conversationId as number;
+		// The person gives Forge's sub-chat work of their own: a command left running in the background.
+		await client.call("conversation.open", { id: forge });
+		await client.call("submit", { id: forge, text: "/background sleep 3600" });
+		const leave = await client.until("approval to leave a command running in the sub-chat", () => client.inbox.find((i) => i.conversationId === forge));
+		await client.call("inbox.decide", { id: leave.id, decision: "once" });
+		const [left] = await client.until("a command running in the sub-chat", () => (running(forge).length === 1 ? running(forge) : undefined));
+		await client.until("the sub-chat idle again", () => !client.conversations.get(forge)!.state.busy && client.conversations.get(forge)!.items.filter((i) => i.kind === "tool").length === 1);
+
+		const listed = await subChats({ action: "list" });
+		assert.equal(listed.isError, false, listed.text);
+		assert.match(listed.text, new RegExp(`- ${scout}: Scout, “Scout: look around”\\. Idle`));
+		assert.match(listed.text, new RegExp(`- ${forge}: Forge, .*Idle.*${left.id} \`sleep 3600\``));
+
+		// Not one that is working, or waiting on the person.
+		await client.call("submit", { id: forge, text: "/bash echo waits-for-you" });
+		const waiting = await client.until("the sub-chat waiting on an approval", () => client.inbox.find((i) => i.conversationId === forge));
+		const refused = await subChats({ action: "archive", chats: [forge] });
+		assert.equal(refused.isError, true);
+		assert.match(refused.text, /not archived, because it is waiting on the person \(an approval\)/);
+		await client.call("inbox.decide", { id: waiting.id, decision: "deny" });
+		await client.until("the sub-chat idle after the denial", () => !client.conversations.get(forge)!.state.busy && !client.inbox.some((i) => i.conversationId === forge));
+		await client.call("submit", { id: forge, text: "/timeout 3600 sleep 3600" });
+		const run = await client.until("approval for a long command in the sub-chat", () => client.inbox.find((i) => i.conversationId === forge));
+		await client.call("inbox.decide", { id: run.id, decision: "once" });
+		await client.until("the sub-chat working, with nothing waiting", () => !client.inbox.some((i) => i.conversationId === forge) && client.library.find((x) => x.id === forge)?.busy);
+		const working = await subChats({ action: "archive", chats: [forge] });
+		assert.match(working.text, /not archived, because it is working/);
+		await client.call("abort", { id: forge });
+		await client.until("the sub-chat stopped", () => !client.library.find((x) => x.id === forge)?.busy && !client.conversations.get(forge)!.state.busy);
+
+		// Nor another conversation's sub-chat, or a conversation that is no sub-chat at all.
+		const stranger = await subChats({ action: "archive", chats: [childId, m] });
+		assert.equal(stranger.isError, true);
+		assert.ok(client.library.some((x) => x.id === childId) && client.library.some((x) => x.id === m), "nothing outside this conversation is archived");
+
+		// Archived: out of the sidebar into the Archive, its background command stopped and said so, and a line in the conversation.
+		const put = await subChats({ action: "archive", chats: [scout, forge] });
+		assert.equal(put.isError, false, put.text);
+		assert.match(put.text, new RegExp(`Stopped the background command it left running: ${left.id} \`sleep 3600\``));
+		assert.deepEqual(put.details.archived, [scout, forge]);
+		await client.until("both in the Archive, under their conversation", () =>
+			[scout, forge].every((id) => !client.library.some((x) => x.id === id) && (client.archived.find((x) => x.id === id) as any)?.parent === lead),
+		);
+		assert.ok(client.library.some((x) => x.id === lead), "the conversation that archived them stays");
+		assert.equal(running(forge).length, 0, "the command was stopped");
+		await client.until("a line saying what was put away", () => markers().find((t) => t.startsWith("The agent archived 2 sub-chats") && t.includes(`(${scout})`) && t.includes("1 background command they left running was stopped")));
+		await client.until("the sub-chat reads as archived", () => client.conversations.get(forge)?.state.archived === true);
+		await assert.rejects(client.call("submit", { id: forge, text: "hello" }), /archived/);
+		assert.match((await subChats({ action: "archive", chats: [forge] })).text, /already archived/);
+		const afterwards = await subChats({ action: "list" });
+		assert.match(afterwards.text, /Every sub-chat of this conversation is archived/);
+		assert.match(afterwards.text, new RegExp(`Archived: ${scout} .*${forge} `));
+
+		// Continuing an archived sub-chat restores it.
+		const again = await ask(`/continue ${scout}: one more thing`);
+		assert.equal(again.isError, false, again.text);
+		assert.ok(again.text.includes('You said: "one more thing"'));
+		await client.until("restored to the sidebar", () => client.library.some((x) => x.id === scout && x.parent === lead) && !client.archived.some((x) => x.id === scout));
+		await client.until("a line saying it was restored", () => markers().some((t) => t.startsWith(`The agent restored sub-chat “Scout: look around” (${scout})`)));
+		// And the person restores the other from the Archive.
+		await client.call("conversation.unarchive", { id: forge });
+		await client.until("restored by the person", () => client.library.some((x) => x.id === forge) && !client.archived.some((x) => x.id === forge));
+		step("sub_chats: lists a conversation's own sub-chats; archives finished ones only, stopping their commands and saying so; continuing one restores it");
+	}
 
 	await client.call("submit", { id: f, text: "/delegate Scout: not allowed" });
 	await settled(f, 6);

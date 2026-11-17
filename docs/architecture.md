@@ -35,6 +35,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/main.ts` | Startup, the socket server, request handlers, events |
 | `src/state.ts` | The app's own documents (conversation index, agents) and the Inbox |
 | `src/extensions.ts` | What pi² adds to every conversation: approvals, `ask_user`, `delegate`, `read_reference`, `computer`, `browser` |
+| `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/providers.ts` | Built-in providers, custom endpoints, the scripted demo model |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
 | `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
@@ -66,7 +67,7 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 ### Sub-chats
 
-`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository ([worktrees.md](worktrees.md#sub-chats)). The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one.
+`delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository ([worktrees.md](worktrees.md#sub-chats)). The app lists it under its parent. Passing `chat` continues an earlier sub-chat instead of starting a new one, and restores it first if the agent had archived it. A conversation that can delegate also gets `sub_chats`, to list its sub-chats with how each stands and archive the finished ones ([archive.md](archive.md#sub-chats-an-agent-puts-away)).
 
 ### What commands can find
 

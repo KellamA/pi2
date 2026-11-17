@@ -36,7 +36,7 @@ A background command runs until one of these:
 - it ends by itself;
 - the agent stops it;
 - you stop it, in **Activity**;
-- its conversation is archived or deleted, or the conversation its sub-chat belongs to is;
+- its conversation is archived or deleted, or the conversation its sub-chat belongs to is, or the agent that opened its sub-chat archives it ([archive.md](archive.md#sub-chats-an-agent-puts-away));
 - the worktree it runs in is removed;
 - pi²'s engine stops.
 

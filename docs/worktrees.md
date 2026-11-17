@@ -49,6 +49,8 @@ When a conversation hands work to another agent, the sub-chat starts in the fold
 
 Continuing an earlier sub-chat keeps the folder it has. Removing a worktree moves the sub-chats working in it back with their conversation.
 
+An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, as for any archived conversation (below).
+
 The app shows such a sub-chat as working in its parent's worktree: **Branches** lists it under the conversation whose worktree it is, marked "parent's worktree", and its tooltip and branch menu name that conversation. A sub-chat can still be given a worktree of its own with **New Worktree…**: it starts from the parent's branch, and the sub-chat stops working in its parent's worktree.
 
 ## Removing a worktree
@@ -63,7 +65,7 @@ A worktree cannot be removed while its agent is working. A command the agent lef
 
 ## Worktrees left behind
 
-Archiving or deleting a conversation leaves its worktree where it is, with any work in it: an archived conversation can be restored and carry on there. Commands its agent left running in the background are stopped.
+Archiving or deleting a conversation leaves its worktree where it is, with any work in it: an archived conversation can be restored and carry on there. Commands its agent left running in the background are stopped. The same holds for a sub-chat an agent archived with `sub_chats`.
 
 - When you delete a conversation whose worktree has nothing uncommitted, pi² offers **Delete and Remove Worktree**. The branch is kept. A worktree with uncommitted changes is always kept.
 - **Branches** lists every worktree whose conversation was archived or deleted under **Left Behind**, with how its branch stands. **Remove…** asks the same questions as removing any other worktree: keep the branch or delete it too (only if merged), or discard uncommitted changes.
