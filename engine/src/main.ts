@@ -38,7 +38,7 @@ import { BrowserHost, validateBrowser } from "./browser.ts";
 import { BUILT_IN_TOOLS, toolsLeftOut, validateToolsOff } from "./builtins.ts";
 import { codemodeExtension } from "./codemode.ts";
 import { holdingPlaces } from "./sections.ts";
-import { KeychainCredentialStore } from "./credentials.ts";
+import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
@@ -168,7 +168,7 @@ writeFileSync(runningMarker, String(Date.now()));
 
 // ---- Models, tools, harness
 
-const credentials = new KeychainCredentialStore(home);
+const credentials = credentialStore(home);
 const providers = new Providers(home, credentials, () => deviceId(), { log });
 const mcp = new McpServers(home, credentials);
 mcp.log = log;
