@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { backgroundMarker, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
+import { backgroundMarker, backgroundMarkerDetails, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
 import { EngineClient, exited, PATIENT_MS, running, stop, until } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
@@ -40,6 +40,8 @@ assert.equal(commandLine("npm run dev\n  -- --port 3000"), "npm run dev -- --por
 assert.equal(commandLine("x".repeat(200)).length, 121);
 assert.equal(backgroundMarker({ id: "bg-2", command: "npm run dev", how: "exited with code 1" }), "Background command bg-2 exited with code 1: npm run dev");
 assert.equal(backgroundMarker(null), "Background command ended", "an entry this engine cannot read still says something");
+assert.deepEqual(backgroundMarkerDetails({ id: "bg-2", command: "npm run dev", how: "exited with code 1" }), { background: { id: "bg-2" } });
+for (const data of [null, {}, { id: 2 }, { id: "bg-0" }, { id: "x" }, { id: "bg-2 " }]) assert.equal(backgroundMarkerDetails(data), undefined, JSON.stringify(data));
 step("durations, commands on one line and the transcript's line read as expected");
 
 // ---- The engine
@@ -328,6 +330,7 @@ try {
 	assert.equal(later.result.details.background.status, "running");
 	const marker = await client.until("its end shown in the transcript", () => client.markers(a).find((text) => text.includes(later.bg)));
 	assert.equal(marker, `Background command ${later.bg} exited with code 4: sleep 2; echo done-late; exit 4`);
+	assert.deepEqual(client.items(a, "marker").find((item) => item.text === marker)?.details, { background: { id: later.bg } }, "the line names its command, for its output window");
 	assert.ok(!client.markers(a).some((text) => text.includes(`${quick.bg} `) || text.includes(`${fine.bg} `)), "an end the call that started the command saw is in that call's row, not in a line of its own");
 	told = await client.told(a);
 	assert.ok(told.includes(`- ${later.bg}: \`sleep 2; echo done-late; exit 4\` is over: it exited with code 4, at `), `the agent is told at its next request: ${told}`);

@@ -56,6 +56,8 @@ enum TranscriptAction: Equatable {
     case openChat(Int, beside: Bool)
     case fork(entry: Int)
     case picture(entry: Int, index: Int)
+    /// The window with a background command's output, by the id the engine gave it ("bg-3").
+    case output(String)
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
@@ -89,6 +91,9 @@ enum TranscriptAction: Equatable {
         case "image":
             guard let entry = Self.integer(body["entry"]), let index = Self.integer(body["index"]), index >= 0, index < 1000 else { return nil }
             self = .picture(entry: entry, index: index)
+        case "output":
+            guard let id = Self.backgroundCommand(body["id"]) else { return nil }
+            self = .output(id)
         default:
             return nil
         }
@@ -107,6 +112,16 @@ enum TranscriptAction: Equatable {
         default:
             return nil
         }
+    }
+
+    /// An id the engine gives a background command, "bg-" and a number, and nothing else.
+    static func backgroundCommand(_ value: Any?) -> String? {
+        guard let text = value as? String, text.hasPrefix("bg-") else { return nil }
+        // Byte by byte, so that no other kind of digit, and no mark joined to one, passes for a number.
+        let digits = Array(text.utf8.dropFirst(3))
+        guard (1...9).contains(digits.count), digits[0] != UInt8(ascii: "0"),
+              digits.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }) else { return nil }
+        return text
     }
 
     private static func identifier(_ value: Any?) -> String? {

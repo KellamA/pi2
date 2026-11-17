@@ -27,7 +27,7 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 
 - The person's messages sit right, in a rounded box, with their pictures and files above. Pictures are fetched when they scroll into view, and open larger in an overlay.
 - Answers are plain prose with full Markdown: headings, emphasis, strikethrough, code, fenced code blocks with a language and a Copy button, nested and task lists, tables, quotes, rules and links. Raw HTML is shown as the text it is.
-- Tool calls are one-line rows: "Ran `npm test`", "Read session.ts", "Edited session.ts +6 −2". A chevron opens the detail: a command and its output, a diff, a file's text, a screenshot. Running rows show a spinner and a present-tense line; a failed row is red and starts open. A call with no result after its run stopped says "No result". A command started with `background: true` reads "Started `npm run dev` in the background" with its id, and the rows that read its output and stop it name the command ([background.md](background.md)).
+- Tool calls are one-line rows: "Ran `npm test`", "Read session.ts", "Edited session.ts +6 −2". A chevron opens the detail: a command and its output, a diff, a file's text, a screenshot. Running rows show a spinner and a present-tense line; a failed row is red and starts open. A call with no result after its run stopped says "No result". A command started with `background: true` reads "Started `npm run dev` in the background" with its id, and the rows that read its output and stop it name the command ([background.md](background.md)). Once the engine has answered, each of those rows, and the line that says a background command ended, has an Output button at its end that opens the window with what the command printed. The id comes from the engine's answer (or, for the line, the entry's `details.background.id`), never from the id the agent asked for.
 - A hand-off names the agent and the task, shows the answer folded to two lines, and has two buttons for the sub-chat: Open shows it in place of the conversation, and Beside splits the pane and shows it next to the conversation.
 - An approval or a question waiting on the person is a card at the call, with the Inbox's words and buttons. An edit's card also shows the change.
 - Thinking is a "Thinking…" line while it streams and a "Thought" row afterwards.
@@ -66,6 +66,7 @@ The page posts to the `pi2` message handler. `TranscriptAction` checks every mes
 | `{type: "openChat", id, beside}` | a whole number; a sub-chat one of this conversation's hand-offs opened. `beside` is optional, true or absent | `openConversation`, then `onOpenBeside` (a pane beside this one) or `onNavigate` |
 | `{type: "fork", entry}` | a whole number; an answer in this conversation | `engine.fork` |
 | `{type: "image", entry, index}` | whole numbers; the entry holds that many pictures | `conversation.image`, then an `image` message back |
+| `{type: "output", id}` | `bg-` and a number; a background command this conversation's rows name, as the engine's results and lines name it | The command's output window (`openWindow`), as Activity's Output opens it |
 
 Anything else is ignored, as is any message from another frame or another page.
 
