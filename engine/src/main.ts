@@ -161,8 +161,10 @@ const computer = new ComputerHost();
 const browser = new BrowserHost();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
 let agents: Record<string, AgentProfile> = {};
+let markReady = () => {};
 
 const host: Host = {
+	ready: new Promise<void>((resolve) => (markReady = resolve)),
 	inbox,
 	computer,
 	browser,
@@ -549,7 +551,6 @@ if (Object.values(library.conversations).some((meta) => meta.archived !== undefi
 	await harness.commit(async (tx) => void migrateDeleted((await tx.doc(Library)).conversations), context);
 	library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
 }
-for (const feature of host.features) await feature.start?.();
 let busyConversations = new Set<number>();
 /** Every conversation with live work, sub-chats included. */
 let working = new Set<number>();
@@ -1295,6 +1296,10 @@ agentsWatch.start(async (call) => {
 	broadcast(agentsEvent());
 	broadcast(inboxEvent());
 });
+// Features start once the conversations and agents are loaded, before any schedule is armed: what one writes into a
+// transcript as it starts (a background command the last engine left, a set-up cut short) sets the last engine's
+// work going again at once, before `resume()`.
+for (const feature of host.features) await feature.start?.();
 const graphWatch = await harness.watchTaskGraph(context);
 type Graph = { tasks: Record<string, { conversationId?: unknown }> };
 /** The conversation `id` belongs to: itself, or the one whose sub-chat it is. */
@@ -1598,9 +1603,11 @@ const server = createServer((socket) => {
 // to wait for, has the usual folders. The shell is then still listened to, and its PATH taken when it comes.
 await pathReady;
 // The last wait of start-up: from here on a stop is the ordinary one. One asked for while starting is done now, in place
-// of listening; stop() ends the process, so nothing below runs.
+// of listening, and before anything is marked ready; stop() ends the process, so nothing below runs.
 phase = "running";
 if (stopWhenStarted) await stop();
+// Tool calls the last engine left, or anything started early, are decided only from here on (see `Host.ready`).
+markReady();
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished

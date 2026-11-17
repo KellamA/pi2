@@ -8,7 +8,8 @@ import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { inspect, newRunMarker, parseStatus, RUN_VARIABLE, stopLeftOver, suggestBranch } from "../src/worktrees.ts";
+import { newRunMarker, RUN_VARIABLE, stopLeftOver } from "../src/processes.ts";
+import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -642,9 +643,9 @@ try {
 		step("a look-alike group without the run's marker in its environment is not touched");
 
 		// A group with both: the member with the marker is stopped, the one started without it is left, and the answer says
-		// something was left.
+		// that part was stopped and part left.
 		left = await orphans(`${waiting()} & sleep 1; env -u ${RUN_VARIABLE} ${waiting()} &`, { [RUN_VARIABLE]: marker }, 2);
-		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 100), "unsure");
+		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker }, 100), "partly");
 		await fourth.until("the member with the marker is stopped", () => !alive(left.pids[0]!), 5_000);
 		await sleep(400);
 		assert.ok(alive(left.pids[1]!), "the member without the marker is not touched");

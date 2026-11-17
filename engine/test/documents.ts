@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { documentHtml, renderInline, renderMarkdown, safeUrl, writeDocument } from "../src/documents.ts";
 
 const md = (source: string, lean = false) => renderMarkdown(source, { lean });
@@ -173,12 +173,18 @@ assert.ok(!documentHtml("Just text").includes("<h1>"));
 const textutil = (...args: string[]) => execFileSync("/usr/bin/textutil", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 const root = realpathSync(mkdtempSync(join(tmpdir(), "pi2-documents-")));
 const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-documents-outside-")));
+// The code under test makes its working folders in a temporary folder of this test's own, so that checking it is left
+// empty sees only this run's: another test run on the same Mac makes and removes folders of the same name in the shared one.
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-documents-scratch-")));
 // Removed however the test ends: a failed check ends the process, and "exit" still runs.
 process.on("exit", () => {
 	rmSync(root, { recursive: true, force: true });
 	rmSync(outside, { recursive: true, force: true });
+	rmSync(scratch, { recursive: true, force: true });
 });
-const before = readdirSync(tmpdir()).filter((name) => name.startsWith("pi2-document-")).length;
+// os.tmpdir() reads TMPDIR each time it is called.
+process.env.TMPDIR = scratch;
+assert.equal(tmpdir(), scratch);
 
 const REPORT = `# Quarterly report
 
@@ -308,9 +314,14 @@ symlinkSync(join(outside, "target.html"), join(root, "link-file.html"));
 await refused({ path: "link-file.html", markdown: "x", overwrite: true }, /link or special file/);
 assert.equal(readFileSync(join(outside, "target.html"), "utf8"), "keep me", "a link is never written through");
 assert.deepEqual(readdirSync(outside).sort(), ["target.html"], "nothing was written outside the folder");
-await refused({ path: "slow.docx", markdown: "x" }, /could not be written: textutil took too long/, async () => {
+let workedIn = "";
+await refused({ path: "slow.docx", markdown: "x" }, /could not be written: textutil took too long/, async (_format, input) => {
+	workedIn = dirname(input);
 	throw new Error("textutil took too long and was stopped");
 });
+assert.equal(dirname(workedIn), scratch, "the conversion works in a folder inside the temporary folder");
+assert.match(basename(workedIn), /^pi2-document-/);
+assert.ok(!existsSync(workedIn), "and removes it when the conversion fails");
 assert.ok(!existsSync(join(root, "slow.docx")), "a failed conversion leaves no file");
 
 // overwrite: true replaces, and only then
@@ -322,7 +333,7 @@ written(await writeDocument(root, { path: "replace.docx", markdown: "second draf
 assert.ok(textutil("-convert", "txt", "-stdout", join(root, "replace.docx")).includes("second draft"));
 
 // Nothing is left behind in the temporary folder, and a title that looks like an option is only a title.
-assert.equal(readdirSync(tmpdir()).filter((name) => name.startsWith("pi2-document-")).length, before, "working folders are removed");
+assert.deepEqual(readdirSync(scratch), [], "working folders are removed");
 written(await writeDocument(root, { path: "dash.docx", markdown: "text", title: "--help -output /tmp/x" }));
 assert.ok(existsSync(join(root, "dash.docx")));
 

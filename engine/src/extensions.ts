@@ -19,7 +19,7 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { bool, int, num, obj, opt, str } from "@earendil-works/pi-schema";
-import type { Context } from "@earendil-works/chord/context";
+import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import {
 	BROWSER_ACTIONS,
 	type BrowserAction,
@@ -48,6 +48,13 @@ const GATED = new Set(["bash", "write", "edit", "write_document"]);
 export type Host = {
 	/** Features in files of their own; their tools, sections and hooks join this extension's. Filled in by main. */
 	features: FeatureParts[];
+	/**
+	 * Settles once the engine has its conversations, agents and `PATH`, just before it resumes the last engine's work.
+	 * Every tool call waits for it before anything is decided: work can be set going earlier than that (a feature
+	 * writing into a transcript as it starts, a schedule that came due), and a call judged against agents not yet
+	 * loaded would be asked about without its rule, or asked about although a rule covers it.
+	 */
+	ready: Promise<void>;
 	inbox: Inbox;
 	computer: ComputerHost;
 	browser: BrowserHost;
@@ -532,6 +539,7 @@ export function pi2Extension(host: Host): Extension {
 			}),
 			hook(ToolTask, {
 				beforeTool: async (call, api, context) => {
+					await awaitWithContext(host.ready, context);
 					if (call.name === "browser") return approveBrowser(call, api, context);
 					const meta = host.meta(api.conversationId);
 					const isComputer = call.name === "computer";
