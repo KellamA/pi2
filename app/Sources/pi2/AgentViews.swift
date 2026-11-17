@@ -154,6 +154,10 @@ struct AgentEditor: View {
                             TextField("What it is for", text: draft.description)
                         }
                     }
+                    if model.duplicatedAgentID == agentID {
+                        Text("Duplicated settings, not memory notes, conversations, schedules or worktrees. No other agent can hand work to this copy yet. To allow one, open that agent’s settings and turn this copy on under Can hand work to.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                     Picker("Colour", selection: draft.color) {
                         ForEach(AgentColor.names, id: \.self) { Text($0.capitalized).tag($0) }
                     }
@@ -373,6 +377,10 @@ struct AgentEditor: View {
                 Button("Delete Agent…") { confirmingDelete = true }
                     .buttonStyle(.piDanger)
                     .disabled(engine.agents.count <= 1)
+                Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agentID) }
+                    .buttonStyle(.piSecondary)
+                    .disabled(changed)
+                    .help(changed ? "Save or revert your changes before duplicating" : "Duplicate this agent’s saved settings")
                 if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
                 Spacer()
                 Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")

@@ -74,6 +74,12 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 
 Conversations, runs and tool calls are pi durable's. pi² adds a few documents of its own on top: the list of conversations with their titles and settings, the agents, the schedules, and a per-day record of spend.
 
+### Agent settings
+
+`agents.save { agent }` creates or edits a saved setup. `agents.duplicate { id }` copies one in the engine and returns the new `{ id }`; the app opens its settings. Both use the same validation and defaults, including checking the folder, reference files, worktree setting, computer use and browser. New names and ids are allocated in the commit, so simultaneous duplicates remain distinct. Each copy's id includes a fresh UUID: a deleted copy's conversations, schedules and worktrees must never be inherited by another copy with the same name. The name is `<name> copy`, then `<name> copy 2`, and so on, ignoring case when checking what is taken.
+
+Duplication copies the whole saved profile through that shared path, including command rules from the stored original (never from the app). It does not copy conversations, schedules or worktrees, or add the copy to any other agent's `delegates`. The settings page explains how to enable incoming handoffs. Built-in agents have no special status in the copy. Features with person-set settings outside the profile can copy those through `agentDuplicated`; memory uses it to copy only its on/off switch, with no notes ([knowledge.md](knowledge.md)). The settings action is unavailable while there are unsaved edits: Save or Revert first.
+
 ### Approvals
 
 With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that the agent's own rules cover for the conversation's folder runs without asking; see [rules.md](rules.md). The hook decides nothing until the engine has loaded its conversations, its agents and its `PATH` (`Host.ready`): the last engine's work can be set going before then, by a feature writing into a transcript as it starts, and a call judged against agents not yet loaded would be asked about without its rule, or asked about although a rule covers it.
