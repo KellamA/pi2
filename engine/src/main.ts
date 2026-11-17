@@ -1067,6 +1067,15 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await mcp.reconnect(text(params, "id"));
 		return {};
 	},
+	/** Set or replace the value of one of a server's own variables (mcp.ts, #273), and start it again with it. */
+	"mcp.setVariable": async (params) => {
+		await mcp.setVariable(text(params, "id"), params.name, params.value);
+		return {};
+	},
+	"mcp.removeVariable": async (params) => {
+		await mcp.removeVariable(text(params, "id"), params.name);
+		return {};
+	},
 	/** One picture of an entry: a screenshot in a tool result, or a picture the person attached to a message. */
 	"conversation.image": async (params) => {
 		const conv = await conversation(params.id);
