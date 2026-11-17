@@ -15,7 +15,17 @@ pi² suggests a branch name from the conversation's title (`pi2/fix-the-login-pa
 
 The worktree is made in pi²'s data folder (`worktrees/<repository>-<id>/<branch>`), and the conversation's folder moves into it. If the conversation worked in a subfolder of the repository, it keeps working in the same subfolder of the worktree.
 
-The agent is told it is in a worktree of its own, on which branch, and to commit there and leave other branches and the main checkout alone.
+The agent is told it is in a worktree of its own, on which branch, and to commit there, not to check out a branch another worktree has, and to leave the main checkout alone.
+
+### Another branch in the same worktree
+
+An agent given several pieces of work in turn, each for a pull request of its own, may start a new branch in its worktree once its branch is merged, from what the worktree was made from (such as `origin/main`, after a fetch). It is told so (#206). pi² follows the branch the worktree is on now, wherever it shows or uses one:
+
+- The branch tracker and **Branches** show the current branch, and measure "merged" and the commits not yet merged against what the worktree was made from, as before. A new branch with no commits of its own yet shows as merged until its first commit, as the first branch does once merged.
+- `sub_chats` names the current branch, and `remove_worktree` removes the worktree only if nothing on that branch would be lost. Any branch left in the repository stays there.
+- **Remove Worktree and Branch** deletes the branch it is on now, the one the dialog names, and only if it is merged. The branch the worktree was first made on is kept.
+
+A sub-chat working in its parent's worktree is still told not to check out another branch there: the branch is its parent's.
 
 Files git ignores (installed packages, build output, `.env` files) are not in a new worktree. An agent that needs them has to set them up there, unless its agent has a set-up command.
 

@@ -114,23 +114,27 @@ async function carrying(members: [number, Listed][], marker: string): Promise<[n
 }
 
 /**
- * After `graceMs`, SIGKILL whatever of `members` SIGTERM did not end: the whole of `group`, when one is given and its
- * leader is still there, else each one that is still the same process.
+ * SIGKILL whatever of `members` is still there: the whole of `group`, when one is given and its leader is still there,
+ * else each one that is still the same process (the same group, started at the same time) as when it was listed.
  */
-export function killLater(members: [number, Listed][], graceMs: number, group?: number): void {
-	setTimeout(async () => {
-		const now = await processes().catch(() => new Map<number, Listed>());
-		const same = ([pid, was]: [number, Listed]) => signallable(pid) && now.get(pid)?.group === was.group && now.get(pid)?.start === was.start;
-		const leader = members.find(([pid]) => pid === group);
-		const targets = group !== undefined && leader !== undefined && same(leader) ? [-group] : members.filter(same).map(([pid]) => pid);
-		for (const target of targets) {
-			try {
-				process.kill(target, "SIGKILL");
-			} catch {
-				// Gone meanwhile.
-			}
+export async function killRemaining(members: [number, Listed][], group?: number): Promise<void> {
+	if (members.length === 0) return;
+	const now = await processes().catch(() => new Map<number, Listed>());
+	const same = ([pid, was]: [number, Listed]) => signallable(pid) && now.get(pid)?.group === was.group && now.get(pid)?.start === was.start;
+	const leader = members.find(([pid]) => pid === group);
+	const targets = group !== undefined && leader !== undefined && same(leader) ? [-group] : members.filter(same).map(([pid]) => pid);
+	for (const target of targets) {
+		try {
+			process.kill(target, "SIGKILL");
+		} catch {
+			// Gone meanwhile.
 		}
-	}, graceMs).unref();
+	}
+}
+
+/** After `graceMs`, SIGKILL whatever of `members` SIGTERM did not end, as `killRemaining` does. */
+export function killLater(members: [number, Listed][], graceMs: number, group?: number): void {
+	setTimeout(() => void killRemaining(members, group), graceMs).unref();
 }
 
 /**
