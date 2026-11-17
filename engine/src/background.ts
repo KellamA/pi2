@@ -21,7 +21,7 @@ import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Engine, Feature } from "./features.ts";
-import { killLater, type LeftOver, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
+import { killLater, type LeftOver, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
 export const KEEP_CHARS = 128 * 1024;
@@ -617,15 +617,17 @@ export const background: Feature = (_host, running) => {
 			for (const record of left) {
 				// Without its process on record, the engine stopped in the instant between starting it and noting it down.
 				const found: LeftOver | "unknown" = record.process === undefined ? "unknown" : await stopLeftOver(record.process).catch(() => "unsure" as const);
-				running.log("background command", record.id, "left by the last engine", found === "stopped" ? "was stopped" : found === "gone" ? "is not running" : "may still be running");
+				running.log("background command", record.id, "left by the last engine", found === "unknown" ? leftOverLog.unsure : leftOverLog[found]);
 				const how =
 					found === "stopped"
 						? "was left running when pi²’s engine stopped, and was stopped when the engine started again"
-						: found === "unsure"
-							? `was cut off when pi²’s engine stopped. Something it started may still be running (process group ${record.process?.group}), and was left alone because pi² could not be sure it is the same`
-							: found === "unknown"
-								? "was cut off when pi²’s engine stopped, just as it was being started. It may still be running: pi² had not yet noted its process, and so left it alone"
-								: "ended when pi²’s engine stopped";
+						: found === "partly"
+							? `was left running when pi²’s engine stopped. What pi² could tell it had started was stopped when the engine started again; something else in its process group (${record.process?.group}) may still be running, and was left alone because pi² could not be sure it is the same`
+							: found === "unsure"
+								? `was cut off when pi²’s engine stopped. Something it started may still be running (process group ${record.process?.group}), and was left alone because pi² could not be sure it is the same`
+								: found === "unknown"
+									? "was cut off when pi²’s engine stopped, just as it was being started. It may still be running: pi² had not yet noted its process, and so left it alone"
+									: "ended when pi²’s engine stopped";
 				const { process: _process, ...known } = record;
 				const command: Command = { ...known, output: "", total: 0, read: 0, ended: { at: Date.now(), how, failed: true }, settled: Promise.resolve(), waiters: new Set() };
 				commands.set(record.id, command);

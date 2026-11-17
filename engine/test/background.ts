@@ -572,6 +572,37 @@ try {
 		await client.until("what it had started is stopped", () => !alive(holder), 10_000);
 		step("what a background command started is stopped by the next engine by the run's marker, when the command's own process ended meanwhile");
 	}
+
+	// ---- Only part of what it started carries the marker: that part is stopped, the rest left alone, and the line says both
+	{
+		const markedFile = join(scratch, "marked.pid");
+		const unmarkedFile = join(scratch, "unmarked.pid");
+		const leaderFile = join(scratch, "partly-leader.pid");
+		const holder = (file: string) => `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => {}, 600000)' '${file}'`;
+		const cmd = `${holder(markedFile)} & env -u PI2_RUN ${holder(unmarkedFile)} & echo $$ > '${leaderFile}'; sleep 6`;
+		const { bg } = await client.start(z, cmd);
+		const [leader, marked, unmarked] = [await pidIn(leaderFile), await pidIn(markedFile), await pidIn(unmarkedFile)];
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		for (let tries = 0; alive(leader); tries++) {
+			assert.ok(tries < 200, "the command's own process ended");
+			await sleep(100);
+		}
+		assert.ok(alive(marked) && alive(unmarked), "what it started is still running");
+		engine = boot();
+		client = await Client.attach();
+		await client.call("conversation.open", { id: z });
+		const group = leader;
+		assert.equal(
+			await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg} `))),
+			`Background command ${bg} was left running when pi²’s engine stopped. What pi² could tell it had started was stopped when the engine started again; something else in its process group (${group}) may still be running, and was left alone because pi² could not be sure it is the same: ${commandLine(cmd)}`,
+		);
+		await client.until("the part with the marker is stopped", () => !alive(marked), 10_000);
+		await sleep(500);
+		assert.ok(alive(unmarked), "the part without the marker is not touched");
+		process.kill(unmarked, "SIGKILL");
+		step("when only part of what a background command started carries the run's marker, that part is stopped, the rest is left alone, and its line says both");
+	}
 	console.log("PASS");
 } finally {
 	// A clean stop of the engine stops whatever it still has running in the background.
