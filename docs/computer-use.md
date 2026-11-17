@@ -38,7 +38,7 @@ These hold whatever the agent or its instructions say. They are checked in the e
 - **Password fields are never typed into.**
 - **The Apple menu is off limits.**
 - **pi² itself cannot be added or used**, so an agent cannot approve its own requests.
-- **A copy of pi² under another bundle id is look-only.** Any bundle id starting with `dev.pi2.app.`, such as a throwaway test build, can be added, opened and looked at, but not clicked, typed into, scrolled or sent keys or menu commands. Looking at a copy is how an agent working on pi² checks a change to the app. Acting in one is refused because a copy has approve buttons too, and one started without a data folder of its own shows the real agents' requests, so a click there could approve an agent's own request. Inside a running copy, that copy is refused the way pi² is.
+- **A copy of pi² under another bundle id is look-only.** Any bundle id starting with `dev.pi2.app.`, such as a development build (`dev.pi2.app.dev`) or a throwaway test copy of one, can be added, opened and looked at, but not clicked, typed into, scrolled or sent keys or menu commands. Looking at a copy is how an agent working on pi² checks a change to the app. Acting in one is refused because a copy has approve buttons too, and a copy of a release build started without a data folder of its own shows the real agents' requests, so a click there could approve an agent's own request. Inside a running copy, that copy is refused the way pi² is.
 
 Apps are matched by bundle id without regard to case, as macOS finds them, so `com.apple.terminal` is refused like `com.apple.Terminal`. Two spellings of one bundle id are one app: it is kept once, and allowing it for the rest of a conversation covers both.
 
