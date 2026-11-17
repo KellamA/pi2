@@ -4,6 +4,12 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Added
+- **Agents can read several files in one step.** An agent's `read` now takes a list of files, or of parts of one file, and the conversation shows them as one row that names the files and opens to each. A file that cannot be read says why without stopping the others. A step shows at most 100 KB of text and five pictures, and says where to carry on.
+
+### Changed
+- **Agents are steered to the file tools and to working in fewer steps.** Agents are told that steps which do not depend on each other can go together and run at the same time, except when one of them can change files. The shell's instructions now say to read, find, search and change files with their own tools, that commands already start in the conversation's folder, and that output need not be cut short. The instructions are slightly shorter than before.
+
 ## 0.7.7
 
 ### Added

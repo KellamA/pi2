@@ -92,12 +92,15 @@ try {
 	const bash = (wrap as { wrap(tool: unknown): { description: string; parameters: unknown } }).wrap(createBashTool());
 	assert.equal(DEFAULT_COMMAND_TIMEOUT_SECONDS, 120, "the default is 2 minutes, as Claude Code's (issue #160)");
 	assert.equal(MAX_COMMAND_TIMEOUT_SECONDS, 600, "a call may ask for 10 minutes at most, as in Claude Code");
-	assert.match(bash.description, /A command is stopped after 2 minutes unless you pass `timeout` in seconds, which can give it up to 10 minutes\. For one that may take longer \(a full test suite, a build\), use `background: true`, which has no time limit\./);
+	assert.match(bash.description, /A command is stopped after 2 minutes unless you pass `timeout` in seconds, up to 10 minutes; for longer \(a full test suite, a build\) use `background: true`, which has no time limit\./);
 	assert.match(bash.description, /Standard input is closed/);
 	assert.doesNotMatch(bash.description, /Optionally provide a timeout/);
 	// That a long output is kept whole, so it need not cut it short itself (issue #161).
-	assert.match(bash.description, /A long output is shortened to its last 2000 lines or 50KB, whichever is less, and then the whole of it is kept in a file whose path the result gives/);
-	assert.match(bash.description, /do not cut a command's output short yourself with `head`, `tail` or `grep`/);
+	assert.match(bash.description, /A long output is shortened to its last 2000 lines or 50KB, and the whole of it is kept for 7 days in a file the result names/);
+	assert.match(bash.description, /do not cut an output short with `head`, `tail` or `grep`/);
+	// What it is not for, and that it starts in the folder (issue #162).
+	assert.match(bash.description, /Every command starts in the conversation's folder, so there is no need to `cd` to it/);
+	assert.match(bash.description, /Not for reading files \(`read` takes several at once\), finding or searching them \(`find_files`, `search_files`\), or changing them \(`edit`, `write`\)/);
 	assert.doesNotMatch(bash.description, /saved to a temp file/);
 	assert.match(JSON.stringify(bash.parameters), /Timeout in seconds\. Default 120 \(2 minutes\), at most 600 \(10 minutes\); pass a larger one/);
 	// And about leaving one running: how to, that the limit is not for it, and where its output is read.
