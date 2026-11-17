@@ -4,6 +4,8 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+## 0.7.7
+
 ### Added
 - **Open a background command's output from the conversation.** The rows for starting, reading and stopping a background command, and the line that says it ended, now have an Output button. It opens the same up-to-date output window as Activity and the strip above the message field. A command whose output is no longer kept says so when opened.
 
@@ -26,6 +28,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 - **Packaged start-up is checked before a release is drafted.** The release workflow starts the engine from the actual update archive and mounted disk image, checks its build, gets a scripted answer and stops it cleanly; it also opens the app from the archive and checks that it connects. Ordinary CI builds an ad-hoc release app and proves the same check and deliberate missing-file and wrong-build failures. No release keys are needed for that check. See [docs/releasing.md](docs/releasing.md).
 - Engine tests now measure clean shutdown inside the engine, keeping the real five-second deadline, and wait for committed state before crash-recovery checks instead of sleeping. Background-output checks must see new output, not merely reach a wait's time limit.
 - **Keep reader-facing changes first.** New changelog sections can keep build, test and repository changes under For contributors without putting them in GitHub's release notes or the update feed. The extraction is tested in CI; already-published sections are left unchanged.
+- **`PI2_SHOW` opens archived conversations.** A development build started with `PI2_SHOW` set to a number or title now finds archived conversations and archived sub-chats too, after the ones in the sidebar. It opens them as they are and does not restore them. See [docs/development.md](docs/development.md).
 
 ## 0.7.6
 
