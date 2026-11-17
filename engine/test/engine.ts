@@ -25,8 +25,9 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 // An engine a test starts keeps the PATH the test gave it, and reads nobody's shell profile (src/shellpath.ts).
 process.env.PI2_LOGIN_SHELL ??= "off";
-// Overridable so two copies of the suite can run at once without sharing Keychain items.
-const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
+// This run's own, so that a second run of the suite at the same time neither sees the keys and sign-ins this one stores
+// (its checks start from none) nor removes them under it. PI2_TEST_KEYCHAIN_SERVICE chooses one instead.
+const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? `dev.pi2.credentials.test-engine-${process.pid}`;
 
 type Item = { id: number; kind: string; text: string; callId?: string; name?: string; isError?: boolean; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
 type InboxItem = { id: string; kind: string; conversationId: number; rootConversationId: number; tool: string; question: string | null; agentName: string | null; callId: string };
@@ -208,7 +209,21 @@ function cleanKeychain(): void {
 		} catch {}
 	}
 }
-cleanKeychain(); // anything an earlier failed run left behind
+cleanKeychain(); // anything an earlier failed run with the same service left behind
+// A run's own service is emptied whatever way the run ends, a crash outside the try below included, since no later run
+// will use it again; it holds this test's items only, the second engine's sign-ins among them.
+process.on("exit", () => {
+	if (process.env.PI2_TEST_KEYCHAIN_SERVICE !== undefined) return;
+	for (const service of [KEYCHAIN_SERVICE, `${KEYCHAIN_SERVICE}.limits`]) {
+		for (let i = 0; i < 1000; i++) {
+			try {
+				execFileSync("/usr/bin/security", ["delete-generic-password", "-s", service], { stdio: "ignore" });
+			} catch {
+				break;
+			}
+		}
+	}
+});
 
 let backupPath = "";
 let restoredId = -1;
@@ -1559,6 +1574,66 @@ try {
 		rmSync(project, { recursive: true, force: true });
 		rmSync(elsewhere, { recursive: true, force: true });
 		step("rules: removing a rule makes the command ask again; deleting the agent deletes its rules");
+	}
+
+	{
+		// An approval asked again after a restart is judged against the agent's rules like a new one (#101). A background
+		// command the last engine left running makes the next engine write its end into a transcript as it starts, which
+		// sets the waiting calls going again before the rest of the engine (its agents) has loaded.
+		const { chmodSync } = await import("node:fs");
+		const project = removedAtEnd(realpathSync(mkdtempSync(join(tmpdir(), "pi2-restart-rules-"))));
+		for (const name of ["run-tests", "serve"]) {
+			writeFileSync(join(project, name), `#!/bin/sh\necho "${name} ran: $*"\n`);
+			chmodSync(join(project, name), 0o755);
+		}
+		type Rule = { folder: string; words: string[] };
+		const rulesOf = (id: string) => ((client.agents.find((x) => x.id === id) as any)?.commandRules ?? []) as Rule[];
+		const { id: keeper } = await client.call("agents.save", { agent: { name: "Keeper", access: "ask", cwd: project } });
+		await client.until("agent for rules across a restart", () => client.agents.some((x) => x.id === keeper));
+		const open = async () => {
+			const { id } = await client.call("conversation.create", { agentId: keeper });
+			await client.call("conversation.open", { id });
+			await client.until("conversation in the project", () => client.conversations.get(id)?.state.agent.cwd === project);
+			return id as number;
+		};
+		const askedIn = (id: number) => client.inbox.find((i) => i.conversationId === id) as (InboxItem & { rule?: Rule }) | undefined;
+		const [left, offered, covered] = [await open(), await open(), await open()];
+
+		await client.call("submit", { id: left, text: "/background sleep 120" });
+		await client.call("inbox.decide", { id: (await client.until("approval to leave a command running", () => askedIn(left))).id, decision: "once" });
+		await client.until("a command left running", () => client.events.background?.commands?.some((c: { conversationId: number }) => c.conversationId === left));
+		await client.call("submit", { id: offered, text: "/bash ./serve --once" });
+		const before = await client.until("approval offering a rule", () => askedIn(offered));
+		assert.deepEqual(before.rule, { words: ["./serve"], folder: project });
+		await client.call("submit", { id: covered, text: "/bash ./run-tests --waited" });
+		await client.until("approval for a command a rule will cover", () => askedIn(covered));
+		// Made while that approval waits, as when the person keeps a rule from another conversation's approval.
+		await client.call("rules.add", { agentId: keeper, folder: project, command: "./run-tests" });
+		await client.until("rule kept", () => rulesOf(keeper).length === 1);
+
+		await sleep(400);
+		engine.kill("SIGKILL");
+		await new Promise((resolve) => engine.once("exit", resolve));
+		engine = startEngine();
+		client = await Client.attach();
+		for (const id of [left, offered, covered]) await client.call("conversation.open", { id });
+		const marker = (id: number) => client.conversations.get(id)?.items.find((i) => i.kind === "marker" && /^Background command .* when pi²’s engine stopped/.test(i.text));
+		await client.until("the command left running is written down by the new engine as it starts", () => marker(left));
+
+		const after = await client.until("approval asked again after the restart", () => askedIn(offered));
+		assert.equal(after.callId, before.callId, "the same call is asked about again");
+		assert.deepEqual(after.rule, before.rule, "asked again, it offers the same rule");
+		const outcome = await client.until("the covered command asked again or run", () => (askedIn(covered) !== undefined ? "asked" : toolResults(covered).length > 0 ? "ran" : undefined));
+		assert.equal(outcome, "ran", "the rule saved before the restart covers the command, so it is not asked about again");
+		await settled(covered, 1);
+		assert.match(toolResults(covered)[0]!.text, /run-tests ran: --waited/);
+		assert.deepEqual(toolResults(covered)[0]!.details?.allowedBy, ["./run-tests"], "marked as allowed by the rule");
+		await client.call("inbox.decide", { id: after.id, decision: "deny" });
+		await settled(offered, 1);
+		assert.equal(toolResults(offered)[0]!.isError, true, "denied after the restart, it did not run");
+		assert.equal(client.inbox.length, 0);
+		await client.call("agents.delete", { id: keeper });
+		step("rules across a restart: an approval asked again offers its rule, and one a saved rule covers runs without asking, while the new engine writes down a command the last one left running");
 	}
 
 	{
