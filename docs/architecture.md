@@ -45,6 +45,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/plan.ts` | The agent's task list |
+| `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
