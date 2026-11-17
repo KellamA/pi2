@@ -61,6 +61,7 @@ This runs, side by side, every file in `engine/test` but two: `patience.ts`, whi
 - `addedmodels.ts`: models added by hand to a built-in provider: what a new id is based on, adding, changing, keeping, giving way to the catalog and removing one, against stand-in providers; then a real engine whose added models are sent to a stand-in server on 127.0.0.1, which answers one and refuses the other, and what a conversation says when one is refused or removed.
 - `background.ts`: background commands. An engine starts, reads and stops commands, and is stopped and killed with commands running; nothing they started is left.
 - `cache.ts`: the prompt cache's lifetime. An engine against a stand-in Anthropic endpoint on 127.0.0.1: a conversation asks for the one-hour cache once it has handed out work and the others do not, a refusal of it is sent again with the short cache, and `engine.log` says what a request after a pause read; see [limits.md](limits.md#the-prompt-cache).
+- `chat.ts`: chat mode's engine: a chat made, listed, opened and told it is one; offered only the assistant's tools, asking nothing, writing documents in its own folder; its model, settings and web setting; pinned, searched, counted, exported, shown in Activity, forked, archived and deleted as a chat. See [chat.md](chat.md).
 - `codemode.ts`: what a conversation is told about scripts, with a test MCP server of 40 tools. It prints the size of each section of the system prompt; see [codemode.md](codemode.md).
 - `credentials.ts`: the Keychain store.
 - `documents.ts`: the documents tool.
