@@ -184,14 +184,30 @@ function demoProvider(): Provider {
 			const sections = new Map<string, string>();
 			const offered = new Map<string, { name: string }>();
 			let content = "";
+			// One line per system message, for "/system history": what each one changed.
+			const history: string[] = [];
 			for (const message of request.messages as readonly { role?: string; content?: unknown; sections?: Record<string, string | null>; toolsAdded?: { name: string }[]; toolsRemoved?: { name: string }[] }[]) {
 				if (message.role !== "system") continue;
 				content += textOf(message.content);
+				history.push(
+					[
+						...Object.entries(message.sections ?? {}).map(([key, value]) => (value === null ? `-${key}` : `${key}=${value.length}`)),
+						...(message.toolsRemoved ?? []).map((tool) => `-tool:${tool.name}`),
+						...(message.toolsAdded ?? []).map((tool) => `+tool:${tool.name}`),
+					].join(" "),
+				);
 				for (const [key, value] of Object.entries(message.sections ?? {})) value === null ? sections.delete(key) : sections.set(key, value);
 				for (const added of message.toolsAdded ?? []) offered.set(added.name, added);
 				for (const removed of message.toolsRemoved ?? []) offered.delete(removed.name);
 			}
 			const asked = prompt.slice(8).trim();
+			if (asked === "history") {
+				// "/system history": each system message in order, with the sections it set (and their length), removed (-) and
+				// the tools it took away and added, so a test can see what was sent again (#186).
+				return fauxAssistantMessage(`HISTORY\n${history.join("\n")}`);
+			}
+			// A section with nothing to say is empty, holding its place, and is not sent (sections.ts).
+			for (const [key, value] of sections) if (value === "") sections.delete(key);
 			if (asked === "sizes") {
 				// "/system sizes": the characters of each part of the prompt and of the tool definitions, to measure them.
 				const parts = [["(base)", content.length], ...[...sections].map(([key, value]) => [key, value.length]), [`(tools: ${offered.size})`, JSON.stringify([...offered.values()]).length]];

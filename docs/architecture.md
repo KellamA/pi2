@@ -157,6 +157,35 @@ So `src/order.ts` marks the tools that change files to run in order: `bash` (in 
 
 The `bash` description says what the shell is not for: reading a file (`read`), finding and searching (`find_files`, `search_files`), changing a file (`edit`, `write`). It also says that a command starts in the conversation's folder, so there is no need to `cd` to it, and that there is no need to cut an output short, since the whole of it is kept. It is kept short, since every word of a description is read again on every turn.
 
+### The system prompt's sections
+
+A conversation's system prompt is its agent's sections, each tagged with its key (`<worktree>…</worktree>`), in the order the extensions declare them, then the agent's own instructions. pi durable sends the whole prompt and the tool definitions once, at the conversation's first request, and after that only what changed, as a system message in the transcript: a section whose text changed is sent again under its name, a section that went is named as removed, and tools are added and taken away by name. A new section, or a new tool, is added at the end. When that would leave them in another order than the agent's, pi durable removes every section (or every tool) and sends them all again instead, which puts the whole prompt in the middle of the conversation, for every later turn to carry, and starts the prompt cache again from there (#186).
+
+The agent's instructions always come last, under a key no extension may use, so in a conversation whose agent has instructions a section that arrived after the first request would always be out of order, wherever it was declared. So every section keeps its place instead (`src/sections.ts`, applied to pi²'s extension and code mode's in `main.ts`): a section with nothing to say is empty rather than left out, and an empty section is not sent to the model at all. When it has something to say, its text changes in place and is sent as that one section; when it has nothing again, it goes back to empty, which is sent as that section with no text. A section is only given an empty place where that moves nothing: in a conversation's first request, or where the section is already shown. A conversation started before this goes on as before for each section it was sent without: when that section has something to say, the whole prompt is sent once more, and from then on the section keeps its place. Making room for them all at once would send the whole prompt to every such conversation at its next message, whether or not any of them ever came. Tools keep their order the same way: a conversation whose tools change (`syncTools`, or its access level changed) keeps the ones it has in the order it has them, and the new ones come after (`keepingOrder`). `engine/test/sections.ts` checks that each section and tool that arrives or goes is sent alone, with the demo model's `/system history`, which lists what each system message of the conversation changed.
+
+The cheaper of the two ways the issue offered was chosen. Declaring the sections that come and go after the steady ones cannot work while the instructions come last, and several of them can come in any order. A one-line "none" text for each would be sent in every conversation; an empty one costs nothing.
+
+The sections, in the order they are declared:
+
+| Section | From | Has something to say when | Steady, or comes and goes |
+|---|---|---|---|
+| `computer_use` | `extensions.ts` | the `computer` tool is offered (computer use on) | Comes and goes with the agent's settings; changes in place as apps are allowed |
+| `browser` | `extensions.ts` | the `browser` tool is offered (the browser on) | Comes and goes with the agent's settings |
+| `reference_files` | `extensions.ts` | the agent has reference files | Comes and goes with the agent's settings |
+| `agents` | `extensions.ts` | the conversation can hand work to another agent (not in a sub-chat) | Comes and goes with the agent's settings and as agents are added or deleted |
+| `task_list` | `plan.ts` | `update_plan` is offered: always | Steady |
+| `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
+| `memory` | `knowledge.ts` | memory is on for the agent | Comes and goes with the agent's settings |
+| `look_web` | `look.ts` | `web_fetch` is offered (the browser on) | Comes and goes with the agent's settings |
+| `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full) | Steady; changes only with the conversation's access level |
+| `scheduling` | `selfschedule.ts` | the scheduling tools are offered | Comes and goes with the agent's settings |
+| `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
+| `background_commands` | `background.ts` | the conversation has started a background command | Comes at its first background command; goes when the engine restarts, which forgets them |
+| `codemode` | `codemode.ts` (pi durable's, cut down) | code mode is on | Comes and goes with the agent's settings; changes in place as its tools change |
+| `instructions` | pi durable | the agent has instructions | Steady: set when the conversation is, and always last |
+
+A section added to `extensions.ts` or to a feature (`features.ts`) keeps its place without anything more. A section in a new extension needs `holdingPlaces` where the extension is installed in `main.ts`, and a test in `engine/test/sections.ts` if it comes and goes.
+
 ### An MCP server changed while a call runs on it
 
 The engine counts the tool calls running on each copy of an MCP server it started (a process, or a session with a server over HTTP), so that a change to the server in Settings does not cut off a call it did not mean to (`src/mcp.ts`):
