@@ -50,8 +50,9 @@ jobs:
               docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
               # Changelog entries: Transcript page (tests) checks them on Linux.
               changelog.d/*) ;;
-              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
-              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook | scripts/rerun-if-no-runner) ;;
+              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner, auto-merge).
+              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
+              scripts/rerun-if-no-runner | scripts/auto-merge) ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
               # could break that.
               app/VERSION)
