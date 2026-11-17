@@ -582,6 +582,11 @@ try {
 		const [cmd, leaderPid, childPid] = deaf();
 		const { bg } = await client.start(z, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
+		// And one whose shell ends at SIGTERM while what it started ignores it (`server & wait`): once the shell is gone,
+		// its group can no longer be signalled through it, so what is left in it is found by `ps` and ended there (#199).
+		const [cmd2, leaderPid2, childPid2] = stubborn();
+		const { bg: bg2 } = await client.start(z, cmd2);
+		pids.push(await pidIn(leaderPid2), await pidIn(childPid2));
 		await stop(engine);
 		// The app gives the engine five seconds before a restore. Measure inside the engine, so time this test spends
 		// unscheduled after the engine exits is not charged to it. Delays inside the engine still count: the app's deadline
@@ -595,7 +600,8 @@ try {
 		client = await Client.attach(engine);
 		assert.deepEqual(client.running(), []);
 		await client.call("conversation.open", { id: z });
-		assert.equal(await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(bg))), `Background command ${bg} ended when pi²’s engine stopped: ${commandLine(cmd)}`);
+		assert.equal(await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg} `))), `Background command ${bg} ended when pi²’s engine stopped: ${commandLine(cmd)}`);
+		assert.equal(await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg2} `))), `Background command ${bg2} ended when pi²’s engine stopped: ${commandLine(cmd2)}`);
 		assert.match(await client.told(z), new RegExp(`- ${bg}: .* is over: it ended when pi²’s engine stopped\\.`), "the agent is told at its next request");
 		assert.match((await client.background(z, { action: "read", id: bg })).text, /: ended when pi²’s engine stopped\.\nIts output was in the engine that stopped, and was not kept\.$/);
 		const lost = await client.call("background.output", { id: bg });
@@ -604,7 +610,7 @@ try {
 		assert.ok(Number(next.bg.slice(3)) > Number(bg.slice(3)), `ids are not used again after a restart: ${next.bg} after ${bg}`);
 		await client.background(z, { action: "stop", id: next.bg });
 		assert.equal(client.events.recovery?.recovery, null, "a clean stop is not an unexpected one: Activity has no notice");
-		step(`a clean stop of the engine stops its background commands, even ones that ignore SIGTERM, within the app's five seconds (${stopped[0]}); the next engine writes that down and tells the agent`);
+		step(`a clean stop of the engine stops its background commands, even ones that ignore SIGTERM and what outlives a shell that heeds it, within the app's five seconds (${stopped[0]}); the next engine writes that down and tells the agent`);
 	}
 
 	// ---- The engine is killed outright: the command is left running, and the next engine stops it
