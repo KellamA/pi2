@@ -745,6 +745,8 @@ export const worktrees: Feature = (_host, engine) => {
 			shared
 				? `Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to ${own.branch}, do not check out another branch here, and do not change the main checkout at ${own.repo}.`
 				: `Other agents may be working in other worktrees of the same repository at the same time, so keep to this folder: commit your work to its branch, do not check out a branch another worktree has, and do not change the main checkout at ${own.repo}. Once ${own.branch} is merged, you may start a new branch here from ${own.base ?? "the default branch"} for your next piece of work.`,
+			// One agent's `git stash pop` applied another's stash: the list is the repository's, not the worktree's (#242).
+			"Do not use `git stash`: every worktree of the repository shares its stashes.",
 			"Files git ignores (installed packages, build output, local settings) are not copied into a new worktree; set them up here if the work needs them.",
 			...setupNote(own.setup),
 		].join(" ");

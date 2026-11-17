@@ -127,6 +127,23 @@ final class AppModel {
         }
     }
 
+    /// The copy's settings open straight away, with a reminder about incoming handoffs.
+    var duplicatedAgentID: String?
+
+    func duplicateAgent(_ id: String) {
+        Task {
+            do {
+                let result = try await engine.call("agents.duplicate", ["id": id])
+                if let copyID = result["id"]?.stringValue {
+                    duplicatedAgentID = copyID
+                    selection = .agent(copyID)
+                }
+            } catch {
+                engine.lastError = error.localizedDescription
+            }
+        }
+    }
+
     func beginRename(_ conversation: ConversationSummary) {
         newTitle = conversation.title
         renaming = conversation
@@ -712,6 +729,9 @@ private struct AgentRow: View {
             }
         }
         .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agent.id) }
+        }
     }
 }
 

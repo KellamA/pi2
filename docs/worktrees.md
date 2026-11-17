@@ -15,7 +15,7 @@ pi² suggests a branch name from the conversation's title (`pi2/fix-the-login-pa
 
 The worktree is made in pi²'s data folder (`worktrees/<repository>-<id>/<branch>`), and the conversation's folder moves into it. If the conversation worked in a subfolder of the repository, it keeps working in the same subfolder of the worktree.
 
-The agent is told it is in a worktree of its own, on which branch, and to commit there, not to check out a branch another worktree has, and to leave the main checkout alone.
+The agent is told it is in a worktree of its own, on which branch, and to commit there, not to check out a branch another worktree has, and to leave the main checkout alone. It is also told not to use `git stash`: a repository has one list of stashes for all its worktrees, so one agent's `git stash pop` can apply another's work (#242).
 
 ### Another branch in the same worktree
 

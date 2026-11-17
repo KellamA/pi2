@@ -34,6 +34,9 @@ struct PaletteView: View {
         if matches("new agent") { result.append(Entry(id: "new-agent", icon: "person.badge.plus", title: "New Agent", detail: "Action") { model.newAgent() }) }
         if matches("quick ask") { result.append(Entry(id: "quick-ask", icon: "bolt", title: "Quick Ask", detail: "Action") { QuickAsk.shared.show(model: model) }) }
         if matches("settings providers tools") { result.append(Entry(id: "settings", icon: "gearshape", title: "Settings", detail: "Action") { openSettings() }) }
+        for agent in engine.agents where matches("duplicate agent \(agent.name)") {
+            result.append(Entry(id: "duplicate-\(agent.id)", icon: "doc.on.doc", title: "Duplicate agent: \(agent.name)", detail: "Agent") { model.duplicateAgent(agent.id) })
+        }
         for agent in engine.agents where !needle.isEmpty && matches("edit agent \(agent.name)") {
             result.append(Entry(id: "agent-\(agent.id)", icon: "person.crop.circle", title: "Edit agent: \(agent.name)", detail: "Agent") { model.selection = .agent(agent.id) })
         }

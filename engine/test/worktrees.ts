@@ -295,6 +295,7 @@ try {
 		assert.equal(realpathSync(readFileSync(setupRan, "utf8").trim()), realpathSync(oneRoot), "the agent's set-up command ran in it");
 		const told = await client.tool(lead, `/continue ${one}: /system`);
 		assert.ok(told.text.includes("This conversation works in a git worktree of its own") && told.text.includes("sub-one"), `continued, it is told about its worktree: ${told.text}`);
+		assert.ok(told.text.includes("Do not use `git stash`"), `and not to stash, since every worktree shares the stashes: ${told.text}`);
 		await client.until("continuing keeps the folder", () => cwdOf(one) === oneRoot);
 		step("delegate with worktree: the sub-chat gets a worktree of its own from the parent's commit, runs the set-up, is told, is tracked, and keeps it");
 
