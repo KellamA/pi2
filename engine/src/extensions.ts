@@ -88,6 +88,16 @@ const text = (value: string) => [{ type: "text" as const, text: value }];
 /** What the model is told when the person says no. */
 const DECLINED = "The person declined this action. Do not retry it; ask what they would like instead.";
 
+/** The longest title an agent may give a sub-chat; the sidebar shows far less. */
+const TITLE_MAX = 80;
+
+/** A sub-chat's title as an agent gave it: on one line, trimmed and cut to `TITLE_MAX`; undefined when there is none. */
+export function titleOf(given: string | undefined): string | undefined {
+	const title = (given ?? "").replace(/\s+/g, " ").trim();
+	if (title === "") return undefined;
+	return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1).trimEnd()}…` : title;
+}
+
 /** The agents a conversation may delegate to, from its own agent's list. */
 function delegatesOf(host: Host, conversationId: ConversationId): AgentProfile[] {
 	const own = host.agent(host.meta(conversationId)?.agentId);
@@ -124,6 +134,7 @@ export function pi2Extension(host: Host): Extension {
 			"Hand a self-contained task to another agent and get its answer back. Name one of the agents listed in the <agents> section, and write the task so it stands on its own: the other agent sees none of this conversation. " +
 			"Each call opens a sub-chat the person can watch. To carry on an earlier sub-chat instead of starting a new one, pass its number as `chat`; that agent then still remembers what it did there. " +
 			"Once a sub-chat's work is done and you will not continue it, archive it with sub_chats.\n" +
+			"Give each new sub-chat a short `title` that tells it apart from the others in the person's sidebar, such as \"Fix login timeout\"; without one it is named after the agent and the first words of the task, or the worktree's branch. Passing `title` with `chat` renames that sub-chat, unless the person renamed it themselves.\n" +
 			"A new sub-chat works in this conversation's folder. To give it a git worktree of its own instead, pass `worktree` with a branch name: use it when several sub-chats change the same repository at once, so each works on its own branch in its own checkout and none disturbs the others or this folder. " +
 			"pi² makes the worktree from the repository the sub-chat would work in, as New Worktree… does: the sub-chat works there and is told so, the agent's set-up command runs in it, and the person sees its branch. " +
 			"The new branch starts from the commit this conversation's folder is on, or from `from`: a branch, tag or commit as the repository has it now (it is not fetched first, so fetch first if you need the latest). A branch that already exists is checked out as it is, unless `from` is given. " +
@@ -132,17 +143,19 @@ export function pi2Extension(host: Host): Extension {
 			agent: str(),
 			task: str(),
 			chat: opt(int({ description: "Number of an earlier sub-chat of this conversation to continue" })),
+			title: opt(str({ description: `A short name for the sub-chat that the person sees, ${TITLE_MAX} characters at most, such as "Fix login timeout". With chat, renames it` })),
 			worktree: opt(str({ description: "For a new sub-chat: the branch for a git worktree of its own, such as \"fix-login-timeout\"" })),
 			from: opt(str({ description: "With worktree: what the new branch starts from, such as \"origin/main\"; by default the commit this conversation's folder is on" })),
 		}),
 		replay: "safe", // a rerun after a crash finds the same child conversation and submission
 		execute: async (args, api, context) => {
 			const parent = api.conversationId as unknown as number;
-			const footer = async (id: number, name: string) => {
+			const footer = async (id: number, name: string, title: string, note = "") => {
 				const own = await worktreeOf(api, id, context);
 				const where = own === undefined ? "" : `, working in a worktree of its own at ${own.path} on the branch ${own.branch}`;
-				return `\n\n(Sub-chat ${id} with ${name}${where}. To continue it, call delegate again with chat: ${id}.)`;
+				return `\n\n(Sub-chat ${id}, “${title}”, with ${name}${where}.${note} To continue it, call delegate again with chat: ${id}.)`;
 			};
+			const title = titleOf(args.title);
 			if (args.from !== undefined && args.worktree === undefined) return { output: text("`from` says where a sub-chat's worktree starts; pass it with `worktree`."), isError: true };
 			if (args.worktree !== undefined && args.chat !== undefined) {
 				return { output: text("`worktree` is for a new sub-chat. A sub-chat that is continued keeps the folder it has; leave `chat` out to start a new one in a worktree."), isError: true };
@@ -159,10 +172,23 @@ export function pi2Extension(host: Host): Extension {
 					await api.commit(async (tx) => void delete (await tx.doc(Library)).conversations[String(args.chat)]?.archivedAt, context);
 					await noteSubChats(api, api.conversationId, { action: "restored", chats: [{ id: args.chat, title: meta.title }] }, `delegate:${String(api.taskId)}:restored`, context);
 				}
+				// A new title renames it, unless the person chose its name: theirs stands.
+				let named = meta.title;
+				let note = "";
+				if (title !== undefined && title !== meta.title) {
+					if (meta.renamed === true) note = " The person renamed this sub-chat, so it keeps their name.";
+					else {
+						await api.commit(async (tx) => {
+							const stored = (await tx.doc(Library)).conversations[String(args.chat)];
+							if (stored !== undefined && stored.renamed !== true) stored.title = title;
+						}, context);
+						named = title;
+					}
+				}
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
 				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
-				if ("reason" in result) return { output: text(`${agent.name} did not finish the task (${result.reason}).`), isError: true };
-				return { output: text(result.answer + (await footer(args.chat, agent.name))) };
+				if ("reason" in result) return { output: text(`${agent.name} did not finish the task (${result.reason}).${note}`), isError: true };
+				return { output: text(result.answer + (await footer(args.chat, agent.name, named, note))) };
 			}
 			const allowed = delegatesOf(host, api.conversationId);
 			const target = allowed.find((a) => a.name.toLowerCase() === args.agent.trim().toLowerCase() || a.id === args.agent.trim());
@@ -174,6 +200,7 @@ export function pi2Extension(host: Host): Extension {
 			// The helper works where its parent works now (its worktree, say), unless it has a project of its own elsewhere.
 			const here = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? null;
 			const change = { ...profile, cwd: await subChatFolder(here, target.cwd) };
+			const named = title ?? (args.worktree !== undefined ? `${target.name}: ${args.worktree.trim()}` : `${target.name}: ${args.task.trim().split("\n")[0]!.slice(0, 60)}`);
 			const child = await api.commit(async (tx: Tx) => {
 				const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
 				if (existing !== undefined) return existing.id;
@@ -181,7 +208,7 @@ export function pi2Extension(host: Host): Extension {
 				await configure(tx, created.id, change);
 				const now = Date.now();
 				(await tx.doc(Library)).conversations[String(created.id)] = {
-					title: `${target.name}: ${args.task.trim().split("\n")[0]!.slice(0, 60)}`,
+					title: named,
 					createdAt: now,
 					updatedAt: now,
 					access: target.access,
@@ -203,7 +230,8 @@ export function pi2Extension(host: Host): Extension {
 				const why = "reason" in settled && settled.reason !== undefined ? ` (${String(settled.reason)})` : "";
 				return { output: text(`${target.name} did not finish the task${why}.`), isError: true };
 			}
-			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name))) };
+			const kept = (await api.snapshot(Library, context))?.conversations[String(child)]?.title ?? named;
+			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name, kept))) };
 		},
 	});
 
@@ -617,7 +645,7 @@ export function pi2Extension(host: Host): Extension {
 				return [
 					"You can hand work to these agents with the delegate tool:",
 					...agents.map((a) => `- ${a.name}: ${a.description}`),
-					"Each delegation opens a sub-chat under this conversation. Start a new one for a new piece of work; continue an existing one (pass its number as `chat`) when the work builds on what that agent already did. " +
+					"Each delegation opens a sub-chat under this conversation. Start a new one for a new piece of work, with a short `title` so the person can tell it from the others; continue an existing one (pass its number as `chat`) when the work builds on what that agent already did. " +
 						"sub_chats lists them with how each stands, and archives the ones that are finished, so the person's sidebar shows only work still going.",
 				].join("\n");
 			}),

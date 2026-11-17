@@ -453,6 +453,29 @@ try {
 		await client.call("conversation.unarchive", { id: forge });
 		await client.until("restored by the person", () => client.library.some((x) => x.id === forge) && !client.archived.some((x) => x.id === forge));
 		step("sub_chats: lists a conversation's own sub-chats; archives finished ones only, stopping their commands and saying so; continuing one restores it");
+
+		// The calling agent names a sub-chat, and can rename it when continuing it, unless the person named it (#152).
+		const titleOf = (id: number) => client.library.find((x) => x.id === id)?.title;
+		const named = await ask(`/tool delegate ${JSON.stringify({ agent: "Scout", task: "You are given one Git issue to read.", title: "  Read the\n  README  " })}`);
+		assert.equal(named.isError, false, named.text);
+		const readme = named.details.conversationId as number;
+		await client.until("named as the agent asked, on one line", () => titleOf(readme) === "Read the README");
+		assert.ok(named.text.includes(`(Sub-chat ${readme}, “Read the README”, with Scout.`), named.text);
+		const unnamed = (await ask("/delegate Scout: You are given one Git issue to read.")).details.conversationId as number;
+		await client.until("without a title, the agent and the task's first words", () => titleOf(unnamed) === "Scout: You are given one Git issue to read.");
+		const long = (await ask(`/tool delegate ${JSON.stringify({ agent: "Scout", task: "x", title: "word ".repeat(40) })}`)).details.conversationId as number;
+		await client.until("a long title cut short", () => titleOf(long)?.length === 80 && titleOf(long)!.endsWith("…"));
+		const renamed = await ask(`/tool delegate ${JSON.stringify({ agent: "", chat: readme, task: "and the tests", title: "README and tests" })}`);
+		assert.ok(renamed.text.includes("“README and tests”"), renamed.text);
+		await client.until("renamed by the agent", () => titleOf(readme) === "README and tests");
+		await client.call("conversation.rename", { id: readme, title: "Mine" });
+		await client.until("renamed by the person", () => titleOf(readme) === "Mine");
+		const theirs = await ask(`/tool delegate ${JSON.stringify({ agent: "", chat: readme, task: "once more", title: "Agent's choice" })}`);
+		assert.equal(theirs.isError, false, theirs.text);
+		assert.ok(theirs.text.includes("“Mine”") && theirs.text.includes("The person renamed this sub-chat, so it keeps their name."), theirs.text);
+		await sleep(300);
+		assert.equal(titleOf(readme), "Mine", "the person's name stands");
+		step("delegate title: names a new sub-chat, one line, cut short; renames one continued, unless the person named it");
 	}
 
 	await client.call("submit", { id: f, text: "/delegate Scout: not allowed" });
