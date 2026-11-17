@@ -46,6 +46,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/reference.ts` | An agent's reference files |
 | `src/rules.ts` | Rules for the shell commands an agent may run without asking: reading a command line, matching, refusing. See [rules.md](rules.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
+| `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out. See [Built-in tools](#built-in-tools) |
 | `src/plan.ts` | The agent's task list |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
@@ -81,6 +82,26 @@ Conversations, runs and tool calls are pi durable's. pi² adds a few documents o
 
 Duplication copies the whole saved profile through that shared path, including command rules from the stored original (never from the app). It does not copy conversations, schedules or worktrees, or add the copy to any other agent's `delegates`. The settings page explains how to enable incoming handoffs. Built-in agents have no special status in the copy. Features with person-set settings outside the profile can copy those through `agentDuplicated`; memory uses it to copy only its on/off switch, with no notes ([knowledge.md](knowledge.md)), and the agent's own variables to copy their names without their values ([An agent's own variables](#an-agents-own-variables)). The settings action is unavailable while there are unsaved edits: Save or Revert first.
 
+### Built-in tools
+
+Every conversation with tools used to be offered the same few tools whatever its agent was for, and every tool's definition, with the section of the system prompt that goes with it, is read again on every turn (#177, #221). An agent's settings list them under **Built-in tools**, each with a line saying what it is for, and the person can leave any of them out:
+
+| Entry | Tools | Offered at all when |
+|---|---|---|
+| List, find and search files | `list_files`, `find_files`, `search_files` | tool access is not off |
+| Write documents | `write_document` | Ask first or Full access |
+| Ask you questions | `ask_user` | always |
+| Keep a task list | `update_plan` | always |
+| Read the web | `web_fetch`, `web_search` | the browser is on |
+
+- **Only tools no other switch governs.** The shell and the file tools, and `background`, which works the shell's background commands, follow the access level. Computer use, the browser, scheduling, code mode, memory, reference files and handing work on keep their own switches and are not listed twice. Reading the web still needs the browser on: the list can take it away, never give it to an agent without the browser.
+- **All on by default.** The agent keeps the keys of the ones left out, `toolsOff` (`src/builtins.ts`), so an agent saved before the list, or a tool added to it later, is offered as before. `agents.save` refuses a key it does not know; `agents.duplicate` copies the list, as it copies every saved setting.
+- **None is forced on.** Where leaving one out has a consequence the person might not expect, its line says so: without asking, an agent that needs a decision can only stop; without the task list, the person sees no plan.
+- **Gone everywhere.** `toolsFor` in `main.ts` drops them last, after everything else has decided what is offered, so a sub-chat follows its own agent's list, and code mode's listing and `ALL_TOOLS` lack them: a script calling one finds it does not exist. A tool that is not offered is never called, so it is never asked about either. The section of the system prompt that goes with a tool goes with it (`documents`, `look_web`, `update_plan`'s part of `task_list`); the sentence about sending calls together stays in `task_list` without the task list.
+- **From the next message.** An existing conversation is changed at its next message, as for any switch: the tools that went are taken away, and the sections that changed are sent alone ([The system prompt's sections](#the-system-prompts-sections)).
+
+The engine sends the list, with each entry's title, line and what it needs, in the `agents` event (`builtInTools`), so the app has no copy of it.
+
 ### Approvals
 
 With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that the agent's own rules cover for the conversation's folder runs without asking; see [rules.md](rules.md). The hook decides nothing until the engine has loaded its conversations, its agents and its `PATH` (`Host.ready`): the last engine's work can be set going before then, by a feature writing into a transcript as it starts, and a call judged against agents not yet loaded would be asked about without its rule, or asked about although a rule covers it.
@@ -89,7 +110,7 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 `delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository, or the call passes `worktree`, which gives it a worktree of its own made as New Worktree… makes one ([worktrees.md](worktrees.md#sub-chats)); without full access that asks the person first, unless the other agent gets worktrees anyway. The app lists it under its parent, by the `title` the calling agent gave it (80 characters at most), or else as the agent's name and the first words of the task, or the worktree's branch when it has one. Passing `chat` continues an earlier sub-chat instead of starting a new one, and restores it first if the agent had archived it; a `title` passed with it renames it, unless the person renamed it themselves. A conversation that can delegate also gets `sub_chats`, to list its sub-chats with how each stands and archive the finished ones ([archive.md](archive.md#sub-chats-an-agent-puts-away)).
 
-A sub-chat is given its agent's tools, as a conversation of that agent's would be, less what only makes sense in a conversation of its own (`toolsFor` in `main.ts`, and a feature's `toolNames`, which is told whether it is for a sub-chat): handing work on (`delegate`, `sub_chats`) and scheduling its own work ([schedules.md](schedules.md#turning-it-on)). It keeps `ask_user`: a sub-chat that needs the person shows as waiting on them. What a sub-chat is offered follows its agent's settings at each message, as for any conversation.
+A sub-chat is given its agent's tools, as a conversation of that agent's would be, less what only makes sense in a conversation of its own (`toolsFor` in `main.ts`, and a feature's `toolNames`, which is told whether it is for a sub-chat): handing work on (`delegate`, `sub_chats`) and scheduling its own work ([schedules.md](schedules.md#turning-it-on)). It keeps `ask_user`, unless its agent's settings leave it out: a sub-chat that needs the person shows as waiting on them. A sub-chat follows its own agent's list of [built-in tools](#built-in-tools), not that of the agent that handed it the work. What a sub-chat is offered follows its agent's settings at each message, as for any conversation.
 
 A sub-chat whose run ends without an answer is kept as it stopped, and `delegate`'s result says why and how to carry on: "Scout did not finish the task: the model's provider answered with an error: “429 rate_limit_error: This request would exceed your account's rate limit. …” The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12." The provider's message is shortened to 300 characters, with keys, account and organisation identifiers, request ids and email addresses taken out (`src/providererror.ts`). A refusal for the provider's limit is waited for before it gets that far ([limits.md](limits.md#when-a-limit-is-reached)); when the run ends on one all the same, the result says that carrying on works once the limit has reset.
 
@@ -220,7 +241,7 @@ So `src/order.ts` marks the tools that change files to run in order: `bash` (in 
 - A code mode script gets, for `files`, a list with an entry per file: its `text` or `image`, a `note` (such as where to go on from), or the `error` that kept it from being read. For `path`, it gets what it always got.
 - The result's `details` list the files, with which failed and which were pictures. The conversation shows the call as one row that names them ("Read reading.ts, tools.js and 3 more"), and opens to a section per file, cut at those lines.
 
-The `bash` description says what the shell is not for: reading a file (`read`), finding and searching (`find_files`, `search_files`), changing a file (`edit`, `write`). It also says that a command starts in the conversation's folder, so there is no need to `cd` to it, and that there is no need to cut an output short, since the whole of it is kept. It is kept short, since every word of a description is read again on every turn.
+The `bash` description says what the shell is not for: reading a file (`read`) and changing one (`edit`, `write`), which come with it at every access level that has it. It used to name `find_files` and `search_files` too; since an agent may leave those out (#221), they say themselves to use them rather than `find` or `grep` in the shell. It also says that a command starts in the conversation's folder, so there is no need to `cd` to it, and that there is no need to cut an output short, since the whole of it is kept. It is kept short, since every word of a description is read again on every turn.
 
 ### The system prompt's sections
 
@@ -238,11 +259,11 @@ The sections, in the order they are declared:
 | `browser` | `extensions.ts` | the `browser` tool is offered (the browser on) | Comes and goes with the agent's settings |
 | `reference_files` | `extensions.ts` | the agent has reference files | Comes and goes with the agent's settings |
 | `agents` | `extensions.ts` | the conversation can hand work to another agent (not in a sub-chat) | Comes and goes with the agent's settings and as agents are added or deleted |
-| `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady |
+| `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady; changes in place when the agent's settings leave `update_plan` out or bring it back, keeping the second part |
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
 | `memory` | `knowledge.ts` | memory is on for the agent | Comes and goes with the agent's settings |
-| `look_web` | `look.ts` | `web_fetch` is offered (the browser on) | Comes and goes with the agent's settings |
-| `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full) | Steady; changes only with the conversation's access level |
+| `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out) | Comes and goes with the agent's settings |
+| `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full, and not left out) | Changes with the conversation's access level, and comes and goes with the agent's built-in tools |
 | `scheduling` | `selfschedule.ts` | the scheduling tools are offered: scheduling on, not in a sub-chat (#177) | Comes and goes with the agent's settings |
 | `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
 | `scratch` | `scratch.ts` | `bash` is offered: it names the conversation's [scratch folder](#a-scratch-folder) | Steady; changes only with the conversation's access level |

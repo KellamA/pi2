@@ -77,13 +77,14 @@ const MAX_TIMEOUT_SECONDS = 2_147_483_647 / 1000;
 /**
  * What the model is told the tool does. Short, since it is read again on every turn; it says what the shell is not for,
  * because agents read files through it (`cat`, `sed -n`) far more often than with `read`, began most commands with a
- * `cd` to the folder they were already in, and cut a third of their outputs with `head` or `tail` (#162).
+ * `cd` to the folder they were already in, and cut a third of their outputs with `head` or `tail` (#162). Finding and
+ * searching files is pointed to from `find_files` and `search_files` themselves, which an agent may not be offered (#221).
  */
 export function describe(limits: Limits): string {
 	return (
 		"Run a bash command; returns its stdout and stderr together. " +
 		"Every command starts in the conversation's folder, so there is no need to `cd` to it (a `cd` does not carry over to the next command). " +
-		"Not for reading files (`read` takes several at once), finding or searching them (`find_files`, `search_files`), or changing them (`edit`, `write`). " +
+		"Not for reading files (`read` takes several at once) or changing them (`edit`, `write`). " +
 		`A long output is shortened to its last 2000 lines or 50KB, and the whole of it is kept for ${KEEP_DAYS} days in a file the result names, to read with \`read\` or search with \`grep\`: ` +
 		"so do not cut an output short with `head`, `tail` or `grep`, which loses the rest. " +
 		`A command has ${duration(limits.fallback)} unless you pass \`timeout\` in seconds, up to ${duration(limits.most)}. ` +

@@ -715,7 +715,7 @@ export const look: Feature = (host) => {
 	const findTool = defineTool({
 		name: "find_files",
 		description:
-			"Find files whose path matches a glob, newest first. `*` is anything within a name, `**` crosses folders, `?` is one character, `{a,b}` is either. A glob with no / (such as *.ts) matches names anywhere below; otherwise it matches the path below `path`, as in src/**/test_*.py. Looks inside the conversation's folder only; .git, node_modules and build output are left out.",
+			"Find files whose path matches a glob, newest first. `*` is anything within a name, `**` crosses folders, `?` is one character, `{a,b}` is either. A glob with no / (such as *.ts) matches names anywhere below; otherwise it matches the path below `path`, as in src/**/test_*.py. Looks inside the conversation's folder only; .git, node_modules and build output are left out. Use it rather than `find` in the shell.",
 		parameters: obj({
 			pattern: str({ description: "Glob such as **/*.ts" }),
 			path: opt(str({ description: "Folder to look in, relative to the conversation's folder" })),
@@ -729,7 +729,7 @@ export const look: Feature = (host) => {
 	const searchTool = defineTool({
 		name: "search_files",
 		description:
-			"Search the text files below a folder for lines containing `query` (or matching it as a regular expression with `regex`). Answers with file, line number and line, grouped by file; long lists are cut and say so. `glob` limits which files (same form as find_files). Looks inside the conversation's folder only; binary files, .git, node_modules and build output are left out.",
+			"Search the text files below a folder for lines containing `query` (or matching it as a regular expression with `regex`). Answers with file, line number and line, grouped by file; long lists are cut and say so. `glob` limits which files (same form as find_files). Looks inside the conversation's folder only; binary files, .git, node_modules and build output are left out. Use it rather than `grep` in the shell.",
 		parameters: obj({
 			query: str({ description: "Text to look for" }),
 			path: opt(str({ description: "Folder to search, relative to the conversation's folder" })),

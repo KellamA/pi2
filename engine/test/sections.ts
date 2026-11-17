@@ -6,6 +6,8 @@
 // pi durable sends again every section, or every tool, when what changed would leave them in another order than the
 // agent's. The agent's instructions come last, so before #186 any section that arrived after the first message, such as
 // background_commands at the first background command, had the whole prompt sent again.
+//
+// The built-in tools an agent's settings leave out (#221) are taken away, and come back, in the same way.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -58,7 +60,8 @@ try {
 	await client.until("providers", () => client.events.providers);
 	const agentOf = async (agent: Record<string, unknown>): Promise<string> => {
 		const { id } = await client.call("agents.save", { agent });
-		await client.until(`agent ${agent.name}`, () => client.events.agents?.agents?.some((x: any) => x.id === id && x.name === agent.name));
+		const off = JSON.stringify(agent.toolsOff ?? []);
+		await client.until(`agent ${agent.name}`, () => client.events.agents?.agents?.some((x: any) => x.id === id && x.name === agent.name && JSON.stringify(x.toolsOff ?? []) === off));
 		return id;
 	};
 	const helper = await agentOf({ name: "Helper", description: "Helps." });
@@ -135,6 +138,29 @@ try {
 	await agentOf(everything);
 	await client.answer(id, "Again");
 	await onlyChanged("code mode switched on again sends codemode and its tool alone", ["codemode"], ["codemode"]);
+
+	// Built-in tools left out in the agent's settings, one at a time (#221), and all of them back: each change is sent alone.
+	const leavingOut: [string, string[], string[]][] = [
+		["files", [], ["list_files", "find_files", "search_files"]],
+		["documents", ["documents"], ["write_document"]],
+		["ask", [], ["ask_user"]],
+		["plan", ["task_list"], ["update_plan"]],
+		["web", ["look_web"], ["web_fetch", "web_search"]],
+	];
+	const off: string[] = [];
+	for (const [key, sections, tools] of leavingOut) {
+		off.push(key);
+		await agentOf({ ...everything, toolsOff: off });
+		await client.answer(id, "Again");
+		await onlyChanged(`${key} left out takes away only ${[...sections, ...tools].join(", ")}`, [...sections, "codemode"], tools);
+	}
+	await agentOf({ ...everything, toolsOff: [] });
+	await client.answer(id, "Again");
+	await onlyChanged(
+		"every built-in tool back sends only those tools and their sections",
+		[...leavingOut.flatMap(([, sections]) => sections), "codemode"],
+		leavingOut.flatMap(([, , tools]) => tools),
+	);
 
 	await client.answer(id, "Nothing changed");
 	await onlyChanged("a message that changes nothing sends nothing", [], [], false);

@@ -39,7 +39,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, instructions, files, memory, tools, rules, variables, extras, computer, browser, schedule, delegates
+    case profile, model, instructions, files, memory, tools, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -288,6 +288,14 @@ struct AgentEditor: View {
                 }
                 .id(AgentSection.tools)
 
+                if !engine.builtInTools.isEmpty {
+                    BuiltInToolsSection(tools: engine.builtInTools, agent: agent, toolsOff: Binding(
+                        get: { agent.toolsOff ?? [] },
+                        set: { draft.wrappedValue.toolsOff = $0 }
+                    ))
+                    .id(AgentSection.builtins)
+                }
+
                 CommandRulesSection(engine: engine, agentID: agentID, folder: agent.cwd, access: agent.access)
                     .id(AgentSection.rules)
 
@@ -410,6 +418,47 @@ struct AgentEditor: View {
             } catch {
                 self.error = error.localizedDescription
             }
+        }
+    }
+}
+
+/// The built-in tools the agent is offered, each on unless the person leaves it out. Tools with switches of their own
+/// (computer use, the browser, scheduling, scripts, memory, handing work on) are not here, and the shell and the file
+/// tools follow the access level. The engine sends the list, with what each is for.
+struct BuiltInToolsSection: View {
+    let tools: [BuiltInTool]
+    let agent: AgentProfile
+    @Binding var toolsOff: [String]
+
+    var body: some View {
+        Section {
+            ForEach(tools) { tool in
+                Toggle(isOn: Binding(
+                    get: { !toolsOff.contains(tool.key) },
+                    set: { on in
+                        // Kept in the engine's order, as it stores them, so a saved list compares equal to the draft.
+                        let off = Set(toolsOff.filter { $0 != tool.key } + (on ? [] : [tool.key]))
+                        toolsOff = tools.map(\.key).filter(off.contains)
+                    }
+                )) {
+                    Text(tool.title)
+                    Text(unavailable(tool).map { "\(tool.detail) \($0)" } ?? tool.detail)
+                }
+            }
+        } header: {
+            Text("Built-in tools")
+        } footer: {
+            Text("Each tool’s description is read again on every turn, so leaving out what the agent never uses makes every turn a little cheaper. A sub-chat this agent works in follows this list. Scripts can only call the tools it is offered.").formFooter()
+        }
+    }
+
+    /// Why the tool is not offered with the agent's settings as they are, if it is not.
+    private func unavailable(_ tool: BuiltInTool) -> String? {
+        switch tool.needs {
+        case "files" where agent.access == "none": "Not offered with tool access off."
+        case "changes" where agent.access != "ask" && agent.access != "full": "Offered only with Ask first or Full access."
+        case "browser" where agent.browser?.enabled != true: "Offered only while the browser is on."
+        default: nil
         }
     }
 }
