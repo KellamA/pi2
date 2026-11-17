@@ -2343,7 +2343,7 @@ try {
 			let text = result.text;
 			const bg = result.details?.background?.id;
 			// On a busy machine the script may not have printed by the time the call returns; then a read waits for it.
-			if (bg !== undefined && !/script/.test(text)) text += (await together(["background", { action: "read", id: bg, wait: 600 }]))[0]!.text;
+			if (bg !== undefined && !/script/.test(text)) text += (await together(["background", { action: "read", id: bg, wait: 240 }]))[0]!.text;
 			return text;
 		};
 		const script = `${tmp}/run.sh`;
@@ -2358,7 +2358,7 @@ try {
 		const gate = join(tmp, "gate");
 		[started] = await together(["bash", { command: `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo through`, background: true }]);
 		const bg = started!.details.background.id;
-		await client.call("submit", { id: o, text: `/tools ${JSON.stringify([{ name: "background", arguments: { action: "read", id: bg, wait: 600 } }, { name: "read", arguments: { path: `${tmp}/note.txt` } }])}` });
+		await client.call("submit", { id: o, text: `/tools ${JSON.stringify([{ name: "background", arguments: { action: "read", id: bg, wait: 240 } }, { name: "read", arguments: { path: `${tmp}/note.txt` } }])}` });
 		const first = await client.until("one of the two calls done", () => {
 			const slots = client.conversations.get(o)!.state.tools;
 			const [waiting, reading] = [slots.find((slot) => slot.name === "background"), slots.find((slot) => slot.name === "read")];
