@@ -464,9 +464,13 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $model.selection) {
-            navRow("Inbox", icon: engine.inbox.isEmpty ? "tray" : "tray.full", tag: .inbox) {
+            let notices = PlanLimits(engine.extras["limits"])?.notices.count ?? 0
+            navRow("Inbox", icon: engine.inbox.isEmpty && notices == 0 ? "tray" : "tray.full", tag: .inbox) {
                 if !engine.inbox.isEmpty {
                     Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
+                } else if notices > 0 {
+                    // A notice of a plan's window waits on nobody, so it is counted without the colour of a request.
+                    Tag("\(notices)").accessibilityLabel(notices == 1 ? "1 notice" : "\(notices) notices")
                 }
             }
             navRow("Activity", icon: "waveform.path.ecg", tag: .activity) {

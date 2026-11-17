@@ -43,6 +43,7 @@ import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } fro
 import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
+import { nearlyUsedUp } from "./limits.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -202,6 +203,13 @@ export function pi2Extension(host: Host): Extension {
 				const where = own === undefined ? "" : `, working in a worktree of its own at ${own.path} on the branch ${own.branch}`;
 				return `\n\n(Sub-chat ${id}, “${title}”, with ${name}${where}.${note} To continue it, call delegate again with chat: ${id}.)`;
 			};
+			/** How the plan's windows stand, when the subscription the sub-chat ran on is nearly used up; else nothing. */
+			const limits = async (id: number) => {
+				const provider = (await api.snapshot(AgentDoc, id as unknown as ConversationId, context))?.model?.provider;
+				const views = host.features.find((feature) => feature.planLimits !== undefined)?.planLimits?.() ?? [];
+				const line = nearlyUsedUp(views.find((view) => view.id === provider), Date.now());
+				return line === undefined ? "" : `\n\n${line}`;
+			};
 			const title = titleOf(args.title);
 			if (args.from !== undefined && args.worktree === undefined) return { output: text("`from` says where a sub-chat's worktree starts; pass it with `worktree`."), isError: true };
 			if (args.worktree !== undefined && args.chat !== undefined) {
@@ -234,8 +242,8 @@ export function pi2Extension(host: Host): Extension {
 				}
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
 				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
-				if ("reason" in result) return { output: text(unfinished(agent.name, args.chat, result.reason, result.detail) + note), isError: true };
-				return { output: text(result.answer + (await footer(args.chat, agent.name, named, note))) };
+				if ("reason" in result) return { output: text(unfinished(agent.name, args.chat, result.reason, result.detail) + note + (await limits(args.chat))), isError: true };
+				return { output: text(result.answer + (await footer(args.chat, agent.name, named, note)) + (await limits(args.chat))) };
 			}
 			const allowed = delegatesOf(host, api.conversationId);
 			const target = allowed.find((a) => a.name.toLowerCase() === args.agent.trim().toLowerCase() || a.id === args.agent.trim());
@@ -276,10 +284,10 @@ export function pi2Extension(host: Host): Extension {
 			if (settled.status !== "done" || settled.type !== "input") {
 				const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
 				const detail = "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
-				return { output: text(unfinished(target.name, child as unknown as number, reason, detail)), isError: true };
+				return { output: text(unfinished(target.name, child as unknown as number, reason, detail) + (await limits(child as unknown as number))), isError: true };
 			}
 			const kept = (await api.snapshot(Library, context))?.conversations[String(child)]?.title ?? named;
-			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name, kept))) };
+			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name, kept)) + (await limits(child as unknown as number))) };
 		},
 	});
 

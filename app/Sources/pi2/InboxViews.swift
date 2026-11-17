@@ -237,10 +237,12 @@ struct InboxCard: View {
 struct InboxView: View {
     @Bindable var model: AppModel
     private var engine: EngineClient { model.engine }
+    /// Windows of a subscription nearly used up while runs on it were going (limits.ts): below what waits on the person.
+    private var notices: [PlanLimits.Notice] { PlanLimits(engine.extras["limits"])?.notices ?? [] }
 
     var body: some View {
         Group {
-            if engine.inbox.isEmpty {
+            if engine.inbox.isEmpty && notices.isEmpty {
                 EmptyState(icon: "checkmark.seal", title: "Nothing needs you", message: "Approvals and questions from your agents land here. You can answer them from the transcript too.")
             } else {
                 ScrollView {
@@ -256,6 +258,9 @@ struct InboxView: View {
                                 .font(.system(size: 12))
                             }
                         }
+                        ForEach(notices) { notice in
+                            LimitNoticeCard(engine: engine, notice: notice, open: { model.selection = .conversation($0) }, showUsage: { model.selection = .usage })
+                        }
                     }
                     .padding(.horizontal, 28).padding(.vertical, 22)
                     .frame(maxWidth: 760)
@@ -265,7 +270,15 @@ struct InboxView: View {
         }
         .background(Theme.window)
         .navigationTitle("Inbox")
-        .navigationSubtitle(engine.inbox.isEmpty ? "" : "\(engine.inbox.count) waiting")
+        .navigationSubtitle(subtitle)
+    }
+
+    private var subtitle: String {
+        let parts = [
+            engine.inbox.isEmpty ? nil : "\(engine.inbox.count) waiting",
+            notices.isEmpty ? nil : notices.count == 1 ? "1 notice" : "\(notices.count) notices",
+        ]
+        return parts.compactMap { $0 }.joined(separator: ", ")
     }
 }
 

@@ -17,7 +17,7 @@ import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
 import { knowledge } from "./knowledge.ts";
-import { limits } from "./limits.ts";
+import { limits, type ProviderLimits } from "./limits.ts";
 import { limitWait } from "./limitwait.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
@@ -74,6 +74,11 @@ export type FeatureParts = {
 	 * Only one feature answers it. See engine/scripts/patch-dependencies.ts.
 	 */
 	retry?(message: AssistantMessage | undefined, attempt: number, conversationId: number): { waitMs?: number | false; spent: number };
+	/**
+	 * How every signed-in subscription's windows stand, as Usage shows them: for `delegate`'s result and `sub_chats`' list,
+	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
+	 */
+	planLimits?(): ProviderLimits[];
 	/** Runs once when the harness is open, before the engine listens or runs anything: load what the rest needs at once. */
 	start?(): Promise<void>;
 	/**
