@@ -151,6 +151,67 @@
 		return steps.length > 0 ? steps : null;
 	}
 
+	/**
+	 * The files a read asked for, `{path, offset, limit}` each: its `path`, then its `files` (paths or objects, or the
+	 * same as a JSON string, which the engine also takes). Null for a read of one `path` alone, as reads were before #176.
+	 */
+	function readEntries(args) {
+		let files = args.files;
+		if (typeof files === "string") {
+			try {
+				files = JSON.parse(files);
+			} catch {
+				files = [];
+			}
+		}
+		if (files === undefined) return null;
+		const entries = [];
+		if (typeof args.path === "string" && args.path !== "") entries.push({ path: args.path, offset: args.offset, limit: args.limit });
+		for (const file of Array.isArray(files) ? files : []) {
+			if (typeof file === "string" && file !== "") entries.push({ path: file });
+			else if (isObject(file) && typeof file.path === "string" && file.path !== "") entries.push({ path: file.path, offset: file.offset, limit: file.limit });
+		}
+		return entries;
+	}
+
+	/** The line the engine puts above each file of a read of several (engine/src/reading.ts, `headerOf`). */
+	function readHeader(entry) {
+		const offset = typeof entry.offset === "number" ? entry.offset : null;
+		const limit = typeof entry.limit === "number" ? entry.limit : null;
+		const lines = offset === null && limit === null ? "" : limit === null ? `from line ${offset}` : `lines ${offset ?? 1}-${(offset ?? 1) + limit - 1}`;
+		return `==> ${entry.path}${lines ? ` (${lines})` : ""} <==`;
+	}
+
+	/**
+	 * A read of several files, cut into a section per file at the lines the engine put above each, labelled with the
+	 * file and its range; one the engine could not read is marked failed. Null when the lines are not all there, as in
+	 * an output that is not finished, so the caller shows it whole.
+	 */
+	function readSections(entries, details, output) {
+		const told = isObject(details) && Array.isArray(details.files) && details.files.length === entries.length ? details.files : null;
+		const starts = [];
+		let from = 0;
+		for (const entry of entries) {
+			const header = readHeader(entry) + "\n";
+			let at = output.indexOf(header, from);
+			while (at > 0 && output[at - 1] !== "\n") at = output.indexOf(header, at + 1);
+			if (at < 0) return null;
+			starts.push({ at, body: at + header.length });
+			from = at + header.length;
+		}
+		return entries.map((entry, index) => {
+			const end = index + 1 < starts.length ? starts[index + 1].at : output.length;
+			const window = readWindow(entry);
+			return {
+				kind: "text",
+				label: entry.path + (window ? ", " + window : ""),
+				text: output.slice(starts[index].body, end).replace(/\n+$/, ""),
+				failed: told !== null && isObject(told[index]) && told[index].failed === true,
+				language: extension(entry.path),
+			};
+		});
+	}
+
 	/** Lines and columns of a read, when it asked for a window of the file. */
 	function readWindow(args) {
 		const offset = typeof args.offset === "number" ? args.offset : null;
@@ -375,9 +436,28 @@
 				break;
 			case "read": {
 				glyph = "file";
-				const file = basename(args.path);
-				label = file ? [t(active ? "Reading " : "Read "), name(file), t(dots)] : [t(active ? "Reading a file" + ELLIPSIS : "Read a file")];
-				stats = readWindow(args) ?? "";
+				const entries = readEntries(args);
+				if (entries === null) {
+					const file = basename(args.path);
+					label = file ? [t(active ? "Reading " : "Read "), name(file), t(dots)] : [t(active ? "Reading a file" + ELLIPSIS : "Read a file")];
+					stats = readWindow(args) ?? "";
+					break;
+				}
+				// Several files are one row that names them: the first two or three, then how many more.
+				const paths = [...new Set(entries.map((entry) => entry.path))];
+				const shown = paths.length <= 3 ? paths : paths.slice(0, 2);
+				const more = paths.length - shown.length;
+				label = [t(active ? "Reading " : "Read ")];
+				shown.forEach((path, index) => {
+					if (index > 0) label.push(t(index === shown.length - 1 && more === 0 ? " and " : ", "));
+					label.push(name(basename(path)));
+				});
+				if (more > 0) label.push(t(` and ${more} more`));
+				if (shown.length === 0) label = [t(active ? "Reading files" : "Read files")];
+				label.push(t(dots));
+				if (paths.length > 1) stats = `${paths.length} files`;
+				else if (entries.length > 1) stats = `${entries.length} parts`;
+				else if (entries.length === 1) stats = readWindow(entries[0]) ?? "";
 				break;
 			}
 			case "write": {
@@ -614,9 +694,13 @@
 				sections.push({ kind: "command", label: "Set-up command", command: str(args.command), output, failed: false, placeholder: active ? "Running" + ELLIPSIS : result ? "(no output)" : "" });
 				break;
 			case "read":
-			case "read_reference":
-				if (failed || !result || output !== "") outputSection(str(args.path) || "Output");
+			case "read_reference": {
+				const entries = call.name === "read" ? readEntries(args) : null;
+				const parts = entries !== null && result ? readSections(entries, details, output) : null;
+				if (parts !== null) sections.push(...parts);
+				else if (failed || !result || output !== "") outputSection(str(args.path) || (entries !== null ? "Files" : "Output"));
 				break;
+			}
 			case "write":
 				if (typeof args.content === "string") sections.push({ kind: "text", label: str(args.path) || "File", text: args.content, language: extension(args.path) });
 				if (failed) outputSection("Result");

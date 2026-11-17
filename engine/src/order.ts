@@ -9,8 +9,10 @@
 //
 // So a round that has a call to a tool that changes files runs in order: each call sees what the ones before it did.
 // Rounds of calls that only look (reads, searches, web pages) and rounds of sub-chats still run side by side, which is
-// where running together saves real time. The tools' descriptions say both, so a model puts a call that needs another's
-// result after it, or in a later answer.
+// where running together saves real time. The system prompt says both, once (`ORDER_NOTE`, in the task_list section,
+// plan.ts), and that calls that do not depend on each other belong together in one answer (#176): models made one call
+// per answer, nine times in ten, and read through the shell to read several files at once. Until then the note was
+// added to the descriptions of bash, write, edit and read, four copies read again on every turn.
 //
 // An MCP tool that its server does not mark read-only counts as one that changes things (#190): src/mcp.ts marks each
 // such tool to run in order as it lists the server's tools, since their names are only known then. Two independent
@@ -22,24 +24,18 @@ import type { Feature } from "./features.ts";
 /** Tools that change files, by name: any one of them in an answer makes its calls run in order. */
 export const IN_ORDER = ["bash", "write", "edit", "write_document", "codemode"] as const;
 
-/** What a model is told, after the description of each tool it most often writes a file with and uses one with. */
+/** What a model is told in the system prompt about the calls of one answer. */
 export const ORDER_NOTE =
-	`Calls you make in one answer run one at a time, in the order you give them, when any of them is ${IN_ORDER.join(", ")} or an MCP tool not marked read-only, ` +
-	"so each sees what the calls before it did. Otherwise they start together, so a call that needs another's result (a file a sub-chat writes, say) belongs in a later answer.";
-
-/** The tools whose descriptions carry the note. */
-const TOLD = new Set(["bash", "write", "edit", "read"]);
+	"Calls that do not depend on each other (several files to read, several searches) belong together in one answer: they run at the same time. " +
+	`When any of them is ${IN_ORDER.join(", ")} or an MCP tool not marked read-only, they run one at a time instead, in the order given, so each sees what the ones before it did; ` +
+	"otherwise a call that needs another's result belongs in a later answer.";
 
 // Wraps by name, as `wrapTool` makes them, without a copy of each tool to name it by. The tool a wrap is given is
 // whichever won, with the wraps of features listed before this one applied (bash's time limit, in commands.ts), so this
 // adds to what those made of it.
-const wraps: Wrap<ToolRegistration>[] = [...new Set<string>([...IN_ORDER, ...TOLD])].map((name) => ({
+const wraps: Wrap<ToolRegistration>[] = IN_ORDER.map((name) => ({
 	tool: name,
-	wrap: (tool: ToolRegistration) => ({
-		...tool,
-		...((IN_ORDER as readonly string[]).includes(name) ? { executionMode: "sequential" as const } : {}),
-		...(TOLD.has(name) ? { description: `${tool.description} ${ORDER_NOTE}` } : {}),
-	}),
+	wrap: (tool: ToolRegistration) => ({ ...tool, executionMode: "sequential" as const }),
 }));
 
 export const order: Feature = () => ({ wraps });
