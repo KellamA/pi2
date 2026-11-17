@@ -30,7 +30,18 @@ export type McpServerConfig = {
 export type McpToolInfo = { name: string; toolName: string; description: string; readOnly: boolean };
 export type McpServerStatus = McpServerConfig & { status: "connected" | "connecting" | "off" | "error"; error: string | null; hasToken: boolean; tools: McpToolInfo[] };
 
-type Live = { client?: McpClient; status: McpServerStatus["status"]; error: string | null; tools: McpToolInfo[]; registrations: ToolRegistration[] };
+/** A server process (or HTTP session) the engine is talking to, and how many tool calls it is answering right now. */
+type Connection = { client: McpClient; calls: number; retired: boolean };
+type Live = {
+	connection?: Connection;
+	status: McpServerStatus["status"];
+	error: string | null;
+	tools: McpToolInfo[];
+	registrations: ToolRegistration[];
+	/** A server run as a program: the PATH it was started with, which it and whatever it starts keep. */
+	path?: string;
+};
+type Opened = { connection: Connection; tools: McpToolInfo[]; registrations: ToolRegistration[] };
 
 export class McpServers {
 	readonly #path: string;
@@ -38,8 +49,15 @@ export class McpServers {
 	#configs: McpServerConfig[];
 	readonly #live = new Map<string, Live>();
 	readonly #tokens = new Set<string>();
+	/** Every connection still open, current or retired, so that stopping closes them all. */
+	readonly #connections = new Set<Connection>();
+	/** Servers being started again with a new PATH, so that each is started again once at a time. */
+	readonly #restarting = new Set<string>();
+	#stopped = false;
 	/** Called whenever a server's status or tools change. */
 	onChange: () => void = () => {};
+	/** Where to say what was done without being asked: a server started again with a new PATH. */
+	log: (...parts: unknown[]) => void = () => {};
 
 	constructor(home: string, credentials: CredentialStore) {
 		this.#path = join(home, "mcp.json");
@@ -129,13 +147,84 @@ export class McpServers {
 		await this.#connect(config);
 	}
 
+	/**
+	 * The PATH the engine gives what it starts has changed: the login shell was too slow for start-up and its PATH was
+	 * taken when it came (shellpath.ts). Bring every server run as a program that was started with another PATH onto
+	 * it, so that it ends up as a quicker start would have left it (issue #98):
+	 *
+	 * - one that failed to start (its program may only be on the new PATH) is connected again; nothing is using it;
+	 * - one that is connected is started again alongside the one running, and put in its place only once it has
+	 *   connected and listed its tools. Its tools never drop out meanwhile, and a call already running finishes on the
+	 *   process that started it, which is closed once no call is left on it. If it fails to start with the new PATH,
+	 *   the one running is kept, as it was;
+	 * - one still connecting is looked at again once it has connected or failed.
+	 *
+	 * A server started with the PATH the engine has now is left alone, so a PATH that did not change restarts nothing.
+	 */
+	followPath(): void {
+		for (const config of this.#configs) this.#follow(config);
+	}
+
 	async stop(): Promise<void> {
-		await Promise.all([...this.#live.keys()].map((id) => this.#disconnect(id)));
+		this.#stopped = true;
+		await Promise.all([...this.#connections].map((connection) => this.#close(connection)));
 	}
 
 	async #disconnect(id: string): Promise<void> {
-		const client = this.#live.get(id)?.client;
-		if (client !== undefined) await client.close().catch(() => {});
+		const connection = this.#live.get(id)?.connection;
+		if (connection !== undefined) await this.#close(connection);
+	}
+
+	async #close(connection: Connection): Promise<void> {
+		this.#connections.delete(connection);
+		await connection.client.close().catch(() => {});
+	}
+
+	/** A connection another has replaced: closed as soon as no tool call is running on it. */
+	#retire(connection: Connection | undefined): void {
+		if (connection === undefined) return;
+		connection.retired = true;
+		if (connection.calls === 0) void this.#close(connection);
+	}
+
+	/** The PATH a server would be started with now; undefined for one that is not a program. */
+	#pathFor(config: McpServerConfig): string | undefined {
+		return config.transport === "stdio" ? process.env.PATH : undefined;
+	}
+
+	#follow(config: McpServerConfig): void {
+		if (this.#stopped || !config.enabled || config.transport !== "stdio" || this.#restarting.has(config.id)) return;
+		const live = this.#live.get(config.id);
+		if (live === undefined || live.path === this.#pathFor(config)) return;
+		if (live.status === "error") void this.#connect(config);
+		else if (live.status === "connected") void this.#restart(config, live);
+		// "connecting": #connect follows it when it settles.
+	}
+
+	/** Start `config` again with the PATH the engine has now, in place of `old`, without cutting off a call. */
+	async #restart(config: McpServerConfig, old: Live): Promise<void> {
+		this.#restarting.add(config.id);
+		try {
+			const path = this.#pathFor(config);
+			let opened: Opened;
+			try {
+				opened = await this.#open(config);
+			} catch (error) {
+				if (this.#stopped) return;
+				this.log(`MCP server ${config.name} could not be started again with the new PATH (${error instanceof Error ? error.message : String(error)}); it keeps running as it was started`);
+				return;
+			}
+			// Reconnected, removed or switched off meanwhile, or the engine is stopping: this one is not wanted.
+			if (this.#stopped || this.#live.get(config.id) !== old) return void this.#close(opened.connection);
+			const live: Live = { status: "connected", error: null, path, ...opened };
+			this.#live.set(config.id, live);
+			this.#watch(config, live);
+			this.#retire(old.connection);
+			this.log(`MCP server ${config.name} started again with the new PATH${old.connection !== undefined && old.connection.calls > 0 ? "; the one it replaces stops once its calls are done" : ""}`);
+			this.onChange();
+		} finally {
+			this.#restarting.delete(config.id);
+		}
 	}
 
 	async #connect(config: McpServerConfig): Promise<void> {
@@ -145,56 +234,92 @@ export class McpServers {
 			this.onChange();
 			return;
 		}
-		const live: Live = { status: "connecting", error: null, tools: [], registrations: [] };
+		const live: Live = { status: "connecting", error: null, tools: [], registrations: [], path: this.#pathFor(config) };
 		this.#live.set(config.id, live);
 		this.onChange();
 		try {
-			let transport: McpTransport;
-			if (config.transport === "stdio") {
-				transport = new StdioTransport({ command: config.command!, args: config.args ?? [], stderr: "pipe" });
-			} else {
-				const token = this.#tokens.has(config.id) ? (await this.#credentials.read(`mcp-${config.id}`)) : undefined;
-				const key = token?.type === "api_key" ? token.key : undefined;
-				transport = new StreamableHttpTransport({ url: config.url!, ...(key ? { headers: { authorization: `Bearer ${key}` } } : {}) });
-			}
-			const client = new McpClient({ name: "pi2", version: "0.1.0", requestTimeoutMs: 60_000 });
-			await client.connect(transport);
-			const tools = await client.listTools();
-			const taken = new Set<string>();
-			live.client = client;
-			for (const tool of tools) {
-				const toolName = createMcpToolName(config.id, tool.name, (candidate) => taken.has(candidate));
-				taken.add(toolName);
-				live.tools.push({ name: tool.name, toolName, description: tool.description ?? tool.title ?? tool.name, readOnly: tool.annotations?.readOnlyHint === true });
-				live.registrations.push(
-					defineTool({
-						name: toolName,
-						description: `[${config.name}] ${tool.description ?? tool.title ?? tool.name}`,
-						parameters: normalizeMcpInputSchema(tool.inputSchema) as never,
-						execute: async (args, _api, context) => {
-							const result = await client.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal });
-							const limited = await limitMcpContent(toLlmContent(result));
-							// MCP reports tool failures in the result, not as a protocol error.
-							return { output: limited.content as never, isError: result.isError === true };
-						},
-					}) as ToolRegistration,
-				);
-			}
+			const opened = await this.#open(config);
+			// Reconnected or removed meanwhile, or the engine is stopping: this connection is not wanted.
+			if (this.#stopped || this.#live.get(config.id) !== live) return void this.#close(opened.connection);
+			Object.assign(live, opened);
 			live.status = "connected";
-			client.onClose(() => {
-				// The server went away on its own (not replaced by a reconnect): show it, and drop its tools.
-				if (this.#live.get(config.id) !== live || live.status !== "connected") return;
-				live.status = "error";
-				live.error = "The server disconnected.";
-				live.tools = [];
-				live.registrations = [];
-				this.onChange();
-			});
+			this.#watch(config, live);
 		} catch (error) {
+			if (this.#live.get(config.id) !== live) return;
 			live.status = "error";
 			live.error = error instanceof Error ? error.message : String(error);
 		}
 		this.onChange();
+		// The PATH may have changed while it was starting.
+		this.#follow(config);
+	}
+
+	/** Shows a server that went away on its own (not replaced by a reconnect), and drops its tools. */
+	#watch(config: McpServerConfig, live: Live): void {
+		live.connection?.client.onClose(() => {
+			if (this.#live.get(config.id) !== live || live.status !== "connected") return;
+			live.status = "error";
+			live.error = "The server disconnected.";
+			live.tools = [];
+			live.registrations = [];
+			this.onChange();
+		});
+	}
+
+	/** Start the server and list its tools. Throws if it cannot be reached; leaves nothing running then. */
+	async #open(config: McpServerConfig): Promise<Opened> {
+		let transport: McpTransport;
+		if (config.transport === "stdio") {
+			transport = new StdioTransport({ command: config.command!, args: config.args ?? [], stderr: "pipe" });
+		} else {
+			const token = this.#tokens.has(config.id) ? (await this.#credentials.read(`mcp-${config.id}`)) : undefined;
+			const key = token?.type === "api_key" ? token.key : undefined;
+			transport = new StreamableHttpTransport({ url: config.url!, ...(key ? { headers: { authorization: `Bearer ${key}` } } : {}) });
+		}
+		const client = new McpClient({ name: "pi2", version: "0.1.0", requestTimeoutMs: 60_000 });
+		const connection: Connection = { client, calls: 0, retired: false };
+		this.#connections.add(connection);
+		let tools: Awaited<ReturnType<McpClient["listTools"]>>;
+		try {
+			await client.connect(transport);
+			tools = await client.listTools();
+		} catch (error) {
+			await this.#close(connection);
+			throw error;
+		}
+		const taken = new Set<string>();
+		const opened: Opened = { connection, tools: [], registrations: [] };
+		for (const tool of tools) {
+			const toolName = createMcpToolName(config.id, tool.name, (candidate) => taken.has(candidate));
+			taken.add(toolName);
+			opened.tools.push({ name: tool.name, toolName, description: tool.description ?? tool.title ?? tool.name, readOnly: tool.annotations?.readOnlyHint === true });
+			opened.registrations.push(
+				defineTool({
+					name: toolName,
+					description: `[${config.name}] ${tool.description ?? tool.title ?? tool.name}`,
+					parameters: normalizeMcpInputSchema(tool.inputSchema) as never,
+					execute: async (args, _api, context) => {
+						// The server as it is when the call runs, not as it was when this tool was listed: a call
+						// that was waiting (for an approval, say) while the server was started again goes to the new
+						// one rather than to one that has been closed.
+						const current = this.#live.get(config.id)?.connection;
+						if (current === undefined) throw new Error(`${config.name} is not connected`);
+						// Counted, so that a server started again is closed only once no call is running on it.
+						current.calls++;
+						try {
+							const result = await current.client.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal });
+							const limited = await limitMcpContent(toLlmContent(result));
+							// MCP reports tool failures in the result, not as a protocol error.
+							return { output: limited.content as never, isError: result.isError === true };
+						} finally {
+							current.calls--;
+							if (current.retired && current.calls === 0) void this.#close(current);
+						}
+					},
+				}) as ToolRegistration,
+			);
+		}
+		return opened;
 	}
 
 	#persist(): void {
