@@ -73,6 +73,7 @@ This runs, side by side, every file in `engine/test` but two: `patience.ts`, whi
 - `look.ts`: the look tools.
 - `mcppath.ts`: MCP servers started before a slow login shell answers are started again with its `PATH`, without cutting off a call (a stand-in shell, a test MCP server and a real engine).
 - `mcpreconnect.ts`: reconnecting, editing, removing or switching off an MCP server deals with a call running on it as [architecture.md](architecture.md#an-mcp-server-changed-while-a-call-runs-on-it) says (a test MCP server whose calls answer when the test lets them, and a real engine).
+- `modellists.ts`: asking a provider which models a key or sign-in can use, against stand-in providers on a stand-in server on 127.0.0.1 answering as ChatGPT's Codex service, Anthropic (two pages), OpenAI and Google do; a refusal (the key not repeated), a redirect (not followed) and providers that cannot be asked; and the catalogs the library refreshes itself, at start, on asking and from the store at the next start.
 - `offered.ts`: computer use with no app allowed, and scheduling in a sub-chat, are not offered. It prints the size of the prompt and the tool definitions for a plain agent and for such a sub-chat.
 - `reading.ts`: `read` of several files, or several parts of one, in one call, around the library's own tool.
 - `rules.ts`: the command rules. It also runs the commands its rules allow through `/bin/bash`, in a folder of its own.

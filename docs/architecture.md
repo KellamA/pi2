@@ -39,6 +39,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/extensions.ts` | What pi² adds to every conversation: approvals, `ask_user`, `delegate`, `read_reference`, `computer`, `browser` |
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
+| `src/modellists.ts` | Asking a built-in provider which models a key or sign-in can use; the store of catalogs the library refreshes itself (`model-catalogs.json`) |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
 | `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |

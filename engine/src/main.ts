@@ -47,6 +47,7 @@ import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
+import { plainProviderError } from "./providererror.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
@@ -991,6 +992,12 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		scheduleUsageRefresh();
 		return model;
 	},
+	"providers.ask": async (params) => {
+		const listing = await providers.askProvider(text(params, "id"));
+		// A refreshed catalog may hold new models, or ones that were added by hand.
+		if (listing.refreshed) await announceProviders();
+		return listing;
+	},
 	"providers.removeModel": async (params) => {
 		providers.removeModel(text(params, "provider"), text(params, "id"));
 		await announceProviders();
@@ -1590,6 +1597,15 @@ const scheduleUsageRefresh = () => {
 	usageTimer = setTimeout(() => void refreshUsage().catch((error) => log("usage refresh failed:", error)), 400);
 };
 await refreshUsage();
+
+// Providers whose list the library refreshes itself (pi-ai's models.refresh()) are asked for it, in the background.
+void providers
+	.refreshCatalogs()
+	.then(async (errors) => {
+		for (const [id, error] of errors) log(`refreshing ${id}'s list of models failed: ${plainProviderError(error.message)}`);
+		await announceProviders();
+	})
+	.catch((error) => log("refreshing the providers' lists of models failed:", error));
 
 // ---- Schedules
 
