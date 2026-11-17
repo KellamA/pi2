@@ -41,6 +41,8 @@ import { isArchived, isPutAway } from "./archive.ts";
 import { noteSubChats, subChatsTool } from "./subchats.ts";
 import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
 import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
+import { limitOf } from "./limitwait.ts";
+import { CARRY_ON, plainProviderError } from "./providererror.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -76,7 +78,7 @@ export type Host = {
 	 * Send a message to a sub-chat that an earlier call created, and wait for its answer. Stopping the caller stops
 	 * the sub-chat's run too. Resolves with the answer, or `undefined` with a reason when there was none.
 	 */
-	continueChat(conversationId: number, content: string, requestId: string, context: Context): Promise<{ answer: string } | { reason: string }>;
+	continueChat(conversationId: number, content: string, requestId: string, context: Context): Promise<{ answer: string } | { reason: string; detail?: string }>;
 	/** Every conversation pi² keeps, by id: sub-chats, archived and deleted ones included. */
 	conversations(): Record<string, Meta>;
 	/** Whether a conversation has work running: a run, a tool call, a question or approval it waits on. */
@@ -96,6 +98,24 @@ export function titleOf(given: string | undefined): string | undefined {
 	const title = (given ?? "").replace(/\s+/g, " ").trim();
 	if (title === "") return undefined;
 	return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1).trimEnd()}…` : title;
+}
+
+/**
+ * What `delegate` answers when a sub-chat's run ended without an answer: why, in the provider's own words when it was
+ * the provider's error (shortened, with no keys or account identifiers), and that the sub-chat can be carried on.
+ */
+export function unfinished(name: string, chat: number, reason: string | undefined, detail: string | undefined): string {
+	const resume = `The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: ${chat}.`;
+	if (reason === "model_error") {
+		const said = plainProviderError(detail ?? "") || "no message";
+		// pi² says itself when it stopped waiting for a limit (src/limitwait.ts); otherwise a limit is still worth naming.
+		const limit = detail !== undefined && !detail.includes(CARRY_ON) && limitOf(detail, undefined, Date.now()) !== undefined;
+		const why = limit ? " The provider refused it for its limit, so carrying on works once the limit has reset." : "";
+		return `${name} did not finish the task: the model's provider answered with an error: “${said}”.${why} ${resume}`;
+	}
+	if (reason === "aborted") return `${name} did not finish the task: its run was stopped, by the person or with this conversation. ${resume}`;
+	const said = detail === undefined || detail === "" ? "" : `: ${plainProviderError(detail)}`;
+	return `${name} did not finish the task (${reason ?? "no answer"}${said}). ${resume}`;
 }
 
 /** The agents a conversation may delegate to, from its own agent's list. */
@@ -214,7 +234,7 @@ export function pi2Extension(host: Host): Extension {
 				}
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
 				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
-				if ("reason" in result) return { output: text(`${agent.name} did not finish the task (${result.reason}).${note}`), isError: true };
+				if ("reason" in result) return { output: text(unfinished(agent.name, args.chat, result.reason, result.detail) + note), isError: true };
 				return { output: text(result.answer + (await footer(args.chat, agent.name, named, note))) };
 			}
 			const allowed = delegatesOf(host, api.conversationId);
@@ -254,8 +274,9 @@ export function pi2Extension(host: Host): Extension {
 			const submission = await handle.submit({ type: "input", content: args.task, requestId: `delegate:${String(api.taskId)}` }, context);
 			const settled = await submission.wait(context);
 			if (settled.status !== "done" || settled.type !== "input") {
-				const why = "reason" in settled && settled.reason !== undefined ? ` (${String(settled.reason)})` : "";
-				return { output: text(`${target.name} did not finish the task${why}.`), isError: true };
+				const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
+				const detail = "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
+				return { output: text(unfinished(target.name, child as unknown as number, reason, detail)), isError: true };
 			}
 			const kept = (await api.snapshot(Library, context))?.conversations[String(child)]?.title ?? named;
 			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name, kept))) };

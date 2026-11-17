@@ -56,7 +56,9 @@ A run whose request a provider refuses for its limit does not end. It waits, and
 
 **A restart.** The wait is the run's own stored sleep (pi durable's retry, see below), so it survives the engine stopping or being killed: the next engine goes on waiting until the same time, without asking in between, and the conversation and Activity show it again. (Killed in the instant between storing the sleep and noting the wait, the next engine notes the wait again from the sleep; it then no longer knows when the wait began, so the six hours count from the restart.) If the engine stops while the request after a wait is on its way, that request counts as one of the three ordinary retries, as any request cut off by a restart does.
 
-**engine.log** has a line when a wait starts (who refused, until when, and whether the provider named the time), and when it ends: the run carried on (after how long, and how many refusals), it was stopped, the provider answered with another error, or it gave up. The lines name the conversation, as in `conversation 12 is waiting for Anthropic's rate limit: until 2026-11-17T20:15:03Z, the time it named`. A refusal in between has no line of its own; the transcript has each.
+**engine.log** has a line when a wait starts (who refused, until when, and whether the provider named the time), and when it ends: the run carried on (after how long, and how many refusals), it was stopped, the provider answered with another error, or it gave up. The lines name the conversation, as in `conversation 12 is waiting for Anthropic's rate limit: until 2026-11-17T20:15:03Z, the time it named`. A refusal in between has no line of its own; the transcript has each. A run that ends on an error from the provider all the same, a limit or any other, has a line of its own too, with the provider's message (see [The logs](architecture.md#the-logs)).
+
+**A sub-chat.** A sub-chat that waits keeps the `delegate` call that started it waiting. One whose run ends on the provider's error all the same gives `delegate` a result that says so in the provider's words, and that the sub-chat can be carried on by passing its number as `chat` ([architecture.md](architecture.md#sub-chats)).
 
 ### How it works
 
@@ -95,5 +97,5 @@ A conversation's state has `limitWait` while its run sleeps for a limit, and its
 - Copilot's figures appear only after a request in pi², and premium requests are the only allowance shown (chat and completions are unlimited on paid plans).
 - The figures from answers are as of the start of that answer.
 - Signing in again to a different account of the same provider, without signing out first, keeps showing the old account's figures until they are next read.
-- Nothing holds a run back before a provider refuses it, however full a window is, and nobody is told that a window is nearly used up while runs are going: the wait starts with the first refusal.
+- Nothing holds a run back before a provider refuses it, however full a window is, and nobody is told that a window is nearly used up while runs are going, nor is an agent that hands out work told how the windows stand: the wait starts with the first refusal (#232).
 - A summary of earlier messages (compaction) that a provider refuses for its limit is still retried only three times, and then fails as it did before.
