@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Changed
+- **A command that ends with a harmless exit code is no longer shown as failed.** A `grep` that found nothing, checks still pending or an `a && b` that stopped where it was meant to now shows its exit code at the end of its row, in a quiet colour, with the row closed, and the agent is told the exit code as a fact rather than as an error. A command that could not be started (exit code 126 or 127), was ended by a signal, or was stopped at its time limit is still shown in red and opened. Scripts in code mode get the exit code as before.
+
 ## 0.7.7
 
 ### Added

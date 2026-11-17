@@ -22,6 +22,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { type ToolExecutionApi, type ToolExecutionResult, wrapTool } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
+import { constants } from "node:os";
 import { join } from "node:path";
 import { isDeleted } from "./archive.ts";
 import { BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, startInBackground } from "./background.ts";
@@ -129,6 +130,30 @@ export function tookMessage(timing: Timing): string | undefined {
 	return `The command took ${elapsed(timing.ms)}${quiet}.`;
 }
 
+/**
+ * What the result of a command that ran to its end says about its exit code (#182). A command line's exit code is the
+ * last command's, and a non-zero one is often no failure at all: a `grep` that found nothing, `gh pr checks` with checks
+ * still pending, an `a && b` that stopped where it was meant to. So it is told to the model as a fact, and the result is
+ * not an error, unless the code says the command could not be started (126, not executable; 127, not found) or was
+ * ended by a signal (128 and the signal's number, as the shell and pi durable report it). `details.exitCode` lets the
+ * conversation show the code on the row. A command stopped at its time limit, or aborted, has no exit code: it throws.
+ */
+export function exitResult(exitCode: number): { isError?: true; details?: { exitCode: number; signal?: string }; diagnostics?: { severity: "info" | "error"; code: string; message: string }[] } {
+	if (exitCode === 0) return {};
+	const signal = exitCode > 128 ? Object.entries(constants.signals).find(([, number]) => number === exitCode - 128)?.[0] : undefined;
+	const failed =
+		signal !== undefined
+			? `The command was ended by ${signal} (exit code ${exitCode}).`
+			: exitCode === 127
+				? "Exit code 127: a command it ran was not found."
+				: exitCode === 126
+					? "Exit code 126: a command it ran could not be run (it is not executable, or not allowed)."
+					: undefined;
+	const details = { exitCode, ...(signal === undefined ? {} : { signal }) };
+	if (failed !== undefined) return { isError: true, details, diagnostics: [{ severity: "error", code: "exit_code", message: failed }] };
+	return { details, diagnostics: [{ severity: "info", code: "exit_code", message: `Exit code ${exitCode}` }] };
+}
+
 const count = (n: number) => n.toLocaleString("en-US");
 const size = (bytes: number) => (bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`);
 
@@ -195,8 +220,7 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	const exitCode = result.value.exitCode;
 	// What a script calling `bash` gets, as pi durable's `bash` gives it.
 	const structuredOutput = { output: retained.text, truncated: retained.truncated, ...(kept?.kept ? { fullOutputPath: kept.path } : {}), exitCode };
-	if (exitCode === 0) return { structuredOutput };
-	return { structuredOutput, isError: true, diagnostics: [{ severity: "error", code: "exit_code", message: `Command exited with code ${exitCode}` }] };
+	return { structuredOutput, ...exitResult(exitCode) };
 }
 
 /** The wrap of `bash` with these limits, keeping long outputs in `store`. Tests make one with limits of their own. */

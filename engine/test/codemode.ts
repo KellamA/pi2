@@ -212,6 +212,9 @@ try {
 	assert.match(described, new RegExp(`declare const tools: \\{ ${last}\\(args: \\{[\\s\\S]*id: string;`), described);
 	const shell = await client.script(plain, "const r = await tools.bash({ command: 'echo from-a-script' }); text(r.exitCode + ' ' + r.output.trim())");
 	assert.equal(shell, "0 from-a-script", "bash resolves to the object the short section says");
+	// A non-zero exit, failure or not, resolves with its code too; it does not reject (#182, docs/codemode.md).
+	const exits = await client.script(plain, "const codes = []; for (const command of ['grep -q x /dev/null', 'no-such-command-182', 'kill -KILL $$']) codes.push((await tools.bash({ command })).exitCode); text(codes.join(' '))");
+	assert.equal(exits, "1 127 137", "a script gets every exit code, and decides for itself");
 	step("a script calls, lists, finds and describes tools the section does not show");
 } finally {
 	client.close();

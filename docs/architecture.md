@@ -103,6 +103,16 @@ The tool's description gives both limits. A command the limit stopped has, under
 
 The default was 30 minutes until #160, in which a command waiting on a system prompt that nobody had seen (by the timing, a macOS privacy prompt) held its conversation for 29 minutes with nothing to show for it. A worktree's set-up command is not an agent's command and keeps its own limit of 15 minutes ([worktrees.md](worktrees.md)).
 
+### A command's exit code
+
+A command that ran to its end is not an error because its exit code is not 0 (#182). A command line's exit code is that of its last command, and that is often no failure at all: a `grep` that found nothing, `gh pr checks` with checks still pending, `a && b` stopping where it was meant to. So the result tells the model the code as a fact, under the output (`[info] Exit code 1`), and its `details.exitCode` lets the conversation show it on the row, which stays closed, in a quiet colour ([transcript.md](transcript.md#how-it-is-drawn)). A result is still an error, with a red row that starts open, when the command:
+
+- was stopped at its time limit, or stopped or aborted (it has no exit code: the call throws, as above);
+- could not be started: exit code 127 ("a command it ran was not found") or 126 ("could not be run (it is not executable, or not allowed)");
+- was ended by a signal: 128 and the signal's number, as the shell and pi durable report it ("The command was ended by SIGKILL (exit code 137)."), with the signal's name in `details.signal`.
+
+`exitResult` in `src/commands.ts` decides. Nothing else reads a shell result's error flag to decide what to do: Activity, notifications and the Inbox go by runs and approvals, not by tool results; a Markdown export says "Result:" rather than "Result (error):" for these. A script in code mode gets `{ output, exitCode, … }` from `tools.bash()` for any command that ran to its end, failure or not, as before; it rejects only when the command was stopped, aborted or could not be run at all ([codemode.md](codemode.md)). Results stored before this change keep the error they were given.
+
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
 ### A long output

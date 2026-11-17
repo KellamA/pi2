@@ -2215,14 +2215,15 @@ try {
 			await client.until("full access", () => client.conversations.get(id)?.state.agent.access === "full");
 			return id as number;
 		};
-		const [stopped, longer, input] = [await open(), await open(), await open()];
+		const [stopped, longer, input, exited] = [await open(), await open(), await open(), await open()];
 		const started = Date.now();
 		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
 		// take, however busy the machine.
 		await client.call("submit", { id: stopped, text: "/bash echo begun; sleep 600; echo never-printed" });
 		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
-		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
+		await client.call("submit", { id: exited, text: "/bash echo all-in-order; grep -q nothing-here /dev/null" });
+		const [cut, honoured, reader, nonzero] = await Promise.all([stopped, longer, input, exited].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
 		assert.equal(cut.isError, true, cut.text);
 		assert.ok(cut.text.includes("begun") && !cut.text.includes("never-printed"), `what it wrote before it was stopped is kept: ${cut.text}`);
 		assert.match(cut.text, /stopped after 3 seconds, the default time limit for a command\. If it needs longer, run it again with a larger `timeout` \(in seconds, up to 600\), or with `background: true`, which has no time limit/);
@@ -2230,8 +2231,12 @@ try {
 		assert.ok(honoured.text.includes("finished-late"), `a larger timeout is honoured: ${honoured.text}`);
 		assert.equal(reader.isError, false, reader.text);
 		assert.ok(reader.text.includes("got []"), `a command reading its input gets none: ${reader.text}`);
+		// A non-zero exit is a fact the model is told, not an error (issue #182), and the row is given the code.
+		assert.equal(nonzero.isError, false, nonzero.text);
+		assert.equal(nonzero.text, "all-in-order\n<harness>\n[info] Exit code 1\n</harness>");
+		assert.deepEqual(nonzero.details, { exitCode: 1 });
 		assert.ok(Date.now() - started < 5 * 60_000, "the stopped command did not run its full ten minutes");
-		step("commands: one without a timeout is stopped at the default and says how to get longer; a larger timeout is honoured; standard input is closed");
+		step("commands: one without a timeout is stopped at the default and says how to get longer; a larger timeout is honoured; standard input is closed; a non-zero exit is told as a fact");
 
 		// A long output is shortened to its end, and all of it is kept in a file in the data folder, which the result names
 		// (issue #161). A short one keeps no file. Deleting the conversation removes its files.

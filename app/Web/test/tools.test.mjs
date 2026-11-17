@@ -160,9 +160,29 @@ test("what a row opens to", () => {
 	assert.deepEqual(kinds("mcp__x__y", { a: 1, b: 2 }), ["text", "text"]);
 	const running = T.detailFor(call("bash", { command: "make" }), "running", null, { output: "partial\n" });
 	assert.equal(running[0].output, "partial");
-	const failed = T.detailFor(call("bash", { command: "false" }), "failed", { text: "<harness>\n[error] Command exited with code 1\n</harness>" }, null);
-	assert.equal(failed[0].output, "Command exited with code 1");
+	const failed = T.detailFor(call("bash", { command: "nope" }), "failed", { text: "<harness>\n[error] Exit code 127: a command it ran was not found.\n</harness>", isError: true, details: { exitCode: 127 } }, null);
+	assert.equal(failed[0].output, "Exit code 127: a command it ran was not found.");
 	assert.equal(failed[0].failed, true);
+});
+
+test("a command's non-zero exit that is not a failure is said quietly, and one that is a failure is not (#182)", () => {
+	const grep = { command: "grep -q left /tmp/x" };
+	const exited = { text: "<harness>\n[info] Exit code 1\n</harness>", isError: false, details: { exitCode: 1 } };
+	const info = T.describe(call("bash", grep), "done", exited, null);
+	assert.equal(info.exit, "Exit code 1");
+	assert.equal(info.title, "Ran grep -q left /tmp/x · Exit code 1");
+	const [opened] = T.detailFor(call("bash", grep), "done", exited, null);
+	assert.equal(opened.output, "Exit code 1");
+	assert.equal(opened.failed, false, "its output is not drawn as a failure");
+	// Only for a command that ended with a code other than 0 and was not a failure.
+	assert.equal(T.describe(call("bash", grep), "done", { text: "x" }, null).exit, "", "exit 0 has no details");
+	assert.equal(T.describe(call("bash", grep), "done", { text: "x", details: { exitCode: 0 } }, null).exit, "");
+	assert.equal(T.describe(call("bash", grep), "failed", { text: "x", isError: true, details: { exitCode: 137, signal: "SIGKILL" } }, null).exit, "", "a failure says Failed instead");
+	assert.equal(T.describe(call("bash", grep), "running", null, { output: "" }).exit, "");
+	assert.equal(T.describe(call("bash", grep), "done", { text: "x", details: { exitCode: "1" } }, null).exit, "", "only a whole number");
+	assert.equal(T.describe(call("read", { path: "a" }), "done", { text: "x", details: { exitCode: 1 } }, null).exit, "", "only for a command");
+	// Older results, from before #182, have no exit code in their details: they keep the error they were.
+	assert.equal(T.describe(call("bash", grep), "failed", { text: "<harness>\n[error] Command exited with code 1\n</harness>", isError: true }, null).exit, "");
 });
 
 test("scheduling: one-line summaries, what a row opens to, and the approval card", () => {
