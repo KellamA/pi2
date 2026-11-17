@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### For contributors
+- **`scripts/test-copy` runs a throwaway copy of the app in one command a step.** `start <suffix> [--show <what>]` copies this checkout's development build under a bundle id, data folder and Keychain service of its own, signs it and launches it behind other windows without taking the focus, and prints the app's and the engine's process ids. `shot` captures its window only when screen capture is already allowed, and `stop` stops what it recorded, by pid, and removes the copy and everything it left. It refuses a suffix that could reach the installed copy, a release build, a suffix already in use and a pid it did not record. "A throwaway copy, step by step" in CONTRIBUTING.md now describes it; `scripts/test-test-copy` checks its refusals (#181).
+
 ## 0.7.7
 
 ### Added
