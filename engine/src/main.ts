@@ -1660,6 +1660,9 @@ sweepOften.unref();
 async function stop(): Promise<void> {
 	if (stopping) return;
 	stopping = true;
+	// Measure here, not around the signal in another process: that process may not get to run when this one exits.
+	// Scheduling delays inside this stop still count, just as they do toward the app's five-second restore deadline.
+	const began = performance.now();
 	stopLoginShell.abort(); // a shell too slow for start-up and still being listened to
 	server.close();
 	for (const client of clients) client.socket.destroy();
@@ -1671,5 +1674,6 @@ async function stop(): Promise<void> {
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
 	rmSync(runningMarker, { force: true });
+	log(`stopped cleanly in ${Math.ceil(performance.now() - began)} ms`);
 	process.exit(0);
 }
