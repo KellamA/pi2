@@ -140,10 +140,10 @@ cd engine && npm ci && cd ..
 ```
 
 ```bash
-open "app/build/pi².app"
+open "app/build/pi² dev.app"
 ```
 
-That is a development build: it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. For an app that carries its own engine and can be moved to Applications:
+That is a development build, "pi² dev": it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. It keeps its conversations, sign-ins and settings apart from an installed pi². For an app that carries its own engine and can be moved to Applications:
 
 ```bash
 ./app/build.sh release

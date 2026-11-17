@@ -17,18 +17,28 @@ cd engine && npm ci
 ```
 
 ```bash
-open "app/build/pi².app"
+open "app/build/pi² dev.app"
 ```
 
 `npm ci` also runs `engine/scripts/patch-dependencies.ts`, which fixes bugs in installed dependencies that their own releases do not have yet (each patch says what and why). If a dependency update changes a patched file, the install stops with a message: check whether the fix is still needed, then update or remove its patch.
 
 This is a development build. It runs the engine from `engine/` with the Node on your `PATH`, so engine edits take effect the next time the engine starts (**Debug › Kill Engine** restarts it), and the build only works on this machine.
 
+A development build keeps apart from a pi² installed on the same Mac, so opening one can never reach that copy's conversations, sign-ins, preferences, macOS permissions or login item:
+
+- Its bundle id is `dev.pi2.app.dev`, and it is called "pi² dev" in the Dock, Finder and the menu bar. macOS keeps its preferences, notifications and privacy permissions apart from the installed copy's (`dev.pi2.app`).
+- Its data folder is `~/Library/Application Support/pi2-dev` and its Keychain service `dev.pi2.credentials.dev`, unless `PI2_HOME` and `PI2_KEYCHAIN_SERVICE` name others. Both are named after the bundle id: a copy whose bundle id is `dev.pi2.app.test-7` uses `pi2-test-7` and `dev.pi2.credentials.test-7` (`app/Sources/pi2/DevelopmentBuild.swift`).
+- It never uses the usual data folder, `~/Library/Application Support/pi2`, or the usual Keychain service, `dev.pi2.credentials`, even when `PI2_HOME` or `PI2_KEYCHAIN_SERVICE` names them; it uses its own instead and says so in its `app.log`. That is the case more often than it sounds: every command an agent of the installed pi² runs inherits its engine's `PI2_HOME`, which names the usual folder, and `open` passes it on to the app it opens. To try a development build on your own conversations, restore a backup of them (Settings › Storage) into the development build's data folder; you sign in again there, since the sign-ins stay with the installed copy.
+- It cannot turn the login item on or off: the switch in Settings › General shows as unavailable, as in any copy on a data folder of its own.
+- It never updates itself, and it never replaces the engine it finds on its data folder: that is only done by a release build, after an update. An engine started by another development build with the same bundle id, from another checkout, is noted in `app.log` and left running.
+
 For an app that carries its own Node and engine and can be moved:
 
 ```bash
 ./app/build.sh release
 ```
+
+This makes `app/build/pi².app`, with the bundle id and the name of the release (`dev.pi2.app`, "pi²"), on the usual data folder and Keychain service unless `PI2_HOME` and `PI2_KEYCHAIN_SERVICE` say otherwise. That is the build that is released, so do not open it as built on a Mac where pi² is in use: [Testing safely](../CONTRIBUTING.md#testing-safely) says how to try one.
 
 Signed builds, the update feed and the release workflow are described in [releasing.md](releasing.md).
 
@@ -87,13 +97,13 @@ The conversation page (`app/Web/transcript`) has tests that run in Node with a s
 cd app/Web && node --test test/
 ```
 
-See [transcript.md](transcript.md). The rest of the app has no automated tests. To try a change without touching your own data, run a copy on a throwaway folder:
+See [transcript.md](transcript.md). The rest of the app has no automated tests. A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
 
 ```bash
-open -n "app/build/pi².app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.test
+open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.try
 ```
 
-On a Mac where pi² is in real use, give the copy its own bundle id as well and clean up after it: [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the steps and the rules.
+On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the steps and the rules.
 
 A development build (not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
@@ -118,9 +128,9 @@ A development build runs its engine from the checkout it was built in. If that i
 
 - Use an installed release as your everyday copy. It carries its own engine and Node, so nothing you change in a checkout reaches it.
 - Do the work in git worktrees (a conversation can move into one of its own; see [worktrees.md](worktrees.md)) or in a separate clone, never in the checkout a running development build came from.
-- Run a test copy on its own data folder (`PI2_HOME`), Keychain service (`PI2_KEYCHAIN_SERVICE`) and bundle id (change `CFBundleIdentifier` in the copy's `Info.plist`, then sign it again with `codesign --force --sign -`), so it shares no conversations, keys or macOS permissions with the copy you use. [CONTRIBUTING.md](../CONTRIBUTING.md) has the rules for testing safely.
+- Test in a development build, which shares no conversations, keys, preferences, macOS permissions or login item with the copy you use: it has a bundle id, a data folder and a Keychain service of its own, and never takes the usual ones ([Build and run](#build-and-run)). When several sessions test at once, give each copy a bundle id of its own as well (change `CFBundleIdentifier` in the copy's `Info.plist`, then sign it again with `codesign --force --sign -`); its data folder and Keychain service follow from it. [CONTRIBUTING.md](../CONTRIBUTING.md) has the rules for testing safely.
 
-`app/build.sh` deletes and rebuilds `app/build/pi².app`, so before it builds or deletes anything it looks for a running process whose executable is inside that bundle. If it finds one, it names the process and stops: deleting the bundle would pull the files out from under a running app, and the new build would lose the Accessibility and Screen Recording permissions given to the old one. Build in a worktree or clone instead, or quit that copy. `PI2_REPLACE_RUNNING=1 ./app/build.sh` replaces it anyway.
+`app/build.sh` deletes and rebuilds the bundle it makes, `app/build/pi² dev.app` (or `app/build/pi².app` for a release build), so before it builds or deletes anything it looks for a running process whose executable is inside that bundle. If it finds one, it names the process and stops: deleting the bundle would pull the files out from under a running app, and the new build would lose the Accessibility and Screen Recording permissions given to the old one. Build in a worktree or clone instead, or quit that copy. `PI2_REPLACE_RUNNING=1 ./app/build.sh` replaces it anyway. A development build also deletes a development build that an older `build.sh` left at `app/build/pi².app`, under the same check, so that nobody tries out a stale build by its old name; a release build there is left alone.
 
 ## Layout
 
