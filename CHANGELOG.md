@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### Fixed
+- An answer that called an MCP tool that changes things (one writing a file through a filesystem server, say) and read the result in the same answer could have the read run first and miss it. A call to an MCP tool its server does not mark read-only now makes the answer's calls run one at a time, in order, as commands and file edits already did. Read-only MCP tools still run side by side.
+
 ## 0.7.7
 
 ### Added
