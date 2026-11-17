@@ -50,6 +50,8 @@ jobs:
               docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
               # Changelog entries: Transcript page (tests) checks them on Linux.
               changelog.d/*) ;;
+              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
+              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook | scripts/rerun-if-no-runner) ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
               # could break that.
               app/VERSION)
@@ -100,6 +102,19 @@ jobs:
         working-directory: app
         run: node --test test-release-notes.mjs
 
+  scripts:
+    name: Scripts (tests)
+    # scripts/issue and its hook need only bash, git and jq, so they are checked on Linux (#235). Neither touches a
+    # GitHub issue: the hook's test has a stand-in gh.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: scripts/test-issue
+      - run: scripts/test-issue-hook
+
   app:
     name: App (build)
     needs: changes
@@ -108,6 +123,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+      # What scripts/test-copy refuses, in a stand-in checkout: it launches nothing. Here and not on Linux because both
+      # it and its test read and write the bundle's Info.plist with PlistBuddy, which only macOS has (#235).
+      - name: Check what scripts/test-copy refuses
+        run: scripts/test-test-copy
       - uses: actions/setup-node@v7
         with:
           node-version: 26
