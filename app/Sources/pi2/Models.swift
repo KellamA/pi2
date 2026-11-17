@@ -479,10 +479,22 @@ struct RecoveryReport: Codable, Equatable {
         let outcome: String
         let group: Int?
     }
+    /// A worktree's set-up command that was running, and what the new engine did about it. One per conversation at most.
+    struct LeftSetup: Codable, Equatable, Identifiable {
+        var id: Int { conversationId }
+        let conversationId: Int
+        let rootConversationId: Int
+        let title: String
+        let command: String
+        /// As for `LeftCommand`, but for "unknown": a set-up whose process was not noted yet counts as "gone".
+        let outcome: String
+        let group: Int?
+    }
     let at: Double
     let conversations: [Resumed]
     /// Absent from an engine older than this app.
     let background: [LeftCommand]?
+    let setups: [LeftSetup]?
 }
 
 enum AccessLevel {
