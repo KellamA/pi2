@@ -26,6 +26,9 @@ Usage: scripts/issue <command> [arguments]
   skip "why"                               Go ahead without an issue (GitHub unreachable,
                                            or the person said not to track this)
   list                                     Show open issues by status
+  audit [--since DATE]                     List what is wrong on the board; exits 1 if anything
+                                           is (changes nothing). DATE limits the check for a
+                                           missing Done summary to issues closed since then.
 EOF
 }
 
@@ -60,6 +63,10 @@ set_status() {
 	[[ -n $status ]] && args+=(--add-label "$status")
 	gh issue edit "$n" "${args[@]}" >/dev/null
 }
+
+# "audit" looks for a missing Done summary only on issues closed after this, when
+# "done" started posting its summary on issues that were closed already (#147).
+AUDIT_SINCE=2026-11-17T04:00:00Z
 
 need_number() { [[ ${1-} =~ ^[0-9]+$ ]] || die "expected an issue number, got '${1-}'"; }
 
@@ -107,8 +114,10 @@ case $cmd in
 		need_number "${1-}"
 		ensure_labels
 		state=$(gh issue view "$1" --json state -q .state)
-		[[ $state == "CLOSED" ]] && gh issue reopen "$1" >/dev/null
+		# Label it before reopening it: the issue-labels workflow puts "backlog" on
+		# an issue reopened with no status label, and would race with this.
 		set_status "$1" "in progress"
+		[[ $state == "CLOSED" ]] && gh issue reopen "$1" >/dev/null
 		gh issue edit "$1" --add-label agent --add-assignee @me >/dev/null
 		gh issue comment "$1" --body "Picked up by an agent session on branch \`$(branch)\`." >/dev/null
 		echo "[pi2-issue] working on #$1 $(gh issue view "$1" --json url -q .url)"
@@ -130,14 +139,27 @@ case $cmd in
 		sha=$(git rev-parse --short HEAD 2>/dev/null || true)
 		if [[ $cmd == done ]]; then
 			msg="**Done.** $2"$'\n\n'"Branch \`$(branch)\`${sha:+, at $sha}."
-			reason=completed
+			reason=completed api_reason=completed gh_reason=COMPLETED
 		else
 			msg="**Not going ahead.** $2"
-			reason="not planned"
+			reason="not planned" api_reason=not_planned gh_reason=NOT_PLANNED
 		fi
+		# The issue is usually closed already, by a pull request with "Fixes #N",
+		# and "gh issue close --comment" posts nothing on a closed issue. So the
+		# summary goes on as a comment of its own, first, and the issue is closed
+		# only if it is still open.
+		gh issue comment "$1" --body "$(clean "$msg")" >/dev/null
 		set_status "$1" ""
-		gh issue close "$1" --reason "$reason" --comment "$(clean "$msg")" >/dev/null
-		echo "[pi2-issue] closed #$1 ($reason)"
+		closed=$(gh issue view "$1" --json state,stateReason -q '.state + " " + (.stateReason // "")')
+		if [[ $closed == OPEN* ]]; then
+			gh issue close "$1" --reason "$reason" >/dev/null
+			echo "[pi2-issue] closed #$1 ($reason)"
+		else
+			# Closed already, perhaps for another reason: make the reason this one.
+			[[ $closed == "CLOSED $gh_reason" ]] ||
+				gh api -X PATCH "repos/{owner}/{repo}/issues/$1" -f state=closed -f state_reason="$api_reason" >/dev/null
+			echo "[pi2-issue] closed #$1 ($reason, was already closed; summary posted)"
+		fi
 		;;
 	skip)
 		[[ -n ${1-} ]] || die "say why this work is not tracked"
@@ -152,6 +174,56 @@ case $cmd in
 		echo "== other open"
 		gh issue list --state open --limit 50 --json number,title,labels \
 			-q '.[] | select([.labels[].name] | any(. == "in progress" or . == "waiting" or . == "blocked" or . == "backlog") | not) | "  #\(.number)  \(.title)"'
+		;;
+	audit)
+		since=$AUDIT_SINCE
+		while (($#)); do
+			case $1 in
+				--since) since=${2-}; shift 2 || die "--since needs a date" ;;
+				*) die "unknown option $1" ;;
+			esac
+		done
+		[[ $since =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && since+="T00:00:00Z"
+		[[ $since =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+			die "--since takes a date such as 2026-11-17, or a UTC time such as 2026-11-17T09:00:00Z"
+		issues=$(gh issue list --state all --limit 5000 \
+			--json number,state,stateReason,labels,updatedAt,closedAt)
+		# One line per problem, "<number>\t<what is wrong>", in order of number.
+		problems=$(jq -r '
+			def status: [.labels[].name | select(. == "in progress" or . == "waiting" or . == "blocked" or . == "backlog")];
+			sort_by(.number)[] |
+			(status) as $s |
+			if .state == "CLOSED" then
+				if ($s | length) > 0 then "\(.number)\tclosed, but still labelled \($s | map("\"\(.)\"") | join(" and "))" else empty end
+			else
+				if ($s | length) == 0 then "\(.number)\topen with no status label"
+				elif ($s | length) > 1 then "\(.number)\topen with \($s | length) status labels: \($s | join(", "))"
+				elif $s[0] == "in progress" and (.updatedAt | fromdateiso8601) < (now - 86400) then
+					"\(.number)\tin progress, but nothing has happened on it since \(.updatedAt)"
+				else empty end
+			end' <<<"$issues")
+		# Closed as completed by agent work since $since: it should carry the
+		# summary that "done" posts. Comments are fetched only for these.
+		candidates=$(jq -r --arg since "$since" '
+			.[] | select(.state == "CLOSED" and .stateReason == "COMPLETED"
+				and any(.labels[]; .name == "agent")
+				and .closedAt != null and (.closedAt | fromdateiso8601) >= ($since | fromdateiso8601)) |
+			.number' <<<"$issues" | sort -n)
+		for n in $candidates; do
+			summaries=$(gh issue view "$n" --json comments \
+				-q '[.comments[] | select(.body | startswith("**Done.**"))] | length')
+			if [[ $summaries == 0 ]]; then
+				problems+="${problems:+$'\n'}$n"$'\t'"closed as completed, but has no **Done.** summary"
+			fi
+		done
+		if [[ -z $problems ]]; then
+			echo "The board is in order."
+		else
+			sort -n -s -k1,1 <<<"$problems" | awk -F '\t' '{ printf "#%s  %s\n", $1, $2 }'
+			count=$(wc -l <<<"$problems" | tr -d ' ')
+			echo "$count problem$( ((count == 1)) || echo s) on the board."
+			exit 1
+		fi
 		;;
 	""|-h|--help|help) usage ;;
 	*) usage >&2; exit 1 ;;
