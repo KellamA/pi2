@@ -4,6 +4,9 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ## Unreleased
 
+### For contributors
+- **The issue hooks go by what `scripts/issue` printed, and by GitHub.** Under Claude Code, `scripts/issue-hook` now counts only the `[pi2-issue]` lines in the output of a command that ran `scripts/issue`, so a line the session merely read or printed (another session's transcript, an issue comment) no longer counts as its own issue. Before holding up the end of a turn, it asks GitHub whether the issue is still open and in progress; when GitHub does not answer, the turn ends and the person is told. See [CLAUDE.md](CLAUDE.md) (#184).
+
 ## 0.7.7
 
 ### Added
