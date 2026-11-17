@@ -57,7 +57,7 @@ Conversations, runs and tool calls are pi durable's. pi² adds a few documents o
 
 ### Approvals
 
-With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that the agent's own rules cover for the conversation's folder runs without asking; see [rules.md](rules.md).
+With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that the agent's own rules cover for the conversation's folder runs without asking; see [rules.md](rules.md). The hook decides nothing until the engine has loaded its conversations, its agents and its `PATH` (`Host.ready`): the last engine's work can be set going before then, by a feature writing into a transcript as it starts, and a call judged against agents not yet loaded would be asked about without its rule, or asked about although a rule covers it.
 
 ### Sub-chats
 
