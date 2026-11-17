@@ -9,8 +9,8 @@
 // answers carry its premium requests in their headers, which the test sets, and the stand-in can hold an answer back
 // so that a run is still going when the figures arrive. No real provider is called.
 //
-// No check depends on how fast the Mac is: each waits for what the engine does. The one time sat through is a notice's
-// window resetting, set ten seconds after the answer that names it.
+// Each check waits for what the engine does, with one exception: a notice's window resets half a minute after the answer
+// that names it, which the engine has to have read and looked at within that time. That time is then sat through.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -19,10 +19,11 @@ import { createServer } from "node:http";
 import { createServer as createTlsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { GITHUB_COPILOT_MODELS } from "@earendil-works/pi-ai/providers/github-copilot.models";
 import { KeychainCredentialStore } from "../src/credentials.ts";
 import { limitsReport, nearlyUsedUp, type ProviderLimits, resetWords, windowWords } from "../src/limits.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, PATIENT_MS, stop } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -188,7 +189,14 @@ await store.modify("github-copilot", async () => ({
 let engine = startEngine();
 try {
 	let client = await Client.connect(engine, home);
-	await client.until("Claude's windows read at start", () => client.limitsOf("anthropic")?.windows.length > 0);
+	// Read at start; and asked again until it has been, in case that first look did not get an answer in time on a busy
+	// Mac (the usage address is given six seconds, and renewing a sign-in twenty).
+	// A refresh waits for an ask under way, and sends the event before it answers.
+	for (const deadline = Date.now() + PATIENT_MS; !(client.limitsOf("anthropic")?.windows.length > 0); ) {
+		assert.ok(Date.now() < deadline, `Claude's windows never read: ${JSON.stringify(client.limitsOf("anthropic"))}\n${log}`);
+		await client.call("limits.refresh").catch(() => {});
+		if (!(client.limitsOf("anthropic")?.windows.length > 0)) await sleep(600);
+	}
 	assert.equal(client.limitsOf("anthropic").windows[0].usedPercent, 93);
 	assert.deepEqual(client.notices, [], "a window past 90% with nothing running on it is no notice");
 
@@ -250,11 +258,11 @@ try {
 	await client.tool(lead, `/continue ${sub}: still more`);
 	assert.equal(client.notices.length, 0, "a dismissed notice does not come back before the reset");
 
-	// A reading well below means the window reset: past 90% again, it is noticed again. This time its reset is ten
-	// seconds after the answer that says so, and the notice leaves the Inbox once that has passed.
+	// A reading well below means the window reset: past 90% again, it is noticed again. This time its reset is half a
+	// minute after the answer that says so, and the notice leaves the Inbox once that has passed.
 	premium = { used: 10, resets: monthReset };
 	await client.tool(lead, `/continue ${sub}: a new month`);
-	premium = { used: 92, resets: 0, resetsIn: 10_000 };
+	premium = { used: 92, resets: 0, resetsIn: 30_000 };
 	hold();
 	await client.call("submit", { id: lead, text: `/continue ${sub}: nearly out` });
 	await client.until("noticed again after the reset", () => client.notices.length === 1 && client.notices[0]!.usedPercent === 92);
@@ -281,6 +289,10 @@ try {
 	assert.ok(!log.includes("planwindows-test"), "no token in the engine's log");
 	step("a notice is kept over a restart and goes when its subscription is signed out");
 	console.log("PASS");
+} catch (error) {
+	// What the engine said, for a failure that is not plain from the check alone.
+	process.stderr.write(log);
+	throw error;
 } finally {
 	letGo();
 	await stop(engine);
