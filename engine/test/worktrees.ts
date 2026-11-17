@@ -234,6 +234,116 @@ try {
 		step("removing the worktree takes the sub-chats that worked in it back with their parent");
 	}
 
+	{
+		// delegate gives a new sub-chat a worktree of its own (#151), and sub_chats removes it once nothing would be lost.
+		const save = async (agent: Record<string, unknown>): Promise<string> => (await client.call("agents.save", { agent })).id;
+		const setupRan = join(scratch, "worker-setup");
+		const worker = await save({ name: "Worker", access: "full", cwd: project, setup: `pwd >> '${setupRan}'` });
+		const plainHelper = await save({ name: "Plain", access: "full" });
+		const auto = await save({ name: "Auto", access: "full", cwd: project, worktree: true });
+		const orchestrator = await save({ name: "Orchestrator", access: "full", delegates: [worker, plainHelper] });
+		const careful = await save({ name: "Careful", access: "ask", delegates: [worker, auto] });
+		const open = async (agentId: string, cwd: string) => {
+			const { id } = await client.call("conversation.create", { agentId });
+			await client.call("conversation.open", { id });
+			await client.call("conversation.configure", { id, cwd });
+			await client.until("conversation in its folder", () => client.conversations.get(id)?.state.agent.cwd === cwd);
+			return id as number;
+		};
+		const delegate = (id: number, args: Record<string, unknown>) => client.tool(id, `/tool delegate ${JSON.stringify(args)}`);
+		const subChatsOf = (id: number) => (client.events.library?.conversations ?? []).filter((c: Event) => c.parent === id).map((c: Event) => c.id as number);
+		const cwdOf = (id: number) => client.conversations.get(id)?.state.agent.cwd;
+		const lead = await open(orchestrator, project);
+		const head = run(project, "rev-parse", "HEAD");
+
+		const where = "/bash pwd && git branch --show-current && git rev-parse HEAD";
+		const first = await delegate(lead, { agent: "Worker", task: where, worktree: "sub-one" });
+		assert.equal(first.isError, false, first.text);
+		const one = first.details.conversationId as number;
+		await client.call("conversation.open", { id: one });
+		const oneRoot = await client.until("the sub-chat in its worktree", () => (cwdOf(one) !== project ? cwdOf(one) : undefined));
+		assert.ok(oneRoot.startsWith(join(home, "worktrees")), `made where New Worktree… makes them: ${oneRoot}`);
+		await client.until("the sub-chat's worktree tracked, for the sidebar and Branches", () => client.branch(one)?.managed === true);
+		assert.equal(client.branch(one).branch, "sub-one");
+		assert.ok(first.text.includes(oneRoot) && first.text.includes("sub-one") && first.text.includes(head), `the sub-chat worked there, from the parent's commit: ${first.text}`);
+		assert.ok(first.text.includes(`worktree of its own at ${oneRoot} on the branch sub-one`), "the answer says where it works");
+		assert.equal(cwdOf(lead), project, "the parent stays where it was");
+		assert.equal(realpathSync(readFileSync(setupRan, "utf8").trim()), realpathSync(oneRoot), "the agent's set-up command ran in it");
+		const told = await client.tool(lead, `/continue ${one}: /system`);
+		assert.ok(told.text.includes("This conversation works in a git worktree of its own") && told.text.includes("sub-one"), `continued, it is told about its worktree: ${told.text}`);
+		await client.until("continuing keeps the folder", () => cwdOf(one) === oneRoot);
+		step("delegate with worktree: the sub-chat gets a worktree of its own from the parent's commit, runs the set-up, is told, is tracked, and keeps it");
+
+		// Starting from a named ref, as the repository has it now.
+		run(project, "tag", "older", "HEAD~1");
+		const older = run(project, "rev-parse", "older^{commit}");
+		const fromTag = await delegate(lead, { agent: "Worker", task: where, worktree: "sub-two", from: "older" });
+		assert.equal(fromTag.isError, false, fromTag.text);
+		assert.ok(fromTag.text.includes(older) && fromTag.text.includes("sub-two"), `it starts from the ref: ${fromTag.text}`);
+		const two = fromTag.details.conversationId as number;
+		assert.equal((await client.until("tracked", () => client.branch(two)?.managed === true && client.branch(two))).base, "older", "merged is measured against the ref it was made from");
+
+		// When it cannot be made, the call fails with the reason and nothing is handed over.
+		const before = subChatsOf(lead).length;
+		const cases: [Record<string, unknown>, RegExp][] = [
+			[{ agent: "Worker", task: "x", worktree: "sub-three", from: "no-such-ref" }, /No worktree could be made for the sub-chat, so nothing was handed over: “no-such-ref” is not a branch, tag or commit in project/],
+			[{ agent: "Worker", task: "x", worktree: "sub-one", from: "main" }, /The branch sub-one already exists/],
+			[{ agent: "Worker", task: "x", worktree: "not a branch.." }, /cannot be a branch name/],
+			[{ agent: "Worker", task: "x", from: "main" }, /pass it with `worktree`/],
+			[{ agent: "", task: "x", chat: one, worktree: "sub-four" }, /`worktree` is for a new sub-chat/],
+		];
+		for (const [args, reason] of cases) {
+			const failed = await delegate(lead, args);
+			assert.equal(failed.isError, true, JSON.stringify(args));
+			assert.match(failed.text, reason);
+		}
+		const nowhere = await open(orchestrator, scratch);
+		const outside = await delegate(nowhere, { agent: "Plain", task: "x", worktree: "sub-five" });
+		assert.match(outside.text, /nothing was handed over: The sub-chat's folder is not in a git repository/);
+		assert.equal(subChatsOf(lead).length, before, "no sub-chat is left behind by a failed call");
+		assert.equal(subChatsOf(nowhere).length, 0);
+		step("delegate with worktree: a named ref to start from; a bad ref, a taken branch, a bad name or no repository fail the call with the reason, leaving no sub-chat");
+
+		// Without full access, the person is asked first, unless the agent handed the work gets worktrees anyway.
+		const asking = await open(careful, project);
+		const inboxFor = (id: number) => (client.events.inbox?.items ?? []).find((i: Event) => i.conversationId === id);
+		await client.call("submit", { id: asking, text: `/tool delegate ${JSON.stringify({ agent: "Worker", task: "x", worktree: "asked-first", from: "main" })}` });
+		const question = await client.until("asked before the worktree is made", () => inboxFor(asking));
+		assert.equal(question.question, "Make a git worktree on the branch asked-first, from main, for a new sub-chat with Worker.");
+		assert.equal(subChatsOf(asking).length, 0, "nothing is made while it waits");
+		await client.call("inbox.decide", { id: question.id, decision: "deny" });
+		await client.until("denied", () => !client.conversations.get(asking).state.busy && client.conversations.get(asking).items.some((i: Event) => i.kind === "tool"));
+		assert.equal(subChatsOf(asking).length, 0, "denied, nothing is made");
+		assert.ok(!run(project, "branch").includes("asked-first"));
+		await client.call("submit", { id: asking, text: `/tool delegate ${JSON.stringify({ agent: "Worker", task: "x", worktree: "asked-first" })}` });
+		await client.call("inbox.decide", { id: (await client.until("asked again", () => inboxFor(asking))).id, decision: "once" });
+		await client.until("allowed, the sub-chat is made", () => subChatsOf(asking).length === 1 && !client.conversations.get(asking).state.busy);
+		const byAuto = await delegate(asking, { agent: "Auto", task: "x", worktree: "auto-sub" });
+		assert.equal(byAuto.isError, false, byAuto.text);
+		assert.equal(inboxFor(asking), undefined, "not asked for an agent whose conversations get worktrees anyway");
+		step("delegate with worktree: asked first without full access, unless the receiving agent gets worktrees anyway");
+
+		// sub_chats says how each worktree stands, and removes one with nothing to lose when archiving, keeping its branch.
+		const dirty = (await delegate(lead, { agent: "Worker", task: "/bash echo unsaved > unsaved.txt", worktree: "sub-dirty" })).details.conversationId as number;
+		const listed = await client.tool(lead, `/tool sub_chats {"action":"list"}`);
+		assert.ok(listed.text.includes(`worktree of its own at ${oneRoot}, on the branch sub-one (made from main): nothing uncommitted, no commits that are not on main`), listed.text);
+		assert.match(listed.text, /on the branch sub-dirty \(made from main\): 1 uncommitted change/);
+		const kept = await client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "archive", chats: [one] })}`);
+		assert.match(kept.text, /was left where it is\. Nothing would be lost by removing it: pass remove_worktree: true/);
+		assert.ok(existsSync(oneRoot));
+		await client.until("listed as left behind", () => client.events.branches?.leftBehind?.some((w: Event) => w.id === one));
+		const removed = await client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "archive", chats: [one, dirty], remove_worktree: true })}`);
+		assert.equal(removed.isError, false, removed.text);
+		assert.ok(removed.text.includes(`- ${one}: already archived. Removed its worktree at ${oneRoot}; the branch sub-one is kept.`), removed.text);
+		assert.match(removed.text, /was left where it is, since it has 1 uncommitted change; the person can remove it from Branches/);
+		assert.equal(existsSync(oneRoot), false, "the worktree's folder is gone");
+		assert.ok(run(project, "branch").includes("sub-one"), "its branch is kept");
+		await client.until("no longer left behind", () => !client.events.branches?.leftBehind?.some((w: Event) => w.id === one) && client.events.branches?.leftBehind?.some((w: Event) => w.id === dirty));
+		const line = client.conversations.get(lead).items.filter((i: Event) => i.kind === "marker").at(-1).text;
+		assert.ok(line.includes("The agent removed a worktree with nothing uncommitted or unmerged; its branch sub-one is kept."), line);
+		step("sub_chats: each worktree's standing listed; archiving leaves it, or removes it on request when nothing would be lost, keeping the branch");
+	}
+
 	// An agent whose conversations each get a worktree.
 	await assert.rejects(client.call("agents.save", { agent: { name: "Builder", access: "full", cwd: scratch, worktree: true } }), /git repository/);
 	const { id: builder } = await client.call("agents.save", { agent: { name: "Builder", access: "full", cwd: project, worktree: true } });

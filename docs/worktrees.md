@@ -37,7 +37,7 @@ In an agent's settings, under **Give each conversation its own worktree**, **Set
 
 In an agent's settings, under Tools, **Give each conversation its own worktree** makes every conversation you start with that agent begin in a new worktree, made from the agent's folder, on a branch named after the agent and the conversation (`pi2/forge-12`). The agent's folder has to be in a git repository.
 
-Conversations started by a schedule, sub-chats, and forks are not given one: a fork works in the same folder as the conversation it came from, and a sub-chat usually works in its parent's (see below).
+Conversations started by a schedule, sub-chats, and forks are not given one: a fork works in the same folder as the conversation it came from, and a sub-chat usually works in its parent's, unless the agent handing it work asks for a worktree (see below).
 
 The agent's command rules for the repository hold in these worktrees too, and a rule made in one is kept for the main checkout, so the next conversation does not ask again. See [rules.md](rules.md).
 
@@ -49,9 +49,19 @@ When a conversation hands work to another agent, the sub-chat starts in the fold
 
 Continuing an earlier sub-chat keeps the folder it has. Removing a worktree moves the sub-chats working in it back with their conversation.
 
-An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, as for any archived conversation (below).
+An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, as for any archived conversation (below), unless the agent asks for it to be removed and nothing would be lost: nothing uncommitted, nothing half done, and no commits that are not on what it started from. The removal is the same as **Remove Worktree, Keep Branch**: the branch stays.
 
-The app shows such a sub-chat as working in its parent's worktree: **Branches** lists it under the conversation whose worktree it is, marked "parent's worktree", and its tooltip and branch menu name that conversation. A sub-chat can still be given a worktree of its own with **New Worktree…**: it starts from the parent's branch, and the sub-chat stops working in its parent's worktree.
+The app shows a sub-chat working in its parent's worktree as such: **Branches** lists it under the conversation whose worktree it is, marked "parent's worktree", and its tooltip and branch menu name that conversation. A sub-chat can still be given a worktree of its own with **New Worktree…**: it starts from the parent's branch, and the sub-chat stops working in its parent's worktree.
+
+### A worktree of its own, from the agent
+
+An agent handing work on can ask for the new sub-chat to get a worktree of its own: `delegate` with `worktree`, a branch name. This is for several sub-chats changing one repository at once, so each has its own branch and checkout and none disturbs the others or its parent's folder.
+
+- pi² makes it exactly as **New Worktree…** does, in the repository the sub-chat would otherwise have worked in: the same place in the data folder, the sub-chat's folder moves into it, it is told it works there, the set-up command of the agent it hands to runs, command rules hold there, and the sidebar and **Branches** show it as the sub-chat's own worktree.
+- The new branch starts from the commit the parent's folder is on, or from `from`: a branch, tag or commit as the repository has it now, such as `origin/main`. pi² does not fetch first. "Merged" is measured against what it started from. A branch that already exists is checked out as it is, unless `from` is given, which is then refused.
+- If the worktree cannot be made (not a git repository, a ref that does not exist, a branch that cannot be used), the call fails with the reason, and no sub-chat is left behind.
+- It is made without asking when the conversation handing the work on has full access, since its agent could make one with git itself, or when the agent it hands to has **Give each conversation its own worktree** on. Otherwise you are asked first, with what it would make and the task; **Always Allow Here** stops the questions for the rest of that conversation.
+- Continuing the sub-chat keeps it in its worktree. Removing it works as for any other: the sub-chat goes back to its parent's folder.
 
 ## Removing a worktree
 
