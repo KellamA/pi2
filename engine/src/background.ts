@@ -84,6 +84,13 @@ type Command = {
 	waiters: Set<() => void>;
 };
 
+/**
+ * What became of the commands the last engine left running, for the notice after it stopped unexpectedly: one each, with
+ * the conversation in the sidebar it belongs to.
+ */
+type LeftBehind = { id: string; conversationId: number; rootConversationId: number; title: string; command: string; outcome: LeftOver | "unknown"; group: number | null };
+const leftBehind: LeftBehind[] = [];
+
 /** Every command this engine knows of, running and recently ended, by id. */
 const commands = new Map<string, Command>();
 let engine: Engine | undefined;
@@ -628,6 +635,17 @@ export const background: Feature = (_host, running) => {
 								: found === "unknown"
 									? "was cut off when pi²’s engine stopped, just as it was being started. It may still be running: pi² had not yet noted its process, and so left it alone"
 									: "ended when pi²’s engine stopped";
+				const library = running.library().conversations;
+				const root = library[String(record.conversationId)]?.parent ?? record.conversationId;
+				leftBehind.push({
+					id: record.id,
+					conversationId: record.conversationId,
+					rootConversationId: root,
+					title: library[String(root)]?.title ?? "",
+					command: record.command,
+					outcome: found,
+					group: signallable(record.process?.group) ? record.process.group : null,
+				});
 				const { process: _process, ...known } = record;
 				const command: Command = { ...known, output: "", total: 0, read: 0, ended: { at: Date.now(), how, failed: true }, settled: Promise.resolve(), waiters: new Set() };
 				commands.set(record.id, command);
@@ -648,6 +666,7 @@ export const background: Feature = (_host, running) => {
 			await Promise.race([Promise.all(live.map((command) => stop(command, "was stopped when pi²’s engine stopped", SHUTDOWN_GRACE_MS))), new Promise<void>((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS + 500).unref())]);
 			for (const command of live) if (command.child !== undefined) signalGroup(command.child, "SIGKILL");
 		},
+		recovery: () => ({ background: leftBehind }),
 		greeting: () => [event()],
 		// Archiving or deleting a conversation stops what it left running, and what its sub-chats did.
 		putAwayChanged: () => {

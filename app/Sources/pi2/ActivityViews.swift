@@ -47,12 +47,14 @@ struct ActivityView: View {
 
     private func recoveryBanner(_ recovery: RecoveryReport) -> some View {
         let when = Date(timeIntervalSince1970: recovery.at / 1000).formatted(date: .omitted, time: .shortened)
+        let left = recovery.background ?? []
         return VStack(alignment: .leading, spacing: 6) {
             Label("The engine restarted after stopping unexpectedly (\(when))", systemImage: "arrow.clockwise.circle.fill")
                 .font(.callout.weight(.semibold))
-            if recovery.conversations.isEmpty {
+            if recovery.conversations.isEmpty && left.isEmpty {
                 Text("Nothing was running at the time. Everything is as it was.").font(.callout).foregroundStyle(.secondary)
-            } else {
+            }
+            if !recovery.conversations.isEmpty {
                 Text("These conversations were working and were picked up from where they stopped. A model request that was cut off is sent again; a shell command that was cut off is not run again, and its agent is told.")
                     .font(.callout).foregroundStyle(.secondary)
                 ForEach(recovery.conversations) { conversation in
@@ -62,11 +64,60 @@ struct ActivityView: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.acc)
                 }
             }
+            if !left.isEmpty {
+                Text(leftIntro(left))
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, recovery.conversations.isEmpty ? 0 : 4)
+                ForEach(left) { command in leftRow(command) }
+            }
             Button("Dismiss") { engine.perform("recovery.dismiss") }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .panel(fill: Theme.ok.opacity(0.08), border: Theme.ok.opacity(0.35))
+    }
+
+    /// What the notice says of the commands agents had left running in the background when the engine stopped.
+    private func leftIntro(_ left: [RecoveryReport.LeftCommand]) -> String {
+        let intro = left.count == 1
+            ? "An agent had left a command running in the background. It is not started again; its conversation has a line about it, and its agent is told."
+            : "Agents had left commands running in the background. None is started again; each conversation has a line about it, and its agent is told."
+        let unsure = left.contains { ["partly", "unsure", "unknown"].contains($0.outcome) }
+        return unsure ? intro + " pi² leaves alone whatever it cannot be sure belongs to a command, so part of one may still be running." : intro
+    }
+
+    /// One command the last engine left: its conversation, the command, and what became of it.
+    private func leftRow(_ left: RecoveryReport.LeftCommand) -> some View {
+        let group = left.group.map { " (process group \($0))" } ?? ""
+        let outcome: String
+        switch left.outcome {
+        case "stopped": outcome = "stopped"
+        case "partly": outcome = "stopped in part; the rest may still be running\(group)"
+        case "gone": outcome = "had already ended"
+        case "unsure", "unknown": outcome = "left alone; it may still be running\(group)"
+        default: outcome = "ended"
+        }
+        let settled = left.outcome == "stopped" || left.outcome == "gone"
+        return VStack(alignment: .leading, spacing: 1) {
+            Button(left.title.isEmpty ? "New conversation" : left.title) {
+                model.selection = .conversation(left.rootConversationId)
+            }
+            .buttonStyle(.plain).foregroundStyle(Theme.acc)
+            .lineLimit(1).truncationMode(.tail)
+            .help("Open the conversation that started it")
+            // The command is what gets cut short; what became of it keeps its size.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(left.command.split(whereSeparator: \.isNewline).joined(separator: " "))
+                    .font(Theme.mono).foregroundStyle(Theme.tx2)
+                    .lineLimit(1).truncationMode(.tail)
+                    .help(left.command)
+                Text("·").foregroundStyle(Theme.tx3)
+                Text(outcome)
+                    .font(.callout).foregroundStyle(settled ? Theme.tx2 : Theme.warn)
+                    .fixedSize()
+            }
+        }
     }
 
     /// Conversations in the sidebar that are working, plus any subagent whose parent is not itself listed.

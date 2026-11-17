@@ -465,8 +465,24 @@ struct RecoveryReport: Codable, Equatable {
         let id: Int
         let title: String
     }
+    /// A command an agent had left running in the background, and what the new engine did about it.
+    struct LeftCommand: Codable, Equatable, Identifiable {
+        /// "bg-3".
+        let id: String
+        let conversationId: Int
+        /// The conversation in the sidebar it belongs to, and its title; differs from `conversationId` for a sub-chat's command.
+        let rootConversationId: Int
+        let title: String
+        let command: String
+        /// "stopped", "partly" (what carried the run's marker was stopped, the rest left), "gone" (it had ended), "unsure"
+        /// (left alone, as pi² could not tell it was the same) or "unknown" (left alone: its process had not been noted yet).
+        let outcome: String
+        let group: Int?
+    }
     let at: Double
     let conversations: [Resumed]
+    /// Absent from an engine older than this app.
+    let background: [LeftCommand]?
 }
 
 enum AccessLevel {

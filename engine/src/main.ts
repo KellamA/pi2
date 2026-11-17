@@ -1312,9 +1312,14 @@ function activityEvent() {
 
 // ---- Recovery: what an engine that starts after a crash found and picked up
 
-type Recovery = { at: number; conversations: { id: number; title: string }[] };
+/** The conversations that were working and were picked up, and what features add (background commands, say). */
+type Recovery = { at: number; conversations: { id: number; title: string }[]; [feature: string]: unknown };
 let recovery: Recovery | null = stoppedUncleanly
-	? { at: Date.now(), conversations: [...new Set([...working].map(rootOf))].map((id) => ({ id, title: library.conversations[String(id)]?.title ?? "" })) }
+	? {
+			...Object.assign({}, ...host.features.map((feature) => feature.recovery?.() ?? {})),
+			at: Date.now(),
+			conversations: [...new Set([...working].map(rootOf))].map((id) => ({ id, title: library.conversations[String(id)]?.title ?? "" })),
+		}
 	: null;
 const recoveryEvent = () => ({ event: "recovery", recovery });
 
