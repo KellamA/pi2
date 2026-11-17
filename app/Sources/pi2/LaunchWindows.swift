@@ -11,8 +11,9 @@ import SwiftUI
 /// SwiftUI ignores the frame saved in the preferences for the main window and centres it at launch, and it does not
 /// ask `defaultWindowPlacement` for that window either. The Settings window it does place, from its saved frame,
 /// after its content is in. So this works on the `NSWindow` itself, from a view inside it: it places the window when
-/// the view comes into it, and again each time SwiftUI moves it, until the window is on screen. Done before the
-/// window shows, it never appears in the middle first.
+/// the view comes into it, and again each time SwiftUI moves it, until a second after the window is on screen. Done
+/// before the window shows, it never appears in the middle first; a window SwiftUI shows before placing it (one a
+/// `WindowGroup` opens) may, for that moment.
 enum LaunchWindows {
     @MainActor static let origin = parseOrigin(ProcessInfo.processInfo.environment["PI2_WINDOW_ORIGIN"])
     @MainActor static let behind = ["1", "true", "yes"].contains(ProcessInfo.processInfo.environment["PI2_WINDOW_BEHIND"]?.lowercased() ?? "")
@@ -37,8 +38,8 @@ enum LaunchWindows {
     }
 }
 
-/// An empty view that keeps its window where `LaunchWindows` says, from when it comes into the window until the window
-/// is on screen. A window already on screen is left where it is, or where it was moved to.
+/// An empty view that keeps its window where `LaunchWindows` says, from when it comes into the window until a second
+/// after the window is on screen. After that it is left where it is, or where it was moved to.
 private struct LaunchWindowPlacer: NSViewRepresentable {
     func makeNSView(context: Context) -> Placer { Placer() }
     func updateNSView(_ view: Placer, context: Context) {}
@@ -49,20 +50,46 @@ private struct LaunchWindowPlacer: NSViewRepresentable {
 
     final class Placer: NSView {
         private var moves: NSObjectProtocol?
+        private var shows: NSObjectProtocol?
+        /// When the window was first seen on screen. A window a `WindowGroup` opens (a background command's output) is
+        /// shown first and moved by SwiftUI just after, so a window is followed for a second after it shows.
+        private var shownAt: Date?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             stopFollowing()
+            shownAt = nil
             guard let window else { return }
             if LaunchWindows.behind { window.level = LaunchWindows.behindLevel }
-            guard LaunchWindows.topLeft != nil, !window.isVisible else { return }
+            guard LaunchWindows.topLeft != nil else { return }
             place(window)
+            if window.isVisible { shown() }
             moves = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, let window = self.window else { return }
-                    if window.isVisible { self.stopFollowing() } else { self.place(window) }
+                    if window.isVisible { self.shown() }
+                    if let shownAt = self.shownAt, Date().timeIntervalSince(shownAt) >= 1 { self.stopFollowing() } else { self.place(window) }
+                }
+            }
+            shows = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.window?.isVisible == true else { return }
+                    self.shown()
+                }
+            }
+        }
+
+        /// The window is on screen: it is followed for one more second, then left where it is.
+        private func shown() {
+            guard shownAt == nil else { return }
+            shownAt = Date()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, let window = self.window else { return }
+                    self.place(window)
+                    self.stopFollowing()
                 }
             }
         }
@@ -74,7 +101,9 @@ private struct LaunchWindowPlacer: NSViewRepresentable {
 
         func stopFollowing() {
             if let moves { NotificationCenter.default.removeObserver(moves) }
+            if let shows { NotificationCenter.default.removeObserver(shows) }
             moves = nil
+            shows = nil
         }
     }
 }

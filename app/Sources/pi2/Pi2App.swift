@@ -16,7 +16,8 @@ extension Selection {
     /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
     /// a conversation's number or title. For taking pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the
     /// agent's page at one of its sections, which the page reads for itself (`AgentSection`). "settings" and what follows
-    /// it is not about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual.
+    /// it is not about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual; so does
+    /// "output:<id>", which opens a background command's output window (`OutputLaunch`).
     init?(launch value: String?, conversations: [ConversationSummary]) {
         guard let value, !value.isEmpty else { return nil }
         switch value {
@@ -34,6 +35,23 @@ extension Selection {
                 return nil
             }
         }
+    }
+}
+
+/// The background command whose output a development build was asked to open on, in `PI2_SHOW=output:<id>`, such as
+/// `output:bg-1`. The main window opens as it would without `PI2_SHOW`. Taken once, so the window is not opened again.
+@MainActor
+enum OutputLaunch {
+    static let asked: String? = {
+        guard let value = ProcessInfo.processInfo.environment["PI2_SHOW"], value.hasPrefix("output:") else { return nil }
+        let id = String(value.dropFirst("output:".count)).trimmingCharacters(in: .whitespaces)
+        return id.isEmpty ? nil : id
+    }()
+    private static var taken = false
+
+    static func take() -> Bool {
+        defer { taken = true }
+        return asked != nil && !taken
     }
 }
 #endif
@@ -237,6 +255,23 @@ struct Pi2App: App {
         }
         .defaultSize(width: 1100, height: 780)
         .keyboardShortcut("b", modifiers: [.command, .shift])
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
+        // A background command's output, one window per command, opened from Activity, the conversation or the menu
+        // bar. Never at launch, and not brought back after a restart: the command's output does not outlast the engine.
+        WindowGroup("Background Command", id: BackgroundOutputScene.id, for: String.self) { $id in
+            Group {
+                if let id {
+                    BackgroundOutputWindow(model: model, id: id)
+                } else {
+                    Text("No command was chosen.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .tint(.piAccent)
+            .launchWindow()
+        }
+        .defaultSize(width: 760, height: 520)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
@@ -842,6 +877,12 @@ private struct WindowOpener: View {
             guard model.engine.hasLoadedLibrary, SettingsLaunch.asked != nil else { return }
             try? await Task.sleep(for: .seconds(1))
             if !Task.isCancelled, SettingsLaunch.takeWindow() { openSettings() }
+        }
+        // `PI2_SHOW=output:<id>` opens that background command's output window, the same way and as late.
+        .task(id: model.engine.hasLoadedLibrary) {
+            guard model.engine.hasLoadedLibrary, let id = OutputLaunch.asked else { return }
+            try? await Task.sleep(for: .seconds(1))
+            if !Task.isCancelled, OutputLaunch.take() { openWindow(id: BackgroundOutputScene.id, value: id) }
         }
         #endif
     }
