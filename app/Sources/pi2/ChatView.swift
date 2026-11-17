@@ -78,6 +78,7 @@ struct ChatView: View {
                 .padding(.horizontal, inset).padding(.top, 8)
             }
             BackgroundStrip(engine: engine, id: id, inset: inset)
+            WakeStrip(engine: engine, id: id, inset: inset)
             PlanStrip(engine: engine, id: id, state: state)
             if archived {
                 archivedBar

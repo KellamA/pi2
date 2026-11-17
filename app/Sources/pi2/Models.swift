@@ -458,6 +458,34 @@ struct BackgroundCommand: Codable, Equatable, Identifiable {
     let startedAt: Double
 }
 
+/// Something that will wake a conversation's agent when it ends: a sub-chat handed work without waiting, or a background
+/// command started with `wake`. Or one that has ended and waits for the agent to stop answering (docs/wakes.md).
+struct WakeItem: Codable, Equatable, Identifiable {
+    let key: String
+    /// The conversation that will be woken.
+    let conversationId: Int
+    let rootConversationId: Int
+    /// "subchat" or "background".
+    let kind: String
+    /// The sub-chat's number, or the command's id.
+    let ref: String
+    /// "sub-chat 12 “Fix login”", "background command bg-3 (`npm test`)".
+    let label: String
+    let startedAt: Double
+    /// "running", or "arrived": over, and waiting to be handed to the agent.
+    let state: String
+    var id: String { key }
+}
+
+/// Why a conversation's agent is not woken for now: "stopped" (the person's Stop), "cap" (woken too often this hour,
+/// until `until`) or "budget".
+struct WakeHold: Codable, Equatable {
+    let conversationId: Int
+    let why: String
+    let since: Double
+    let until: Double?
+}
+
 /// A background command and the output of it the engine keeps, as the person reads it (`background.output`).
 struct BackgroundOutput: Decodable, Equatable {
     struct Ended: Decodable, Equatable {

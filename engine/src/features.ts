@@ -26,6 +26,7 @@ import { reads } from "./reading.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
 import { variables } from "./variables.ts";
+import { wakes } from "./wakes.ts";
 import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
@@ -49,6 +50,8 @@ export type Engine = {
 	stateChanged(id: number): void;
 	/** Send Activity again to every app: for a change to what a feature's `activity` says. */
 	activityChanged(): void;
+	/** Why no new work may start now, in words, when today's budget is used up; undefined otherwise. */
+	overBudget(): string | undefined;
 };
 
 export type FeatureParts = {
@@ -101,6 +104,12 @@ export type FeatureParts = {
 	folderChanged?(id: number): void;
 	/** Which conversations are archived or deleted has changed; `engine.library()` already says so. */
 	putAwayChanged?(): void;
+	/** The person sent a message to a conversation. */
+	messageSent?(id: number): void;
+	/** The person stopped a conversation's agent. */
+	stopped?(id: number): void;
+	/** What was spent, or the daily budget, has been counted again: `engine.overBudget()` may say something else now. */
+	usageChanged?(): void;
 	/** The engine is stopping cleanly: stop what this feature started. The app waits a few seconds for the engine, so be quick. */
 	stopping?(): Promise<void>;
 };
@@ -129,6 +138,7 @@ export const FEATURES: Feature[] = [
 	scratch,
 	variables,
 	coauthor,
+	wakes,
 	background,
 	order,
 ];

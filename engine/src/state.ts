@@ -89,6 +89,11 @@ export type Meta = {
 	renamed?: boolean;
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
+	/**
+	 * The `delegate` call that made a sub-chat it did not wait for (`wait: false`). Such a sub-chat belongs to no call, so
+	 * that the call can end while it works; this lets the call, run again after a crash, find it rather than make another.
+	 */
+	madeBy?: string;
 };
 
 /** Index of conversations: titles, order, tool access. */

@@ -51,6 +51,9 @@ final class EngineClient {
     private(set) var activity: [ActivityRun] = []
     /// Commands agents left running in the background, oldest first.
     private(set) var backgroundCommands: [BackgroundCommand] = []
+    /// What will wake an agent when it ends, and what has and waits for it (docs/wakes.md).
+    private(set) var wakes: [WakeItem] = []
+    private(set) var wakeHolds: [WakeHold] = []
     private(set) var schedules: [Schedule] = []
     private(set) var recovery: RecoveryReport?
     private(set) var usage: UsageSummary?
@@ -359,6 +362,10 @@ final class EngineClient {
     private struct InboxEvent: Decodable { let items: [InboxItem] }
     private struct ActivityEvent: Decodable { let runs: [ActivityRun] }
     private struct BackgroundEvent: Decodable { let commands: [BackgroundCommand] }
+    private struct WakesEvent: Decodable {
+        let items: [WakeItem]
+        let held: [WakeHold]
+    }
     private struct SchedulesEvent: Decodable { let schedules: [Schedule] }
     private struct RecoveryEvent: Decodable { let recovery: RecoveryReport? }
     private struct McpEvent: Decodable { let servers: [McpServer] }
@@ -403,6 +410,10 @@ final class EngineClient {
                 activity = try decoder.decode(ActivityEvent.self, from: line).runs
             case "background":
                 backgroundCommands = try decoder.decode(BackgroundEvent.self, from: line).commands
+            case "wakes":
+                let event = try decoder.decode(WakesEvent.self, from: line)
+                wakes = event.items
+                wakeHolds = event.held
             case "schedules":
                 schedules = try decoder.decode(SchedulesEvent.self, from: line).schedules
             case "recovery":

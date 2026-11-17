@@ -33,7 +33,7 @@ import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { constants } from "node:os";
 import { join } from "node:path";
 import { isDeleted } from "./archive.ts";
-import { adopt, BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, KEEP_CHARS, startInBackground } from "./background.ts";
+import { adopt, BACKGROUND_DESCRIPTION, BACKGROUND_PARAMETER, KEEP_CHARS, startInBackground, WAKE_PARAMETER } from "./background.ts";
 import { commandEnvironment } from "./environment.ts";
 import { commandAsks } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
@@ -105,6 +105,7 @@ function parameters(limits: Limits) {
 				}),
 			),
 			background: opt(bool({ description: BACKGROUND_PARAMETER })),
+			wake: opt(bool({ description: WAKE_PARAMETER })),
 		},
 		{ open: true },
 	);
