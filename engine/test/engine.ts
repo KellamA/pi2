@@ -2220,7 +2220,7 @@ try {
 		const [cut, honoured, reader] = await Promise.all([stopped, longer, input].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
 		assert.equal(cut.isError, true, cut.text);
 		assert.ok(cut.text.includes("begun") && !cut.text.includes("never-printed"), `what it wrote before it was stopped is kept: ${cut.text}`);
-		assert.match(cut.text, /stopped after 3 seconds, the default time limit for a command\. If it needs longer, run it again with a larger `timeout`/);
+		assert.match(cut.text, /stopped after 3 seconds, the default time limit for a command\. If it needs longer, run it again with a larger `timeout` \(in seconds, up to 600\), or with `background: true`, which has no time limit/);
 		assert.equal(honoured.isError, false, honoured.text);
 		assert.ok(honoured.text.includes("finished-late"), `a larger timeout is honoured: ${honoured.text}`);
 		assert.equal(reader.isError, false, reader.text);

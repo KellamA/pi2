@@ -29,7 +29,7 @@ Listing, reading and stopping never ask. They change nothing but the commands th
 
 ## How long it runs
 
-There is no limit on how many background commands there are, or on how long one runs. The [30-minute limit](architecture.md#how-long-a-command-may-run) for a command is not for them. A call can give one a limit of its own by passing `timeout`.
+There is no limit on how many background commands there are, or on how long one runs. The [limits](architecture.md#how-long-a-command-may-run) for a command in the foreground (2 minutes, or up to 10 with `timeout`) are not for them. A call can give one a limit of its own by passing `timeout`.
 
 A background command runs until one of these:
 
