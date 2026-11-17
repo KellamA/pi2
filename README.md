@@ -112,6 +112,7 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).
 - **Fork, search, export**: branch a conversation from any answer, search everything, export to Markdown or JSON.
 - **Command palette** (⌘K) and **Quick Ask** from anywhere (⌃⌥Space).
+- **Line breaks in a message**: Return sends, and Shift-Return (or Option-Return) starts a new line, in the message field, Quick Ask, the menu bar panel and an answer to an agent's question.
 - **Backup and restore** of everything except your keys.
 - **Dark and light**, dark by default.
 
@@ -140,10 +141,10 @@ cd engine && npm ci && cd ..
 ```
 
 ```bash
-open "app/build/pi².app"
+open "app/build/pi² dev.app"
 ```
 
-That is a development build: it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. For an app that carries its own engine and can be moved to Applications:
+That is a development build, "pi² dev": it runs the engine from the `engine` folder, so keep the folder where it is, and it does not update itself. It keeps its conversations, sign-ins and settings apart from an installed pi². For an app that carries its own engine and can be moved to Applications:
 
 ```bash
 ./app/build.sh release

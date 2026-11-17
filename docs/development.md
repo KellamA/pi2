@@ -17,18 +17,28 @@ cd engine && npm ci
 ```
 
 ```bash
-open "app/build/pi².app"
+open "app/build/pi² dev.app"
 ```
 
 `npm ci` also runs `engine/scripts/patch-dependencies.ts`, which fixes bugs in installed dependencies that their own releases do not have yet (each patch says what and why). If a dependency update changes a patched file, the install stops with a message: check whether the fix is still needed, then update or remove its patch.
 
 This is a development build. It runs the engine from `engine/` with the Node on your `PATH`, so engine edits take effect the next time the engine starts (**Debug › Kill Engine** restarts it), and the build only works on this machine.
 
+A development build keeps apart from a pi² installed on the same Mac, so opening one can never reach that copy's conversations, sign-ins, preferences, macOS permissions or login item:
+
+- Its bundle id is `dev.pi2.app.dev`, and it is called "pi² dev" in the Dock, Finder and the menu bar. macOS keeps its preferences, notifications and privacy permissions apart from the installed copy's (`dev.pi2.app`).
+- Its data folder is `~/Library/Application Support/pi2-dev` and its Keychain service `dev.pi2.credentials.dev`, unless `PI2_HOME` and `PI2_KEYCHAIN_SERVICE` name others. Both are named after the bundle id: a copy whose bundle id is `dev.pi2.app.test-7` uses `pi2-test-7` and `dev.pi2.credentials.test-7` (`app/Sources/pi2/DevelopmentBuild.swift`).
+- It never uses the usual data folder, `~/Library/Application Support/pi2`, or the usual Keychain service, `dev.pi2.credentials`, even when `PI2_HOME` or `PI2_KEYCHAIN_SERVICE` names them; it uses its own instead and says so in its `app.log`. That is the case more often than it sounds: every command an agent of the installed pi² runs inherits its engine's `PI2_HOME`, which names the usual folder, and `open` passes it on to the app it opens. To try a development build on your own conversations, restore a backup of them (Settings › Storage) into the development build's data folder; you sign in again there, since the sign-ins stay with the installed copy.
+- It cannot turn the login item on or off: the switch in Settings › General shows as unavailable, as in any copy on a data folder of its own.
+- It never updates itself, and it never replaces the engine it finds on its data folder: that is only done by a release build, after an update. An engine started by another development build with the same bundle id, from another checkout, is noted in `app.log` and left running.
+
 For an app that carries its own Node and engine and can be moved:
 
 ```bash
 ./app/build.sh release
 ```
+
+This makes `app/build/pi².app`, with the bundle id and the name of the release (`dev.pi2.app`, "pi²"), on the usual data folder and Keychain service unless `PI2_HOME` and `PI2_KEYCHAIN_SERVICE` say otherwise. That is the build that is released, so do not open it as built on a Mac where pi² is in use: [Testing safely](../CONTRIBUTING.md#testing-safely) says how to try one.
 
 Signed builds, the update feed and the release workflow are described in [releasing.md](releasing.md).
 
@@ -38,7 +48,7 @@ Signed builds, the update feed and the release workflow are described in [releas
 cd engine && npm test
 ```
 
-This runs side by side the Keychain store's test, the test that commands keep their output when the engine is busy as they exit and get no input, the test that commands get the login shell's `PATH` (with stand-in shells, and a real engine started with the bare one), the test that a login shell too slow for start-up still has its `PATH` taken when it answers (stand-in shells again, and two real engines), the test that MCP servers started before that answer are started again with its `PATH` without cutting off a call (a stand-in shell, a test MCP server and a real engine), the test that an engine told to stop while it is still starting stops cleanly (a real engine held in start-up by a stand-in shell that never answers), the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), the worktrees test (which makes throwaway git repositories and has an engine make and remove worktrees in them), the background commands' test (which has an engine start, read and stop commands, stops and kills that engine with commands running, and checks that nothing it started is left), and the end-to-end test described next.
+This runs side by side the Keychain store's test, the test that every line of `engine.log` starts with its time (and that `--restore`'s output does not), the test that commands keep their output when the engine is busy as they exit and get no input, the test that commands get the login shell's `PATH` (with stand-in shells, and a real engine started with the bare one), the test that a login shell too slow for start-up still has its `PATH` taken when it answers (stand-in shells again, and two real engines), the test that MCP servers started before that answer are started again with its `PATH` without cutting off a call (a stand-in shell, a test MCP server and a real engine), the test that reconnecting, editing, removing or switching off an MCP server deals with a call running on it as [architecture.md](architecture.md#an-mcp-server-changed-while-a-call-runs-on-it) says (a test MCP server whose calls answer when the test lets them, and a real engine), the test that an engine told to stop while it is still starting stops cleanly (a real engine held in start-up by a stand-in shell that never answers), the look tools' test, the documents test, the command rules' test (which also runs the commands its rules allow through `/bin/bash`, in a folder of its own), the worktrees test (which makes throwaway git repositories and has an engine make and remove worktrees in them), the background commands' test (which has an engine start, read and stop commands, stops and kills that engine with commands running, and checks that nothing it started is left), the code mode test (which checks what a conversation is told about scripts, with a test MCP server of 40 tools, and prints the size of each section of the system prompt; see [codemode.md](codemode.md)), and the end-to-end test described next.
 
 The test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, pictures and files in messages, tools, approvals, delegation and sub-chats, reference files, computer use and the browser (each with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore. It makes the demo model type fast (`PI2_DEMO_TOKENS_PER_SECOND`); a check that needs an answer still on its way, to stop it or kill the engine in the middle of it, sends a message starting with `/slow `, which is answered at the usual pace. `npm run test:engine` runs this test alone.
 
@@ -81,19 +91,25 @@ cd app && swift build -c release --product pi2-layout-check && .build/release/pi
 
 A crash in it prints the step it happened in; `--verbose` prints every step.
 
+What Return does in a field that sends a message (`app/Sources/ComposeKit`: Return sends, Shift-Return or Option-Return starts a new line, and Return while an input method is composing is left to it) is checked by a program of its own. It checks the decision for every combination of modifier keys, then makes a SwiftUI text field as the message field is made, in a window of its own that never comes on screen, and hands key presses straight to that window: no key is posted to the system and no permission is needed. It checks that Shift-Return puts a line break at the cursor in place of the selection and the field grows, that Return sends the text with its line breaks, that Return with marked text (what an input method shows while a candidate is chosen) does not send, and that pasted line breaks are kept. Then it does the same for the answer field of a question on the conversation page, which has its own copy of the rule (`keys.js`): it loads the real page from `app/Web/transcript` in a web view that keeps nothing on disk. It cannot type with a real input method, so that is still worth trying by hand after a change there. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-compose-check && .build/debug/pi2-compose-check
+```
+
 The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page.
 
 ```bash
 cd app/Web && node --test test/
 ```
 
-See [transcript.md](transcript.md). The rest of the app has no automated tests. To try a change without touching your own data, run a copy on a throwaway folder:
+See [transcript.md](transcript.md). The rest of the app has no automated tests. A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
 
 ```bash
-open -n "app/build/pi².app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.test
+open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.try
 ```
 
-On a Mac where pi² is in real use, give the copy its own bundle id as well and clean up after it: [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the steps and the rules.
+On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the steps and the rules.
 
 A development build (not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
@@ -110,7 +126,7 @@ A development build (not a release build) also reads a few variables that help w
 
 To check a page without clicking, launch a throwaway copy with these (`open -n -g … --env PI2_SHOW=agent:<id>#rules --env PI2_DRAW_WHEN_HIDDEN=1 --env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000`) and capture its window with `screencapture -l <window id>`, taking the id from `CGWindowListCopyWindowInfo` for the copy's process. Check first that screen capture is already allowed (`CGPreflightScreenCaptureAccess()`), since capturing without it makes macOS ask.
 
-The scripted demo model answers `/bash <command>`, `/timeout <seconds> <command>` (bash with a `timeout`), `/background <command>` (bash with `background: true`; see [background.md](background.md)), `/tool <name> <json>` (any tool the conversation has, such as `/tool background {"action":"list"}`, or `/tool delegate {"agent":"Forge","task":"…","title":"Fix X","worktree":"fix-x","from":"main"}` for the parameters `/delegate` does not take), `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider.
+The scripted demo model answers `/bash <command>`, `/timeout <seconds> <command>` (bash with a `timeout`), `/background <command>` (bash with `background: true`; see [background.md](background.md)), `/tool <name> <json>` (any tool the conversation has, such as `/tool background {"action":"list"}`, or `/tool delegate {"agent":"Forge","task":"…","title":"Fix X","worktree":"fix-x","from":"main"}` for the parameters `/delegate` does not take), `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider. `/system` answers with parts of the system prompt it was sent: `/system <section> …` with those sections and the names of the tools offered, `/system sizes` with the length in characters of each section and of the tool definitions.
 
 ## Working on pi² with pi²
 
@@ -118,9 +134,9 @@ A development build runs its engine from the checkout it was built in. If that i
 
 - Use an installed release as your everyday copy. It carries its own engine and Node, so nothing you change in a checkout reaches it.
 - Do the work in git worktrees (a conversation can move into one of its own; see [worktrees.md](worktrees.md)) or in a separate clone, never in the checkout a running development build came from.
-- Run a test copy on its own data folder (`PI2_HOME`), Keychain service (`PI2_KEYCHAIN_SERVICE`) and bundle id (change `CFBundleIdentifier` in the copy's `Info.plist`, then sign it again with `codesign --force --sign -`), so it shares no conversations, keys or macOS permissions with the copy you use. [CONTRIBUTING.md](../CONTRIBUTING.md) has the rules for testing safely.
+- Test in a development build, which shares no conversations, keys, preferences, macOS permissions or login item with the copy you use: it has a bundle id, a data folder and a Keychain service of its own, and never takes the usual ones ([Build and run](#build-and-run)). When several sessions test at once, give each copy a bundle id of its own as well (change `CFBundleIdentifier` in the copy's `Info.plist`, then sign it again with `codesign --force --sign -`); its data folder and Keychain service follow from it. [CONTRIBUTING.md](../CONTRIBUTING.md) has the rules for testing safely.
 
-`app/build.sh` deletes and rebuilds `app/build/pi².app`, so before it builds or deletes anything it looks for a running process whose executable is inside that bundle. If it finds one, it names the process and stops: deleting the bundle would pull the files out from under a running app, and the new build would lose the Accessibility and Screen Recording permissions given to the old one. Build in a worktree or clone instead, or quit that copy. `PI2_REPLACE_RUNNING=1 ./app/build.sh` replaces it anyway.
+`app/build.sh` deletes and rebuilds the bundle it makes, `app/build/pi² dev.app` (or `app/build/pi².app` for a release build), so before it builds or deletes anything it looks for a running process whose executable is inside that bundle. If it finds one, it names the process and stops: deleting the bundle would pull the files out from under a running app, and the new build would lose the Accessibility and Screen Recording permissions given to the old one. Build in a worktree or clone instead, or quit that copy. `PI2_REPLACE_RUNNING=1 ./app/build.sh` replaces it anyway. A development build also deletes a development build that an older `build.sh` left at `app/build/pi².app`, under the same check, so that nobody tries out a stale build by its old name; a release build there is left alone.
 
 ## Layout
 
@@ -132,6 +148,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Web/transcript` is the conversation page the app shows in a web view; `app/Web/test` its tests. See [transcript.md](transcript.md).
 - `app/Sources/BrowserKit` is pi²'s own browser: everything that touches a web page. See [browser.md](browser.md).
 - `app/Sources/PaneKit` is the tree of panes behind the conversation area and the ready-made layouts; the app's `Workspace.swift` keeps it and draws it.
+- `app/Sources/ComposeKit` is what Return does in the fields that send a message (`sendsOnReturn`, used in place of `onSubmit`).
 
 ## Conventions
 
