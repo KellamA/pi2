@@ -253,12 +253,13 @@ private struct RunRow: View {
     }
 }
 
-/// One command left running in the background: what it is, whose it is, for how long, and Stop.
+/// One command left running in the background: what it is, whose it is, for how long, its output, and Stop.
 private struct BackgroundCommandRow: View {
     let model: AppModel
     let command: BackgroundCommand
     /// Set when Stop was pressed: the row stays until the engine says the command is gone, which can take a few seconds.
     @State private var stopping = false
+    @Environment(\.openWindow) private var openWindow
     private var engine: EngineClient { model.engine }
 
     /// The conversation that started it: a sub-chat's command names the sub-chat, and opens the conversation it belongs to.
@@ -295,6 +296,10 @@ private struct BackgroundCommandRow: View {
                     .frame(minWidth: 52, alignment: .trailing)
             }
             .fixedSize()
+            Button("Output") { openWindow(id: BackgroundOutputScene.id, value: command.id) }
+                .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
+                .fixedSize()
+                .help("Show what it has printed, as it prints it")
             Button("Open") { model.selection = .conversation(command.rootConversationId) }
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
                 .fixedSize()

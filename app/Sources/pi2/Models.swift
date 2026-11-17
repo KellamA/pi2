@@ -389,6 +389,36 @@ struct BackgroundCommand: Codable, Equatable, Identifiable {
     let startedAt: Double
 }
 
+/// A background command and the output of it the engine keeps, as the person reads it (`background.output`).
+struct BackgroundOutput: Decodable, Equatable {
+    struct Ended: Decodable, Equatable {
+        let at: Double
+        /// Worded to follow "It": "exited with code 1 after 4 seconds".
+        let how: String
+        let failed: Bool
+    }
+
+    let id: String
+    let conversationId: Int
+    let rootConversationId: Int
+    let command: String
+    let cwd: String
+    let startedAt: Double
+    let running: Bool
+    /// Asked to stop, and not yet over.
+    let stopping: Bool
+    let ended: Ended?
+    /// False for a command an engine that stopped had started: its output went with that engine.
+    let kept: Bool
+    /// Characters it has printed in all, counted as the engine counts them (UTF-16 units). The next request starts here.
+    let total: Int
+    /// Where `output` begins, counted from the first character it printed.
+    let from: Int
+    /// Characters printed after the point asked for that were not kept.
+    let dropped: Int
+    let output: String
+}
+
 /// A conversation with work in flight, as the Activity view lists it.
 struct ActivityRun: Codable, Equatable, Identifiable {
     let conversationId: Int

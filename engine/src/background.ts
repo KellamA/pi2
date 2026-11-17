@@ -41,6 +41,8 @@ const SETTLE_MS = 1_000;
 const SHUTDOWN_GRACE_MS = 1_500;
 /** The longest a read waits for new output. Stopping the run ends the wait sooner. */
 export const MAX_WAIT_SECONDS = 600;
+/** The longest a request from the app for a command's output waits for more. The app asks again when it returns. */
+export const APP_WAIT_SECONDS = 30;
 /** How many ended commands are remembered, across all conversations, for their output to be read. */
 const ENDED_KEPT = 50;
 /** How many of a conversation's ended commands its agent is reminded of. */
@@ -491,6 +493,41 @@ function standing(command: Command, now = Date.now()): string {
 
 const count = (n: number) => `${n.toLocaleString("en-US")} character${n === 1 ? "" : "s"}`;
 
+/**
+ * A command and the output of it that is kept, from character `from` on (counted from the first character it printed),
+ * for the person to read in the app. At most the last `KEEP_CHARS`: the buffer holds up to twice that before it is cut.
+ * It leaves what counts as read for the agent as it was: the person looking does not pass anything over for the agent.
+ */
+function forThePerson(command: Command, from: number) {
+	const first = command.total - command.output.length;
+	const asked = Math.min(from, command.total);
+	let begin = Math.max(asked, first, command.total - KEEP_CHARS);
+	// Never half a character: the kept output can begin in the middle of one written as two UTF-16 units, and the app's
+	// JSON reader refuses the lone half.
+	const unit = command.output.charCodeAt(begin - first);
+	if (unit >= 0xdc00 && unit <= 0xdfff) begin += 1;
+	const library = engine?.library().conversations ?? {};
+	return {
+		id: command.id,
+		conversationId: command.conversationId,
+		rootConversationId: library[String(command.conversationId)]?.parent ?? command.conversationId,
+		command: command.command,
+		cwd: command.cwd,
+		startedAt: command.startedAt,
+		running: isRunning(command),
+		stopping: isRunning(command) && command.stopping !== undefined,
+		// How it ended, worded to follow "It": "exited with code 1 after 4 seconds".
+		ended: command.ended === undefined ? null : { at: command.ended.at, how: standing(command), failed: command.ended.failed },
+		// False for a command an engine that stopped had started: its output went with that engine.
+		kept: command.child !== undefined,
+		total: command.total,
+		from: begin,
+		// Printed after `from` but let go before it could be shown.
+		dropped: Math.max(0, begin - asked),
+		output: command.output.slice(begin - first),
+	};
+}
+
 /** What the agent is told of its conversation's background commands at each request: what is running, and what ended. */
 function describeCommands(conversationId: number): string | undefined {
 	const own = [...commands.values()].filter((command) => command.conversationId === conversationId).sort((a, b) => a.startedAt - b.startedAt);
@@ -677,6 +714,35 @@ export const background: Feature = (_host, running) => {
 			}
 		},
 		handlers: {
+			/**
+			 * The person reads a command's output, from Activity or the conversation: what is kept from `from` on. With `wait`
+			 * (seconds), a request that finds nothing new waits for more output or the end, up to `APP_WAIT_SECONDS`, so the
+			 * app sees output as it arrives without asking over and over.
+			 */
+			"background.output": async (params) => {
+				const command = typeof params.id === "string" ? commands.get(idOf(params.id)) : undefined;
+				if (command === undefined) {
+					throw new Error(`pi² no longer has this command's output. While its engine runs, it keeps the output of the commands running and of the last ${ENDED_KEPT} that ended.`);
+				}
+				const from = typeof params.from === "number" && Number.isFinite(params.from) && params.from > 0 ? Math.floor(params.from) : 0;
+				const wait = typeof params.wait === "number" && Number.isFinite(params.wait) && params.wait > 0 ? Math.min(params.wait, APP_WAIT_SECONDS) : 0;
+				if (wait > 0 && isRunning(command) && command.total <= from) {
+					let waiter: (() => void) | undefined;
+					let timer: ReturnType<typeof setTimeout> | undefined;
+					try {
+						await new Promise<void>((resolve) => {
+							waiter = resolve;
+							command.waiters.add(resolve);
+							timer = setTimeout(resolve, wait * 1000);
+							timer.unref();
+						});
+					} finally {
+						clearTimeout(timer);
+						if (waiter !== undefined) command.waiters.delete(waiter);
+					}
+				}
+				return forThePerson(command, from);
+			},
 			/** The person stops one from Activity. */
 			"background.stop": async (params) => {
 				const command = typeof params.id === "string" ? commands.get(params.id) : undefined;

@@ -26,7 +26,7 @@ struct MenuBarView: View {
             }
 
             section("Running")
-            if engine.activity.isEmpty {
+            if engine.activity.isEmpty && engine.backgroundCommands.isEmpty {
                 Text("Nothing is running.").font(.callout).foregroundStyle(.secondary)
             }
             ForEach(engine.activity.filter { $0.parent == nil }) { run in
@@ -42,6 +42,23 @@ struct MenuBarView: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+            }
+            // Commands agents left running in the background: each opens its output.
+            ForEach(engine.backgroundCommands) { command in
+                Button {
+                    openWindow(id: BackgroundOutputScene.id, value: command.id)
+                    NSApp.activate()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "terminal").font(.system(size: 11)).foregroundStyle(Theme.tx2).frame(width: 16)
+                        Text(oneLine(command.command)).font(Theme.mono).lineLimit(1).truncationMode(.tail)
+                        Spacer()
+                        Text("in the background").font(.caption).foregroundStyle(Theme.tx2).fixedSize()
+                    }
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .help("Show its output: \(command.command)")
             }
 
             if let next = nextSchedule, let at = next.nextRunAt {
