@@ -6,6 +6,7 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 ### Changed
 - **An agent in a worktree of its own may start its next branch there.** Once its branch is merged, it may start a new one in the same worktree for its next pull request, rather than being told never to change branch. Branches, an agent's `sub_chats` and Remove Worktree and Branch now go by the branch the worktree is on now. A sub-chat sharing its parent's worktree still keeps to that branch.
+- **A command that reaches its time limit moves to the background.** A command an agent waits for that is still running after its two minutes (or the up to ten it asked for) now keeps running in the background instead of being stopped, so a long test suite or build does not have to start again from nothing. The agent is told it was moved and gets its id, and you see it in Activity and above the message field with its Stop button, like any background command. This happens only where starting it in the background would not have asked you: under Ask first, a command you allowed once is still stopped at its limit. A command that starts with `sleep` is stopped too.
 
 ### Fixed
 - Quitting pi² or restoring a backup could leave running a program a background command had started, when the program ignored the request to stop and the command's own shell did not (`server & wait`, say). The next start then said the command “was cut off” and that something it started might still be running. A clean stop now ends what is left of each command before the engine exits.
