@@ -33,7 +33,7 @@ It works with the models you already have: sign in with a subscription, paste an
 
 ### Run a team of agents
 
-An agent is a saved setup: a model, instructions, tools, a folder, and limits. Pick one to start a conversation.
+An agent is a saved setup: a model, instructions, tools, a folder, and limits. Pick one to start a conversation. To start from an existing setup, choose **Duplicate** in the agent's sidebar context menu or its settings, or **Duplicate agent: …** in the command palette (⌘K). Its settings open with “copy” added to the name, numbered if needed. All settings are copied, including command rules and who it can hand work to; memory notes, conversations, schedules and worktrees stay with the original. Other agents cannot hand work to the copy until you allow it in their settings. Built-in agents can be copied too.
 
 <p align="center"><img src="docs/images/welcome.png" alt="The welcome screen with four agents to choose from" width="820"></p>
 

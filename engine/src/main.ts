@@ -382,6 +382,71 @@ async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promi
 	}, context);
 }
 
+// Saving and duplicating share validation and defaults; the app never assembles a copy.
+async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?: CommandRule[]): Promise<{ id: string }> {
+	let name = typeof input?.name === "string" ? input.name.trim() : "";
+	if (input === undefined || name === "") throw new Error("Give the agent a name");
+	if (input.access !== undefined && !ACCESS_LEVELS.includes(input.access)) throw new Error(`Unknown access level: ${String(input.access)}`);
+	if (typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
+	if (input.worktree !== undefined && typeof input.worktree !== "boolean") throw new Error("worktree must be true or false");
+	if (input.setup !== undefined && typeof input.setup !== "string") throw new Error("The set-up command must be text");
+	if (typeof input.setup === "string" && input.setup.length > 4_000) throw new Error("The set-up command is too long: keep it under 4,000 characters, or put it in a script");
+	if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
+	const taken = Object.values(agents).some((other) => other.id !== input.id && other.name.toLowerCase() === name.toLowerCase());
+	if (taken && copiedRules === undefined) throw new Error(`There is already an agent called ${name}`);
+	if (input.id !== undefined && agents[input.id] === undefined) throw new Error(`Unknown agent: ${input.id}`);
+	// New identities are allocated in the commit, so two requests cannot pick the same name or id.
+	let id = input.id ?? "";
+	const previous = agents[id];
+	const agent: AgentProfile = {
+		id,
+		name,
+		description: (input.description ?? previous?.description ?? "").trim(),
+		color: input.color ?? previous?.color ?? "violet",
+		model: input.model === undefined ? (previous?.model ?? null) : input.model,
+		thinkingLevel: input.thinkingLevel === undefined ? (previous?.thinkingLevel ?? null) : input.thinkingLevel,
+		instructions: input.instructions ?? previous?.instructions ?? "",
+		access: input.access ?? previous?.access ?? "none",
+		cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
+		worktree: input.worktree ?? previous?.worktree ?? false,
+		setup: (input.setup ?? previous?.setup ?? "").trim(),
+		delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
+		maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
+		codeMode: input.codeMode ?? previous?.codeMode ?? false,
+		mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
+		files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
+		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
+		browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
+		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
+		createdAt: previous?.createdAt ?? Date.now(),
+	};
+	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
+		throw new Error("To give each conversation its own worktree, choose a folder in a git repository for the agent");
+	}
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Agents);
+		if (input.id === undefined) {
+			const base = name;
+			const taken = () => Object.values(doc.agents).some((other) => other.name.toLowerCase() === name.toLowerCase());
+			if (copiedRules !== undefined) {
+				for (let n = 2; taken(); n++) name = `${base} ${n}`;
+			} else if (taken()) throw new Error(`There is already an agent called ${name}`);
+			const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
+			// A deleted copy may still own conversations, schedules and worktrees. Never reuse its identity.
+			id = copiedRules === undefined ? slug : `${slug}-${randomUUID()}`;
+			for (let n = 2; doc.agents[id] !== undefined; n++) id = `${slug}-${n}`;
+			agent.id = id;
+			agent.name = name;
+			agent.delegates = agent.delegates.filter((other) => other !== id);
+		}
+		// Save never accepts rules from the app. Duplication alone supplies rules from the stored source.
+		const rules: CommandRule[] = JSON.parse(JSON.stringify(copiedRules ?? doc.agents[id]?.commandRules ?? []));
+		doc.agents[id] = { ...agent, commandRules: rules };
+	}, context);
+	// The agent's conversations pick up what it may now do at their next message; see syncTools.
+	return { id };
+}
+
 // ---- Rules for an agent's shell commands (rules.ts). They live on the agent, so deleting it deletes them.
 
 const sameWords = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((word, index) => word === b[index]);
@@ -1109,58 +1174,13 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 
-	"agents.save": async (params) => {
-		const input = params.agent as Partial<AgentProfile> | undefined;
-		const name = typeof input?.name === "string" ? input.name.trim() : "";
-		if (input === undefined || name === "") throw new Error("Give the agent a name");
-		if (input.access !== undefined && !ACCESS_LEVELS.includes(input.access)) throw new Error(`Unknown access level: ${String(input.access)}`);
-		if (typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
-		if (input.worktree !== undefined && typeof input.worktree !== "boolean") throw new Error("worktree must be true or false");
-		if (input.setup !== undefined && typeof input.setup !== "string") throw new Error("The set-up command must be text");
-		if (typeof input.setup === "string" && input.setup.length > 4_000) throw new Error("The set-up command is too long: keep it under 4,000 characters, or put it in a script");
-		if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
-		const taken = Object.values(agents).some((other) => other.id !== input.id && other.name.toLowerCase() === name.toLowerCase());
-		if (taken) throw new Error(`There is already an agent called ${name}`);
-		let id = input.id;
-		if (id !== undefined && agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
-		if (id === undefined) {
-			const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
-			id = slug;
-			for (let n = 2; agents[id] !== undefined; n++) id = `${slug}-${n}`;
-		}
-		const previous = agents[id];
-		const agent: AgentProfile = {
-			id,
-			name,
-			description: (input.description ?? previous?.description ?? "").trim(),
-			color: input.color ?? previous?.color ?? "violet",
-			model: input.model === undefined ? (previous?.model ?? null) : input.model,
-			thinkingLevel: input.thinkingLevel === undefined ? (previous?.thinkingLevel ?? null) : input.thinkingLevel,
-			instructions: input.instructions ?? previous?.instructions ?? "",
-			access: input.access ?? previous?.access ?? "none",
-			cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
-			worktree: input.worktree ?? previous?.worktree ?? false,
-			setup: (input.setup ?? previous?.setup ?? "").trim(),
-			delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
-			maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
-			codeMode: input.codeMode ?? previous?.codeMode ?? false,
-			mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
-			files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
-			computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
-			browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
-			schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
-			createdAt: previous?.createdAt ?? Date.now(),
-		};
-		if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
-			throw new Error("To give each conversation its own worktree, choose a folder in a git repository for the agent");
-		}
-		await harness.commit(async (tx) => {
-			const doc = await tx.doc(Agents);
-			// Rules are kept as they are now, whatever the app sent: they change only through their own requests.
-			const rules: CommandRule[] = JSON.parse(JSON.stringify(doc.agents[id]?.commandRules ?? []));
-			doc.agents[id] = { ...agent, commandRules: rules };
-		}, context);
-		// The agent's conversations pick up what it may now do at their next message; see syncTools.
+	"agents.save": async (params) => saveAgent(params.agent as Partial<AgentProfile> | undefined),
+	"agents.duplicate": async (params) => {
+		const sourceId = text(params, "id");
+		const source = agents[sourceId];
+		if (source === undefined) throw new Error(`Unknown agent: ${sourceId}`);
+		const { id } = await saveAgent({ ...structuredClone(source), id: undefined, name: `${source.name} copy` }, structuredClone(source.commandRules ?? []));
+		for (const feature of host.features) await feature.agentDuplicated?.(sourceId, id);
 		return { id };
 	},
 	"agents.delete": async (params) => {
