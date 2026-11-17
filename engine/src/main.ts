@@ -740,7 +740,10 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"conversation.rename": async (params) => {
 		const conv = await conversation(params.id);
 		const title = text(params, "title").trim().slice(0, 120);
-		await editMeta(conv.id, (meta) => void (meta.title = title));
+		await editMeta(conv.id, (meta) => {
+			meta.title = title;
+			meta.renamed = true;
+		});
 		return {};
 	},
 	"conversation.fork": async (params) => {

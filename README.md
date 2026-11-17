@@ -37,7 +37,7 @@ An agent is a saved setup: a model, instructions, tools, a folder, and limits. P
 
 <p align="center"><img src="docs/images/welcome.png" alt="The welcome screen with four agents to choose from" width="820"></p>
 
-Agents can hand work to each other. Each handoff opens a sub-chat under the conversation that started it, so you can watch an orchestrator's helpers work, open any of them, and talk to them directly. The orchestrator can archive its finished sub-chats itself, so the sidebar shows the work still going.
+Agents can hand work to each other. Each handoff opens a sub-chat under the conversation that started it, so you can watch an orchestrator's helpers work, open any of them, and talk to them directly. The orchestrator names each sub-chat for what it is doing, can give each one a git worktree and branch of its own, and archives the finished ones itself, so the sidebar shows the work still going.
 
 <p align="center"><img src="docs/images/orchestration.png" alt="An agent hands two tasks to other agents and writes a plan from their answers" width="820"></p>
 

@@ -74,6 +74,8 @@ export type Meta = {
 	agentId?: string;
 	/** Tools the person chose "always allow" for in this conversation. */
 	autoApprove?: string[];
+	/** The person gave it its title themselves: an agent continuing it as a sub-chat does not rename it (extensions.ts). */
+	renamed?: boolean;
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
 };

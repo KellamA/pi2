@@ -268,6 +268,7 @@ try {
 		assert.ok(first.text.includes(oneRoot) && first.text.includes("sub-one") && first.text.includes(head), `the sub-chat worked there, from the parent's commit: ${first.text}`);
 		assert.ok(first.text.includes(`worktree of its own at ${oneRoot} on the branch sub-one`), "the answer says where it works");
 		assert.equal(cwdOf(lead), project, "the parent stays where it was");
+		assert.equal((client.events.library?.conversations ?? []).find((c: Event) => c.id === one)?.title, "Worker: sub-one", "without a title, it is named after its branch");
 		assert.equal(realpathSync(readFileSync(setupRan, "utf8").trim()), realpathSync(oneRoot), "the agent's set-up command ran in it");
 		const told = await client.tool(lead, `/continue ${one}: /system`);
 		assert.ok(told.text.includes("This conversation works in a git worktree of its own") && told.text.includes("sub-one"), `continued, it is told about its worktree: ${told.text}`);
