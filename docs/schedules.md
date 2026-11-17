@@ -6,6 +6,8 @@ An agent asked to "check this every morning" or "look again in two hours" can se
 
 Per agent, and **off by default**. In the agent's settings, under Schedules: "Can schedule its own work". With it off the agent has no scheduling tools and nothing about them in its prompt. Turning it on or off reaches the agent's existing conversations at their next message, like the agent's other settings.
 
+A sub-chat, where another agent handed the agent a task, has neither the tools nor the section, whatever the switch says (#177). Its work is that one task, and the sub-chat is archived once it reports, so setting its own future work is not its to do; the conversation that handed it the work has the tools if its own agent may schedule. A conversation the person starts, and a scheduled run, have them.
+
 Turning it off takes the tools away. Schedules the agent already set, which the person approved, keep running until the person turns them off or deletes them in Activity.
 
 ## What the agent can do
@@ -22,7 +24,8 @@ Three tools, and a short prompt section, `scheduling`.
 
 What it cannot do:
 
-- Schedule another agent. A schedule always runs as the agent whose conversation set it (in a sub-chat, the agent the work was handed to).
+- Schedule another agent. A schedule always runs as the agent whose conversation set it.
+- Schedule anything from a sub-chat (above).
 - Cancel or change a schedule the person made. It is refused with a plain message saying the person can turn it off or delete it in Activity. A schedule the agent set that the person has since moved to another agent counts as the person's.
 - Change a schedule. To change one it cancels it and asks for a new one, which is asked about again.
 

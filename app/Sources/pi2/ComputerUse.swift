@@ -200,7 +200,7 @@ struct ComputerUseSection: View {
                 }
                 HStack {
                     Button("Add Apps…") { add() }
-                    if settings.apps.isEmpty { Text("Until you add an app, there is nothing the agent can use.").foregroundStyle(.secondary) }
+                    if settings.apps.isEmpty { Text("Until you add an app, the agent is not given computer use at all.").foregroundStyle(.secondary) }
                 }
                 if let refused { Text(refused).font(.callout).foregroundStyle(Theme.warn) }
                 Toggle("Ask before each action", isOn: $settings.ask)

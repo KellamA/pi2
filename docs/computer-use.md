@@ -6,7 +6,7 @@ An agent with computer use on can see and work the apps you choose, one window a
 
 ## Turning it on
 
-1. Open an agent and scroll to **Computer use**. Switch it on and add the apps it may use.
+1. Open an agent and scroll to **Computer use**. Switch it on and add the apps it may use. Until there is at least one app, the agent is not given the computer tool or anything about it in its prompt, since it could do nothing with it (#177). The tool comes with the first app you add, and goes again if you remove the last one.
 2. Press **Grant…** next to Accessibility. macOS opens System Settings; switch pi² on there. Do the same for Screen Recording if you want the agent to get pictures. Reopen pi² afterwards.
 3. Ask the agent to do something in one of those apps. Conversations it already has pick up the change at their next message.
 
