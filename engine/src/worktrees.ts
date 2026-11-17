@@ -24,7 +24,7 @@ import type { Feature } from "./features.ts";
 import type { MadeWorktree } from "./rules.ts";
 import type { AgentProfile } from "./state.ts";
 import { stopCommandsIn } from "./background.ts";
-import { type LeftOver, leftOverLog, newRunMarker, noteProcess, RUN_VARIABLE, type RunProcess, stopLeftOver } from "./processes.ts";
+import { type LeftOver, leftOverLog, newRunMarker, noteProcess, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** A worktree pi² made for a conversation. */
 export type Worktree = {
@@ -389,6 +389,11 @@ export const worktrees: Feature = (_host, engine) => {
 	 * what they have printed so far, which the conversation's state carries while they run.
 	 */
 	const setups = new Map<number, { run: string; child: ChildProcess; output(): string; stop(reason: string): void; settled: Promise<void> }>();
+	/**
+	 * The set-ups the last engine had running, and what became of each, for the notice after it stopped unexpectedly: with
+	 * the conversation in the sidebar each belongs to.
+	 */
+	const cutOff: { conversationId: number; rootConversationId: number; title: string; command: string; outcome: LeftOver; group: number | null }[] = [];
 
 	const event = () => ({ event: "branches", conversations: last, leftBehind });
 
@@ -749,6 +754,16 @@ export const worktrees: Feature = (_host, engine) => {
 							: found === "unsure"
 								? `was cut off when pi²’s engine stopped. Something it started may still be running (process group ${left?.group}), and was left alone because pi² could not be sure it belongs to this set-up`
 								: "was cut off when pi²’s engine stopped";
+				const library = engine.library().conversations;
+				const root = library[key]?.parent ?? Number(key);
+				cutOff.push({
+					conversationId: Number(key),
+					rootConversationId: root,
+					title: library[String(root)]?.title ?? "",
+					command: was.command,
+					outcome: found,
+					group: signallable(left?.group) ? left.group : null,
+				});
 				const setup: Setup = { ...was, status: "failed", reason };
 				await recordSetup(Number(key), setup);
 				await noteSetup(Number(key), setup);
@@ -764,6 +779,7 @@ export const worktrees: Feature = (_host, engine) => {
 			timer.unref?.();
 			void refresh();
 		},
+		recovery: () => ({ setups: cutOff }),
 		greeting: () => [event()],
 		// A set-up command running in the conversation's worktree, with the end of what it has printed so far.
 		state: (view) => {
