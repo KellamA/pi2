@@ -19,10 +19,14 @@ public struct ComputerRequest: Sendable {
     public var image: Bool
     /// Whose view of the window this is: control numbers belong to one conversation's latest look at one app.
     public var conversationId: Int
+    /// Whether the agent may use throwaway test copies of pi², which are then listed, and acted on once `TestCopy`
+    /// finds the running one really is one.
+    public var testCopies: Bool
 
     public init(
         action: String, of: String? = nil, app: String? = nil, apps: [String] = [], element: Int? = nil, x: Double? = nil, y: Double? = nil,
-        text: String? = nil, dy: Int? = nil, count: Int? = nil, path: String? = nil, image: Bool = true, conversationId: Int = 0
+        text: String? = nil, dy: Int? = nil, count: Int? = nil, path: String? = nil, image: Bool = true, conversationId: Int = 0,
+        testCopies: Bool = false
     ) {
         self.action = action
         self.of = of
@@ -37,6 +41,7 @@ public struct ComputerRequest: Sendable {
         self.path = path
         self.image = image
         self.conversationId = conversationId
+        self.testCopies = testCopies
     }
 }
 
@@ -72,7 +77,8 @@ public enum ComputerPolicy {
     ]
 
     /// pi² itself, where an agent could approve its own requests: never usable. A copy under another bundle id that starts
-    /// with this one, such as a throwaway test build, is look-only, so an agent working on pi² can check a change by looking.
+    /// with this one, such as a throwaway test build, is look-only, so an agent working on pi² can check a change by looking;
+    /// an agent allowed test copies may also act in one that `TestCopy` finds is one.
     static let pi2 = "dev.pi2.app"
 
     // macOS finds an app by its bundle id without regard to case, so every comparison here ignores it too: otherwise
