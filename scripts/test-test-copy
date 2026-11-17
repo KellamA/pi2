@@ -85,6 +85,10 @@ expect "--show needs what to open on" start test-8 --show
 # --welcome is an option of start's, taking no value: the option after it is still read, and refused.
 expect "unknown option --bogus" start test-8 --welcome --bogus
 expect "unknown option --bogus" start test-8 --show inbox --welcome --bogus
+expect "--menu needs the label" start test-8 --menu
+expect "--menu needs the label" start test-8 --menu ""
+expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
+expect "unknown option --bogus" start test-8 --menu "Fix the login bug" --bogus
 rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 
 expect "no copy named test-7 was started from this checkout" stop test-7
@@ -110,6 +114,27 @@ elif ! grep -qF "printf '{\n\t\"onboarded\": true\n}\n' >\"\$DATA/settings.json\
 	failures=$((failures + 1))
 else
 	echo "ok: test-copy start marks the welcome done as the engine reads it"
+fi
+
+# start --menu prints the file the app writes for PI2_MENU, by a name each keeps for itself.
+sources="$(dirname -- "$script")/../app/Sources/pi2"
+if ! grep -qxF 'MENU_FILE=context-menu.txt' "$script" ||
+	! grep -qF 'static let fileName = "context-menu.txt"' "$sources/LaunchPreviews.swift"; then
+	echo "FAIL: test-copy's MENU_FILE and the app's ContextMenuPreview.fileName are no longer both context-menu.txt"
+	failures=$((failures + 1))
+else
+	echo "ok: test-copy start --menu reads the file the app writes"
+fi
+
+# Every context menu in the app can be listed by PI2_MENU only if it is made with .contextMenu(previewAs:), which
+# LaunchPreviews.swift turns into the plain one. A plain .contextMenu elsewhere is one a test copy cannot show.
+plain=$(grep -rn --include='*.swift' -E '\.contextMenu[[:space:]]*(\{|\()' "$sources" | grep -v '\.contextMenu(previewAs:' | grep -v '/LaunchPreviews\.swift:' || true)
+if [[ -n $plain ]]; then
+	echo "FAIL: a context menu made with plain .contextMenu, which PI2_MENU cannot list; use .contextMenu(previewAs: <label>):"
+	echo "${plain//"$sources/"/  }"
+	failures=$((failures + 1))
+else
+	echo "ok: every context menu in the app is made with .contextMenu(previewAs:)"
 fi
 
 out=$("$copy" status 2>&1)
