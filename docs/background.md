@@ -67,7 +67,7 @@ Stopping sends the command and everything it started a request to end (SIGTERM),
 
 In the conversation:
 
-- Starting one is a row like any command's: "Started `npm run dev` in the background", with its id. It opens to the command and what it had printed when the call returned.
+- Starting one is a row like any command's: "Started `npm run dev` in the background", with its id. A foreground command moved at its time limit reads "Ran `npm test`, moved to the background as bg-4". Each opens to the command and what it had printed when the call returned.
 - Reading and stopping are rows of their own: "Read the output of `npm run dev`", "Stopped `npm run dev`". They open to what the agent was given.
 - A command that is over by the time the call that started it returns shows there: the row is marked failed if it exited with an error, and opens to what it printed.
 - Any other end that the agent did not ask for gets a line of its own in the conversation, like the one for a context reset: "Background command bg-2 exited with code 1: npm run dev", "… was stopped by the person: …", "… was stopped because the conversation was archived: …". So does an end the command came to by itself that took something it had left running with it: "… finished, and what it had left running was stopped with it: …". A stop is never worded that way, since a stop was meant for everything the command started.
