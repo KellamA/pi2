@@ -765,6 +765,11 @@
 			note.setAttribute("data-nocopy", "");
 			head.appendChild(note);
 		}
+		// A command's exit code that is not a failure (#182): said, in a quiet colour, and the row stays closed.
+		if (info.exit) {
+			head.appendChild(document.createTextNode(" "));
+			head.appendChild(el("span", "tool-status exited", info.exit));
+		}
 		// A failed set-up already says so where its line starts.
 		if (status === "failed" && call.name !== "pi2_setup") {
 			head.appendChild(document.createTextNode(" "));

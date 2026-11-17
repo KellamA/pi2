@@ -379,10 +379,11 @@
 	 * "failed", or "none" (no result and none coming: the run stopped first). `names` carries what only the app knows:
 	 * `mcp` (tool name to "Server: tool") and `apps` (bundle ID to app name).
 	 *
-	 * Returns `{ glyph, label, stats, title, note }`: `label` is a list of `{text, style}` pieces for the one line,
-	 * `stats` a short figure after it, `title` the line as plain text for tooltips and VoiceOver, and `note` pieces for
-	 * a quiet remark after it (which rule let a command run without asking), empty when there is none. What the chevron
-	 * opens is `detailFor`'s.
+	 * Returns `{ glyph, label, stats, title, note, exit }`: `label` is a list of `{text, style}` pieces for the one line,
+	 * `stats` a short figure after it, `title` the line as plain text for tooltips and VoiceOver, `note` pieces for
+	 * a quiet remark after it (which rule let a command run without asking), empty when there is none, and `exit` a
+	 * command's non-zero exit code when that is not a failure ("Exit code 1"), or "". What the chevron opens is
+	 * `detailFor`'s.
 	 */
 	function describe(call, status, result, live, names = {}) {
 		const args = isObject(call.arguments) ? call.arguments : {};
@@ -606,8 +607,21 @@
 		}
 		// A set-up that failed says how in its label.
 		const note = toolName === "pi2_setup" ? [] : ruleNote(details);
-		const title = label.map((piece) => piece.text).join("") + (stats ? " " + stats : "") + (note.length > 0 ? " (" + note.map((piece) => piece.text).join("") + ")" : "");
-		return { glyph, label, stats, title, note };
+		const exit = exitNote(toolName, status, args, details);
+		const title =
+			label.map((piece) => piece.text).join("") + (stats ? " " + stats : "") + (note.length > 0 ? " (" + note.map((piece) => piece.text).join("") + ")" : "") + (exit ? " " + String.fromCharCode(0xb7) + " " + exit : "");
+		return { glyph, label, stats, title, note, exit };
+	}
+
+	/**
+	 * "Exit code 1" for a command that ended by itself with a code other than 0 and is not a failure (the engine's
+	 * `details.exitCode`, #182): a `grep` that found nothing, checks still pending. Empty otherwise. A failed one (not
+	 * found, ended by a signal) says so in red instead, and its output says why.
+	 */
+	function exitNote(toolName, status, args, details) {
+		if ((toolName !== "bash" && toolName !== "powershell") || status !== "done" || args.background === true || !isObject(details)) return "";
+		const code = details.exitCode;
+		return Number.isInteger(code) && code !== 0 ? "Exit code " + code : "";
 	}
 
 	/**

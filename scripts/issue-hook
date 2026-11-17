@@ -6,12 +6,17 @@
 #                     main one or a worktree), until the session has an issue
 #                     in progress for the work. "This repository" is the one
 #                     this script is in, wherever the session's folder is.
-#   issue-hook stop   Stop: if the session left an issue marked in progress, ask
-#                     the agent once to close it or say what it is waiting on.
+#   issue-hook stop   Stop: if the session left an issue marked in progress, and
+#                     GitHub says it is still open and in progress, ask the
+#                     agent once to close it or say what it is waiting on.
 #
 # The session's issues are found by reading the "[pi2-issue] ..." lines that
-# scripts/issue printed into this session's transcript. Set PI2_ISSUES=off to
-# turn both checks off.
+# scripts/issue printed for this session: the output of a shell call, the
+# agent's or the person's ("!" in Claude Code), whose command runs
+# scripts/issue. The same line anywhere else in the transcript (a file, a log or
+# another session's transcript the agent printed, an issue comment it read) is
+# only quoted, and does not count (#184). Set PI2_ISSUES=off to turn both checks
+# off.
 
 set -uo pipefail
 
@@ -25,12 +30,44 @@ transcript=$(jq -r '.transcript_path // empty' <<<"$input")
 # Sub-agents work for a parent session, which owns the issue.
 [[ -n $(jq -r '.agent_id // empty' <<<"$input") ]] && exit 0
 
+# Prints what scripts/issue printed for this session, in the order it printed
+# it. The transcript is Claude Code's: one JSON object a line. An agent's shell
+# call is a "tool_use" part named Bash in an assistant line, and what it printed
+# is the "tool_result" part with its id in a later user line, as a string or as
+# text parts. A command the person runs with "!" is a user line holding
+# <bash-input>, then one holding <bash-stdout>. A command runs scripts/issue
+# when the script's path is in command position: at the start, or after ; & |
+# ( or a line break, with any folder in front (./, "$CLAUDE_PROJECT_DIR"/).
+# `cat scripts/issue` does not run it. grep keeps jq to the few lines that can
+# matter, since a transcript can be over 100 MB.
+issue_output() {
+	[[ -f $transcript ]] || return 0
+	grep -F -e 'scripts/issue' -e '[pi2-issue]' -e '<bash-input>' -e '<bash-stdout>' "$transcript" |
+		jq -Rnr '
+			def runs_issue: test("(^|[;&|(\\n])[[:space:]]*([^[:space:];&|()<>]*/)?scripts/issue[\"'\'']?([[:space:];&|)]|$)");
+			def text: if type == "string" then . elif type == "array" then [.[] | select(.type? == "text") | .text | strings] | join("\n") else "" end;
+			foreach (inputs | fromjson? | objects) as $e ({ids: {}, bang: false, out: []};
+				.out = [] |
+				($e.message.content? // null) as $c |
+				if $e.type == "assistant" and ($c | type) == "array" then
+					reduce ($c[] | objects | select(.type == "tool_use" and .name == "Bash" and (.input.command? | strings | runs_issue)) | .id | strings) as $id (.; .ids[$id] = true)
+				elif $e.type == "user" and ($c | type) == "string" then
+					if ($c | startswith("<bash-input>")) then .bang = ($c | ltrimstr("<bash-input>") | split("</bash-input>")[0] | runs_issue)
+					elif ($c | startswith("<bash-stdout>")) and .bang then .out = [$c | ltrimstr("<bash-stdout>") | split("</bash-stdout>")[0]] | .bang = false
+					else .bang = false end
+				elif $e.type == "user" and ($c | type) == "array" then
+					.ids as $ids | .out = [$c[] | objects | select(.type == "tool_result" and $ids[.tool_use_id | strings] == true) | .content | text]
+				else . end;
+				.out[])' 2>/dev/null
+}
+
 # Prints "<number> <state>" for each issue this session touched, where state is
 # the last thing that happened to it: active, paused or closed. A "skipped"
-# line counts as an active pseudo-issue numbered 0.
+# line counts as an active pseudo-issue numbered 0. Only a line scripts/issue
+# printed at the start of a line counts.
 session_issues() {
-	[[ -f $transcript ]] || return 0
-	grep -oE '\[pi2-issue\] (opened|working on|paused|closed) #[0-9]+|\[pi2-issue\] skipped' "$transcript" |
+	issue_output |
+		grep -oE '^\[pi2-issue\] (opened|working on|paused|closed) #[0-9]+|^\[pi2-issue\] skipped' |
 		awk '
 			/skipped/ { state["0"] = "active"; order["0"] = NR; next }
 			{
@@ -71,6 +108,51 @@ physical() (
 	done
 	printf '%s\n' "${path:-/}"
 )
+
+# Prints the folder this script is in, with links resolved: the repository it
+# is in is "this repository", whatever the session's folder is.
+hook_dir() {
+	local self=${BASH_SOURCE[0]}
+	[[ $self == */* ]] || self=./$self
+	physical "${self%/*}/."
+}
+
+# Asks GitHub about issue $1 and prints "in progress" if it is open and
+# labelled so, or "other" if it is closed or has another status (it was closed
+# by a merged pull request, or another session changed it). Prints nothing, and
+# fails, when GitHub gives no answer in PI2_ISSUES_GH_SECONDS (10 by default):
+# no gh, no network, no sign-in, no such issue. gh runs in this repository's
+# folder, so it asks about this repository's issues, and its answer goes to a
+# file rather than a pipe, so that a gh stopped at the limit cannot keep the
+# hook waiting. It is polled rather than watched by a sleeping process, so
+# nothing is left behind.
+ask_github() {
+	local dir out pid status=1 ticks limit=${PI2_ISSUES_GH_SECONDS:-10}
+	[[ $limit =~ ^[0-9]+$ ]] || limit=10
+	command -v gh >/dev/null || return 1
+	dir=$(hook_dir) || return 1
+	out=$(mktemp) || return 1
+	(cd -- "$dir" && exec gh issue view "$1" --json state,labels) >"$out" 2>/dev/null </dev/null &
+	pid=$!
+	for ((ticks = limit * 10; ticks > 0; ticks--)); do
+		kill -0 "$pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	if kill -0 "$pid" 2>/dev/null; then
+		kill "$pid" 2>/dev/null
+		wait "$pid" 2>/dev/null
+	else
+		wait "$pid"
+		status=$?
+	fi
+	if ((status == 0)); then
+		jq -er 'if .state == "OPEN" and any(.labels[]?; .name == "in progress") then "in progress"
+			elif .state == "OPEN" or .state == "CLOSED" then "other" else empty end' "$out" 2>/dev/null
+		status=$?
+	fi
+	rm -f "$out"
+	return "$status"
+}
 
 deny() {
 	jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
@@ -113,9 +195,7 @@ case $mode in
 		# none, and still edit files here. git gives that folder relative to
 		# where it was asked in the main checkout and as it was recorded in a
 		# worktree, hence physical.
-		self=${BASH_SOURCE[0]}
-		[[ $self == */* ]] || self=./$self
-		here=$(physical "${self%/*}/.") || exit 0
+		here=$(hook_dir) || exit 0
 		mine=$(git -C "$here" rev-parse --git-common-dir 2>/dev/null) || exit 0
 		[[ $theirs == /* ]] || theirs=$dir/$theirs
 		[[ $mine == /* ]] || mine=$here/$mine
@@ -133,8 +213,30 @@ case $mode in
 		;;
 	stop)
 		[[ $(jq -r '.stop_hook_active // false' <<<"$input") == true ]] && exit 0
-		open=$(session_issues | awk '$2 == "active" && $1 != "0" { printf "%s#%s", sep, $1; sep = ", " }')
-		[[ -n $open ]] || exit 0
+		active=$(session_issues | awk '$2 == "active" && $1 != "0" { print $1 }')
+		[[ -n $active ]] || exit 0
+
+		# The transcript says what this session last did, not what has happened
+		# since: a merged pull request closes an issue, and another session may
+		# have finished or paused it. So GitHub is asked, and only an issue still
+		# open and in progress there holds up the turn. One that cannot be checked
+		# does not: blocking on what the transcript says could have the agent post
+		# a false summary on an issue that is closed, and with GitHub out of reach
+		# the agent could not update the issue anyway. The person is told instead.
+		open='' unknown=''
+		for n in $active; do
+			if state=$(ask_github "$n"); then
+				[[ $state == "in progress" ]] && open+="${open:+, }#$n"
+			else
+				unknown+="${unknown:+, }#$n"
+			fi
+		done
+		if [[ -z $open ]]; then
+			[[ -n $unknown ]] || exit 0
+			message="This session left $unknown marked in progress, but GitHub could not be asked whether it still is, so the turn ended without asking for its status. Check it with scripts/issue list."
+			jq -n --arg m "$message" '{systemMessage: $m}'
+			exit 0
+		fi
 		reason="Before ending the turn, update $open, still marked in progress: scripts/issue done N \"<what changed and what was verified>\" if the work is finished; scripts/issue wait N \"<what you need from the person>\" if it waits on them; scripts/issue block N \"<why>\" if it is stuck. Then end the turn as you meant to."
 		jq -n --arg r "$reason" '{decision: "block", reason: $r}'
 		;;

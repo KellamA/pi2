@@ -48,12 +48,80 @@ cp "$source_hook" "$R/elsewhere/issue-hook" # a copy in no repository
 
 hook=$repo/scripts/issue-hook       # the hook of the project the session is in
 
+# Transcript lines as Claude Code writes them, one JSON object a line.
+# call <id> <command>: the agent runs a shell command.
+call() {
+	jq -cn --arg id "$1" --arg c "$2" '{type: "assistant", message: {role: "assistant",
+		content: [{type: "tool_use", id: $id, name: "Bash", input: {command: $c, description: "x"}}]}}'
+}
+# result <id> <output>: what it printed, as a string; result_parts as text parts.
+result() {
+	jq -cn --arg id "$1" --arg o "$2" '{type: "user", message: {role: "user",
+		content: [{type: "tool_result", tool_use_id: $id, content: $o, is_error: false}]},
+		toolUseResult: {stdout: $o, stderr: "", interrupted: false}}'
+}
+result_parts() {
+	jq -cn --arg id "$1" --arg o "$2" '{type: "user", message: {role: "user",
+		content: [{type: "tool_result", tool_use_id: $id, content: [{type: "text", text: $o}]}]}}'
+}
+# read_file <id> <path>: the agent calls another tool, here Read.
+read_file() {
+	jq -cn --arg id "$1" --arg p "$2" '{type: "assistant", message: {role: "assistant",
+		content: [{type: "tool_use", id: $id, name: "Read", input: {file_path: $p}}]}}'
+}
+# says <text>: the agent writes text; asks <text>: the person does.
+says() { jq -cn --arg t "$1" '{type: "assistant", message: {role: "assistant", content: [{type: "text", text: $t}]}}'; }
+asks() { jq -cn --arg t "$1" '{type: "user", message: {role: "user", content: $t}}'; }
+# bang <command> <output>: the person runs a command with "!".
+bang() {
+	jq -cn --arg c "$1" '{type: "user", message: {role: "user", content: ("<bash-input>" + $c + "</bash-input>")}}'
+	jq -cn --arg o "$2" '{type: "user", message: {role: "user",
+		content: ("<bash-stdout>" + $o + "</bash-stdout><bash-stderr></bash-stderr>")}}'
+}
+
+take7='[pi2-issue] working on #7 https://example.invalid/7'
+wait7='[pi2-issue] paused #7 (waiting)'
+# Another session's transcript, as an agent might print it: the line is there
+# both inside its JSON and on a line of its own.
+other='{"type":"user","message":{"content":[{"type":"tool_result","content":"[pi2-issue] working on #7 https://example.invalid/7"}]}}
+[pi2-issue] working on #7 https://example.invalid/7'
+
 : >"$R/none.jsonl"
-printf '%s\n' '{"text":"[pi2-issue] working on #7 https://example.invalid/7"}' >"$R/active.jsonl"
-printf '%s\n' '{"text":"[pi2-issue] working on #7 https://example.invalid/7"}' \
-	'{"text":"[pi2-issue] paused #7 (waiting)"}' >"$R/paused.jsonl"
-printf '%s\n' '{"text":"[pi2-issue] skipped: no network"}' >"$R/skipped.jsonl"
+{ call a 'scripts/issue take 7'; result a "$take7"; } >"$R/active.jsonl"
+{ call a 'scripts/issue take 7'; result a "$take7"; call b 'scripts/issue wait 7 "a decision"'; result b "$wait7"; } >"$R/paused.jsonl"
+{ call a 'scripts/issue skip "no network"'; result a '[pi2-issue] skipped: no network'; } >"$R/skipped.jsonl"
 ln -s "$R/active.jsonl" "$R/active-link.jsonl"
+
+# A line the session only quoted is not its own (#184). Each of these has one
+# such line for #7 and no issue of the session's own.
+{ call a 'cat ../other/session.jsonl'; result a "$other"; } >"$R/quoted-cat.jsonl"
+{ call a 'gh issue view 7 --comments'; result_parts a "$other"; } >"$R/quoted-gh.jsonl"
+{ call a 'cat notes.txt scripts/issue'; result a "$take7"; } >"$R/quoted-named.jsonl"
+{ call a "scripts/issue-hook stop <input.json; cat log.txt"; result a "$take7"; } >"$R/quoted-other-script.jsonl"
+{ call a 'scripts/issue list'; result a "  #7  $take7"; } >"$R/quoted-mid-line.jsonl"
+{ read_file a scripts/issue; result a "$take7"; } >"$R/quoted-read.jsonl"
+{ says "$take7"; } >"$R/quoted-said.jsonl"
+{ asks "$take7"; } >"$R/quoted-asked.jsonl"
+{ result a "$take7"; } >"$R/quoted-no-call.jsonl"
+{ bang 'cat ../other/session.jsonl' "$other"; } >"$R/quoted-bang.jsonl"
+{ bang 'scripts/issue list' '== in progress'; bang 'cat ../other/session.jsonl' "$other"; } >"$R/quoted-bang-after.jsonl"
+{ bang 'scripts/issue list' '== in progress'; asks 'look at this'; asks "<bash-stdout>$take7</bash-stdout>"; } >"$R/quoted-bang-gap.jsonl"
+
+# And these are the session's own: scripts/issue run in other ways, or printed
+# among other lines.
+{ call a './scripts/issue take 7'; result a "$take7"; } >"$R/own-dot.jsonl"
+{ call a '"$CLAUDE_PROJECT_DIR"/scripts/issue take 7'; result a "$take7"; } >"$R/own-project-dir.jsonl"
+{ call a "$repo/scripts/issue take 7"; result a "$take7"; } >"$R/own-absolute.jsonl"
+{ call a "cd src && ../scripts/issue take 7 2>&1"; result a "$take7"; } >"$R/own-after-cd.jsonl"
+{ call a $'git status\nscripts/issue take 7'; result a $'On branch main\n'"$take7"; } >"$R/own-second-line.jsonl"
+{ call a 'scripts/issue take 7'; result_parts a "$take7"; } >"$R/own-parts.jsonl"
+{ call a 'scripts/issue take 7'; echo '{not json'; result a "$take7"; } >"$R/own-bad-line.jsonl"
+{ bang 'scripts/issue take 7' "$take7"; } >"$R/own-bang.jsonl"
+# Its own line first, then quoted ones that would close or pause it.
+{ call a 'scripts/issue take 7'; result a "$take7"; call b 'cat ../other/session.jsonl'
+	result b $'[pi2-issue] closed #7 (completed)\n[pi2-issue] paused #7 (waiting)'; } >"$R/own-then-quoted.jsonl"
+{ call a 'cat ../other/session.jsonl'; result a '[pi2-issue] closed #7 (completed)'
+	call b 'scripts/issue take 7'; result b "$take7"; } >"$R/own-after-quoted.jsonl"
 
 pass=0 fail=0
 
@@ -74,14 +142,43 @@ expect() {
 	report "$want" "$got" "edit: $what"
 }
 
-# expect_stop <block|quiet> <description> <transcript> [stop_hook_active]
+# A stand-in for gh, first on the PATH the stop check is run with. It answers
+# "gh issue view N --json state,labels" as GH_ANSWER_N, or else GH_ANSWER, says
+# (open, closed, waiting, garbage, fail or hang), and notes where it ran and
+# what it was asked in $R/gh-calls.
+mkdir "$R/gh-bin"
+cat >"$R/gh-bin/gh" <<'EOF'
+#!/bin/bash
+echo "$PWD $*" >>"$GH_CALLS"
+v=GH_ANSWER_$3
+case ${!v:-${GH_ANSWER:-open}} in
+	open) echo '{"labels":[{"name":"agent"},{"name":"in progress"}],"state":"OPEN"}' ;;
+	closed) echo '{"labels":[{"name":"agent"}],"state":"CLOSED"}' ;;
+	waiting) echo '{"labels":[{"name":"agent"},{"name":"waiting"}],"state":"OPEN"}' ;;
+	garbage) echo 'not what was asked for' ;;
+	fail) echo 'error connecting to api.github.com' >&2; exit 1 ;;
+	hang) echo $$ >"$GH_PID"; exec sleep 60 ;;
+esac
+EOF
+chmod +x "$R/gh-bin/gh"
+
+# expect_stop <block|quiet|warn|unasked> <description> <transcript> [stop_hook_active [env...]]
+# block: it asks for the issue's status; warn: it tells the person GitHub could
+# not be asked; quiet: it said nothing after asking GitHub; unasked: it said
+# nothing and did not ask. Passes when gh was asked only what it should be.
 expect_stop() {
-	local want=$1 what=$2 out got
-	out=$(jq -n --arg t "$3" --argjson a "${4-false}" \
+	local want=$1 what=$2 transcript=$3 active=${4-false} out got
+	shift 3; shift || true
+	: >"$R/gh-calls"
+	out=$(jq -n --arg t "$transcript" --argjson a "$active" \
 		'{session_id: "s", transcript_path: $t, hook_event_name: "Stop", stop_hook_active: $a}' |
-		"$hook" stop)
-	if [[ -z $out ]]; then got=quiet
+		env PATH="$R/gh-bin:$PATH" GH_CALLS="$R/gh-calls" GH_PID="$R/gh-pid" "$@" "$hook" stop)
+	if [[ -z $out && ! -s $R/gh-calls ]]; then got=unasked
+	elif [[ -n $(grep -v "^$repo/scripts issue view [0-9]* --json state,labels\$" "$R/gh-calls") ]]; then
+		got="gh asked: $(cat "$R/gh-calls")"
+	elif [[ -z $out ]]; then got=quiet
 	elif [[ $out == *'"block"'*'#7'* ]]; then got=block
+	elif [[ $out == *'"systemMessage"'*'#7'* ]]; then got=warn
 	else got="unexpected output: $out"
 	fi
 	report "$want" "$got" "stop: $what"
@@ -242,12 +339,51 @@ mkdir "$R/bin"
 for tool in git cat grep awk sort cut env; do ln -s "$(command -v "$tool")" "$R/bin/$tool"; done
 expect allow "jq missing" "$repo" "$repo/src/a.txt" "$none" PATH="$R/bin"
 
+quoted=("$R"/quoted-*.jsonl) own=("$R"/own-*.jsonl)
+for t in "${quoted[@]}"; do
+	name=${t##*/quoted-}
+	expect deny "line quoted (${name%.jsonl})" "$repo" "$repo/src/a.txt" "$t"
+	expect_stop unasked "line quoted (${name%.jsonl})" "$t"
+done
+for t in "${own[@]}"; do
+	name=${t##*/own-}
+	expect allow "its own line (${name%.jsonl})" "$repo" "$repo/src/a.txt" "$t"
+	expect_stop block "its own line (${name%.jsonl})" "$t"
+done
+
 expect_stop block "issue in progress" "$active"
 expect_stop block "issue in progress, transcript through a link" "$R/active-link.jsonl"
-expect_stop quiet "no issue" "$none"
-expect_stop quiet "issue paused" "$paused"
-expect_stop quiet "only skipped" "$R/skipped.jsonl"
-expect_stop quiet "already asked once" "$active" true
+expect_stop unasked "no issue" "$none"
+expect_stop unasked "transcript missing" "$R/missing.jsonl"
+expect_stop unasked "issue paused" "$paused"
+expect_stop unasked "only skipped" "$R/skipped.jsonl"
+expect_stop unasked "already asked once" "$active" true
+expect_stop unasked "PI2_ISSUES=off" "$active" false PI2_ISSUES=off
+
+# What GitHub says decides: only an issue still open and in progress there
+# holds up the turn.
+expect_stop quiet "issue closed on GitHub" "$active" false GH_ANSWER=closed
+expect_stop quiet "issue waiting on GitHub" "$active" false GH_ANSWER=waiting
+# GitHub cannot be asked: the turn ends, and the person is told.
+expect_stop warn "gh fails" "$active" false GH_ANSWER=fail
+expect_stop warn "gh answers something else" "$active" false GH_ANSWER=garbage
+started=$SECONDS
+expect_stop warn "gh does not answer" "$active" false GH_ANSWER=hang PI2_ISSUES_GH_SECONDS=1
+report within-5s "$( ((SECONDS - started <= 5)) && echo within-5s || echo "$((SECONDS - started))s")" "stop: gh not answering is given up on"
+report stopped "$(kill -0 "$(cat "$R/gh-pid")" 2>/dev/null && echo "still running" || echo stopped)" "stop: gh not answering is stopped"
+mkdir "$R/nogh"
+for tool in jq git cat grep awk sort cut env mktemp rm sleep; do ln -s "$(command -v "$tool")" "$R/nogh/$tool"; done
+expect_stop warn "gh missing" "$active" false PATH="$R/nogh"
+
+# Several issues: each is asked about, and only the one in progress is named.
+{ call a 'scripts/issue take 7'; result a "$take7"; call b 'scripts/issue start "Eight"'
+	result b '[pi2-issue] opened #8 https://example.invalid/8'; call c 'scripts/issue take 9'
+	result c '[pi2-issue] working on #9 https://example.invalid/9'; } >"$R/three.jsonl"
+expect_stop block "three issues, one in progress" "$R/three.jsonl" false GH_ANSWER_8=closed GH_ANSWER_9=fail
+report 3 "$(wc -l <"$R/gh-calls" | tr -d ' ')" "stop: three issues, each asked about"
+out=$(jq -n --arg t "$R/three.jsonl" '{transcript_path: $t, hook_event_name: "Stop"}' |
+	env PATH="$R/gh-bin:$PATH" GH_CALLS="$R/gh-calls" GH_ANSWER_8=closed GH_ANSWER_9=fail "$hook" stop)
+report "update #7" "$(jq -r '.reason' <<<"$out" | grep -oE 'update [#0-9, ]*[0-9]')" "stop: three issues, only #7 named"
 
 echo "$pass passed, $fail failed"
 ((fail == 0))
