@@ -58,6 +58,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/mcp.ts` | MCP servers and their tools |
 | `src/backup.ts` | Backup and restore |
+| `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |
 
 Conversations, runs and tool calls are pi durable's. pi² adds a few documents of its own on top: the list of conversations with their titles and settings, the agents, the schedules, and a per-day record of spend.
 
@@ -103,11 +104,29 @@ A command's standard input is `/dev/null`, as pi durable starts it, so a command
 |---|---|
 | Conversations, agents, schedules, settings | `~/Library/Application Support/pi2` (one SQLite database and a few small files) |
 | Keys and sign-ins | The macOS Keychain, service `dev.pi2.credentials` |
-| Logs | `engine.log` and `app.log` in the data folder |
+| Logs | `engine.log` and `app.log` in the data folder. See [The logs](#the-logs) |
 
 A sign-in credential can be several kilobytes, more than one Keychain command can carry, so long ones are split across several items with a checksum. A damaged item reads as "signed out" rather than as an error.
 
 Environment variables the engine reads, mostly for tests: `PI2_HOME` (data folder), `PI2_KEYCHAIN_SERVICE` (Keychain service name), `PI2_DEMO_COST` (a price for the demo model so budgets can be tested), `PI2_DEMO_TEXT_MODEL` (adds a demo model that cannot see images), `PI2_DEMO_TOKENS_PER_SECOND` (how fast the demo model types, except for messages that start with `/slow `), `PI2_LOGIN_SHELL` (the shell to ask for its `PATH` in place of the person's; `off` asks none and leaves the `PATH` as it is, which is what the tests do), `PI2_LOGIN_SHELL_TIMEOUT_SECONDS` (how long start-up waits for that shell's answer, in place of 5 seconds; the login shell test gives its stand-in 600, so a busy Mac does not make the engine go on without its `PATH`), `PI2_COMMAND_TIMEOUT_SECONDS` (the time limit for a shell command whose call gives none, in place of 30 minutes; the end-to-end test uses 3).
+
+## The logs
+
+`engine.log` is what the engine prints: the app, or the login item, sends its standard output and standard error there, and adds to the file rather than starting it again, so the lines of an engine that crashed are still there after the next start. `app.log` has the app's own notes, such as a dropped connection.
+
+Every line of both starts with the time it was written, in UTC to the second (ISO 8601, as Swift's `.iso8601` writes it), then a space:
+
+```
+2026-11-16T18:03:12Z [pi2-engine] listening on …/engine.sock
+2026-11-16T18:09:40Z [pi2-engine] worktree made for conversation 12 on fix-login
+2026-11-16T18:15:02Z [pi2-engine] background command bg-3 of conversation 12 exited with code 1
+```
+
+The engine's own lines carry the `[pi2-engine]` tag after the time; a line without it came from a dependency or from Node. A line about a background command, a worktree or a set-up command names its conversation by number (`conversation 12`), the number the app shows for it, so `grep "conversation 12"` finds what was done for one conversation.
+
+The time is put on in one place, `engine/src/log.ts`, where the lines leave the engine, not by each line's writer: so a line a dependency writes, a warning from Node, and the trace of an error that stops the engine (which the engine writes itself, as a `fatal:` line) get one too, and so does each line of a message that runs over several. A line written in several pieces gets the time of its first piece. Only what Node writes before the engine's own code has started has no time: an engine file that cannot be read or has an error in it, which Node reports as it loads the files and stops. `--restore`, which the app runs to put a backup back, writes its output as it is: the app reads it, and shows its error to the person.
+
+What reads the log goes by its wording, not by the start of a line: the app's "engine could not be started" notice shows its last lines as they are, and tests wait for a line such as `listening on` anywhere in a line. A new reader should do the same, or allow for the time.
 
 ## Known limits
 

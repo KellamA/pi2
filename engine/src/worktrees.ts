@@ -512,7 +512,7 @@ export const worktrees: Feature = (_host, engine) => {
 			const conv = await engine.harness().conversation(id as unknown as ConversationId, engine.context());
 			await conv?.submit({ type: "write", entry: { kind: SETUP_ENTRY, data: JSON.parse(JSON.stringify(setup)) } }, engine.context());
 		} catch (error) {
-			engine.log("could not note the set-up of", id, error instanceof Error ? error.message : error);
+			engine.log("could not note the set-up of conversation", id, error instanceof Error ? error.message : error);
 		}
 	}
 
@@ -584,9 +584,9 @@ export const worktrees: Feature = (_host, engine) => {
 					}
 				});
 				// Written down: from here on, an engine that comes after this one can stop what the set-up left running.
-				if (kept) engine.log("set-up for", id, "runs as process group", noted.group);
+				if (kept) engine.log("set-up for conversation", id, "runs as process group", noted.group);
 			})
-			.catch((error) => engine.log("could not note the set-up's process for", id, error instanceof Error ? error.message : error));
+			.catch((error) => engine.log("could not note the set-up's process for conversation", id, error instanceof Error ? error.message : error));
 		const settled = ended.then(async ({ code, signal }) => {
 			clearTimeout(timer);
 			clearTimeout(pushing);
@@ -595,8 +595,8 @@ export const worktrees: Feature = (_host, engine) => {
 			const reason =
 				failedToStart !== undefined ? `could not start: ${failedToStart}` : stopped !== undefined ? stopped : code !== 0 ? (code === null ? `was ended by ${signal ?? "a signal"}` : `exited with code ${code}`) : undefined;
 			const setup: Setup = { run, command, status: reason === undefined ? "done" : "failed", ...(reason === undefined ? {} : { reason }), seconds: Math.round((Date.now() - started) / 1000), output: tail(output, SETUP_KEEP_CHARS) };
-			engine.log("set-up for", id, reason === undefined ? "finished" : reason);
-			await recordSetup(id, setup).catch((error) => engine.log("could not record the set-up of", id, error instanceof Error ? error.message : error));
+			engine.log("set-up for conversation", id, reason === undefined ? "finished" : reason);
+			await recordSetup(id, setup).catch((error) => engine.log("could not record the set-up of conversation", id, error instanceof Error ? error.message : error));
 			await noteSetup(id, setup);
 			if (setups.get(id)?.child === child) {
 				setups.delete(id);
@@ -653,13 +653,13 @@ export const worktrees: Feature = (_host, engine) => {
 				doc[String(id)] = { path, branch, repo: repo.main, origin: cwd, base: useExisting ? (current ?? null) : (named ?? current ?? null), baseCommit, createdAt: Date.now() };
 			});
 			await setFolder(id, target);
-			engine.log("worktree made for", id, "on", branch);
+			engine.log("worktree made for conversation", id, "on", branch);
 			// The agent's set-up command, written for the agent's own repository, so run only in a worktree of that one.
 			const agent = engine.agents()[meta?.agentId ?? ""];
 			const command = agent?.setup?.trim() ?? "";
 			const theirs = command === "" || agent?.cwd == null ? undefined : await repoOf(agent.cwd);
 			if (theirs !== undefined && realish(theirs.commonDir) === realish(repo.commonDir)) {
-				await startSetup(id, path, command).catch((error) => engine.log("could not start the set-up of", id, error instanceof Error ? error.message : error));
+				await startSetup(id, path, command).catch((error) => engine.log("could not start the set-up of conversation", id, error instanceof Error ? error.message : error));
 			}
 			return { path: target, branch };
 		} finally {
@@ -721,7 +721,7 @@ export const worktrees: Feature = (_host, engine) => {
 			const back = isFolder(own.origin) ? own.origin : repoRoot;
 			await save((doc) => void delete doc[String(id)]);
 			if (back !== undefined) for (const each of [id, ...joined]) await setFolder(each, back);
-			engine.log("worktree removed for", id);
+			engine.log("worktree removed for conversation", id);
 			return { branchDeleted, note };
 		} finally {
 			changing.delete(id);
@@ -785,7 +785,7 @@ export const worktrees: Feature = (_host, engine) => {
 				if (own.setup?.status !== "running") continue;
 				const { process: left, ...was } = own.setup;
 				const found: LeftOver = left === undefined ? "gone" : await stopLeftOver(left).catch(() => "unsure" as const);
-				if (left !== undefined) engine.log("set-up left by the last engine for", key, leftOverLog[found]);
+				if (left !== undefined) engine.log("set-up left by the last engine for conversation", key, leftOverLog[found]);
 				const reason =
 					found === "stopped"
 						? "was left running when pi²’s engine stopped, and was stopped when the engine started again"
@@ -836,7 +836,7 @@ export const worktrees: Feature = (_host, engine) => {
 				await create(id);
 			} catch (error) {
 				// The conversation still works, in the agent's own folder; the tracker shows where.
-				engine.log("could not make a worktree for", id, error instanceof Error ? error.message : error);
+				engine.log("could not make a worktree for conversation", id, error instanceof Error ? error.message : error);
 			}
 		},
 		handlers: {

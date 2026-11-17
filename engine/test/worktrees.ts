@@ -194,6 +194,12 @@ try {
 	assert.equal(readFileSync(join(project, "sub", "new.txt"), "utf8"), "made-here\n", "the work arrived through the merge");
 	step("remove the worktree: its folder and merged branch go, and the conversation returns to where it was");
 
+	// engine.log: each line starts with its time, and a worktree's lines name the conversation (src/log.ts).
+	await until("the worktree's removal logged", () => logged.some((line) => line.endsWith(`[pi2-engine] worktree removed for conversation ${a}`)));
+	assert.ok(logged.some((line) => line.endsWith(`[pi2-engine] worktree made for conversation ${a} on ${made.branch}`)), logged.join("\n"));
+	assert.ok(logged.length > 0 && logged.every((line) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ( |$)/.test(line)), `every line of the log starts with its time:\n${logged.join("\n")}`);
+	step("engine.log: every line starts with its time; making and removing a worktree are logged with the conversation's number");
+
 	{
 		// A conversation in a worktree hands work to other agents.
 		const outside = repo("outside");
@@ -634,7 +640,7 @@ try {
 		});
 		sleepers.push(started);
 		// The engine notes the command's process group just after starting it, which the next engine needs to stop it.
-		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for ${k} runs as process group ${leader}`)));
+		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for conversation ${k} runs as process group ${leader}`)));
 		await stop(engine, "SIGKILL");
 		assert.ok(alive(leader) && alive(started), "an engine killed outright does not stop the set-up");
 		engine = startEngine();
@@ -667,7 +673,7 @@ try {
 			return read(endedFile) > 0 && read(strayFile) > 0 ? [read(endedFile), read(strayFile)] : undefined;
 		});
 		holders.push(stray);
-		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for ${l} runs as process group ${ended}`)));
+		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for conversation ${l} runs as process group ${ended}`)));
 		await stop(engine, "SIGKILL");
 		writeFileSync(strayGate, "");
 		await until("the command's first process ended", () => !alive(ended));

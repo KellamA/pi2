@@ -49,10 +49,18 @@ import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
+import { timeLines } from "./log.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
+
+// Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
+// goes to the app, which reads its output and shows its error to the person as it is.
+if (!process.argv.includes("--restore")) {
+	timeLines(process.stdout);
+	timeLines(process.stderr);
+}
 
 const context = BACKGROUND_CONTEXT;
 const home = process.env.PI2_HOME ?? join(homedir(), "Library", "Application Support", "pi2");
