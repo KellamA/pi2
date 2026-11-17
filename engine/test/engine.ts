@@ -238,8 +238,9 @@ try {
 	const { id: c } = await client.call("conversation.create");
 	await client.call("conversation.open", { id: c });
 	await client.call("submit", { id: c, text: "/slow survive this", requestId: "crash-1" });
+	// Killed in the middle of it. Whether the part already shown outlives the crash is up to pi durable, which stores it
+	// about a second after showing it and may lose it; what is checked is that the answer is resumed and given once.
 	await client.until("partial answer", () => (client.conversations.get(c)?.state.partial?.text.length ?? 0) > 40);
-	await sleep(1200); // let the deferred partial reach storage
 	await stop(engine, "SIGKILL");
 	engine = startEngine();
 	client = await Client.attach();
@@ -251,7 +252,7 @@ try {
 	assert.equal(conv.items.filter((i) => i.kind === "user").length, 1);
 	assert.equal(conv.items.filter((i) => i.kind === "assistant" && i.stop === "stop").length, 1);
 	assert.equal(client.library.length, 3, "the library survived the crash");
-	step(`kill -9 mid-answer: resumed, ${conv.items.filter((i) => i.kind === "assistant" && i.stop !== "stop").length} interrupted attempt kept`);
+	step("kill -9 mid-answer: resumed, and answered once");
 
 	// ---- Agents
 	await client.until("agents", () => client.agents.length > 0);
@@ -1094,8 +1095,8 @@ try {
 		await client.until("fork replaced its list", () => planOf(forked)?.items.length === 1);
 		assert.equal(planOf(p)!.items.length, 4, "the original keeps its list");
 
-		// The list survives the engine being killed and started again.
-		await sleep(1200);
+		// The list survives the engine being killed and started again. Each list was committed before update_plan answered,
+		// which `update` waited for, so the engine is killed at once.
 		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
@@ -1533,7 +1534,7 @@ try {
 		assert.equal(rulesOf(tester).length, 0);
 
 		// Kept across a restart, and good for a new conversation of that agent in that folder, other arguments included.
-		await sleep(400);
+		// The rule was committed before the agents event that said it was kept, which comes from the stored document.
 		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
@@ -1650,9 +1651,12 @@ try {
 		const askedIn = (id: number) => client.inbox.find((i) => i.conversationId === id) as (InboxItem & { rule?: Rule }) | undefined;
 		const [left, offered, covered] = [await open(), await open(), await open()];
 
-		await client.call("submit", { id: left, text: "/background sleep 120" });
+		await client.call("submit", { id: left, text: `/background sleep ${(2 * PATIENT_MS) / 1000}` });
 		await client.call("inbox.decide", { id: (await client.until("approval to leave a command running", () => askedIn(left))).id, decision: "once" });
-		await client.until("a command left running", () => client.events.background?.commands?.some((c: { conversationId: number }) => c.conversationId === left));
+		// The call that started it returns once the command's process is on record, which the next engine needs to stop it:
+		// the event that lists it as running comes before that.
+		await settled(left, 1);
+		assert.ok(client.events.background?.commands?.some((c: { conversationId: number }) => c.conversationId === left), "a command left running");
 		await client.call("submit", { id: offered, text: "/bash ./serve --once" });
 		const before = await client.until("approval offering a rule", () => askedIn(offered));
 		assert.deepEqual(before.rule, { words: ["./serve"], folder: project });
@@ -1662,12 +1666,13 @@ try {
 		await client.call("rules.add", { agentId: keeper, folder: project, command: "./run-tests" });
 		await client.until("rule kept", () => rulesOf(keeper).length === 1);
 
-		await sleep(400);
+		// Everything above was committed before the event the test waited for, so the engine is killed at once.
 		await stop(engine, "SIGKILL");
 		engine = startEngine();
 		client = await Client.attach();
 		for (const id of [left, offered, covered]) await client.call("conversation.open", { id });
-		const marker = (id: number) => client.conversations.get(id)?.items.find((i) => i.kind === "marker" && /^Background command .* when pi²’s engine stopped/.test(i.text));
+		const marker = (id: number) =>
+			client.conversations.get(id)?.items.find((i) => i.kind === "marker" && /^Background command .* was left running when pi²’s engine stopped, and was stopped when the engine started again/.test(i.text));
 		await client.until("the command left running is written down by the new engine as it starts", () => marker(left));
 
 		const after = await client.until("approval asked again after the restart", () => askedIn(offered));
