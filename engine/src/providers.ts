@@ -278,8 +278,8 @@ function endpointProvider(config: EndpointConfig): Provider {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
 			maxTokens: Math.min(16_384, Math.floor(contextWindow / 4)),
-			// Local and self-hosted servers rarely know the newer OpenAI request fields.
-			...(config.api === "openai-completions" ? { compat: { supportsDeveloperRole: false, supportsReasoningEffort: m.reasoning ?? false } } : {}),
+			// Local and self-hosted servers rarely know the newer OpenAI request fields, such as the long prompt cache's.
+			...(config.api === "openai-completions" ? { compat: { supportsDeveloperRole: false, supportsReasoningEffort: m.reasoning ?? false, supportsLongCacheRetention: false } } : {}),
 		} as Model<EndpointApi>;
 	});
 	return createProvider({

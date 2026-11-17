@@ -70,6 +70,36 @@ The retrying is pi durable's: a failed request becomes a stored sleep in the run
 
 The same knowledge of the plan's windows that **Usage** shows is not used to hold back a run before it is refused; see the Known limits.
 
+## The prompt cache
+
+Every request sends the whole conversation again. A provider with a prompt cache keeps what it read of the last request for a while, and the next request that starts the same way reads it from there instead, at a tenth of the price or less, and counts for less of a subscription's allowance. By default the cache lasts five minutes. A request after a longer pause reads nothing from it and writes the whole conversation into it again: for a conversation of 150,000 tokens on Anthropic's API, that is 1.25 times the price of all of it, where reading it costs 0.1 times (#159).
+
+A conversation that hands out work is the one that pauses longest: it waits for its sub-chats for tens of minutes, then pays for its whole context again. So **from its first `delegate` call on, a conversation asks for the long cache** (pi-ai's `cacheRetention: "long"`). Every other conversation, its sub-chats included, stays on the short one. That is what Claude Code does on a Claude subscription: an hour for the main conversation, five minutes for its subagents ([How Claude Code uses prompt caching](https://code.claude.com/docs/en/prompt-caching#which-ttl-each-request-gets)).
+
+What the long cache is, by provider:
+
+| Provider | Long cache | Costs, against the short one |
+|---|---|---|
+| Anthropic, by key or a Claude subscription | An hour (`cache_control.ttl: "1h"`) | A write costs 2 times the input price instead of 1.25; a read costs the same. On a subscription the cost is part of the plan's allowance; Anthropic does not say how writes and reads weigh in it, and its own Claude Code asks for the hour there by default |
+| Amazon Bedrock, Claude models that have it | An hour (`cachePoint.ttl`) | As Anthropic's |
+| OpenAI's API | Extended retention (`prompt_cache_retention: "24h"` on older models; on GPT-5.6 and later the same 30 minutes as by default) | Nothing more |
+| ChatGPT sign-in (Codex), Google, Mistral, a custom OpenAI-compatible endpoint | Nothing different is sent | — |
+
+A one-hour write costs more only on what a turn adds; a rewrite after a long wait costs the whole context. The first round of `delegate` calls still finds the cache gone when it returns, since the request that made those calls asked for the short cache; the rounds after it do not, as long as each takes less than the hour. A wait of more than an hour loses it all the same.
+
+**A provider that refuses it.** A gateway or endpoint that does not know the long cache may refuse a request that asks for it. A request refused before any answer, with an error that names the cache (`ttl`, `cache`, `retention`) and is not a limit, a bad key or a server error, is sent again at once with the short cache; the conversation sees only the answer. That provider is then not asked for the long cache again until the engine restarts, and `engine.log` says so once: `Stand-in refused a request that asked for the long prompt cache (400 invalid_request_error: cache_control.ttl: Extra inputs are not permitted); it was sent again with the short cache, and Stand-in is not asked for the long one again until the engine restarts`. If the request is refused the same way with the short cache too, the long cache was not the cause, and it is asked for again next time.
+
+**Seeing the effect.** `engine.log` has a line when a conversation starts asking for the long cache (`conversation 12 hands out work: its requests ask Anthropic for the long prompt cache from now on`), and one for each request that comes more than five minutes after the one before it in the same conversation, saying what it read from the cache and which lifetime the request before it asked for:
+
+```
+conversation 12 read 143,912 tokens from the prompt cache after 31 min without a request; the request before asked for the long cache
+conversation 14 read nothing from the prompt cache after 6 min without a request, and wrote 88,301 tokens to it again; the request before asked for the short cache
+```
+
+A provider that reports no cache writes (OpenAI's) shows a miss as input sent again instead. **Usage** shows the cost: pi-ai prices a one-hour write at twice the input price, and each request's `usage` keeps `cacheRead` and `cacheWrite`.
+
+**How it works** (`engine/src/cache.ts`). pi durable sends each conversation's requests with a provider session id of its own (`pi.provider`); a hook before each request notes which conversation it belongs to, and the models the harness is given are wrapped so that a request of a conversation that has a sub-chat is sent with `cacheRetention: "long"`, unless its caller chose a lifetime itself (a compaction asks for none). The wrapper holds the request's events until its answer begins, so a refusal of the long cache can be sent again unseen. `engine/test/cache.ts` runs an engine against a stand-in Anthropic endpoint on 127.0.0.1 that answers, hands out work, and then refuses the one-hour cache; `PI2_CACHE_PAUSE_MS` sets the pause after which a request has a line in `engine.log` (five minutes otherwise).
+
 ## What is kept
 
 The last good reading of each signed-in subscription (plan, windows, when it was read) is kept in `limits.json` in the data folder, so it shows at once after a restart. It holds no token. Signing a subscription out removes its reading.
