@@ -370,7 +370,9 @@ export const selfSchedule: Feature = (host) => {
 
 	return {
 		tools: [scheduleTask, listSchedules, cancelSchedule],
-		toolNames: (_access, agent) => (agent?.schedule?.enabled === true ? TOOL_NAMES : []),
+		// Not in a sub-chat: its work is a task handed to it, and it is archived once it reports, so its own future work is
+		// not its to set (#177). The conversation that handed it the work has the tools, if its agent may schedule.
+		toolNames: (_access, agent, where) => (agent?.schedule?.enabled === true && !where.subChat ? TOOL_NAMES : []),
 		sections: [section("scheduling", (input) => (input.agent.tools.some((tool) => tool.name === "schedule_task") ? describeScheduling() : undefined))],
 	};
 };

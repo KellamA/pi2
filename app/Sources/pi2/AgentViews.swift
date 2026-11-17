@@ -335,7 +335,7 @@ struct AgentEditor: View {
                     Text("Schedules")
                 } footer: {
                     Text(agent.schedule?.enabled == true
-                        ? "When you ask it to do something later or regularly, such as every morning or in two hours, the agent can set a schedule for itself. You approve each one before it is set. Each run then starts a new conversation with this agent, with its tools and access, and works with no one watching. It can run at most every 15 minutes, and the agent can have 20 at most. The agent can list its schedules and cancel the ones it set, but not yours. They show in Activity, marked “set by \(agent.name)”."
+                        ? "When you ask it to do something later or regularly, such as every morning or in two hours, the agent can set a schedule for itself. You approve each one before it is set. Each run then starts a new conversation with this agent, with its tools and access, and works with no one watching. It can run at most every 15 minutes, and the agent can have 20 at most. The agent can list its schedules and cancel the ones it set, but not yours. They show in Activity, marked “set by \(agent.name)”. In a sub-chat, where it works on a task another agent handed it, it cannot schedule."
                         : "Off: the agent cannot set schedules. You can still schedule it yourself in Activity.").formFooter()
                 }
                 .id(AgentSection.schedule)

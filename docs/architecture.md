@@ -80,6 +80,8 @@ With tool access set to "Ask first", a hook runs before each tool call that woul
 
 `delegate` creates a conversation owned by the calling tool call, configured from the other agent's profile, and waits for its answer. It works in its parent's folder unless the other agent has a folder of its own outside the parent's repository, or the call passes `worktree`, which gives it a worktree of its own made as New Worktree… makes one ([worktrees.md](worktrees.md#sub-chats)); without full access that asks the person first, unless the other agent gets worktrees anyway. The app lists it under its parent, by the `title` the calling agent gave it (80 characters at most), or else as the agent's name and the first words of the task, or the worktree's branch when it has one. Passing `chat` continues an earlier sub-chat instead of starting a new one, and restores it first if the agent had archived it; a `title` passed with it renames it, unless the person renamed it themselves. A conversation that can delegate also gets `sub_chats`, to list its sub-chats with how each stands and archive the finished ones ([archive.md](archive.md#sub-chats-an-agent-puts-away)).
 
+A sub-chat is given its agent's tools, as a conversation of that agent's would be, less what only makes sense in a conversation of its own (`toolsFor` in `main.ts`, and a feature's `toolNames`, which is told whether it is for a sub-chat): handing work on (`delegate`, `sub_chats`) and scheduling its own work ([schedules.md](schedules.md#turning-it-on)). It keeps `ask_user`: a sub-chat that needs the person shows as waiting on them. What a sub-chat is offered follows its agent's settings at each message, as for any conversation.
+
 ### What commands can find
 
 The app or the login item starts the engine, so it begins with the `PATH` macOS gives every program: `/usr/bin:/bin:/usr/sbin:/sbin`. Programs the person installed themselves (with Homebrew, a version manager, or into `~/.local/bin`) are not on it. As it starts, the engine asks the person's login shell for its `PATH`, the way a new terminal window would have it (`zsh`, `bash` or `fish`, run as a login and interactive shell), and takes that as its own, keeping its own folders after it. Shell commands, MCP servers started as programs, and git all inherit it. Only full paths are kept, so an entry that means "the current folder" never lets a file in a project stand in for a program.
@@ -170,17 +172,18 @@ The sections, in the order they are declared:
 
 | Section | From | Has something to say when | Steady, or comes and goes |
 |---|---|---|---|
-| `computer_use` | `extensions.ts` | the `computer` tool is offered (computer use on) | Comes and goes with the agent's settings; changes in place as apps are allowed |
+| `computer_use` | `extensions.ts` | the `computer` tool is offered: computer use on, with at least one app allowed (#177) | Comes and goes with the agent's settings, and with the first app allowed and the last taken away; changes in place as apps are allowed |
 | `browser` | `extensions.ts` | the `browser` tool is offered (the browser on) | Comes and goes with the agent's settings |
 | `reference_files` | `extensions.ts` | the agent has reference files | Comes and goes with the agent's settings |
 | `agents` | `extensions.ts` | the conversation can hand work to another agent (not in a sub-chat) | Comes and goes with the agent's settings and as agents are added or deleted |
-| `task_list` | `plan.ts` | `update_plan` is offered: always | Steady |
+| `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady |
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
 | `memory` | `knowledge.ts` | memory is on for the agent | Comes and goes with the agent's settings |
 | `look_web` | `look.ts` | `web_fetch` is offered (the browser on) | Comes and goes with the agent's settings |
 | `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full) | Steady; changes only with the conversation's access level |
-| `scheduling` | `selfschedule.ts` | the scheduling tools are offered | Comes and goes with the agent's settings |
+| `scheduling` | `selfschedule.ts` | the scheduling tools are offered: scheduling on, not in a sub-chat (#177) | Comes and goes with the agent's settings |
 | `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
+| `commit_coauthor` | `coauthor.ts` | the person's co-author switch in Settings is on, and the conversation can run commands | Comes and goes with that switch |
 | `background_commands` | `background.ts` | the conversation has started a background command | Comes at its first background command; goes when the engine restarts, which forgets them |
 | `codemode` | `codemode.ts` (pi durable's, cut down) | code mode is on | Comes and goes with the agent's settings; changes in place as its tools change |
 | `instructions` | pi durable | the agent has instructions | Steady: set when the conversation is, and always last |
