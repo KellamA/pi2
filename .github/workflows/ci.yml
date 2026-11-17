@@ -56,3 +56,7 @@ jobs:
       - name: Build the app, ComputerKit and the probe
         working-directory: app
         run: swift build
+      # Built with optimisation, as the app is released: closing a pane crashed only in an optimised build (#134).
+      - name: Check the pane layout (optimised build)
+        working-directory: app
+        run: swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check

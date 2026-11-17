@@ -64,6 +64,14 @@ cd app && swift build --product pi2-browser-probe && .build/debug/pi2-browser-pr
 
 With the probe built, `cd engine && npm run test:browser` runs a real engine against it, to check that the two agree. See [browser.md](browser.md).
 
+The panes the conversation area is divided into (`app/Sources/PaneKit`) are checked by a program of its own: it splits panes, closes them down to one in every ready-made layout and at random, gives them equal room, saves and reads back each tree, and reads back damaged saved layouts, which must give a single pane. Build it with optimisation, as the app is released; closing a pane once crashed only in an optimised build (#134), and CI runs it this way:
+
+```bash
+cd app && swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
+```
+
+A crash in it prints the step it happened in; `--verbose` prints every step.
+
 The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page.
 
 ```bash
@@ -112,6 +120,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Sources/ComputerKit` is the part of computer use that touches the screen. See [computer-use.md](computer-use.md).
 - `app/Web/transcript` is the conversation page the app shows in a web view; `app/Web/test` its tests. See [transcript.md](transcript.md).
 - `app/Sources/BrowserKit` is pi²'s own browser: everything that touches a web page. See [browser.md](browser.md).
+- `app/Sources/PaneKit` is the tree of panes behind the conversation area and the ready-made layouts; the app's `Workspace.swift` keeps it and draws it.
 
 ## Conventions
 
