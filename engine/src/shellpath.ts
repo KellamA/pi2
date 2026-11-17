@@ -246,15 +246,29 @@ export interface StillListening {
  * for up to `giveUpMs` from when it was asked: when it answers, the PATH becomes what an answer in time would have
  * made it, so whatever is started from then on gets it. The result is then the shell still being listened to.
  *
+ * Aborting `stop` stops the shell and whatever it started, whether start-up is still waiting for it (the engine was told
+ * to stop while starting, issue #100) or it is only being listened to. The PATH is then left as it is.
+ *
  * Never throws; says in the log what it did, without the shell's folders.
  */
-export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: NodeJS.ProcessEnv = process.env, waitMs = startUpWait(env), giveUpMs = GIVE_UP_MS): Promise<StillListening | undefined> {
+export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: NodeJS.ProcessEnv = process.env, waitMs = startUpWait(env), giveUpMs = GIVE_UP_MS, stop?: AbortSignal): Promise<StillListening | undefined> {
 	// Tests switch this off, so an engine they start runs with the PATH they gave it and reads nobody's profile.
-	if (env.PI2_LOGIN_SHELL === "off") return undefined;
+	if (env.PI2_LOGIN_SHELL === "off" || stop?.aborted === true) return undefined;
 	const shell = loginShell(env);
 	const askedAt = Date.now();
 	const asked = shell === undefined ? undefined : listenToShell(shell, env, waitMs, giveUpMs);
+	let stopping = false;
+	const stopShell = () => {
+		stopping = true;
+		asked?.stop("the engine is stopping");
+	};
+	stop?.addEventListener("abort", stopShell, { once: true });
+	void asked?.late.then(() => stop?.removeEventListener("abort", stopShell));
 	const soon: Answer & { listening?: true } = asked === undefined ? { reason: "the account names no shell" } : await asked.soon;
+	if (stopping) {
+		log("PATH not taken from the login shell: the engine is stopping");
+		return undefined;
+	}
 	if ("path" in soon) {
 		env.PATH = folders(soon.path, env.PATH).join(":");
 		log(`PATH taken from ${basename(shell!)}: ${folders(soon.path).length} folders`);
@@ -269,7 +283,6 @@ export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: No
 		return undefined;
 	}
 	log(`PATH not taken from the login shell (${soon.reason}); ${added} for now, and still listening for its answer`);
-	let stopping = false;
 	const done = asked.late
 		.then((late) => {
 			if (stopping) return;
@@ -288,9 +301,6 @@ export async function adoptLoginPath(log: (...parts: unknown[]) => void, env: No
 		.catch(() => {}); // only a log that cannot be written leads here, and then there is nowhere to say so
 	return {
 		done,
-		stop: () => {
-			stopping = true;
-			asked.stop("the engine is stopping");
-		},
+		stop: stopShell,
 	};
 }

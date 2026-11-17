@@ -48,9 +48,8 @@ function standIn(folder: string, name: string, body: string): string {
 	return path;
 }
 /**
- * Shell lines that wait for the file `gate`. They give up once the scratch folder is gone: if a check fails while an
- * engine is still in its first five seconds, stopping that engine kills it outright, before it can stop its shell,
- * and the stand-in must not be left waiting for ever.
+ * Shell lines that wait for the file `gate`. They give up once the scratch folder is gone, so that a stand-in is never
+ * left waiting for ever, whatever became of the engine or the check that asked it.
  */
 const waitFor = (gate: string) => `while [ ! -e "${gate}" ]; do [ -d "${scratch}" ] || exit 1; sleep 0.05; done`;
 /** A shell that answers with `path`, but not before the file `gate` is there. */
@@ -251,6 +250,23 @@ try {
 	assert.ok(Date.now() - started < 10_000);
 	assert.equal(env.PATH, fallback(BARE));
 	assert.equal(lines.length, 1, "nothing more is logged for a shell the engine stopped itself");
+
+	// Stopped while start-up is still waiting for it (issue #100): the wait ends at once, and the shell is stopped.
+	const waitingPid = join(scratch, "waiting.pid");
+	pidFiles.push(waitingPid);
+	env = { PATH: BARE, PI2_LOGIN_SHELL: hanging(join(scratch, "waiting"), waitingPid) };
+	lines = [];
+	const stopping = new AbortController();
+	const waited = adoptLoginPath((...parts) => void lines.push(parts.join(" ")), env, 10 * 60_000, 20 * 60_000, stopping.signal);
+	const waitedFor = await startedBy(waitingPid);
+	stopping.abort();
+	assert.equal(await within(30_000, "the wait to end", waited), undefined, "nothing is left to listen to");
+	await until("what the shell started to be stopped", () => !alive(waitedFor), 5_000);
+	assert.equal(env.PATH, BARE, "the PATH is left as it was");
+	assert.deepEqual(lines, ["PATH not taken from the login shell: the engine is stopping"]);
+	const before = { PATH: BARE, PI2_LOGIN_SHELL: hanging(join(scratch, "never-asked"), join(scratch, "never-asked.pid")) };
+	assert.equal(await adoptLoginPath(() => {}, before, WAIT_MS, 60_000, stopping.signal), undefined);
+	assert.ok(!existsSync(join(scratch, "never-asked.pid")), "a shell is not asked at all once the stop has come");
 
 	// A process with nothing else to do ends by itself while the shell is still going, ten minutes before the far
 	// limit, and stops the shell as it goes: neither the shell nor the limit holds it.
