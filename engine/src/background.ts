@@ -140,6 +140,15 @@ export function backgroundMarker(data: unknown): string {
 	return `Background command${id} ${how}${command === "" ? "" : `: ${command}`}`;
 }
 
+/**
+ * What the app is given with that line besides its words: the command's id, for a way to the window with its output.
+ * Nothing for an entry with no id this engine could have given.
+ */
+export function backgroundMarkerDetails(data: unknown): { background: { id: string } } | undefined {
+	const id = data !== null && typeof data === "object" ? (data as { id?: unknown }).id : undefined;
+	return typeof id === "string" && /^bg-[1-9][0-9]{0,8}$/.test(id) ? { background: { id } } : undefined;
+}
+
 // ---- Process groups
 
 function realish(path: string): string {

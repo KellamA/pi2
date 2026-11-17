@@ -697,6 +697,31 @@
 
 	// MARK: - Hand-offs
 
+	/** An id the engine gives a background command: "bg-" and a number. */
+	const BACKGROUND_ID = /^bg-[1-9][0-9]{0,8}$/;
+
+	/**
+	 * The background command a call's row is about ("bg-3"), for a way to the window with its output: the command a
+	 * `bash` call with `background: true` started, or the one a `background` call read or stopped. Only the engine's
+	 * answer counts, never the id the agent asked for, which may name no command at all; so it is empty until the call
+	 * has a result, and for a call the engine refused. The app checks the id against the same results before it acts.
+	 */
+	function backgroundCommand(call, result) {
+		const details = result && isObject(result.details) ? result.details : null;
+		if (details === null || !isObject(call)) return "";
+		let id = "";
+		if (call.name === "bash") id = isObject(details.background) ? str(details.background.id) : "";
+		else if (call.name === "background") id = str(details.id);
+		return BACKGROUND_ID.test(id) ? id : "";
+	}
+
+	/** The same for the line that says a background command ended ("Background command bg-2 exited with code 1: …"). */
+	function markerCommand(item) {
+		const details = isObject(item) && isObject(item.details) ? item.details : null;
+		const id = details !== null && isObject(details.background) ? str(details.background.id) : "";
+		return BACKGROUND_ID.test(id) ? id : "";
+	}
+
 	/** A delegation's answer without the footer the engine adds for the model ("(Sub-chat 4 with Atlas. …)"). */
 	function subagentAnswer(output) {
 		const text = readable(output);
@@ -743,6 +768,8 @@
 		describe,
 		ruleOffer,
 		backgroundCaption,
+		backgroundCommand,
+		markerCommand,
 		detailFor,
 		subagentAnswer,
 		scheduleApproval,
