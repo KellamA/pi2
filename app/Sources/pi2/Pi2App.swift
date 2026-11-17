@@ -14,11 +14,12 @@ enum Selection: Hashable {
 #if PI2_DEVELOPMENT
 extension Selection {
     /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
-    /// a conversation's number or title. For taking pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the
-    /// agent's page at one of its sections, which the page reads for itself (`AgentSection`). "settings" and what follows
+    /// a conversation's number or title, in the sidebar or the Archive (including archived sub-chats). For taking
+    /// pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the agent's page at one of its
+    /// sections, which the page reads for itself (`AgentSection`). "settings" and what follows
     /// it is not about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual; so does
     /// "output:<id>", which opens a background command's output window (`OutputLaunch`).
-    init?(launch value: String?, conversations: [ConversationSummary]) {
+    init?(launch value: String?, conversations: [ConversationSummary], archived: [ArchivedConversation]) {
         guard let value, !value.isEmpty else { return nil }
         switch value {
         case "inbox": self = .inbox
@@ -30,6 +31,8 @@ extension Selection {
             if value.hasPrefix("agent:") {
                 self = .agent(String(value.dropFirst("agent:".count).prefix { $0 != "#" }))
             } else if let found = conversations.first(where: { String($0.id) == value || $0.title == value }) {
+                self = .conversation(found.id)
+            } else if let found = archived.first(where: { String($0.id) == value || $0.title == value }) {
                 self = .conversation(found.id)
             } else {
                 return nil
@@ -381,7 +384,7 @@ struct RootView: View {
             model.workspace.forget { id in !engine.conversations.contains { $0.id == id } && !model.isArchived(id) }
             guard model.selection == nil else { return }
             #if PI2_DEVELOPMENT
-            if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations) {
+            if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations, archived: engine.archived) {
                 model.selection = asked
                 return
             }
