@@ -107,7 +107,15 @@ scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Lat
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 
-`submit` returns a submission id when the message is accepted, **not when the answer is finished**. Once it has finished, put the conversation away (archiving stops any work still running):
+`call … submit` returns a submission id when the message is accepted, **not when the answer is finished**. For a message whose answer must be committed before the next step, use **`send <suffix> <conversation> <text> [--timeout <seconds>]`** instead:
+
+```bash
+scripts/test-copy send test-7 "$CHAT" 'Hello again' --timeout 120
+```
+
+It subscribes before submitting, then follows that exact submission's durable outcome on conversation events, not an old idle state or a delay. It prints one JSON result with `status`, the conversation and submission ids, and the answer on success, once the submission is done and the conversation is idle. Exit codes: `0` done, `1` failed or socket/engine error, `2` waiting for the person's approval or answer (with the waiting items), `124` timed out. The limit is 600 seconds by default and at most 600; it is a hang guard, not a sleep. Ending the wait never answers an approval or question and never stops work. A timeout before acceptance can leave `submissionId: null`: inspect the copy before sending again. It uses the same ownership, recorded-engine and no-symlink checks as `call`, and refuses invalid conversation numbers, empty messages and invalid limits.
+
+Once it has finished, put the conversation away (archiving stops any work still running):
 
 ```bash
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
@@ -124,7 +132,7 @@ What it refuses, before it changes anything:
 - a suffix that is empty, not lower-case letters, digits and hyphens, longer than 32 characters (the engine's socket path has a limit), or `dev`, the suffix every development build has as built; and so any bundle id, data folder or Keychain service that could be the usual one;
 - a bundle that is not a development build of this checkout, so never a release build, which runs on the usual data folder;
 - a suffix already in use, by this checkout or any other: the copy's folder in the checkout and its data folder are each made with `mkdir`, which only one of two `start`s at the same moment can do, so a second `start` with the same suffix fails and touches nothing of the first. Copies with different suffixes, from one checkout or several, are independent;
-- a `stop`, `shot` or `call` for a copy this checkout did not start, and a signal to a pid it did not record;
+- a `stop`, `shot`, `send` or `call` for a copy this checkout did not start, and a signal to a pid it did not record;
 - a picture outside the checkout.
 
 It never uses `pkill` or `killall`, and never passes a pattern to `rm` or `security`. To see that the copy runs on its own folder, not the real one: its data folder holds `engine.sock`, `engine.pid` and an `engine.log` that ends with `listening on` and the path of that socket, and `ps -E -o command= -p <engine pid>` shows the copy's `PI2_KEYCHAIN_SERVICE`.

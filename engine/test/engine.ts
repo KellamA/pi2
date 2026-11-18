@@ -216,12 +216,18 @@ try {
 	// ---- Conversations and the demo model
 	const { id: a } = await client.call("conversation.create");
 	await client.call("conversation.open", { id: a });
-	await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	const firstSubmission = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
 	let conv = await client.idle(a);
 	assert.deepEqual(conv.items.map((i) => i.kind), ["user", "assistant"]);
 	assert.ok(conv.items[1]!.text.endsWith("Done."));
 	assert.equal(client.library.find((c) => c.id === a)?.title, "hello there");
-	step("create, submit, streamed answer, automatic title");
+	const firstOutcome = await client.call("submission.get", { id: a, submissionId: firstSubmission.submissionId });
+	assert.equal(firstOutcome.submission.status, "done");
+	assert.equal(firstOutcome.submission.answer, conv.items[1]!.id);
+	assert.equal(firstOutcome.busy, false);
+	await assert.rejects(client.call("submission.get", { id: a, submissionId: "bad" }), /must be a number/);
+	await assert.rejects(client.call("submission.get", { id: a, submissionId: 99999999 }), /No such submission/);
+	step("create, submit, streamed answer, automatic title, exact submission outcome");
 
 	// ---- Tool access: off by default
 	await client.call("submit", { id: a, text: "/bash echo should-not-run" });
@@ -236,6 +242,7 @@ try {
 
 	// ---- Tool access: full, in a chosen folder
 	const { id: b } = await client.call("conversation.create");
+	await assert.rejects(client.call("submission.get", { id: b, submissionId: firstSubmission.submissionId }), /another conversation/);
 	await client.call("conversation.open", { id: b });
 	await client.call("conversation.configure", { id: b, access: "full", cwd: workdir });
 	await client.until("access applied", () => client.conversations.get(b)?.state.agent.access === "full");
@@ -257,7 +264,11 @@ try {
 	await client.call("submit", { id: b, text: "queued follow-up", mode: "queue" });
 	const queued = await client.until("queued item", () => client.conversations.get(b)!.state.queued[0]);
 	assert.equal(queued.text, "queued follow-up");
+	const queuedOutcome = await client.call("submission.get", { id: b, submissionId: queued.id });
+	assert.equal(queuedOutcome.submission.status, "queued");
+	assert.equal(queuedOutcome.busy, true);
 	await client.call("withdraw", { submissionId: queued.id });
+	assert.equal((await client.call("submission.get", { id: b, submissionId: queued.id })).submission.status, "unanswered");
 	await client.until("queue emptied", () => client.conversations.get(b)!.state.queued.length === 0);
 	await client.call("abort", { id: b });
 	await client.until("stopped", () => !client.conversations.get(b)!.state.busy);

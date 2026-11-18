@@ -23,6 +23,7 @@ import {
 	type EntryId,
 	type EntryRecord,
 	Harness,
+	LiveDoc,
 	type SubmissionId,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
@@ -1454,6 +1455,17 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await takeSwitch(conv.id);
 		await conv.submit({ type: "continue" }, context);
 		return {};
+	},
+	/** Read one admitted message's durable outcome, not a previous run's idle state (test-copy send). */
+	"submission.get": async (params) => {
+		if (!Number.isSafeInteger(params.submissionId)) throw new Error("submissionId must be a number");
+		const conv = await conversation(params.id);
+		const submission = await harness.submission(params.submissionId as SubmissionId, context);
+		if (submission === undefined) throw new Error("No such submission");
+		const record = await submission.status(context);
+		if (record.conversationId !== conv.id) throw new Error("That submission belongs to another conversation");
+		const live = await harness.snapshot(LiveDoc, conv.id, context);
+		return { submission: record, busy: live?.run !== undefined };
 	},
 	withdraw: async (params) => {
 		const submission = await harness.submission(params.submissionId as SubmissionId, context);

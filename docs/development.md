@@ -166,7 +166,15 @@ scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Lat
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 
-`submit` returns when accepted, not when the model has finished answering. After the answer finishes, archive it (this stops any work still running):
+`call … submit` returns when accepted, not when the model has finished answering. Use `send` to wait for the exact new submission to finish and the conversation to be idle, following committed conversation events (not sleeping or accepting an earlier idle state):
+
+```bash
+scripts/test-copy send test-7 "$CHAT" 'Hello again' --timeout 120
+```
+
+The JSON result has `status`, conversation/submission ids and the answer on success. Exit `0`: done; `1`: failed or connection/engine error; `2`: waiting on the person (approval/question items included); `124`: timeout. The hang guard defaults to 600 seconds, at most 600. No approval is answered and no work is stopped when waiting ends. Before acceptance a timeout may have no submission id; inspect before resending. Like `call`, it refuses an unowned copy, an unrecorded engine or a symlink for its data/socket; it also refuses invalid conversation numbers, empty text and invalid limits. The engine's read-only `submission.get { id, submissionId }` reports the durable record and whether that conversation is busy, and refuses a submission belonging to another conversation, including another chat version.
+
+After the answer finishes, archive it (this stops any work still running):
 
 ```bash
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
