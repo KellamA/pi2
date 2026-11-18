@@ -67,6 +67,8 @@ struct AgentEditor: View {
     let agentID: String
 
     @State private var draft: AgentProfile?
+    /// The saved agent the draft was last brought up to date with: what the person's edits are measured from.
+    @State private var base: AgentProfile?
     @State private var turnsText = ""
     @State private var error: String?
     @State private var confirmingDelete = false
@@ -104,10 +106,7 @@ struct AgentEditor: View {
             }
         }
         .onAppear(perform: load)
-        .onChange(of: saved) { _, _ in
-            // Follow changes made elsewhere, but never overwrite edits in progress.
-            if !changed || draft == nil { load() }
-        }
+        .onChange(of: saved) { old, _ in follow(old) }
         .confirmationDialog("Delete \(saved?.name ?? "this agent")?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 engine.perform("agents.delete", ["id": agentID])
@@ -125,7 +124,21 @@ struct AgentEditor: View {
 
     private func load() {
         draft = saved
+        base = saved
         turnsText = saved?.maxTurns.map(String.init) ?? ""
+    }
+
+    /// Follows a change saved elsewhere (another window, the engine's socket, a schedule's or rule's request), keeping
+    /// the person's edits: the form shows the agent as it is now, with only what they changed on top. Measured from the
+    /// agent the form was last brought up to date with, not from the agent as it is now, which would count every change
+    /// made elsewhere as an edit (#299).
+    private func follow(_ old: AgentProfile?) {
+        guard let draft, let saved, let from = base ?? old else { return load() }
+        let edited = AgentRebase.edited(draft, from: from)
+        if edited.isEmpty { return load() }
+        self.draft = AgentRebase.rebase(draft, from: from, onto: saved)
+        base = saved
+        if !edited.contains("maxTurns") { turnsText = saved.maxTurns.map(String.init) ?? "" }
     }
 
     #if PI2_DEVELOPMENT
@@ -421,9 +434,15 @@ struct AgentEditor: View {
 
     private func save() {
         guard let draft else { return }
+        // Only what the person changed: a setting saved elsewhere since the page last caught up keeps its newer value.
+        // The engine keeps what is left out; a name is always needed.
+        let edited = base.map { AgentRebase.edited(draft, from: $0) }
+        var agent = draft.payload.filter { edited?.contains($0.key) ?? true }
+        agent["id"] = draft.id
+        agent["name"] = draft.name
         Task {
             do {
-                try await engine.call("agents.save", ["agent": draft.payload])
+                try await engine.call("agents.save", ["agent": agent])
                 error = nil
             } catch {
                 self.error = error.localizedDescription
