@@ -47,6 +47,7 @@ import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { noticingRefusals } from "./limitwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
+import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { messageSent } from "./heed.ts";
@@ -354,7 +355,7 @@ const harness = await Harness.open(
 	{
 		// Every request notes how a provider refused it, so a limit can be waited for as long as the provider says. A
 		// conversation that hands out work asks for the long prompt cache (src/cache.ts).
-		models: noticingRefusals(promptCacheLifetimes(providers.models)),
+		models: noticingRefusals(retryThinking(providers, promptCacheLifetimes(providers.models), engine.providersChanged)),
 		registry,
 		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
 		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
@@ -620,6 +621,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
+	if (entry.kind === THINKING_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
 		// With the command's id, so the line can open the window with its output.
 		const details = backgroundMarkerDetails(entry.data);
@@ -1434,7 +1436,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				if (item.text !== "") lines.push(item.text, "");
 				for (const call of item.toolCalls) {
 					const result = results.get(call.callId);
-					lines.push(`**Tool: ${call.name}**`, "", `${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
+					lines.push(`**Tool: ${call.name}**`, "");
+					if ((result?.details as { allowedByEverything?: unknown } | null)?.allowedByEverything === true) lines.push("*Allowed by Allow everything.*", "");
+					lines.push(`${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
 					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
 				}
 			}

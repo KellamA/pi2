@@ -102,6 +102,10 @@ A development build measures this when asked: see [Measuring the app's speed](de
 
 Conversations, runs and tool calls are pi durable's. pi² adds a few documents of its own on top: the list of conversations with their titles and settings, the agents, the schedules, and a per-day record of spend.
 
+### A thinking level refused by a provider
+
+If a provider refuses a request before the answer starts and explicitly lists the thinking levels it accepts, the engine tries the nearest one once (the lower one on a tie). A line in the conversation explains the retry; it is not sent to the model. Once the retry is accepted, the menus use the provider's list, even for a model from the catalog. For a model added by hand the list is also saved in `added-models.json`; a catalog correction lasts until the model is replaced or the engine restarts. If pi² cannot tell what the provider accepts, the error is shown as before.
+
 ### Agent settings
 
 `agents.save { agent }` creates or edits a saved setup. `agents.duplicate { id }` copies one in the engine and returns the new `{ id }`; the app opens its settings. Both use the same validation and defaults, including checking the folder, reference files, worktree setting, computer use and browser. New names and ids are allocated in the commit, so simultaneous duplicates remain distinct. Each copy's id includes a fresh UUID: a deleted copy's conversations, schedules and worktrees must never be inherited by another copy with the same name. The name is `<name> copy`, then `<name> copy 2`, and so on, ignoring case when checking what is taken.
@@ -158,6 +162,8 @@ The app sends a message to a working conversation either to steer it (the defaul
 | `background`, a read with `wait` | Stops waiting, gives what there is, and says the command is still running. |
 | `ask_user` | The question is taken away, and the result says the person wrote a message instead. |
 | Everything else | Left to finish, and the message comes after it: a command in the foreground, `write`, `edit` and `write_document`, an MCP tool, a code mode script (and every call it makes, `delegate` included, since they are part of the script), computer use, the browser, and a call waiting for the person's approval, which they answer on its card. |
+
+For a code mode script, this boundary is deliberate (#325): its next action may depend on the reply a nested `delegate` gives, so an interruption result would change the program's meaning. The field says “reads this once the script has finished” and the queued chip says “After the script”. A short script can instead hand work over with `wait: false` and finish, letting the answers wake the agent; a top-level `sub_chats` wait then gives way as usual. See [Code mode](codemode.md#a-message-while-a-script-waits).
 
 A message sent queued keeps its meaning and is placed once the agent has answered.
 

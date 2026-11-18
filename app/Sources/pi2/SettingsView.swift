@@ -795,6 +795,9 @@ struct AddModelForm: View {
                     } header: {
                         Text(takenFrom(draft))
                     } footer: {
+                        if !draft.editing, draft.told?.contains("thinking levels") != true {
+                            Text("Thinking levels are copied from \(draft.basedOnName) and may not all work on this model.").formFooter()
+                        }
                         Text("pi² does not know this model's price: Usage counts its tokens and shows no cost. It uses your \(provider.name) \(provider.status?.type == "oauth" ? "sign-in" : "key"). If \(provider.name) does not offer the model to it, a conversation that uses it stops and says so. Once pi²'s own list has the model, that entry takes this one's place.").formFooter()
                     }
                 }

@@ -118,6 +118,9 @@ try {
 	// A call that asks for more than the most gets the most, and is told what to do instead (issue #160). The command
 	// sleeps beyond the test's patience: only the limit can end it, and nothing must print before that limit.
 	type Run = { execute(args: unknown, api: unknown, context: unknown): Promise<unknown> };
+	const { useRunFolder } = await import("../src/processes.ts");
+	const runFolder = join(folder, "runs");
+	useRunFolder(runFolder);
 	const limited = (shell(undefined, { fallback: 1, most: 2 }) as unknown as { wrap(tool: unknown): Run }).wrap(createBashTool());
 	const runLimited = async (args: Record<string, unknown>, tool = limited) => {
 		let printed = "";
@@ -141,6 +144,8 @@ try {
 		"a second of quiet is not worth remarking on",
 	);
 
+	assert.deepEqual(readdirSync(runFolder), [], "a command stopped at its limit releases its run's file");
+
 	// A non-zero exit is told as a fact, not as an error, unless the command could not be started or a signal ended it
 	// (issue #182). Limits longer than any wait here, so only the command ends each run.
 	const roomySeconds = 2 * PATIENT_MS / 1000;
@@ -148,6 +153,20 @@ try {
 	const fine = await runLimited({ command: "echo fine", timeout: roomySeconds }, roomy);
 	assert.equal(fine.error, undefined, "a command with a patient explicit timeout finishes");
 	assert.equal(fine.printed, "fine\n");
+	const inherited = await runLimited({ command: `'${process.execPath}' -e 'console.log(JSON.stringify({marker:process.env.PI2_RUN, mode:require("fs").fstatSync(19).mode & 4095}))'` }, roomy);
+	assert.equal(inherited.error, undefined, "foreground exec inherited the descriptor");
+	const proof = JSON.parse(inherited.printed);
+	assert.match(proof.marker, /^[0-9a-f]{32}$/);
+	assert.equal(proof.mode, 0, "the inherited file still cannot be opened by name");
+	assert.deepEqual(readdirSync(runFolder), [], "a command that ends normally releases its run's file");
+	const cwd = env.cwd;
+	try {
+		env.cwd = join(folder, "no-such-folder");
+		assert.ok((await runLimited({ command: "true" }, roomy)).error, "a failed start is reported");
+	} finally {
+		env.cwd = cwd;
+	}
+	assert.deepEqual(readdirSync(runFolder), [], "a failed start releases its run's file");
 	const ended = async (command: string) => {
 		let printed = "";
 		const api = { env, conversationId: 1, callId: "exit", output: (text: string) => void (printed += text), retainedOutput: () => ({ text: printed, truncated: false }), diagnostic: () => {} };
@@ -174,6 +193,7 @@ try {
 		assert.deepEqual(result.diagnostics, [{ severity: "error", code: "exit_code", message }], command);
 		assert.equal(result.structuredOutput.exitCode, code, command);
 	}
+	assert.deepEqual(readdirSync(runFolder), [], "non-zero exits and signals release their run files too");
 	// The messages about time, at the real limits: one stopped by the default, one whose own timeout ran out, and how
 	// long one that ended by itself took when that was a minute or more.
 	const real = { fallback: 120, most: 600 };

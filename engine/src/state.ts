@@ -6,7 +6,7 @@ import type { ReferenceFile } from "./reference.ts";
 import type { ScheduleSettings } from "./selfschedule.ts";
 import type { CommandRule } from "./rules.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
-import { defineDoc } from "@earendil-works/pi-durable";
+import { defineDoc, type HookApi } from "@earendil-works/pi-durable";
 
 export type ModelRef = { provider: string; modelId: string };
 
@@ -220,6 +220,9 @@ export type InboxItem = {
 	createdAt: number;
 };
 
+/** The tool task remembers why its approval was skipped, even if it is interrupted by a restart. */
+export const ALLOWED_BY_EVERYTHING = "pi2.allowedByEverything";
+
 /**
  * Waiting calls live in memory: each is a tool task parked inside its hook or its `execute()`. After a restart the
  * Harness runs that code again, so the item reappears; nothing here needs to be stored.
@@ -242,8 +245,11 @@ export class Inbox {
 	 * everything is answered "once" at once, without being shown: allowed this time, with nothing remembered (no rule,
 	 * no "always"), so turning the switch off later leaves nothing behind. A question is always asked.
 	 */
-	async ask(item: InboxItem, context: Context): Promise<string> {
-		if (item.kind === "approval" && (await this.#unasked(item.conversationId))) return "once";
+	async ask(item: InboxItem, api: Pick<HookApi, "memo">, context: Context): Promise<string> {
+		if (item.kind === "approval" && (await this.#unasked(item.conversationId))) {
+			await api.memo(ALLOWED_BY_EVERYTHING, true, context);
+			return "once";
+		}
 		const answer = new Promise<string>((resolve) => this.#waiting.set(item.id, { item, resolve }));
 		this.onChange();
 		try {

@@ -278,6 +278,7 @@ export const selfSchedule: Feature = (host) => {
 					when: capital(when),
 					createdAt: Date.now(),
 				},
+				api,
 				context,
 			);
 			// Only once or deny is offered. "always" from another app counts as once: nothing is remembered either way.

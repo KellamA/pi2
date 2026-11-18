@@ -36,7 +36,7 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/test-copy <command> [arguments]
 
-  start <suffix> [--show <what>] [--menu <label>] [--welcome]
+  start <suffix> [--show <what>] [--menu <label>] [--welcome] [--env NAME=VALUE]
                                    Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
                                    data folder of its own, behind other windows, parked in a corner, without taking
                                    the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md),
@@ -44,7 +44,9 @@ Usage: scripts/test-copy <command> [arguments]
                                    context menu of the element with that label, such as a conversation's title
                                    (PI2_MENU). The first-run welcome is marked done in the copy's data folder, so it
                                    does not cover the window; --welcome keeps it. Prints the data folder and the
-                                   app's and engine's process ids.
+                                   app's and engine's process ids. --env may repeat, for these test variables only:
+                                   PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND.
+                                   Values are explicit (never inherited), kept for reopen, and not secrets.
   reopen <suffix> [--show <what>]   Stop only the recorded app, keep its engine and data, and launch it again with
                                    the same clean environment. Keep the previous --show unless given another.
   shot <suffix> <file.png> [--window <title>]
@@ -156,12 +158,30 @@ from_bundle() {
 }
 
 APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" WELCOME=0 MENU=""
+TEST_ENV=()
+# Only explicit demo switches may cross the clean launch boundary. Never accept an open-ended PI2_* prefix:
+# PI2_HOME and the Keychain service are owned by this script, and future switches may weaken isolation.
+add_test_env() {
+	local pair=$1 key old
+	[[ $pair == *=* ]] || die "--env needs NAME=VALUE"
+	[[ $pair != *$'\n'* && $pair != *$'\r'* ]] || die "--env takes one line"
+	key=${pair%%=*}
+	case $key in
+		PI2_DEMO_PICTURES|PI2_DEMO_TEXT_MODEL|PI2_DEMO_COST|PI2_DEMO_TOKENS_PER_SECOND) ;;
+		*) die "--env does not allow $key; only PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST and PI2_DEMO_TOKENS_PER_SECOND" ;;
+	esac
+	for old in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do
+		[[ ${old%%=*} != "$key" ]] || die "--env repeats $key; give each variable once"
+	done
+	TEST_ENV+=("$pair")
+}
 # Where a copy started with --menu writes the context menu (ContextMenuPreview.fileName in the app).
 MENU_FILE=context-menu.txt
 
 load_state() {
 	[[ -f $STATE ]] || return 1
 	local key value
+	TEST_ENV=()
 	while IFS='=' read -r key value; do
 		case $key in
 			app_pid) APP_PID=$value ;;
@@ -172,6 +192,7 @@ load_state() {
 			engine_exe) ENGINE_EXE=$value ;;
 			show) SHOW=$value ;;
 			menu) MENU=$value ;;
+			test_env) add_test_env "$value" ;;
 		esac
 	done <"$STATE"
 	[[ -z $APP_PID || $APP_PID =~ ^[0-9]+$ ]] || die "$STATE is damaged: app_pid is '$APP_PID'"
@@ -182,6 +203,8 @@ save_state() {
 	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" "menu=$MENU" \
 		"app_pid=$APP_PID" "app_start=$APP_START" "app_exe=$APP_EXE" \
 		"engine_pid=$ENGINE_PID" "engine_start=$ENGINE_START" "engine_exe=$ENGINE_EXE" >"$STATE.new"
+	local pair
+	for pair in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do printf '%s\n' "test_env=$pair" >>"$STATE.new"; done
 	mv "$STATE.new" "$STATE"
 }
 
@@ -335,6 +358,8 @@ launch_app() {
 		--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
 	[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
 	[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
+	local pair
+	for pair in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do vars+=(--env "$pair"); done
 	env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" TMPDIR="${TMPDIR:-/tmp/}" LANG=en_US.UTF-8 \
 		PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -n -g "$APP" "${vars[@]}"
 
@@ -358,6 +383,7 @@ case $cmd in
 			case $1 in
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
 				--welcome) WELCOME=1; shift ;;
+				--env) [[ -n ${2-} ]] || die "--env needs NAME=VALUE"; add_test_env "$2"; shift 2 ;;
 				--menu) [[ -n ${2-} ]] || die "--menu needs the label of what to right-click, such as a conversation's title"; MENU=$2; shift 2 ;;
 				*) die "unknown option $1" ;;
 			esac

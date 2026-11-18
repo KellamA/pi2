@@ -118,6 +118,18 @@ expect "--show needs what to open on" start test-8 --show
 # --welcome is an option of start's, taking no value: the option after it is still read, and refused.
 expect "unknown option --bogus" start test-8 --welcome --bogus
 expect "unknown option --bogus" start test-8 --show inbox --welcome --bogus
+expect "--env needs NAME=VALUE" start test-8 --env
+expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
+expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\nPI2_HOME=elsewhere'
+expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\r'
+for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
+	expect "--env does not allow" start test-8 --env "$key=value"
+done
+expect "--env repeats PI2_DEMO_COST" start test-8 --env PI2_DEMO_COST=1 --env PI2_DEMO_COST=2
+for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND; do
+	expect "unknown option --bogus" start test-8 --env "$key=explicit value=with equals" --bogus
+done
+expect "unknown option --bogus" start test-8 --env PI2_DEMO_COST= --env PI2_DEMO_TEXT_MODEL=1 --bogus
 expect "--menu needs the label" start test-8 --menu
 expect "--menu needs the label" start test-8 --menu ""
 expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
@@ -199,6 +211,12 @@ else
 	echo "FAIL: test-copy status before engine.pid exists (exit $status): $out"
 	failures=$((failures + 1))
 fi
+
+# Saved test variables must pass the same allowlist on reopen: no edited state can supply PI2_HOME.
+printf '%s\n' 'test_env=PI2_HOME=elsewhere' >"$root/app/build/test-copies/test-7/state"
+HOME="$T/home" expect "--env does not allow PI2_HOME" reopen test-7
+printf '%s\n' "app_pid=$$" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
+	"app_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
 
 # call and send require a live, recorded engine too; an app alone is not enough, nor is a reused pid.
 HOME="$T/home" expect "has no recorded engine running" send test-7 8 hello

@@ -803,6 +803,7 @@ struct ToolCard: View {
     private var isRunning: Bool { result == nil && running }
     private var isError: Bool { result?.isError ?? false }
     private var output: String { Self.readable(result?.text ?? live?.output ?? "") }
+    private var allowedByEverything: Bool { result?.details?["allowedByEverything"] == .bool(true) }
     /// The person's rules that let this command run without asking, as its result records them.
     private var allowedBy: [String] {
         (result?.details?["allowedBy"]?.arrayValue ?? []).compactMap { $0.stringValue }
@@ -904,7 +905,7 @@ struct ToolCard: View {
             // Waiting on the person: the approval or question is the whole card.
             InboxCard(engine: engine, item: pending, showsSource: false)
         } else if call.name == "delegate" {
-            SubagentCard(engine: engine, call: call, subagent: subagent, title: title, output: output, isRunning: isRunning, isError: isError, finished: result != nil)
+            SubagentCard(engine: engine, call: call, subagent: subagent, title: title, output: output, isRunning: isRunning, isError: isError, finished: result != nil, allowedByEverything: allowedByEverything)
         } else {
             card
         }
@@ -922,7 +923,9 @@ struct ToolCard: View {
                         .foregroundStyle(Theme.tx)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    if !allowedBy.isEmpty {
+                    if allowedByEverything {
+                        Text("allowed by Allow everything").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                    } else if !allowedBy.isEmpty {
                         // So a command that was not asked about does not look as if nothing checked it.
                         Text("allowed by your rule").font(.system(size: 11)).foregroundStyle(Theme.tx3)
                             .help("Ran without asking: your rule for “\(allowedBy.joined(separator: "”, “"))” covers it")
@@ -944,7 +947,7 @@ struct ToolCard: View {
             }
             .buttonStyle(.plain)
             .help(title)
-            .accessibilityLabel("\(title) \(call.summary)")
+            .accessibilityLabel("\(title) \(call.summary)\(allowedByEverything ? ", allowed by Allow everything" : "")")
 
             if expanded {
                 Rectangle().fill(Theme.line).frame(height: 1)
@@ -978,6 +981,7 @@ struct SubagentCard: View {
     let isRunning: Bool
     let isError: Bool
     let finished: Bool
+    let allowedByEverything: Bool
     @State private var expanded = false
 
     private var profile: AgentProfile? {
@@ -997,6 +1001,9 @@ struct SubagentCard: View {
                 Text(profile?.name ?? subagent?.name ?? "Subagent").font(.system(size: 13, weight: .semibold))
                 Tag(call.arguments["chat"]?.intValue == nil ? "subagent · \(engine.shortModelName(profile?.model))" : "continued · \(engine.shortModelName(profile?.model))")
                 Spacer(minLength: 6)
+                if allowedByEverything {
+                    Text("allowed by Allow everything").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                }
                 if isRunning {
                     Spinner()
                     Text("working").font(.system(size: 11.5)).foregroundStyle(Theme.tx2)

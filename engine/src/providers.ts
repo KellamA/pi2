@@ -24,6 +24,7 @@ import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@e
 import { isAttachmentBlock } from "./attachments.ts";
 import type { LocalSetup } from "./localengine.ts";
 import { FileModelsStore, type ListedModel, listerFor } from "./modellists.ts";
+import { THINKING_LEVELS } from "./thinkingretry.ts";
 
 export const DEMO_PROVIDER = "demo";
 export const DEMO_MODEL = "demo-1";
@@ -110,6 +111,8 @@ export type AddedModel = {
 	vision: boolean;
 	/** As `getSupportedThinkingLevels` gives them; empty for a model that does not think. */
 	thinkingLevels: string[];
+	/** The provider's own wire values, not those copied from the template. */
+	reportedThinking?: ThinkingLevelMap;
 	addedAt: number;
 	/** The model as it was built when added: what it is built from if the library no longer has `basedOn`. */
 	model: Model<Api>;
@@ -139,9 +142,6 @@ export type ModelDraft = {
 	/** The id is already added by hand: saving it changes that model. */
 	editing: boolean;
 };
-
-/** Every thinking level pi-ai knows, in order. */
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /**
  * A model id's family and version: the id without its version numbers and dates ("claude-opus", "gpt-mini"), and those
@@ -247,7 +247,7 @@ function checkModelId(raw: unknown): string {
 
 /** A model added by hand, built from its template with the person's choices. Its price is not known, so it is none. */
 function buildAdded(template: Model<Api>, entry: Omit<AddedModel, "addedAt" | "model" | "basedOn">, provider: string): Model<Api> {
-	const reasoning = entry.thinkingLevels.some((level) => level !== "off");
+	const reasoning = entry.reportedThinking !== undefined || entry.thinkingLevels.some((level) => level !== "off");
 	const { thinkingLevelMap: _map, ...rest } = template;
 	return {
 		...rest,
@@ -255,7 +255,7 @@ function buildAdded(template: Model<Api>, entry: Omit<AddedModel, "addedAt" | "m
 		name: entry.name,
 		provider,
 		reasoning,
-		...(reasoning ? { thinkingLevelMap: thinkingMap(template, entry.thinkingLevels) } : {}),
+		...(reasoning ? { thinkingLevelMap: entry.reportedThinking ?? thinkingMap(template, entry.thinkingLevels) } : {}),
 		input: entry.vision ? ["text", "image"] : ["text"],
 		contextWindow: entry.contextWindow,
 		maxTokens: entry.maxTokens,
@@ -685,6 +685,8 @@ export class Providers {
 	#added: Record<string, AddedModel[]>;
 	/** The added models as built, by provider: the same objects each time, until they change. */
 	#built = new Map<string, Model<Api>[]>();
+	/** Catalog corrections last only until the library replaces that model, or the engine restarts. */
+	#learned = new WeakMap<Model<Api>, ThinkingLevelMap>();
 	/** What each provider said of its models when last asked, by id: for adding one of them. */
 	readonly #listed = new Map<string, Map<string, ListedModel>>();
 	readonly #log: (...parts: unknown[]) => void;
@@ -991,6 +993,33 @@ export class Providers {
 		return this.#info(this.#builtModels(input.provider).find((m) => m.id === id)!);
 	}
 
+	learnThinking(model: Model<Api>, levels: string[], map: ThinkingLevelMap): boolean {
+		if (this.models.getModel(model.provider, model.id) !== model) return false;
+		if (!this.isAddedByHand(model.provider, model.id)) {
+			this.#learned.set(model, map);
+			return true;
+		}
+		const before = this.#added[model.provider]!;
+		this.#added[model.provider] = before.map((entry) => entry.id !== model.id ? entry : {
+			...entry, thinkingLevels: levels, reportedThinking: map, model: { ...model, thinkingLevelMap: map },
+		});
+		try {
+			this.#persistAdded();
+		} catch {
+			this.#added[model.provider] = before;
+			this.#learned.set(model, map);
+			this.#log(`could not save reported thinking levels for ${model.provider}/${model.id}; using them until the engine restarts`);
+			return true;
+		}
+		this.#built.delete(model.provider);
+		return true;
+	}
+
+	reportedThinking(model: Model<Api>): ThinkingLevelMap | undefined {
+		return this.#learned.get(model) ?? (this.isAddedByHand(model.provider, model.id)
+			? this.#added[model.provider]?.find((entry) => entry.id === model.id)?.reportedThinking : undefined);
+	}
+
 	removeModel(providerId: string, id: string): void {
 		if (!this.#added[providerId]?.some((entry) => entry.id === id)) throw new Error(`${id} was not added by hand to ${this.models.getProvider(providerId)?.name ?? providerId}`);
 		this.#added[providerId] = this.#added[providerId]!.filter((entry) => entry.id !== id);
@@ -1010,7 +1039,7 @@ export class Providers {
 			providerName: names?.get(model.provider) ?? this.models.getProvider(model.provider)?.name ?? model.provider,
 			id: model.id,
 			name: model.name,
-			thinkingLevels: model.reasoning ? getSupportedThinkingLevels(model) : [],
+			thinkingLevels: model.reasoning ? getSupportedThinkingLevels({ ...model, thinkingLevelMap: this.reportedThinking(model) ?? model.thinkingLevelMap }) : [],
 			contextWindow: model.contextWindow,
 			vision: model.input.includes("image"),
 			...(this.isAddedByHand(model.provider, model.id) ? { addedByHand: true } : {}),
