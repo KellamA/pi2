@@ -181,7 +181,7 @@ struct QuickAskView: View {
     @FocusState private var focused: Bool
     private var engine: EngineClient { model.engine }
 
-    private var data: ConversationData? { conversationID.flatMap { engine.open[$0] } }
+    private var data: OpenConversation? { conversationID.flatMap { engine.open[$0] } }
     /// The newest answer, finished or still streaming.
     private var answer: String? {
         if let partial = data?.state?.partial?.text, !partial.isEmpty { return partial + " ▍" }
@@ -238,6 +238,8 @@ struct QuickAskView: View {
         .ignoresSafeArea()
         .onAppear { focused = true }
         .onExitCommand(perform: close)
+        // Kept coming from the engine although no pane shows it, while this panel has it.
+        .onChange(of: conversationID, initial: true) { _, id in engine.quickAskConversation = id }
     }
 
     private func send() {

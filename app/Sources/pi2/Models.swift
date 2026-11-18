@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Any JSON value, for payloads the app shows but does not interpret (tool arguments, request results).
 enum JSONValue: Codable, Equatable, Sendable {
@@ -252,6 +253,16 @@ struct RunFailure: Codable, Equatable {
         if let detail, !detail.isEmpty { return "\(what): \(detail)" }
         return what
     }
+}
+
+/// A message the person sent that the conversation does not show yet: on its way to the engine, or taken by it.
+struct OutgoingMessage: Equatable, Identifiable {
+    /// The request id it is sent with, which the engine uses to recognise it if it is sent again.
+    let id: String
+    /// Its text, or what it carries when it is only attachments.
+    let summary: String
+    /// The engine's id for it, once the engine has taken it.
+    var submission: Int?
 }
 
 struct QueuedInput: Codable, Equatable, Identifiable {
@@ -951,9 +962,21 @@ struct SearchResult: Codable, Equatable, Identifiable {
     var id: Int { entryId }
 }
 
-struct ConversationData: Equatable {
-    var items: [Item] = []
-    var state: ConversationState?
+/// An open conversation as the engine last sent it: its entries and its live state. One object per conversation, so that
+/// an update to one conversation redraws only the views that show it, not every view that shows any (#347).
+@MainActor
+@Observable
+final class OpenConversation {
+    private(set) var items: [Item] = []
+    /// Nil until the engine has sent the conversation.
+    private(set) var state: ConversationState?
+
+    /// Takes in one update from the engine, touching only what changed.
+    func apply(reset: Bool, items new: [Item], state: ConversationState) {
+        if reset, !items.isEmpty { items = [] }
+        if !new.isEmpty { items.append(contentsOf: new) }
+        if self.state != state { self.state = state }
+    }
 }
 
 struct EndpointModel: Codable, Equatable, Hashable {
@@ -1122,5 +1145,8 @@ struct SignInFlow: Equatable {
 
 struct EngineError: LocalizedError {
     let message: String
+    /// No answer came: the engine was not connected, or the connection went before it answered. A request that is safe to
+    /// send again (a message with its request id) can be sent again once the engine is back.
+    var unanswered = false
     var errorDescription: String? { message }
 }

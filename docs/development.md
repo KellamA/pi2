@@ -192,6 +192,24 @@ To check a page without clicking, start a throwaway copy on it and capture its w
 
 The scripted demo model answers `/bash <command>`, `/timeout <seconds> <command>` (bash with a `timeout`), `/background <command>` (bash with `background: true`; see [background.md](background.md)), `/tool <name> <json>` (any tool the conversation has, such as `/tool background {"action":"list"}`, or `/tool delegate {"agent":"Forge","task":"…","title":"Fix X","worktree":"fix-x","from":"main"}` for the parameters `/delegate` does not take), `/tools <json>` (several calls in one answer, as a real model makes them: `/tools [{"name":"bash","arguments":{"command":"ls"}},{"name":"read","arguments":{"path":"a.txt"}}]`), `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider. `/context` answers with what the person said in the conversation as the model was sent it, one message a line, with `(answer)` for each answer between, so a test can see which version of a chat a request saw. `/system` answers with parts of the system prompt it was sent: `/system <section> …` with those sections and the names of the tools offered, `/system sizes` with the length in characters of each section and of the tool definitions, `/system history` with one line for each system message in the conversation, saying which sections it set (with their length) or removed and which tools it added or took away. A section with nothing to say holds its place with empty text, which is not sent to the model; `/system sizes` and `/system <section>` leave it out.
 
+## Measuring the app's speed
+
+A development build (ordinary or optimised) measures its main thread while its data folder holds a file named `perf.on`, and writes what it found to `perf.log` there every ten seconds (`PerfProbe.swift`). It looks for the file every two seconds, so it can be turned on and off while the app runs. A release build never measures. Each ten seconds it writes:
+
+- how much of the time the main thread was awake, and how late it answered a block sent to it every 50 ms from another thread (the wait a click would have), at the median, the 95th percentile and the worst;
+- for each kind of event from the engine, and each kind of reply: how many a second, their size, and the main thread's time decoding and taking them in; `page update` is a conversation page being sent what changed;
+- for each kind of request: how many, and how long their answers took.
+
+It also writes a line for each conversation opened, with the time from asking for it to each step (the engine's first update, the engine's answer, the page being sent the entries, the page having drawn them), and one for each message accepted. Measure an optimised build in a throwaway copy, which is what a person runs:
+
+```bash
+./app/build.sh optimised
+scripts/test-copy start test-7
+touch ~/Library/Application\ Support/pi2-test-7/perf.on
+```
+
+Then make the load (#344 adds a script that starts conversations on the demo model, each streaming and running commands), work the copy, and read `perf.log`. What the probe cannot see, such as how much of the main thread's time SwiftUI spends laying out, `sample <app pid> 10` shows: a process of your own can be sampled without any permission. Never sample or signal the installed pi².
+
 ## CI
 
 Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue` and `scripts/test-issue-hook`). Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.

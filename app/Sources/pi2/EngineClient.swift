@@ -20,7 +20,11 @@ final class EngineClient {
     private(set) var archived: [ArchivedConversation] = []
     /// After how many unused days a conversation is archived on its own; nil for never.
     private(set) var autoArchiveDays: Int?
-    private(set) var open: [Int: ConversationData] = [:]
+    /// The conversations the app has asked the engine for, which it keeps sending. The list changes only as one is opened
+    /// or closed; each conversation's updates go to its own object, so they redraw only the views that show it.
+    private(set) var open: [Int: OpenConversation] = [:]
+    /// Messages the person sent that the conversation does not show yet, by conversation, oldest first.
+    private(set) var outgoing: [Int: [OutgoingMessage]] = [:]
     private(set) var providers: [ProviderInfo] = []
     /// Every model of every connected provider, including the ones hidden in Settings.
     private(set) var allModels: [ModelInfo] = []
@@ -52,6 +56,8 @@ final class EngineClient {
     }
     private(set) var hasLoadedLibrary = false
     private(set) var activity: [ActivityRun] = []
+    /// How many runs `activity` lists, for the sidebar, which need not be drawn again for every change to a run.
+    private(set) var runningCount = 0
     /// Commands agents left running in the background, oldest first.
     private(set) var backgroundCommands: [BackgroundCommand] = []
     /// What will wake an agent when it ends, and what has and waits for it (docs/wakes.md).
@@ -122,7 +128,7 @@ final class EngineClient {
 
     @discardableResult
     func call(_ method: String, _ params: [String: Any] = [:]) async throws -> JSONValue {
-        guard let connection, status == .connected else { throw EngineError(message: "The engine is not running yet.") }
+        guard let connection, status == .connected else { throw EngineError(message: "The engine is not running yet.", unanswered: true) }
         let id = nextRequestID
         nextRequestID += 1
         var data = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
@@ -155,8 +161,9 @@ final class EngineClient {
 
     func openConversation(_ id: Int) {
         PerfProbe.opening(id, "asked")
+        lastWanted[id] = Date()
         guard open[id] == nil else { return }
-        open[id] = ConversationData()
+        open[id] = OpenConversation()
         // Panes restored at launch appear before the app has connected. Connecting asks for every open conversation,
         // so one opened before then waits for that rather than failing.
         guard status == .connected else { return }
@@ -187,8 +194,30 @@ final class EngineClient {
     /// conversation using it is shown (docs/local-models-running.md).
     func setShown(_ ids: Set<Int>) {
         guard ids != shown else { return }
+        // What was on screen until now was wanted until now.
+        for id in shown.union(ids) { lastWanted[id] = Date() }
         shown = ids
         sendShown()
+    }
+
+    /// When each open conversation was last on screen or asked for.
+    @ObservationIgnored private var lastWanted: [Int: Date] = [:]
+    /// The conversation Quick Ask shows, which no pane may: it is kept open while the panel has it.
+    @ObservationIgnored var quickAskConversation: Int?
+    /// How long a conversation no longer on screen keeps coming from the engine, so that going back to it is instant.
+    private static let keptOpen: TimeInterval = 120
+
+    /// Closes the conversations nothing has shown for a while. Otherwise every conversation looked at since launch keeps
+    /// coming from the engine, several times a second while it works, to be read and kept for nothing (#347).
+    private func closeUnwanted() {
+        guard status == .connected else { return }
+        let now = Date()
+        for id in open.keys where !shown.contains(id) && id != quickAskConversation && outgoing[id] == nil {
+            guard now.timeIntervalSince(lastWanted[id] ?? .distantPast) > Self.keptOpen else { continue }
+            open[id] = nil
+            lastWanted[id] = nil
+            Task { _ = try? await call("conversation.close", ["id": id]) }
+        }
     }
 
     private func sendShown() {
@@ -199,20 +228,59 @@ final class EngineClient {
 
     /// Sends a message. Returns false, after showing why, when the engine refused it.
     /// `attachments` are pictures and files to go with it, as `ComposerAttachments.Draft.payload` makes them.
+    ///
+    /// Until the engine has it, and then until the conversation shows it, the message is in `outgoing`, which the
+    /// message field shows. When no answer comes because the engine is not connected or the connection goes, the message
+    /// is sent again once the engine is back, with the same request id, which makes the engine find the submission it
+    /// may already have taken rather than take it twice. Only after a minute without an engine is it given back.
     @discardableResult
     func submit(_ text: String, attachments: [[String: Any]] = [], to id: Int, steer: Bool) async -> Bool {
-        do {
-            // The request ID makes a resend after a lost reply harmless: the engine finds the same submission.
-            var params: [String: Any] = ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString]
-            if !attachments.isEmpty { params["attachments"] = attachments }
-            let asked = PerfProbe.now()
-            try await call("submit", params)
-            PerfProbe.note("submit to \(id) accepted in \(Int(((PerfProbe.now() - asked) * 1000).rounded()))ms")
-            return true
-        } catch {
-            lastError = error.localizedDescription
-            return false
+        let requestId = UUID().uuidString
+        var params: [String: Any] = ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": requestId]
+        if !attachments.isEmpty { params["attachments"] = attachments }
+        let summary = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")" : text
+        outgoing[id, default: []].append(OutgoingMessage(id: requestId, summary: summary))
+        let asked = PerfProbe.now()
+        while true {
+            do {
+                let result = try await call("submit", params)
+                PerfProbe.note("submit to \(id) accepted in \(Int(((PerfProbe.now() - asked) * 1000).rounded()))ms")
+                // Shown as taken until the conversation shows it (in `handle`), and for a few seconds at most.
+                if let index = outgoing[id]?.firstIndex(where: { $0.id == requestId }) {
+                    outgoing[id]?[index].submission = result["submissionId"]?.intValue ?? 0
+                }
+                Task {
+                    try? await Task.sleep(for: .seconds(open[id] == nil ? 0 : 3))
+                    dropOutgoing(requestId, from: id)
+                }
+                return true
+            } catch let error as EngineError where error.unanswered {
+                if await connected(within: .seconds(60)) { continue }
+                dropOutgoing(requestId, from: id)
+                lastError = "The engine did not come back for a minute, so the message was put back in its field. It may have been sent before the engine stopped: check the conversation before sending it again."
+                return false
+            } catch {
+                dropOutgoing(requestId, from: id)
+                lastError = error.localizedDescription
+                return false
+            }
         }
+    }
+
+    private func dropOutgoing(_ requestId: String, from id: Int) {
+        outgoing[id]?.removeAll { $0.id == requestId }
+        if outgoing[id]?.isEmpty == true { outgoing[id] = nil }
+    }
+
+    /// Waits until the engine is connected, for at most `limit`. True once it is.
+    private func connected(within limit: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + limit
+        while status != .connected {
+            guard ContinuousClock.now < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return true
     }
 
     func configure(_ id: Int, _ change: [String: Any]) {
@@ -296,6 +364,9 @@ final class EngineClient {
     func start() {
         guard connection == nil else { return }
         connect()
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closeUnwanted() }
+        }
     }
 
     private func connect() {
@@ -439,54 +510,60 @@ final class EngineClient {
             switch envelope.event {
             case "library":
                 let event = try decoder.decode(LibraryEvent.self, from: line)
-                conversations = event.conversations
-                archived = event.archived ?? []
-                autoArchiveDays = event.autoArchiveDays
-                hasLoadedLibrary = true
+                update(\.conversations, event.conversations)
+                update(\.archived, event.archived ?? [])
+                update(\.autoArchiveDays, event.autoArchiveDays)
+                update(\.hasLoadedLibrary, true)
             case "agents":
                 let event = try decoder.decode(AgentsEvent.self, from: line)
-                agents = event.agents
-                builtInTools = event.builtInTools ?? []
+                update(\.agents, event.agents)
+                update(\.builtInTools, event.builtInTools ?? [])
             case "pictures":
-                pictures = try decoder.decode(PictureModels.self, from: line)
+                update(\.pictures, try decoder.decode(PictureModels.self, from: line))
             case "inbox":
-                inbox = try decoder.decode(InboxEvent.self, from: line).items
+                update(\.inbox, try decoder.decode(InboxEvent.self, from: line).items)
             case "activity":
-                activity = try decoder.decode(ActivityEvent.self, from: line).runs
+                update(\.activity, try decoder.decode(ActivityEvent.self, from: line).runs)
+                update(\.runningCount, activity.count)
             case "background":
-                backgroundCommands = try decoder.decode(BackgroundEvent.self, from: line).commands
+                update(\.backgroundCommands, try decoder.decode(BackgroundEvent.self, from: line).commands)
             case "wakes":
                 let event = try decoder.decode(WakesEvent.self, from: line)
-                wakes = event.items
-                wakeHolds = event.held
+                update(\.wakes, event.items)
+                update(\.wakeHolds, event.held)
             case "local.running":
-                localRunning = try decoder.decode(LocalRunningEvent.self, from: line).running
+                update(\.localRunning, try decoder.decode(LocalRunningEvent.self, from: line).running)
             case "schedules":
-                schedules = try decoder.decode(SchedulesEvent.self, from: line).schedules
+                update(\.schedules, try decoder.decode(SchedulesEvent.self, from: line).schedules)
             case "recovery":
-                recovery = try decoder.decode(RecoveryEvent.self, from: line).recovery
+                update(\.recovery, try decoder.decode(RecoveryEvent.self, from: line).recovery)
             case "usage":
-                usage = try decoder.decode(UsageSummary.self, from: line)
+                update(\.usage, try decoder.decode(UsageSummary.self, from: line))
             case "mcp":
-                mcpServers = try decoder.decode(McpEvent.self, from: line).servers
+                update(\.mcpServers, try decoder.decode(McpEvent.self, from: line).servers)
             case "branches":
                 let event = try decoder.decode(BranchesEvent.self, from: line)
-                branches = Dictionary(uniqueKeysWithValues: event.conversations.compactMap { key, value in Int(key).map { ($0, value) } })
-                leftBehind = event.leftBehind ?? []
+                update(\.branches, Dictionary(uniqueKeysWithValues: event.conversations.compactMap { key, value in Int(key).map { ($0, value) } }))
+                update(\.leftBehind, event.leftBehind ?? [])
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
-                providers = event.providers
-                allModels = event.models
-                defaultModel = event.defaultModel
-                onboarded = event.onboarded ?? true
+                update(\.providers, event.providers)
+                update(\.allModels, event.models)
+                update(\.defaultModel, event.defaultModel)
+                update(\.onboarded, event.onboarded ?? true)
             case "conversation":
                 let event = try decoder.decode(ConversationEvent.self, from: line)
-                guard var data = open[event.id] else { return }
+                guard let data = open[event.id] else { return }
                 let first = data.state == nil
-                if event.reset { data.items = [] }
-                data.items.append(contentsOf: event.items)
-                data.state = event.state
-                open[event.id] = data
+                data.apply(reset: event.reset, items: event.items, state: event.state)
+                // A message the engine has taken goes from the field once the conversation shows it: in the queue, or as
+                // a message of the person's in the transcript.
+                if outgoing[event.id]?.contains(where: { $0.submission != nil }) == true {
+                    let queued = Set(event.state.queued.map(\.id))
+                    let arrived = event.reset || event.items.contains { $0.kind == "user" }
+                    outgoing[event.id]?.removeAll { $0.submission.map { arrived || queued.contains($0) } ?? false }
+                    if outgoing[event.id]?.isEmpty == true { outgoing[event.id] = nil }
+                }
                 if first { PerfProbe.opening(event.id, "entries \(data.items.count) (\(line.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to read)") }
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
@@ -496,11 +573,13 @@ final class EngineClient {
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
             case "limits", "memory", "coauthor", "local":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
-                extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
+                let value = try decoder.decode(JSONValue.self, from: line)
+                if extras[envelope.event ?? ""] != value { extras[envelope.event ?? ""] = value }
             case "local.progress":
                 // One download's progress, kept in the `local` event it belongs to (LocalModelsSettings.swift).
-                if let download = try decoder.decode(JSONValue.self, from: line)["download"] {
-                    extras["local"] = extras["local"]?.replacingDownload(download)
+                if let download = try decoder.decode(JSONValue.self, from: line)["download"],
+                   let local = extras["local"]?.replacingDownload(download), local != extras["local"] {
+                    extras["local"] = local
                 }
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
@@ -513,6 +592,12 @@ final class EngineClient {
         } catch {
             lastError = "The engine sent something the app could not read (\(envelope.event ?? "reply"))."
         }
+    }
+
+    /// Sets a property only when the value differs. A property of an observable object tells every view that reads it
+    /// of each set, even to the same value, and the engine sends most of these again whenever anything in them changes.
+    private func update<Value: Equatable>(_ path: ReferenceWritableKeyPath<EngineClient, Value>, _ value: Value) {
+        if self[keyPath: path] != value { self[keyPath: path] = value }
     }
 
     private func handleAuth(_ event: AuthEventMessage) {
@@ -563,7 +648,7 @@ final class EngineClient {
         connection?.cancel()
         connection = nil
         if status == .connected { status = .restarting }
-        for continuation in pending.values { continuation.resume(throwing: EngineError(message: "The engine stopped before it answered.")) }
+        for continuation in pending.values { continuation.resume(throwing: EngineError(message: "The engine stopped before it answered.", unanswered: true)) }
         pending.removeAll()
         launchEngineIfNeeded()
         // While the engine cannot be started, keep looking for one (it may be started some other way) but calmly.

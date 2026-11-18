@@ -535,14 +535,7 @@ struct SidebarView: View {
                 }
             }
             navRow("Activity", icon: "waveform.path.ecg", tag: .activity) {
-                if engine.recovery != nil {
-                    Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
-                        .help("The engine restarted after stopping unexpectedly")
-                        .accessibilityLabel("Engine restarted")
-                }
-                if !engine.activity.isEmpty {
-                    Tag("\(engine.activity.count) running", .acc)
-                }
+                ActivityBadges(engine: engine)
             }
             navRow("Usage", icon: "chart.bar", tag: .usage) {
                 if engine.usage?.overBudget == true {
@@ -705,6 +698,24 @@ struct SidebarView: View {
             // A sub-chat is archived with the conversation it belongs to.
             if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
             Button("Delete", role: .destructive) { model.delete(conversation) }
+        }
+    }
+}
+
+/// Activity's row in the sidebar: how many runs there are, and whether the engine restarted. A view of its own, since
+/// the engine says what is running several times a second while agents work, and only this needs drawing again for it,
+/// not the whole sidebar (#347).
+private struct ActivityBadges: View {
+    let engine: EngineClient
+
+    var body: some View {
+        if engine.recovery != nil {
+            Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
+                .help("The engine restarted after stopping unexpectedly")
+                .accessibilityLabel("Engine restarted")
+        }
+        if engine.runningCount > 0 {
+            Tag("\(engine.runningCount) running", .acc)
         }
     }
 }

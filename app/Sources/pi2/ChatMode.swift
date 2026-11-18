@@ -114,7 +114,10 @@ extension AppModel {
     func newChat() {
         mode = .chat
         if let waiting = engine.chats.first(where: { chat in
-            guard chat.title.isEmpty, !chat.busy, let data = engine.open[chat.id], let state = data.state else { return false }
+            guard chat.title.isEmpty, !chat.busy else { return false }
+            // A chat is titled after its first message, so one with no title has none; one open here can say for sure.
+            guard let data = engine.open[chat.id] else { return true }
+            guard let state = data.state else { return false }
             return data.items.isEmpty && state.partial == nil && !state.busy
         }) {
             chats.selection = waiting.id
@@ -409,7 +412,8 @@ struct ChatModeDetail: View {
         .navigationSubtitle("Chat")
         .toolbar {
             ToolbarItemGroup {
-                if let id { ModelMenu(engine: engine, id: id, agent: engine.open[id]?.state?.agent) }
+                // Left out until the chat has come from the engine, as in the agent view.
+                if let id, let agent = engine.open[id]?.state?.agent { ModelMenu(engine: engine, id: id, agent: agent) }
             }
         }
         .task(id: needsChat) { if needsChat { model.newChat() } }

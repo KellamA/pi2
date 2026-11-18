@@ -17,6 +17,8 @@ struct ConversationTranscript: View {
                 folder: folder, engine: engine, conversationID: conversationID, items: items, state: state,
                 inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names, chat: chat
             )
+            // The page stays hidden until it has drawn the conversation; meanwhile this shows through.
+            .background { ConversationLoading(chat: state?.chat == true) }
         } else {
             TranscriptView(engine: engine, conversationID: conversationID, items: items, state: state)
         }
@@ -131,18 +133,28 @@ final class TranscriptBridge {
         push()
     }
 
-    private func push() {
-        guard ready, let view, let names else { return }
+    /// Sends the page what changed. `drawn` is called once the page has drawn it, or at once when nothing changed.
+    private func push(drawn: (@MainActor () -> Void)? = nil) {
+        guard ready, let view, let names else {
+            drawn?()
+            return
+        }
         let started = PerfProbe.now()
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
         guard let message = feed.update(items: items, state: state, inbox: inbox, names: names, palette: palette, chat: chat),
-              let json = TranscriptFeed.json(message) else { return }
+              let json = TranscriptFeed.json(message) else {
+            drawn?()
+            return
+        }
         PerfProbe.event("page update", bytes: json.utf8.count, since: started)
-        guard message.reset == true, PerfProbe.active else { return send(json) }
+        guard message.reset == true, PerfProbe.active else { return send(json, then: drawn) }
         // The whole conversation going to the page, as it does when one is opened: time it until the page has shown it.
         let id = conversationID
         PerfProbe.opening(id, "page \(message.items?.count ?? 0) entries (\(json.utf8.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to encode)")
-        send(json) { PerfProbe.opening(id, "drawn") }
+        send(json) {
+            PerfProbe.opening(id, "drawn")
+            drawn?()
+        }
     }
 
     private func send(_ json: String, then done: (@MainActor () -> Void)? = nil) {
@@ -151,8 +163,9 @@ final class TranscriptBridge {
             view?.callAsyncJavaScript("window.pi2.receive(message)", arguments: ["message": json], in: nil, in: .page, completionHandler: nil)
             return
         }
-        // The page draws in its next animation frame: wait for that, and a turn after it, before calling it drawn.
-        let script = "window.pi2.receive(message); await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)));"
+        // The page draws in its next animation frame: wait for that, and a turn after it. A window nobody can see has
+        // no animation frames, and the page then draws on a timer of its own, so this does not wait longer than that.
+        let script = "window.pi2.receive(message); await new Promise((done) => { requestAnimationFrame(() => setTimeout(done, 0)); setTimeout(done, 200); });"
         view?.callAsyncJavaScript(script, arguments: ["message": json], in: nil, in: .page) { _ in
             MainActor.assumeIsolated { done() }
         }
@@ -163,8 +176,8 @@ final class TranscriptBridge {
         case .ready:
             ready = true
             feed.restart()
-            push()
-            view?.alphaValue = 1
+            // Shown once it has drawn what it was sent, so it never shows empty over the loading view.
+            push { [weak self] in self?.view?.alphaValue = 1 }
         case .copy(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
