@@ -505,6 +505,16 @@
 				glyph = "code";
 				label = [t(active ? "Running a script" + ELLIPSIS : "Ran a script")];
 				break;
+			case "make_picture": {
+				// A picture model's work (#286): the description, and the picture itself under the row, which starts open.
+				glyph = "picture";
+				const what = str(args.description).replace(/\s+/g, " ").trim();
+				const changing = args.change === true;
+				const verb = changing ? (active ? "Changing the picture: " : "Changed the picture: ") : active ? "Making a picture: " : "Made a picture: ";
+				label = what ? [t(verb), muted(quoted(what.length > 200 ? what.slice(0, 200) + ELLIPSIS : what)), t(dots)] : [t(verb.replace(/: $/, "") + dots)];
+				if (status === "done" && isObject(details) && str(details.modelName)) stats = str(details.modelName);
+				break;
+			}
 			case "run_code":
 				// A program in the sandbox (#286): nothing on the Mac, so the row says what it is for, not where it ran.
 				glyph = "code";
@@ -675,7 +685,7 @@
 	 *   { kind: "command", label, command, output, failed }   a command and what it printed
 	 *   { kind: "diff", label, diff }                          an edit
 	 *   { kind: "text", label, text, failed, language }        a file's text, an output, the arguments
-	 *   { kind: "images", entry, count }                       pictures kept with the result
+	 *   { kind: "images", entry, count, name?, label? }        pictures kept with the result, with what to call them
 	 *   { kind: "qa", question, answer }                       a question and the person's answer
 	 *   { kind: "plan", steps: [{text, status}] }              a task list
 	 */
@@ -744,6 +754,10 @@
 			case "codemode":
 				if (str(args.code)) sections.push({ kind: "text", label: "Script", text: str(args.code), language: "js" });
 				outputSection("Output");
+				break;
+			case "make_picture":
+				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images, name: "Picture", label: "Picture made" + (isObject(details) && str(details.modelName) ? " by " + str(details.modelName) : "") });
+				if (failed || images === 0) outputSection("Result");
 				break;
 			case "run_code":
 				if (str(args.code)) sections.push({ kind: "text", label: "Program", text: str(args.code), language: "js" });

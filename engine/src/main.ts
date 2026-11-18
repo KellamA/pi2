@@ -62,7 +62,7 @@ import { runningCommands } from "./running.ts";
 import { useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
-import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
+import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents, takeAgentSwitch } from "./state.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -177,7 +177,9 @@ const credentials = credentialStore(home);
 const providers = new Providers(home, credentials, () => deviceId(), { log });
 const mcp = new McpServers(home, credentials);
 mcp.log = log;
-const inbox = new Inbox();
+// Allow everything (#294), read from the stored conversation rather than the copy the watch keeps, which can lag
+// behind the message that set it.
+const inbox = new Inbox(async (id) => (await harness.snapshot(Library, context))?.conversations[String(id)]?.allowEverything === true);
 const computer = new ComputerHost();
 const browser = new BrowserHost();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
@@ -205,6 +207,7 @@ const host: Host = {
 	continueChat: async (id, content, requestId, callerContext) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
 		if (conv === undefined) return { reason: "the sub-chat no longer exists" };
+		await takeSwitch(conv.id);
 		await syncTools(conv).catch(() => {});
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
 		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
@@ -272,8 +275,8 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * The tools a conversation is given: file and shell tools by access level, asking the person, delegation, and what
  * its agent adds (scripts, MCP servers). A tool whose server is not connected right now is left out, and so is a tool
  * that could do nothing: the computer while no app is allowed, and in a sub-chat (`subChat`), handing work on and
- * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts):
- * a sub-chat follows its own agent's list.
+ * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts),
+ * where a sub-chat follows its own agent's list, and what a feature withholds for now (pictures with no picture model).
  */
 function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
@@ -281,21 +284,28 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	// Reference files can be read whatever the access level: the person chose them for this agent.
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
 	// Computer use with no app allowed could only refuse; the tool comes with the first app the person allows (#177), or
-	// with test copies of pi² allowed.
-	const screen = hasApps(agent?.computer) ? ["computer"] : [];
+	// with test copies of pi² allowed, or with Allow everything, under which any app may be used (#294).
+	const screen = hasApps(agent?.computer, agent?.allowEverything === true) ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
 	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
-	const leftOut = toolsLeftOut(agent);
+	const leftOut = new Set([...toolsLeftOut(agent), ...withheld()]);
 	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras]
 		.filter((name) => !leftOut.has(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }
 
+/** The tools that could do nothing right now, such as making pictures with no picture model: offered to no one. */
+function withheld(): string[] {
+	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
+}
+
 /** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
 function chatTools() {
+	const held = withheld();
 	return chatToolNames(chatSettings(settings.chat).web)
+		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }
@@ -428,6 +438,21 @@ async function syncTools(conv: Conversation): Promise<void> {
 	for (const client of clients) client.subscriptions.get(chatOf(id))?.push();
 }
 
+/**
+ * A message is about to be sent to conversation `id`: it takes its own agent's Allow everything switch as it is now
+ * (state.ts, `takeAgentSwitch`). Every way a message reaches a conversation calls this first: the person's (`submit`,
+ * `continue`), a schedule's (`deliver`) and an agent's continuing a sub-chat (`continueChat`); `delegate` sets a new
+ * sub-chat's from its own agent as it makes it.
+ */
+async function takeSwitch(id: ConversationId): Promise<void> {
+	const known = library.conversations[String(id)];
+	if (known !== undefined && (known.allowEverything === true) === (agents[known.agentId ?? ""]?.allowEverything === true)) return;
+	await harness.commit(async (tx) => {
+		const meta = (await tx.doc(Library)).conversations[String(id)];
+		if (meta !== undefined) takeAgentSwitch(meta, agents[meta.agentId ?? ""]);
+	}, context);
+}
+
 /** Changes a conversation's record in the library; a chat's version changes the chat's. */
 async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promise<void> {
 	const key = chatOf(id);
@@ -500,7 +525,14 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		const rules: CommandRule[] = JSON.parse(JSON.stringify(copiedRules ?? doc.agents[id]?.commandRules ?? []));
 		// Nor variables: they change through their own requests, and a copy gets theirs from variables.ts.
 		const variables = doc.agents[id]?.variables;
-		doc.agents[id] = { ...agent, commandRules: rules, ...(variables === undefined ? {} : { variables: JSON.parse(JSON.stringify(variables)) }) };
+		// Nor Allow everything, which has its own request; a new agent, a duplicate among them, never has it (#294).
+		const everything = doc.agents[id]?.allowEverything === true;
+		doc.agents[id] = {
+			...agent,
+			commandRules: rules,
+			...(variables === undefined ? {} : { variables: JSON.parse(JSON.stringify(variables)) }),
+			...(everything ? { allowEverything: true as const } : {}),
+		};
 	}, context);
 	// The agent's conversations pick up what it may now do at their next message; see syncTools.
 	return { id };
@@ -783,6 +815,8 @@ function libraryEvent() {
 			// Chat mode lists only chats, and the agent view never does (chat.ts).
 			chat: isChat(meta),
 			pinned: meta.pinned === true,
+			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
+			allowEverything: meta.allowEverything === true,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
@@ -1374,6 +1408,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		}
 		if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
 		// The agent's settings may have changed since this conversation was set up.
+		await takeSwitch(conv.id);
 		await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
 		const submission = await conv.submit(
 			{
@@ -1399,6 +1434,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	continue: async (params) => {
 		const conv = await conversation(params.id);
 		refuseIfPutAway(params.id as number);
+		await takeSwitch(conv.id);
 		await conv.submit({ type: "continue" }, context);
 		return {};
 	},
@@ -1409,6 +1445,23 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 
 	"agents.save": async (params) => saveAgent(params.agent as Partial<AgentProfile> | undefined),
+	/**
+	 * Allow everything on or off for an agent (#294). The app asks the person to confirm before it turns it on. Its
+	 * conversations take the change at their next message (`takeSwitch`).
+	 */
+	"agents.allowEverything": async (params) => {
+		const id = text(params, "id");
+		if (typeof params.on !== "boolean") throw new Error("on must be true or false");
+		const on = params.on;
+		await harness.commit(async (tx) => {
+			const agent = (await tx.doc(Agents)).agents[id];
+			if (agent === undefined) throw new Error(`Unknown agent: ${id}`);
+			if (on) agent.allowEverything = true;
+			else delete agent.allowEverything;
+		}, context);
+		log("agent", id, on ? "now allows everything" : "no longer allows everything");
+		return {};
+	},
 	"agents.duplicate": async (params) => {
 		const sourceId = text(params, "id");
 		const source = agents[sourceId];
@@ -1845,6 +1898,7 @@ async function deliver(id: string): Promise<void> {
 	const pending = schedule?.pending;
 	if (schedule === undefined || pending == null) return;
 	const conv = await harness.conversation(pending.conversationId as unknown as ConversationId, context);
+	if (conv !== undefined) await takeSwitch(conv.id);
 	await conv?.submit({ type: "input", content: schedule.prompt, requestId: `schedule:${id}:${pending.runAt}` }, context);
 	await harness.commit(async (tx) => {
 		const current = (await tx.doc(Schedules)).schedules[id];

@@ -146,7 +146,9 @@ async function judgeShell(host: Host, conversationId: ConversationId, command: u
  */
 export async function commandAsks(host: Host, conversationId: ConversationId, command: string, read: DocumentReader, context: Context): Promise<boolean> {
 	const meta = host.meta(conversationId);
-	// The same three checks as `beforeTool`'s for `bash`, in the same order.
+	// The same three checks as `beforeTool`'s for `bash`, in the same order, after Allow everything, under which the
+	// approval would be answered without asking (state.ts, `Inbox`).
+	if (meta?.allowEverything === true) return false;
 	if (meta?.access !== "ask") return false;
 	if (meta.autoApprove?.includes("bash")) return false;
 	return (await judgeShell(host, conversationId, command, read, context))?.verdict.allowed !== true;
@@ -269,6 +271,8 @@ export function pi2Extension(host: Host): Extension {
 					access: target.access,
 					agentId: target.id,
 					parent,
+					// Its own agent's Allow everything, never its parent's (#294).
+					...(target.allowEverything === true ? { allowEverything: true as const } : {}),
 				};
 				return created.id;
 			}, context);
@@ -335,6 +339,8 @@ export function pi2Extension(host: Host): Extension {
 
 	/** The computer-use settings of the agent a conversation belongs to. */
 	const computerOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.computer;
+	/** Whether a conversation may use any app, not only its agent's list: it allows everything (#294), as of its latest message. */
+	const anyApp = (conversationId: ConversationId) => host.meta(conversationId)?.allowEverything === true;
 	const agentNameOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.name ?? "An agent";
 	/** Told to the app with every request of an agent that may use test copies, which it checks for itself before acting. */
 	const testCopiesOf = (conversationId: ConversationId) => (computerOf(conversationId)?.testCopies === true ? { testCopies: true } : {});
@@ -349,12 +355,13 @@ export function pi2Extension(host: Host): Extension {
 		if (!(ACTIONS as readonly string[]).includes(action)) return `Unknown action "${args.action}". Use one of: ${ACTIONS.join(", ")}.`;
 		if (action === "list_apps") return undefined;
 		if (args.app === undefined || args.app.trim() === "") return `${action} needs \`app\`, a bundle ID from list_apps.`;
-		if (!mayUse(settings, args.app)) {
+		const any = anyApp(conversationId);
+		if (!mayUse(settings, args.app, any)) {
 			const listed = settings.apps.join(", ") || (settings.testCopies === true ? "none listed" : "none; the person adds them in this agent's settings");
 			return `You may not use ${args.app}. Apps you may use: ${listed}${settings.testCopies === true ? ", and test copies of pi² (dev.pi2.app.test…)" : ""}.`;
 		}
 		if (isNever(args.app)) return `${args.app} cannot be used by an agent.`;
-		if (!LOOKING.has(action) && action !== "open_app" && lookOnly(settings, args.app)) return `${args.app} can only be looked at, not controlled.`;
+		if (!LOOKING.has(action) && action !== "open_app" && lookOnly(settings, args.app, any)) return `${args.app} can only be looked at, not controlled.`;
 		if (action === "click" && args.element === undefined && (args.x === undefined || args.y === undefined)) return "click needs `element`, or both `x` and `y`.";
 		if ((action === "type" || action === "key") && (args.text === undefined || args.text === "")) return `${action} needs \`text\`.`;
 		if (action === "scroll" && (args.dy === undefined || args.dy === 0)) return "scroll needs `dy`: pages to scroll, positive for down.";
@@ -424,6 +431,7 @@ export function pi2Extension(host: Host): Extension {
 					agentName: agentNameOf(api.conversationId),
 					image: model?.input.includes("image") ?? true,
 					...(args.action.trim() === "list_apps" ? { apps: computerOf(api.conversationId)?.apps ?? [] } : {}),
+					...(anyApp(api.conversationId) ? { anyApp: true } : {}),
 					...testCopiesOf(api.conversationId),
 					...requestOf(args),
 				},
@@ -687,7 +695,7 @@ export function pi2Extension(host: Host): Extension {
 		sections: [
 			section("computer_use", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "computer")) return undefined;
-				return describeComputer(computerOf(input.conversationId));
+				return describeComputer(computerOf(input.conversationId), anyApp(input.conversationId));
 			}),
 			section("browser", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "browser")) return undefined;
@@ -744,7 +752,15 @@ export function pi2Extension(host: Host): Extension {
 					if (isComputer) {
 						// Ask the app what the action would act on, so the person approves "the Send button", not "control 12".
 						const described = await host.computer.perform(
-							{ action: "describe", of: args.action.trim(), conversationId: api.conversationId as unknown as number, agentName: agentNameOf(api.conversationId), ...testCopiesOf(api.conversationId), ...requestOf(args) },
+							{
+								action: "describe",
+								of: args.action.trim(),
+								conversationId: api.conversationId as unknown as number,
+								agentName: agentNameOf(api.conversationId),
+								...(anyApp(api.conversationId) ? { anyApp: true } : {}),
+								...testCopiesOf(api.conversationId),
+								...requestOf(args),
+							},
 							context,
 							5_000,
 						);
