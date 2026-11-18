@@ -45,7 +45,8 @@ step("how far loading has got is read from what the engine prints");
 	assert.equal(served.program, "/c/python/bin/python3");
 	assert.deepEqual(served.args.slice(0, 5), ["/c/serve/server.py", "--engine", "strata", "--config", "/m/strata-m.json"]);
 	assert.ok(served.args.includes("4321") && served.args.includes("127.0.0.1"));
-	assert.deepEqual(served.env, { HOME: "/data/local/strata/home", XDG_DATA_HOME: "/data/local/strata/data", STRATA_HOME: "/data/local/strata/strata" });
+	assert.deepEqual(served.env, { HOME: "/data/local/strata/home", XDG_DATA_HOME: "/data/local/strata/data", STRATA_HOME: "/data/local/strata/strata", PYTHONNOUSERSITE: "1" });
+	assert.deepEqual(served.unset, ["PYTHONHOME", "PYTHONPATH"]);
 	assert.equal(STRATA.command(engine, model, 4321, "/data").program, "/e/strata", "a model not yet prepared has no run config");
 	assert.ok(!JSON.stringify(served).includes("key"), "no key on the command line");
 }

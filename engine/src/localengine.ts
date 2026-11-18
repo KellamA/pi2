@@ -104,7 +104,7 @@ export type EngineRecipe = {
 	 * there. `home` is pi²'s data folder. Nothing secret goes in the arguments, which every process on the Mac can read:
 	 * the key goes in `keyVariable`.
 	 */
-	command(engine: LocalEngine, model: LocalModel, port: number, home: string): { program: string; args: string[]; env?: Record<string, string> };
+	command(engine: LocalEngine, model: LocalModel, port: number, home: string): { program: string; args: string[]; env?: Record<string, string>; unset?: string[] };
 	/** The environment variable the engine reads the key every request must carry from; null when it takes none. */
 	keyVariable: string | null;
 	/** Where the OpenAI-compatible API is, under `http://127.0.0.1:<port>`: the base its `/chat/completions` is under. */
@@ -124,8 +124,11 @@ export type EngineRecipe = {
  */
 export function strataEnvironment(home: string): Record<string, string> {
 	const root = join(home, "local", "strata");
-	return { HOME: join(root, "home"), XDG_DATA_HOME: join(root, "data"), STRATA_HOME: join(root, "strata") };
+	// And no Python of the person's own, as Strata's launcher does: with STRATA_UNSET left out of the environment.
+	return { HOME: join(root, "home"), XDG_DATA_HOME: join(root, "data"), STRATA_HOME: join(root, "strata"), PYTHONNOUSERSITE: "1" };
 }
+/** Left out of the environment of every Strata command, as Strata's own launcher does (docs/strata.md). */
+export const STRATA_UNSET = ["PYTHONHOME", "PYTHONPATH"];
 
 /**
  * Strata (https://github.com/Niko1221/Strata), as far as #290 found and its documentation tells; not yet run by pi².
@@ -146,6 +149,7 @@ export const STRATA: EngineRecipe = {
 				program: join(engine.control.folder, "python", "bin", "python3"),
 				args: [join(engine.control.folder, "serve", "server.py"), "--engine", "strata", "--config", model.config, "--host", "127.0.0.1", "--port", String(port)],
 				env: strataEnvironment(home),
+				unset: STRATA_UNSET,
 			};
 		}
 		const options = model.options;

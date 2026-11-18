@@ -365,7 +365,7 @@ function start(modelId: string): Server {
 		if (server.stopping !== undefined) return finish();
 		mkdirSync(folder, { recursive: true });
 		server.port = await freePort();
-		const { program, args, env } = recipe.command(setup.engine!, model, server.port, host.home);
+		const { program, args, env, unset } = recipe.command(setup.engine!, model, server.port, host.home);
 		// The run's marker in its environment, and its file open as the engine's other runs have it, which tell what it
 		// starts apart after a crash (processes.ts); what it prints goes to its log.
 		const run = newRun();
@@ -375,7 +375,9 @@ function start(modelId: string): Server {
 		let child: ChildProcess;
 		try {
 			child = spawn(program, args, {
-				env: commandEnvironment({ ...env, [RUN_VARIABLE]: marker, ...(recipe.keyVariable === null ? {} : { [recipe.keyVariable]: server.key }) }),
+				env: Object.fromEntries(
+					Object.entries(commandEnvironment({ ...env, [RUN_VARIABLE]: marker, ...(recipe.keyVariable === null ? {} : { [recipe.keyVariable]: server.key }) })).filter(([name]) => !unset?.includes(name)),
+				),
 				detached: true,
 				stdio: ["ignore", output, output, ...(run.stdio as unknown[]).slice(3)] as never,
 			});
