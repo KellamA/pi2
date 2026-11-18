@@ -213,6 +213,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Worktrees and branches](docs/worktrees.md): working on one repository in parallel, and what the branch colours mean.
 - [pi² as a co-author](docs/commits.md): the setting that asks agents to name pi² in their commits, and what it does not do.
 - [Development](docs/development.md): building, testing, and the layout of the code.
+- [Models on this Mac](docs/local-models.md): getting the engine and a model; [Strata and Qwen3.8-Flash-Next](docs/strata.md): what running them needs, as found on a real Mac.
 - [Releasing](docs/releasing.md): signed downloads, updates, and what to set up before the first release.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)
