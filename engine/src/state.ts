@@ -109,6 +109,11 @@ export type Meta = {
 	version?: true;
 	/** A chat: a conversation of pi²'s built-in chat assistant (chat.ts), with no `agentId`. */
 	chat?: true;
+	/**
+	 * A chat whose web switch is off (#287): it is offered no web tools from its next message. A new chat takes chat
+	 * mode's `web` setting; the person changes it by the chat's message field (`conversation.configure`).
+	 */
+	web?: false;
 	/** The person pinned it to the top of its list (`conversation.pin`). */
 	pinned?: true;
 	/**

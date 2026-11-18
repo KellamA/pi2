@@ -191,14 +191,50 @@ try {
 	assert.equal(settingsFile.chat.instructions, "Be brief.", "kept under chat in the engine's settings");
 	step("chat.set changes the settings, refuses what is wrong, and a default model counts from the next chat");
 
-	// The web switch: off, a chat's next message has no web tools; on again, they come back.
+	// ---- The web switch (#287): chat mode's setting is where a new chat's starts; each chat keeps its own.
+	assert.equal(client.conversations.get(chat).state.web, true, "a chat made with the web on says so");
+	assert.equal(client.conversations.get(plain).state.web, null, "an agent's conversation has no web switch");
 	await client.call("chat.set", { web: false });
-	const noWeb = await client.offered(chat);
+	assert.ok((await client.offered(chat)).tools.includes("web_fetch"), "a chat already made keeps its own switch");
+	const { id: offline } = await client.call("conversation.create", { chat: true });
+	await client.call("conversation.open", { id: offline });
+	assert.equal((await client.until("the offline chat's state", () => client.conversations.get(offline)?.state)).web, false, "a new chat starts with the web off");
+	const noWeb = await client.offered(offline);
 	assert.deepEqual([...noWeb.tools].sort(), expected(builtIns, false).sort(), noWeb.tools.join(" "));
 	assert.ok(!noWeb.sections.includes("look_web"));
+	assert.match(await client.answer(offline, "/system chat"), /turned the web off for this chat/, "the assistant is told the web is off");
 	await client.call("chat.set", { web: true });
-	assert.ok((await client.offered(chat)).tools.includes("web_fetch"));
-	step("with the web off, a chat is not offered the web tools, from its next message");
+	assert.ok(!(await client.offered(offline)).tools.includes("web_fetch"), "turning the setting on again changes no chat");
+	step("chat.set's web is where a new chat's switch starts; a chat made keeps its own");
+
+	await assert.rejects(client.call("conversation.configure", { id: plain, web: false }), /Only a chat has a web switch/);
+	await assert.rejects(client.call("conversation.configure", { id: offline, web: "on" }), /web must be true or false/);
+	await client.call("conversation.configure", { id: offline, web: true });
+	await client.until("the switch on", () => client.conversations.get(offline)?.state.web === true);
+	const withWeb = await client.offered(offline);
+	assert.deepEqual([...withWeb.tools].sort(), expected(builtIns, true).sort(), withWeb.tools.join(" "));
+	assert.ok(withWeb.sections.includes("look_web"));
+	assert.doesNotMatch(await client.answer(offline, "/system chat"), /turned the web off/);
+	await client.call("conversation.configure", { id: offline, web: false });
+	await client.until("the switch off", () => client.conversations.get(offline)?.state.web === false);
+	assert.ok(!(await client.offered(offline)).tools.includes("web_fetch"), "off again, from the next message");
+	step("a chat's web switch turns its web tools off and on, from its next message");
+
+	// Try Again makes a version of the chat, which follows the chat's switch; a fork keeps it too.
+	const asked = client.conversations.get(offline).items.findLast((item: any) => item.kind === "assistant");
+	const before = asked.id;
+	await client.call("conversation.retry", { id: offline, entryId: before });
+	const again = await client.until("the version's answer", () => {
+		const now = client.conversations.get(offline);
+		const last = now?.items.findLast((item: any) => item.kind === "assistant");
+		return now !== undefined && !now.state.busy && last !== undefined && last.id !== before ? last : undefined;
+	});
+	assert.ok(!again.text.includes("web_fetch") && again.text.includes("write_document"), `a version is offered no web either: ${again.text}`);
+	assert.equal(client.conversations.get(offline).state.web, false);
+	const { id: offlineFork } = await client.call("conversation.fork", { id: offline, entryId: client.conversations.get(offline).items[0].id });
+	await client.call("conversation.open", { id: offlineFork });
+	assert.equal((await client.until("the fork's state", () => client.conversations.get(offlineFork)?.state)).web, false, "a fork keeps the chat's switch");
+	step("a chat's versions and forks follow its web switch");
 
 	// ---- Pinned
 	await client.call("conversation.pin", { id: chat, pinned: true });

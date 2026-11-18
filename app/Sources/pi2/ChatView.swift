@@ -258,6 +258,7 @@ struct ChatView: View {
         VStack(alignment: .leading, spacing: 10) {
             AttachmentStrip(attachments: attachments, blindModel: blindModel)
             arrival
+            if isChat, state?.web == false { ChatWebOffNote() }
             TextField(isChat ? chatPlaceholder : placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
@@ -279,6 +280,7 @@ struct ChatView: View {
                 .foregroundStyle(Theme.tx2)
                 .help("Attach pictures or files. You can also paste them, or drop them on the conversation.")
                 .accessibilityLabel("Attach Files")
+                if isChat, let web = state?.web { ChatWebSwitch(engine: engine, id: id, on: web) }
                 if !isChat, let agent = engine.agent(state?.agent.agentId) {
                     HStack(spacing: 6) {
                         AgentAvatar(agent: agent, size: 16)

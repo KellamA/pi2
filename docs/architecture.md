@@ -318,10 +318,10 @@ The sections, in the order they are declared:
 | `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady; changes in place when the agent's settings leave `update_plan` out or bring it back, keeping the second part |
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
 | `memory` | `knowledge.ts` | memory is on for the agent, or for chats in a chat ([knowledge.md](knowledge.md#chat-modes-memory)) | Comes and goes with the agent's settings, or chat mode's; in a chat, changes in place as its notes change and as agents with notes come and go |
-| `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out) | Comes and goes with the agent's settings |
+| `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out; in a chat, its web switch on) | Comes and goes with the agent's settings, or a chat's web switch |
 | `pictures` | `pictures.ts` | the conversation would make pictures (a chat, or an agent that turned them on) but no provider of the person's has a picture model: it says so | Comes and goes as providers are signed in and out |
 | `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full, and not left out; always in a chat) | Changes with the conversation's access level, and comes and goes with the agent's built-in tools |
-| `chat` | `chat.ts` | the conversation is a chat ([chat.md](chat.md)) | Steady; changes in place as the web is turned off or on |
+| `chat` | `chat.ts` | the conversation is a chat ([chat.md](chat.md)) | Steady; changes in place as the chat's web switch is turned off or on |
 | `chat_instructions` | `chat.ts` | the conversation is a chat and the chat instructions in Settings are not empty | Comes and goes, and changes in place, with those instructions |
 | `scheduling` | `selfschedule.ts` | the scheduling tools are offered: scheduling on, not in a sub-chat (#177) | Comes and goes with the agent's settings |
 | `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
