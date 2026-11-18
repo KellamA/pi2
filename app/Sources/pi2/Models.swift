@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Any JSON value, for payloads the app shows but does not interpret (tool arguments, request results).
 enum JSONValue: Codable, Equatable, Sendable {
@@ -77,6 +78,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var chat: Bool? = nil
     /// A chat kept at the top of chat mode's sidebar.
     var pinned: Bool? = nil
+    /// An agent's conversation a chat was continued in (Continue with an Agent, ChatContinue.swift): that chat.
+    var continuedFrom: Int? = nil
+    /// A chat continued with an agent: the conversations it went on in, oldest first.
+    var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
     var allowEverything: Bool? = nil
 }
@@ -212,10 +217,13 @@ struct LimitWait: Codable, Equatable {
     /// The provider's name, as Settings shows it.
     let provider: String
 
-    /// "14:32", or with the day when it is not today.
+    /// "14:32" within the next 20 hours, which cannot be mistaken for another day's; "Thu 09:00" within the week; else the date.
     var untilText: String {
         let date = Date(timeIntervalSince1970: until / 1000)
-        return Calendar.current.isDateInToday(date) ? date.formatted(date: .omitted, time: .shortened) : date.formatted(date: .abbreviated, time: .shortened)
+        let ahead = date.timeIntervalSinceNow
+        if ahead < 20 * 3600 { return date.formatted(date: .omitted, time: .shortened) }
+        if ahead < 6 * 86400 { return date.formatted(.dateTime.weekday(.abbreviated).hour().minute()) }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     /// What the conversation says while it waits.
@@ -228,9 +236,27 @@ struct LimitWait: Codable, Equatable {
         return "\(what)\(refused), and named no time. The run asks again at \(untilText) and carries on by itself. Stop ends it."
     }
 
-    /// The short form, for a row in Activity.
+    /// The short form, for a row in Activity and the menu bar.
     var tag: String {
-        kind == "overloaded" ? "provider overloaded · until \(untilText)" : "rate limit · until \(untilText)"
+        kind == "overloaded" ? "\(provider) overloaded · until \(untilText)" : "waiting for \(provider)’s limit · until \(untilText)"
+    }
+
+    /// The shortest form, for a sidebar row, beside the conversation's title.
+    var shortTag: String { "until \(untilText)" }
+
+    /// What a parent conversation says of its sub-chats that wait (#343): one line per provider, kept up to date.
+    static func subChatsLine(_ waits: [LimitWait]) -> String? {
+        guard !waits.isEmpty else { return nil }
+        let groups = Dictionary(grouping: waits) { "\($0.provider)\u{0}\($0.kind)" }.values.sorted { $0.count > $1.count }
+        let parts = groups.map { group -> String in
+            let latest = group.max { $0.until < $1.until }!
+            let count = group.count == 1 ? "1 sub-chat waits" : "\(group.count) sub-chats wait"
+            if latest.kind == "overloaded" { return "\(count) for \(latest.provider), which is overloaded, until \(latest.untilText)" }
+            return group.allSatisfy(\.told)
+                ? "\(count) for \(latest.provider)’s limit until \(latest.untilText)"
+                : "\(count) for \(latest.provider)’s limit, asking again by \(latest.untilText)"
+        }
+        return parts.joined(separator: "; ") + ". They carry on by themselves; Stop on a sub-chat ends its wait."
     }
 }
 
@@ -252,6 +278,16 @@ struct RunFailure: Codable, Equatable {
         if let detail, !detail.isEmpty { return "\(what): \(detail)" }
         return what
     }
+}
+
+/// A message the person sent that the conversation does not show yet: on its way to the engine, or taken by it.
+struct OutgoingMessage: Equatable, Identifiable {
+    /// The request id it is sent with, which the engine uses to recognise it if it is sent again.
+    let id: String
+    /// Its text, or what it carries when it is only attachments.
+    let summary: String
+    /// The engine's id for it, once the engine has taken it.
+    var submission: Int?
 }
 
 struct QueuedInput: Codable, Equatable, Identifiable {
@@ -726,6 +762,9 @@ struct ConversationState: Codable, Equatable {
     let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
     var chat: Bool? = nil
+    /// A chat's web switch (#287): whether its next message may search the web and read pages. Nil for any other
+    /// conversation, and from an engine older than the switch.
+    var web: Bool? = nil
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
     var messageWaits: MessageWaits? = nil
@@ -739,14 +778,27 @@ struct ConversationState: Codable, Equatable {
 struct MessageWaits: Codable, Equatable {
     let holds: [String]
     let ends: [String]
+    /// Set while the run waits to ask the model again (a retry, or a provider's limit): a message sent to steer is placed
+    /// when it does, so that request carries it (#324). Ms since 1970; absent from an engine older than this field.
+    var retryAt: Double? = nil
 
     private static func joined(_ parts: [String]) -> String {
         ListFormatter.localizedString(byJoining: parts)
     }
 
     /// What happens to a message sent now, in a line for the message field: steered, or queued until the answer.
-    func sentence(agent: String, steer: Bool) -> String {
+    /// `limit` is the provider's limit the run waits for, if it does.
+    func sentence(agent: String, steer: Bool, limit: LimitWait? = nil) -> String {
+        if let limit {
+            // It cannot be answered before the limit resets, and does not end the wait: the provider would only refuse it.
+            let wait = limit.kind == "overloaded" ? "\(limit.provider) to stop being overloaded" : "\(limit.provider)’s limit"
+            guard steer else { return "\(agent) reads this once it has answered, after the wait for \(wait) at \(limit.untilText)." }
+            return "\(agent) reads this after the wait for \(wait), at \(limit.untilText); until then you can take it back."
+        }
         guard steer else { return "\(agent) reads this once it has answered." }
+        if let retryAt, holds.isEmpty, ends.isEmpty {
+            return "\(agent) reads this when it asks the model again, at \(Date(timeIntervalSince1970: retryAt / 1000).formatted(date: .omitted, time: .standard))."
+        }
         let ended = ends.isEmpty ? "" : " It ends \(Self.joined(ends)); \(ends.count == 1 ? "that work carries on" : "the work carries on")."
         if holds.isEmpty {
             return ends.isEmpty ? "\(agent) reads this after its current step." : "\(agent) reads this at once.\(ended)"
@@ -951,9 +1003,50 @@ struct SearchResult: Codable, Equatable, Identifiable {
     var id: Int { entryId }
 }
 
-struct ConversationData: Equatable {
-    var items: [Item] = []
-    var state: ConversationState?
+/// The latest event of each kind that a feature in a file of its own reads, by kind ("limits", "memory"). Each kind is
+/// observed on its own, so a view that reads one is not drawn again when another comes, and a value is only set when it
+/// changed (#347).
+@MainActor
+final class ExtraEvents {
+    @MainActor
+    @Observable
+    final class Slot {
+        var value: JSONValue?
+    }
+
+    private var slots: [String: Slot] = [:]
+
+    private func slot(_ kind: String) -> Slot {
+        if let slot = slots[kind] { return slot }
+        let slot = Slot()
+        slots[kind] = slot
+        return slot
+    }
+
+    subscript(kind: String) -> JSONValue? {
+        get { slot(kind).value }
+        set {
+            let slot = slot(kind)
+            if slot.value != newValue { slot.value = newValue }
+        }
+    }
+}
+
+/// An open conversation as the engine last sent it: its entries and its live state. One object per conversation, so that
+/// an update to one conversation redraws only the views that show it, not every view that shows any (#347).
+@MainActor
+@Observable
+final class OpenConversation {
+    private(set) var items: [Item] = []
+    /// Nil until the engine has sent the conversation.
+    private(set) var state: ConversationState?
+
+    /// Takes in one update from the engine, touching only what changed.
+    func apply(reset: Bool, items new: [Item], state: ConversationState) {
+        if reset, !items.isEmpty { items = [] }
+        if !new.isEmpty { items.append(contentsOf: new) }
+        if self.state != state { self.state = state }
+    }
 }
 
 struct EndpointModel: Codable, Equatable, Hashable {
@@ -1122,5 +1215,8 @@ struct SignInFlow: Equatable {
 
 struct EngineError: LocalizedError {
     let message: String
+    /// No answer came: the engine was not connected, or the connection went before it answered. A request that is safe to
+    /// send again (a message with its request id) can be sent again once the engine is back.
+    var unanswered = false
     var errorDescription: String? { message }
 }

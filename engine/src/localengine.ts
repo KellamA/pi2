@@ -6,7 +6,7 @@
 // stand-in that takes the same command line (engine/test/localserver.ts). What has not been checked against the real
 // engine is marked so: #293 corrects it here, and the stand-in with it.
 
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** A model set up on this Mac, as `local-models.json` lists it (the downloads piece writes it; see docs/local-models.md). */
@@ -105,6 +105,8 @@ export type EngineRecipe = {
 	 * the key goes in `keyVariable`.
 	 */
 	command(engine: LocalEngine, model: LocalModel, port: number, home: string): { program: string; args: string[]; env?: Record<string, string>; unset?: string[] };
+	/** Why `model` cannot be started with `engine` as they are set up, in words for the person; undefined when it can. */
+	missing?(engine: LocalEngine, model: LocalModel): string | undefined;
 	/** The environment variable the engine reads the key every request must carry from; null when it takes none. */
 	keyVariable: string | null;
 	/** Where the OpenAI-compatible API is, under `http://127.0.0.1:<port>`: the base its `/chat/completions` is under. */
@@ -130,46 +132,126 @@ export function strataEnvironment(home: string): Record<string, string> {
 /** Left out of the environment of every Strata command, as Strata's own launcher does (docs/strata.md). */
 export const STRATA_UNSET = ["PYTHONHOME", "PYTHONPATH"];
 
+/** A command to run: the program, its arguments, the folder it runs in, and what it needs in its environment. */
+export type StrataCommand = { program: string; args: string[]; cwd: string; env: Record<string, string>; unset: string[] };
+
+/** How Strata's setup names a pack, and the run config it writes for it (localcatalog.ts). */
+export type PrepareNames = { family: string; model: string; config: string };
+
+/** What one line Strata's setup printed says: the step it began, what it is doing, how far, or why it stopped. */
+export type SetupLine = { step?: number; stage?: string; fraction?: number; failure?: string; hint?: string };
+
+const python = (control: string) => join(control, "python", "bin", "python3");
+
 /**
- * Strata (https://github.com/Niko1221/Strata), as far as #290 found and its documentation tells; not yet run by pi².
- * #293 corrects what is wrong here. Its HTTP server is the control package's Python `serve/server.py`, which starts the
- * `strata` executable itself, with the run config Strata's installer writes for a prepared model (`config`). A model
- * without one, or an engine without its control package, is started with the executable's own flags, as the stand-in
- * the tests use is. To check:
- * - the executable's own flags, for a model with no run config (the server's, `--engine`, `--config`, `--host` and
- *   `--port`, and the key in `STRATA_API_KEY`, are as #290 ran it);
- * - whether the executable alone reads the key from the environment as the server does;
- * - that `/v1/models` answers 200 once the model is loaded (#290: the server does not listen at all until then).
+ * Strata's own setup, from its control package: it installs the engine where Strata's server finds it, and prepares a
+ * downloaded pack once, as #290 ran it by hand and #293 runs it from pi². Neither asks anything (`--yes`), starts a
+ * model or opens a browser. Preparing writes a pack folder and the draft layer into `data`, fetching the draft layer's
+ * 5.2 GB from Qwen's original model unless they are there already, and a run config into the control package's folder.
+ */
+export const STRATA_SETUP = {
+	/** The seven steps of setup on a Mac (there is no step 3 there): how far it has got is the step it is at. */
+	steps: 7,
+	/** Installs the engine's archive, already checked by pi², into Strata's component folder: it checks its signature and files again, without the network. */
+	component: (control: string, archive: string, home: string): StrataCommand => ({
+		program: python(control),
+		args: [join(control, "strata.py"), "components", "install-file", archive],
+		cwd: control,
+		env: strataEnvironment(home),
+		unset: STRATA_UNSET,
+	}),
+	/**
+	 * Prepares the pack whose files are in `files` (the person's own files, as Strata calls them: it takes them as they are,
+	 * so pi² checks them first), putting what it makes in `data`. Always with the picture reader where the pack has one, so
+	 * that turning pictures on later needs no preparing again; the context size is pi²'s to set at each start.
+	 */
+	prepare: (control: string, names: PrepareNames, files: string, data: string, vision: boolean, home: string): StrataCommand => ({
+		program: python(control),
+		args: [join(control, "setup.py"), "--family", names.family, "--model", names.model, "--gguf-dir", files, "--data-dir", data, "--vision", vision ? "gpu" : "no", "--no-start", "--no-browser", "--yes"],
+		cwd: control,
+		env: { ...strataEnvironment(home), STRATA_CONTROL_INSTALL: "1" },
+		unset: STRATA_UNSET,
+	}),
+	/** Where setup writes the run config: in the control package's own folder, which it takes for its home in this mode. */
+	config: (control: string, names: PrepareNames) => join(control, names.config),
+	/** One line it printed: "=== Step 6: preparing the model for Strata ===", "  MTP draft layer:   0.87 / 5.21 GB (16%)", "  [X]  …". */
+	read: (line: string): SetupLine => {
+		const step = /^=== Step (\d+): (.*?) ===$/.exec(line.trim());
+		if (step !== null) return { step: Number(step[1]), stage: step[2] };
+		const amount = /^\s*([A-Za-z][^:]*?):\s+([\d.]+) \/ ([\d.]+) GB \((\d+)%\)/.exec(line);
+		if (amount !== null) return { stage: `fetching the ${amount[1].replace(/^MTP /, "")} (${amount[2]} of ${amount[3]} GB)`, fraction: Math.min(1, Number(amount[4]) / 100) };
+		const failed = /^\s*\[X\]\s+(.*\S)/.exec(line);
+		if (failed !== null) return { failure: failed[1] };
+		return {};
+	},
+};
+
+/** A file name from a model id: ids may hold "/", ":" and the like. */
+export const fileName = (id: string) => id.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "") || "model";
+
+/**
+ * The run config a model is started with: the one Strata's setup wrote when it prepared the model (pi²'s copy of it,
+ * `config`), with the model's settings as they are now, so that a change in Settings counts at the next start without
+ * preparing it again. The context size is `--max-context` among the engine's arguments; pictures are `--vision` there
+ * and the `vision` section, both left out when they are off; the engine's own log goes to pi²'s folder of logs. Written
+ * to `local/run/<model>.json` in the data folder, readable by the person only.
+ */
+export function runConfig(model: LocalModel, home: string): string {
+	const written = JSON.parse(readFileSync(model.config!, "utf8")) as { args?: unknown; vision?: unknown; [key: string]: unknown };
+	const args = Array.isArray(written.args) ? written.args.map(String) : [];
+	const at = args.indexOf("--max-context");
+	if (at === -1) args.push("--max-context", String(model.contextSize));
+	else args[at + 1] = String(model.contextSize);
+	const vision = model.options.vision === true && written.vision !== undefined;
+	const config: Record<string, unknown> = { ...written, args: vision || !args.includes("--vision") ? args : args.filter((arg) => arg !== "--vision") };
+	if (!vision) delete config.vision;
+	config.args_written = config.args;
+	config.log = join(home, "local", "logs", `${fileName(model.id)}.engine.log`);
+	const folder = join(home, "local", "run");
+	mkdirSync(folder, { recursive: true });
+	const path = join(folder, `${fileName(model.id)}.json`);
+	writeFileSync(path, `${JSON.stringify(config, null, 1)}\n`, { mode: 0o600 });
+	return path;
+}
+
+/**
+ * Strata (https://github.com/Niko1221/Strata), as #290 found it and #293 ran it through pi²: its HTTP server is the
+ * control package's Python `serve/server.py`, which starts the `strata` engine itself (from Strata's component folder,
+ * where the downloads piece installs it), with the run config Strata's setup wrote when it prepared the model. It does
+ * not listen until the model is loaded, so `/v1/models` answering is being ready; it reads its key from
+ * `STRATA_API_KEY`; it says what it is doing while it loads in lines of its own, with no percentage.
  */
 export const STRATA: EngineRecipe = {
 	name: "Strata",
+	missing: (engine, model) => {
+		if (engine.control === undefined) return "The Strata engine set up on this Mac is from an earlier pi² and has no server. Update it in Settings › Providers › On this Mac.";
+		if (model.config === undefined) return `${model.name} is not prepared for Strata yet: Settings › Providers › On this Mac shows how far it has got. It can be used once it is ready.`;
+		return undefined;
+	},
 	command: (engine, model, port, home) => {
-		if (engine.control !== undefined && model.config !== undefined) {
-			return {
-				program: join(engine.control.folder, "python", "bin", "python3"),
-				args: [join(engine.control.folder, "serve", "server.py"), "--engine", "strata", "--config", model.config, "--host", "127.0.0.1", "--port", String(port)],
-				env: strataEnvironment(home),
-				unset: STRATA_UNSET,
-			};
-		}
-		const options = model.options;
-		const vision = options.vision === true && typeof options.visionFile === "string" && options.visionFile !== "";
-		const parallel = typeof options.parallel === "number" && Number.isInteger(options.parallel) && options.parallel > 0 ? options.parallel : 1;
+		const control = engine.control!.folder;
+		const parallel = typeof model.options.parallel === "number" && Number.isInteger(model.options.parallel) && model.options.parallel > 0 ? model.options.parallel : 1;
 		return {
-			program: engine.path,
+			program: join(control, "python", "bin", "python3"),
 			args: [
-				"--model",
-				model.path,
+				join(control, "serve", "server.py"),
+				"--engine",
+				"strata",
+				"--config",
+				runConfig(model, home),
 				"--host",
 				"127.0.0.1",
 				"--port",
 				String(port),
-				"--context",
-				String(model.contextSize),
 				"--parallel",
 				String(parallel),
-				...(vision ? ["--vision-file", options.visionFile as string] : ["--vision", "no"]),
+				// Answers still being written when it is asked to stop are cut off after this long, inside the five seconds
+				// pi² gives it before SIGKILL.
+				"--shutdown-timeout",
+				"2",
 			],
+			env: strataEnvironment(home),
+			unset: STRATA_UNSET,
 		};
 	},
 	// Read from there, as #290 saw.

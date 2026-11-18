@@ -39,7 +39,10 @@ struct MenuBarView: View {
                         AgentAvatar(agent: engine.agent(run.agentId), size: 16)
                         Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
                         Spacer()
-                        Text(run.status == "waiting" ? "waiting" : run.limit != nil ? "waiting for limit" : "working").font(.caption).foregroundStyle(run.status == "waiting" || run.limit != nil ? Theme.warn : Theme.tx2)
+                        let atLimit = engine.subChatLimitWaits[run.conversationId]?.count ?? 0
+                        let status = run.status == "waiting" ? "waiting" : run.limit?.tag ?? (atLimit > 0 ? "working · \(atLimit) sub-chat\(atLimit == 1 ? "" : "s") at limit" : "working")
+                        Text(status).font(.caption).lineLimit(1).foregroundStyle(run.status == "waiting" || run.limit != nil || atLimit > 0 ? Theme.warn : Theme.tx2)
+                            .help(run.limit?.sentence ?? LimitWait.subChatsLine(engine.subChatLimitWaits[run.conversationId] ?? []) ?? "")
                     }
                     .contentShape(.rect)
                 }
@@ -181,7 +184,7 @@ struct QuickAskView: View {
     @FocusState private var focused: Bool
     private var engine: EngineClient { model.engine }
 
-    private var data: ConversationData? { conversationID.flatMap { engine.open[$0] } }
+    private var data: OpenConversation? { conversationID.flatMap { engine.open[$0] } }
     /// The newest answer, finished or still streaming.
     private var answer: String? {
         if let partial = data?.state?.partial?.text, !partial.isEmpty { return partial + " ▍" }
@@ -238,6 +241,8 @@ struct QuickAskView: View {
         .ignoresSafeArea()
         .onAppear { focused = true }
         .onExitCommand(perform: close)
+        // Kept coming from the engine although no pane shows it, while this panel has it.
+        .onChange(of: conversationID, initial: true) { _, id in engine.quickAskConversation = id }
     }
 
     private func send() {
@@ -281,10 +286,19 @@ enum EngineLoginItem {
     }
     static var installed: Bool { FileManager.default.fileExists(atPath: plistURL.path) }
 
+    /// How launchd is told to treat the engine. It was `Background` until #344, which runs a job at the lowest
+    /// priority macOS has, with its disk use held back and on the efficiency cores alone, and every command it starts
+    /// the same: the engine the app waits on for everything it shows was the first to give way when the Mac was busy,
+    /// and agents' builds took several times as long. `Interactive` gives it what an app's own processes have, as an
+    /// engine the app starts itself has; agents' commands are started a step lower by the engine (priority.ts).
+    static let processType = "Interactive"
+
     /// What the installed login item runs, and for which data folder.
     struct Item {
         let arguments: [String]
         let home: String?
+        /// Its `ProcessType`, nil when it has none.
+        var processType: String? = nil
 
         /// Whether it starts the engine for this data folder. A copy of pi² on a data folder of its own (a test copy,
         /// say) must leave another folder's login item alone.
@@ -299,7 +313,7 @@ enum EngineLoginItem {
               let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
         else { return nil }
         let environment = plist["EnvironmentVariables"] as? [String: String]
-        return Item(arguments: plist["ProgramArguments"] as? [String] ?? [], home: environment?["PI2_HOME"])
+        return Item(arguments: plist["ProgramArguments"] as? [String] ?? [], home: environment?["PI2_HOME"], processType: plist["ProcessType"] as? String)
     }
 
     /// The installed item, or nil if there is none. An item that cannot be read serves no data folder.
@@ -371,7 +385,7 @@ enum EngineLoginItem {
             "KeepAlive": ["SuccessfulExit": false],
             "StandardOutPath": home + "/engine.log",
             "StandardErrorPath": home + "/engine.log",
-            "ProcessType": "Background",
+            "ProcessType": processType,
         ]
         try FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)

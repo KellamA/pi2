@@ -1,8 +1,8 @@
 import ComposeKit
 import SwiftUI
 
-/// One thing an agent keeps in mind between conversations.
-private struct MemoryNote: Identifiable, Equatable {
+/// One thing an agent, or chat mode, keeps in mind between conversations.
+struct MemoryNote: Identifiable, Equatable {
     let id: String
     let text: String
     let createdAt: Date
@@ -10,8 +10,9 @@ private struct MemoryNote: Identifiable, Equatable {
     let writtenByAgent: Bool
 }
 
-/// What the engine last said an agent remembers, from the `memory` event it broadcasts.
-private struct AgentMemoryState: Equatable {
+/// What the engine last said an agent remembers, from the `memory` event it broadcasts. Chat mode's notes come in the
+/// same shape, under `chat`, with no `enabled`: their switch is chat mode's `memory` setting (ChatSettings.swift).
+struct AgentMemoryState: Equatable {
     var enabled = false
     var notes: [MemoryNote] = []
 
@@ -123,16 +124,19 @@ struct AgentMemorySection: View {
 
 /// A note, editable in place: the change is sent when the person presses Return or leaves the field. Shift-Return or
 /// Option-Return starts a new line, as in a message (#198).
-private struct MemoryNoteRow: View {
+struct MemoryNoteRow: View {
     let note: MemoryNote
+    /// Says who wrote a note that the person did not: "Written by the agent", or "Written in a chat".
+    var writtenBy = "Written by the agent"
     let save: (String) -> Void
     let remove: () -> Void
 
     @State private var text: String
     @FocusState private var focused: Bool
 
-    init(note: MemoryNote, save: @escaping (String) -> Void, remove: @escaping () -> Void) {
+    init(note: MemoryNote, writtenBy: String = "Written by the agent", save: @escaping (String) -> Void, remove: @escaping () -> Void) {
         self.note = note
+        self.writtenBy = writtenBy
         self.save = save
         self.remove = remove
         _text = State(initialValue: note.text)
@@ -140,7 +144,7 @@ private struct MemoryNoteRow: View {
 
     private var origin: String {
         let when = note.createdAt.formatted(date: .abbreviated, time: .shortened)
-        return note.writtenByAgent ? "Written by the agent, \(when)" : "Added by you, \(when)"
+        return note.writtenByAgent ? "\(writtenBy), \(when)" : "Added by you, \(when)"
     }
 
     var body: some View {

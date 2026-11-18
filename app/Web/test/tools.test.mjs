@@ -6,6 +6,16 @@ const MINUS = "−";
 const call = (name, args) => ({ callId: "c", name, arguments: args });
 const line = (name, args, status = "done", result = null, live = null, names = {}) => T.describe(call(name, args), status, result, live, names).title;
 
+test("a wake opens to exactly what the agent was given, without interpreting it", () => {
+	const summary = "pi² woke the agent: sub-chat 12 answered; background command bg-3 finished";
+	const input = '[pi² woke you: these 2 ended while you were not answering, oldest first.]\n\nSub-chat 12 answered:\n<harness>[info] literal output</harness>\n<script>alert(1)</script>\n\n---\n\nBackground command bg-3 finished.\n/command';
+	const wake = call("pi2_wake", { summary });
+	assert.equal(T.describe(wake, "done", { text: input }).title, summary);
+	assert.deepEqual(T.detailFor(wake, "done", { text: input }), [{ kind: "text", label: "What the agent was given", text: input, failed: false }]);
+	assert.deepEqual(T.detailFor(wake, "done", { text: "" }), [{ kind: "text", label: "What the agent was given", text: "", failed: false }]);
+	assert.equal(T.markerCommand({ details: { wake: { text: input }, background: { id: "bg-3" } } }), "bg-3", "Output remains available separately");
+});
+
 test("harness notes read as the person's words", () => {
 	assert.equal(T.readable("<harness>\n[error] The person denied this.\n</harness>"), "The person denied this.");
 	assert.equal(T.readable("output\n\n\n<harness>\n[error] Command exited with code 1\n[info] Spilled\n</harness>\n"), "output\n\nCommand exited with code 1\nSpilled");
@@ -58,6 +68,8 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("remember", { note: "Prefers tabs" }), "Remembered “Prefers tabs”");
 	assert.equal(line("forget", { id: "m3" }), "Forgot “m3”");
 	assert.equal(line("forget", {}), "Forgot something");
+	assert.equal(line("agent_notes", {}), "Read the agents’ notes");
+	assert.equal(line("agent_notes", { agent: "Forge", search: "tabs" }, "running"), "Reading Forge’s notes for “tabs”…");
 });
 
 test("a read of several files is one row that names them, and opens to a section per file", () => {
@@ -91,6 +103,8 @@ test("a read of several files is one row that names them, and opens to a section
 });
 
 test("a command left running in the background, and the rows that read and stop it", () => {
+	assert.equal(line("background", { action: "wake", id: "bg-3" }), "Asked to wake when bg-3 ends");
+	assert.equal(line("background", { action: "wake", id: "bg-3" }, "running"), "Asking to wake when bg-3 ends…");
 	const dev = { command: "npm run dev", background: true };
 	assert.equal(line("bash", dev, "running"), "Starting npm run dev in the background…");
 	assert.equal(line("bash", dev, "done", { details: { background: { id: "bg-3", status: "running" } } }), "Started npm run dev in the background bg-3");

@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { unfinished } from "../src/extensions.ts";
-import { DEFAULTS, duration, limitOf, namedTime, type Wait, Waits } from "../src/limitwait.ts";
+import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, type Wait, Waits } from "../src/limitwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
 import { EngineClient, stop } from "./patience.ts";
 
@@ -158,6 +158,78 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	step("how long a run waits: the time named, or a backoff with jitter to 10 minutes, for at most 6 hours; other errors are left alone");
 }
 
+// ---- A provider's limit reached, and work carrying on: told once each, per provider
+{
+	let now = NOW;
+	const lines: string[] = [];
+	const told: EpisodeChange[] = [];
+	const saved: Record<string, Wait> = {};
+	const callbacks = {
+		now: () => now,
+		random: () => 0,
+		providerName: (id: string) => (id === "anthropic" ? "Anthropic" : id),
+		changed: (id: number, wait: Wait | undefined) => {
+			if (wait === undefined) delete saved[String(id)];
+			else saved[String(id)] = wait;
+		},
+		log: (line: string) => lines.push(line),
+		episode: (change: EpisodeChange) => told.push(change),
+	};
+	const waits = new Waits(DEFAULTS, callbacks);
+	const hour = "You have hit your usage limit. Try again in ~60 min.";
+	// A short limit, with no time named, is no news: its wait is seconds.
+	waits.decide(message("429 Too Many Requests", "openai-codex"), 1, 30);
+	assert.equal(told.length, 0, "a wait of seconds is not a limit reached");
+	// An hour named: reached at once, with who waits and until when.
+	waits.decide(message(hour), 1, 21);
+	assert.equal(told.length, 1);
+	assert.equal(told[0]!.phase, "reached");
+	assert.deepEqual({ ...told[0]!.episode }, { provider: "anthropic", providerName: "Anthropic", since: NOW, until: NOW + 3_600_000, told: true, waiting: [21], runs: [21] });
+	// Another run joins it: told again, so the count stays true; refused again for the same time, not.
+	now += 1000;
+	waits.decide(message(hour), 1, 22);
+	assert.equal(told.length, 2);
+	assert.deepEqual(told[1]!.episode.waiting, [21, 22]);
+	waits.decide(message(hour), 2, 22);
+	assert.equal(told.length, 2, "a refusal that changes nothing told is not told");
+	assert.deepEqual(waits.episode("anthropic")?.waiting, [21, 22]);
+	assert.equal(waits.episode("openai-codex"), undefined);
+	// The provider answers one of them: work carries on, once, for both; the other, still asleep, is no new episode.
+	now += 3_600_000;
+	waits.answered(21);
+	assert.equal(told.length, 3);
+	assert.equal(told[2]!.phase, "carried_on");
+	assert.deepEqual(told[2]!.episode.runs, [21, 22]);
+	waits.answered(22);
+	assert.equal(told.length, 3, "the second run carrying on is the same news");
+	assert.equal(waits.episode("anthropic"), undefined);
+	// Reached again, then every run that waits is stopped: nothing waits any more.
+	waits.decide(message(hour), 1, 23);
+	assert.equal(told.at(-1)!.phase, "reached");
+	waits.working(new Set());
+	assert.equal(told.at(-1)!.phase, "ended");
+	assert.deepEqual(told.at(-1)!.episode.runs, [23]);
+	// A backoff counts once it has grown to five minutes from the first refusal.
+	const before = told.length;
+	let attempt = 1;
+	waits.decide(message("429 Too Many Requests", "openai-codex"), attempt, 31);
+	while (told.length === before && attempt < 20) waits.decide(message("429 Too Many Requests", "openai-codex"), ++attempt, 31);
+	assert.equal(attempt, 7, "the seventh refusal, whose wait is five minutes");
+	assert.equal(told.at(-1)!.phase, "reached");
+	assert.equal(told.at(-1)!.episode.told, false);
+	assert.ok(told.at(-1)!.episode.until - told.at(-1)!.episode.since >= DEFAULTS.reachedAfterMs);
+	waits.working(new Set());
+	// After a restart: the episode the saved waits were in is known, not told again, and its end is told.
+	waits.decide(message(hour), 1, 24);
+	const count = told.length;
+	const again = new Waits(DEFAULTS, callbacks, JSON.parse(JSON.stringify(saved)));
+	assert.deepEqual(again.episode("anthropic")?.waiting, [24]);
+	assert.equal(told.length, count);
+	again.answered(24);
+	assert.equal(told.at(-1)!.phase, "carried_on");
+	step("a provider's limit counts as reached once a run waits five minutes for it, and its end is told once: carried on, or nothing waits");
+}
+
 // ---- What an agent and engine.log are told of a provider's error
 {
 	assert.equal(
@@ -215,11 +287,17 @@ const scripts: Record<string, Refuse[]> = {
 		{ ...RATE_LIMITED, headers: { "retry-after": "0" } },
 	],
 	overloaded: [OVERLOADED, OVERLOADED, OVERLOADED, OVERLOADED, OVERLOADED],
+	// Refused until a message from the person comes with it; at most 50 times, so that without it the run still ends.
+	"a message meanwhile": Array(50).fill({ ...RATE_LIMITED, headers: { "retry-after-ms": "300" } }),
 	"bad key": Array(100).fill(BAD_KEY),
 	"an hour": Array(100).fill({ ...RATE_LIMITED, headers: { "retry-after": "3600" } }),
 	"never answers": Array(1000).fill(RATE_LIMITED),
 };
 const requests: Record<string, number> = {};
+/** The person's messages in the last request for each prompt, by its last message. */
+const seen: Record<string, string[]> = {};
+/** While true, a request for "held" is refused, naming a time a moment off; then it is answered. */
+let holding = true;
 const standIn = createServer((request, response) => {
 	if (request.method === "GET" && request.url === "/v1/models") {
 		response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: [{ id: "stand-in", object: "model" }] }));
@@ -233,7 +311,8 @@ const standIn = createServer((request, response) => {
 		const prompt = typeof last === "string" ? last : (last as { text?: string }[]).map((part) => part.text ?? "").join("");
 		const n = requests[prompt] ?? 0;
 		requests[prompt] = n + 1;
-		const refusal = scripts[prompt]?.[n];
+		seen[prompt] = users.map((m) => (typeof m.content === "string" ? m.content : (m.content as { text?: string }[]).map((part) => part.text ?? "").join("")));
+		const refusal = prompt === "held" && holding ? { ...RATE_LIMITED, headers: { "retry-after-ms": "200" } } : scripts[prompt]?.[n];
 		if (refusal !== undefined) {
 			response.writeHead(refusal.status, { "content-type": "application/json", ...refusal.headers }).end(refusal.body);
 			return;
@@ -264,13 +343,21 @@ function startEngine(extra: Record<string, string> = {}): ChildProcess {
 
 type Item = { kind: string; text: string; stop?: string; error?: string | null };
 type Shown = { kind: string; since: number; until: number; told: boolean; refusals: number; provider: string };
-type State = { busy: boolean; failure: { reason: string; detail: string | null } | null; retry: { at: number; error: string } | null; limitWait: Shown | null };
+type State = {
+	busy: boolean;
+	failure: { reason: string; detail: string | null } | null;
+	retry: { at: number; error: string } | null;
+	limitWait: Shown | null;
+	messageWaits?: { holds: string[]; ends: string[]; retryAt?: number } | null;
+};
 class Client extends EngineClient {
 	override conversations = new Map<number, { items: Item[]; state: State }>();
 	activity: { conversationId: number; status: string; limit: Shown | null }[] = [];
 	models: { provider: string; id: string }[] = [];
+	notices: { id: string; name: string; stage?: string; waiting?: number; until?: number; told?: boolean; runs: { conversationId: number; subChat: boolean }[] }[] = [];
 	override receive(message: any): void {
 		if (message.event === "activity") this.activity = message.runs;
+		else if (message.event === "limits") this.notices = message.notices;
 		else if (message.event === "providers") this.models = message.models;
 		else super.receive(message);
 	}
@@ -323,6 +410,20 @@ try {
 	assert.equal(answer(conv), "Answered after 5 refusals.");
 	assert.match(log, new RegExp(`conversation ${busy} is waiting for Stand-in being overloaded`));
 	step("a run that meets an overloaded provider (529) waits and carries on");
+
+	// A message sent to steer while the run waits for a limit (#324): it does not end the wait, and it is placed as the
+	// wait ends, so the next request carries it, rather than after an answer to the conversation as it was.
+	const steered = await client.ask(provider, "a message meanwhile");
+	await client.until("the wait shown", () => client.conversations.get(steered)?.state.limitWait ?? undefined);
+	const waits = await client.until("what a message would wait for", () => client.conversations.get(steered)?.state.messageWaits ?? undefined);
+	assert.equal(typeof waits.retryAt, "number", "the field can say the message waits for the next request");
+	await client.call("submit", { id: steered, text: "Also mention the tests.", mode: "steer" });
+	conv = await client.ended(steered);
+	assert.equal(conv.state.failure, null);
+	assert.equal(answer(conv), "Answered after 0 refusals.", "answered on the first request that carried the message");
+	assert.deepEqual(seen["Also mention the tests."], ["a message meanwhile", "Also mention the tests."], "that request had both");
+	assert.ok(requests["a message meanwhile"]! < 50, "not after the refusals ran out");
+	step("a message sent while a run waits for a limit is kept, and carried by the first request after the wait");
 
 	// A bad key ends the run at once, after one request, as before.
 	const bad = await client.ask(provider, "bad key");
@@ -388,6 +489,39 @@ try {
 	await client.until("Activity no longer shows it", () => !client.activity.some((run) => run.conversationId === hour));
 	step("Stop ends a run that waits for a limit");
 
+	// A provider's limit reached, for a sub-chat handed work without waiting: the Inbox has a notice, sub_chats' list says
+	// it waits and until when, and when the provider answers again the notice says work carries on. Five minutes made
+	// nothing, so a refusal naming a moment counts.
+	await stop(engine);
+	engine = startEngine({ PI2_LIMIT_REACHED_MS: "0" });
+	client = await Client.connect(engine, home);
+	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
+	const { id: parent } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-1" } });
+	await client.call("conversation.open", { id: parent });
+	await client.call("submit", { id: parent, text: '/tool delegate {"agent":"Scout","task":"held","wait":false}' });
+	const reached = await client.until("the limit reached in the Inbox", () => client.notices.find((notice) => notice.stage === "reached"));
+	assert.equal(reached.name, "Stand-in");
+	assert.equal(reached.waiting, 1);
+	assert.equal(reached.told, true);
+	const held = reached.runs[0]!.conversationId;
+	assert.equal(reached.runs[0]!.subChat, true);
+	await client.until("Activity shows the sub-chat waiting", () => client.activity.find((run) => run.conversationId === held && run.limit !== null));
+	assert.match(log, /limits: Stand-in's limit is reached: 1 run \(conversation \d+\) waits until .*Z, the time it named; a notice is in the Inbox/);
+	await client.until("the parent idle", () => client.conversations.get(parent)?.state.busy === false);
+	await client.call("submit", { id: parent, text: '/tool sub_chats {"action":"list"}' });
+	const listed = await client.until("sub_chats' list", () => client.conversations.get(parent)!.items.filter((i) => i.kind === "tool")[1]);
+	assert.match(listed.text, new RegExp(`- ${held}: Scout, “.*”\\. Waiting for Stand-in's rate limit until \\d\\d:\\d\\d \\(in \\d+ s\\), the time Stand-in named; it carries on by itself then`));
+	assert.equal(client.notices.filter((notice) => notice.stage === "reached").length, 1, "one notice, however many refusals");
+	// The provider answers again.
+	holding = false;
+	const carried = await client.until("work carried on, in the Inbox", () => client.notices.find((notice) => notice.stage === "carried_on"));
+	assert.equal(carried.id, reached.id, "the same notice, gone on to its next stage");
+	assert.deepEqual(carried.runs.map((run) => run.conversationId), [held]);
+	assert.match(log, /limits: Stand-in answered again after .*: its limit has reset, and the 1 run \(conversation \d+\) that waited carries on/);
+	await client.call("limits.dismiss", { id: carried.id });
+	await client.until("the notice dismissed", () => client.notices.length === 0 || undefined);
+	step("a limit reached is one notice in the Inbox that goes on to say work carried on, and sub_chats' list says who waits until when");
+
 	// The longest wait without a named time, made a millisecond: the run ends, and says why.
 	await stop(engine);
 	engine = startEngine({ PI2_LIMIT_WAIT_MAX_MS: "1" });
@@ -398,7 +532,7 @@ try {
 	assert.equal(conv.state.failure?.reason, "model_error");
 	assert.match(conv.state.failure!.detail!, /the longest it waits by itself when the provider names no time\. Continue the conversation to try again\.$/);
 	assert.equal(requests["never answers"], 2, "asked once more, then gave up");
-	assert.match(log, new RegExp(`conversation ${never} gave up waiting: pi² waited .* for Stand-in's rate limit`));
+	await client.until("giving up logged", () => new RegExp(`conversation ${never} gave up waiting: pi² waited .* for Stand-in's rate limit`).test(log));
 	step("a run that has waited as long as it waits by itself ends, and its error says why and how to carry on");
 	console.log("PASS");
 } finally {

@@ -6,7 +6,6 @@
 //
 // See docs/documents.md. The converter and the file writing are exported for the tests.
 
-import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,6 +16,7 @@ import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 import { isChat, makeChatFolder } from "./chat.ts";
 import type { Feature } from "./features.ts";
 import { chatIdOf } from "./versions.ts";
+import { execFileOffThread } from "./offthread.ts";
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
@@ -583,10 +583,10 @@ const FORMAT_LIST = ".docx (Word), .rtf, .odt (OpenDocument) and .html";
 /** Make `output` from the HTML file `input`. Replaceable so the tests can see what is run. */
 export type Converter = (format: "docx" | "rtf" | "odt", input: string, output: string, title: string) => Promise<void>;
 
-/** No shell, a fixed program, arguments as a list, and a time limit. */
+/** No shell, a fixed program, arguments as a list, and a time limit; started off the engine's thread (offthread.ts). */
 const textutil: Converter = (format, input, output, title) =>
 	new Promise((done, reject) => {
-		execFile(TEXTUTIL, ["-convert", format, "-encoding", "UTF-8", ...(title === "" ? [] : ["-title", title]), "-output", output, input], { timeout: CONVERT_MS, maxBuffer: 1024 * 1024 }, (error, _out, stderr) => {
+		execFileOffThread(TEXTUTIL, ["-convert", format, "-encoding", "UTF-8", ...(title === "" ? [] : ["-title", title]), "-output", output, input], { timeout: CONVERT_MS, maxBuffer: 1024 * 1024 }, (error, _out, stderr) => {
 			if (error === null) return done();
 			const killed = (error as { killed?: boolean }).killed === true;
 			reject(new Error(killed ? "textutil took too long and was stopped" : `textutil could not convert it${String(stderr).trim() === "" ? "" : `: ${String(stderr).trim().slice(0, 300)}`}`));

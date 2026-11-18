@@ -13,7 +13,7 @@
 // git ignores is put back before the agent needs it. Its start and end are written into the transcript, and the
 // conversation's next request waits for it, so the agent is told how it went before it answers.
 
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -22,7 +22,9 @@ import type { ConversationId, DocumentReader } from "@earendil-works/pi-durable"
 import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
 import { commandEnvironment } from "./environment.ts";
 import type { Feature } from "./features.ts";
+import { runOffThread } from "./offthread.ts";
 import type { MadeWorktree } from "./rules.ts";
+import { forAgent } from "./priority.ts";
 import { scratchVariable } from "./scratch.ts";
 import { agentVariables } from "./variables.ts";
 import type { AgentProfile } from "./state.ts";
@@ -185,25 +187,17 @@ const GIT_TIMEOUT_MS = 10_000;
 export class GitError extends Error {}
 
 /** Runs git without touching the index lock (so it never gets in an agent's way) and without ever asking for input. */
-export function git(args: string[], cwd: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		execFile(
-			"git",
-			args,
-			{
-				cwd,
-				timeout: GIT_TIMEOUT_MS,
-				maxBuffer: 8 * 1024 * 1024,
-				env: commandEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }),
-			},
-			(error, stdout, stderr) => {
-				if (error) {
-					const message = String(stderr).trim().split("\n").filter((line) => line.trim() !== "").pop() ?? error.message;
-					reject(Object.assign(new GitError(message.replace(/^(fatal|error): /, "")), { code: (error as { code?: unknown }).code }));
-				} else resolve(String(stdout));
-			},
-		);
+// Off the engine's thread (offthread.ts): the tracker runs git for every folder every few seconds.
+export async function git(args: string[], cwd: string): Promise<string> {
+	const { error, stdout, stderr } = await runOffThread("git", args, {
+		cwd,
+		timeout: GIT_TIMEOUT_MS,
+		maxBuffer: 8 * 1024 * 1024,
+		env: commandEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }),
 	});
+	if (error === null) return stdout;
+	const message = stderr.trim().split("\n").filter((line) => line.trim() !== "").pop() ?? error.message;
+	throw Object.assign(new GitError(message.replace(/^(fatal|error): /, "")), { code: error.code });
 }
 
 const tryGit = (args: string[], cwd: string) => git(args, cwd).then((out) => out.trim(), () => undefined);
@@ -558,7 +552,7 @@ export const worktrees: Feature = (_host, engine) => {
 		const marker = given.marker;
 		let child: ChildProcess;
 		try {
-			child = spawn("/bin/bash", ["-c", command], { cwd: root, env: commandEnvironment({ ...variables, ...scratchVariable(id), [RUN_VARIABLE]: marker }), detached: true, stdio: given.stdio });
+			child = spawn(...forAgent("/bin/bash", ["-c", command]), { cwd: root, env: commandEnvironment({ ...variables, ...scratchVariable(id), [RUN_VARIABLE]: marker }), detached: true, stdio: given.stdio });
 		} catch (error) {
 			forgetRun(marker);
 			throw error;

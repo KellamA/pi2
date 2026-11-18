@@ -304,9 +304,13 @@ struct WorkspaceView: View {
         }
         if engine.agent(state?.agent.agentId)?.browser?.enabled == true { BrowserButton(engine: engine, conversationID: id) }
         if let branch = engine.branches[id] { BranchMenu(engine: engine, id: id, status: branch) }
-        ContextMeter(engine: engine, id: id, state: state)
-        ModelMenu(engine: engine, id: id, agent: state?.agent)
-        ToolsMenu(engine: engine, id: id, agent: state?.agent)
+        // Until the conversation has come from the engine there is no model or access to show, and "Model" and
+        // "Tools off" would read as if nothing were chosen; the pane says it is loading instead.
+        if let state {
+            ContextMeter(engine: engine, id: id, state: state)
+            ModelMenu(engine: engine, id: id, agent: state.agent)
+            ToolsMenu(engine: engine, id: id, agent: state.agent)
+        }
     }
 }
 
@@ -467,7 +471,10 @@ private struct PaneHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             if let id = pane.conversation {
-                if summary?.busy == true || engine.open[id]?.state?.busy == true {
+                if let wait = engine.limitWaits[id] {
+                    Image(systemName: "hourglass").font(.system(size: 11)).foregroundStyle(Theme.warn).frame(width: 14)
+                        .help(wait.sentence)
+                } else if summary?.busy == true || engine.open[id]?.state?.busy == true {
                     Spinner().frame(width: 14)
                 } else {
                     AgentAvatar(agent: engine.agent(summary?.agentId ?? engine.open[id]?.state?.agent.agentId), size: 14)

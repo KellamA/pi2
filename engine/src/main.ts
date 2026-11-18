@@ -23,6 +23,7 @@ import {
 	type EntryId,
 	type EntryRecord,
 	Harness,
+	LiveDoc,
 	type SubmissionId,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
@@ -37,6 +38,7 @@ import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunning
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validateToolsOn } from "./builtins.ts";
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
+import { chatHandover, handoverAttachments } from "./handover.ts";
 import { codemodeExtension } from "./codemode.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
@@ -53,11 +55,12 @@ import { McpServers } from "./mcp.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
-import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
+import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, newestOnly, Providers } from "./providers.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
 import { timeLines } from "./log.ts";
+import { LagMonitor } from "./lag.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
@@ -92,6 +95,8 @@ const build = (() => {
 function log(...parts: unknown[]): void {
 	console.error("[pi2-engine]", ...parts);
 }
+/** How late the engine's thread runs (lag.ts). */
+const lag = new LagMonitor((line) => log(line));
 
 // Anything that would kill the process is written to the log first. The app restarts the engine, and reopening the
 // storage recovers whatever was running.
@@ -236,6 +241,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	chatSettings: () => chatSettings(settings.chat),
 	providers: () => providers,
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
@@ -244,7 +250,7 @@ const engine: Engine = {
 	stateChanged: (id) => {
 		for (const client of clients) (client.subscriptions.get(id) ?? client.subscriptions.get(chatOf(id)))?.push();
 	},
-	activityChanged: () => broadcast(activityEvent()),
+	activityChanged: () => announceActivity(),
 	overBudget: () => (overBudget() ? `Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up.` : undefined),
 	providersChanged: () => void announceProviders(),
 };
@@ -293,19 +299,26 @@ function withheld(): string[] {
 	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
 }
 
-/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
-function chatTools() {
+/**
+ * The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on, and what
+ * features add for chats (chat mode's memory while that is on, knowledge.ts).
+ */
+function chatTools(web: boolean) {
 	const held = withheld();
-	return chatToolNames(chatSettings(settings.chat).web)
+	const added = host.features.flatMap((feature) => feature.chatToolNames?.() ?? []);
+	return [...chatToolNames(web), ...added]
 		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }
 
 /** How a new chat is configured: no folder, no instructions of an agent's, the assistant's tools. */
-function chatChange(model: ModelRef): AgentChange {
-	return { model, thinkingLevel: null, instructions: null, tools: chatTools(), cwd: null, maxTurns: null };
+function chatChange(model: ModelRef, web: boolean): AgentChange {
+	return { model, thinkingLevel: defaultThinking(model), instructions: null, tools: chatTools(web), cwd: null, maxTurns: null };
 }
+
+/** Whether chat `id` (or the chat it is a version of) may read the web: its own switch, which starts as chat mode's setting. */
+const chatWeb = (id: number): boolean => library.conversations[String(chatOf(id))]?.web !== false;
 
 /**
  * `wanted` in the order the conversation already has its tools (`current`, its AgentDoc's), with the new ones after them.
@@ -324,7 +337,7 @@ async function agentChange(agent: AgentProfile, options: { subChat: boolean }): 
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
-		thinkingLevel: (agent.thinkingLevel as never) ?? null,
+		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
 		tools: toolsFor(agent.access, agent, options.subChat),
 		cwd: agent.cwd,
@@ -423,7 +436,7 @@ async function syncTools(conv: Conversation): Promise<void> {
 	// A conversation whose agent was deleted keeps the setup it has. A chat has the assistant's tools.
 	if (meta === undefined || (own === undefined && !isChat(meta))) return;
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools() : toolsFor(meta.access, own, isSubChat(meta)));
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta)));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -581,7 +594,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string; details?: { background: { id: string } } }
+	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string } } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -613,10 +626,11 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
 	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
-	// What woke the agent is a message to the model, and a line to the person; its Output opens a command's output.
+	// Show the same model input behind the line, including wakes stored before the row could open (#318).
 	if (entry.kind === WAKE_ENTRY) {
-		const details = wakeMarkerDetails(entry.data);
-		return { id, kind: "marker", text: wakeMarker(entry.data), ...(details === undefined ? {} : { details }) };
+		const content = textOf((entry.model?.[0] as { content?: unknown } | undefined)?.content);
+		const details = { ...wakeMarkerDetails(entry.data), wake: { text: content } };
+		return { id, kind: "marker", text: wakeMarker(entry.data), details };
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
@@ -741,6 +755,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		title: meta?.title ?? "",
 		// A chat of the built-in assistant (chat.ts): the page shows chat mode's own controls only then.
 		chat: isChat(meta),
+		// A chat's web switch (#287): whether its next message may read the web. Null for any other conversation.
+		web: isChat(meta) ? chatWeb(id) : null,
 		archived: isArchived(meta) || (meta?.parent !== undefined && isArchived(library.conversations[String(meta.parent)])),
 		queued: (inbox.items ?? [])
 			.filter((item) => item.mode !== "write")
@@ -784,8 +800,35 @@ function send(client: Client, message: unknown): void {
 	if (!client.socket.destroyed) client.socket.write(`${JSON.stringify(message)}\n`);
 }
 function broadcast(message: unknown): void {
-	for (const client of clients) send(client, message);
+	if (clients.size === 0) return;
+	// Made into text once, however many apps are connected.
+	const line = `${JSON.stringify(message)}\n`;
+	for (const client of clients) if (!client.socket.destroyed) client.socket.write(line);
 }
+
+/**
+ * Sends the event `make` makes to every app at most once every `ms`: at once when none went in the last `ms`, else once
+ * at the end of it, made then, so the last state is always sent. Activity lists every run, and was sent again whole for
+ * each change to any of them: with 20 runs working, 55 events a second, 360 KB, each of which the app decoded and laid
+ * out (#344). The library and the Inbox, sent a few times a second at most, go at once: what is done next often reads
+ * them (an approval answered must leave the Inbox before it could be answered again).
+ */
+function coalesced(make: () => unknown, ms = 250): () => void {
+	let last = Number.NEGATIVE_INFINITY;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const now = () => {
+		timer = undefined;
+		last = performance.now();
+		broadcast(make());
+	};
+	return () => {
+		if (timer !== undefined) return;
+		const wait = last + ms - performance.now();
+		if (wait <= 0) now();
+		else timer = setTimeout(now, wait);
+	};
+}
+const announceActivity = coalesced(() => activityEvent());
 
 library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
 // Conversations deleted before there was an archive are marked the new way, once.
@@ -814,6 +857,10 @@ function libraryEvent() {
 			// Chat mode lists only chats, and the agent view never does (chat.ts).
 			chat: isChat(meta),
 			pinned: meta.pinned === true,
+			// Continue with an Agent (#289): the chat a conversation was continued from, and the conversations a chat was
+			// continued in, leaving out any deleted since.
+			continuedFrom: meta.continuedFrom ?? null,
+			continuedIn: (meta.continuedIn ?? []).filter((other) => library.conversations[String(other)] !== undefined && !isDeleted(library.conversations[String(other)])),
 			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
 			allowEverything: meta.allowEverything === true,
 		}))
@@ -893,7 +940,7 @@ function inboxEvent() {
 }
 inbox.onChange = () => {
 	broadcast(inboxEvent());
-	broadcast(activityEvent());
+	announceActivity();
 };
 
 async function providersEvent() {
@@ -997,17 +1044,84 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
 		saveSettings();
 	}
 	const now = Date.now();
+	// The web starts as chat mode's setting says, and is the chat's own from then on.
+	const web = chatSettings(settings.chat).web;
 	const created = await harness.createConversation(
 		{
 			ownership: { kind: "ownerless" },
-			agent: chatChange(model),
+			agent: chatChange(model, web),
 			init: async (tx, id) => {
 				// No agent, and no tool access of an agent's: its tools are the assistant's own, none of which asks.
-				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true };
+				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true, ...(web ? {} : { web: false as const }) };
 			},
 		},
 		context,
 	);
+	return { id: created.id };
+}
+
+/**
+ * Continue with an Agent (#289, handover.ts): a new conversation of `agentId`, in `cwd` or the agent's own folder, whose
+ * first message is chat `chatId` as it stands, with its pictures and files, and what the person typed. The chat is left
+ * as it was; each is linked to the other on its record. The agent's access, approvals and Allow everything apply from
+ * that first message, as in any conversation of its own.
+ */
+async function continueChat(params: Params): Promise<{ id: ConversationId }> {
+	const shown = await conversation(params.id);
+	const chatId = chatOf(shown.id);
+	const meta = library.conversations[String(chatId)];
+	if (!isChat(meta)) throw new Error("Only a chat can be continued with an agent");
+	if (isDeleted(meta)) throw new Error("That chat was deleted");
+	const agent = agents[String(params.agentId ?? "")];
+	if (agent === undefined) throw new Error("Choose one of your agents to continue with");
+	if (params.text !== undefined && typeof params.text !== "string") throw new Error("text must be text");
+	const typed = typeof params.text === "string" ? params.text.trim() : "";
+	let cwd = agent.cwd;
+	if (params.cwd !== undefined && params.cwd !== null) {
+		cwd = text(params, "cwd");
+		if (!(existsSync(cwd) && statSync(cwd).isDirectory())) throw new Error(`Not a folder: ${cwd}`);
+	}
+	if (busyConversations.has(chatId)) throw new Error("The chat is still answering. Wait for it to finish, or stop it, then continue with an agent.");
+	if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
+
+	// The chat as it stands: the version shown, with the history it was made from.
+	const entries: EntryRecord[] = [];
+	let cursor: unknown;
+	for (;;) {
+		const batch = await shown.entries({ order: "ascending" }, 500, cursor as never, context);
+		entries.push(...batch.items);
+		cursor = (batch as { next?: unknown }).next;
+		if (cursor === undefined || batch.items.length === 0) break;
+	}
+	if (!entries.some((entry) => (entry.model?.[0] as { role?: string } | undefined)?.role === "user")) throw new Error("This chat has nothing in it yet to continue from");
+
+	const change = { ...(await agentChange(agent, { subChat: false })), cwd };
+	const model = change.model == null ? undefined : providers.models.getModel(change.model.provider, change.model.modelId);
+	const handover = chatHandover(entries, { title: meta!.title, agent: agent.name, typed: typed !== "", seesPictures: model === undefined || model.input.includes("image") });
+	const attachments = handoverAttachments(handover);
+	const now = Date.now();
+	const created = await harness.createConversation(
+		{
+			ownership: { kind: "ownerless" },
+			agent: change,
+			init: async (tx, id) => {
+				const conversations = (await tx.doc(Library)).conversations;
+				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId };
+				const chat = conversations[String(chatId)];
+				if (chat !== undefined) chat.continuedIn = [...(chat.continuedIn ?? []), id as unknown as number];
+			},
+		},
+		context,
+	);
+	settings.lastAgent = agent.id;
+	saveSettings();
+	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
+	const conv = (await harness.conversation(created.id, context))!;
+	// Its own agent's Allow everything, and its own tools, as for any first message of a conversation of that agent.
+	await takeSwitch(conv.id);
+	await syncTools(conv).catch((error) => log("could not update the tools of conversation", created.id, error instanceof Error ? error.message : ""));
+	await conv.submit({ type: "input", content: userContent(typed, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(typed, attachments) }, whenBusy: "followUp" }, context);
+	for (const feature of host.features) feature.messageSent?.(created.id as unknown as number);
 	return { id: created.id };
 }
 
@@ -1022,6 +1136,8 @@ const text = (params: Params, key: string): string => {
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	/** How late the engine's thread ran since the last time this was asked (lag.ts): for the load script. */
+	"engine.lag": async () => lag.take(),
 	"conversation.create": async (params) => {
 		if (params.chat !== undefined && typeof params.chat !== "boolean") throw new Error("chat must be true or false");
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
@@ -1033,7 +1149,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
-				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef } : change,
+				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : change,
 				init: async (tx, id) => {
 					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
 				},
@@ -1107,8 +1223,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
-						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps.
+						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps, and its web switch.
 						...(isChat(source) ? { chat: true as const } : {}),
+						...(isChat(source) && source?.web === false ? { web: false as const } : {}),
 					};
 				},
 			},
@@ -1365,9 +1482,12 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.defaultModel !== undefined) delete settings.lastChatModel;
 		saveSettings();
 		broadcast(chatEvent());
-		// The web switch changes what every chat is offered, from its next message (syncTools).
+		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287). The memory
+		// switch changes what every chat is offered, from its next message (syncTools).
 		return after;
 	},
+	/** Continue with an Agent (#289): `{ id, agentId, cwd?, text? }`, answered with the new conversation's `{ id }`. */
+	"chat.continueWithAgent": async (params) => continueChat(params),
 	"conversation.configure": async (params, client) => {
 		const conv = await conversation(params.id);
 		const id = chatOf(conv.id);
@@ -1375,10 +1495,23 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// A chat has no folder and no tool access to choose: its tools are the assistant's (chat.ts).
 		if (chat && params.cwd !== undefined) throw new Error("A chat has no folder");
 		if (chat && params.access !== undefined) throw new Error("A chat's tools are fixed: it has no tool access to change");
+		if (params.web !== undefined) {
+			if (!chat) throw new Error("Only a chat has a web switch; an agent's tools are chosen in its settings");
+			if (typeof params.web !== "boolean") throw new Error("web must be true or false");
+			// Kept on the chat's record and counted from its next message, when its tools are brought in line (syncTools),
+			// so an answer being written keeps the tools it started with.
+			await editMeta(conv.id, (meta) => {
+				if (params.web === false) meta.web = false;
+				else delete meta.web;
+			});
+			for (const other of clients) other.subscriptions.get(id)?.push();
+		}
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
-			await conv.configure({ model: { provider: model.provider, modelId: model.modelId } }, context);
+			// A model on this Mac comes with its own thinking level when the conversation has none (defaultThinking).
+			const thinking = params.thinkingLevel === undefined && ((await harness.snapshot(AgentDoc, conv.id, context))?.thinkingLevel ?? null) === null ? defaultThinking(model) : null;
+			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
 			// The next conversation starts with it: the next chat for a chat, else the next of an agent's.
 			if (chat) settings.lastChatModel = { provider: model.provider, modelId: model.modelId };
 			else settings.defaultModel = { provider: model.provider, modelId: model.modelId };
@@ -1433,14 +1566,20 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
-		for (const feature of host.features) feature.messageSent?.(params.id as number);
-		// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
-		if (params.mode === "steer") messageSent(conv.id as unknown as number);
+		// From here the message is kept, and the app is told so at once: nothing after this may make it look refused, or the
+		// person, given the text back, would send it again (#344).
+		try {
+			for (const feature of host.features) feature.messageSent?.(params.id as number);
+			// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
+			if (params.mode === "steer") messageSent(conv.id as unknown as number);
+		} catch (error) {
+			log("after a message to conversation", params.id, "was kept:", error instanceof Error ? error.message : error);
+		}
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
 			// A message that is only attachments is titled after the first of them.
 			if (meta.title === "") meta.title = (content.trim().split("\n")[0] || attachments[0]?.name || "").slice(0, 60);
-		});
+		}).catch((error) => log("could not note the message to conversation", params.id, error instanceof Error ? error.message : error));
 		return { submissionId: submission.id };
 	},
 	abort: async (params) => {
@@ -1454,6 +1593,17 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await takeSwitch(conv.id);
 		await conv.submit({ type: "continue" }, context);
 		return {};
+	},
+	/** Read one admitted message's durable outcome, not a previous run's idle state (test-copy send). */
+	"submission.get": async (params) => {
+		if (!Number.isSafeInteger(params.submissionId)) throw new Error("submissionId must be a number");
+		const conv = await conversation(params.id);
+		const submission = await harness.submission(params.submissionId as SubmissionId, context);
+		if (submission === undefined) throw new Error("No such submission");
+		const record = await submission.status(context);
+		if (record.conversationId !== conv.id) throw new Error("That submission belongs to another conversation");
+		const live = await harness.snapshot(LiveDoc, conv.id, context);
+		return { submission: record, busy: live?.run !== undefined };
 	},
 	withdraw: async (params) => {
 		const submission = await harness.submission(params.submissionId as SubmissionId, context);
@@ -1790,14 +1940,14 @@ graphWatch.start(async (call) => {
 	for (const feature of host.features) feature.runsChanged?.(working);
 	const changed = before.size !== working.size || [...working].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
-	broadcast(activityEvent());
+	announceActivity();
 	scheduleUsageRefresh();
 });
 // A command starting or ending changes its row in the conversation, which the live document may already have shown
 // without its clock; its output reaches the conversation on its own, and only Activity needs telling of it.
 runningCommands.onChange = (id, why) => {
 	if (why !== "printed") engine.stateChanged(id);
-	broadcast(activityEvent());
+	announceActivity();
 };
 
 // ---- MCP servers: their tools are one extension, replaced whenever a server connects or drops

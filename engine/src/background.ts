@@ -25,6 +25,7 @@ import { type ConversationId, defineDoc, defineTool, section, type ToolExecution
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
+import { forAgent } from "./priority.ts";
 import { scratchVariable } from "./scratch.ts";
 import { arrive, unwatch, watch, watched } from "./wakes.ts";
 import { agentVariables } from "./variables.ts";
@@ -399,7 +400,7 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		// With the variables the person gave the conversation's agent (variables.ts).
 		const variables = await agentVariables(conversationId);
 		run = newRun();
-		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: run.marker }), detached: true, stdio: run.stdio });
+		child = spawn(...forAgent("/bin/bash", ["-c", args.command]), { cwd, env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: run.marker }), detached: true, stdio: run.stdio });
 	} catch (error) {
 		await forget();
 		await unwatch(wakeKey(id));

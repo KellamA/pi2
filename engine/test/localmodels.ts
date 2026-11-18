@@ -13,7 +13,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DownloadError, download } from "../src/download.ts";
 import type { Catalog, CatalogFile } from "../src/localcatalog.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, stop, until } from "./patience.ts";
+
+/** Whether a process runs: one that has ended and waits only to be reaped (Z) runs nothing. */
+const alive = (pid: number) => {
+	try {
+		return !execFileSync("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().startsWith("Z");
+	} catch {
+		return false;
+	}
+};
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -253,10 +262,44 @@ chmodSync(join(packaging, "strata-test", "bin", "strata"), 0o644);
 writeFileSync(join(packaging, "strata-test", "README"), "a stand-in engine\n");
 execFileSync("/usr/bin/tar", ["-czf", join(packaging, "engine.tar.gz"), "-C", packaging, "strata-test"]);
 const engineArchive = serve("/engine/strata-test.tar.gz", readFileSync(join(packaging, "engine.tar.gz")), "wrong");
-// Its control package: the server, which is not run here either.
-mkdirSync(join(packaging, "strata-control", "serve"), { recursive: true });
-writeFileSync(join(packaging, "strata-control", "serve", "server.py"), "print('never run')\n");
-execFileSync("/usr/bin/tar", ["-czf", join(packaging, "control.tar.gz"), "-C", packaging, "strata-control"]);
+// Its control package: a stand-in for its Python, which plays Strata's commands. `strata.py components install-file`
+// installs the engine in Strata's component folder; `setup.py` prepares a pack as Strata's setup does (its steps, a
+// pack folder and a run config in the control package's folder), noting its environment and arguments, and fails when
+// the file STRATA_TEST_FAIL names is there, or waits while the one STRATA_TEST_HOLD names is; the server is no server.
+const control = join(packaging, "control");
+mkdirSync(join(control, "python", "bin"), { recursive: true });
+mkdirSync(join(control, "serve"), { recursive: true });
+for (const name of ["strata.py", "setup.py", join("serve", "server.py")]) writeFileSync(join(control, name), "# a stand-in: python/bin/python3 plays it\n");
+writeFileSync(
+	join(control, "python", "bin", "python3"),
+	`#!/bin/sh
+case "$(basename "$1")" in
+strata.py)
+  mkdir -p "$XDG_DATA_HOME/strata/components/engine/0.0.1-test" && echo "Engine 0.0.1-test is installed" ;;
+setup.py)
+  shift
+  while [ $# -gt 0 ]; do case "$1" in --model) model=$2; shift ;; --gguf-dir) files=$2; shift ;; --data-dir) data=$2; shift ;; esac; shift; done
+  env > "$data/setup.env"
+  echo "$$" > "$data/setup.pid"
+  echo "Strata on a Mac (Apple Silicon, Metal)"
+  echo "=== Step 1: checking your Mac ==="
+  while [ -n "$STRATA_TEST_HOLD" ] && [ -f "$STRATA_TEST_HOLD" ]; do sleep 0.05; done
+  if [ -n "$STRATA_TEST_FAIL" ] && [ -f "$STRATA_TEST_FAIL" ]; then
+    echo ""; echo "  [X]  the draft layer's download keeps stopping (exit 3)"; echo "       run setup again - what is downloaded is kept"
+    echo ""; echo "Setup stopped. Fix the item above and run it again - everything already done is kept and skipped."; exit 1
+  fi
+  echo "=== Step 6: preparing the model for Strata ==="
+  echo "  MTP draft layer:   2.60 / 5.21 GB (50%)" >&2
+  mkdir -p "$data/packs/$model"
+  lower=$(echo "$model" | tr A-Z a-z)
+  printf '{"exe":"component:strata-engine","args":["--pack","%s","--native","%s","--max-context","65536","--vision"],"vision":{"mmproj":"x"}}' "$data/packs/$model" "$files" > "strata-$lower.json"
+  echo "=== Step 7: writing the run settings ==="; echo "All set." ;;
+*) echo "not a server" ;;
+esac
+`,
+);
+chmodSync(join(control, "python", "bin", "python3"), 0o755);
+execFileSync("/usr/bin/tar", ["-czf", join(packaging, "control.tar.gz"), "-C", control, "."]);
 const controlArchive = serve("/engine/strata-control-test.tar.gz", readFileSync(join(packaging, "control.tar.gz")));
 
 const bigFiles = [serve("/packs/big-1.gguf", randomBytes(3 * 1024 * 1024)), serve("/packs/big-2.gguf", randomBytes(1024 * 1024)), serve("/packs/big-vision.gguf", randomBytes(64 * 1024))];
@@ -269,9 +312,9 @@ const catalog: Catalog = {
 			id: "test-model",
 			name: "Test Model",
 			packs: [
-				{ id: "test-big", pack: "BIG", provider: "Tests", note: "The better one.", needsGB: 63, recommendedFromGB: 96, files: bigFiles, visionFile: "big-vision.gguf", prepareBytes: 0, licences: [licence] },
-				{ id: "test-small", pack: "SMALL", provider: "Tests", note: "Too big for any Mac.", needsGB: 200, recommendedFromGB: 256, files: smallFiles, visionFile: null, prepareBytes: 0, licences: [licence] },
-				{ id: "test-later", pack: "LATER", provider: "Tests", note: "Not yet.", needsGB: 10, recommendedFromGB: 16, files: [], visionFile: null, prepareBytes: 0, licences: [licence], unavailable: "Not offered yet, for a test." },
+				{ id: "test-big", pack: "BIG", provider: "Tests", note: "The better one.", needsGB: 63, recommendedFromGB: 96, files: bigFiles, visionFile: "big-vision.gguf", prepareBytes: 0, prepare: { family: "test", model: "BIG", config: "strata-big.json" }, licences: [licence] },
+				{ id: "test-small", pack: "SMALL", provider: "Tests", note: "Too big for any Mac.", needsGB: 200, recommendedFromGB: 256, files: smallFiles, visionFile: null, prepareBytes: 0, prepare: { family: "test", model: "SMALL", config: "strata-small.json" }, licences: [licence] },
+				{ id: "test-later", pack: "LATER", provider: "Tests", note: "Not yet.", needsGB: 10, recommendedFromGB: 16, files: [], visionFile: null, prepareBytes: 0, prepare: null, licences: [licence], unavailable: "Not offered yet, for a test." },
 			],
 		},
 	],
@@ -283,6 +326,12 @@ temporary.push(catalogFile);
 writeFileSync(catalogFile, JSON.stringify(catalog));
 
 const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/(API_KEY|TOKEN|SECRET)/.test(name)));
+/** What the engines have logged. */
+let logged = "";
+// Files that tell the stand-in setup to fail, or to wait; there only while a test wants it.
+const failSetup = join(home, "..", `${home.split("/").at(-1)}-fail`);
+const holdSetup = join(home, "..", `${home.split("/").at(-1)}-hold`);
+temporary.push(failSetup, holdSetup);
 function startEngine(extra: Record<string, string> = {}): ChildProcess {
 	const child = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "main.ts")], {
 		env: {
@@ -296,20 +345,27 @@ function startEngine(extra: Record<string, string> = {}): ChildProcess {
 			PI2_LOCAL_RETRIES: "3",
 			PI2_LOCAL_STALL_MS: "5000",
 			PI2_LOCAL_KEEP_FREE: "0",
+			// A Python path of the person's own, which no Strata command may be given.
+			PYTHONPATH: "/nowhere",
+			STRATA_TEST_FAIL: failSetup,
+			STRATA_TEST_HOLD: holdSetup,
 			...extra,
 		},
 		stdio: ["ignore", "ignore", "pipe"],
 	});
-	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => process.stderr.write(chunk));
+	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
+		logged += chunk;
+		process.stderr.write(chunk);
+	});
 	return child;
 }
 
-type Download = { id: string; state: string; phase: string | null; error: string | null; received: number; total: number };
+type Download = { id: string; state: string; phase: string | null; error: string | null; received: number; total: number; stage: string; prepare: { step: number | null; stage: string | null; fraction: number | null } | null; log: string | null };
 type Status = {
 	platform: { supported: boolean; memoryGB: number };
-	engine: { installed: { version: string; path: string; folder: string; control: { version: string; folder: string } } | null; pinned: { version: string }; update: boolean };
+	engine: { installed: { version: string; path: string; folder: string; control: { version: string; folder: string }; component?: boolean } | null; pinned: { version: string }; update: boolean };
 	catalog: { packs: { id: string; fit: string; recommended: boolean; unavailable: string | null; installed: boolean; size: number }[] }[];
-	models: { id: string; path: string; contextSize: number; options: { vision: boolean; visionFile: string | null; parallel: number } }[];
+	models: { id: string; path: string; contextSize: number; config?: string; preparedWith?: string; options: { vision: boolean; visionFile: string | null; parallel: number } }[];
 	downloads: Download[];
 	folder: { path: string; isDefault: boolean };
 };
@@ -376,8 +432,10 @@ try {
 		path: executable,
 		folder: join(home, "local", "engine", "0.0.1-test"),
 		control: { version: "0.0.2-test", folder: join(home, "local", "control", "0.0.2-test") },
+		component: true,
 	});
-	assert.ok(existsSync(join(home, "local", "control", "0.0.2-test", "strata-control", "serve", "server.py")), "the control package is unpacked whole");
+	assert.ok(existsSync(join(home, "local", "control", "0.0.2-test", "serve", "server.py")), "the control package is unpacked whole");
+	assert.ok(existsSync(join(home, "local", "strata", "data", "strata", "components", "engine", "0.0.1-test")), "the engine is installed where Strata's server finds it, in pi²'s folder for Strata");
 	assert.equal(existsSync(join(home, "local", "downloads")), false, "the archives go once unpacked");
 	assert.equal(excluded(join(home, "local")), true, "Time Machine skips the folder");
 	assert.equal(status.engine.update, false);
@@ -403,10 +461,37 @@ try {
 	await stop(engine);
 	client.close();
 	modes.set("/packs/small-1.gguf", "fast");
+	// Once downloaded, Strata's setup prepares it, and waits here: the engine is killed while it does.
+	writeFileSync(holdSetup, "");
 	engine = startEngine();
 	client = await Client.connect(engine, home);
-	status = await client.until("the model set up after the restart", () => client.status?.models.some((m) => m.id === "test-small") && client.status);
+	const preparing = await client.until("preparing it", () => client.download("test-small")?.prepare?.step === 1 && client.download("test-small"));
 	assert.ok(requests.filter((r) => r.path === "/packs/small-1.gguf").at(-1)!.start > 0, "after the restart it carried on from the part");
+	assert.deepEqual([preparing.stage, preparing.phase, preparing.prepare!.stage], ["prepare", "preparing", "checking your Mac"]);
+	assert.equal(onDiskOrNull() !== null && onDisk().models.some((m) => m.id === "test-small"), false, "it is not offered before it is prepared");
+	const prepared = join(home, "local", "models", "test-small", "prepared");
+	const setupPid = Number(await until("the setup's pid", () => existsSync(join(prepared, "setup.pid")) && readFileSync(join(prepared, "setup.pid"), "utf8").trim()));
+	await until("its process on record", () => JSON.parse(readFileSync(join(home, "local-setup.json"), "utf8")).downloads.some((d: { process?: unknown }) => d.process !== undefined));
+	const ran = readFileSync(join(prepared, "setup.env"), "utf8").split("\n");
+	for (const [name, value] of [
+		["HOME", join(home, "local", "strata", "home")],
+		["XDG_DATA_HOME", join(home, "local", "strata", "data")],
+		["STRATA_HOME", join(home, "local", "strata", "strata")],
+		["STRATA_CONTROL_INSTALL", "1"],
+		["PYTHONNOUSERSITE", "1"],
+	]) assert.ok(ran.includes(`${name}=${value}`), `Strata's setup runs with ${name}=${value}`);
+	assert.equal(ran.some((line) => line.startsWith("PYTHONPATH=")), false, "and no Python path of the person's");
+	engine.kill("SIGKILL");
+	await stop(engine);
+	client.close();
+	assert.ok(alive(setupPid), "an engine killed outright leaves Strata's setup running for the moment");
+	engine = startEngine();
+	client = await Client.connect(engine, home);
+	await until("the next engine stops the setup it left", () => !alive(setupPid));
+	await until("and starts it again", () => existsSync(join(prepared, "setup.pid")) && Number(readFileSync(join(prepared, "setup.pid"), "utf8")) !== setupPid);
+	assert.match(logged, /Strata's setup preparing test-small, left by the last engine, was stopped/);
+	rmSync(holdSetup);
+	status = await client.until("the model set up after the restart", () => client.status?.models.some((m) => m.id === "test-small") && client.status);
 	const small = status.models.find((m) => m.id === "test-small")!;
 	assert.deepEqual(onDisk().models.find((m) => m.id === "test-small"), {
 		id: "test-small",
@@ -415,10 +500,15 @@ try {
 		path: join(home, "local", "models", "test-small", "small-1.gguf"),
 		contextSize: 65_536,
 		options: { vision: false, visionFile: null, parallel: 1 },
+		config: join(home, "local", "configs", "test-small.json"),
+		preparedWith: "0.0.2-test",
 	});
+	assert.deepEqual(JSON.parse(readFileSync(small.config!, "utf8")).args.slice(0, 2), ["--pack", join(prepared, "packs", "SMALL")], "pi² keeps the run config Strata's setup wrote");
+	const printed = readFileSync(join(home, "local", "logs", "test-small.prepare.log"), "utf8");
+	assert.ok(printed.includes("MTP draft layer:   2.60 / 5.21 GB (50%)") && printed.includes("All set."), "what setup printed, on either stream, is in its log");
 	assert.equal(createHash("sha256").update(readFileSync(small.path)).digest("hex"), smallFiles[0]!.sha256);
 	assert.equal(excluded(join(home, "local", "models", "test-small")), true);
-	step("a download carries on by itself after the engine is killed, and the model is listed once checked");
+	step("a download carries on by itself after the engine is killed, is prepared by Strata's setup in pi²'s folders, also after the engine is killed while it does, and is listed once prepared");
 
 	// Configuring.
 	await client.call("local.model.configure", { id: "test-small", contextSize: 131_072, options: { parallel: 2 } });
@@ -446,20 +536,47 @@ try {
 	assert.equal(client.download("test-big"), undefined);
 	step("a download goes to the folder chosen for models, and cancelling it removes what it left");
 
-	// Back to pi²'s own folder, and the whole of the big pack, with its picture reader.
+	// Back to pi²'s own folder, and the whole of the big pack, with its picture reader, from files of the person's own
+	// where they match: a Strata data folder with the first file and a wrong second one, and the draft layer's tensors.
 	await client.call("local.model.folder", { path: null });
-	modes.set("/packs/big-1.gguf", "stall");
-	await client.call("local.model.install", { pack: "test-big", accept: true });
+	const mine = folder("pi2-local-mine-");
+	mkdirSync(join(mine, "Strata-data", "models", "big"), { recursive: true });
+	mkdirSync(join(mine, "Strata-data", "mtp", "tensors"), { recursive: true });
+	writeFileSync(join(mine, "Strata-data", "models", "big", "big-1.gguf"), served.get("/packs/big-1.gguf")!);
+	writeFileSync(join(mine, "Strata-data", "models", "big", "big-2.gguf"), randomBytes(1024 * 1024));
+	writeFileSync(join(mine, "Strata-data", "mtp", "mtp-inventory.json"), "{}");
+	writeFileSync(join(mine, "Strata-data", "mtp", "tensors", "mtp.fc.bin"), "tensor");
+	await assert.rejects(client.call("local.model.install", { pack: "test-big", accept: true, from: join(mine, "Strata-data", "mtp") }), /None of the files of Test Model \(BIG\) is in .* by name and size/);
+	modes.set("/packs/big-2.gguf", "stall");
+	writeFileSync(failSetup, "");
+	const firstAsked = requests.length;
+	await client.call("local.model.install", { pack: "test-big", accept: true, from: mine });
+	failed = await client.until("preparing it failed", () => client.download("test-big")?.state === "failed" && client.download("test-big"));
+	assert.equal(failed.stage, "prepare");
+	assert.match(
+		failed.error ?? "",
+		/^Test Model \(BIG\) could not be prepared\. Strata's setup stopped: the draft layer's download keeps stopping \(exit 3\) run setup again - what is downloaded is kept\. What it printed is in .*test-big\.prepare\.log\. Press Try Again: what was done is kept\.$/,
+	);
+	assert.equal(onDisk().models.some((m) => m.id === "test-big"), false, "a model that could not be prepared is not offered");
+	const since = requests.slice(firstAsked).map((r) => r.path);
+	assert.equal(since.includes("/packs/big-1.gguf"), false, "the person's own file that matched is not downloaded");
+	assert.ok(since.includes("/packs/big-2.gguf") && since.includes("/packs/big-vision.gguf"), "one that does not match, or is not there, is");
+	assert.equal(readFileSync(join(home, "local", "models", "test-big", "prepared", "mtp", "tensors", "mtp.fc.bin"), "utf8"), "tensor", "the draft layer's tensors are taken for Strata's setup to check");
+	assert.ok(existsSync(join(mine, "Strata-data", "models", "big", "big-1.gguf")) && existsSync(join(mine, "Strata-data", "mtp", "tensors", "mtp.fc.bin")), "the person's files stay where they were");
+	rmSync(failSetup);
+	await client.call("local.download.resume", { id: "test-big" });
 	status = await client.until("the big pack set up", () => client.status?.models.some((m) => m.id === "test-big") && client.status);
 	const big = status.models.find((m) => m.id === "test-big")!;
 	assert.deepEqual(big.options, { vision: true, visionFile: join(home, "local", "models", "test-big", "big-vision.gguf"), parallel: 1 });
 	assert.equal(status.catalog[0]!.packs.find((p) => p.id === "test-big")!.installed, true);
-	step("a pack with a picture reader is set up with pictures on, through a stalled connection");
+	for (const file of bigFiles) assert.equal(createHash("sha256").update(readFileSync(join(home, "local", "models", "test-big", file.name))).digest("hex"), file.sha256);
+	step("files of the person's own are used where they match and downloaded where not, through a stalled connection; a preparation that fails says why, and Try Again carries on");
 
 	await client.call("local.model.remove", { id: "test-big" });
 	assert.equal(existsSync(join(home, "local", "models", "test-big")), false);
+	assert.equal(existsSync(join(home, "local", "configs", "test-big.json")), false);
 	assert.equal(onDisk().models.some((m) => m.id === "test-big"), false);
-	step("removing a model removes its files and its entry");
+	step("removing a model removes its files, what preparing it made, and its entry");
 
 	// No space: a disk that cannot hold the download and the room pi² keeps is refused before anything is asked.
 	client.close();
@@ -479,8 +596,24 @@ try {
 	await client.call("local.engine.remove");
 	assert.equal(existsSync(join(home, "local", "engine")), false);
 	assert.equal(existsSync(join(home, "local", "control")), false);
+	assert.equal(existsSync(join(home, "local", "strata")), false);
 	assert.equal(onDisk().engine, null);
 	step("removing the engine removes it");
+	client.close();
+
+	// A pack downloaded while there is no engine waits for it, and is prepared once it is set up.
+	await stop(engine);
+	engine = startEngine();
+	client = await Client.connect(engine, home);
+	await client.until("the local status", () => client.status);
+	await client.call("local.model.install", { pack: "test-big", accept: true });
+	const waiting = await client.until("downloaded, waiting for the engine", () => client.download("test-big")?.state === "waiting" && client.download("test-big"));
+	assert.equal(waiting.error, "Downloaded and checked. Preparing it for Strata needs the engine: get Strata above, and preparing starts by itself.");
+	assert.equal(onDisk().models.some((m) => m.id === "test-big"), false);
+	modes.set("/engine/strata-test.tar.gz", "fast");
+	await client.call("local.engine.install", { accept: true });
+	await client.until("prepared once the engine is set up", () => client.status?.models.some((m) => m.id === "test-big"));
+	step("a pack downloaded before the engine waits for it, and is prepared once it is set up");
 	client.close();
 } finally {
 	await stop(engine);

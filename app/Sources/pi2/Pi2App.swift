@@ -525,24 +525,10 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $model.selection) {
-            let notices = PlanLimits(engine.extras["limits"])?.notices.count ?? 0
-            navRow("Inbox", icon: engine.inbox.isEmpty && notices == 0 ? "tray" : "tray.full", tag: .inbox) {
-                if !engine.inbox.isEmpty {
-                    Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
-                } else if notices > 0 {
-                    // A notice of a plan's window waits on nobody, so it is counted without the colour of a request.
-                    Tag("\(notices)").accessibilityLabel(notices == 1 ? "1 notice" : "\(notices) notices")
-                }
-            }
+            InboxRow(engine: engine)
+                .tag(Selection.inbox)
             navRow("Activity", icon: "waveform.path.ecg", tag: .activity) {
-                if engine.recovery != nil {
-                    Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
-                        .help("The engine restarted after stopping unexpectedly")
-                        .accessibilityLabel("Engine restarted")
-                }
-                if !engine.activity.isEmpty {
-                    Tag("\(engine.activity.count) running", .acc)
-                }
+                ActivityBadges(engine: engine)
             }
             navRow("Usage", icon: "chart.bar", tag: .usage) {
                 if engine.usage?.overBudget == true {
@@ -647,8 +633,19 @@ struct SidebarView: View {
         .tag(tag)
     }
     private func conversationRow(_ conversation: ConversationSummary, subChats: Int) -> some View {
-        HStack(spacing: 8) {
-            if conversation.busy {
+        let wait = engine.limitWaits[conversation.id]
+        return HStack(spacing: 8) {
+            if let wait {
+                // Waiting for a provider's limit is not working: no spinner (#343).
+                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                    .help(wait.sentence)
+                    .accessibilityLabel(wait.tag)
+            } else if engine.heldByLimits.contains(conversation.id) {
+                // Nothing of it works: all its sub-chats wait for a limit.
+                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                    .help(LimitWait.subChatsLine(engine.subChatLimitWaits[conversation.id] ?? []) ?? "")
+                    .accessibilityLabel("Waiting for a limit")
+            } else if conversation.busy {
                 Spinner().frame(width: 16)
             } else {
                 AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
@@ -662,6 +659,12 @@ struct SidebarView: View {
                 : engine.inbox.contains { $0.conversationId == conversation.id }
             if needsYou {
                 Tag("needs you", .warn).accessibilityLabel("Needs you")
+            } else if let wait {
+                // The title gives way, not the time.
+                Tag(wait.shortTag, .warn).fixedSize().help(wait.sentence)
+            } else if subChats > 0, model.collapsed.contains(conversation.id), let waits = engine.subChatLimitWaits[conversation.id] {
+                // Folded away, its sub-chats' rows cannot say it.
+                Tag("\(waits.count) at limit", .warn).fixedSize().help(LimitWait.subChatsLine(waits) ?? "")
             }
             // Which branch the conversation's folder is on, coloured by how it stands. On every row, sub-chats too, so
             // each one's branch can be followed from the sidebar; one in its parent's checkout draws it faded.
@@ -705,6 +708,56 @@ struct SidebarView: View {
             // A sub-chat is archived with the conversation it belongs to.
             if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
             Button("Delete", role: .destructive) { model.delete(conversation) }
+        }
+    }
+}
+
+/// The Inbox's row in the sidebar, with what waits there. A view of its own, so that a plan's limits, which can change
+/// with every answer from a subscription, draw only this row again.
+private struct InboxRow: View {
+    let engine: EngineClient
+
+    var body: some View {
+        let notices = PlanLimits(engine.extras["limits"])?.notices.count ?? 0
+        HStack(spacing: 8) {
+            Image(systemName: engine.inbox.isEmpty && notices == 0 ? "tray" : "tray.full").foregroundStyle(Theme.tx2).frame(width: 20)
+            Text("Inbox")
+            Spacer(minLength: 4)
+            if !engine.inbox.isEmpty {
+                Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
+            } else if notices > 0 {
+                // A notice of a plan's window waits on nobody, so it is counted without the colour of a request.
+                Tag("\(notices)").accessibilityLabel(notices == 1 ? "1 notice" : "\(notices) notices")
+            }
+        }
+    }
+}
+
+/// Activity's row in the sidebar: how many runs there are, and whether the engine restarted. A view of its own, since
+/// the engine says what is running several times a second while agents work, and only this needs drawing again for it,
+/// not the whole sidebar (#347).
+private struct ActivityBadges: View {
+    let engine: EngineClient
+
+    var body: some View {
+        if engine.recovery != nil {
+            Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
+                .help("The engine restarted after stopping unexpectedly")
+                .accessibilityLabel("Engine restarted")
+        }
+        // A run waiting for a provider's limit is counted apart from those working (#343).
+        let waiting = engine.limitWaits.count
+        if engine.runningCount > waiting {
+            // Beside the count at the limit, the word gives way so that the row's own title fits.
+            let running = engine.runningCount - waiting
+            Tag(waiting > 0 ? "\(running)" : "\(running) running", .acc).fixedSize()
+                .help("\(running) running")
+                .accessibilityLabel("\(running) running")
+        }
+        if waiting > 0 {
+            Tag("\(waiting) at limit", .warn).fixedSize()
+                .help("\(waiting) waiting for a provider’s limit; they carry on by themselves")
+                .accessibilityLabel("\(waiting) waiting for a limit")
         }
     }
 }
@@ -854,6 +907,8 @@ struct ConversationCommands: View {
             .disabled(id == nil || state?.compacting == true)
         Button("Start Fresh Context") { if let id { engine.perform("conversation.reset", ["id": id]) } }
             .disabled(id == nil)
+        Button("Continue with an Agent…") { if let id { model.continueWithAgent(id) } }
+            .disabled(id == nil || !chat || model.mode != .chat || !engine.canContinueWithAgent(id ?? 0))
         Button("Fork From Last Answer") {
             if let id, let last = engine.open[id]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) { engine.fork(id, at: last.id) }
         }

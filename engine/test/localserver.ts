@@ -1,7 +1,9 @@
 // A stand-in for the engine that runs models on this Mac (Strata), for engine/test/localrun.ts. Not a test itself.
 //
-// It takes the command line localengine.ts gives the real engine, serves the same OpenAI-compatible API on the address
-// it is given, and behaves as its "model" file says, a JSON file named by --model:
+// It takes the command line localengine.ts gives Strata's server (`server.py --engine strata --config <run config>
+// --host --port --parallel --shutdown-timeout`, started as the control package's Python, which the test makes a script
+// that runs this), serves the same OpenAI-compatible API on the address it is given, and behaves as its "model" file
+// says: a JSON file the run config names as the engine's `--native` file, as Strata's names the model's first file:
 //
 //   { "gate": "<path>" }     loading ends once that file exists, so a test decides when it is loaded; else at once
 //   { "fail": "<words>" }    it prints them and exits 1 while loading, as an engine that cannot load the model does
@@ -13,7 +15,8 @@
 // `POST /v1/chat/completions` answers "You said: <the last message>". A message holding "/crash" makes it exit
 // mid-answer, once per model file (a `.crashed` file beside it remembers). One holding "/hold <path>" is answered in
 // part, and finished once that file exists. When the engine gave it a key (STRATA_API_KEY), a request without it is
-// refused. It writes its own process number, and its program's, beside the model file (`.pid`, `.child`).
+// refused. It writes its own process number, and its program's, beside the model file (`.pid`, `.child`), with its
+// command line (`.args`) and the run config it was given (`.config`).
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -25,7 +28,13 @@ const flag = (name: string) => {
 	const at = args.indexOf(name);
 	return at === -1 ? undefined : args[at + 1];
 };
-const modelPath = flag("--model") ?? "";
+// The run config pi² wrote for this start, with the engine's arguments in it.
+const config = JSON.parse(readFileSync(flag("--config") ?? "", "utf8")) as { args: string[]; vision?: unknown };
+const engineFlag = (name: string) => {
+	const at = config.args.indexOf(name);
+	return at === -1 ? undefined : config.args[at + 1];
+};
+const modelPath = engineFlag("--native") ?? "";
 const host = flag("--host") ?? "";
 const port = Number(flag("--port"));
 const behaviour = JSON.parse(readFileSync(modelPath, "utf8")) as { gate?: string; fail?: string; child?: boolean; ignoreTerm?: boolean };
@@ -34,13 +43,14 @@ const key = process.env.STRATA_API_KEY;
 
 writeFileSync(`${modelPath}.pid`, String(process.pid));
 writeFileSync(`${modelPath}.args`, JSON.stringify(args));
+writeFileSync(`${modelPath}.config`, JSON.stringify(config));
 if (behaviour.ignoreTerm === true) process.on("SIGTERM", () => console.log("SIGTERM ignored"));
 if (behaviour.child === true) {
 	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)"], { stdio: "ignore", detached: true });
 	writeFileSync(`${modelPath}.child`, String(child.pid));
 }
 
-console.log(`stand-in engine: serving ${modelId} on ${host}:${port}, context ${flag("--context")}`);
+console.log(`stand-in engine: serving ${modelId} on ${host}:${port}, context ${engineFlag("--max-context")}`);
 if (host !== "127.0.0.1") {
 	console.error(`error: asked to listen on ${host}, not 127.0.0.1`);
 	process.exit(2);

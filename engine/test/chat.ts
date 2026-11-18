@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dueForArchive } from "../src/archive.ts";
 import { CHAT_TOOLS } from "../src/builtins.ts";
+import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-chat-"));
@@ -73,8 +74,11 @@ class Client extends EngineClient {
  * The chat's tools as the engine's list has them: those of `CHAT_TOOLS` it knows, the web's only with the web on, and not
  * making pictures, since this engine has no picture model (pictures.ts; tested in pictures.ts).
  */
-const expected = (builtIns: any[], web: boolean) =>
-	builtIns.filter((entry) => CHAT_TOOLS.includes(entry.key) && (web || entry.key !== "web") && entry.needs !== "pictures").flatMap((entry) => entry.tools as string[]);
+const expected = (builtIns: any[], web: boolean) => [
+	...builtIns.filter((entry) => CHAT_TOOLS.includes(entry.key) && (web || entry.key !== "web") && entry.needs !== "pictures").flatMap((entry) => entry.tools as string[]),
+	// Chat mode's memory, on by default (#288; tested in chatmemory.ts).
+	...CHAT_MEMORY_TOOLS,
+];
 
 engine = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
 const client = await Client.connect(engine, home);
@@ -116,11 +120,11 @@ try {
 	const seen = await client.offered(chat);
 	assert.deepEqual([...seen.tools].sort(), expected(builtIns, true).sort(), `only the assistant's tools: ${seen.tools.join(" ")}`);
 	for (const name of ["web_fetch", "web_search", "write_document"]) assert.ok(seen.tools.includes(name), `${name}: ${seen.tools.join(" ")}`);
-	for (const name of ["bash", "read", "write", "edit", "ask_user", "update_plan", "delegate", "browser", "computer", "list_files", "remember", "schedule_task"]) {
+	for (const name of ["bash", "read", "write", "edit", "ask_user", "update_plan", "delegate", "browser", "computer", "list_files", "schedule_task"]) {
 		assert.ok(!seen.tools.includes(name), `no ${name} in a chat: ${seen.tools.join(" ")}`);
 	}
 	assert.ok(seen.sections.includes("chat") && seen.sections.includes("look_web") && seen.sections.includes("documents"), seen.sections.join(" "));
-	for (const key of ["scratch", "agents", "project_instructions", "memory", "worktree", "computer_use", "browser"]) assert.ok(!seen.sections.includes(key), `no ${key} section: ${seen.sections.join(" ")}`);
+	for (const key of ["scratch", "agents", "project_instructions", "worktree", "computer_use", "browser"]) assert.ok(!seen.sections.includes(key), `no ${key} section: ${seen.sections.join(" ")}`);
 	const section = await client.answer(chat, "/system chat");
 	assert.match(section, /chat assistant of pi²/);
 	assert.match(section, /no folder/);
@@ -187,14 +191,50 @@ try {
 	assert.equal(settingsFile.chat.instructions, "Be brief.", "kept under chat in the engine's settings");
 	step("chat.set changes the settings, refuses what is wrong, and a default model counts from the next chat");
 
-	// The web switch: off, a chat's next message has no web tools; on again, they come back.
+	// ---- The web switch (#287): chat mode's setting is where a new chat's starts; each chat keeps its own.
+	assert.equal(client.conversations.get(chat).state.web, true, "a chat made with the web on says so");
+	assert.equal(client.conversations.get(plain).state.web, null, "an agent's conversation has no web switch");
 	await client.call("chat.set", { web: false });
-	const noWeb = await client.offered(chat);
+	assert.ok((await client.offered(chat)).tools.includes("web_fetch"), "a chat already made keeps its own switch");
+	const { id: offline } = await client.call("conversation.create", { chat: true });
+	await client.call("conversation.open", { id: offline });
+	assert.equal((await client.until("the offline chat's state", () => client.conversations.get(offline)?.state)).web, false, "a new chat starts with the web off");
+	const noWeb = await client.offered(offline);
 	assert.deepEqual([...noWeb.tools].sort(), expected(builtIns, false).sort(), noWeb.tools.join(" "));
 	assert.ok(!noWeb.sections.includes("look_web"));
+	assert.match(await client.answer(offline, "/system chat"), /turned the web off for this chat/, "the assistant is told the web is off");
 	await client.call("chat.set", { web: true });
-	assert.ok((await client.offered(chat)).tools.includes("web_fetch"));
-	step("with the web off, a chat is not offered the web tools, from its next message");
+	assert.ok(!(await client.offered(offline)).tools.includes("web_fetch"), "turning the setting on again changes no chat");
+	step("chat.set's web is where a new chat's switch starts; a chat made keeps its own");
+
+	await assert.rejects(client.call("conversation.configure", { id: plain, web: false }), /Only a chat has a web switch/);
+	await assert.rejects(client.call("conversation.configure", { id: offline, web: "on" }), /web must be true or false/);
+	await client.call("conversation.configure", { id: offline, web: true });
+	await client.until("the switch on", () => client.conversations.get(offline)?.state.web === true);
+	const withWeb = await client.offered(offline);
+	assert.deepEqual([...withWeb.tools].sort(), expected(builtIns, true).sort(), withWeb.tools.join(" "));
+	assert.ok(withWeb.sections.includes("look_web"));
+	assert.doesNotMatch(await client.answer(offline, "/system chat"), /turned the web off/);
+	await client.call("conversation.configure", { id: offline, web: false });
+	await client.until("the switch off", () => client.conversations.get(offline)?.state.web === false);
+	assert.ok(!(await client.offered(offline)).tools.includes("web_fetch"), "off again, from the next message");
+	step("a chat's web switch turns its web tools off and on, from its next message");
+
+	// Try Again makes a version of the chat, which follows the chat's switch; a fork keeps it too.
+	const asked = client.conversations.get(offline).items.findLast((item: any) => item.kind === "assistant");
+	const before = asked.id;
+	await client.call("conversation.retry", { id: offline, entryId: before });
+	const again = await client.until("the version's answer", () => {
+		const now = client.conversations.get(offline);
+		const last = now?.items.findLast((item: any) => item.kind === "assistant");
+		return now !== undefined && !now.state.busy && last !== undefined && last.id !== before ? last : undefined;
+	});
+	assert.ok(!again.text.includes("web_fetch") && again.text.includes("write_document"), `a version is offered no web either: ${again.text}`);
+	assert.equal(client.conversations.get(offline).state.web, false);
+	const { id: offlineFork } = await client.call("conversation.fork", { id: offline, entryId: client.conversations.get(offline).items[0].id });
+	await client.call("conversation.open", { id: offlineFork });
+	assert.equal((await client.until("the fork's state", () => client.conversations.get(offlineFork)?.state)).web, false, "a fork keeps the chat's switch");
+	step("a chat's versions and forks follow its web switch");
 
 	// ---- Pinned
 	await client.call("conversation.pin", { id: chat, pinned: true });
