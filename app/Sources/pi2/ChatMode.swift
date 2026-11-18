@@ -415,11 +415,10 @@ struct ChatModeDetail: View {
         .task(id: needsChat) { if needsChat { model.newChat() } }
         .onAppear { forgetMissing() }
         .onChange(of: engine.hasLoadedLibrary) { forgetMissing() }
-        // The chat on screen was deleted elsewhere (another window, the engine): move on, as archiving it here does.
-        .onChange(of: engine.chats.map(\.id)) { old, new in
-            if let id, old.contains(id), !new.contains(id), !engine.archived.contains(where: { $0.id == id }) {
-                model.chats.selection = new.first
-            }
+        // The chat on screen was deleted other than from here (from the Archive, say): move on to the latest. One that was
+        // archived stays, to be read or restored.
+        .onChange(of: engine.conversations.map(\.id) + engine.archived.map(\.id)) { old, new in
+            if let id, old.contains(id), !new.contains(id) { model.chats.selection = engine.chats.first?.id }
         }
     }
 
