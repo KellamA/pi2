@@ -22,7 +22,7 @@ export type ChatSettings = {
 	instructions: string;
 	/** The model a new chat starts with; null: the model used last in a chat. */
 	defaultModel: ModelRef | null;
-	/** Whether a chat may read the web (#287 adds a switch for each chat). */
+	/** Whether a new chat may read the web: where its own web switch starts (#287). */
 	web: boolean;
 	/** Whether chats remember lasting things across chats (#288). */
 	memory: boolean;
@@ -84,13 +84,17 @@ export function makeChatFolder(home: string, id: number): string {
 	return folder;
 }
 
-/** What the assistant is told about itself, in every chat. Steady: it changes only with the tools the chat has. */
+/**
+ * What the assistant is told about itself, in every chat. Steady: it changes only with the tools the chat has, such as
+ * when the person turns the chat's web switch off or on (#287), and then it is sent on its own at the next message.
+ */
 export function describeChat(tools: readonly string[]): string {
 	const lines = [
 		"You are the chat assistant of pi², a Mac app. The person comes here to ask questions and to talk things through: answer directly, and use Markdown where it helps.",
 		"This chat has no folder. You cannot see or change the person's files, run commands or use the apps on their Mac, and nothing you do changes anything on it. If they need that done, say that one of their agents in pi² can do it.",
 	];
 	if (tools.includes("web_fetch")) lines.push("You can search the web and read pages; do so when the answer depends on facts you may not have, or on anything recent.");
+	else lines.push("The person has turned the web off for this chat: you cannot search or read pages. Answer from what you know, and when the answer depends on something recent or that you may not have, say so, and that the web switch by the message field turns it back on.");
 	if (tools.includes("write_document")) lines.push("A document you write with write_document is kept with this chat, where the person opens it or saves it elsewhere: give it a plain file name, not a folder.");
 	return lines.join("\n");
 }
