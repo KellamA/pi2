@@ -184,9 +184,8 @@ private struct ChatMemorySection: View {
 
     private func footer(notes: [MemoryNote]) -> String {
         var text = enabled
-            ? "Chats keep short notes of lasting things you tell them, such as your preferences, and are given them in every chat after. These are chat mode's own: your agents never see them. "
+            ? "Chats keep short notes of lasting things you tell them, such as your preferences, and are given them in every chat after. These are chat mode's own: your agents never see them. Every note is sent to the model in every chat, so do not keep anything secret here. "
             : "Off: chats remember nothing between chats, and read none of your agents' notes. "
-        text += "Every note is sent to the model in every chat, so do not keep anything secret here. "
         if !enabled, !notes.isEmpty { text += "The notes are kept but not sent while this is off. " }
         text += "Changes here apply at once."
         return text
