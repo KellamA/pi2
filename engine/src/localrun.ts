@@ -650,6 +650,12 @@ export const localRun: Feature = (_host, running) => {
 			for (const server of all) signal(server, "SIGKILL");
 			const leaderless = new Set(all.filter((server) => server.child !== undefined && (server.child.exitCode !== null || server.child.signalCode !== null)).map((server) => server.child!.pid));
 			await killRemaining((await listing).filter(([, each]) => leaderless.has(each.group)));
+			// Nothing of them is left for the next engine to look for: their records go, so it does not report them.
+			await saving;
+			await running
+				.harness()
+				.commit(async (tx) => void ((await tx.doc(LocalRuns)).running = {}), running.context())
+				.catch((error) => running.log("could not clear the record of the models on this Mac:", error instanceof Error ? error.message : error));
 		},
 		runsChanged: (now) => {
 			working = new Set(now);
