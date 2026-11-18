@@ -15,13 +15,18 @@ enum WindowCapture {
     }
 
     /// The window of `pid` whose frame matches `frame` (as accessibility reports it), for capture and for clicks.
-    static func window(pid: pid_t, frame: CGRect) async -> SCWindow? {
+    static func window(pid: pid_t, frame: CGRect, parkedTestCopy: Bool) async -> SCWindow? {
         guard permitted, let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return nil }
-        let own = content.windows.filter { $0.owningApplication?.processID == pid && $0.windowLayer == 0 && $0.frame.width > 1 }
+        let own = content.windows.filter { $0.owningApplication?.processID == pid && $0.frame.width > 1 }
+        let normal = own.filter { $0.windowLayer == 0 }
         let close: (CGRect, CGRect) -> Bool = { a, b in
             abs(a.minX - b.minX) < 3 && abs(a.minY - b.minY) < 3 && abs(a.width - b.width) < 3 && abs(a.height - b.height) < 3
         }
-        return own.first { close($0.frame, frame) } ?? own.filter(\.isOnScreen).max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+        if let match = normal.first(where: { close($0.frame, frame) }) { return match }
+        // scripts/test-copy parks its windows at layer -1. Only use a parked window when it matches the AX frame;
+        // the controls and picture coordinates must belong to the same window.
+        if parkedTestCopy, let match = own.first(where: { $0.windowLayer == -1 && close($0.frame, frame) }) { return match }
+        return normal.filter(\.isOnScreen).max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
     }
 
     /// A picture no larger than `limit` pixels on its longer side: enough to read, small enough to be cheap to send.

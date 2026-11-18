@@ -129,8 +129,7 @@ public actor ComputerController {
             if Self.accessibilityGranted {
                 let app = AXUIElementCreateApplication(running.processIdentifier)
                 let windows = AX.children(app, kAXWindowsAttribute)
-                let minimized = windows.filter { (AX.value($0, kAXMinimizedAttribute) as? Bool) == true }
-                if !windows.isEmpty, minimized.count == windows.count, let first = minimized.first {
+                if let first = Self.minimizedWindow(in: windows) {
                     AX.set(first, kAXMinimizedAttribute, kCFBooleanFalse)
                     did = "Brought \(name)'s window back."
                 } else if windows.isEmpty {
@@ -170,13 +169,24 @@ public actor ComputerController {
 
     private func key(_ request: ComputerRequest, _ bundleID: String) -> String { "\(request.conversationId)|\(bundleID)" }
 
+    private static func isMinimized(_ window: AXUIElement) -> Bool {
+        (AX.value(window, kAXMinimizedAttribute) as? Bool) == true
+    }
+
+    /// The window `open_app` would restore. An unrecognized AX role or a missing attribute is not evidence that
+    /// a window is minimized.
+    private static func minimizedWindow(in windows: [AXUIElement]) -> AXUIElement? {
+        guard let first = windows.first, windows.allSatisfy(isMinimized) else { return nil }
+        return first
+    }
+
     private static func frontWindow(of app: AXUIElement) -> (window: AXUIElement?, minimized: Bool) {
-        let usable: (AXUIElement) -> Bool = { (AX.value($0, kAXMinimizedAttribute) as? Bool) != true && AX.role($0) == "AXWindow" }
+        let usable: (AXUIElement) -> Bool = { AX.role($0) == "AXWindow" && !isMinimized($0) }
         if let focused = AX.element(app, kAXFocusedWindowAttribute), usable(focused) { return (focused, false) }
         if let main = AX.element(app, kAXMainWindowAttribute), usable(main) { return (main, false) }
         let windows = AX.children(app, kAXWindowsAttribute)
         if let first = windows.first(where: usable) { return (first, false) }
-        return (nil, !windows.isEmpty)
+        return (nil, minimizedWindow(in: windows) != nil)
     }
 
     /// The window server's number for the window at `frame`. Needs no permission, and clicks carry it.
@@ -216,11 +226,14 @@ public actor ComputerController {
             noPicture = nil // the model cannot see pictures; the list and the text are its view
         } else if !WindowCapture.permitted {
             noPicture = "No picture: pi² has no Screen Recording permission (the person can grant it in this agent's settings). The list below still works."
-        } else if let target = await WindowCapture.window(pid: pid, frame: frame) {
-            shot = await WindowCapture.capture(target, frame: frame)
-            if shot == nil { noPicture = "No picture: the window could not be captured this time. The list below still works." }
         } else {
-            noPicture = "No picture: the window could not be found for capture. The list below still works."
+            let parkedTestCopy = running.bundleURL.map { TestCopy.isThrowaway(bundleURL: $0, bundleID: bundleID) } ?? false
+            if let target = await WindowCapture.window(pid: pid, frame: frame, parkedTestCopy: parkedTestCopy) {
+                shot = await WindowCapture.capture(target, frame: frame)
+                if shot == nil { noPicture = "No picture: the window could not be captured this time. The list below still works." }
+            } else {
+                noPicture = "No picture: the window could not be found for capture. The list below still works."
+            }
         }
         let scale = shot?.scale ?? 1
         views[key(request, bundleID)] = View(pid: pid, app: app, frame: frame, scale: scale, windowID: shot?.windowID ?? windowID, controls: reader.controls)
