@@ -102,6 +102,10 @@ A development build measures this when asked: see [Measuring the app's speed](de
 
 Conversations, runs and tool calls are pi durable's. pi² adds a few documents of its own on top: the list of conversations with their titles and settings, the agents, the schedules, and a per-day record of spend.
 
+### A thinking level refused by a provider
+
+If a provider refuses a request before the answer starts and explicitly lists the thinking levels it accepts, the engine tries the nearest one once (the lower one on a tie). A line in the conversation explains the retry; it is not sent to the model. Once the retry is accepted, the menus use the provider's list, even for a model from the catalog. For a model added by hand the list is also saved in `added-models.json`; a catalog correction lasts until the model is replaced or the engine restarts. If pi² cannot tell what the provider accepts, the error is shown as before.
+
 ### Agent settings
 
 `agents.save { agent }` creates or edits a saved setup. `agents.duplicate { id }` copies one in the engine and returns the new `{ id }`; the app opens its settings. Both use the same validation and defaults, including checking the folder, reference files, worktree setting, computer use and browser. New names and ids are allocated in the commit, so simultaneous duplicates remain distinct. Each copy's id includes a fresh UUID: a deleted copy's conversations, schedules and worktrees must never be inherited by another copy with the same name. The name is `<name> copy`, then `<name> copy 2`, and so on, ignoring case when checking what is taken.

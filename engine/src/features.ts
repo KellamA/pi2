@@ -35,6 +35,7 @@ import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
 import { variables } from "./variables.ts";
 import { wakes } from "./wakes.ts";
+import { thinkingNotices } from "./thinkingretry.ts";
 import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
@@ -176,6 +177,7 @@ export const FEATURES: Feature[] = [
 	variables,
 	coauthor,
 	priority,
+	thinkingNotices,
 	wakes,
 	background,
 	heed,

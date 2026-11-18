@@ -22,6 +22,7 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { nameLike, nearestModel, Providers } from "../src/providers.ts";
+import { reportedThinking } from "../src/thinkingretry.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 function step(name: string): void {
@@ -42,15 +43,22 @@ process.on("exit", () => {
 });
 
 /** A stand-in server on 127.0.0.1: what it was asked, and what it answers, by the model asked for. */
-type Asked = { method: string; url: string; authorization: string | undefined; model: string | undefined };
+type Asked = { method: string; url: string; authorization: string | undefined; model: string | undefined; effort?: string };
 const asked: Asked[] = [];
 const REFUSED = new Set(["gpt-6.2-sol", "gpt-test-next"]);
 const standIn = createServer((request: IncomingMessage, response) => {
 	let body = "";
 	request.setEncoding("utf8").on("data", (chunk: string) => (body += chunk));
 	request.on("end", () => {
-		const model = body === "" ? undefined : (JSON.parse(body) as { model?: string }).model;
-		asked.push({ method: request.method ?? "", url: request.url ?? "", authorization: request.headers.authorization, model });
+		const { model, reasoning } = body === "" ? {} : JSON.parse(body) as { model?: string; reasoning?: { effort?: string } };
+		asked.push({ method: request.method ?? "", url: request.url ?? "", authorization: request.headers.authorization, model, effort: reasoning?.effort });
+		if (model === "gpt-test-thinking" && reasoning?.effort !== "low") {
+			response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: {
+				message: `Unsupported value: 'none' is not supported with the '${model}' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.`,
+				param: "reasoning.effort", code: "unsupported_value", type: "invalid_request_error",
+			} }));
+			return;
+		}
 		if (model !== undefined && REFUSED.has(model)) {
 			// OpenAI's own answer for a model the key cannot use.
 			response.writeHead(404, { "content-type": "application/json" }).end(
@@ -77,6 +85,18 @@ const standIn = createServer((request: IncomingMessage, response) => {
 });
 await new Promise<void>((resolve) => standIn.listen(0, "127.0.0.1", resolve));
 const standInUrl = `http://127.0.0.1:${(standIn.address() as { port: number }).port}/v1`;
+
+// ---- Which validation errors actually tell us the accepted levels
+
+assert.deepEqual(reportedThinking("reasoning_effort 'none' is not supported for this model; supported values: ['low', 'high', 'max']", "none", "glm")?.levels, ["low", "high", "max"]);
+assert.deepEqual(reportedThinking("Invalid thinkingLevel. Supported levels: LOW, HIGH.", "MEDIUM", "gemini")?.levels, ["low", "high"]);
+assert.deepEqual(reportedThinking("output_config.effort: Input should be 'low', 'medium' or 'high'", "max", "claude")?.levels, ["low", "medium", "high"]);
+assert.equal(reportedThinking("output_config.effort 'xhigh' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.", "xhigh", "claude"), undefined);
+assert.equal(reportedThinking("Thinking budget is not supported for this model.", "low", "gemini"), undefined);
+assert.equal(reportedThinking("Unsupported value: 'none' is not supported with the 'other-model' model. Supported values are: 'low'.", "none", "test"), undefined);
+assert.equal(reportedThinking("Invalid reasoning_effort. Supported values: low, sometimes.", "max", "test"), undefined);
+assert.equal(reportedThinking("Invalid reasoning_effort. Supported values: low, max.", "max", "test"), undefined);
+step("only explicit, understood effort validation lists can cause a retry");
 
 // ---- Choosing what a new id is like
 
@@ -297,7 +317,10 @@ temporary.push(home);
 const openaiTemplate = getBuiltinModels("openai").find((model) => model.api === "openai-responses")!;
 const storedModel = (id: string) => ({ ...openaiTemplate, id, name: id, reasoning: false, thinkingLevelMap: undefined, baseUrl: standInUrl, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
 const storedEntry = (id: string) => ({ id, name: id, basedOn: "a-model-the-library-dropped", contextWindow: 100_000, maxTokens: 4096, vision: false, thinkingLevels: [], addedAt: 1, model: storedModel(id) });
-writeFileSync(join(home, "added-models.json"), JSON.stringify({ openai: [storedEntry("gpt-test-next"), storedEntry("gpt-test-works")] }));
+const thinking = storedEntry("gpt-test-thinking");
+writeFileSync(join(home, "added-models.json"), JSON.stringify({ openai: [storedEntry("gpt-test-next"), storedEntry("gpt-test-works"), {
+	...thinking, thinkingLevels: ["off", "low", "medium", "high"], model: { ...thinking.model, reasoning: true, thinkingLevelMap: { off: "none" } },
+}] }));
 
 // Keys for real providers in the test's own environment are not passed on: nothing here may reach one.
 const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/(API_KEY|TOKEN|SECRET)/.test(name)));
@@ -316,7 +339,7 @@ function startEngine(): ChildProcess {
 
 type Item = { kind: string; text: string; stop?: string; error?: string | null };
 type State = { busy: boolean; failure: { reason: string; detail: string | null } | null };
-type Shown = { provider: string; id: string; name: string; addedByHand?: boolean };
+type Shown = { provider: string; id: string; name: string; thinkingLevels: string[]; addedByHand?: boolean };
 class Client extends EngineClient {
 	override conversations = new Map<number, { items: Item[]; state: State }>();
 	models: Shown[] = [];
@@ -341,7 +364,7 @@ let engine = startEngine();
 try {
 	let client = await Client.connect(engine, home);
 	await client.call("providers.setKey", { id: "openai", key: "sk-test-not-real" });
-	await client.until("the added models offered", () => client.models.filter((m) => m.provider === "openai" && m.addedByHand === true).length === 2);
+	await client.until("the added models offered", () => client.models.filter((m) => m.provider === "openai" && m.addedByHand === true).length === 3);
 	step("models added by hand are offered once their provider has a key, marked as added by hand");
 
 	// The stand-in answers one of them: its tokens are counted, and Usage says its price is not known.
@@ -356,6 +379,25 @@ try {
 	const row = await client.until("its usage", () => client.usage.find((u) => u.key === "openai/gpt-test-works"));
 	assert.deepEqual({ tokens: row.tokens, cost: row.cost, unpriced: row.unpriced }, { tokens: 46, cost: 0, unpriced: true });
 	step("an added model answers on the provider's key; Usage counts its tokens and says its price is not known");
+
+	// Off was copied from another model. The refusal is retried in place; the amended catalog and draft agree.
+	const levels = ["low", "medium", "high", "xhigh", "max"];
+	const { id: retried } = await client.call("conversation.create", { model: { provider: "openai", modelId: thinking.id } });
+	await client.call("conversation.open", { id: retried });
+	await client.call("submit", { id: retried, text: "Use the stand-in" });
+	conv = await client.ended(retried, 1);
+	assert.equal(conv.state.failure, null);
+	assert.deepEqual(asked.filter((a) => a.model === thinking.id).map((a) => a.effort), ["none", "low"]);
+	assert.deepEqual(conv.items.filter((a) => a.kind === "marker").map((a) => a.text), ["gpt-test-thinking refused the Off thinking level. Retried with Low."]);
+	assert.equal(conv.items.filter((a) => a.kind === "assistant").length, 1);
+	await client.until("corrected model menu", () => client.models.find((m) => m.id === thinking.id)?.thinkingLevels.join() === levels.join());
+	assert.deepEqual((await client.call("providers.draftModel", { provider: "openai", id: thinking.id })).thinkingLevels, levels);
+	await client.call("submit", { id: retried, text: "Again" });
+	conv = await client.ended(retried, 2);
+	assert.equal(conv.state.failure, null);
+	assert.deepEqual(asked.filter((a) => a.model === thinking.id).map((a) => a.effort), ["none", "low", "low"]);
+	assert.equal(conv.items.filter((a) => a.kind === "marker").length, 1);
+	step("a refused thinking level is retried once and corrected in the model menu and draft");
 
 	// The provider refuses the other: the conversation says so, in the provider's words, and names the model.
 	const { id: refused } = await client.call("conversation.create", { model: { provider: "openai", modelId: "gpt-test-next" } });
@@ -401,9 +443,10 @@ try {
 	client = await Client.connect(engine, home);
 	await client.until("the added models offered after a restart", () => {
 		const ids = client.models.filter((m) => m.addedByHand === true).map((m) => m.id).sort();
-		return ids.join(" ") === "gpt-99-test gpt-test-works";
+		return ids.join(" ") === "gpt-99-test gpt-test-thinking gpt-test-works";
 	});
-	step("a model added in settings is kept across a restart");
+	assert.deepEqual(client.models.find((m) => m.id === thinking.id)?.thinkingLevels, levels);
+	step("models added in settings and their corrected thinking levels are kept across a restart");
 	client.close();
 } finally {
 	await stop(engine);
