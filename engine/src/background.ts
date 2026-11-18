@@ -27,7 +27,7 @@ import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { scratchVariable } from "./scratch.ts";
 import { agentVariables } from "./variables.ts";
-import { killLater, killRemaining, type Listed, type LeftOver, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
+import { forgetRun, killLater, killRemaining, type Listed, type LeftOver, leftOverLog, type NewRun, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
 export const KEEP_CHARS = 128 * 1024;
@@ -359,23 +359,30 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		doc.next += 1;
 		doc.running[id] = { id, conversationId, command: args.command, cwd, startedAt };
 	});
-	const forget = () => save((doc) => void delete doc.running[id]).catch((error) => host.log("could not forget", logName(id, conversationId), error instanceof Error ? error.message : error));
+	let run: NewRun | undefined;
+	const forget = () =>
+		save((doc) => void delete doc.running[id])
+			.catch((error) => host.log("could not forget", logName(id, conversationId), error instanceof Error ? error.message : error))
+			.finally(() => forgetRun(run?.marker));
 
 	// As a command that is waited for is run: through bash, in the conversation's folder, with the engine's environment
 	// less pi²'s own settings (environment.ts) and with the conversation's scratch folder (scratch.ts), and no input. In
-	// a process group of its own, so that stopping it stops whatever it started too. One more variable is added to that
-	// environment: a marker of this run, which what it starts inherits, so that the next engine can know them if this
-	// one dies, even once the command's own first process has ended (`stopLeftOver`).
-	const marker = newRunMarker();
+	// a process group of its own, so that stopping it stops whatever it started too. It is given what tells this run
+	// apart, which what it starts inherits, so that the next engine can know them if this one dies, even once the
+	// command's own first process has ended (`stopLeftOver`): a marker in its environment, and its run's file, open.
 	let child: ChildProcess;
 	try {
 		// With the variables the person gave the conversation's agent (variables.ts).
 		const variables = await agentVariables(conversationId);
-		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: marker }), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		run = newRun();
+		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: run.marker }), detached: true, stdio: run.stdio });
 	} catch (error) {
 		await forget();
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);
+	} finally {
+		run?.started();
 	}
+	const marker = run.marker;
 	const command: Command = { id, conversationId, command: args.command, cwd, startedAt, child, output: "", total: 0, read: 0, settled: Promise.resolve(), waiters: new Set() };
 	commands.set(id, command);
 	const followed = follow(host, command, child, marker, args.timeout, forget);

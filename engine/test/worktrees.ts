@@ -2,12 +2,12 @@
 // conversation, over its socket, on a throwaway data folder and throwaway repositories.
 
 import assert from "node:assert/strict";
-import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcess, execFileSync, spawn, spawnSync, type StdioOptions } from "node:child_process";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { newRunMarker, RUN_VARIABLE, stopLeftOver } from "../src/processes.ts";
+import { type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, useRunFolder } from "../src/processes.ts";
 import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
 import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
 
@@ -136,6 +136,9 @@ const alive = (pid: number) => {
 const LONG_SLEEP = `sleep ${(2 * PATIENT_MS) / 1000}`;
 /** The same for node: a program whose environment macOS lets another process read. */
 const LONG_WAIT = `setTimeout(() => {}, ${2 * PATIENT_MS})`;
+/** And of the other programs that come with macOS. */
+const SH_SLEEP = `/bin/sh -c '${LONG_SLEEP}; :'`;
+const PERL_SLEEP = `/usr/bin/perl -e 'sleep ${(2 * PATIENT_MS) / 1000}'`;
 const sleepers: number[] = [];
 const holders: number[] = [];
 let engine = startEngine();
@@ -687,40 +690,49 @@ try {
 		step("a set-up left running by an engine killed outright is stopped by the next engine, with what it started, and marked; Activity's notice names it");
 
 		// The same when the command's first process has ended and only something it started in the background is left: the
-		// next engine knows it by the run's marker in its environment. The first process ends once the engine is killed, as
-		// it waits for the test to let it; ended while the engine runs, the set-up would soon count as over. What is left
-		// is node, not `sleep`: macOS does not show the environment of its own programs.
+		// next engine knows it by the run's marker in its environment, or by the run's file it has open. The first process
+		// ends once the engine is killed, as it waits for the test to let it; ended while the engine runs, the set-up would
+		// soon count as over. One of what is left is node with the file closed, known by its environment alone; the other is
+		// `sleep` without the marker, known by the file alone, as macOS does not show the environment of its own programs.
 		const strayFile = join(scratch, "stray.pid");
+		const strayingSleepFile = join(scratch, "stray-sleep.pid");
 		const endedFile = join(scratch, "stray-leader.pid");
 		const strayGate = join(scratch, "stray.gate");
-		const holder = `'${process.execPath}' -e '${LONG_WAIT}'`;
+		const holder = `'${process.execPath}' -e '${LONG_WAIT}' 19<&-`;
 		const { id: strayer } = await third.call("agents.save", {
-			agent: { name: "Strayer", access: "full", cwd: tooling, setup: `${holder} & echo $! > '${strayFile}'; echo $$ > '${endedFile}'; while [ ! -e '${strayGate}' ]; do sleep 0.1; done` },
+			agent: {
+				name: "Strayer",
+				access: "full",
+				cwd: tooling,
+				setup: `${holder} & echo $! > '${strayFile}'; env -u ${RUN_VARIABLE} ${LONG_SLEEP} & echo $! > '${strayingSleepFile}'; echo $$ > '${endedFile}'; while [ ! -e '${strayGate}' ]; do sleep 0.1; done`,
+			},
 		});
 		const { id: l } = await third.call("conversation.create", { agentId: strayer });
 		await third.call("worktree.create", { id: l });
-		const [ended, stray] = await third.until("set-up running", () => {
+		const [ended, stray, straySleep] = await third.until("set-up running", () => {
 			const read = (file: string) => (existsSync(file) ? Number(readFileSync(file, "utf8").trim()) : 0);
-			return read(endedFile) > 0 && read(strayFile) > 0 ? [read(endedFile), read(strayFile)] : undefined;
+			return read(endedFile) > 0 && read(strayFile) > 0 && read(strayingSleepFile) > 0 ? [read(endedFile), read(strayFile), read(strayingSleepFile)] : undefined;
 		});
 		holders.push(stray);
+		sleepers.push(straySleep);
 		await until("the set-up's process group noted", () => logged.some((line) => line.includes(`set-up for conversation ${l} runs as process group ${ended}`)));
 		await stop(engine, "SIGKILL");
 		writeFileSync(strayGate, "");
 		await until("the command's first process ended", () => !alive(ended));
-		assert.ok(alive(stray), "what the set-up started in the background outlives it and the engine");
+		assert.ok(alive(stray) && alive(straySleep), "what the set-up started in the background outlives it and the engine");
 		engine = startEngine();
 		const fourth = await Client.connect(engine, home);
 		await fourth.call("conversation.open", { id: l });
 		const strayed = await fourth.until("marked", () => fourth.conversations.get(l)?.items.find((item: Event) => item.kind === "setup" && item.details.status !== "running"));
 		assert.equal(strayed.details.reason, "was left running when pi²’s engine stopped, and was stopped when the engine started again");
 		await fourth.until("what was left without its leader is stopped", () => !alive(stray));
+		await fourth.until("the `sleep` that only had the run's file open too", () => !alive(straySleep));
 		assert.deepEqual(
 			(await fourth.until("recovery event", () => fourth.events.recovery)).recovery?.setups.map((left: Event) => [left.conversationId, left.outcome, left.group]),
 			[[l, "stopped", ended]],
 			"the notice names only the set-up this engine found",
 		);
-		step("what a set-up started in the background, left running after its first process ended and the engine was killed, is stopped by the next engine");
+		step("what a set-up started in the background, left running after its first process ended and the engine was killed, is stopped by the next engine, by its environment or by the run's file");
 
 		// A number that now belongs to another process, or members of a group whose leader is gone, are left alone.
 		const other = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });
@@ -750,8 +762,15 @@ try {
 		// variable given as undefined is one the group starts without.
 		const marker = newRunMarker();
 		const waiting = (before = "") => `'${process.execPath}' -e '${before}console.log(process.pid); ${LONG_WAIT}'`;
-		const orphans = async (script: string, env: Record<string, string | undefined>, count = 1) => {
-			const first = spawn("/bin/bash", ["-c", script], { detached: true, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "ignore"] });
+		const orphans = async (script: string, env: Record<string, string | undefined>, count = 1, run?: NewRun) => {
+			// With a run, started with its file open, as the engine starts a command (`newRun`).
+			const stdio = run === undefined ? ["ignore", "pipe", "ignore"] : (run.stdio as unknown[]).map((each, i) => (i === 2 ? "ignore" : each));
+			let first: ChildProcess;
+			try {
+				first = spawn("/bin/bash", ["-c", script], { detached: true, env: { ...process.env, ...env }, stdio: stdio as StdioOptions });
+			} finally {
+				run?.started();
+			}
 			let out = "";
 			let over = false;
 			first.stdout!.on("data", (chunk) => (out += chunk));
@@ -812,6 +831,59 @@ try {
 		process.kill(reused.pid!, "SIGKILL");
 		step("in a group with both, only the member that carries the marker is stopped; a number that went to a new process is still not touched");
 
+		// The run's file, beside the marker: a member left without its leader that has the file its run was started with open
+		// is the run's, whatever its environment shows. The programs that come with macOS, whose environment cannot be read,
+		// are known by it: `sleep` (one ignoring SIGTERM, as `stubborn()` in test/background.ts does), `/bin/sh` and what it
+		// runs, and perl, all without the marker in their environment.
+		useRunFolder(join(home, "test-runs"));
+		const system = (run?: NewRun) => orphans(`trap '' TERM; ${LONG_SLEEP} & echo $!; trap - TERM; ${SH_SLEEP} & echo $!; ${PERL_SLEEP} & echo $!`, { [RUN_VARIABLE]: undefined }, 3, run);
+		const groupOf = (group: number) => [...execFileSync("/bin/ps", ["-A", "-o", "pid=,pgid="], { encoding: "utf8" }).matchAll(/^\s*(\d+)\s+(\d+)\s*$/gm)].filter((m) => Number(m[2]) === group).map((m) => Number(m[1]));
+		const given = newRun();
+		const runFile = join(home, "test-runs", given.marker);
+		left = await system(given);
+		assert.throws(() => openSync(runFile, "r"), /EACCES/, "nothing can open a run's file once it is made, the person's own processes included");
+		assert.equal(await stopLeftOver({ group: left.group, start: "anything", marker: given.marker }, 1_000), "stopped");
+		await sleep(300);
+		assert.ok(alive(left.pids[0]!), "the `sleep` that ignores SIGTERM is still there until the grace is over");
+		await until("every member with the run's file, `sleep`, `sh` and perl, is stopped", () => groupOf(left.group).length === 0);
+		assert.equal(existsSync(runFile), false, "a run's file goes once its record has been dealt with");
+		step("macOS's own programs left without their leader (`sleep`, `/bin/sh`, perl) are stopped when they have the run's file open, and one that ignores SIGTERM is killed");
+
+		// What only looks like the run's is never signalled: a member with another run's file open; with the run's file open
+		// once it has been replaced by another of the same name, or had its permissions changed; or once it is gone. And a
+		// process with the run's file open in another group is not of the group on record.
+		const replaced = newRun();
+		const changed = newRun();
+		const gone = newRun();
+		const unheld = newRun();
+		unheld.started();
+		const fileLookAlikes: [string, { group: number; pids: number[] }, string][] = [
+			["another run's file", await system(newRun()), unheld.marker],
+			["a file replaced by another of the same name", await system(replaced), replaced.marker],
+			["a file whose permissions were changed", await system(changed), changed.marker],
+			["a file that is gone", await system(gone), gone.marker],
+		];
+		const replacedFile = join(home, "test-runs", replaced.marker);
+		rmSync(replacedFile);
+		closeSync(openSync(replacedFile, constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL, 0o000));
+		chmodSync(join(home, "test-runs", changed.marker), 0o600);
+		rmSync(join(home, "test-runs", gone.marker));
+		// A `sleep` of its own group that has the run's file open, beside a group of the number on record that has nothing.
+		const elsewhere = newRun();
+		const apart = spawn("/bin/sleep", [String((2 * PATIENT_MS) / 1000)], { detached: true, stdio: elsewhere.stdio });
+		elsewhere.started();
+		apart.unref();
+		sleepers.push(apart.pid!);
+		fileLookAlikes.push(["nothing, beside a process of another group with the run's file", await system(), elsewhere.marker]);
+		for (const [what, alike, recorded] of fileLookAlikes) {
+			assert.equal(await stopLeftOver({ group: alike.group, start: "anything", marker: recorded }, 100), "unsure", what);
+		}
+		await sleep(400);
+		for (const [what, alike] of fileLookAlikes) assert.ok(alike.pids.every(alive), `a member with ${what} is not touched`);
+		assert.ok(alive(apart.pid!), "a process with the run's file open in another group is not touched");
+		for (const pid of [...fileLookAlikes.flatMap(([, alike]) => groupOf(alike.group)), apart.pid!]) process.kill(pid, "SIGKILL");
+		step("a member with another run's file, or one replaced, changed or gone, and a process of another group with the run's file, are not touched");
+
 		// A record no set-up could have left (1 would signal every process the person owns, 0 the engine's own group) is
 		// refused before anything is looked at or signalled, and so is the engine's own pid or group.
 		const ownGroup = Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
@@ -842,7 +914,7 @@ try {
 	// Should a check have failed before they were stopped, the long sleeps of set-ups: only one still running that command.
 	for (const pid of [...sleepers, ...holders]) {
 		const line = spawnSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
-		if (line === LONG_SLEEP || line.endsWith(LONG_WAIT)) process.kill(pid, "SIGKILL");
+		if (line === LONG_SLEEP || line.endsWith(LONG_WAIT) || [SH_SLEEP, PERL_SLEEP].some((each) => line === each.replaceAll("'", ""))) process.kill(pid, "SIGKILL");
 	}
 	rmSync(home, { recursive: true, force: true });
 	rmSync(scratch, { recursive: true, force: true });
