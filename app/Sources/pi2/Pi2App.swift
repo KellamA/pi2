@@ -415,6 +415,14 @@ struct RootView: View {
             if let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
         }
         .onChange(of: engine.conversations) { _, list in
+            #if PI2_DEVELOPMENT
+            // A conversation `PI2_SHOW` names that was made after launch, through the engine's socket, is opened once it is
+            // listed, while nothing else has been chosen.
+            if model.selection == nil, engine.hasLoadedLibrary,
+               let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: list, archived: engine.archived) {
+                model.selection = asked
+            }
+            #endif
             // Panes showing a deleted conversation are emptied; the focused one moves on below.
             if engine.hasLoadedLibrary {
                 model.workspace.forget { id in id != model.selectedConversationID && !list.contains { $0.id == id } && !model.isArchived(id) }
