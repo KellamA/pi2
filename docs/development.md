@@ -1,5 +1,20 @@
 # Development
 
+## What to read for what
+
+Read only the sections that apply to your work. Before you build, run or test anything, read all of [Testing safely](../CONTRIBUTING.md#testing-safely).
+
+| Work | Sections to read |
+|---|---|
+| Finding your way around the code | [Layout](#layout), [Conventions](#conventions) |
+| Building the app or working on pi² from pi² | [Requirements](#requirements), [Build and run](#build-and-run), [Working on pi² with pi²](#working-on-pi-with-pi) |
+| Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
+| Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Message fields](#message-field-checks) or [Conversation page](#conversation-page-tests) |
+| Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
+| Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
+| Repository scripts, checks and merging | [CI](#ci) |
+
 ## Requirements
 
 - macOS 15 or later
@@ -53,11 +68,15 @@ Signed builds, the update feed and the release workflow are described in [releas
 
 ## Tests
 
+### Running the engine tests
+
 ```bash
 cd engine && npm test
 ```
 
 This runs, side by side, every file in `engine/test` but three: `patience.ts`, which is not a test but what the tests that start an engine share, `localserver.ts`, the stand-in for the engine that runs models on this Mac, which `localrun.ts` starts, and `browser.ts`, which needs the browser probe ([browser.md](browser.md)). A test you add as `engine/test/<name>.ts` is picked up by itself, with nothing to add to `package.json`; `node test/<name>.ts` runs it alone. Only `test:engine` and `test:browser` keep per-file npm aliases; do not add per-file scripts for new tests. `test:linux` and `test:macos` are CI's two groups, described under [CI](#ci). A file there that is not a test goes in the pattern in `package.json`'s `test` script, beside those, and among the files `engine/scripts/test-platform.ts` leaves out. Give a test you add a line of its own below, in its place by file name, so that two pull requests adding tests rarely touch the same lines. The tests:
+
+### Engine tests by file
 
 - `addedmodels.ts`: models added by hand to a built-in provider: what a new id is based on, adding, changing, keeping, giving way to the catalog and removing one, against stand-in providers; then a real engine whose added models are sent to a stand-in server on 127.0.0.1, which answers one and refuses the other, and what a conversation says when one is refused or removed.
 - `background.ts`: background commands. An engine starts, reads and stops commands, and is stopped and killed with commands running; nothing they started is left.
@@ -101,7 +120,11 @@ This runs, side by side, every file in `engine/test` but three: `patience.ts`, w
 - `wakes.ts`: waking an agent that is not answering, when a sub-chat started with `delegate` and `wait: false` answers or a command started with `wake: true` ends, and each bound on it: the turn limit, Ask first, the daily budget, the hourly cap, the person's Stop and Don't Wake, archiving and deleting, and an engine stopped and started again; see [wakes.md](wakes.md).
 - `worktrees.ts`: it makes throwaway git repositories and has an engine make and remove worktrees in them.
 
+### The end-to-end test
+
 The end-to-end test starts a real engine on a throwaway data folder and a throwaway Keychain service and drives it over the socket: chat, pictures and files in messages, tools, approvals, delegation and sub-chats, reference files, computer use and the browser (each with a stand-in for the app), schedules, crash recovery (`kill -9` mid-answer and mid-approval), usage and budget, search, code mode, a test MCP server, a mock OpenAI-compatible endpoint with and without a key, export, backup and restore. It makes the demo model type fast (`PI2_DEMO_TOKENS_PER_SECOND`); a check that needs an answer still on its way, to stop it or kill the engine in the middle of it, sends a message starting with `/slow `, which is answered at the usual pace. `npm run test:engine` runs this test alone.
+
+### Keeping test runs apart
 
 Each test removes the folders it makes in the temporary folder, and the Keychain items it makes, when it ends, whether it passed or failed. A test you add should do the same: in a `finally`, or, in a test with no `try` around it, in a `process.on("exit")` handler, which still runs when a failed check ends the process. An engine's [scratch folders](architecture.md#a-scratch-folder) are in `/tmp/pi2-<uid>`, outside its data folder: `engine/test/patience.ts` removes those of every engine a test connected to through it, as the test's process exits. Several runs of the suite can go at the same time on one Mac (several agents, or two worktrees), so a test checks only what it made itself: it does not count what is in the shared temporary folder (the documents test gives the code it checks a temporary folder of its own), listens on port 0 rather than a fixed one, and keeps Keychain items under a service no other run uses (the end-to-end test's has its process id in it, unless `PI2_TEST_KEYCHAIN_SERVICE` names one). To see what a run leaves behind, give it a temporary folder of its own with a short path (a long one makes the engines' socket paths too long), then list it: only npm's own `node-compile-cache` should be there.
 
@@ -111,6 +134,8 @@ T=$(mktemp -d /tmp/tests.XXXX)
 ls -A "$T"
 ```
 
+### Running several suites at once
+
 The whole suite takes about 80 seconds on a quiet Mac. Four runs at once took about two minutes each and six about two and a half, so runs from several agents or worktrees are quicker started side by side than taken in turn. Send a run's output to a file and read the file, rather than cutting it down with `tail` or `grep` as it runs: when the part you kept does not answer the question, the file does, and the suite does not have to run again.
 
 ```bash
@@ -118,13 +143,19 @@ The whole suite takes about 80 seconds on a quiet Mac. Four runs at once took ab
 grep -E "^(ℹ|✖)" /tmp/tests.log
 ```
 
+### Waiting in tests
+
 No check may depend on how fast the Mac is. With several runs of the suite going at once, an engine can take well over ten seconds to start listening, and anything can take many times longer than on a quiet machine. So a test waits for the thing itself, never for a time, and the limit on a wait (ten minutes, `PATIENT_MS`) is only there so that a hang fails instead of running for ever. A wait the test can tell has failed ends at once: when the engine exits, or the connection to it closes. `engine/test/patience.ts` has this for every test that starts an engine: `listening` connects once the engine listens, `EngineClient` is a connection with requests, events and `until`, and `stop` stops a process and waits for it. A process that only a check should stop (a command's `sleep`, a stand-in shell's program) runs for longer than any wait, so that a wait for it to be stopped cannot be met by its ending by itself. Where a check is about time, it measures what it is about: the processor time the converter took, or the time between a request arriving at a stand-in and the engine giving up on it, rather than the time on the test's clock around them. One check must retain an elapsed-time bound: a clean stop must fit in the five seconds the app gives the engine before a restore. It uses the engine's own monotonic elapsed time, not the test's time around the signal and exit, so a test process slow to notice the exit does not cause a failure. Scheduling delays inside the engine still count, as they do toward the app's deadline: subtracting them or using only processor time could hide a stop that really waits too long. This requirement can fail under extreme load; quiet CI verifies it. Where the engine has a limit of its own on a wait, such as the 30 seconds a request for a background command's output may wait, a test that must tell the wait ending for its reason from the limit running out sets the limit longer than its own patience (`PI2_OUTPUT_WAIT_SECONDS`). Before a test kills an engine to check that something outlives it, it waits for the answer or event that comes once that thing is stored, not for a time: a tool's result, or an event the engine sends from a stored document (the agents, the library). An event can come sooner than the storing it seems to report: the one that lists a background command as running comes before its process is on record, which the call that started it waits for. Streamed progress, such as the part of an answer already shown, is stored about a second later and may be lost.
+
+### Engine type-check
 
 ```bash
 cd engine && npm run check
 ```
 
 type-checks the engine.
+
+### Browser checks
 
 The part of the app that works web pages is checked by a program of its own, which serves a few pages to itself and loads no real website:
 
@@ -134,6 +165,8 @@ cd app && swift build --product pi2-browser-probe && .build/debug/pi2-browser-pr
 
 With the probe built, `cd engine && npm run test:browser` runs a real engine against it, to check that the two agree. See [browser.md](browser.md).
 
+### Pane layout checks
+
 The panes the conversation area is divided into (`app/Sources/PaneKit`) are checked by a program of its own: it splits panes, closes them down to one in every ready-made layout and at random, gives them equal room, saves and reads back each tree, and reads back damaged saved layouts, which must give a single pane. Build it with optimisation, as the app is released; closing a pane once crashed only in an optimised build (#134), and CI runs it this way:
 
 ```bash
@@ -142,11 +175,15 @@ cd app && swift build -c release --product pi2-layout-check && .build/release/pi
 
 A crash in it prints the step it happened in; `--verbose` prints every step.
 
+### Message field checks
+
 What Return does in a field that sends a message (`app/Sources/ComposeKit`: Return sends, Shift-Return or Option-Return starts a new line, and Return while an input method is composing is left to it) is checked by a program of its own. It checks the decision for every combination of modifier keys, then makes a SwiftUI text field as the message field is made, in a window of its own that never comes on screen, and hands key presses straight to that window: no key is posted to the system and no permission is needed. It checks that Shift-Return puts a line break at the cursor in place of the selection and the field grows, that Return sends the text with its line breaks, that Return with marked text (what an input method shows while a candidate is chosen) does not send, and that pasted line breaks are kept. It checks a field made as a memory note is in an agent's settings (a field of a grouped form that saves with Return and keeps its text) in the same way. Then it does the same for the answer field of a question on the conversation page, which has its own copy of the rule (`keys.js`): it loads the real page from `app/Web/transcript` in a web view that keeps nothing on disk. It cannot type with a real input method, so that is still worth trying by hand after a change there. CI runs it after building the app:
 
 ```bash
 cd app && swift build --product pi2-compose-check && .build/debug/pi2-compose-check
 ```
+
+### Conversation page tests
 
 The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page.
 
@@ -154,7 +191,11 @@ The conversation page (`app/Web/transcript`) has tests that run in Node with a s
 cd app/Web && node --test test/
 ```
 
-See [transcript.md](transcript.md). The rest of the app has no automated tests. A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
+See [transcript.md](transcript.md). The rest of the app has no automated tests.
+
+### Trying changes in a throwaway copy
+
+A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
 
 ```bash
 open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_SERVICE=dev.pi2.credentials.try
@@ -204,6 +245,8 @@ scripts/test-copy start test-340 --show 'Demo variables' \
 
 The exact allowlist is `PI2_DEMO_PICTURES`, `PI2_DEMO_TEXT_MODEL`, `PI2_DEMO_COST`, `PI2_DEMO_TOKENS_PER_SECOND`. For a local picture stand-in, add `--env PI2_DEMO_PICTURES=http://127.0.0.1:PORT/v1` with its actual port. Never name a real provider. Each name may appear once; values with spaces or `=` work when quoted. Missing `=`, multiline values and every unlisted name (including `PI2_HOME` and `PI2_KEYCHAIN_SERVICE`) are refused before launch. The script sets isolation itself. The non-secret values are stored, revalidated and passed again at `reopen`; an engine already running keeps its original environment, so stop/start to change a value. Adding another allowed name is a reviewed script change, never a prefix wildcard.
 
+### Choosing what a copy shows
+
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. A conversation made after launch, such as through the copy's engine socket, opens when it comes, as long as nothing else is on screen. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `everything` (Allow everything), `builtins` (built-in tools), `rules` (commands it may run without asking), `variables` (variables for its commands), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. `#everything` also puts up the confirmation for turning Allow everything on, while it is off, so it can be captured. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
@@ -223,6 +266,8 @@ A development build (ordinary or optimised, not a release build) also reads a fe
   Without these, a copy's main window opens in the middle of the main screen at every launch, even launched with `open -g`: SwiftUI centres it, and ignores a frame written into the copy's preferences. A check that launches a copy many times should use both, as the steps in [Testing safely](../CONTRIBUTING.md#testing-safely) do.
 
 To check a page without clicking, start a throwaway copy on it and capture its window: `scripts/test-copy start test-7 --show agent:<id>#rules` launches it with `PI2_SHOW` and the three variables above, with the first-run welcome marked done in the copy's data folder so that it does not cover the page (`--welcome` keeps it), and `scripts/test-copy shot test-7 app/build/test-copies/test-7/rules.png` captures it with `screencapture -l`, taking the window's id from `CGWindowListCopyWindowInfo` for the copy's process. It checks first that screen capture is already allowed (`CGPreflightScreenCaptureAccess()`) and refuses if it is not, since capturing without it makes macOS ask. For a palette entry, `--show palette:<query>` and a capture; for a context menu, `--menu <label>`, which sets `PI2_MENU` and prints the file it writes.
+
+### The scripted demo model
 
 The scripted demo model answers `/bash <command>`, `/timeout <seconds> <command>` (bash with a `timeout`), `/background <command>` (bash with `background: true`; see [background.md](background.md)), `/tool <name> <json>` (any tool the conversation has, such as `/tool background {"action":"list"}`, or `/tool delegate {"agent":"Forge","task":"…","title":"Fix X","worktree":"fix-x","from":"main"}` for the parameters `/delegate` does not take), `/tools <json>` (several calls in one answer, as a real model makes them: `/tools [{"name":"bash","arguments":{"command":"ls"}},{"name":"read","arguments":{"path":"a.txt"}}]`), `/read <path>`, `/ask <question>`, `/delegate <agent>: <task>`, `/continue <sub-chat>: <task>`, `/ref <path>`, `/code <script>`, `/mcp <tool> <json>`, `/computer <json>` and `/browser <json>` with the matching tool call, which is enough to exercise most of the app without a provider. `/context` answers with what the person said in the conversation as the model was sent it, one message a line, with `(answer)` for each answer between, so a test can see which version of a chat a request saw. `/system` answers with parts of the system prompt it was sent: `/system <section> …` with those sections and the names of the tools offered, `/system sizes` with the length in characters of each section and of the tool definitions, `/system history` with one line for each system message in the conversation, saying which sections it set (with their length) or removed and which tools it added or took away. A section with nothing to say holds its place with empty text, which is not sent to the model; `/system sizes` and `/system <section>` leave it out. `/work <steps> <tokens a second> <command>` works as an agent does, for the load script below: it writes a paragraph at that pace and runs the command, `steps` times, then says it is done. Asked to summarize a conversation for compaction, it answers with a line at once, rather than repeating the whole conversation at a readable pace.
 
