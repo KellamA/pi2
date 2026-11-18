@@ -32,6 +32,8 @@ final class ChatModeState {
     }
     /// A new chat is being made, so a second click does not make two.
     var creating = false
+    /// The chat whose Continue with an Agent sheet is showing (ChatContinue.swift).
+    var continuing: Int?
     /// Set while the agent view's selection is changed for it (at launch, or when its conversation went away) rather than
     /// by the person, so the window stays on the side it is on.
     @ObservationIgnored var holdingMode = false
@@ -363,6 +365,8 @@ private struct ChatRow: View {
         .contextMenu(previewAs: title, String(chat.id)) {
             Button("Rename…") { model.beginRename(chat) }
             Button(chat.isPinned ? "Unpin" : "Pin") { model.engine.pin(chat.id, !chat.isPinned) }
+            Button("Continue with an Agent…") { model.continueWithAgent(chat.id) }
+                .disabled(!model.engine.canContinueWithAgent(chat.id))
             Button("Archive") { model.archive(chat) }
             Divider()
             Button("Delete", role: .destructive) { model.delete(chat) }
@@ -409,8 +413,16 @@ struct ChatModeDetail: View {
         .navigationSubtitle("Chat")
         .toolbar {
             ToolbarItemGroup {
-                if let id { ModelMenu(engine: engine, id: id, agent: engine.open[id]?.state?.agent) }
+                if let id {
+                    Button("Continue with an Agent…", systemImage: "arrowshape.turn.up.right") { model.continueWithAgent(id) }
+                        .disabled(!engine.canContinueWithAgent(id))
+                        .help("Continue with an Agent: hand this chat to one of your agents, in a folder you choose")
+                    ModelMenu(engine: engine, id: id, agent: engine.open[id]?.state?.agent)
+                }
             }
+        }
+        .sheet(isPresented: Binding(get: { model.chats.continuing != nil }, set: { if !$0 { model.chats.continuing = nil } })) {
+            if let chat = model.chats.continuing { ContinueWithAgentSheet(model: model, chat: chat) }
         }
         .task(id: needsChat) { if needsChat { model.newChat() } }
         .onAppear { forgetMissing() }

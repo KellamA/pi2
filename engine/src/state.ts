@@ -114,6 +114,10 @@ export type Meta = {
 	 * mode's `web` setting; the person changes it by the chat's message field (`conversation.configure`).
 	 */
 	web?: false;
+	/** A conversation of an agent's that a chat was continued in (Continue with an Agent, #289): that chat. */
+	continuedFrom?: number;
+	/** A chat that was continued with an agent (#289): the conversations it was continued in, oldest first. */
+	continuedIn?: number[];
 	/** The person pinned it to the top of its list (`conversation.pin`). */
 	pinned?: true;
 	/**
