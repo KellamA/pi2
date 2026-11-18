@@ -162,7 +162,7 @@ struct AgentEditor: View {
                         ForEach(AgentColor.names, id: \.self) { Text($0.capitalized).tag($0) }
                     }
                     if saved?.allowEverything == true {
-                        Label("Allow everything is on: this agent asks you about nothing. It is set under Tools, below.", systemImage: "exclamationmark.octagon.fill")
+                        Label("Allow everything is on: this agent asks you about nothing. Turn it off below, under Allow everything.", systemImage: "exclamationmark.octagon.fill")
                             .foregroundStyle(Theme.bad)
                     }
                 }
