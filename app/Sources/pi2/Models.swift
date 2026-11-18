@@ -77,6 +77,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var chat: Bool? = nil
     /// A chat kept at the top of chat mode's sidebar.
     var pinned: Bool? = nil
+    /// An agent's conversation a chat was continued in (Continue with an Agent, ChatContinue.swift): that chat.
+    var continuedFrom: Int? = nil
+    /// A chat continued with an agent: the conversations it went on in, oldest first.
+    var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
     var allowEverything: Bool? = nil
 }

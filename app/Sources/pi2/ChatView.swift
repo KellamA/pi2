@@ -126,6 +126,7 @@ struct ChatView: View {
                 .panel(fill: stopped ? Theme.panel : Theme.bad.opacity(0.08), border: stopped ? Theme.line : Theme.bad.opacity(0.35))
                 .padding(.horizontal, inset).padding(.top, 8)
             }
+            ContinuedLinks(engine: engine, id: id, inset: inset)
             LocalModelStrip(engine: engine, state: state?.local, inset: inset)
             BackgroundStrip(engine: engine, id: id, inset: inset)
             WakeStrip(engine: engine, id: id, inset: inset)
