@@ -57,7 +57,9 @@ struct PaletteView: View {
             })
         }
         for conversation in engine.conversations where !conversation.isChat && matches(conversation.title) {
-            let agent = (engine.agent(conversation.agentId)?.name ?? "") + (conversation.parent == nil ? "" : " · sub-chat")
+            let owner = engine.agent(conversation.agentId)
+            let agent = (owner?.name ?? "") + (conversation.parent == nil ? "" : " · sub-chat")
+                + (AllowEverything.warning(conversation, agent: owner) == nil ? "" : " · \(AllowEverything.tag)")
             result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: conversation.busy ? "\(agent) · working" : agent) {
                 model.selection = .conversation(conversation.id)
             })

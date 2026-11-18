@@ -8,6 +8,20 @@ enum AllowEverything {
 
     static func confirmationTitle(_ name: String) -> String { "Let \(name) do anything without asking you?" }
 
+    /// What a conversation's warning says, or nil when it runs as its agent's settings ask. It follows the conversation's
+    /// own agent, never its parent's: a sub-chat runs under its own agent's switch.
+    static func warning(_ conversation: ConversationSummary?, agent: AgentProfile?) -> String? {
+        let taken = conversation?.allowEverything == true
+        let agentOn = agent?.allowEverything == true
+        guard taken || agentOn else { return nil }
+        let name = agent?.name ?? "This agent"
+        return switch (taken, agentOn) {
+        case (true, true): "Allow everything is on: \(name) does anything here without asking you, and may use any app."
+        case (true, false): "Allow everything was turned off for \(name), but holds here until this conversation’s next message."
+        default: "Allow everything is on for \(name): from this conversation’s next message, nothing here is asked about."
+        }
+    }
+
     static func confirmation(_ name: String) -> String {
         """
         \(name) will no longer ask before anything it does: running commands, changing and deleting files, clicking and typing in apps and web pages, making worktrees and setting schedules. With computer use on, it may use any app, not only the ones listed, including Safari, Chrome and other browsers where you are signed in.
@@ -113,15 +127,8 @@ struct AllowEverythingBanner: View {
 
     var body: some View {
         let agent = engine.agent(conversation?.agentId)
-        let taken = conversation?.allowEverything == true
-        let agentOn = agent?.allowEverything == true
-        if taken || agentOn {
+        if let text = AllowEverything.warning(conversation, agent: agent) {
             let name = agent?.name ?? "This agent"
-            let text = switch (taken, agentOn) {
-            case (true, true): "Allow everything is on: \(name) does anything here without asking you, and may use any app."
-            case (true, false): "Allow everything was turned off for \(name), but holds here until this conversation’s next message."
-            default: "Allow everything is on for \(name): from this conversation’s next message, nothing here is asked about."
-            }
             Label(text, systemImage: "exclamationmark.octagon.fill")
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(Theme.bad)
@@ -131,6 +138,24 @@ struct AllowEverythingBanner: View {
                 .panel(fill: Theme.bad.opacity(0.08), border: Theme.bad.opacity(0.35))
                 .padding(.horizontal, inset).padding(.top, 8)
                 .help("Set in \(name)’s settings, under Allow everything")
+        }
+    }
+}
+
+/// The banner's mark, small, on a conversation's row in the sidebar (#328), so the list shows which conversations run
+/// unasked before one is opened. It reads only the conversation's row and the agents, which change rarely and are set
+/// only when they change, so it adds nothing to what makes a row draw again while agents work.
+struct AllowEverythingMark: View {
+    let engine: EngineClient
+    let conversation: ConversationSummary
+
+    var body: some View {
+        if let text = AllowEverything.warning(conversation, agent: engine.agent(conversation.agentId)) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.bad)
+                .help(text)
+                .accessibilityLabel("Allows everything")
         }
     }
 }

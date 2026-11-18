@@ -653,6 +653,7 @@ struct SidebarView: View {
             Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
                 .lineLimit(1)
                 .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
+            AllowEverythingMark(engine: engine, conversation: conversation)
             Spacer(minLength: 0)
             let needsYou = conversation.parent == nil
                 ? engine.inbox.contains { $0.rootConversationId == conversation.id }
