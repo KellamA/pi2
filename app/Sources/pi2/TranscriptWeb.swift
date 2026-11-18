@@ -169,8 +169,73 @@ final class TranscriptBridge {
             // A command whose output pi² no longer has opens all the same: the window says so.
             guard backgroundCommands.contains(id) else { return }
             showOutput(id)
+        case .save(let text, let name):
+            saveFile(named: name) { url in try Data(text.utf8).write(to: url, options: .atomic) }
+        case .savePicture(let entry, let index):
+            guard let item = items.first(where: { $0.id == entry }), index < (item.images ?? 0) else { return }
+            savePicture(entry: entry, index: index)
+        case .openDocument(let entry):
+            guard let file = document(entry) else { return }
+            NSWorkspace.shared.open(file)
+        case .saveDocument(let entry):
+            guard let file = document(entry) else { return }
+            saveFile(named: file.lastPathComponent) { url in
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                try FileManager.default.copyItem(at: file, to: url)
+            }
         }
     }
+
+    /// The document a `write_document` call of this conversation wrote, as its result names it, if it is still there.
+    /// The page only names the call's entry, so it can open no other file.
+    private func document(_ entry: Int) -> URL? {
+        guard let item = items.first(where: { $0.id == entry && $0.kind == "tool" && $0.name == "write_document" }), item.isError != true,
+              let path = item.details?["path"]?.stringValue, path.hasPrefix("/") else { return nil }
+        let file = URL(fileURLWithPath: path)
+        var folder: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &folder), !folder.boolValue else {
+            let alert = NSAlert()
+            alert.messageText = "\(file.lastPathComponent) is no longer there"
+            alert.informativeText = "It was moved or deleted after it was written: \(path)"
+            alert.runModal()
+            return nil
+        }
+        return file
+    }
+
+    /// Asks the person where to save a file, offering `name`, and writes it there. Says so if it cannot be written.
+    private func saveFile(named name: String, write: @escaping (URL) throws -> Void) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = name
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try write(url)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "\(url.lastPathComponent) could not be saved"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+        if let window = view?.window { panel.beginSheetModal(for: window, completionHandler: finish) } else { finish(panel.runModal()) }
+    }
+
+    /// Fetches one of an entry's pictures from the engine and asks the person where to save it.
+    private func savePicture(entry: Int, index: Int) {
+        let conversationID = conversationID
+        Task { [weak self] in
+            guard let self else { return }
+            guard let result = try? await engine.call("conversation.image", ["id": conversationID, "entryId": entry, "index": index]),
+                  let base64 = result["data"]?.stringValue, let type = result["mimeType"]?.stringValue,
+                  let ending = Self.pictureEndings[type], let data = Data(base64Encoded: base64) else { return }
+            saveFile(named: "Picture.\(ending)") { url in try data.write(to: url, options: .atomic) }
+        }
+    }
+
+    private static let pictureEndings = ["image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"]
 
     /// The background commands this conversation's rows are about, as the engine named them: the ones its calls started,
     /// read or stopped, and the ones whose end has a line of its own. Never the id an agent asked for, which may be

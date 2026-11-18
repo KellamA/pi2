@@ -424,6 +424,14 @@ struct RootView: View {
             if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }), !model.isArchived(id) {
                 model.selection = list.first { $0.parent == nil }.map { .conversation($0.id) }
             }
+            #if PI2_DEVELOPMENT
+            // A conversation `PI2_SHOW` names that was made after launch, through the engine's socket in a throwaway copy
+            // that starts on an empty data folder, is shown when it comes, while nothing else is on screen.
+            if engine.hasLoadedLibrary, model.selection == nil,
+               case .conversation(let id)? = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: list, archived: []) {
+                model.selection = .conversation(id)
+            }
+            #endif
         }
         .confirmationDialog(
             "Delete “\(model.deleting.map { $0.title.isEmpty ? "New conversation" : $0.title } ?? "")”?",

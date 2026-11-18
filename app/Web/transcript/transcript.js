@@ -394,6 +394,30 @@
 		return b;
 	}
 
+	/**
+	 * Open and Save a Copy for a document a call wrote (#286): in the app the person uses for that kind of file, or a copy
+	 * where they choose. A chat's documents are kept in the data folder, where the person would not find them. The page
+	 * names the call's entry only; the app finds the file from its result.
+	 */
+	function documentButtons(written) {
+		const box = el("span", "chat-actions");
+		const open = button("link-button", "Open " + written.name, "Open");
+		open.title = "Open " + written.name;
+		open.appendChild(glyph("open", "open-glyph"));
+		open.addEventListener("click", (event) => {
+			event.stopPropagation();
+			post({ type: "openDocument", entry: written.entry });
+		});
+		const save = button("link-button", "Save a copy of " + written.name, "Save a Copy" + ELLIPSIS);
+		save.title = "Save a copy of " + written.name + " where you choose";
+		save.addEventListener("click", (event) => {
+			event.stopPropagation();
+			post({ type: "saveDocument", entry: written.entry });
+		});
+		box.append(open, save);
+		return box;
+	}
+
 	function workingRow() {
 		const row = inPhase(el("div", "working"));
 		row.setAttribute("role", "status");
@@ -565,6 +589,8 @@
 					const actions = [];
 					const words = turnText(visible, index);
 					if (words !== "") actions.push(copyAction(() => words));
+					// A long answer can be kept as a file, as a code block can (#286): its Markdown, as written.
+					if (T.longAnswer(words)) actions.push({ label: "Save as a File" + ELLIPSIS, glyph: "down", run: () => post({ type: "save", text: words, name: T.saveName("answer") }) });
 					actions.push({ label: "Fork from here", glyph: "fork", run: () => post({ type: "fork", entry: item.id }) });
 					return actionsBar(actions);
 				},
@@ -797,13 +823,17 @@
 		const command = fixed ? "" : T.backgroundCommand(call, result);
 		const outputLink = command ? outputButton(command) : null;
 		if (outputLink) head.appendChild(outputLink);
+		// A document that was written: Open and Save a Copy, at the end of its line, as a hand-off's Open is.
+		const written = T.documentWritten(call, status, result);
+		const documentLinks = written ? documentButtons(written) : null;
+		if (documentLinks) head.appendChild(documentLinks);
 		row.appendChild(head);
 		if (sections.length === 0) return;
 
 		const body = el("div", "row-body tool-body");
 		body.id = "body-" + ++bodyCount;
 		const toggle = chevron(body.id, info.title);
-		head.insertBefore(toggle, outputLink);
+		head.insertBefore(toggle, outputLink ?? documentLinks);
 		row.appendChild(body);
 		const liveOutput = liveTool && str(liveTool.output) !== "";
 		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode", "pi2_setup"].includes(call.name));
@@ -875,7 +905,7 @@
 					body.appendChild(el("div", "detail-status" + (section.failed ? " failed" : ""), section.text));
 					break;
 				case "command": {
-					const box = detailBox(section.label, () => (section.output !== "" ? section.output : section.command));
+					const box = detailBox(section.label, () => (section.output !== "" ? section.output : section.command), section.output !== "" ? "output.txt" : null);
 					const pre = el("pre", "output" + (section.failed ? " failed" : ""));
 					const command = el("span", "command");
 					command.appendChild(el("span", "prompt", "$ "));
@@ -891,7 +921,7 @@
 					break;
 				}
 				case "text": {
-					const box = detailBox(section.label, () => section.text);
+					const box = detailBox(section.label, () => section.text, section.text !== "" ? T.saveName("text", section.label) : null);
 					const pre = el("pre", "output" + (section.failed ? " failed" : ""));
 					if (section.text !== "") pre.textContent = section.text;
 					else pre.appendChild(el("span", "placeholder", section.placeholder || ""));
@@ -900,7 +930,7 @@
 					break;
 				}
 				case "diff": {
-					const box = detailBox(section.label, () => T.diffText(section.diff));
+					const box = detailBox(section.label, () => T.diffText(section.diff), "changes.diff");
 					box.appendChild(diffElement(section.diff));
 					body.appendChild(box);
 					break;
@@ -947,11 +977,21 @@
 		}
 	}
 
-	function detailBox(label, copyText) {
+	/** A box with a label, Copy and, given a file name to offer (`saveAs`), Save, which asks the app where. */
+	function detailBox(label, copyText, saveAs = null) {
 		const box = el("div", "detail");
 		const head = el("div", "detail-head");
 		head.setAttribute("data-nocopy", "");
 		head.appendChild(el("span", "detail-label", label));
+		const buttons = el("span", "head-buttons");
+		if (saveAs) {
+			const save = button("copy-button", "Save " + (label || "output") + " as a file", "Save" + ELLIPSIS);
+			save.addEventListener("click", (event) => {
+				event.stopPropagation();
+				post({ type: "save", text: copyText(), name: saveAs });
+			});
+			buttons.appendChild(save);
+		}
 		const copy = button("copy-button", "Copy " + (label || "output"), "Copy");
 		copy.addEventListener("click", (event) => {
 			event.stopPropagation();
@@ -959,7 +999,8 @@
 			copy.textContent = "Copied";
 			setTimeout(() => (copy.textContent = "Copy"), 1400);
 		});
-		head.appendChild(copy);
+		buttons.appendChild(copy);
+		head.appendChild(buttons);
 		box.appendChild(head);
 		return box;
 	}
@@ -1320,6 +1361,9 @@
 	const lightbox = document.getElementById("lightbox");
 	let lightboxReturn = null;
 
+	/** The picture the lightbox shows, as "entry/index", for Save. */
+	let lightboxPicture = "";
+
 	function openLightbox(url, label, from) {
 		const image = lightbox.querySelector("img");
 		image.src = url;
@@ -1327,7 +1371,9 @@
 		lightbox.setAttribute("aria-label", label);
 		lightbox.hidden = false;
 		lightboxReturn = from;
-		lightbox.querySelector("button").focus();
+		lightboxPicture = from ? str(from.getAttribute("data-picture")) : "";
+		lightbox.querySelector(".lightbox-save").hidden = lightboxPicture === "";
+		lightbox.querySelector(".lightbox-close").focus();
 	}
 
 	function closeLightbox() {
@@ -1336,9 +1382,16 @@
 		lightbox.querySelector("img").removeAttribute("src");
 		if (lightboxReturn) lightboxReturn.focus();
 		lightboxReturn = null;
+		lightboxPicture = "";
 	}
 
 	lightbox.addEventListener("click", closeLightbox);
+	// Save asks the app, which fetches the picture from the engine and asks the person where; the lightbox stays open.
+	lightbox.querySelector(".lightbox-save").addEventListener("click", (event) => {
+		event.stopPropagation();
+		const [entry, index] = lightboxPicture.split("/").map(Number);
+		if (Number.isInteger(entry) && Number.isInteger(index)) post({ type: "savePicture", entry, index });
+	});
 	document.addEventListener("keydown", (event) => {
 		if (event.key === "Escape") closeLightbox();
 	});
@@ -1423,6 +1476,14 @@
 			event.preventDefault();
 			const url = MD.safeURL(link.getAttribute("href"));
 			if (url) post({ type: "openLink", url });
+			return;
+		}
+		const save = target && target.closest('[data-action="save-code"]');
+		if (save) {
+			const box = save.closest(".codeblock");
+			const code = box?.querySelector("pre code");
+			// The language the fence named, as its label shows it, gives the name offered (code.py).
+			if (code) post({ type: "save", text: codeText(code), name: T.saveName("code", box.querySelector(".code-lang")?.textContent) });
 			return;
 		}
 		const copy = target && target.closest('[data-action="copy-code"]');

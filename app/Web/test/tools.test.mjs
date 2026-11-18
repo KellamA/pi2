@@ -198,6 +198,12 @@ test("what a row opens to", () => {
 	assert.deepEqual(kinds("edit", { path: "a", edits: [{ oldText: "a", newText: "b" }] }, "failed"), ["diff", "text"]);
 	assert.deepEqual(kinds("write_document", { path: "a.docx", markdown: "# x" }), ["text"]);
 	assert.deepEqual(kinds("write_document", { path: "a.docx", markdown: "# x" }, "failed", { text: "exists", id: 4 }), ["text", "text"]);
+	// Written, with the file's path in its result: the document, to open or save a copy of from its line, by the call's entry only.
+	const writing = call("write_document", { path: "a.docx", markdown: "# x" });
+	assert.deepEqual(T.documentWritten(writing, "done", { text: "Wrote a.docx", id: 7, details: { path: "/data/chats/3/a.docx" } }), { entry: 7, name: "a.docx" });
+	assert.equal(T.documentWritten(writing, "running", null), null);
+	assert.equal(T.documentWritten(writing, "failed", { text: "exists", id: 7, details: null }), null);
+	assert.equal(T.documentWritten(call("write", { path: "a.docx" }), "done", { text: "Wrote", id: 7, details: { path: "/a.docx" } }), null);
 	assert.equal(T.describe(call("write_document", { path: "a.docx" }), "done", null, null).glyph, "file");
 	assert.deepEqual(kinds("write", { path: "a", content: "x" }), ["text"]);
 	assert.deepEqual(kinds("ask_user", { question: "q" }), ["qa"]);
@@ -464,4 +470,22 @@ test("a running command's clock: how long it has run, and how long it has been q
 	assert.equal(T.commandClock(undefined, null, start), null, "no start time, no clock");
 	assert.equal(T.commandClock("1000", null, start), null);
 	assert.equal(T.QUIET_MS, 30_000);
+});
+
+test("what a block offers to be saved as (#286)", () => {
+	assert.equal(T.saveName("code", "python"), "code.py");
+	assert.equal(T.saveName("code", "TypeScript"), "code.ts");
+	assert.equal(T.saveName("code", "bash"), "code.sh");
+	assert.equal(T.saveName("code", "Dockerfile"), "Dockerfile");
+	assert.equal(T.saveName("code", ""), "code.txt");
+	assert.equal(T.saveName("code", "brainfuck"), "code.txt");
+	assert.equal(T.saveName("code", "constructor"), "code.txt", "only the table's own languages");
+	assert.equal(T.saveName("text", "docs/notes.md"), "notes.md");
+	assert.equal(T.saveName("text", "Output"), "output.txt");
+	assert.equal(T.saveName("text", "What it printed"), "output.txt");
+	assert.equal(T.saveName("text", "../../etc/passwd"), "output.txt");
+	assert.equal(T.saveName("text", "/tmp/a b.txt"), "output.txt");
+	assert.equal(T.saveName("answer"), "answer.md");
+	assert.equal(T.longAnswer("x".repeat(1499)), false);
+	assert.equal(T.longAnswer("x".repeat(1500)), true);
 });
