@@ -98,6 +98,11 @@ export type Meta = {
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
 	/**
+	 * The `delegate` call that made a sub-chat it did not wait for (`wait: false`). Such a sub-chat belongs to no call, so
+	 * that the call can end while it works; this lets the call, run again after a crash, find it rather than make another.
+	 */
+	madeBy?: string;
+	/**
 	 * One of a chat's versions after the first (versions.ts), with the chat as its `parent`: shown in the chat's place when
 	 * current, and never on its own.
 	 */

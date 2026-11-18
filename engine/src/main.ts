@@ -47,6 +47,7 @@ import { noticingRefusals } from "./limitwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
+import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
@@ -226,6 +227,14 @@ const host: Host = {
 			callerContext.abortSignal?.removeEventListener("abort", stop);
 		}
 	},
+	sendToChat: async (id, content, requestId) => {
+		const conv = await harness.conversation(id as unknown as ConversationId, context);
+		if (conv === undefined) return undefined;
+		await syncTools(conv).catch(() => {});
+		const submission = await conv.submit({ type: "input", content, requestId }, context);
+		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
+		return submission.id as unknown as number;
+	},
 	conversations: () => library.conversations,
 	working: (id) => working.has(id),
 	// A chat's version is the chat as far as approvals and "always allow" go (versions.ts).
@@ -256,6 +265,7 @@ const engine: Engine = {
 		for (const client of clients) (client.subscriptions.get(id) ?? client.subscriptions.get(chatOf(id)))?.push();
 	},
 	activityChanged: () => broadcast(activityEvent()),
+	overBudget: () => (overBudget() ? `Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up.` : undefined),
 	providersChanged: () => void announceProviders(),
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
@@ -623,6 +633,12 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
 	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
+	// What woke the agent is a message to the model, and a line to the person; its Output opens a command's output.
+	if (entry.kind === WAKE_ENTRY) {
+		const details = wakeMarkerDetails(entry.data);
+		return { id, kind: "marker", text: wakeMarker(entry.data), ...(details === undefined ? {} : { details }) };
+	}
+	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -1437,6 +1453,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		for (const feature of host.features) feature.messageSent?.(params.id as number);
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
 			// A message that is only attachments is titled after the first of them.
@@ -1446,6 +1463,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	abort: async (params) => {
 		await (await conversation(params.id)).abort(context);
+		for (const feature of host.features) feature.stopped?.(params.id as number);
 		return {};
 	},
 	continue: async (params) => {
@@ -1881,6 +1899,7 @@ async function refreshUsage(): Promise<void> {
 		overBudget: overBudget(),
 	};
 	broadcast(usageSummary);
+	for (const feature of host.features) feature.usageChanged?.();
 }
 let usageTimer: ReturnType<typeof setTimeout> | undefined;
 /** Usage changes when work ends; recount shortly after, once, however many tasks finished together. */

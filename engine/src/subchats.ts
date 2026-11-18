@@ -16,6 +16,7 @@ import { limitsReport } from "./limits.ts";
 import { elapsed, runningCommandsOf, stopCommandsOf } from "./background.ts";
 import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
+import { nextSubChats, watchedSubChats } from "./wakes.ts";
 import { type BranchInfo, inspect, removeWorktree, type Worktree, worktreeOf } from "./worktrees.ts";
 
 /** A line in the calling conversation's transcript: which sub-chats were archived, or restored to be continued. */
@@ -157,7 +158,8 @@ export const SUB_CHATS_DESCRIPTION =
 	"- archive: put away the sub-chats numbered in `chats`. Use it once you have what you needed from a sub-chat and will not continue it, or when the person asks you to tidy up. " +
 	"An archived sub-chat leaves the sidebar for the Archive, where the person can read and restore it; nothing is deleted. Commands it left running in the background are stopped, and the answer says which. " +
 	"A worktree of its own is left as it is, unless you pass `remove_worktree: true` and removing it loses nothing: nothing uncommitted and no commits that are not on the branch it was made from (fetch first if it was merged elsewhere). Its branch is kept either way. " +
-	"A sub-chat that is working or waiting on the person is not archived. Continuing an archived sub-chat with delegate and its number restores it.";
+	"A sub-chat that is working or waiting on the person is not archived. Continuing an archived sub-chat with delegate and its number restores it.\n" +
+	"- wait: wait for the next sub-chat you started with `wait: false` (or one of `chats`) to finish, and get its answer here instead of being woken for it; those already finished come at once.";
 
 /** The `sub_chats` tool. Offered with `delegate`, to conversations that can hand work on. */
 export function subChatsTool(host: Host) {
@@ -165,8 +167,8 @@ export function subChatsTool(host: Host) {
 		name: "sub_chats",
 		description: SUB_CHATS_DESCRIPTION,
 		parameters: obj({
-			action: str({ description: "list or archive" }),
-			chats: opt(arr(int(), { description: "For archive: the numbers of the sub-chats to archive" })),
+			action: str({ description: "list, archive or wait" }),
+			chats: opt(arr(int(), { description: "For archive: the numbers of the sub-chats to archive. For wait: the sub-chats to wait for, by default all" })),
 			remove_worktree: opt(bool({ description: "For archive: also remove each one's worktree of its own, if nothing would be lost (nothing uncommitted, no commits that are not on the branch it was made from). Its branch is kept." })),
 		}),
 		// Listing changes nothing, and archiving what is archived changes nothing.
@@ -189,7 +191,8 @@ export function subChatsTool(host: Host) {
 				const lines: string[] = [];
 				for (const id of listed) {
 					const meta = all[String(id)]!;
-					const state = activity(host, [id, ...subChatsOf(all, id)]) ?? "idle";
+					const busy = activity(host, [id, ...subChatsOf(all, id)]);
+					const state = busy === undefined ? "idle" : watchedSubChats(caller).includes(id) ? `${busy}, and its answer will come to you as a message` : busy;
 					const where = whereWords(await whereOf(api, id, parentWorktree, context));
 					const commands = runningCommandsOf(id);
 					const running = commands.length === 0 ? "no background commands running" : `background commands running: ${commands.map((command) => `${command.id} \`${command.command}\``).join(", ")}`;
@@ -201,7 +204,14 @@ export function subChatsTool(host: Host) {
 				return { output: text([head, ...lines, ...tail, ...limits].join("\n")), details: { action, count: listed.length, archived: archived.length } };
 			}
 
-			if (action !== "archive") return { output: text(`Unknown action "${args.action}". Use list or archive.`), isError: true };
+			if (action === "wait") {
+				const came = await nextSubChats(caller, args.chats, context);
+				if (came === "none") {
+					return { output: text("No sub-chat of this conversation is working without being waited for, so there is nothing to wait for. delegate with `wait: false` starts one; list shows how each stands."), details: { action, count: 0 } };
+				}
+				return { output: text(came.map((each) => each.text).join("\n\n---\n\n")), details: { action, count: came.length } };
+			}
+			if (action !== "archive") return { output: text(`Unknown action "${args.action}". Use list, archive or wait.`), isError: true };
 			const asked = [...new Set(args.chats ?? [])];
 			if (asked.length === 0) return { output: text("archive needs `chats`: the numbers of the sub-chats to archive, from list."), isError: true };
 			const lines: string[] = [];

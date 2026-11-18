@@ -342,7 +342,10 @@ function demoProvider(): Provider {
 		}
 		const blocks: readonly DemoBlock[] = Array.isArray(last?.content) ? last.content : [];
 		const typed = demoPrompt(last);
-		const prompt = typed.startsWith("/slow ") ? typed.slice(6).trim() : typed;
+		// A message waking the agent (wakes.ts) is acted on by its first line that starts with "/", so a test can choose
+		// what a woken agent does, by what a command prints or a sub-chat answers.
+		const woken = typed.startsWith("[pi² woke you") ? typed.split("\n").find((line) => line.startsWith("/"))?.trim() : undefined;
+		const prompt = woken ?? (typed.startsWith("/slow ") ? typed.slice(6).trim() : typed);
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
