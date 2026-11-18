@@ -674,8 +674,11 @@ const kind = (type: string): "html" | "text" | "other" => {
 	return "other";
 };
 
-/** What `web_fetch` answers with. */
-export function describePage(page: Fetched, offset: number): { text: string; isError?: boolean } {
+/**
+ * What `web_fetch` answers with. A page read is a source: its final address and title, which a chat names under the
+ * answer that read it (#285).
+ */
+export function describePage(page: Fetched, offset: number): { text: string; isError?: boolean; source?: { url: string; title: string } } {
 	const sort = kind(page.type);
 	const label = page.type.split(";")[0]!.trim() || "unknown type";
 	if (page.status >= 400) return { text: `The server answered ${page.status} for ${page.url}.`, isError: true };
@@ -699,7 +702,7 @@ export function describePage(page: Fetched, offset: number): { text: string; isE
 	if (page.cut) notes.push(`The page is larger than ${size(FETCH_BYTES)}; only the first part was read.`);
 	if (notes.length > 0) out.push("", `(${notes.join(" ")})`);
 	if (body.trim() === "") out.push("(The page has no readable text. It may need JavaScript; try the browser tool.)");
-	return { text: out.join("\n") };
+	return { text: out.join("\n"), source: { url: page.url, title } };
 }
 
 const SEARCH_FAILED = "Searching without the browser did not work. Use the browser tool's `search` action instead.";
@@ -708,11 +711,20 @@ export async function webSearch(query: string, context: Pick<Context, "abortSign
 	if (query.trim() === "") return { text: "web_search needs `query`.", isError: true };
 	const page = await fetchPage(searchAddress(query), context);
 	if ("refused" in page) return { text: `${page.refused} ${SEARCH_FAILED}`, isError: true };
+	return describeSearch(page, query);
+}
+
+/** Keep an explicitly empty search distinct from a page the reader could not understand. */
+export function describeSearch(page: Fetched, query: string): { text: string; isError?: boolean } {
 	const html = decodeBody(page.body, page.type);
 	const results = parseSearchResults(html);
 	if (results.length === 0) {
+		const advice = "Try fewer words or remove quotes. For source code, try `gh search code`.";
+		// Match the page's marker, not words in the echoed query (which can itself contain "captcha").
+		const empty = /class\s*=\s*["'][^"']*\bno-results(?:__message)?\b[^"']*["']/i.test(html);
+		if (page.status === 200 && empty) return { text: `No results found for "${query.slice(0, 100)}". ${advice}`, isError: true };
 		const check = page.status !== 200 || /anomaly|captcha|unusual traffic|are you a human/i.test(html);
-		return { text: check ? `The search engine answered with a check instead of results (status ${page.status}). ${SEARCH_FAILED}` : `No results could be read for "${query.slice(0, 100)}". The search page may have changed, or nothing matched. ${SEARCH_FAILED}`, isError: true };
+		return { text: check ? `The search engine answered with a check instead of results (status ${page.status}). ${SEARCH_FAILED}` : `No results could be read for "${query.slice(0, 100)}". The search page may have changed. ${advice} ${SEARCH_FAILED}`, isError: true };
 	}
 	const out = [`Results for "${query.trim().slice(0, 100)}":`];
 	results.slice(0, 10).forEach((result, i) => {
@@ -783,7 +795,7 @@ export const look: Feature = (host) => {
 			const page = await fetchPage(args.url, context);
 			if ("refused" in page) return fail(page.refused);
 			const result = describePage(page, Math.max(0, Math.floor(args.offset ?? 0)));
-			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
+			return { output: text(result.text), ...(result.isError ? { isError: true } : {}), ...(result.source === undefined ? {} : { details: { source: result.source } }) };
 		},
 	});
 	const searchWebTool = defineTool({

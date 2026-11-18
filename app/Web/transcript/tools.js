@@ -505,6 +505,11 @@
 				glyph = "code";
 				label = [t(active ? "Running a script" + ELLIPSIS : "Ran a script")];
 				break;
+			case "run_code":
+				// A program in the sandbox (#286): nothing on the Mac, so the row says what it is for, not where it ran.
+				glyph = "code";
+				label = [t(active ? "Working it out with code" + ELLIPSIS : "Worked it out with code")];
+				break;
 			case "computer":
 			case "browser": {
 				glyph = toolName === "browser" ? "globe" : "cursor";
@@ -739,6 +744,10 @@
 			case "codemode":
 				if (str(args.code)) sections.push({ kind: "text", label: "Script", text: str(args.code), language: "js" });
 				outputSection("Output");
+				break;
+			case "run_code":
+				if (str(args.code)) sections.push({ kind: "text", label: "Program", text: str(args.code), language: "js" });
+				outputSection("What it printed");
 				break;
 			case "computer":
 			case "browser":

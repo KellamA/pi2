@@ -55,6 +55,12 @@ enum TranscriptAction: Equatable {
     /// A sub-chat to show: in place of this conversation, or `beside` it in a pane of its own.
     case openChat(Int, beside: Bool)
     case fork(entry: Int)
+    /// Try Again under a chat's answer, with the model chosen for it, if one was (#285).
+    case retry(entry: Int, model: ModelRef?)
+    /// One of the person's messages in a chat, sent again with this text as a new version.
+    case edit(entry: Int, text: String)
+    /// Another of a chat's versions at a point: `after` the entry they part at (nil: the first message).
+    case version(after: Int?, index: Int)
     case picture(entry: Int, index: Int)
     /// The window with a background command's output, by the id the engine gave it ("bg-3").
     case output(String)
@@ -68,6 +74,8 @@ enum TranscriptAction: Equatable {
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
+    /// An edited message: as long as a message can be, within reason.
+    static let editLimit = 1_000_000
 
     init?(message body: Any) {
         guard let body = body as? [String: Any], let type = body["type"] as? String else { return nil }
@@ -95,6 +103,27 @@ enum TranscriptAction: Equatable {
         case "fork":
             guard let entry = Self.integer(body["entry"]) else { return nil }
             self = .fork(entry: entry)
+        case "retry":
+            guard let entry = Self.integer(body["entry"]) else { return nil }
+            if body["model"] == nil {
+                self = .retry(entry: entry, model: nil)
+            } else {
+                guard let model = body["model"] as? [String: Any], let provider = Self.identifier(model["provider"]),
+                      let id = Self.identifier(model["modelId"]) else { return nil }
+                self = .retry(entry: entry, model: ModelRef(provider: provider, modelId: id))
+            }
+        case "edit":
+            // Empty text is the engine's to refuse or not: a message of attachments alone keeps them.
+            guard let entry = Self.integer(body["entry"]), let text = body["text"] as? String, text.utf16.count <= Self.editLimit else { return nil }
+            self = .edit(entry: entry, text: text)
+        case "version":
+            guard let index = Self.integer(body["index"]), index >= 0 else { return nil }
+            if body["after"] is NSNull {
+                self = .version(after: nil, index: index)
+            } else {
+                guard let after = Self.integer(body["after"]) else { return nil }
+                self = .version(after: after, index: index)
+            }
         case "image":
             guard let entry = Self.integer(body["entry"]), let index = Self.integer(body["index"]), index >= 0, index < 1000 else { return nil }
             self = .picture(entry: entry, index: index)

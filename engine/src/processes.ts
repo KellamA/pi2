@@ -1,15 +1,19 @@
 // The processes of commands pi² starts and leaves to run on their own: a worktree's set-up command (worktrees.ts) and a
 // command an agent leaves running in the background (background.ts). See docs/worktrees.md and docs/background.md.
 //
-// Each such command leads a process group of its own and is started with a random marker in its environment. While it
-// runs, the engine notes the group, when its first process started, and the marker. Should the engine die outright, the
-// next one goes by that note to stop what was left running, and only what is provably the same: a process number is
-// given to other programs once it is free, so a number alone proves nothing. Both kinds of command read `ps` through
-// here, so a start time noted by one is read the same way by the other.
+// Each such command leads a process group of its own and is started with a random marker in its environment, and with
+// a file of its run open, which nothing else can open (`newRun`). While it runs, the engine notes the group, when its
+// first process started, and the marker. Should the engine die outright, the next one goes by that note to stop what was
+// left running, and only what is provably the same: a process number is given to other programs once it is free, so a
+// number alone proves nothing. Both kinds of command read `ps` through here, so a start time noted by one is read the
+// same way by the other.
 
-import { type ChildProcess, execFile } from "node:child_process";
+import { type ChildProcess, execFile, type StdioOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { subscribe } from "node:diagnostics_channel";
+import { closeSync, constants, mkdirSync, openSync, rmSync } from "node:fs";
+import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 
 /**
  * A command's process group: its id, which is the pid of the process that leads it, and when that process started, as
@@ -55,6 +59,105 @@ export function lookOutFor(marker: string): { child(): ChildProcess | undefined;
 
 /** Whether a stored marker is one `newRunMarker` could have made. Anything else, a short or spaced one say, proves nothing. */
 const isRunMarker = (marker: unknown): marker is string => typeof marker === "string" && /^[0-9a-f]{32}$/.test(marker);
+
+/**
+ * Where runs' files are kept (`newRun`): `runs` in the data folder, which the engine names at its start. Until it does,
+ * no command is given a file, and none is looked for: a marker in the environment is then the only proof.
+ */
+let runFolder: string | undefined;
+export const useRunFolder = (folder: string): void => void (runFolder = folder);
+/** The descriptor a command is given its run's file as. High, so that it is out of the way of a script's own (3 to 9). */
+const RUN_FD = 19;
+const runFile = (folder: string, marker: string) => join(folder, marker);
+
+/** A run about to be started: its marker, and the `stdio` to start it with, which hands it its file. */
+export type NewRun = { marker: string; stdio: StdioOptions; started(): void };
+
+/**
+ * A new run of a command: a marker for its environment (`RUN_VARIABLE`), and an empty file of the run's own, named by
+ * the marker, that the command is started with open as descriptor `RUN_FD` (`stdio`), which whatever it starts inherits.
+ * The file is made with no permissions at all, so that no process, the person's own included, can open it once it is
+ * made: a process that has it open got it from the command. macOS lets `lsof` list the files of the person's own
+ * processes, the programs that come with macOS too, whose environment it does not show. So the file proves a process the
+ * run's where the environment cannot (`holding`). `started()` closes the engine's own copy, once the command is started
+ * or could not be; call it either way. Without a folder for it, or should it not be made, there is no file, and the
+ * command is started as before.
+ */
+export function newRun(): NewRun {
+	const marker = newRunMarker();
+	let fd: number | undefined;
+	if (runFolder !== undefined) {
+		try {
+			mkdirSync(runFolder, { recursive: true, mode: 0o700 });
+			// Node opens it close-on-exec, so no other process this engine starts gets it.
+			fd = openSync(runFile(runFolder, marker), constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o000);
+		} catch {
+			fd = undefined;
+		}
+	}
+	const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...(fd === undefined ? [] : [...Array<"ignore">(RUN_FD - 3).fill("ignore"), fd])];
+	return {
+		marker,
+		stdio,
+		started: () => {
+			if (fd === undefined) return;
+			try {
+				closeSync(fd);
+			} catch {
+				// Closed already.
+			}
+			fd = undefined;
+		},
+	};
+}
+
+/** Remove the file of a run that is over, or that the engine after the one that started it has dealt with. */
+export function forgetRun(marker: string | undefined): void {
+	if (runFolder === undefined || !isRunMarker(marker)) return;
+	try {
+		rmSync(runFile(runFolder, marker), { force: true });
+	} catch {
+		// Left for good: an empty file, which proves nothing once its run's record is gone.
+	}
+}
+
+/**
+ * Which of `pids` have the file of the run `marker` open: the one `newRun` made, still there, still with no permissions,
+ * and still the same file (the same device and inode). An inode number names one file on a device at a time, and one
+ * still there is not given to another, so a process with that open has the run's file, which it can only have been
+ * handed by the run. `lsof` reads that for the person's own processes, macOS's own programs among them. Anything it does
+ * not answer in full, or a file that is gone or was changed, proves nothing.
+ */
+async function holding(pids: number[], marker: string): Promise<Set<number>> {
+	const found = new Set<number>();
+	if (runFolder === undefined || pids.length === 0) return found;
+	const file = await lstat(runFile(runFolder, marker), { bigint: true }).catch(() => undefined);
+	if (file === undefined || !file.isFile() || (file.mode & 0o7777n) !== 0n || file.uid !== BigInt(process.getuid?.() ?? -1)) return found;
+	const listed = await new Promise<string | undefined>((resolve) => {
+		execFile("/usr/sbin/lsof", ["-w", "-n", "-P", "-p", pids.join(","), "-F", "pDi"], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+			// lsof exits 1 when one of the processes asked about is not there: what it listed of the others still stands.
+			resolve(error && (error as { code?: unknown }).code !== 1 ? undefined : String(stdout));
+		});
+	});
+	if (listed === undefined) return found;
+	// One field a line: `p` starts a process, `f` one of its files, then `D` its device (in hex) and `i` its inode.
+	let pid = 0;
+	let device: bigint | undefined;
+	let inode: bigint | undefined;
+	const done = () => {
+		if (device === file.dev && inode === file.ino && pids.includes(pid)) found.add(pid);
+		[device, inode] = [undefined, undefined];
+	};
+	for (const line of listed.split("\n")) {
+		const [field, value] = [line[0], line.slice(1)];
+		if (field === "p" || field === "f") done();
+		if (field === "p") pid = /^\d+$/.test(value) ? Number(value) : 0;
+		else if (field === "D" && /^0x[0-9a-f]+$/i.test(value)) device = BigInt(value);
+		else if (field === "i" && /^\d+$/.test(value)) inode = BigInt(value);
+	}
+	done();
+	return found;
+}
 
 /** After SIGTERM, how long what is left over gets before SIGKILL. */
 const GRACE_MS = 3_000;
@@ -124,20 +227,26 @@ function commandLines(pids: number[], environment: boolean): Promise<Map<number,
 }
 
 /**
- * Which of `members` carry `RUN_VARIABLE` with the value `marker` in their environment, and are still the processes
- * listed. `ps -E` prints the environment after the arguments with nothing to say where one ends and the other begins, so
- * each process is listed without it too and only what `-E` added counts: naming the marker in an argument is not carrying
- * it. macOS shows the environment only of the person's own processes, and not of the programs that come with macOS itself
- * (`/bin/sh`, `sleep`): those read as carrying nothing, as does a process started with a cleared environment. A value
- * with a space in it could spell the marker as a word of its own, but only by knowing the run's random value.
+ * Which of `members` are provably of the run `marker`, and are still the processes listed: those that have the run's
+ * file open (`holding`), and those that carry `RUN_VARIABLE` with the value `marker` in their environment. Either one is
+ * proof; neither replaces the other. A process can close the file (as Python's `subprocess` does for what it starts), and
+ * macOS shows no environment for its own programs (`/bin/sh`, `sleep`) or another person's, or for a process started with
+ * a cleared one.
+ *
+ * `ps -E` prints the environment after the arguments with nothing to say where one ends and the other begins, so each
+ * process is listed without it too and only what `-E` added counts: naming the marker in an argument is not carrying it.
+ * A value with a space in it could spell the marker as a word of its own, but only by knowing the run's random value.
+ * The files are read first, so that the listing that tells whether each is still the same process comes after.
  */
 async function carrying(members: [number, Listed][], marker: string): Promise<[number, Listed][]> {
 	const pids = members.map(([pid]) => pid).filter(signallable);
 	if (pids.length === 0) return [];
+	const holders = await holding(pids, marker).catch(() => new Set<number>());
 	const [bare, full] = await Promise.all([commandLines(pids, false), commandLines(pids, true)]);
 	return members.filter(([pid, was]) => {
 		const [a, b] = [bare.get(pid), full.get(pid)];
-		if (a === undefined || b === undefined || [a, b].some((each) => each.group !== was.group || each.start !== was.start)) return false;
+		if (!signallable(pid) || a === undefined || b === undefined || [a, b].some((each) => each.group !== was.group || each.start !== was.start)) return false;
+		if (holders.has(pid)) return true;
 		if (!b.command.startsWith(`${a.command} `)) return false;
 		return b.command.slice(a.command.length + 1).split(" ").includes(`${RUN_VARIABLE}=${marker}`);
 	});
@@ -183,8 +292,11 @@ export const leftOverLog: Record<LeftOver, string> = { stopped: "was stopped", p
  * group's id is not given to a new process while the group lasts. Then the group is signalled as one.
  *
  * Without that leader, a group of this number may be what the command started in the background before its first process
- * ended, or another group that got the same number later. The number alone cannot tell, so each member is asked for the
- * run's marker (`carrying`), and those that have it are signalled one by one, by pid. A member without it is left alone.
+ * ended, or another group that got the same number later. The number alone cannot tell, so each member is asked for
+ * proof that it is the run's, the run's file open or its marker in the environment (`carrying`), and those that have it
+ * are signalled one by one, by pid. A member without either is left alone.
+ *
+ * The record is dealt with once: the run's file is removed afterwards (`forgetRun`).
  *
  * "stopped" is answered once SIGTERM is sent to everything found; whatever of it is still there, and still the same
  * process, gets SIGKILL after `graceMs`. "partly" means the members with the marker were stopped so, and others that may
@@ -192,6 +304,14 @@ export const leftOverLog: Record<LeftOver, string> = { stopped: "was stopped", p
  * "gone" means nothing of it is running.
  */
 export async function stopLeftOver(left: RunProcess, graceMs = GRACE_MS): Promise<LeftOver> {
+	try {
+		return await stopRun(left, graceMs);
+	} finally {
+		forgetRun(left.marker);
+	}
+}
+
+async function stopRun(left: RunProcess, graceMs: number): Promise<LeftOver> {
 	// The record comes from a stored document, and a group number of 1 would signal every process the person owns, and 0
 	// this engine's own group. Anything a command could never have been recorded with is refused before looking.
 	if (!signallable(left.group) || typeof left.start !== "string" || left.start === "") return "unsure";
