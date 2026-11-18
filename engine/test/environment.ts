@@ -218,10 +218,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	// ---- Where the values are, and are not
 
 	const { path: backupPath } = await client.call("backup.create", { directory: scratch });
-	/** Every file under `folder` that holds `text`. */
+	/** Every file under `folder` that holds `text`. An empty one holds nothing, and a run's file (processes.ts) is empty and cannot be read. */
 	const holding = (folder: string, text: string): string[] =>
 		readdirSync(folder, { recursive: true, withFileTypes: true })
-			.filter((entry) => entry.isFile() && readFileSync(join(entry.parentPath, entry.name)).includes(text))
+			.filter((entry) => entry.isFile() && statSync(join(entry.parentPath, entry.name)).size > 0 && readFileSync(join(entry.parentPath, entry.name)).includes(text))
 			.map((entry) => join(entry.parentPath, entry.name));
 	assert.deepEqual(holding(home, TOKEN), [], "no file in the data folder holds a value: not the database, not a settings file");
 	assert.deepEqual(holding(backupPath, TOKEN), [], "nor does a backup");

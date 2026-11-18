@@ -33,8 +33,10 @@ type InboxItem = { id: string; kind: string; conversationId: number; rootConvers
 type State = { archived?: boolean; usage: { cost: number; tokens: number }; context: { used: number; window: number | null }; busy: boolean; partial: { text: string } | null; failure: { reason: string } | null; queued: { id: number; text: string }[]; agent: { model: { provider: string; modelId: string } | null; access: string; cwd: string | null; agentId: string | null; parent: number | null }; tools: { name: string; status: string }[] };
 type Conv = { items: Item[]; state: State };
 
-function startEngine(): ChildProcess {
-	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5", PI2_DEMO_TEXT_MODEL: "1", PI2_COMMAND_TIMEOUT_SECONDS: "3" }, stdio: ["ignore", "ignore", "inherit"] });
+// Ordinary checks wait for the command's outcome, not what fits before a short foreground limit (#267).
+// Only the default-timeout check shortens it; otherwise the engine's limit outlasts the test's hang guard.
+function startEngine(commandTimeout = 2 * PATIENT_MS / 1000): ChildProcess {
+	return spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5", PI2_DEMO_TEXT_MODEL: "1", PI2_COMMAND_TIMEOUT_SECONDS: String(commandTimeout) }, stdio: ["ignore", "ignore", "inherit"] });
 }
 
 class Client extends EngineClient {
@@ -1499,6 +1501,10 @@ try {
 		const many = await looked(lk, "list_files", { path: "many" });
 		assert.match(many.text, /^many\/ : 320 entries\nf000\.txt/);
 		assert.match(many.text, /… and 20 more not shown/, "the listing is capped and says so");
+		const cursorFrom = (text: string) => JSON.parse(/cursor: (".*")\. Files/.exec(text)![1]!);
+		const manyEnd = await looked(lk, "list_files", { path: "many", cursor: cursorFrom(many.text) });
+		assert.match(manyEnd.text, /f300.txt/);
+		assert.ok(!manyEnd.text.includes("f299.txt") && !manyEnd.text.includes("cursor:"));
 		assert.equal((await looked(lk, "list_files", { path: "src/deep/.." })).isError, false);
 		assert.equal((await looked(lk, "list_files", { path: "src/app.ts" })).isError, true, "a file is not a folder");
 
@@ -1506,7 +1512,11 @@ try {
 		assert.equal(found.isError, false, found.text);
 		assert.ok(found.text.startsWith("2 files match") && found.text.includes("src/app.ts") && found.text.includes("src/deep/test_b.py") && !found.text.includes("x.ts"), found.text);
 		assert.ok(!found.text.includes("secret"), "a link out of the folder is not followed");
-		assert.match((await looked(lk, "find_files", { pattern: "*.txt", path: "many" })).text, /… and 120 more not shown/, "find is capped and says so");
+		const foundMany = await looked(lk, "find_files", { pattern: "*.txt", path: "many" });
+		assert.match(foundMany.text, /200 files match/);
+		const foundEnd = await looked(lk, "find_files", { pattern: "*.txt", path: "many", cursor: cursorFrom(foundMany.text) });
+		assert.match(foundEnd.text, /120 files match/);
+		assert.ok(!foundEnd.text.includes("many/f199.txt") && !foundEnd.text.includes("cursor:"));
 		assert.match((await looked(lk, "find_files", { pattern: "test_*.py", path: "src" })).text, /^1 file matches/);
 
 		const searched = await looked(lk, "search_files", { query: "needle", ignoreCase: true });
@@ -1520,7 +1530,10 @@ try {
 		assert.match((await looked(lk, "search_files", { query: "zzz-nothing" })).text, /^No matches in/);
 		const hits = await looked(lk, "search_files", { query: "cap-me", path: "hits" });
 		assert.match(hits.text, /… 2 more in this file/, "per file cap");
-		assert.match(hits.text, /Stopped at 100 matches/, "total cap");
+		assert.match(hits.text, /Stopped after 100 matches/, "total cap");
+		const hitsEnd = await looked(lk, "search_files", { query: "cap-me", path: "hits", cursor: cursorFrom(hits.text) });
+		assert.match(hitsEnd.text, /^20 matches/);
+		assert.ok(!hitsEnd.text.includes("cursor:"));
 		assert.equal(hits.text.split("\n").filter((l: string) => /^  \d+: /.test(l)).length, 100);
 
 		for (const path of ["..", "../../..", outside, join(outside, "secret.txt"), "link-out", "link-out/secret.txt", "link-file.txt"]) {
@@ -2356,7 +2369,10 @@ try {
 		step("selfschedule: the person's edits keep who set it, and only the engine can mark it; switching off takes the tools away");
 	}
 	{
-		// commands (engine/src/commands.ts): this engine's default limit is 3 seconds (PI2_COMMAND_TIMEOUT_SECONDS)
+		// commands (engine/src/commands.ts): only the default-limit check needs the short foreground limit.
+		await stop(engine);
+		engine = startEngine(3);
+		client = await Client.attach();
 		const open = async () => {
 			const { id } = await client.call("conversation.create");
 			await client.call("conversation.open", { id });
@@ -2364,29 +2380,32 @@ try {
 			await client.until("full access", () => client.conversations.get(id)?.state.agent.access === "full");
 			return id as number;
 		};
-		const [stopped, longer, input, exited] = [await open(), await open(), await open(), await open()];
-		const started = Date.now();
-		// At once, so the two waits overlap. The first would run for ten minutes, far longer than the three of them can
-		// take, however busy the machine. It starts with `sleep`, so at its limit it is stopped rather than moved to the
-		// background (#197; test/background.ts has the move).
-		await client.call("submit", { id: stopped, text: "/bash sleep 0.1; echo begun; sleep 600; echo never-printed" });
-		await client.call("submit", { id: longer, text: "/timeout 30 sleep 5; echo finished-late" });
+		const stopped = await open();
+		// It cannot finish within the test's patience. Starting with `sleep` stops it at its limit rather than moving
+		// it to the background (#197; test/background.ts has the move). Nothing need print before that limit.
+		await client.call("submit", { id: stopped, text: `/bash sleep ${2 * PATIENT_MS / 1000}; echo never-printed` });
+		await settled(stopped, 1);
+		const cut = toolResults(stopped)[0]!;
+		assert.equal(cut.isError, true, cut.text);
+		assert.ok(!cut.text.includes("never-printed"), cut.text);
+		assert.match(cut.text, /stopped after 3 seconds, the default time limit for a command\. If it needs longer, run it again with a larger `timeout` \(in seconds, up to 600\), or with `background: true`, which has no time limit/);
+		await stop(engine);
+		engine = startEngine();
+		client = await Client.attach();
+		const [longer, input, exited] = [await open(), await open(), await open()];
+		await client.call("submit", { id: longer, text: `/timeout ${2 * PATIENT_MS / 1000} sleep 5; echo finished-late` });
 		await client.call("submit", { id: input, text: '/bash cat; read -r answer; echo "got [$answer]"' });
 		await client.call("submit", { id: exited, text: "/bash echo all-in-order; grep -q nothing-here /dev/null" });
-		const [cut, honoured, reader, nonzero] = await Promise.all([stopped, longer, input, exited].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
-		assert.equal(cut.isError, true, cut.text);
-		assert.ok(cut.text.includes("begun") && !cut.text.includes("never-printed"), `what it wrote before it was stopped is kept: ${cut.text}`);
-		assert.match(cut.text, /stopped after 3 seconds, the default time limit for a command\. If it needs longer, run it again with a larger `timeout` \(in seconds, up to 600\), or with `background: true`, which has no time limit/);
+		const [honoured, reader, nonzero] = await Promise.all([longer, input, exited].map((id) => settled(id, 1).then(() => toolResults(id)[0]!)));
 		assert.equal(honoured.isError, false, honoured.text);
-		assert.ok(honoured.text.includes("finished-late"), `a larger timeout is honoured: ${honoured.text}`);
+		assert.ok(honoured.text.includes("finished-late"), `an explicit timeout is honoured: ${honoured.text}`);
 		assert.equal(reader.isError, false, reader.text);
 		assert.ok(reader.text.includes("got []"), `a command reading its input gets none: ${reader.text}`);
 		// A non-zero exit is a fact the model is told, not an error (issue #182), and the row is given the code.
 		assert.equal(nonzero.isError, false, nonzero.text);
 		assert.equal(nonzero.text, "all-in-order\n<harness>\n[info] Exit code 1\n</harness>");
 		assert.deepEqual(nonzero.details, { exitCode: 1 });
-		assert.ok(Date.now() - started < 5 * 60_000, "the stopped command did not run its full ten minutes");
-		step("commands: one without a timeout is stopped at the default and says how to get longer; a larger timeout is honoured; standard input is closed; a non-zero exit is told as a fact");
+		step("commands: one without a timeout is stopped at the default and says how to get longer; an explicit timeout is honoured; standard input is closed; a non-zero exit is told as a fact");
 
 		// A long output is shortened to its end, and all of it is kept in a file in the data folder, which the result names
 		// (issue #161). A short one keeps no file. Deleting the conversation removes its files.
@@ -2415,7 +2434,7 @@ try {
 		const gate = join(workdir, "clock-gate-196");
 		type Clock = { callId: string; command?: string; startedAt: number; lastOutputAt: number | null; output?: string };
 		const submitted = Date.now();
-		await client.call("submit", { id: clocked, text: `/timeout 600 echo started-196; while [ ! -e '${gate}' ]; do sleep 0.1; done; echo done-196` });
+		await client.call("submit", { id: clocked, text: `/bash echo started-196; while [ ! -e '${gate}' ]; do sleep 0.1; done; echo done-196` });
 		const row = await client.until("the running command's clock", () =>
 			(client.conversations.get(clocked)?.state.tools as Clock[] | undefined)?.find((tool) => tool.output?.includes("started-196") && typeof tool.startedAt === "number" && typeof tool.lastOutputAt === "number"),
 		);

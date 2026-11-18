@@ -41,7 +41,7 @@ export function validateAutoArchive(days: unknown): number | null {
 
 /**
  * The conversations to archive because nothing has happened in them for `days` days: top-level ones only (a sub-chat
- * goes with its parent), not already put away, and with nothing going on in them or their sub-chats: `active` says
+ * goes with its parent), not already put away, not pinned, and with nothing going on in them or their sub-chats: `active` says
  * whether a conversation is working or waiting on the person.
  */
 export function dueForArchive(conversations: Record<string, Meta>, now: number, days: number | null, active: (id: number) => boolean): number[] {
@@ -50,7 +50,8 @@ export function dueForArchive(conversations: Record<string, Meta>, now: number, 
 	const due: number[] = [];
 	for (const [key, meta] of Object.entries(conversations)) {
 		const id = Number(key);
-		if (meta.parent !== undefined || isPutAway(meta)) continue;
+		// A pinned conversation is one the person keeps at hand on purpose, however long it goes unused.
+		if (meta.parent !== undefined || isPutAway(meta) || meta.pinned === true) continue;
 		const children = Object.entries(conversations).filter(([, child]) => child.parent === id && !isDeleted(child));
 		// A sub-chat used more recently than its parent keeps the whole conversation.
 		const lastUsed = Math.max(meta.updatedAt, ...children.map(([, child]) => child.updatedAt));
