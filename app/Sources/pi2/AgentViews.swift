@@ -581,6 +581,36 @@ struct AgentVariablesSection: View {
     let engine: EngineClient
     let agentID: String
 
+    var body: some View {
+        Section {
+            Label("Every command this agent runs can read these values, and so can whatever those commands start.", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(Theme.warn)
+            VariablesEditor(
+                variables: engine.agent(agentID)?.variables ?? [],
+                unsetText: "no value: commands do not get it",
+                removeHelp: "the agent's commands no longer get it",
+                onSet: { name, value in _ = try await engine.call("variables.set", ["agentId": agentID, "name": name, "value": value]) },
+                onRemove: { name in _ = try await engine.call("variables.remove", ["agentId": agentID, "name": name]) }
+            )
+        } header: {
+            Text("Variables for its commands")
+        } footer: {
+            Text("Its shell commands, background commands and set-up command get these as environment variables, without asking you: for example a token a command-line tool reads. The agent can print a value or send it anywhere a command can, so give it only what you would let it use. Values are kept in your macOS Keychain, never in pi²’s files or backups, and cannot be shown here again, only replaced. A sub-chat gets the variables of its own agent; MCP servers get none, and have their own in Settings › Tools. A copy of this agent gets the names without the values. Changes here apply at once, without Save, from the next command.").formFooter()
+        }
+    }
+}
+
+/// Rows that list environment variables by name, and set, replace and remove them: an agent's (above) or an MCP
+/// server's (ToolsSettings.swift). A value goes to the engine, which keeps it in the Keychain, and never comes back.
+struct VariablesEditor: View {
+    let variables: [AgentVariable]
+    /// What a variable with no value shows, saying what that means.
+    let unsetText: String
+    /// What removing one does, after “Remove NAME and its value:”.
+    let removeHelp: String
+    let onSet: (String, String) async throws -> Void
+    let onRemove: (String) async throws -> Void
+
     @State private var name = ""
     @State private var value = ""
     /// The variable whose value is being set or replaced, and what is typed for it.
@@ -588,62 +618,52 @@ struct AgentVariablesSection: View {
     @State private var newValue = ""
     @State private var problem: String?
 
-    private var variables: [AgentVariable] { engine.agent(agentID)?.variables ?? [] }
-
     var body: some View {
-        Section {
-            Label("Every command this agent runs can read these values, and so can whatever those commands start.", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(Theme.warn)
-            ForEach(variables) { variable in
-                if replacing == variable.name {
-                    HStack(spacing: 8) {
-                        Text(variable.name).font(Theme.mono).lineLimit(1)
-                        SecureField("Value", text: $newValue, prompt: Text(variable.set ? "New value" : "Value"))
-                            .labelsHidden()
-                            .onSubmit { set(variable.name, newValue) }
-                        Button("Cancel") { replacing = nil; newValue = "" }
-                        Button("Save") { set(variable.name, newValue) }
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Image(systemName: "key")
-                            .foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                        Text(variable.name).font(Theme.mono).lineLimit(1).truncationMode(.middle)
-                        Text(variable.set ? "value set" : "no value: commands do not get it")
-                            .font(.caption)
-                            .foregroundStyle(variable.set ? Color.secondary : Theme.warn)
-                        Spacer(minLength: 8)
-                        Button(variable.set ? "Replace…" : "Set Value…") { replacing = variable.name; newValue = ""; problem = nil }
-                            .buttonStyle(.borderless)
-                            .help(variable.set ? "Give \(variable.name) a new value. The one kept now cannot be shown." : "Give \(variable.name) a value")
-                        Button("Remove", systemImage: "minus.circle") { remove(variable.name) }
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.borderless)
-                            .help("Remove \(variable.name) and its value: the agent's commands no longer get it")
-                    }
+        ForEach(variables) { variable in
+            if replacing == variable.name {
+                HStack(spacing: 8) {
+                    Text(variable.name).font(Theme.mono).lineLimit(1)
+                    SecureField("Value", text: $newValue, prompt: Text(variable.set ? "New value" : "Value"))
+                        .labelsHidden()
+                        .onSubmit { save(variable.name, newValue) }
+                    Button("Cancel") { replacing = nil; newValue = "" }
+                    Button("Save") { save(variable.name, newValue) }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "key")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(variable.name).font(Theme.mono).lineLimit(1).truncationMode(.middle)
+                    Text(variable.set ? "value set" : unsetText)
+                        .font(.caption)
+                        .foregroundStyle(variable.set ? Color.secondary : Theme.warn)
+                    Spacer(minLength: 8)
+                    Button(variable.set ? "Replace…" : "Set Value…") { replacing = variable.name; newValue = ""; problem = nil }
+                        .buttonStyle(.borderless)
+                        .help(variable.set ? "Give \(variable.name) a new value. The one kept now cannot be shown." : "Give \(variable.name) a value")
+                    Button("Remove", systemImage: "minus.circle") { remove(variable.name) }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help("Remove \(variable.name) and its value: \(removeHelp)")
                 }
             }
-            HStack(spacing: 8) {
-                TextField("Name", text: $name, prompt: Text("GH_TOKEN"))
-                    .labelsHidden()
-                    .font(Theme.mono)
-                    .frame(maxWidth: 180)
-                    .accessibilityLabel("Name of a new variable")
-                SecureField("Value", text: $value, prompt: Text("Value"))
-                    .labelsHidden()
-                    .accessibilityLabel("Its value")
-                    .onSubmit { add() }
-                Button("Add") { add() }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            if let problem {
-                Text(problem).foregroundStyle(Theme.bad).font(.callout)
-            }
-        } header: {
-            Text("Variables for its commands")
-        } footer: {
-            Text("Its shell commands, background commands and set-up command get these as environment variables, without asking you: for example a token a command-line tool reads. The agent can print a value or send it anywhere a command can, so give it only what you would let it use. Values are kept in your macOS Keychain, never in pi²’s files or backups, and cannot be shown here again, only replaced. A sub-chat gets the variables of its own agent; MCP servers get none. A copy of this agent gets the names without the values. Changes here apply at once, without Save, from the next command.").formFooter()
+        }
+        HStack(spacing: 8) {
+            TextField("Name", text: $name, prompt: Text("GH_TOKEN"))
+                .labelsHidden()
+                .font(Theme.mono)
+                .frame(maxWidth: 180)
+                .accessibilityLabel("Name of a new variable")
+            SecureField("Value", text: $value, prompt: Text("Value"))
+                .labelsHidden()
+                .accessibilityLabel("Its value")
+                .onSubmit { add() }
+            Button("Add") { add() }
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        if let problem {
+            Text(problem).foregroundStyle(Theme.bad).font(.callout)
         }
     }
 
@@ -652,7 +672,7 @@ struct AgentVariablesSection: View {
         guard !trimmed.isEmpty else { return }
         Task {
             do {
-                try await engine.call("variables.set", ["agentId": agentID, "name": trimmed, "value": value])
+                try await onSet(trimmed, value)
                 name = ""
                 value = ""
                 problem = nil
@@ -662,10 +682,10 @@ struct AgentVariablesSection: View {
         }
     }
 
-    private func set(_ variable: String, _ text: String) {
+    private func save(_ variable: String, _ text: String) {
         Task {
             do {
-                try await engine.call("variables.set", ["agentId": agentID, "name": variable, "value": text])
+                try await onSet(variable, text)
                 replacing = nil
                 newValue = ""
                 problem = nil
@@ -678,7 +698,7 @@ struct AgentVariablesSection: View {
     private func remove(_ variable: String) {
         Task {
             do {
-                try await engine.call("variables.remove", ["agentId": agentID, "name": variable])
+                try await onRemove(variable)
                 if replacing == variable { replacing = nil; newValue = "" }
                 problem = nil
             } catch {
