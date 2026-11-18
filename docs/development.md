@@ -181,6 +181,16 @@ scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
 
 It refuses a copy this checkout did not start, a missing or changed bundle, an unrecorded engine or bundle process, a reused app pid, or a symlink for the copy, state, data or socket, before stopping anything. A failed relaunch leaves the engine and data for diagnosis and `stop`.
 
+`start --env NAME=VALUE` gives a copy an explicit demo switch without inheriting the caller's environment. For example (no provider needed):
+
+```bash
+scripts/test-copy start test-340 --show 'Demo variables' \
+  --env PI2_DEMO_TEXT_MODEL=1 --env PI2_DEMO_COST=5 \
+  --env PI2_DEMO_TOKENS_PER_SECOND=1000
+```
+
+The exact allowlist is `PI2_DEMO_PICTURES`, `PI2_DEMO_TEXT_MODEL`, `PI2_DEMO_COST`, `PI2_DEMO_TOKENS_PER_SECOND`. For a local picture stand-in, add `--env PI2_DEMO_PICTURES=http://127.0.0.1:PORT/v1` with its actual port. Never name a real provider. Each name may appear once; values with spaces or `=` work when quoted. Missing `=`, multiline values and every unlisted name (including `PI2_HOME` and `PI2_KEYCHAIN_SERVICE`) are refused before launch. The script sets isolation itself. The non-secret values are stored, revalidated and passed again at `reopen`; an engine already running keeps its original environment, so stop/start to change a value. Adding another allowed name is a reviewed script change, never a prefix wildcard.
+
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. A conversation made after launch, such as through the copy's engine socket, opens when it comes, as long as nothing else is on screen. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `everything` (Allow everything), `builtins` (built-in tools), `rules` (commands it may run without asking), `variables` (variables for its commands), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. `#everything` also puts up the confirmation for turning Allow everything on, while it is off, so it can be captured. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.

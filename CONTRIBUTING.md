@@ -84,9 +84,19 @@ scripts/test-copy shot test-7 app/build/test-copies/test-7/inbox.png
 scripts/test-copy stop test-7
 ```
 
-**`start <suffix> [--show <what>] [--menu <label>] [--welcome]`** copies the bundle to `app/build/test-copies/<suffix>/pi² <suffix>.app` with `ditto` (which keeps the symbolic links inside Sparkle's framework), gives it the bundle id `dev.pi2.app.<suffix>` and the name `pi² <suffix>` (which tells it apart in the Dock and the menu bar), and signs it again ad hoc, since editing `Info.plist` breaks the signature. The bundle id gives it the data folder `~/Library/Application Support/pi2-<suffix>` and the Keychain service `dev.pi2.credentials.<suffix>`.
+**`start <suffix> [--show <what>] [--menu <label>] [--welcome] [--env NAME=VALUE]`** copies the bundle to `app/build/test-copies/<suffix>/pi² <suffix>.app` with `ditto` (which keeps the symbolic links inside Sparkle's framework), gives it the bundle id `dev.pi2.app.<suffix>` and the name `pi² <suffix>` (which tells it apart in the Dock and the menu bar), and signs it again ad hoc, since editing `Info.plist` breaks the signature. The bundle id gives it the data folder `~/Library/Application Support/pi2-<suffix>` and the Keychain service `dev.pi2.credentials.<suffix>`.
 
 It launches the copy with `open -n -g`, so it does not take the focus, and with a clean environment that names that data folder and Keychain service explicitly. A shell can have `PI2_HOME` naming the usual data folder (a terminal where it is set, or a command an agent of a pi² from before #195 runs, inherited from its engine), and `open` would pass it on; nothing the shell has reaches the copy. The copy's windows open behind every other window and parked in the bottom-right corner of the screen (`PI2_WINDOW_BEHIND=1`, `PI2_WINDOW_ORIGIN=10000,10000`), and keep drawing while covered (`PI2_DRAW_WHEN_HIDDEN=1`); `--show` sets `PI2_SHOW`, what the window opens on (see [docs/development.md](docs/development.md)).
+
+`--env NAME=VALUE` passes an explicit test value, not a variable inherited from the caller. It may repeat for different names. The allowlist is exactly `PI2_DEMO_PICTURES`, `PI2_DEMO_TEXT_MODEL`, `PI2_DEMO_COST` and `PI2_DEMO_TOKENS_PER_SECOND`; every other name (including `PI2_HOME` and `PI2_KEYCHAIN_SERVICE`), duplicate names, missing `=` and multiline values are refused before anything starts. Values may contain spaces and `=` when quoted. They are not secrets: they are stored in the copy's state file, revalidated and reused by `reopen` (an already-running engine keeps its environment). Adding a new test switch requires a reviewed change to this list, not an open-ended `PI2_` prefix.
+
+```bash
+scripts/test-copy start test-340 --show 'Demo variables' \
+  --env PI2_DEMO_TEXT_MODEL=1 --env PI2_DEMO_COST=5 \
+  --env PI2_DEMO_TOKENS_PER_SECOND=1000
+```
+
+For pictures, also pass `--env PI2_DEMO_PICTURES=http://127.0.0.1:PORT/v1`, replacing `PORT` with your local stand-in server's port, not a real provider. The copy still receives only its own data folder and Keychain service. To change a test value, stop and start a new copy.
 
 A new data folder shows the first-run "Welcome to pi²" sheet, which would sit over every page a picture shows. So before launching, `start` marks it done in the copy's own data folder, as finishing it does: it writes `"onboarded": true` into the copy's `settings.json`, which its engine reads as it starts. Nothing in the app changes for this, so a release build shows the welcome as before. To work on the welcome itself, pass `--welcome`, and the copy shows it as a new installation does.
 
