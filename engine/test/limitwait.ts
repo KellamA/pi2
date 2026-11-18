@@ -291,6 +291,10 @@ const scripts: Record<string, Refuse[]> = {
 	"a message meanwhile": Array(50).fill({ ...RATE_LIMITED, headers: { "retry-after-ms": "300" } }),
 	"bad key": Array(100).fill(BAD_KEY),
 	"an hour": Array(100).fill({ ...RATE_LIMITED, headers: { "retry-after": "3600" } }),
+	"switch this run": [{ ...RATE_LIMITED, headers: { "retry-after": "3600" } }],
+	"waiting child one": [{ ...RATE_LIMITED, headers: { "retry-after": "3600" } }],
+	"waiting child two": [{ ...RATE_LIMITED, headers: { "retry-after": "3600" } }],
+	"billing only": [{ status: 429, body: '{"error":{"type":"insufficient_quota","message":"Your credit balance is too low"}}' }],
 	"never answers": Array(1000).fill(RATE_LIMITED),
 };
 const requests: Record<string, number> = {};
@@ -342,9 +346,11 @@ function startEngine(extra: Record<string, string> = {}): ChildProcess {
 }
 
 type Item = { kind: string; text: string; stop?: string; error?: string | null };
-type Shown = { kind: string; since: number; until: number; told: boolean; refusals: number; provider: string };
+type Model = { provider: string; modelId: string };
+type Shown = { kind: string; since: number; until: number; told: boolean; refusals: number; provider: string; model: Model | null };
 type State = {
 	busy: boolean;
+	agent: { model: Model };
 	failure: { reason: string; detail: string | null } | null;
 	retry: { at: number; error: string } | null;
 	limitWait: Shown | null;
@@ -352,7 +358,7 @@ type State = {
 };
 class Client extends EngineClient {
 	override conversations = new Map<number, { items: Item[]; state: State }>();
-	activity: { conversationId: number; status: string; limit: Shown | null }[] = [];
+	activity: { conversationId: number; parent: number | null; status: string; limit: Shown | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	notices: { id: string; name: string; stage?: string; waiting?: number; until?: number; told?: boolean; runs: { conversationId: number; subChat: boolean }[] }[] = [];
 	override receive(message: any): void {
@@ -521,6 +527,82 @@ try {
 	await client.call("limits.dismiss", { id: carried.id });
 	await client.until("the notice dismissed", () => client.notices.length === 0 || undefined);
 	step("a limit reached is one notice in the Inbox that goes on to say work carried on, and sub_chats' list says who waits until when");
+
+	// Choosing another model advances the actual sleeping generation, not a replacement run. The queued steer goes on
+	// the new model's first request and the original submission finishes. A billing refusal is not a wait.
+	const demo = { provider: "demo", modelId: "demo-1" };
+	const original = { provider, modelId: "stand-in" };
+	const billing = await client.ask(provider, "billing only");
+	assert.equal((await client.ended(billing)).state.limitWait, null);
+	await assert.rejects(client.call("conversation.carryOn", { id: billing, since: Date.now(), model: demo }), /no run is still waiting/i);
+	assert.equal(requests["billing only"], 1);
+	const { id: single } = await client.call("conversation.create", { model: original });
+	await client.call("conversation.open", { id: single });
+	const { submissionId } = await client.call("submit", { id: single, text: "switch this run" });
+	const singleWait = await client.until("the run waiting before choosing", () => client.conversations.get(single)?.state.limitWait ?? undefined);
+	assert.deepEqual(singleWait.model, original);
+	const select = (model: Model, since = singleWait.since) => client.call("conversation.carryOn", { id: single, since, model });
+	await assert.rejects(select(original), /no run is still waiting/i);
+	await assert.rejects(select({ provider: "demo", modelId: "missing" }), /model is not available/i);
+	await assert.rejects(select(demo, singleWait.since - 1), /no run is still waiting/i);
+	assert.equal(requests["switch this run"], 1);
+	assert.deepEqual(client.conversations.get(single)!.state.agent.model, original);
+	assert.equal(client.conversations.get(single)!.state.busy, true);
+	await client.call("submit", { id: single, text: "/context", mode: "steer" });
+	assert.deepEqual(await select(demo), { switched: [single] });
+	conv = await client.ended(single);
+	assert.equal(conv.state.failure, null);
+	assert.deepEqual(conv.state.agent.model, demo);
+	assert.equal(conv.state.limitWait, null);
+	assert.equal(answer(conv), "CONTEXT\nswitch this run\n/context");
+	assert.equal(requests["switch this run"], 1);
+	assert.equal(requests["/context"], undefined, "queued steer went to the new model");
+	assert.equal((await client.call("submission.get", { id: single, submissionId })).submission.status, "done");
+	assert.match(conv.items.find((item) => item.kind === "marker" && item.text.startsWith("You changed the model"))!.text, /from stand-in \(Stand-in\) to Demo model \(scripted\) \(demo\) and carried on\./);
+	await client.until("leaving the wait clears its notice", () => client.notices.length === 0 || undefined);
+	assert.doesNotMatch(log, new RegExp(`conversation ${single} carries on: Stand-in answered`));
+	await assert.rejects(select(demo), /no run is still waiting/i);
+	step("a person's choice switches the same run and its queued steer to the new model, without claiming the old limit reset");
+
+	// One choice at the parent changes both live, sleeping sub-chats, without interrupting either blocking delegate.
+	const unrelated = await client.ask(provider, "an hour");
+	await client.until("an unrelated wait", () => client.conversations.get(unrelated)?.state.limitWait ?? undefined);
+	const { id: bulk } = await client.call("conversation.create", { agentId: "atlas", model: demo });
+	await client.call("conversation.open", { id: bulk });
+	const tools = ["waiting child one", "waiting child two", "non-waiting child"].map((task) => ({ name: "delegate", arguments: { agent: "Scout", task } }));
+	await client.call("submit", { id: bulk, text: `/tools ${JSON.stringify(tools)}` });
+	const children = await client.until("both children at the limit", () => {
+		const ids = client.activity.filter((run) => run.parent === bulk && run.limit !== null).map((run) => run.conversationId);
+		return ids.length === 2 ? ids : undefined;
+	});
+	for (const id of children) {
+		await client.call("conversation.open", { id });
+		await client.until(`sub-chat ${id} sleeping`, () => client.conversations.get(id)?.state.limitWait ?? undefined);
+	}
+	const bulkResult = await client.call("conversation.carryOn", { id: bulk, subChats: true, model: demo });
+	assert.deepEqual(bulkResult.switched.sort(), [...children].sort());
+	for (const id of children) {
+		const child = await client.ended(id);
+		assert.equal(child.state.failure, null);
+		assert.deepEqual(child.state.agent.model, demo);
+		assert.match(answer(child)!, /You said: "waiting child (one|two)"/);
+	}
+	const bulkEnd = await client.ended(bulk);
+	assert.equal(bulkEnd.state.failure, null);
+	assert.deepEqual(bulkEnd.state.agent.model, demo);
+	assert.equal(bulkEnd.items.filter((item) => item.kind === "tool").length, 3);
+	for (const task of ["waiting child one", "waiting child two"]) {
+		assert.equal(requests[task], 1);
+		assert.ok(bulkEnd.items.some((item) => item.kind === "tool" && item.text.includes(`You said: "${task}"`)));
+	}
+	assert.ok(bulkEnd.items.some((item) => item.kind === "tool" && item.text.includes("Answered after 0 refusals.")), "the non-waiting child answered on its original model");
+	assert.match(bulkEnd.items.find((item) => item.kind === "marker" && item.text.startsWith("You changed the model"))!.text, /You changed the model for 2 sub-chats to .*#\d+: stand-in \(Stand-in\), #\d+: stand-in \(Stand-in\)/);
+	assert.deepEqual(client.conversations.get(unrelated)!.state.agent.model, original);
+	assert.notEqual(client.conversations.get(unrelated)!.state.limitWait, null);
+	await client.call("abort", { id: unrelated });
+	await client.call("conversation.configure", { id: single, model: original });
+	await client.until("the toolbar can switch back", () => client.conversations.get(single)!.state.agent.model.provider === provider);
+	step("one choice moves the waiting sub-chats, but not their parent, a non-waiting child, or an unrelated wait");
 
 	// The longest wait without a named time, made a millisecond: the run ends, and says why.
 	await stop(engine);

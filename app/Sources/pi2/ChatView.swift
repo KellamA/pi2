@@ -105,11 +105,15 @@ struct ChatView: View {
                 banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: Theme.warn)
             }
             // Its sub-chats that wait for a provider's limit, in one line kept up to date (#343).
-            if let line = LimitWait.subChatsLine(engine.subChatLimitWaits[id] ?? []) {
-                banner(line, systemImage: "hourglass", color: Theme.warn)
+            let subChats = engine.subChatLimitWaits[id] ?? []
+            if let line = LimitWait.subChatsLine(subChats) {
+                limitBanner(line, excluding: Set(subChats.compactMap(\.model)), params: ["subChats": true],
+                            help: "Continue the waiting sub-chats with a different model")
             }
             if let wait = state?.limitWait {
-                banner(wait.sentence, systemImage: "hourglass", color: Theme.warn)
+                let current = wait.model ?? state?.agent.model
+                limitBanner(wait.sentence, excluding: Set([current].compactMap { $0 }), params: ["since": wait.since],
+                            help: "Continue this run with a different model")
             } else if let retry = state?.retry {
                 banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: Theme.warn)
             }
@@ -188,6 +192,32 @@ struct ChatView: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             .panel(fill: color.opacity(0.08), border: color.opacity(0.3))
             .padding(.horizontal, inset).padding(.top, 8)
+    }
+
+    private func limitBanner(_ text: String, excluding: Set<ModelRef>, params: [String: Any], help: String) -> some View {
+        HStack(spacing: 10) {
+            Label(text, systemImage: "hourglass")
+                .foregroundStyle(Theme.warn)
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !archived, engine.models.contains(where: { !excluding.contains($0.ref) }) {
+                Menu("Carry on with…") {
+                    ModelChoices(engine: engine, excluding: excluding) { model in
+                        var choice = params
+                        choice["id"] = id
+                        choice["model"] = ["provider": model.provider, "modelId": model.id]
+                        engine.perform("conversation.carryOn", choice)
+                    }
+                }
+                .fixedSize()
+                .help(help)
+                .accessibilityHint(help)
+            }
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .panel(fill: Theme.warn.opacity(0.08), border: Theme.warn.opacity(0.3))
+        .padding(.horizontal, inset).padding(.top, 8)
     }
 
     @ViewBuilder
@@ -453,12 +483,8 @@ struct ModelMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(engine.modelGroups, id: \.provider) { group in
-                if group.models.count > 12 {
-                    Menu(group.name) { modelButtons(group.models) }
-                } else {
-                    Section(group.name) { modelButtons(group.models) }
-                }
+            ModelChoices(engine: engine, selected: agent?.model) { model in
+                engine.configure(id, ["model": ["provider": model.provider, "modelId": model.id]])
             }
             Divider()
             SettingsLink { Text("Connect More Providers…") }
@@ -487,13 +513,30 @@ struct ModelMenu: View {
         }
     }
 
-    @ViewBuilder
+}
+
+/// The toolbar and limit-wait menus offer the same models, grouped by provider.
+private struct ModelChoices: View {
+    let engine: EngineClient
+    var selected: ModelRef? = nil
+    var excluding: Set<ModelRef> = []
+    let choose: (ModelInfo) -> Void
+
+    var body: some View {
+        ForEach(engine.modelGroups, id: \.provider) { group in
+            let models = group.models.filter { !excluding.contains($0.ref) }
+            if models.count > 12 {
+                Menu(group.name) { modelButtons(models) }
+            } else if !models.isEmpty {
+                Section(group.name) { modelButtons(models) }
+            }
+        }
+    }
+
     private func modelButtons(_ models: [ModelInfo]) -> some View {
         ForEach(models, id: \.ref) { model in
-            Button {
-                engine.configure(id, ["model": ["provider": model.provider, "modelId": model.id]])
-            } label: {
-                if model.ref == agent?.model {
+            Button { choose(model) } label: {
+                if model.ref == selected {
                     Label(model.listName, systemImage: "checkmark")
                 } else {
                     Text(model.listName)

@@ -216,6 +216,8 @@ struct LimitWait: Codable, Equatable {
     let refusals: Int
     /// The provider's name, as Settings shows it.
     let provider: String
+    /// The model that refused, which may differ from the model now picked in the toolbar.
+    let model: ModelRef?
 
     /// "14:32" within the next 20 hours, which cannot be mistaken for another day's; "Thu 09:00" within the week; else the date.
     var untilText: String {

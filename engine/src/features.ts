@@ -6,11 +6,11 @@
 
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
+import type { ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
-import type { Access, AgentProfile, Meta } from "./state.ts";
+import type { Access, AgentProfile, Meta, ModelRef } from "./state.ts";
 
 import { background } from "./background.ts";
 import { promptCache } from "./cache.ts";
@@ -104,6 +104,8 @@ export type FeatureParts = {
 	planLimits?(): ProviderLimits[];
 	/** The wait for a provider's limit a conversation's run is in, if any: for `sub_chats`' list. Only one feature answers it (limitwait.ts). */
 	limitWaitOf?(id: number): Wait | undefined;
+	/** The person's choice to advance sleeping generation retries with a different model (limitwait.ts). */
+	carryOn?(id: ConversationId, model: ModelRef, scope: { subChats: true } | { since: number }): Promise<number[]>;
 	/**
 	 * A provider's limit was reached (or what is known of it changed), the runs that waited for it carry on, or none waits
 	 * any more. Told to every feature by limitwait.ts; limits.ts keeps the Inbox notice.
