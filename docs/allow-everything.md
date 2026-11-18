@@ -26,7 +26,7 @@ A command that reaches its time limit is moved to the background rather than sto
 
 - **Questions.** When the agent asks you something with `ask_user`, it still waits for your answer.
 - **Its tool access.** The switch lifts approvals, not the access level: an agent set to **Read files** still has no shell, and one with tools off still cannot change files. Choose **Ask first** or **Full access** for it to run commands.
-- **pi² itself.** No agent can work pi², where it could approve its own requests, and copies of pi² can only be looked at.
+- **pi² itself.** No agent can work pi², where it could approve its own requests, and copies of pi² can only be looked at, apart from the throwaway test copies an agent may be allowed under **Computer use** ([computer-use.md](computer-use.md)), which the switch does not change.
 - **Terminals, script editors and password managers**, which computer use can never be given: typing in a terminal would get round the agent's tool access, and a password manager holds every secret.
 - **System Settings**, which computer use can still only look at, since it changes the Mac's security. **Password fields**, in apps and in the browser, are never typed into, and the Apple menu is off limits. What macOS itself refuses, such as an app without the Accessibility permission, stays refused.
 - **The browser's own limits**: only http and https, nothing on your Mac or your network, no downloads, uploads only of files it was given ([browser.md](browser.md#what-it-will-not-do)).

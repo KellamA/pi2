@@ -33,7 +33,7 @@ import {
 	UNASKED,
 	uploadable,
 } from "./browser.ts";
-import { ACTIONS, type ComputerHost, describeComputer, givenApp, isNever, isViewOnlyFor, LOOKING, plainDescription, pruneScreenshots } from "./computer.ts";
+import { ACTIONS, type ComputerHost, describeComputer, givenApp, isNever, LOOKING, lookOnly, mayUse, plainDescription, pruneScreenshots } from "./computer.ts";
 import { describeReferenceFiles, readReference } from "./reference.ts";
 import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
@@ -342,6 +342,8 @@ export function pi2Extension(host: Host): Extension {
 	/** Whether a conversation may use any app, not only its agent's list: it allows everything (#294), as of its latest message. */
 	const anyApp = (conversationId: ConversationId) => host.meta(conversationId)?.allowEverything === true;
 	const agentNameOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.name ?? "An agent";
+	/** Told to the app with every request of an agent that may use test copies, which it checks for itself before acting. */
+	const testCopiesOf = (conversationId: ConversationId) => (computerOf(conversationId)?.testCopies === true ? { testCopies: true } : {});
 
 	type ComputerArgs = { action: string; app?: string; element?: number; x?: number; y?: number; text?: string; dy?: number; count?: number; path?: string };
 
@@ -354,9 +356,12 @@ export function pi2Extension(host: Host): Extension {
 		if (action === "list_apps") return undefined;
 		if (args.app === undefined || args.app.trim() === "") return `${action} needs \`app\`, a bundle ID from list_apps.`;
 		const any = anyApp(conversationId);
-		if (!any && givenApp(settings.apps, args.app) === undefined) return `You may not use ${args.app}. Apps you may use: ${settings.apps.join(", ") || "none; the person adds them in this agent's settings"}.`;
+		if (!mayUse(settings, args.app, any)) {
+			const listed = settings.apps.join(", ") || (settings.testCopies === true ? "none listed" : "none; the person adds them in this agent's settings");
+			return `You may not use ${args.app}. Apps you may use: ${listed}${settings.testCopies === true ? ", and test copies of pi² (dev.pi2.app.test…)" : ""}.`;
+		}
 		if (isNever(args.app)) return `${args.app} cannot be used by an agent.`;
-		if (!LOOKING.has(action) && action !== "open_app" && isViewOnlyFor(args.app, any)) return `${args.app} can only be looked at, not controlled.`;
+		if (!LOOKING.has(action) && action !== "open_app" && lookOnly(settings, args.app, any)) return `${args.app} can only be looked at, not controlled.`;
 		if (action === "click" && args.element === undefined && (args.x === undefined || args.y === undefined)) return "click needs `element`, or both `x` and `y`.";
 		if ((action === "type" || action === "key") && (args.text === undefined || args.text === "")) return `${action} needs \`text\`.`;
 		if (action === "scroll" && (args.dy === undefined || args.dy === 0)) return "scroll needs `dy`: pages to scroll, positive for down.";
@@ -427,6 +432,7 @@ export function pi2Extension(host: Host): Extension {
 					image: model?.input.includes("image") ?? true,
 					...(args.action.trim() === "list_apps" ? { apps: computerOf(api.conversationId)?.apps ?? [] } : {}),
 					...(anyApp(api.conversationId) ? { anyApp: true } : {}),
+					...testCopiesOf(api.conversationId),
 					...requestOf(args),
 				},
 				context,
@@ -752,6 +758,7 @@ export function pi2Extension(host: Host): Extension {
 								conversationId: api.conversationId as unknown as number,
 								agentName: agentNameOf(api.conversationId),
 								...(anyApp(api.conversationId) ? { anyApp: true } : {}),
+								...testCopiesOf(api.conversationId),
 								...requestOf(args),
 							},
 							context,

@@ -95,6 +95,10 @@ export type Meta = {
 	renamed?: boolean;
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
+	/** A chat: a conversation of pi²'s built-in chat assistant (chat.ts), with no `agentId`. */
+	chat?: true;
+	/** The person pinned it to the top of its list (`conversation.pin`). */
+	pinned?: true;
 	/**
 	 * Its agent had Allow everything on at this conversation's latest message: nothing it does waits for approval
 	 * (see `Inbox`). Taken from its own agent at each message, never from the conversation that handed it work.

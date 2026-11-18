@@ -35,10 +35,11 @@ import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
-import { BUILT_IN_TOOLS, toolsLeftOut, validateToolsOff } from "./builtins.ts";
+import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff } from "./builtins.ts";
+import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
 import { codemodeExtension } from "./codemode.ts";
 import { holdingPlaces } from "./sections.ts";
-import { KeychainCredentialStore } from "./credentials.ts";
+import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
@@ -47,7 +48,7 @@ import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { McpServers } from "./mcp.ts";
-import { ComputerHost, validateComputer } from "./computer.ts";
+import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
@@ -168,7 +169,7 @@ writeFileSync(runningMarker, String(Date.now()));
 
 // ---- Models, tools, harness
 
-const credentials = new KeychainCredentialStore(home);
+const credentials = credentialStore(home);
 const providers = new Providers(home, credentials, () => deviceId(), { log });
 const mcp = new McpServers(home, credentials);
 mcp.log = log;
@@ -277,8 +278,8 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	// Reference files can be read whatever the access level: the person chose them for this agent.
 	const reference = (agent?.files?.length ?? 0) > 0 ? ["read_reference"] : [];
 	// Computer use with no app allowed could only refuse; the tool comes with the first app the person allows (#177), or
-	// with Allow everything, under which any app may be used (#294).
-	const screen = agent?.computer?.enabled === true && (agent.computer.apps.length > 0 || agent.allowEverything === true) ? ["computer"] : [];
+	// with test copies of pi² allowed, or with Allow everything, under which any app may be used (#294).
+	const screen = hasApps(agent?.computer, agent?.allowEverything === true) ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
 	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
@@ -287,6 +288,18 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 		.filter((name) => !leftOut.has(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
+}
+
+/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
+function chatTools() {
+	return chatToolNames(chatSettings(settings.chat).web)
+		.map(tool)
+		.filter((t) => t !== undefined);
+}
+
+/** How a new chat is configured: no folder, no instructions of an agent's, the assistant's tools. */
+function chatChange(model: ModelRef): AgentChange {
+	return { model, thinkingLevel: null, instructions: null, tools: chatTools(), cwd: null, maxTurns: null };
 }
 
 /**
@@ -344,7 +357,19 @@ const harness = await Harness.open(
 );
 
 const settingsPath = join(home, "settings.json");
-const settings: { defaultModel?: ModelRef; lastAgent?: string; dailyBudget?: number | null; onboarded?: boolean; deviceId?: string; hiddenModels?: Record<string, string[]>; autoArchiveDays?: number | null } = (() => {
+const settings: {
+	defaultModel?: ModelRef;
+	lastAgent?: string;
+	dailyBudget?: number | null;
+	onboarded?: boolean;
+	deviceId?: string;
+	hiddenModels?: Record<string, string[]>;
+	autoArchiveDays?: number | null;
+	/** Chat mode's settings (chat.ts); read through `chatSettings`, which gives the defaults for what is missing. */
+	chat?: ChatSettings;
+	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
+	lastChatModel?: ModelRef;
+} = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
 	} catch {
@@ -378,10 +403,10 @@ async function syncTools(conv: Conversation): Promise<void> {
 	const id = conv.id as unknown as number;
 	const meta = library.conversations[String(id)];
 	const own = agents[meta?.agentId ?? ""];
-	// A conversation whose agent was deleted keeps the setup it has.
-	if (meta === undefined || own === undefined) return;
+	// A conversation whose agent was deleted keeps the setup it has. A chat has the assistant's tools.
+	if (meta === undefined || (own === undefined && !isChat(meta))) return;
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, toolsFor(meta.access, own, meta.parent !== undefined));
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools() : toolsFor(meta.access, own, meta.parent !== undefined));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -443,7 +468,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		codeMode: input.codeMode ?? previous?.codeMode ?? false,
 		mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
 		files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
-		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true }) : validateComputer(input.computer),
+		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true, testCopies: false }) : validateComputer(input.computer),
 		browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
@@ -688,6 +713,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		// An archived conversation, or a sub-chat of one, is not in the list the app is sent; its title and standing
 		// come with it here, so it can still be shown, read-only.
 		title: meta?.title ?? "",
+		// A chat of the built-in assistant (chat.ts): the page shows chat mode's own controls only then.
+		chat: isChat(meta),
 		archived: isArchived(meta) || (meta?.parent !== undefined && isArchived(library.conversations[String(meta.parent)])),
 		queued: (inbox.items ?? [])
 			.filter((item) => item.mode !== "write")
@@ -753,6 +780,9 @@ function libraryEvent() {
 			busy: meta.parent === undefined ? busyConversations.has(Number(id)) : working.has(Number(id)),
 			agentId: meta.agentId ?? null,
 			parent: meta.parent ?? null,
+			// Chat mode lists only chats, and the agent view never does (chat.ts).
+			chat: isChat(meta),
+			pinned: meta.pinned === true,
 			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
 			allowEverything: meta.allowEverything === true,
 		}))
@@ -771,6 +801,8 @@ function libraryEvent() {
 			subChats: Object.values(library.conversations).filter((child) => child.parent === Number(id) && !isDeleted(child)).length,
 			parent: meta.parent ?? null,
 			parentTitle: meta.parent === undefined ? null : (library.conversations[String(meta.parent)]?.title ?? ""),
+			chat: isChat(meta),
+			pinned: meta.pinned === true,
 		}))
 		.sort((a, b) => b.archivedAt - a.archivedAt);
 	return { event: "library", conversations, archived, autoArchiveDays: settings.autoArchiveDays ?? null };
@@ -846,12 +878,27 @@ async function announceProviders(): Promise<void> {
 /** The model a new conversation starts with: the last one picked if it is still usable, else the demo model. */
 async function defaultModel(): Promise<ModelRef> {
 	const wanted = settings.defaultModel;
-	if (wanted !== undefined) {
-		const usable = (await providers.models.getAvailable(wanted.provider).catch(() => [])).some((m) => m.id === wanted.modelId);
-		if (usable) return wanted;
-	}
+	if (wanted !== undefined && (await usable(wanted))) return wanted;
 	return { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
 }
+
+/** Whether `model`'s provider is connected and offers it now. */
+async function usable(model: ModelRef): Promise<boolean> {
+	return (await providers.models.getAvailable(model.provider).catch(() => [])).some((m) => m.id === model.modelId);
+}
+
+/**
+ * The model a new chat starts with: the one used last in a chat, else chat mode's default model, else the agent view's.
+ * Choosing a default model in Settings forgets the last one used (`chat.set`), so the choice counts from the next chat.
+ */
+async function chatModel(): Promise<ModelRef> {
+	for (const wanted of [settings.lastChatModel, chatSettings(settings.chat).defaultModel]) {
+		if (wanted !== undefined && wanted !== null && (await usable(wanted))) return wanted;
+	}
+	return defaultModel();
+}
+
+const chatEvent = () => ({ event: "chat", ...chatSettings(settings.chat) });
 
 async function subscribe(client: Client, conv: Conversation): Promise<void> {
 	const id = conv.id as unknown as number;
@@ -879,6 +926,34 @@ async function subscribe(client: Client, conv: Conversation): Promise<void> {
 	});
 }
 
+/** Start a chat with pi²'s built-in assistant (chat.ts), on `model` if given, else on the model a new chat starts with. */
+async function createChat(given: unknown): Promise<{ id: ConversationId }> {
+	let model: ModelRef;
+	if (given === undefined || given === null) model = await chatModel();
+	else {
+		const ref = given as Partial<ModelRef>;
+		if (typeof ref.provider !== "string" || typeof ref.modelId !== "string") throw new Error("model must be { provider, modelId }");
+		if (providers.models.getModel(ref.provider, ref.modelId) === undefined) throw new Error(`Unknown model: ${ref.provider}/${ref.modelId}`);
+		model = { provider: ref.provider, modelId: ref.modelId };
+		// Chosen for this chat, so the next one starts with it too, as it would after choosing it in the chat.
+		settings.lastChatModel = model;
+		saveSettings();
+	}
+	const now = Date.now();
+	const created = await harness.createConversation(
+		{
+			ownership: { kind: "ownerless" },
+			agent: chatChange(model),
+			init: async (tx, id) => {
+				// No agent, and no tool access of an agent's: its tools are the assistant's own, none of which asks.
+				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true };
+			},
+		},
+		context,
+	);
+	return { id: created.id };
+}
+
 // ---- Requests
 
 type Params = Record<string, unknown>;
@@ -891,6 +966,9 @@ const text = (params: Params, key: string): string => {
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
 	"conversation.create": async (params) => {
+		if (params.chat !== undefined && typeof params.chat !== "boolean") throw new Error("chat must be true or false");
+		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
+		if (params.chat === true) return createChat(params.model);
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
 		const change = await agentChange(agent, { subChat: false });
@@ -909,6 +987,19 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		saveSettings();
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id };
+	},
+	/** `{ id, pinned }`: pin a conversation to the top of its list, or unpin it. A sub-chat goes with its conversation. */
+	"conversation.pin": async (params) => {
+		const conv = await conversation(params.id);
+		if (typeof params.pinned !== "boolean") throw new Error("pinned must be true or false");
+		const meta = library.conversations[String(conv.id)];
+		if (meta?.parent !== undefined) throw new Error("A sub-chat cannot be pinned on its own; pin the conversation it belongs to");
+		if (isDeleted(meta)) throw new Error("That conversation was deleted");
+		await editMeta(conv.id, (m) => {
+			if (params.pinned === true) m.pinned = true;
+			else delete m.pinned;
+		});
+		return {};
 	},
 	"conversation.open": async (params, client) => {
 		await subscribe(client, await conversation(params.id));
@@ -945,6 +1036,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
+						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps.
+						...(isChat(source) ? { chat: true as const } : {}),
 					};
 				},
 			},
@@ -969,7 +1062,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	search: async (params) => {
 		const query = text(params, "query").trim().toLowerCase();
 		if (query.length < 2) return { results: [] };
-		const results: { conversationId: number; title: string; entryId: number; role: string; snippet: string; archived: boolean }[] = [];
+		const results: { conversationId: number; title: string; entryId: number; role: string; snippet: string; archived: boolean; chat: boolean }[] = [];
 		// Archived conversations are searched too: finding something again is what they are kept for.
 		const ids = Object.entries(library.conversations)
 			.filter(([, meta]) => !isDeleted(meta) && meta.parent === undefined)
@@ -990,7 +1083,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if (at === -1) continue;
 					const start = Math.max(0, at - 40);
 					const snippet = (start > 0 ? "…" : "") + body.slice(start, at + query.length + 80).replace(/\s+/g, " ") + (at + query.length + 80 < body.length ? "…" : "");
-					results.push({ conversationId: id, title: library.conversations[String(id)]?.title ?? "", entryId: entry.id as unknown as number, role: message.role, snippet, archived: isArchived(library.conversations[String(id)]) });
+					results.push({ conversationId: id, title: library.conversations[String(id)]?.title ?? "", entryId: entry.id as unknown as number, role: message.role, snippet, archived: isArchived(library.conversations[String(id)]), chat: isChat(library.conversations[String(id)]) });
 					if (results.length >= 40) break;
 				}
 				cursor = (batch as { next?: unknown }).next;
@@ -1095,6 +1188,15 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await mcp.reconnect(text(params, "id"));
 		return {};
 	},
+	/** Set or replace the value of one of a server's own variables (mcp.ts, #273), and start it again with it. */
+	"mcp.setVariable": async (params) => {
+		await mcp.setVariable(text(params, "id"), params.name, params.value);
+		return {};
+	},
+	"mcp.removeVariable": async (params) => {
+		await mcp.removeVariable(text(params, "id"), params.name);
+		return {};
+	},
 	/** One picture of an entry: a screenshot in a tool result, or a picture the person attached to a message. */
 	"conversation.image": async (params) => {
 		const conv = await conversation(params.id);
@@ -1120,7 +1222,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			cursor = (batch as { next?: unknown }).next;
 			if (cursor === undefined || batch.items.length === 0) break;
 		}
-		if (params.format === "json") return { text: JSON.stringify({ title: meta?.title ?? "", agent: agents[meta?.agentId ?? ""]?.name ?? null, exportedAt: new Date().toISOString(), items }, null, 2) };
+		if (params.format === "json") return { text: JSON.stringify({ title: meta?.title ?? "", agent: agents[meta?.agentId ?? ""]?.name ?? null, chat: isChat(meta), exportedAt: new Date().toISOString(), items }, null, 2) };
 		const agentName = agents[meta?.agentId ?? ""]?.name ?? "Assistant";
 		const fence = "```";
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
@@ -1183,14 +1285,31 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await sweepArchive();
 		return {};
 	},
+	/** Chat mode's settings (chat.ts): any of `instructions`, `defaultModel`, `web`, `memory`. Answers with all four. */
+	"chat.set": async (params) => {
+		const after = changeChatSettings(chatSettings(settings.chat), params, (model) => providers.models.getModel(model.provider, model.modelId) !== undefined);
+		settings.chat = after;
+		// A default chosen now counts from the next chat, over the model used last.
+		if (params.defaultModel !== undefined) delete settings.lastChatModel;
+		saveSettings();
+		broadcast(chatEvent());
+		// The web switch changes what every chat is offered, from its next message (syncTools).
+		return after;
+	},
 	"conversation.configure": async (params, client) => {
 		const conv = await conversation(params.id);
 		const id = conv.id as unknown as number;
+		const chat = isChat(library.conversations[String(id)]);
+		// A chat has no folder and no tool access to choose: its tools are the assistant's (chat.ts).
+		if (chat && params.cwd !== undefined) throw new Error("A chat has no folder");
+		if (chat && params.access !== undefined) throw new Error("A chat's tools are fixed: it has no tool access to change");
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
 			await conv.configure({ model: { provider: model.provider, modelId: model.modelId } }, context);
-			settings.defaultModel = { provider: model.provider, modelId: model.modelId };
+			// The next conversation starts with it: the next chat for a chat, else the next of an agent's.
+			if (chat) settings.lastChatModel = { provider: model.provider, modelId: model.modelId };
+			else settings.defaultModel = { provider: model.provider, modelId: model.modelId };
 			saveSettings();
 		}
 		if (params.thinkingLevel !== undefined) await conv.configure({ thinkingLevel: params.thinkingLevel as never }, context);
@@ -1526,6 +1645,8 @@ function activityEvent() {
 				rootConversationId: rootOf(id),
 				title: meta?.title ?? "",
 				agentId: meta?.agentId ?? null,
+				// A chat answering is shown as a chat, not as an agent's work.
+				chat: isChat(meta),
 				status: waiting.has(id) ? "waiting" : "working",
 				since: since.get(id) ?? Date.now(),
 				// What features add (a wait for a provider's limit, say).
@@ -1546,7 +1667,7 @@ let recovery: Recovery | null = stoppedUncleanly
 	? {
 			...Object.assign({}, ...host.features.map((feature) => feature.recovery?.() ?? {})),
 			at: Date.now(),
-			conversations: [...new Set([...working].map(rootOf))].map((id) => ({ id, title: library.conversations[String(id)]?.title ?? "" })),
+			conversations: [...new Set([...working].map(rootOf))].map((id) => ({ id, title: library.conversations[String(id)]?.title ?? "", chat: isChat(library.conversations[String(id)]) })),
 		}
 	: null;
 const recoveryEvent = () => ({ event: "recovery", recovery });
@@ -1588,7 +1709,7 @@ const Spend = defineDoc<{ days: Record<string, { cost: number; tokens: number }>
 	checkpointWhen: () => true,
 });
 const dayKey = (at = new Date()) => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
-let usageSummary: Record<string, unknown> = { event: "usage", models: [], agents: [], conversations: [], total: { cost: 0, tokens: 0 }, today: { cost: 0, tokens: 0 }, days: [], budget: { daily: null }, overBudget: false };
+let usageSummary: Record<string, unknown> = { event: "usage", models: [], agents: [], chats: { cost: 0, tokens: 0 }, conversations: [], total: { cost: 0, tokens: 0 }, today: { cost: 0, tokens: 0 }, days: [], budget: { daily: null }, overBudget: false };
 let todayCost = 0;
 const overBudget = () => typeof settings.dailyBudget === "number" && todayCost >= settings.dailyBudget;
 
@@ -1617,14 +1738,16 @@ async function refreshUsage(): Promise<void> {
 	todayCost = today.cost;
 
 	const byAgent = new Map<string, { cost: number; tokens: number }>();
-	const byConversation: { id: number; title: string; cost: number; tokens: number }[] = [];
+	// Chats are the built-in assistant's, not an agent's: counted on their own.
+	const chats = { cost: 0, tokens: 0 };
+	const byConversation: { id: number; title: string; cost: number; tokens: number; chat: boolean }[] = [];
 	for (const [id, meta] of Object.entries(library.conversations)) {
 		const usage = usageTotals((await harness.snapshot(UsageDoc, Number(id) as unknown as ConversationId, context)) as UsageDocShape | undefined);
 		if (usage.tokens === 0) continue;
-		const agent = byAgent.get(meta.agentId ?? "") ?? { cost: 0, tokens: 0 };
+		const agent = isChat(meta) ? chats : (byAgent.get(meta.agentId ?? "") ?? { cost: 0, tokens: 0 });
 		agent.cost += usage.cost;
 		agent.tokens += usage.tokens;
-		byAgent.set(meta.agentId ?? "", agent);
+		if (!isChat(meta)) byAgent.set(meta.agentId ?? "", agent);
 		// A subagent's spend is shown under the conversation that started it.
 		const root = meta.parent ?? Number(id);
 		const row = byConversation.find((r) => r.id === root);
@@ -1632,7 +1755,7 @@ async function refreshUsage(): Promise<void> {
 			row.cost += usage.cost;
 			row.tokens += usage.tokens;
 		} else if (!isPutAway(library.conversations[String(root)])) {
-			byConversation.push({ id: root, title: library.conversations[String(root)]?.title ?? "", ...usage });
+			byConversation.push({ id: root, title: library.conversations[String(root)]?.title ?? "", ...usage, chat: isChat(library.conversations[String(root)]) });
 		}
 	}
 	usageSummary = {
@@ -1641,6 +1764,7 @@ async function refreshUsage(): Promise<void> {
 			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) }))
 			.sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
+		chats,
 		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),
 		total,
 		today,
@@ -1777,6 +1901,7 @@ const server = createServer((socket) => {
 	send(client, recoveryEvent());
 	send(client, usageSummary);
 	send(client, mcpEvent());
+	send(client, chatEvent());
 	for (const feature of host.features) for (const event of feature.greeting?.() ?? []) send(client, event);
 	void providersEvent().then((event) => send(client, event));
 	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line

@@ -6,7 +6,7 @@ An agent with computer use on can see and work the apps you choose, one window a
 
 ## Turning it on
 
-1. Open an agent and scroll to **Computer use**. Switch it on and add the apps it may use. Until there is at least one app, the agent is not given the computer tool or anything about it in its prompt, since it could do nothing with it (#177). The tool comes with the first app you add, and goes again if you remove the last one.
+1. Open an agent and scroll to **Computer use**. Switch it on and add the apps it may use. Until there is at least one app, or [test copies of pi²](#clicking-in-test-copies) are allowed, the agent is not given the computer tool or anything about it in its prompt, since it could do nothing with it (#177). The tool comes with the first app you add, and goes again if you remove the last one.
 2. Press **Grant…** next to Accessibility. macOS opens System Settings; switch pi² on there. Do the same for Screen Recording if you want the agent to get pictures. Reopen pi² afterwards.
 3. Ask the agent to do something in one of those apps. Conversations it already has pick up the change at their next message.
 
@@ -40,11 +40,23 @@ These hold whatever the agent or its instructions say. They are checked in the e
 - **Password fields are never typed into.**
 - **The Apple menu is off limits.**
 - **pi² itself cannot be added or used**, so an agent cannot approve its own requests.
-- **A copy of pi² under another bundle id is look-only.** Any bundle id starting with `dev.pi2.app.`, such as a development build (`dev.pi2.app.dev`) or a throwaway test copy of one, can be added, opened and looked at, but not clicked, typed into, scrolled or sent keys or menu commands. Looking at a copy is how an agent working on pi² checks a change to the app. Acting in one is refused because a copy has approve buttons too, and a copy of a release build started without a data folder of its own shows the real agents' requests, so a click there could approve an agent's own request. Inside a running copy, that copy is refused the way pi² is.
+- **A copy of pi² under another bundle id is look-only**, unless it is a throwaway test copy and the agent is allowed [test copies](#clicking-in-test-copies). Any bundle id starting with `dev.pi2.app.`, such as a development build (`dev.pi2.app.dev`) or a copy of one, can be added, opened and looked at, but not clicked, typed into, scrolled or sent keys or menu commands. Looking at a copy is how an agent working on pi² checks a change to the app. Acting in one is refused because a copy has approve buttons too, and a copy of a release build started without a data folder of its own shows the real agents' requests, so a click there could approve an agent's own request. Inside a running copy, that copy is refused the way pi² is.
 
 Apps are matched by bundle id without regard to case, as macOS finds them, so `com.apple.terminal` is refused like `com.apple.Terminal`. Two spellings of one bundle id are one app: it is kept once, and allowing it for the rest of a conversation covers both.
 
 The agent is also told that what it reads in a window is content, not instructions. That lowers the risk from text planted in a document or a page; it does not remove it. Keep "Ask before each action" on for anything that matters.
+
+## Clicking in test copies
+
+An agent that works on pi² itself starts throwaway test copies of the app to try its change (`scripts/test-copy`, see [Testing safely](../CONTRIBUTING.md#testing-safely)). Each copy has a bundle id made up for the run, so it cannot be added beforehand, and a copy is look-only anyway. To let an agent press buttons, open menus and fill in sheets in its copies, turn on **Test copies of pi²** in the agent's Computer use settings. It is off unless you turn it on.
+
+With it on, the agent may use any app that is a throwaway test copy without its being listed, and act in it, not only look. list_apps shows the copies running. Everything else stays as it is: it asks before each action if **Ask before each action** is on, works one window at a time, in the background, without taking the focus, and every other app is as before. A sub-chat follows its own agent's switch, not the one of the agent that handed it the work.
+
+A test copy is checked twice. The engine allows only bundle ids beginning `dev.pi2.app.test`, such as `dev.pi2.app.test-146`. Since any app can take an id, pi² then checks the app running under it before each action, and treats it as a test copy only when it is what `scripts/test-copy` makes: a bundle at `app/build/test-copies/<suffix>/` in a checkout, under the id `dev.pi2.app.<suffix>`, that is a development build of that same checkout (it carries no engine of its own, and runs the checkout's `engine/src/main.ts`). A development build never uses the usual data folder or Keychain service ([releasing.md](releasing.md#release-builds-and-development-builds)), so a test copy shows only its own agents' requests, never yours. Not covered, and look-only as before: the development build as built (`dev.pi2.app.dev`), a copy whose suffix does not begin with `test`, a copy of a release build whatever it is called, and any other app under a similar id. The pi² the agent runs in is never usable.
+
+A test copy runs agents of its own with the scripted demo model, which runs a command typed as `/bash …`. So typing in a copy can run a command on your Mac, as the copy, without the approval the agent's own commands have. Keep **Ask before each action** on unless you trust the agent with commands too.
+
+What macOS needs: **Accessibility for pi²**, the pi² the agent runs in, granted with the **Grant…** button next to Accessibility in the agent's Computer use settings (System Settings › Privacy & Security › Accessibility), and pi² reopened afterwards. Screen Recording is optional, for pictures. The copies need no permission of their own: pi² does the reading and clicking. Nothing asks macOS on its own to find out: the settings show whether it is granted without asking, and only the Grant… button sets off the prompt.
 
 ## Commands an agent runs
 
