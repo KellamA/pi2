@@ -54,7 +54,7 @@ export function subChatsOf(all: Record<string, Meta>, root: number): number[] {
 		const parent = queue.shift()!;
 		for (const [key, meta] of Object.entries(all)) {
 			const id = Number(key);
-			if (meta.parent !== parent || isDeleted(meta) || found.includes(id)) continue;
+			if (meta.parent !== parent || meta.version === true || isDeleted(meta) || found.includes(id)) continue;
 			found.push(id);
 			queue.push(id);
 		}

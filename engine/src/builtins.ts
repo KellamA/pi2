@@ -11,6 +11,10 @@
 // reference files and handing work on have switches of their own. A tool listed here is still offered only where it
 // was before (by access level, with the browser on): leaving it out only takes it away. A tool left out is gone from
 // the conversation altogether, so from code mode's listing too, and a script cannot call it.
+//
+// A tool added for some agents only, such as the chat assistant's (#286), is off by default instead (`offByDefault`):
+// `toolsOn` on the agent holds the keys of those it is given, so no agent that has not asked for one pays for it in
+// its prompt.
 
 import type { AgentProfile } from "./state.ts";
 
@@ -24,6 +28,8 @@ export type BuiltInTool = {
 	detail: string;
 	/** Where it is offered at all: any access but none, Ask first or Full access, the browser on; anywhere when absent. */
 	needs?: "files" | "changes" | "browser";
+	/** Off unless the agent's `toolsOn` names it; `toolsOff` names only the others. */
+	offByDefault?: true;
 };
 
 /** In the order the settings show them. */
@@ -61,6 +67,13 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 		detail: "Searches the web and reads pages without opening the browser.",
 		needs: "browser",
 	},
+	{
+		key: "code",
+		tools: ["run_code"],
+		title: "Work things out with code",
+		detail: "Runs a short JavaScript program in a sandbox and shows what it printed: for sums, dates and data. The program cannot reach your files, the network or any other tool.",
+		offByDefault: true,
+	},
 ];
 
 /**
@@ -76,16 +89,26 @@ export function chatToolNames(web: boolean): string[] {
 	return BUILT_IN_TOOLS.filter((tool) => CHAT_TOOLS.includes(tool.key) && (web || tool.key !== "web")).flatMap((tool) => tool.tools);
 }
 
-/** The names of the tools `agent` leaves out. */
-export function toolsLeftOut(agent: AgentProfile | undefined): Set<string> {
+/** The names of the tools `agent` leaves out: those its `toolsOff` names, and those off by default its `toolsOn` does not. */
+export function toolsLeftOut(agent: Pick<AgentProfile, "toolsOff" | "toolsOn"> | undefined): Set<string> {
 	const off = new Set(agent?.toolsOff ?? []);
-	return new Set(BUILT_IN_TOOLS.filter((tool) => off.has(tool.key)).flatMap((tool) => tool.tools));
+	const on = new Set(agent?.toolsOn ?? []);
+	return new Set(BUILT_IN_TOOLS.filter((tool) => (tool.offByDefault ? !on.has(tool.key) : off.has(tool.key))).flatMap((tool) => tool.tools));
 }
 
-/** `toolsOff` as `agents.save` was sent it: known keys only, each once, in the list's order. */
-export function validateToolsOff(input: unknown): string[] {
-	if (!Array.isArray(input) || input.some((key) => typeof key !== "string")) throw new Error("toolsOff must be a list of tool names");
+/**
+ * `toolsOff` or `toolsOn` as `agents.save` was sent it: known keys only, each once, in the list's order. `toolsOff` takes
+ * the tools on by default, `toolsOn` those off by default.
+ */
+function validateKeys(input: unknown, field: "toolsOff" | "toolsOn"): string[] {
+	if (!Array.isArray(input) || input.some((key) => typeof key !== "string")) throw new Error(`${field} must be a list of tool names`);
 	const unknown = input.find((key) => !BUILT_IN_TOOLS.some((tool) => tool.key === key));
 	if (unknown !== undefined) throw new Error(`Unknown built-in tool: ${unknown}`);
+	const onByDefault = field === "toolsOff";
+	const misplaced = BUILT_IN_TOOLS.find((tool) => input.includes(tool.key) && (tool.offByDefault === true) === onByDefault);
+	if (misplaced !== undefined) throw new Error(`${misplaced.key} is ${onByDefault ? "off unless toolsOn names it" : "on unless toolsOff names it"}`);
 	return BUILT_IN_TOOLS.filter((tool) => input.includes(tool.key)).map((tool) => tool.key);
 }
+
+export const validateToolsOff = (input: unknown): string[] => validateKeys(input, "toolsOff");
+export const validateToolsOn = (input: unknown): string[] => validateKeys(input, "toolsOn");

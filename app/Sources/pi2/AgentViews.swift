@@ -292,6 +292,9 @@ struct AgentEditor: View {
                     BuiltInToolsSection(tools: engine.builtInTools, agent: agent, toolsOff: Binding(
                         get: { agent.toolsOff ?? [] },
                         set: { draft.wrappedValue.toolsOff = $0 }
+                    ), toolsOn: Binding(
+                        get: { agent.toolsOn ?? [] },
+                        set: { draft.wrappedValue.toolsOn = $0 }
                     ))
                     .id(AgentSection.builtins)
                 }
@@ -422,23 +425,30 @@ struct AgentEditor: View {
     }
 }
 
-/// The built-in tools the agent is offered, each on unless the person leaves it out. Tools with switches of their own
-/// (computer use, the browser, scheduling, scripts, memory, handing work on) are not here, and the shell and the file
-/// tools follow the access level. The engine sends the list, with what each is for.
+/// The built-in tools the agent is offered, each on unless the person leaves it out, or, for the few that are off by
+/// default, off until the person turns it on. Tools with switches of their own (computer use, the browser, scheduling,
+/// scripts, memory, handing work on) are not here, and the shell and the file tools follow the access level. The engine
+/// sends the list, with what each is for.
 struct BuiltInToolsSection: View {
     let tools: [BuiltInTool]
     let agent: AgentProfile
     @Binding var toolsOff: [String]
+    @Binding var toolsOn: [String]
 
     var body: some View {
         Section {
             ForEach(tools) { tool in
                 Toggle(isOn: Binding(
-                    get: { !toolsOff.contains(tool.key) },
+                    get: { tool.offByDefault == true ? toolsOn.contains(tool.key) : !toolsOff.contains(tool.key) },
                     set: { on in
                         // Kept in the engine's order, as it stores them, so a saved list compares equal to the draft.
-                        let off = Set(toolsOff.filter { $0 != tool.key } + (on ? [] : [tool.key]))
-                        toolsOff = tools.map(\.key).filter(off.contains)
+                        if tool.offByDefault == true {
+                            let given = Set(toolsOn.filter { $0 != tool.key } + (on ? [tool.key] : []))
+                            toolsOn = tools.map(\.key).filter(given.contains)
+                        } else {
+                            let off = Set(toolsOff.filter { $0 != tool.key } + (on ? [] : [tool.key]))
+                            toolsOff = tools.map(\.key).filter(off.contains)
+                        }
                     }
                 )) {
                     Text(tool.title)
