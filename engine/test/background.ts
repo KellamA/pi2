@@ -357,9 +357,10 @@ try {
 	// ---- A command that reaches its time limit in the foreground is moved to the background (#197)
 	{
 		const gate = join(scratch, "gate-moved");
+		const markerFile = join(scratch, "moved-marker");
 		const [cmd, leaderPid, childPid] = lingering();
 		// It prints, then waits for a gate this test opens only after the call has returned: only the move can return it.
-		const line = `echo before; ${cmd.replace("echo up; wait", `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo after; wait`)}`;
+		const line = `echo "$PI2_RUN" > '${markerFile}'; echo before; ${cmd.replace("echo up; wait", `while [ ! -e '${gate}' ]; do sleep 0.1; done; echo after; wait`)}`;
 		const moved = await client.tool(a, `/bash ${line}`);
 		const id = moved.details?.background?.id as string;
 		assert.match(id ?? "", /^bg-\d+$/, `the call names the command it moved: ${JSON.stringify(moved)}`);
@@ -372,6 +373,8 @@ try {
 			moved.text,
 		);
 		assert.ok(!existsSync(gate), "the call did not wait for the command");
+		const runFile = join(home, "runs", readFileSync(markerFile, "utf8").trim());
+		assert.ok(existsSync(runFile), "a moved command keeps its run's file");
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
 		assert.ok(pids.every(alive), "it is still running");
 		const listed = await client.until("listed as running, for Activity and the conversation's strip", () => client.running().find((each) => each.id === id));
@@ -388,6 +391,7 @@ try {
 		const stopped = await client.background(a, { action: "stop", id });
 		assert.match(stopped.text, new RegExp(`^Stopped ${id} \\(.*\\) and everything it started, after \\d+ (?:seconds?|minutes?|hours?(?: \\d+ minutes?)?)\\.$`), stopped.text);
 		await client.until("stopped, with what it started", () => pids.every((pid) => !alive(pid)));
+		await until("a moved command's file is removed once it ends", () => !existsSync(runFile));
 		await logs(`background command ${id} of conversation ${a} reached its time limit in the foreground and was moved to the background`);
 		step("a command that reaches its time limit in the foreground is moved to the background: an id, its output so far and on, listed, told to the agent, outliving its answer, stopped like any other");
 	}
@@ -742,19 +746,27 @@ try {
 		step("a background command left running by an engine killed outright is stopped by the next engine, with what it started, and marked; Activity's notice names it");
 	}
 
-	// ---- What a command started is known by the run's marker or its file, once the command's own first process is gone
-	{
+	// ---- Started there or moved there at its limit: leaderless children are known by the marker or the run's file
+	for (const mode of ["background", "foreground"] as const) {
 		// node, a program whose environment macOS lets another process read, with the run's file closed: known by its
 		// environment alone. And `sleep`, whose environment macOS does not show (docs/worktrees.md), without the marker and
 		// ignoring SIGTERM, as `stubborn()`'s does: known by the run's file alone, and killed after the grace.
-		const holderFile = join(scratch, "holder.pid");
-		const sleeperFile = join(scratch, "sleeper.pid");
-		const leaderFile = join(scratch, "short-leader.pid");
-		const cmd = `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${holderFile}' 19<&- & trap '' TERM; env -u PI2_RUN ${LONG} & echo $! > '${sleeperFile}'; trap - TERM; echo $$ > '${leaderFile}'; sleep 6`;
-		const { bg } = await client.start(z, cmd);
+		const holderFile = join(scratch, `${mode}-holder.pid`);
+		const sleeperFile = join(scratch, `${mode}-sleeper.pid`);
+		const leaderFile = join(scratch, `${mode}-short-leader.pid`);
+		const markerFile = join(scratch, `${mode}-marker`);
+		const gate = join(scratch, `${mode}-leader.gate`);
+		const cmd = `echo "$PI2_RUN" > '${markerFile}'; '${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${holderFile}' 19<&- & trap '' TERM; env -u PI2_RUN ${LONG} & echo $! > '${sleeperFile}'; trap - TERM; echo $$ > '${leaderFile}'; while [ ! -e '${gate}' ]; do sleep 0.1; done`;
+		const result = await client.tool(z, mode === "background" ? `/background ${cmd}` : `/bash ${cmd}`);
+		const bg = result.details?.background?.id as string;
+		assert.match(bg ?? "", /^bg-\d+$/, result.text);
+		if (mode === "foreground") assert.match(result.text, /was moved to the background/);
+		const runFile = join(home, "runs", readFileSync(markerFile, "utf8").trim());
+		assert.ok(existsSync(runFile), "the run keeps its file through adoption");
 		const [leader, holder, sleeper] = [await pidIn(leaderFile), await pidIn(holderFile), await pidIn(sleeperFile)];
 		await stop(engine, "SIGKILL");
-		// With no engine running, the command's own process ends, and what it started is left in a group without a leader.
+		// With no engine running, let the first process end: no elapsed-time race with moving it or recording its process.
+		writeFileSync(gate, "");
 		await until("the command's own process to end", () => !alive(leader));
 		assert.ok(alive(holder) && alive(sleeper), "what it started is still running");
 		engine = boot();
@@ -765,19 +777,25 @@ try {
 			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
 		);
 		await client.until("what it had started is stopped", () => !alive(holder) && !alive(sleeper));
-		step("what a background command started is stopped by the next engine by the run's marker or its file, when the command's own process ended meanwhile");
+		assert.equal(existsSync(runFile), false, "recovery removes the dealt-with run's file");
+		step(`what a command ${mode === "foreground" ? "moved to" : "started in"} the background started is recovered by its marker or file after its leader ends`);
 	}
 
-	// ---- Only part of what it started carries the marker or the run's file: that part is stopped, the rest left alone, and the line says both
-	{
-		const markedFile = join(scratch, "marked.pid");
-		const unmarkedFile = join(scratch, "unmarked.pid");
-		const leaderFile = join(scratch, "partly-leader.pid");
+	// ---- Both ways: a leaderless look-alike without either proof is never touched, even beside a proven child
+	for (const mode of ["background", "foreground"] as const) {
+		const markedFile = join(scratch, `${mode}-marked.pid`);
+		const unmarkedFile = join(scratch, `${mode}-unmarked.pid`);
+		const leaderFile = join(scratch, `${mode}-partly-leader.pid`);
+		const gate = join(scratch, `${mode}-partly.gate`);
 		const holder = (file: string) => `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${file}'`;
-		const cmd = `${holder(markedFile)} & env -u PI2_RUN ${holder(unmarkedFile)} 19<&- & echo $$ > '${leaderFile}'; sleep 6`;
-		const { bg } = await client.start(z, cmd);
+		const cmd = `${holder(markedFile)} & env -u PI2_RUN ${holder(unmarkedFile)} 19<&- & echo $$ > '${leaderFile}'; while [ ! -e '${gate}' ]; do sleep 0.1; done`;
+		const result = await client.tool(z, mode === "background" ? `/background ${cmd}` : `/bash ${cmd}`);
+		const bg = result.details?.background?.id as string;
+		assert.match(bg ?? "", /^bg-\d+$/, result.text);
+		if (mode === "foreground") assert.match(result.text, /was moved to the background/);
 		const [leader, marked, unmarked] = [await pidIn(leaderFile), await pidIn(markedFile), await pidIn(unmarkedFile)];
 		await stop(engine, "SIGKILL");
+		writeFileSync(gate, "");
 		await until("the command's own process to end", () => !alive(leader));
 		assert.ok(alive(marked) && alive(unmarked), "what it started is still running");
 		engine = boot();
@@ -797,7 +815,7 @@ try {
 			"Activity's notice says it was stopped in part",
 		);
 		process.kill(unmarked, "SIGKILL");
-		step("when only part of what a background command started carries the run's marker or file, that part is stopped, the rest is left alone, and its line says both");
+		step(`a command ${mode === "foreground" ? "moved to" : "started in"} the background has only its proven children stopped; look-alikes stay untouched`);
 	}
 	console.log("PASS");
 	passed = true;
