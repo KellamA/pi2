@@ -1,2 +1,0 @@
-### For contributors
-- A development build measures its main thread while its data folder holds a file named `perf.on`, and writes to `perf.log` there every ten seconds: how busy the main thread was and how late it answered, what each kind of event from the engine cost, how long requests took, and the steps of opening a conversation ([development.md](docs/development.md#measuring-the-apps-speed)).
