@@ -148,6 +148,19 @@ open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_
 
 On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: `scripts/test-copy start test-7`, then `scripts/test-copy stop test-7`. [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the rules and what the script does for each.
 
+To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. For a running `test-7`, these create a conversation on the scripted demo model (no provider or sign-in) and send it a message:
+
+```bash
+CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
+```
+
+`submit` returns when accepted, not when the model has finished answering. After the answer finishes, archive it (this stops any work still running):
+
+```bash
+scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
+```
+
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `builtins` (built-in tools), `rules` (commands it may run without asking), `variables` (variables for its commands), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
