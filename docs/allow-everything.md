@@ -49,6 +49,7 @@ Turning it on or off applies from each conversation's next message, both ways, n
 It is shown in red, as pi² marks anything risky:
 
 - the agent's row in the sidebar has the tag **allows everything**;
+- each of its conversations in the sidebar has a small red mark after its title, and says **allows everything** in the command palette's results. A sub-chat is marked by its own agent's switch, never its parent's, so one can be marked under a conversation that is not, and the other way round. Hovering over the mark says what the conversation's bar says;
 - every conversation of the agent has a red bar across its top, which says when the switch has changed and the conversation takes the change at its next message;
 - the agent's settings say so at the top, and under **Allow everything**; with computer use on, its section says that any app may be used.
 
