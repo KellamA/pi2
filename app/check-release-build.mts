@@ -10,7 +10,7 @@
 //   --commit SHA       the commit it must have been built from; any, if not given
 //   --bundle-id ID     the bundle id it must have; defaults to dev.pi2.app, which installed copies update to
 //   --open-app         also open the app itself, on a data folder of its own, and check that it starts the engine inside
-//                      it and connects to it. For a Mac nobody uses, such as a CI runner: an app with pi²'s own bundle
+//                      it, as a process macOS holds responsible for itself rather than the app, and connects to it. For a Mac nobody uses, such as a CI runner: an app with pi²'s own bundle
 //                      id shares its preferences and permissions with an installed copy, so this is refused for
 //                      dev.pi2.app outside CI. Give a copy its own bundle id to try it elsewhere (CONTRIBUTING.md).
 //
@@ -18,7 +18,7 @@
 // for its PATH, and is stopped by its process id before it ends, whether the checks passed or not.
 
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -404,6 +404,25 @@ function processes(): Process[] {
 		.map((match) => ({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3]! }));
 }
 
+/**
+ * The process macOS holds responsible for `pid`, by which it judges the privacy permissions of `pid` and of everything it
+ * starts. Asked through libSystem's `responsibility_get_pid_responsible_for_pid`, which is not in the public headers and
+ * which Node cannot call, so through a few lines of C compiled for the purpose. It only asks; it prompts for nothing.
+ */
+function responsibleFor(pid: number): number {
+	const folder = temporaryFolder("pi2-check-responsible-");
+	const source = join(folder, "responsible.c");
+	writeFileSync(
+		source,
+		"#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n" +
+			"extern pid_t responsibility_get_pid_responsible_for_pid(pid_t);\n" +
+			'int main(int argc, char **argv) { printf("%d\\n", responsibility_get_pid_responsible_for_pid(atoi(argv[1]))); }\n',
+	);
+	const program = join(folder, "responsible");
+	run("/usr/bin/cc", [source, "-o", program]);
+	return Number(run(program, [String(pid)]).trim());
+}
+
 /** The app's own sockets that are connected to one of the engine's: the app has connected. */
 function appConnected(appPid: number, enginePid: number): boolean {
 	// lsof names each Unix socket by its own address and, once connected, its peer's ("->0x…").
@@ -489,9 +508,14 @@ async function checkOpenedApp(build: Build): Promise<void> {
 	const engineProcess = processes().find((process) => process.pid === engine);
 	if (engineProcess?.ppid !== app) fail(`The engine on the app's data folder, process ${engine}, was not started by the app (${app}).`);
 	if (!samePath(engineProcess.command, build.node)) fail(`The app started its engine with ${engineProcess.command}, not the Node inside it.`);
+	// Not the app: an agent's commands would have the app's Accessibility, around computer use's limits (#263).
+	const responsible = responsibleFor(engine);
+	if (responsible !== engine) {
+		fail(`macOS holds process ${responsible}${responsible === app ? ", the app," : ""} responsible for the engine, not the engine itself, so agents' commands would have its privacy permissions.`);
+	}
 	const connection = await connectWhenListening(home, () => (alive(engine) ? undefined : "stopped"));
 	cleanups.push(() => connection.close());
-	step(`the app started the engine inside it, process ${engine}, which listens`);
+	step(`the app started the engine inside it, process ${engine}, responsible for itself, which listens`);
 	await checkInfo(connection, build, engine);
 	connection.close();
 	await waitFor("the app to connect to its engine", () => appConnected(app, engine), START_MS, appGone);
