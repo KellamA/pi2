@@ -139,25 +139,57 @@ struct McpServerSheet: View {
     @State private var commandLine = ""
     @State private var url = ""
     @State private var token = ""
+    /// Variables to start a server run as a program with, from its first start (#298).
+    @State private var variables: [NewVariable] = []
     @State private var error: String?
     @State private var working = false
     @Environment(\.dismiss) private var dismiss
 
+    struct NewVariable: Identifiable {
+        let id = UUID()
+        var name = ""
+        var value = ""
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                TextField("Name", text: $name, prompt: Text("GitHub"))
-                Picker("Runs", selection: $transport) {
-                    Text("On this Mac").tag("stdio")
-                    Text("At a URL").tag("http")
+                Section {
+                    TextField("Name", text: $name, prompt: Text("GitHub"))
+                    Picker("Runs", selection: $transport) {
+                        Text("On this Mac").tag("stdio")
+                        Text("At a URL").tag("http")
+                    }
+                    .pickerStyle(.segmented)
+                    if transport == "stdio" {
+                        TextField("Command", text: $commandLine, prompt: Text("npx -y @modelcontextprotocol/server-filesystem ~/Documents"))
+                            .font(.system(.body, design: .monospaced))
+                    } else {
+                        TextField("URL", text: $url, prompt: Text("https://mcp.example.com/mcp"))
+                        SecureField("Access token", text: $token, prompt: Text("Optional"))
+                    }
                 }
-                .pickerStyle(.segmented)
                 if transport == "stdio" {
-                    TextField("Command", text: $commandLine, prompt: Text("npx -y @modelcontextprotocol/server-filesystem ~/Documents"))
-                        .font(.system(.body, design: .monospaced))
-                } else {
-                    TextField("URL", text: $url, prompt: Text("https://mcp.example.com/mcp"))
-                    SecureField("Access token", text: $token, prompt: Text("Optional"))
+                    Section {
+                        ForEach(variables) { variable in
+                            HStack {
+                                TextField("Name", text: field(variable.id, \.name), prompt: Text("GITHUB_TOKEN"))
+                                    .font(.system(.body, design: .monospaced))
+                                    .labelsHidden()
+                                SecureField("Value", text: field(variable.id, \.value), prompt: Text("Value"))
+                                    .labelsHidden()
+                                Button("Remove", systemImage: "minus.circle") { variables.removeAll { $0.id == variable.id } }
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.borderless)
+                                    .help("Remove this variable")
+                            }
+                        }
+                        Button("Add Variable") { variables.append(NewVariable()) }
+                    } header: {
+                        Text("Variables")
+                    } footer: {
+                        Text("Environment variables the server’s program is started with, such as a token it needs. The program can read them, and so can whatever it starts. Values are kept in your macOS Keychain, never in pi²’s files or backups. Change them later with Variables….").formFooter()
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -171,7 +203,18 @@ struct McpServerSheet: View {
             }
             .padding(20)
         }
-        .frame(width: 520, height: 300)
+        .frame(width: 520, height: transport == "stdio" ? 420 + CGFloat(min(variables.count, 4)) * 30 : 300)
+    }
+
+    /// A row's field, found by the row's id rather than its place: a field still focused as its row is removed reads
+    /// nothing, where a binding to an index crashed reading past the end of the list.
+    private func field(_ id: UUID, _ key: WritableKeyPath<NewVariable, String>) -> Binding<String> {
+        Binding(
+            get: { variables.first { $0.id == id }?[keyPath: key] ?? "" },
+            set: { value in
+                if let index = variables.firstIndex(where: { $0.id == id }) { variables[index][keyPath: key] = value }
+            }
+        )
     }
 
     /// Splits a command line on spaces, keeping quoted parts together.
@@ -202,6 +245,9 @@ struct McpServerSheet: View {
             let words = Self.words(commandLine).map { NSString(string: $0).expandingTildeInPath }
             params["command"] = words.first ?? ""
             params["args"] = Array(words.dropFirst())
+            // A row left empty is not a variable; anything else the engine checks, saying why.
+            let given = variables.filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty || !$0.value.isEmpty }
+            if !given.isEmpty { params["variables"] = given.map { ["name": $0.name, "value": $0.value] } }
         } else {
             params["url"] = url
             if !token.isEmpty { params["token"] = token }
