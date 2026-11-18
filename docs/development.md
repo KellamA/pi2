@@ -157,10 +157,12 @@ open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_
 
 On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: `scripts/test-copy start test-7`, then `scripts/test-copy stop test-7`. [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the rules and what the script does for each.
 
-To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. For a running `test-7`, these create a conversation on the scripted demo model (no provider or sign-in) and send it a message:
+To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. These start a copy waiting to show a conversation, create it after launch on the scripted demo model (no provider or sign-in), and send it a message. `PI2_SHOW` opens it when it appears while nothing else is open; no restart or click is needed:
 
 ```bash
+scripts/test-copy start test-7 --show 'Late demo'
 CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Late demo\"}"
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 

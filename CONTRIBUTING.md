@@ -98,10 +98,12 @@ Two things an agent cannot click to see, it can still check. `--show palette:<qu
 
 **`call <suffix> <method> [<json params>]`** sends one request to the engine socket in that copy's own data folder. It requires a copy started by this checkout and a still-recorded engine, ignores `PI2_HOME` and other socket overrides, and refuses a symlink for the data folder or socket. Params default to `{}` and must be a JSON object. It prints the complete JSON response (`{"id":1,"result":…}` or `{"id":1,"error":…}`), ignoring events, and exits non-zero on an engine error, a closed connection or a ten-minute wait without a response.
 
-For example, with `test-7` running, make a conversation explicitly on the scripted demo model (no provider or sign-in), then send it a message:
+To show a conversation made after launch, start with `--show` naming its title (or number). The development build waits for it to appear while nothing else is open; no restart or click is needed (#294). For example, make a conversation explicitly on the scripted demo model (no provider or sign-in), then send it a message:
 
 ```bash
+scripts/test-copy start test-7 --show 'Late demo'
 CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Late demo\"}"
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 
