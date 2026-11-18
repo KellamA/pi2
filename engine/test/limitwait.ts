@@ -287,11 +287,15 @@ const scripts: Record<string, Refuse[]> = {
 		{ ...RATE_LIMITED, headers: { "retry-after": "0" } },
 	],
 	overloaded: [OVERLOADED, OVERLOADED, OVERLOADED, OVERLOADED, OVERLOADED],
+	// Refused until a message from the person comes with it; at most 50 times, so that without it the run still ends.
+	"a message meanwhile": Array(50).fill({ ...RATE_LIMITED, headers: { "retry-after-ms": "300" } }),
 	"bad key": Array(100).fill(BAD_KEY),
 	"an hour": Array(100).fill({ ...RATE_LIMITED, headers: { "retry-after": "3600" } }),
 	"never answers": Array(1000).fill(RATE_LIMITED),
 };
 const requests: Record<string, number> = {};
+/** The person's messages in the last request for each prompt, by its last message. */
+const seen: Record<string, string[]> = {};
 /** While true, a request for "held" is refused, naming a time a moment off; then it is answered. */
 let holding = true;
 const standIn = createServer((request, response) => {
@@ -307,6 +311,7 @@ const standIn = createServer((request, response) => {
 		const prompt = typeof last === "string" ? last : (last as { text?: string }[]).map((part) => part.text ?? "").join("");
 		const n = requests[prompt] ?? 0;
 		requests[prompt] = n + 1;
+		seen[prompt] = users.map((m) => (typeof m.content === "string" ? m.content : (m.content as { text?: string }[]).map((part) => part.text ?? "").join("")));
 		const refusal = prompt === "held" && holding ? { ...RATE_LIMITED, headers: { "retry-after-ms": "200" } } : scripts[prompt]?.[n];
 		if (refusal !== undefined) {
 			response.writeHead(refusal.status, { "content-type": "application/json", ...refusal.headers }).end(refusal.body);
@@ -338,7 +343,13 @@ function startEngine(extra: Record<string, string> = {}): ChildProcess {
 
 type Item = { kind: string; text: string; stop?: string; error?: string | null };
 type Shown = { kind: string; since: number; until: number; told: boolean; refusals: number; provider: string };
-type State = { busy: boolean; failure: { reason: string; detail: string | null } | null; retry: { at: number; error: string } | null; limitWait: Shown | null };
+type State = {
+	busy: boolean;
+	failure: { reason: string; detail: string | null } | null;
+	retry: { at: number; error: string } | null;
+	limitWait: Shown | null;
+	messageWaits?: { holds: string[]; ends: string[]; retryAt?: number } | null;
+};
 class Client extends EngineClient {
 	override conversations = new Map<number, { items: Item[]; state: State }>();
 	activity: { conversationId: number; status: string; limit: Shown | null }[] = [];
@@ -399,6 +410,20 @@ try {
 	assert.equal(answer(conv), "Answered after 5 refusals.");
 	assert.match(log, new RegExp(`conversation ${busy} is waiting for Stand-in being overloaded`));
 	step("a run that meets an overloaded provider (529) waits and carries on");
+
+	// A message sent to steer while the run waits for a limit (#324): it does not end the wait, and it is placed as the
+	// wait ends, so the next request carries it, rather than after an answer to the conversation as it was.
+	const steered = await client.ask(provider, "a message meanwhile");
+	await client.until("the wait shown", () => client.conversations.get(steered)?.state.limitWait ?? undefined);
+	const waits = await client.until("what a message would wait for", () => client.conversations.get(steered)?.state.messageWaits ?? undefined);
+	assert.equal(typeof waits.retryAt, "number", "the field can say the message waits for the next request");
+	await client.call("submit", { id: steered, text: "Also mention the tests.", mode: "steer" });
+	conv = await client.ended(steered);
+	assert.equal(conv.state.failure, null);
+	assert.equal(answer(conv), "Answered after 0 refusals.", "answered on the first request that carried the message");
+	assert.deepEqual(seen["Also mention the tests."], ["a message meanwhile", "Also mention the tests."], "that request had both");
+	assert.ok(requests["a message meanwhile"]! < 50, "not after the refusals ran out");
+	step("a message sent while a run waits for a limit is kept, and carried by the first request after the wait");
 
 	// A bad key ends the run at once, after one request, as before.
 	const bad = await client.ask(provider, "bad key");

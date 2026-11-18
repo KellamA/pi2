@@ -767,14 +767,27 @@ struct ConversationState: Codable, Equatable {
 struct MessageWaits: Codable, Equatable {
     let holds: [String]
     let ends: [String]
+    /// Set while the run waits to ask the model again (a retry, or a provider's limit): a message sent to steer is placed
+    /// when it does, so that request carries it (#324). Ms since 1970; absent from an engine older than this field.
+    var retryAt: Double? = nil
 
     private static func joined(_ parts: [String]) -> String {
         ListFormatter.localizedString(byJoining: parts)
     }
 
     /// What happens to a message sent now, in a line for the message field: steered, or queued until the answer.
-    func sentence(agent: String, steer: Bool) -> String {
+    /// `limit` is the provider's limit the run waits for, if it does.
+    func sentence(agent: String, steer: Bool, limit: LimitWait? = nil) -> String {
+        if let limit {
+            // It cannot be answered before the limit resets, and does not end the wait: the provider would only refuse it.
+            let wait = limit.kind == "overloaded" ? "\(limit.provider) to stop being overloaded" : "\(limit.provider)’s limit"
+            guard steer else { return "\(agent) reads this once it has answered, after the wait for \(wait) at \(limit.untilText)." }
+            return "\(agent) reads this after the wait for \(wait), at \(limit.untilText); until then you can take it back."
+        }
         guard steer else { return "\(agent) reads this once it has answered." }
+        if let retryAt, holds.isEmpty, ends.isEmpty {
+            return "\(agent) reads this when it asks the model again, at \(Date(timeIntervalSince1970: retryAt / 1000).formatted(date: .omitted, time: .standard))."
+        }
         let ended = ends.isEmpty ? "" : " It ends \(Self.joined(ends)); \(ends.count == 1 ? "that work carries on" : "the work carries on")."
         if holds.isEmpty {
             return ends.isEmpty ? "\(agent) reads this after its current step." : "\(agent) reads this at once.\(ended)"

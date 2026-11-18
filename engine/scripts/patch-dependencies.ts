@@ -91,6 +91,33 @@ const PATCHES: Patch[] = [
     const retry = policy.enabled && counted <= policy.maxRetries;
     const until = retry ? runtime.now() + retryDelayMs(policy, counted) : 0;`,
 	},
+	{
+		// A message the person sends to steer a run is placed after the run's current round of tool calls. A run waiting to
+		// ask a model again (a retry's sleep, and so a wait for a provider's limit, which can be hours) has no round: the
+		// message was placed only after the request following the wait had been answered, and that answer was to the
+		// conversation as it was before the message. This places queued steers, and writes, as the sleep ends, before
+		// the next attempt's request is made, so that request carries them. Until then the message stays queued, where
+		// the person can take it back, and Stop ends the run as ever. Not after a reset (a handoff), which only a round
+		// places. Issue #324.
+		why: "a message sent while a run waits for a provider's limit is only read after the next answer",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `            await runtime.commit(async (tx) => {
+                const live = await tx.doc(LiveDoc, runtime.conversationId);
+                const kept = compacted === undefined ? {} : { compacted };
+                // A poll the host died during polls its response again, as the next attempt.`,
+		replace: `            await runtime.commit(async (tx) => {
+                // Patched by pi2 (engine/scripts/patch-dependencies.ts): what was sent to steer during the wait is placed
+                // now, so the next attempt's request carries it. Read before the commit's first table write.
+                const boundary = poll === undefined ? await prepareBoundary(tx, runtime.conversationId, runtime.settings) : undefined;
+                const live = await tx.doc(LiveDoc, runtime.conversationId);
+                if (boundary !== undefined && !hasQueuedReset(boundary.inbox.items) && boundary.inbox.items.some((item) => item.mode === "steer" || item.mode === "write")) {
+                    const { users } = await applyBoundary(tx, boundary, "postTools", runtime.now());
+                    if (live.run?.taskId === runtime.taskId)
+                        live.run.inputs.push(...users);
+                }
+                const kept = compacted === undefined ? {} : { compacted };
+                // A poll the host died during polls its response again, as the next attempt.`,
+	},
 ];
 
 const engine = resolve(process.argv[2] ?? join(import.meta.dirname, ".."));
