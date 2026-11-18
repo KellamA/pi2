@@ -5,8 +5,9 @@ import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 
 const linux = new Set([
-	"addedmodels", "cache", "codemode", "credentialsplatform", "earlystop", "exec", "latepath", "limits", "limitwait",
-	"log", "look", "mcppath", "mcpreconnect", "modellists", "offered", "reading", "rules", "sections", "shellpath", "socket",
+	"addedmodels", "cache", "chat", "codemode", "credentialsplatform", "earlystop", "everything", "exec", "heed", "latepath", "limits", "limitwait",
+	"localmodels", "log", "look", "mcppath", "mcpreconnect", "modellists", "offered", "pictures", "reading", "rules", "runcode", "sections", "shellpath", "socket",
+	"testcopies", "versions", "wakes",
 ]);
 const group = process.argv[2];
 if (group !== "linux" && group !== "macos") throw new Error("Choose linux or macos");

@@ -19,6 +19,7 @@ T=$(cd -P -- "$T" && pwd -P)
 root=$T/checkout
 mkdir -p "$root/scripts" "$root/app/build"
 cp "$script" "$root/scripts/test-copy"
+cp "$(dirname -- "$script")/test-copy-send.mjs" "$root/scripts/test-copy-send.mjs"
 copy=$root/scripts/test-copy
 
 failures=0
@@ -57,6 +58,21 @@ expect "'dev' is the suffix every development build has" start dev
 expect "a suffix is required" stop
 expect "a suffix is required" shot
 expect "a suffix is required" call
+expect "a suffix is required" send
+expect "'dev' is the suffix every development build has" send dev 8 hello
+expect "is not a suffix" send ../pi2 8 hello
+expect "is too long" send test-7-with-a-suffix-much-too-long-for-a-socket 8 hello
+expect "use: scripts/test-copy send" send test-7
+expect "use: scripts/test-copy send" send test-7 8
+expect "--timeout needs seconds" send test-7 8 hello --timeout
+expect "unknown option --bogus" send test-7 8 hello --bogus
+expect "a suffix is required" reopen
+expect "'dev' is the suffix every development build has" reopen dev
+expect "is not a suffix" reopen ../pi2
+expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
+expect "--show needs what to open on" reopen test-7 --show
+expect "--show takes one line" reopen test-7 --show $'one\ntwo'
+expect "unknown option --bogus" reopen test-7 --bogus
 for suffix in dev ../pi2 Test-7 test-7-with-a-suffix-much-too-long-for-a-socket; do
 	case $suffix in
 		dev) want="'dev' is the suffix every development build has" ;;
@@ -67,6 +83,10 @@ for suffix in dev ../pi2 Test-7 test-7-with-a-suffix-much-too-long-for-a-socket;
 done
 expect "use: scripts/test-copy call" call test-7
 expect "use: scripts/test-copy call" call test-7 engine.info '{}' extra
+expect "a suffix is required" socket
+expect "is not a suffix" socket ../pi2
+expect "'dev' is the suffix every development build has" socket dev
+expect "use: scripts/test-copy socket" socket test-7 extra
 
 expect "there is no development build" start test-7
 
@@ -104,11 +124,16 @@ expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
 expect "unknown option --bogus" start test-8 --menu "Fix the login bug" --bogus
 rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 
+expect "no copy named test-7 was started from this checkout" send test-7 8 hello
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" send test-7 8 hello
+expect "no copy named test-7 was started from this checkout" reopen test-7
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
 # An inherited data-folder override cannot make an unowned copy callable.
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" call test-7 engine.info
+expect "no copy named test-7 was started from this checkout" socket test-7
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" socket test-7
 expect "say where to put the picture" shot test-7
 expect "give a file name ending in .png" shot test-7 "$root/picture.jpg"
 expect "refusing to write" shot test-7 "$T/outside.png"
@@ -175,13 +200,43 @@ else
 	failures=$((failures + 1))
 fi
 
+# call and send require a live, recorded engine too; an app alone is not enough, nor is a reused pid.
+HOME="$T/home" expect "has no recorded engine running" send test-7 8 hello
+# Reopen validates the saved bundle and app before it can stop anything. This shell must never be signalled.
+HOME="$T/home" expect "bundle is missing" reopen test-7
+saved="$root/app/build/test-copies/test-7/pi² test-7.app"
+mkdir -p "$saved/Contents"
+cp "$dev/Contents/Info.plist" "$saved/Contents/Info.plist"
+HOME="$T/home" expect "different bundle id" reopen test-7
+/usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.pi2.app.test-7' "$saved/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$saved/Contents/Info.plist"
+HOME="$T/home" expect "not a development build of this checkout" reopen test-7
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$saved/Contents/Info.plist"
+HOME="$T/home" expect "recorded app executable is not the copy" reopen test-7
+printf '%s\n' "app_pid=$$" 'app_start=not this process' \
+	"app_exe=$saved/Contents/MacOS/pi2" >"$root/app/build/test-copies/test-7/state"
+HOME="$T/home" expect "app pid is no longer the process recorded" reopen test-7
+printf '%s\n' 'app_pid=99999999' "app_exe=$saved/Contents/MacOS/pi2" >"$root/app/build/test-copies/test-7/state"
+HOME="$T/home" expect "has no recorded engine running" reopen test-7
+printf '%s\n' "app_pid=$$" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
+	"app_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
+
 # call requires a live, recorded engine too; an app alone is not enough, nor is a reused pid.
 HOME="$T/home" expect "has no recorded engine running" call test-7 engine.info
+HOME="$T/home" expect "has no recorded engine running" socket test-7
 printf '%s\n' "engine_pid=$$" "engine_start=not this process" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
 HOME="$T/home" expect "has no recorded engine running" call test-7 engine.info
+HOME="$T/home" expect "has no recorded engine running" socket test-7
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
+for id in zero -1 0 1.5 9007199254740992; do
+	HOME="$T/home" expect "conversation must be a positive integer" send test-7 "$id" hello
+done
+HOME="$T/home" expect "the message is empty" send test-7 8 ' '
+for seconds in 0 -1 nope 601; do
+	HOME="$T/home" expect "--timeout must be seconds" send test-7 8 hello --timeout "$seconds"
+done
 for params in '{' null '[]' '"text"' 7; do
 	HOME="$T/home" expect "invalid JSON params" call test-7 engine.info "$params"
 done
@@ -190,10 +245,20 @@ data="$T/home/Library/Application Support/pi2-test-7"
 mkdir -p "$data"
 ln -s "$T/elsewhere.sock" "$data/engine.sock"
 HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
+HOME="$T/home" expect "refusing a symlink" socket test-7
+HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
+HOME="$T/home" expect "refusing a symlink" reopen test-7
 rm "$data/engine.sock"
 rmdir "$data"
 ln -s "$T" "$data"
 HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
+HOME="$T/home" expect "refusing a symlink" socket test-7
+HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
+
+if ! node "$(dirname -- "$script")/test-test-copy-send.mjs"; then
+	failures=$((failures + 1))
+fi
+HOME="$T/home" expect "refusing a symlink" reopen test-7
 
 if ((failures)); then
 	echo "$failures check(s) failed."

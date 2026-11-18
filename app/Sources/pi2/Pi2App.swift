@@ -865,6 +865,8 @@ struct ConversationCommands: View {
             .disabled(id == nil || state?.compacting == true)
         Button("Start Fresh Context") { if let id { engine.perform("conversation.reset", ["id": id]) } }
             .disabled(id == nil)
+        Button("Continue with an Agent…") { if let id { model.continueWithAgent(id) } }
+            .disabled(id == nil || !chat || model.mode != .chat || !engine.canContinueWithAgent(id ?? 0))
         Button("Fork From Last Answer") {
             if let id, let last = engine.open[id]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) { engine.fork(id, at: last.id) }
         }

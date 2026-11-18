@@ -145,6 +145,7 @@ try {
 		const answer = client.items(a, "assistant").at(-1)!.text as string;
 		assert.match(answer, /\[pi² woke you: this ended while you were not answering\.\]/, "the woken answer answers the sub-chat's result");
 		assert.match(answer, /first-done/, "with the sub-chat's answer in it");
+		assert.ok(answer.includes(client.items(a, "marker").find((item) => item.text === line)!.details.wake.text), "a sub-chat wake opens to the message the demo model answered");
 		assert.match(answer, new RegExp(`chat: ${sub}`), "and how to carry it on");
 		assert.deepEqual(client.watched(a), [], "nothing left to wake it for");
 		step("delegate with wait: false returns at once; the sub-chat's answer wakes the agent, with what delegate would have answered");
@@ -168,6 +169,10 @@ try {
 		const together = client.items(a, "assistant").at(-1)!.text as string;
 		assert.match(together, /these 2 ended while you were not answering, oldest first/);
 		assert.ok(together.indexOf("second-done") < together.indexOf("third-done"), "oldest first");
+		const given = client.items(a, "marker").find((item) => item.text === both)!.details.wake.text as string;
+		assert.match(given, /these 2 ended/);
+		assert.ok(given.indexOf("second-done") < given.indexOf("third-done"));
+		assert.match(given, /\n\n---\n\n/, "the opened row retains the batched message");
 		step("what ends while the agent answers comes when the answer ends, together and oldest first");
 
 		// sub_chats wait takes the next one to finish, whichever it is, without a wake.
@@ -201,7 +206,10 @@ try {
 		g.open();
 		const line = await client.woken(b, 1);
 		assert.match(line, new RegExp(`^pi² woke the agent: background command ${bg} \\(\`until .*\`\\) finished$`));
-		assert.deepEqual(client.items(b, "marker").find((item) => item.text === line)?.details, { background: { id: bg } }, "the line opens the command's output");
+		const wake = client.items(b, "marker").find((item) => item.text === line)!;
+		assert.deepEqual(wake.details.background, { id: bg }, "Output still opens the command's output");
+		assert.match(wake.details.wake.text, /^\[pi² woke you: this ended while you were not answering\.\]/);
+		assert.match(wake.details.wake.text, /woken-by-bg/, "the row has exactly what the wake gave the agent");
 		const results = client.items(b, "tool");
 		assert.equal(results.at(-1)!.name, "bash");
 		assert.match(results.at(-1)!.text, /woken-by-bg/, "the woken agent acted on what the command printed");
@@ -215,6 +223,54 @@ try {
 		const sub = await client.tool(b, `/tool delegate ${JSON.stringify({ agent: "Worker", task: `/tool bash ${JSON.stringify({ command: "true", background: true, wake: true })}` })}`);
 		assert.match(sub.text, /The tool reported an error/);
 		step("a background command started with wake: true wakes the agent when it ends, with how and the end of its output; not when it was stopped by the agent or seen to end, nor in a sub-chat");
+	}
+
+	// ---- Watching an already running command (#317), including one moved at its time limit
+	{
+		const b = await open(lead);
+		const g = gate();
+		const moved = await client.tool(b, `/timeout 1 ${g.wait}; echo watched-later`);
+		assert.equal(moved.isError, false, moved.text);
+		const bg = moved.details.background.id as string;
+		assert.deepEqual(client.watched(b), []);
+		for (let n = 0; n < 2; n++) {
+			const watching = await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: bg })}`);
+			assert.equal(watching.isError, false, watching.text);
+		}
+		assert.equal(client.watched(b).length, 1, "watching twice is idempotent");
+		g.open();
+		await client.woken(b, 1);
+		assert.match(client.items(b, "assistant").at(-1)!.text, /watched-later/);
+		const ended = await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: bg })}`);
+		assert.equal(ended.isError, true);
+		assert.match(ended.text, /already over/);
+		const missing = await client.tool(b, '/tool background {"action":"wake","id":"bg-999999"}');
+		assert.equal(missing.isError, true);
+		const other = await open(lead);
+		const foreign = await client.tool(other, `/tool background ${JSON.stringify({ action: "wake", id: bg })}`);
+		assert.equal(foreign.isError, true, "another conversation cannot watch it");
+		const cancelGate = gate();
+		const started = await client.tool(b, `/background ${cancelGate.wait}`);
+		const canceled = started.details.background.id as string;
+		await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: canceled })}`);
+		await client.call("wakes.cancel", { conversationId: b, key: `bg:${canceled}` });
+		const rearm = await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: canceled })}`);
+		assert.equal(rearm.isError, true);
+		assert.match(rearm.text, /already turned off/);
+		cancelGate.open();
+		await client.until("canceled command ended", () => client.markers(b).some((line) => line.startsWith(`Background command ${canceled} finished`)));
+		assert.equal(client.wakes(b).length, 1);
+		const sub = await client.tool(b, `/tool delegate ${JSON.stringify({ agent: "Worker", task: "/background sleep 600" })}`);
+		const child = sub.details.conversationId as number;
+		await client.call("conversation.open", { id: child });
+		const commands = await client.tool(child, '/tool background {"action":"list"}');
+		const childBg = /bg-\d+/.exec(commands.text)?.[0];
+		assert.ok(childBg);
+		const refused = await client.tool(child, `/tool background ${JSON.stringify({ action: "wake", id: childBg })}`);
+		assert.equal(refused.isError, true);
+		assert.match(refused.text, /sub-chat is not woken/);
+		await client.tool(child, `/tool background ${JSON.stringify({ action: "stop", id: childBg })}`);
+		step("background wake watches a command moved at its limit once, refuses ended, missing, foreign and sub-chat commands");
 	}
 
 	// ---- The turn limit
@@ -362,6 +418,9 @@ try {
 		assert.equal(told.split(subLine).length, 2, `the sub-chat once: ${told}`);
 		assert.equal(told.split(`background command ${bg} `).length, 2, `the command once: ${told}`);
 		const woken = client.wakes(k).length;
+		const contents = client.items(k, "marker").filter((item) => item.details?.wake).map((item) => item.details.wake.text);
+		assert.equal(contents.length, woken);
+		assert.ok(contents.some((text) => text.includes("Its output was in the engine that stopped, and was not kept.")));
 		engine.kill("SIGTERM");
 		await exited(engine);
 		engine = boot();
@@ -369,6 +428,7 @@ try {
 		await client.call("conversation.open", { id: k });
 		await client.until("transcript", () => client.items(k, "assistant").length > 0);
 		assert.equal(client.wakes(k).length, woken, "and only once");
+		assert.deepEqual(client.items(k, "marker").filter((item) => item.details?.wake).map((item) => item.details.wake.text), contents, "saved wakes retain their model input after a restart");
 		step("a wake survives the engine stopping: a command that ended with it wakes the agent once, and a sub-chat is followed again");
 	}
 
