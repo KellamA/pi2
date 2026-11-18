@@ -108,7 +108,7 @@ final class AppModel {
     var showMainWindow: () -> Void = {}
 
     /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
-    /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models.md).
+    /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
         workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
     }

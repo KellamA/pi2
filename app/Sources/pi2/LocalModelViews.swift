@@ -3,7 +3,7 @@ import SwiftUI
 
 // Models run on this Mac (#291, part of #173): what the conversation, Activity and the menu bar show of them. The engine
 // starts and stops them (engine/src/localrun.ts); the app says which conversations it shows, sees what runs, and can stop
-// one. See docs/local-models.md.
+// one. See docs/local-models-running.md.
 
 /// What a conversation whose model runs on this Mac is told of it: whether it is loading, loaded, stopped or failed.
 struct LocalModelState: Codable, Equatable {
@@ -126,7 +126,7 @@ struct LocalModelStrip: View {
 }
 
 /// Activity's section for models running on this Mac: each with since when, how much memory, who uses it, and Stop.
-struct LocalModelsSection: View {
+struct LocalModelsActivity: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
 

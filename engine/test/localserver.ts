@@ -1,4 +1,4 @@
-// A stand-in for the engine that runs models on this Mac (Strata), for engine/test/localmodels.ts. Not a test itself.
+// A stand-in for the engine that runs models on this Mac (Strata), for engine/test/localrun.ts. Not a test itself.
 //
 // It takes the command line localengine.ts gives the real engine, serves the same OpenAI-compatible API on the address
 // it is given, and behaves as its "model" file says, a JSON file named by --model:

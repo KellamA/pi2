@@ -45,6 +45,7 @@ Chat mode's settings are under `chat` in the engine's `settings.json`, with thes
 - **Search:** results have `chat`, so the app can say which is which.
 - **Usage:** a chat's spend counts towards the day's total and the budget, as any conversation's. It is not counted as an agent's: the `usage` event has `chats: { cost, tokens }` beside `agents`, and its rows of conversations have `chat`.
 - **Export:** a chat's Markdown names the assistant "Assistant"; its JSON has `chat: true` and `agent: null`.
+- **Versions:** Try Again and Edit make versions of a chat, each a hidden conversation of its own that the chat stands for everywhere: requests on the chat act on the version shown, and Activity, the Inbox, usage, search, archiving and deleting count a version as the chat. Only chats have them. See [architecture.md](architecture.md#a-chats-versions).
 - **Schedules, worktrees, command rules, memory, reference files, variables:** these belong to agents, so a chat has none of them.
 
 ## In the app

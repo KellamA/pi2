@@ -12,7 +12,7 @@ struct ActivityView: View {
             VStack(alignment: .leading, spacing: 22) {
                 if let recovery = engine.recovery { recoveryBanner(recovery) }
                 running
-                if !engine.localRunning.isEmpty { LocalModelsSection(model: model) }
+                if !engine.localRunning.isEmpty { LocalModelsActivity(model: model) }
                 if !engine.backgroundCommands.isEmpty { background }
                 scheduled
             }

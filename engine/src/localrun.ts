@@ -1,6 +1,6 @@
 // Running a model on this Mac (#291, part of #173): the engine that serves it is started when a conversation that uses
 // the model is opened or set working, shared by every conversation that uses it, and stopped a minute after the last one
-// stops using it. See docs/local-models.md.
+// stops using it. See docs/local-models-running.md.
 //
 // A conversation uses a model on this Mac while its model is that one and it is open in one of the app's panes (the app
 // says which with `conversations.shown`), or while it has work running: a run, a sub-chat's or a scheduled one. It stops
@@ -26,6 +26,7 @@ import { isPutAway } from "./archive.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { type EngineRecipe, type LocalModel, type LocalSetup, localSetupReader, STRATA } from "./localengine.ts";
+import { localChanged } from "./localmodels.ts";
 import { forgetRun, killLater, killRemaining, type Listed, leftOverLog, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 import { LOCAL_PROVIDER, type LocalLease } from "./providers.ts";
 
@@ -219,6 +220,8 @@ function announce(): void {
 	clearTimeout(announced);
 	announced = undefined;
 	engine.broadcast({ event: "local.running", ...runningStatus() });
+	// And `local`, the whole of `local.status`, which has this half too (localmodels.ts).
+	localChanged();
 	for (const id of watching) engine.stateChanged(id);
 }
 /** The same, at most twice a second: for progress, which an engine may print many times a second. */
@@ -704,8 +707,6 @@ export const localRun: Feature = (_host, running) => {
 				await stop(server, "was stopped by hand");
 				return {};
 			},
-			// Until the downloads piece (#292) answers it with what is installed, and this feature's half beside it.
-			"local.status": async () => ({ ...readSetup(), ...runningStatus() }),
 		},
 	};
 };
