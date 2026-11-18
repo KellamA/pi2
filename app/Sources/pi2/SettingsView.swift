@@ -3,13 +3,15 @@ import SwiftUI
 /// The tabs of the Settings window, by the names a development build can open it on with `PI2_SHOW=settings:<name>`
 /// (docs/development.md). In the order they appear.
 enum SettingsTab: String, CaseIterable {
-    case general, providers, tools, storage
+    case general, chat, providers, tools, storage
 }
 
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
 enum SettingsSection: String {
     // General
     case appearance, notifications, background, updates
+    // Chat
+    case instructions, newChats = "new-chats", memory, agentNotes = "agent-notes"
     // Providers
     case subscriptions, endpoints, local, keys
     // Tools
@@ -141,6 +143,9 @@ struct SettingsView: View {
             GeneralSettings(home: engine.dataFolder.path)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
+            ChatSettingsView(engine: engine)
+                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                .tag(SettingsTab.chat)
             ProvidersSettings(engine: engine)
                 .tabItem { Label("Providers", systemImage: "key") }
                 .tag(SettingsTab.providers)

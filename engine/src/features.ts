@@ -8,6 +8,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
+import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
@@ -46,6 +47,8 @@ export type Engine = {
 	log(...args: unknown[]): void;
 	agents(): Record<string, AgentProfile>;
 	library(): { conversations: Record<string, Meta> };
+	/** Chat mode's settings as they are now (chat.ts). */
+	chatSettings(): ChatSettings;
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
@@ -74,6 +77,8 @@ export type FeatureParts = {
 	wraps?: Wrap<any>[];
 	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
 	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean }): string[];
+	/** Which of this feature's tools a chat (chat.ts) is given, with chat mode's settings as they are now. */
+	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
 	withheld?(): string[];
 	/** Requests from the app, by method name. Throw an Error with a plain message to refuse. */
