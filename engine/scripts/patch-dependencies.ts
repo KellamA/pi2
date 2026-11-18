@@ -111,6 +111,33 @@ const PATCHES: Patch[] = [
     const until = retry ? runtime.now() + retryDelayMs(policy, counted) : 0;`,
 	},
 	{
+		// Keep the same task (and its submissions and owner) when the person changes model during a limit wait. Move
+		// its sleep deadline in the same commit as the new model. The retry phase places queued steers as usual, then
+		// prepares a fresh first attempt, without carrying over the old model's compaction or retry count. Issue #358.
+		why: "a person cannot end a generation's retry sleep without stopping the run",
+		file: "node_modules/@earendil-works/pi-durable/dist/session/transaction.js",
+		find: `    /** Internal: replace one task record completely. Tasks change their own state through their runtime. */`,
+		replace: `    /** Patched by pi2: expedite a generation retry read in this transaction, if it is still sleeping. */
+    carryOnGeneration(task, now) {
+        if (task.kind !== "pi.generation" || task.abortRequested || task.state.status !== "sleeping" ||
+            task.state.until <= now || task.state.checkpoint.phase !== "retry" || task.state.checkpoint.poll !== undefined)
+            return false;
+        this.setTask({ ...task, state: { status: "sleeping", until: 0, checkpoint: { phase: "retry", until: 0, attempt: 0 } } });
+        return true;
+    }
+    /** Internal: replace one task record completely. Tasks change their own state through their runtime. */`,
+	},
+	{
+		why: "type the generation retry operation",
+		file: "node_modules/@earendil-works/pi-durable/dist/types.d.ts",
+		find: `export interface Tx {
+    conversation`,
+		replace: `export interface Tx {
+    /** Patched by pi2: expedite a generation retry read in this transaction, if it is still sleeping. */
+    carryOnGeneration(task: TaskRecord<JsonValue, JsonValue, JsonValue>, now: number): boolean;
+    conversation`,
+	},
+	{
 		// A message the person sends to steer a run is placed after the run's current round of tool calls. A run waiting to
 		// ask a model again (a retry's sleep, and so a wait for a provider's limit, which can be hours) has no round: the
 		// message was placed only after the request following the wait had been answered, and that answer was to the

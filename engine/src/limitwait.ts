@@ -16,8 +16,14 @@
 
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId, defineDoc, GenerationTask, hook, LiveDoc } from "@earendil-works/pi-durable";
+import { isPutAway } from "./archive.ts";
 import type { Engine, Feature } from "./features.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
+import { defaultThinking } from "./providers.ts";
+import { Library, type ModelRef } from "./state.ts";
+
+/** A display-only transcript entry for a model switch the person asked for. */
+export const CARRY_ON_ENTRY = "pi2.carryOn";
 
 // ---- Reading a refusal
 
@@ -185,6 +191,8 @@ export type Wait = {
 	attempt: number;
 	provider: string;
 	providerName: string;
+	/** The model that refused, even if the toolbar has since changed the conversation's model. */
+	modelId?: string;
 };
 
 export type WaitSettings = {
@@ -348,7 +356,7 @@ export class Waits {
 			// Half the step and a random part of the other half: runs refused together spread out, and each still waits.
 			waitMs = Math.min(step / 2 + (this.#callbacks.random() * step) / 2, this.#settings.maxWaitMs - waited);
 		}
-		const wait: Wait = { kind: limit.kind, since, until: now + waitMs, told: limit.until !== undefined, refusals: count, attempt, provider: message.provider, providerName };
+		const wait: Wait = { kind: limit.kind, since, until: now + waitMs, told: limit.until !== undefined, refusals: count, attempt, provider: message.provider, providerName, modelId: message.model };
 		this.#waits.set(id, wait);
 		this.#callbacks.changed(id, wait);
 		if (current === undefined) {
@@ -392,6 +400,11 @@ export class Waits {
 			if (kept.reached) this.#callbacks.episode?.({ phase: "carried_on", episode, at: now });
 		}
 		this.#end(id, `carries on: ${wait.providerName} answered after ${waited} of waiting (${wait.refusals} refusal${wait.refusals === 1 ? "" : "s"})`, true);
+	}
+
+	/** Leaving a provider's wait is not evidence that its limit reset. */
+	switched(id: number, wait: Wait): void {
+		if (this.#waits.get(id) === wait) this.#end(id, "the person chose another model");
 	}
 
 	/** The conversations working now: a wait of one that is not has ended with its run (stopped, most likely). */
@@ -484,7 +497,7 @@ export function duration(ms: number): string {
 
 // ---- The feature
 
-const LimitWaits = defineDoc<{ waits: Record<string, Wait>; saved?: number }>({
+const LimitWaits = defineDoc<{ waits: Record<string, Wait> }>({
 	kind: "pi2.limitWaits",
 	version: 1,
 	scope: "session",
@@ -500,7 +513,10 @@ function setting(name: string, fallback: number): number {
 
 /** What the app is sent about a wait: in the conversation's state while the run sleeps, and in its Activity row. */
 function shown(wait: Wait) {
-	return { kind: wait.kind, since: wait.since, until: wait.until, told: wait.told, refusals: wait.refusals, provider: wait.providerName };
+	return {
+		kind: wait.kind, since: wait.since, until: wait.until, told: wait.told, refusals: wait.refusals, provider: wait.providerName,
+		model: wait.modelId === undefined ? null : { provider: wait.provider, modelId: wait.modelId },
+	};
 }
 
 export const limitWait: Feature = (host, engine: Engine) => {
@@ -510,32 +526,20 @@ export const limitWait: Feature = (host, engine: Engine) => {
 		maxNamedMs: DEFAULTS.maxNamedMs,
 		reachedAfterMs: setting("PI2_LIMIT_REACHED_MS", DEFAULTS.reachedAfterMs),
 	};
-	/** Saves so far; a save stores the waits only if no later one has been stored before it. */
-	let saves = 0;
-	/**
-	 * Store the waits as they are now. The commit is started at once, not after the one before it, so that it is on its way
-	 * before pi-durable's commit of the run's sleep, which follows the decision this is called from.
-	 */
-	const save = (): Promise<unknown> => {
-		const waits = Object.fromEntries([...waitsOf().all()].map(([id, wait]) => [String(id), wait]));
-		const number = ++saves;
-		return engine
-			.harness()
-			.commit(async (tx) => {
-				const doc = await tx.doc(LimitWaits);
-				if ((doc.saved ?? 0) > number) return;
-				doc.waits = waits;
-				doc.saved = number;
-			}, engine.context())
-			.catch((error) => engine.log("limit waits: could not be saved:", error instanceof Error ? error.message : String(error)));
-	};
+	// Commit before pi-durable stores the sleep. Write only this wait, so a change to another run cannot restore
+	// a wait that Carry On removed in the same transaction as advancing its sleep.
+	const save = (id: number, wait: Wait | undefined): Promise<unknown> => engine.harness().commit(async (tx) => {
+		const doc = await tx.doc(LimitWaits);
+		if (wait === undefined) delete doc.waits[String(id)];
+		else doc.waits[String(id)] = wait;
+	}, engine.context()).catch((error) => engine.log("limit waits: could not be saved:", error instanceof Error ? error.message : String(error)));
 	const callbacks: Callbacks = {
 		now: Date.now,
 		random: Math.random,
 		providerName: (id) => engine.providers().models.getProvider(id)?.name ?? id,
-		changed: (id) => {
+		changed: (id, wait) => {
 			// Shown once stored, so that what Activity shows has been kept (a test waits for it before it kills the engine).
-			void save().then(() => {
+			void save(id, wait).then(() => {
 				engine.stateChanged(id);
 				engine.activityChanged();
 			});
@@ -573,11 +577,59 @@ export const limitWait: Feature = (host, engine: Engine) => {
 	};
 	let waits: Waits | undefined;
 	const waitsOf = () => (waits ??= new Waits(settings, callbacks));
+	const modelName = (ref: ModelRef) => {
+		const name = engine.providers().models.getModel(ref.provider, ref.modelId)?.name ?? ref.modelId;
+		return `${name} (${callbacks.providerName(ref.provider)})`;
+	};
 	return {
+		carryOn: async (conversation, model, scope) => {
+			const root = conversation as unknown as number;
+			const to = modelName(model);
+			const switched = await engine.harness().commit(async (tx) => {
+				const { conversations } = await tx.doc(Library);
+				const rootMeta = conversations[String(root)];
+				if (isPutAway(rootMeta) || (rootMeta?.parent !== undefined && isPutAway(conversations[String(rootMeta.parent)]))) return [];
+				const saved = await tx.doc(LimitWaits);
+				const candidates = [];
+				for (const [id, wait] of waitsOf().all()) {
+					const meta = conversations[String(id)];
+					if ("subChats" in scope ? meta?.parent !== root || meta.version === true : id !== root || wait.since !== scope.since) continue;
+					if (isPutAway(meta) || saved.waits[String(id)]?.since !== wait.since) continue;
+					const chat = id as unknown as ConversationId;
+					const live = await tx.doc(LiveDoc, chat);
+					if (live.run === undefined || live.generation?.retry === undefined || (wait.attempt !== 0 && live.generation.attempt !== wait.attempt)) continue;
+					const task = await tx.task(live.run.taskId);
+					if (task === undefined) continue;
+					const agent = await tx.doc(AgentDoc, chat);
+					const from = wait.modelId === undefined ? agent.model : { provider: wait.provider, modelId: wait.modelId };
+					if (from === undefined || (from.provider === model.provider && from.modelId === model.modelId)) continue;
+					candidates.push({ id, chat, wait, live, task, agent, from: modelName(from) });
+				}
+				// Read every task before the first table write. The task state (not the Activity row) is the final check:
+				// Stop or the scheduled retry may have beaten the click, in which case nothing in that run is changed.
+				const changed = [];
+				for (const { id, chat, wait, live, task, agent, from } of candidates) {
+					if (!tx.carryOnGeneration(task, Date.now())) continue;
+					agent.model = model;
+					const thinking = defaultThinking(model);
+					if (agent.thinkingLevel === undefined && thinking !== null) agent.thinkingLevel = thinking;
+					delete live.generation;
+					delete saved.waits[String(id)];
+					await tx.appendEntry(chat, { kind: CARRY_ON_ENTRY, data: { text: `You changed the model from ${from} to ${to} and carried on.` } });
+					changed.push({ id, wait, from });
+				}
+				if ("subChats" in scope && changed.length > 0) {
+					const from = changed.map((change) => `#${change.id}: ${change.from}`).join(", ");
+					await tx.appendEntry(conversation, { kind: CARRY_ON_ENTRY, data: { text: `You changed the model for ${changed.length === 1 ? "1 sub-chat" : `${changed.length} sub-chats`} to ${to} and carried on (${from}).` } });
+				}
+				return changed;
+			}, engine.context());
+			for (const { id, wait } of switched) waitsOf().switched(id, wait);
+			return switched.map(({ id }) => id);
+		},
 		start: async () => {
 			const doc = await engine.harness().snapshot(LimitWaits, engine.context());
 			const saved: Record<string, Wait> = JSON.parse(JSON.stringify(doc?.waits ?? {}));
-			saves = doc?.saved ?? 0;
 			// Anything decided before this (nothing, as the features start in order) is newer than what was saved.
 			for (const [id, wait] of waits?.all() ?? []) saved[String(id)] = wait;
 			waits = new Waits(settings, callbacks, saved);

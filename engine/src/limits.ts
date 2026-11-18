@@ -901,7 +901,7 @@ class LimitsTracker {
 			// longer true, and goes.
 			if (notice?.stage !== "reached") return;
 			this.#notices = this.#notices.filter((each) => each !== notice);
-			this.#engine.log(`limits: nothing waits for ${episode.providerName}'s limit any more (the runs that waited were stopped); its notice is taken out of the Inbox`);
+			this.#engine.log(`limits: nothing waits for ${episode.providerName}'s limit any more; its notice is taken out of the Inbox`);
 			this.#saveSoon();
 			this.#broadcastNow();
 			return;

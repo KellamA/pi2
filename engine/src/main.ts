@@ -45,7 +45,7 @@ import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
-import { noticingRefusals } from "./limitwait.ts";
+import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { preparePlan } from "./plan.ts";
@@ -621,7 +621,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
-	if (entry.kind === THINKING_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
+	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
 		// With the command's id, so the line can open the window with its output.
 		const details = backgroundMarkerDetails(entry.data);
@@ -963,6 +963,13 @@ async function defaultModel(): Promise<ModelRef> {
 	const wanted = settings.defaultModel;
 	if (wanted !== undefined && (await usable(wanted))) return wanted;
 	return { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
+}
+
+/** A choice in a conversation's model menu counts for future conversations, too. */
+function rememberModel(model: ModelRef, chat: boolean): void {
+	if (chat) settings.lastChatModel = model;
+	else settings.defaultModel = model;
+	saveSettings();
 }
 
 /** Whether `model`'s provider is connected and offers it now. */
@@ -1516,10 +1523,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			// A model on this Mac comes with its own thinking level when the conversation has none (defaultThinking).
 			const thinking = params.thinkingLevel === undefined && ((await harness.snapshot(AgentDoc, conv.id, context))?.thinkingLevel ?? null) === null ? defaultThinking(model) : null;
 			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
-			// The next conversation starts with it: the next chat for a chat, else the next of an agent's.
-			if (chat) settings.lastChatModel = { provider: model.provider, modelId: model.modelId };
-			else settings.defaultModel = { provider: model.provider, modelId: model.modelId };
-			saveSettings();
+			rememberModel({ provider: model.provider, modelId: model.modelId }, chat);
 			for (const feature of host.features) feature.modelChanged?.(id);
 		}
 		if (params.thinkingLevel !== undefined) await conv.configure({ thinkingLevel: params.thinkingLevel as never }, context);
@@ -1541,6 +1545,24 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		}
 		void client;
 		return {};
+	},
+	"conversation.carryOn": async (params) => {
+		const conv = await conversation(params.id);
+		const id = chatOf(conv.id);
+		refuseIfPutAway(id);
+		const { provider, modelId } = (params.model ?? {}) as Partial<ModelRef>;
+		if (typeof provider !== "string" || typeof modelId !== "string") throw new Error("Choose a model to carry on with");
+		const model = { provider, modelId };
+		if (!(await usable(model))) throw new Error(`Model is not available: ${provider}/${modelId}`);
+		const since = params.since;
+		const scope = params.subChats === true ? { subChats: true as const } : typeof since === "number" ? { since } : undefined;
+		if (scope === undefined) throw new Error("This run is no longer waiting for that limit");
+		const carryOn = host.features.find((feature) => feature.carryOn !== undefined)?.carryOn;
+		const switched = await carryOn?.(conv.id, model, scope);
+		if (!switched?.length) throw new Error("No run is still waiting for a limit that can carry on with that model");
+		rememberModel(model, isChat(library.conversations[String(id)]));
+		for (const switchedId of switched) for (const feature of host.features) feature.modelChanged?.(chatOf(switchedId));
+		return { switched };
 	},
 	submit: async (params) => {
 		const conv = await conversation(params.id);
