@@ -11,7 +11,7 @@ const linux = new Set([
 const group = process.argv[2];
 if (group !== "linux" && group !== "macos") throw new Error("Choose linux or macos");
 const tests = readdirSync(new URL("../test/", import.meta.url))
-	.filter((name) => name.endsWith(".ts") && name !== "patience.ts" && name !== "browser.ts")
+	.filter((name) => name.endsWith(".ts") && name !== "patience.ts" && name !== "browser.ts" && name !== "localserver.ts")
 	.sort();
 for (const name of linux) if (!tests.includes(`${name}.ts`)) throw new Error(`Missing Linux test: ${name}`);
 const selected = tests.filter((name) => name === "credentialsplatform.ts" || linux.has(name.slice(0, -3)) === (group === "linux"));

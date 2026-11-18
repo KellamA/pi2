@@ -107,6 +107,12 @@ final class AppModel {
     /// Brings back the main window after it was closed; set by the views that can open windows.
     var showMainWindow: () -> Void = {}
 
+    /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
+    /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
+    var shownConversations: Set<Int> {
+        workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
+    }
+
     var selectedConversationID: Int? {
         if case .conversation(let id) = selection { return id }
         return nil
@@ -430,6 +436,8 @@ struct RootView: View {
                 if let parent = engine.conversations.first(where: { $0.id == id })?.parent { model.collapsed.remove(parent) }
             }
         }
+        // Which conversations are on screen, for the engine: it keeps a model on this Mac loaded while one using it is.
+        .onChange(of: model.shownConversations, initial: true) { _, shown in engine.setShown(shown) }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
             guard loaded else { return }
             // Panes kept from last time that show conversations since deleted are emptied.
