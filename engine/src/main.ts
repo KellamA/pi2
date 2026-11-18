@@ -38,6 +38,7 @@ import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunning
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validateToolsOn } from "./builtins.ts";
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
+import { chatHandover, handoverAttachments } from "./handover.ts";
 import { codemodeExtension } from "./codemode.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
@@ -826,6 +827,10 @@ function libraryEvent() {
 			// Chat mode lists only chats, and the agent view never does (chat.ts).
 			chat: isChat(meta),
 			pinned: meta.pinned === true,
+			// Continue with an Agent (#289): the chat a conversation was continued from, and the conversations a chat was
+			// continued in, leaving out any deleted since.
+			continuedFrom: meta.continuedFrom ?? null,
+			continuedIn: (meta.continuedIn ?? []).filter((other) => library.conversations[String(other)] !== undefined && !isDeleted(library.conversations[String(other)])),
 			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
 			allowEverything: meta.allowEverything === true,
 		}))
@@ -1022,6 +1027,71 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
 		},
 		context,
 	);
+	return { id: created.id };
+}
+
+/**
+ * Continue with an Agent (#289, handover.ts): a new conversation of `agentId`, in `cwd` or the agent's own folder, whose
+ * first message is chat `chatId` as it stands, with its pictures and files, and what the person typed. The chat is left
+ * as it was; each is linked to the other on its record. The agent's access, approvals and Allow everything apply from
+ * that first message, as in any conversation of its own.
+ */
+async function continueChat(params: Params): Promise<{ id: ConversationId }> {
+	const shown = await conversation(params.id);
+	const chatId = chatOf(shown.id);
+	const meta = library.conversations[String(chatId)];
+	if (!isChat(meta)) throw new Error("Only a chat can be continued with an agent");
+	if (isDeleted(meta)) throw new Error("That chat was deleted");
+	const agent = agents[String(params.agentId ?? "")];
+	if (agent === undefined) throw new Error("Choose one of your agents to continue with");
+	if (params.text !== undefined && typeof params.text !== "string") throw new Error("text must be text");
+	const typed = typeof params.text === "string" ? params.text.trim() : "";
+	let cwd = agent.cwd;
+	if (params.cwd !== undefined && params.cwd !== null) {
+		cwd = text(params, "cwd");
+		if (!(existsSync(cwd) && statSync(cwd).isDirectory())) throw new Error(`Not a folder: ${cwd}`);
+	}
+	if (busyConversations.has(chatId)) throw new Error("The chat is still answering. Wait for it to finish, or stop it, then continue with an agent.");
+	if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
+
+	// The chat as it stands: the version shown, with the history it was made from.
+	const entries: EntryRecord[] = [];
+	let cursor: unknown;
+	for (;;) {
+		const batch = await shown.entries({ order: "ascending" }, 500, cursor as never, context);
+		entries.push(...batch.items);
+		cursor = (batch as { next?: unknown }).next;
+		if (cursor === undefined || batch.items.length === 0) break;
+	}
+	if (!entries.some((entry) => (entry.model?.[0] as { role?: string } | undefined)?.role === "user")) throw new Error("This chat has nothing in it yet to continue from");
+
+	const change = { ...(await agentChange(agent, { subChat: false })), cwd };
+	const model = change.model == null ? undefined : providers.models.getModel(change.model.provider, change.model.modelId);
+	const handover = chatHandover(entries, { title: meta!.title, agent: agent.name, typed: typed !== "", seesPictures: model === undefined || model.input.includes("image") });
+	const attachments = handoverAttachments(handover);
+	const now = Date.now();
+	const created = await harness.createConversation(
+		{
+			ownership: { kind: "ownerless" },
+			agent: change,
+			init: async (tx, id) => {
+				const conversations = (await tx.doc(Library)).conversations;
+				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId };
+				const chat = conversations[String(chatId)];
+				if (chat !== undefined) chat.continuedIn = [...(chat.continuedIn ?? []), id as unknown as number];
+			},
+		},
+		context,
+	);
+	settings.lastAgent = agent.id;
+	saveSettings();
+	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
+	const conv = (await harness.conversation(created.id, context))!;
+	// Its own agent's Allow everything, and its own tools, as for any first message of a conversation of that agent.
+	await takeSwitch(conv.id);
+	await syncTools(conv).catch((error) => log("could not update the tools of conversation", created.id, error instanceof Error ? error.message : ""));
+	await conv.submit({ type: "input", content: userContent(typed, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(typed, attachments) }, whenBusy: "followUp" }, context);
+	for (const feature of host.features) feature.messageSent?.(created.id as unknown as number);
 	return { id: created.id };
 }
 
@@ -1384,6 +1454,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// switch changes what every chat is offered, from its next message (syncTools).
 		return after;
 	},
+	/** Continue with an Agent (#289): `{ id, agentId, cwd?, text? }`, answered with the new conversation's `{ id }`. */
+	"chat.continueWithAgent": async (params) => continueChat(params),
 	"conversation.configure": async (params, client) => {
 		const conv = await conversation(params.id);
 		const id = chatOf(conv.id);

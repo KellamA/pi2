@@ -3,7 +3,8 @@
 //
 // The chat instructions from Settings reach every chat and no agent. Chat mode keeps notes of its own, across chats, apart
 // from every agent's: a chat remembers and forgets only its own, and can read the agents' notes (those with memory on)
-// with agent_notes, which changes nothing. It never works the other way: no agent is given chat mode's notes or the tool.
+// with agent_notes, which changes nothing. It never works the other way: no agent is given chat mode's notes or the tool,
+// a chat continued as an agent's conversation (#289) included.
 // With memory off, a chat remembers nothing and reads nothing. Prints what the agents' notes would cost in every chat's
 // prompt, against the one line and the tool that chat mode uses instead.
 
@@ -191,6 +192,26 @@ try {
 	assert.equal(JSON.stringify(client.agentNotes(forge.id)), forgeBefore);
 	step("the app adds, edits and deletes chat mode's notes, apart from the agents'");
 
+	// ---- A chat continued as an agent's conversation (#289) takes none of chat mode's notes with it.
+	const { id: secret } = await client.call("memory.add", { chat: true, text: "Zephyrine is the name of the person's cat." });
+	await client.until("the note to keep back", () => client.chatNotes().some((n) => n.id === secret));
+	// Asked in another chat: the demo model answers /system with the prompt, which would put the note in this chat's answers.
+	assert.match(await client.section(nextChat, "memory"), /Zephyrine/, "chats have it in their prompt");
+	const { id: continued } = await client.call("chat.continueWithAgent", { id: chat, agentId: forge.id, text: "Please carry on" });
+	await client.call("conversation.open", { id: continued });
+	await client.until("the continued conversation's first answer", () => {
+		const conv = client.conversations.get(continued);
+		return conv !== undefined && !conv.state.busy && conv.items.some((item: any) => item.kind === "assistant");
+	});
+	const continuedSeen = await client.offered(continued);
+	assert.ok(!continuedSeen.tools.includes("agent_notes"), `the agent's conversation has no agent_notes: ${continuedSeen.tools.join(" ")}`);
+	const continuedMemory = await client.section(continued, "memory");
+	assert.match(continuedMemory, /The project is called Lighthouse/, "the agent has its own notes");
+	assert.ok(!/Zephyrine|Lives by the sea|c1|c3/.test(continuedMemory), "and none of chat mode's");
+	assert.ok((await client.call("search", { query: "Please carry on" })).results.some((result: any) => result.conversationId === continued), "the search reaches the handed-over chat");
+	assert.ok(!(await client.call("search", { query: "Zephyrine" })).results.some((result: any) => result.conversationId === continued), "no note of chat mode's is in what the agent was given");
+	step("a chat continued with an agent gives it none of chat mode's notes");
+
 	// ---- What the agents' notes would cost in every chat's prompt, against what chat mode sends instead.
 	for (let i = client.agentNotes(forge.id).length; i < 60; i++) await client.call("memory.add", { agentId: forge.id, text: `Forge's note ${i}: ${"x".repeat(380)}` });
 	await client.until("sixty notes", () => client.agentNotes(forge.id).length === 60);
@@ -212,7 +233,7 @@ try {
 	await stop(engine, "SIGKILL");
 	engine = start();
 	client = await Client.connect(engine, home);
-	await client.until("memory sent on connecting", () => client.events.memory?.chat?.notes?.length === 2);
+	await client.until("memory sent on connecting", () => client.events.memory?.chat?.notes?.length === 3);
 	const later = await client.open({ chat: true });
 	assert.match(await client.section(later, "memory"), /- c1: The person sails a boat called Petrel\.\n- c3: Lives by the sea/);
 	const laterAgent = await client.open({ agentId: "forge" });
@@ -230,14 +251,12 @@ try {
 	assert.ok(result.isError && !/Noted/.test(result.text), result.text);
 	result = await client.tool(later, "/tool agent_notes {}");
 	assert.ok(result.isError && !/Forge's note/.test(result.text), result.text);
-	assert.equal(client.chatNotes().length, 2, "nothing was noted, and the notes are kept");
+	assert.equal(client.chatNotes().length, 3, "nothing was noted, and the notes are kept");
 	assert.match(await client.section(later, "chat_instructions"), /Call me Captain/, "the instructions are not memory: they still count");
 	await client.call("chat.set", { memory: true });
 	assert.ok((await client.offered(later)).tools.includes("remember"), "on again, the tools come back at the next message");
 	step("with memory off, a chat remembers nothing and reads nothing, and its notes are kept");
 
-	// Continuing a chat as an agent's conversation (#289) is not in the engine yet; when it is, its test should check that
-	// the agent's conversation is given none of chat mode's notes.
 } finally {
 	client.close();
 	await stop(engine);
