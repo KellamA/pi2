@@ -216,10 +216,15 @@ struct ChatView: View {
     /// What a queued message is waiting for, on its chip: a steer waits for the calls that cannot be left (heed.ts).
     private func queuedLabel(_ item: QueuedInput) -> String {
         guard item.mode == "steer" else { return "Queued until the answer" }
+        // Waiting for a provider's limit, it goes with the first request after the wait (#324).
+        if let limit = state?.limitWait { return "After \(limit.provider)’s \(limit.kind == "overloaded" ? "overload" : "limit"), \(limit.untilText)" }
         return state?.messageWaits?.waitingFor.map { "After \($0)" } ?? "Steering"
     }
 
     private func queuedHelp(_ item: QueuedInput) -> String {
+        if item.mode == "steer", let limit = state?.limitWait {
+            return "\(agentName) reads this with its first request after the wait for \(limit.provider), at \(limit.untilText): it cannot be answered before. Remove it to take it back; Stop ends the run now."
+        }
         guard item.mode == "steer" else { return "\(agentName) reads this once it has answered. Stop ends the run now." }
         if let waiting = state?.messageWaits?.waitingFor { return "\(agentName) reads this once \(waiting) has finished: it cannot be left half done. Stop ends the run now." }
         return "\(agentName) reads this after its current step."
@@ -246,7 +251,7 @@ struct ChatView: View {
     private var arrival: some View {
         // A chat's messages are always queued, and its line would only say so.
         if busy, !isChat, let waits = state?.messageWaits {
-            Text(waits.sentence(agent: engine.agent(state?.agent.agentId)?.name ?? "The agent", steer: steer))
+            Text(waits.sentence(agent: engine.agent(state?.agent.agentId)?.name ?? "The agent", steer: steer, limit: state?.limitWait))
                 .font(.system(size: 11.5))
                 .foregroundStyle(Theme.tx3)
                 .lineLimit(2)
