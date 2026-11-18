@@ -700,7 +700,7 @@ struct MessageWaits: Codable, Equatable {
 
     /// What a message already sent to steer is waiting for, for its chip; nil when it is only waiting for the current step.
     var waitingFor: String? {
-        holds.isEmpty ? nil : "after \(Self.joined(holds))"
+        holds.isEmpty ? nil : Self.joined(holds)
     }
 }
 

@@ -187,12 +187,12 @@ struct ChatView: View {
     /// What a queued message is waiting for, on its chip: a steer waits for the calls that cannot be left (heed.ts).
     private func queuedLabel(_ item: QueuedInput) -> String {
         guard item.mode == "steer" else { return "Queued until the answer" }
-        return state?.messageWaits?.waitingFor.map { "Waiting \($0)" } ?? "Steering"
+        return state?.messageWaits?.waitingFor.map { "After \($0)" } ?? "Steering"
     }
 
     private func queuedHelp(_ item: QueuedInput) -> String {
         guard item.mode == "steer" else { return "\(agentName) reads this once it has answered. Stop ends the run now." }
-        if let waiting = state?.messageWaits?.waitingFor { return "\(agentName) reads this \(waiting): those calls cannot be left half done. Stop ends the run now." }
+        if let waiting = state?.messageWaits?.waitingFor { return "\(agentName) reads this once \(waiting) has finished: it cannot be left half done. Stop ends the run now." }
         return "\(agentName) reads this after its current step."
     }
 
