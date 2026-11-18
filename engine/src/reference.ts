@@ -4,9 +4,9 @@
 // each time, so an edit shows up in the next read. Reading is all that is offered, whatever the conversation's tool
 // access, and only inside what the person listed.
 
-import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, join, sep } from "node:path";
+import { runOffThread } from "./offthread.ts";
 
 export type ReferenceFile = {
 	/** Absolute path of a file or a folder. */
@@ -97,7 +97,7 @@ export function locateReference(files: readonly ReferenceFile[], path: string): 
 export type ReferenceResult = { text: string; isError?: boolean };
 
 /** Read a listed file (a window of its lines) or list a listed folder. */
-export function readReference(files: readonly ReferenceFile[], path: string, offset?: number, limit?: number): ReferenceResult {
+export async function readReference(files: readonly ReferenceFile[], path: string, offset?: number, limit?: number): Promise<ReferenceResult> {
 	if (files.length === 0) return { text: "This agent has no reference files.", isError: true };
 	const real = locateReference(files, path);
 	if (real === undefined) {
@@ -118,9 +118,10 @@ export function readReference(files: readonly ReferenceFile[], path: string, off
 	let content: string;
 	const kind = extname(real).toLowerCase();
 	if (DOCUMENTS.has(kind)) {
-		// Word, RTF and OpenDocument files are read as their text. textutil ships with macOS.
-		const converted = spawnSync("/usr/bin/textutil", ["-convert", "txt", "-stdout", real], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 20_000 });
-		if (converted.status !== 0 || typeof converted.stdout !== "string") return { text: `${real} could not be read as a document. It may be damaged or password-protected.`, isError: true };
+		// Word, RTF and OpenDocument files are read as their text. textutil ships with macOS. It was run synchronously,
+		// which held the engine's thread for as long as it took, up to its 20 seconds (#344).
+		const converted = await runOffThread("/usr/bin/textutil", ["-convert", "txt", "-stdout", real], { maxBuffer: 32 * 1024 * 1024, timeout: 20_000 });
+		if (converted.error !== null) return { text: `${real} could not be read as a document. It may be damaged or password-protected.`, isError: true };
 		content = converted.stdout;
 	} else if (kind === ".pdf") {
 		return { text: `${real} is a PDF, which cannot be read here yet. Ask the person to attach it to the conversation instead.`, isError: true };

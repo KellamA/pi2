@@ -51,6 +51,8 @@ struct ToolsSettings: View {
             .id(SettingsSection.servers)
             CoauthorSettings(engine: engine)
                 .id(SettingsSection.commits)
+            CommandPrioritySettings(engine: engine)
+                .id(SettingsSection.priority)
         }
         .formStyle(.grouped)
         .settingsPage(.tools)

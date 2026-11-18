@@ -207,6 +207,32 @@ So in a release build, an agent's command that captures the screen, such as `scr
 
 Seen on macOS 27.2: from an installed release's engine started by the login item (#95), `CGPreflightScreenCaptureAccess()` true and `AXIsProcessTrusted()` false, the log showing the subject `dev.pi2.app` for the first and the Node's path for the second, and a one-pixel `screencapture` working. A prompt in that case was not seen, since pi² had the permission; by the subject, it would name pi². From a throwaway copy's engine before #263, both false with the copy's bundle id as the subject of each; after it (#263), both false with the Node's path as the subject of each, and the engine its own responsible process. No capture was tried from a copy.
 
+### Staying quick while agents work
+
+The app waits on the engine for everything it shows, and the engine has one thread: whatever holds that thread holds every request behind it, opening a conversation or sending a message among them. With about twenty sub-chats at work the owner found pi² slow to open a conversation and to take a message (#344). `scripts/load.mts` reproduces that load ([development.md](development.md#measuring-under-load)); what it found, and what was done about each:
+
+- **The login item ran the engine as a background job.** Its launchd item had `ProcessType` `Background`: the lowest priority macOS has (4, against 31 for a program a person starts), disk access held back, and only the efficiency cores. Every command the engine started inherited the same, so agents' builds and tests took three to seven times as long as the same work started from a terminal (measured on an 18-core Mac, below), and on a busy Mac the engine was the first to give way. An engine the app starts itself never had this. The item is now `Interactive`, what an app's own processes have (`EngineLoginItem.processType`), and an item made before is put right the next time an updated app replaces the engine, when it rewrites the item anyway.
+- **Starting a process holds the thread that starts it** until the new process is under way: a millisecond or two on a quiet Mac, a median of 8 ms and up to half a second at a load of 140. The engine started a `security` process to read a sign-in from the Keychain for every model request, and for every provider each time usage was counted, and the branch tracker runs git for every listed folder every five seconds. A CPU profile under load had the thread inside `spawn` for about 40% of its time. Now the credential store keeps what it has read (the engine is the only writer of its Keychain service, so what it read stays true until it writes or deletes it itself, `src/credentials.ts`), and the programs the engine runs for itself to their end (git, `security`, `ps`, `lsof`, `textutil`) are started from a worker thread of their own (`src/offthread.ts`), which a test showed keeps the engine's thread within 10 ms where starting them itself cost it 100. `textutil`, for reading an agent's Word or RTF reference file, was run synchronously and could hold the thread for its whole run. Agents' own commands are still started from the engine's thread, as they stream their output.
+- **Activity was sent whole for every change to any run.** With 20 runs that was 55 events a second, 6.5 KB each, to every app. It is now sent at most four times a second, at once when none went in the last quarter of a second and otherwise at the end of it, with the state as it is then (`coalesced` in `main.ts`), and every event is made into text once however many apps are connected. The library and the Inbox, a few events a second at most, are still sent at once: what comes next often reads them, and an approval answered must leave the Inbox before it could be answered again.
+- **A message the engine had kept could come back as refused**, when something it does after keeping the message (noting the conversation's new time and title) failed: the app put the text back in the box, and sending it again sent it twice. Once a message is kept, `submit` now answers that it was.
+
+The engine writes a line to `engine.log` whenever its thread was held for a second or more (`src/lag.ts`), and answers `engine.lag` with how late its thread ran since it was last asked.
+
+#### Agents' commands at a lower priority
+
+The commands the engine starts for agents (shell commands, background commands and a worktree's set-up command) run under `nice -n 10`, and so does everything they start (`src/priority.ts`): when the Mac is busy, the processor goes to pi² and the person's other apps first. It changes nothing else: the same program, arguments, folder and environment, in the same process, as `nice` replaces itself with the command. A command can lower its own priority further but not raise it back. **Settings › Tools › Agents' commands** turns it off, for the commands started after.
+
+What was tried, with the load script and 20 runs each running a fixed piece of processor work again and again (one or four `seq | awk` at a time) on an 18-core Mac:
+
+| | One piece, Mac with room | 20 runs × 1, Mac with room | 20 runs × 4, Mac loaded (85 to 98) |
+|---|---|---|---|
+| As before (an engine the app started) | 0.29 s | 0.32 s | 3.25 s median, 4.58 s mean |
+| `nice -n 10` | 0.30 s | 0.33 s | 3.37 s median, 5.00 s mean |
+| `taskpolicy -c utility` | 0.30 s | 1.61 s | |
+| Background (the old login item) | 0.85 s | | |
+
+In the loaded case the two kinds ran side by side, half the runs each. `utility` costs five times as much with room to spare, as macOS keeps such work on the efficiency cores, and was not chosen; `nice` costs nothing with room and about a tenth when there is none. MCP servers are left at pi²'s own priority: they are programs the person chose, started once and shared by every conversation, mostly idle, and some put up windows of their own, which would answer the person late. So is a model running on this Mac, which the person waits on as on pi².
+
 ### How long a command may run
 
 A shell command has 2 minutes unless the call that runs it passes a `timeout` in seconds, which can give it up to 10 minutes; a call that asks for more gets 10 minutes. These are Claude Code's limits for its Bash tool (its `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`). A command that may take longer than that, such as a full test suite on a busy Mac, runs with `background: true`, where the agent and the person can see it is still going. pi durable's `bash` has no default of its own, so `src/commands.ts` wraps it to add one.

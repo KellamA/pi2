@@ -15,7 +15,7 @@
 // A request for the model (providers.ts) waits here until the server is ready, so a message sent while it loads is
 // answered once it has loaded, and one sent after it was stopped starts it again.
 
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
@@ -25,6 +25,7 @@ import { AgentDoc, type ConversationId, defineDoc } from "@earendil-works/pi-dur
 import { isPutAway } from "./archive.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
+import { execFileOffThread } from "./offthread.ts";
 import { type EngineRecipe, fileName, type LocalModel, type LocalSetup, localSetupReader, STRATA } from "./localengine.ts";
 import { localChanged } from "./localmodels.ts";
 import { forgetRun, killLater, killRemaining, type Listed, leftOverLog, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
@@ -171,7 +172,7 @@ type Row = { ppid: number; group: number; rss: number; start: string };
 /** Every process, by pid, from one reading of `ps`. Those that have ended and wait only to be reaped are left out. */
 function table(): Promise<Map<number, Row>> {
 	return new Promise((resolve, reject) => {
-		execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid=,rss=,stat=,lstart="], { timeout: 10_000, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
+		execFileOffThread("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid=,rss=,stat=,lstart="], { timeout: 10_000, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
 			if (error) return reject(error);
 			const rows = new Map<number, Row>();
 			for (const line of String(stdout).split("\n")) {

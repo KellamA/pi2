@@ -75,9 +75,14 @@ try {
 	assert.deepEqual(await store.modify(cut, async () => big), big);
 	assert.deepEqual(await store.read(cut), big);
 
-	// A long credential with a piece missing is not half-read.
+	// A long credential with a piece missing is not half-read. The store that wrote it keeps what it wrote rather than
+	// asking the Keychain at every read (#344), so a new one reads it.
 	security("delete-generic-password", "-s", SERVICE, "-a", `${cut}:1`);
-	assert.equal(await store.read(cut), undefined, "a credential with a piece missing reads as signed out");
+	assert.equal(await new KeychainCredentialStore(home, SERVICE).read(cut), undefined, "a credential with a piece missing reads as signed out");
+	assert.deepEqual(await store.read(cut), big, "the store that wrote it answers from memory, without asking the Keychain again");
+	const copy = (await store.read(cut)) as any;
+	copy.access = "changed by a caller";
+	assert.deepEqual(await store.read(cut), big, "what a caller does to a credential it was given does not change what is kept");
 
 	// Removing a credential removes all of it.
 	for (const account of [long, garbage, cut]) {

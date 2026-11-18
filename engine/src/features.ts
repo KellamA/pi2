@@ -28,6 +28,7 @@ import { look } from "./look.ts";
 import { order } from "./order.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
+import { priority } from "./priority.ts";
 import { reads } from "./reading.ts";
 import { runCode } from "./runcode.ts";
 import { scratch } from "./scratch.ts";
@@ -174,6 +175,7 @@ export const FEATURES: Feature[] = [
 	scratch,
 	variables,
 	coauthor,
+	priority,
 	wakes,
 	background,
 	heed,
