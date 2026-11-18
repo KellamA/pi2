@@ -62,7 +62,7 @@ import { timeLines } from "./log.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
-import { useRunFolder } from "./processes.ts";
+import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents, takeAgentSwitch } from "./state.ts";
@@ -1733,6 +1733,8 @@ agentsWatch.start(async (call) => {
 // transcript as it starts (a background command the last engine left, a set-up cut short) sets the last engine's
 // work going again at once, before `resume()`.
 for (const feature of host.features) await feature.start?.();
+// Recovery has dealt with recorded runs. Unrecorded files can go only once nothing holds them.
+void sweepRuns().catch((error) => log("run files could not be tidied:", error));
 const graphWatch = await harness.watchTaskGraph(context);
 type Graph = { tasks: Record<string, { conversationId?: unknown }> };
 /** The conversation `id` belongs to: itself, or the one whose sub-chat it is. */

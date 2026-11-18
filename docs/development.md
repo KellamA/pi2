@@ -180,6 +180,15 @@ After the answer finishes, archive it (this stops any work still running):
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
+To change what an existing copy shows, reopen just its app, keeping its engine and conversations. The new app is recorded for `shot` and `stop`, uses the same clean environment and window placement as `start`, and keeps the previous `--show` unless replaced (and `--menu`):
+
+```bash
+scripts/test-copy reopen test-7 --show "$CHAT"
+scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
+```
+
+It refuses a copy this checkout did not start, a missing or changed bundle, an unrecorded engine or bundle process, a reused app pid, or a symlink for the copy, state, data or socket, before stopping anything. A failed relaunch leaves the engine and data for diagnosis and `stop`.
+
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. A conversation made after launch, such as through the copy's engine socket, opens when it comes, as long as nothing else is on screen. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `everything` (Allow everything), `builtins` (built-in tools), `rules` (commands it may run without asking), `variables` (variables for its commands), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. `#everything` also puts up the confirmation for turning Allow everything on, while it is off, so it can be captured. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
