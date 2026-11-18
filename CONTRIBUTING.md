@@ -113,6 +113,13 @@ scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
+**`reopen <suffix> [--show <what>]`** stops only the recorded app by its pid, leaves its engine and data running, and opens the same bundle again with `start`'s clean environment and window placement. It records the new app so `shot` and `stop` still work. Without `--show`, it keeps the previous selection; a supplied value replaces it. It also keeps `--menu`. A missing or changed bundle, an unrecorded engine or bundle process, a reused app pid and symlinks for the copy, state, data or socket are refused before stopping anything. If relaunch fails, the engine and data stay for diagnosis and `stop`.
+
+```bash
+scripts/test-copy reopen test-7 --show "$CHAT"
+scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
+```
+
 **`shot <suffix> <file.png> [--window <title>]`** captures the copy's largest window, or the one with that title (Settings is titled after its tab, such as `General`), with `screencapture -l`, which takes that window only, whatever covers it. It first checks `CGPreflightScreenCaptureAccess()`, and refuses when screen capture is not already allowed, since capturing without it makes macOS ask; say then that the change was not seen on screen. The picture goes inside the checkout: one in `app/build/test-copies/<suffix>` goes with the copy at `stop`. A page settles for a few seconds after the window opens, so wait before capturing it.
 
 **`stop <suffix>`** stops the app first, so that it does not start a new engine when the engine goes, then anything else running from the copy's bundle, then the engine, which outlives the app. It signals only the pids it recorded (or the engine the recorded app started in place of one, named in the copy's data folder), each after checking that the pid is still the process it recorded, by its start time and executable. Then it forgets the copy in Launch Services and removes the copy, its data folder, its preferences (`defaults delete`, and the file, which that can leave behind), every Keychain item under its own service, and the files its browser and macOS leave under its bundle id (`~/Library/WebKit`, `Caches`, `HTTPStorages` and `Saved Application State`), each by its exact path, and checks that none of it is left. If something is still running on the copy's data folder that it did not record, it removes nothing and says so.
@@ -124,7 +131,7 @@ What it refuses, before it changes anything:
 - a suffix that is empty, not lower-case letters, digits and hyphens, longer than 32 characters (the engine's socket path has a limit), or `dev`, the suffix every development build has as built; and so any bundle id, data folder or Keychain service that could be the usual one;
 - a bundle that is not a development build of this checkout, so never a release build, which runs on the usual data folder;
 - a suffix already in use, by this checkout or any other: the copy's folder in the checkout and its data folder are each made with `mkdir`, which only one of two `start`s at the same moment can do, so a second `start` with the same suffix fails and touches nothing of the first. Copies with different suffixes, from one checkout or several, are independent;
-- a `stop`, `shot` or `call` for a copy this checkout did not start, and a signal to a pid it did not record;
+- a `stop`, `shot`, `reopen` or `call` for a copy this checkout did not start, and a signal to a pid it did not record;
 - a picture outside the checkout.
 
 It never uses `pkill` or `killall`, and never passes a pattern to `rm` or `security`. To see that the copy runs on its own folder, not the real one: its data folder holds `engine.sock`, `engine.pid` and an `engine.log` that ends with `listening on` and the path of that socket, and `ps -E -o command= -p <engine pid>` shows the copy's `PI2_KEYCHAIN_SERVICE`.
