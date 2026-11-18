@@ -56,7 +56,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
 | `src/modellists.ts` | Asking a built-in provider which models a key or sign-in can use; the store of catalogs the library refreshes itself (`model-catalogs.json`) |
-| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs, setting them up, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
+| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs (or taking a pack's files from a folder of the person's), preparing them with Strata's setup, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
 | `src/localcatalog.ts` | What can be downloaded for models on this Mac: the pinned engine and the packs, with their checksums and memory figures |
 | `src/download.ts` | Downloading one large file that carries on where it stopped and is checked against a checksum known in advance |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
@@ -73,7 +73,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/runcode.ts` | `run_code`: a short program run in a sandbox with no tools, files or network. See [code.md](code.md) |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
-| `src/knowledge.ts` | A project's instructions file, and an agent's memory |
+| `src/knowledge.ts` | A project's instructions file, an agent's memory, and chat mode's |
 | `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
@@ -95,7 +95,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/localrun.ts` | Running a model on this Mac: starting it when a conversation starts using it, sharing it, stopping it when none does, and its process. See [local-models-running.md](local-models-running.md) |
-| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of how the real engine is started and known to be ready |
+| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of the real engine: how its server is started, with what run config, and known to be ready, and how its setup installs the engine and prepares a pack |
 | `src/mcp.ts` | MCP servers and their tools. See [mcp.md](mcp.md) |
 | `src/backup.ts` | Backup and restore |
 | `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |
@@ -145,7 +145,7 @@ A sub-chat is given its agent's tools, as a conversation of that agent's would b
 
 A sub-chat whose run ends without an answer is kept as it stopped, and `delegate`'s result says why and how to carry on: "Scout did not finish the task: the model's provider answered with an error: “429 rate_limit_error: This request would exceed your account's rate limit. …” The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12." The provider's message is shortened to 300 characters, with keys, account and organisation identifiers, request ids and email addresses taken out (`src/providererror.ts`). A refusal for the provider's limit is waited for before it gets that far ([limits.md](limits.md#when-a-limit-is-reached)); when the run ends on one all the same, the result says that carrying on works once the limit has reset.
 
-When a window of the subscription a sub-chat ran on is 80% used or more, `delegate`'s result ends with a line saying so, and `sub_chats`' list ends with how every signed-in subscription's windows stand and which of the agents run on each, so an agent that hands out work can start fewer sub-chats on one nearly used up ([limits.md](limits.md#telling-an-agent-that-hands-out-work-and-the-person)).
+When a window of the subscription a sub-chat ran on is 80% used or more, `delegate`'s result ends with a line saying so, and `sub_chats`' list ends with how every signed-in subscription's windows stand and which of the agents run on each, so an agent that hands out work can start fewer sub-chats on one nearly used up ([limits.md](limits.md#telling-an-agent-that-hands-out-work-and-the-person)). A sub-chat that waits for a provider's limit says so in that list, with until when, and the person sees it waiting rather than working, in its row and in one line in the conversation that handed it the work ([limits.md](limits.md#when-a-limit-is-reached)).
 
 ### A message while an agent waits
 
@@ -160,6 +160,8 @@ The app sends a message to a working conversation either to steer it (the defaul
 | Everything else | Left to finish, and the message comes after it: a command in the foreground, `write`, `edit` and `write_document`, an MCP tool, a code mode script (and every call it makes, `delegate` included, since they are part of the script), computer use, the browser, and a call waiting for the person's approval, which they answer on its card. |
 
 A message sent queued keeps its meaning and is placed once the agent has answered.
+
+A run that is not in a round of tool calls but waiting to ask the model again (a retry's sleep, and so a wait for a provider's limit, which can last hours) has nothing to end: the request after the wait is the next step. A steer sent then does not end the wait, which would only meet the same refusal; it stays queued, where the person can take it back, and is placed as the wait ends, before that request is made, so the request carries it (a patch to pi durable's retry, `engine/scripts/patch-dependencies.ts`; #324). `messageWaits` has `retryAt` while the run sleeps, and the message field names the limit and its time ([limits.md](limits.md#when-a-limit-is-reached)).
 
 A sub-chat whose wait ended this way is watched for under the call's own key, as `wait: false` watches one, so its answer is given exactly once: to `sub_chats` with `wait`, or as the message that wakes the agent, with the limits and the hourly cap [wakes.md](wakes.md) describes. A wait that got what it waited for in the same moment as the message gives it rather than dropping it. Like a sub-chat started with `wait: false`, one a message let go on is not stopped by Stop: it is stopped on its own, in the sidebar.
 
@@ -331,11 +333,12 @@ The sections, in the order they are declared:
 | `agents` | `extensions.ts` | the conversation can hand work to another agent (not in a sub-chat) | Comes and goes with the agent's settings and as agents are added or deleted |
 | `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady; changes in place when the agent's settings leave `update_plan` out or bring it back, keeping the second part |
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
-| `memory` | `knowledge.ts` | memory is on for the agent | Comes and goes with the agent's settings |
+| `memory` | `knowledge.ts` | memory is on for the agent, or for chats in a chat ([knowledge.md](knowledge.md#chat-modes-memory)) | Comes and goes with the agent's settings, or chat mode's; in a chat, changes in place as its notes change and as agents with notes come and go |
 | `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out; in a chat, its web switch on) | Comes and goes with the agent's settings, or a chat's web switch |
 | `pictures` | `pictures.ts` | the conversation would make pictures (a chat, or an agent that turned them on) but no provider of the person's has a picture model: it says so | Comes and goes as providers are signed in and out |
 | `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full, and not left out; always in a chat) | Changes with the conversation's access level, and comes and goes with the agent's built-in tools |
 | `chat` | `chat.ts` | the conversation is a chat ([chat.md](chat.md)) | Steady; changes in place as the chat's web switch is turned off or on |
+| `chat_instructions` | `chat.ts` | the conversation is a chat and the chat instructions in Settings are not empty | Comes and goes, and changes in place, with those instructions |
 | `scheduling` | `selfschedule.ts` | the scheduling tools are offered: scheduling on, not in a sub-chat (#177) | Comes and goes with the agent's settings |
 | `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
 | `scratch` | `scratch.ts` | `bash` is offered: it names the conversation's [scratch folder](#a-scratch-folder) | Steady; changes only with the conversation's access level |

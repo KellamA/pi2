@@ -58,6 +58,11 @@ final class EngineClient {
     private(set) var activity: [ActivityRun] = []
     /// How many runs `activity` lists, for the sidebar, which need not be drawn again for every change to a run.
     private(set) var runningCount = 0
+    /// The runs waiting for a provider's limit, by conversation; and those of sub-chats, by the conversation they belong to.
+    private(set) var limitWaits: [Int: LimitWait] = [:]
+    private(set) var subChatLimitWaits: [Int: [LimitWait]] = [:]
+    /// Conversations in the sidebar whose every run, their own and their sub-chats', waits for a limit.
+    private(set) var heldByLimits: Set<Int> = []
     /// Commands agents left running in the background, oldest first.
     private(set) var backgroundCommands: [BackgroundCommand] = []
     /// What will wake an agent when it ends, and what has and waits for it (docs/wakes.md).
@@ -532,6 +537,16 @@ final class EngineClient {
             case "activity":
                 update(\.activity, try decoder.decode(ActivityEvent.self, from: line).runs)
                 update(\.runningCount, activity.count)
+                // By conversation, and by the conversation that handed the work out, for the rows and the line that show a
+                // run waiting for a provider's limit rather than working (#343). Set only when changed, so the views that
+                // read them are not drawn again for every clock tick of a command.
+                let waits = Dictionary(activity.compactMap { run in run.limit.map { (run.conversationId, $0) } }, uniquingKeysWith: { first, _ in first })
+                if waits != limitWaits { limitWaits = waits }
+                let bySubChats = Dictionary(grouping: activity.filter { $0.limit != nil && $0.parent != nil }, by: { $0.parent! }).mapValues { $0.compactMap(\.limit) }
+                if bySubChats != subChatLimitWaits { subChatLimitWaits = bySubChats }
+                // A conversation whose every run, its own and its sub-chats', waits for a limit is waiting too, not working.
+                let held = Set(Dictionary(grouping: activity, by: \.rootConversationId).filter { $0.value.allSatisfy { $0.limit != nil } }.keys)
+                if held != heldByLimits { heldByLimits = held }
             case "background":
                 update(\.backgroundCommands, try decoder.decode(BackgroundEvent.self, from: line).commands)
             case "wakes":
@@ -578,9 +593,10 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor", "local":
+            case "limits", "memory", "coauthor", "local", "chat":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
+                if envelope.event == "limits" { Notifier.shared.limitNotices(PlanLimits(extras["limits"])?.notices ?? []) }
             case "local.progress":
                 // One download's progress, kept in the `local` event it belongs to (LocalModelsSettings.swift).
                 if let download = try decoder.decode(JSONValue.self, from: line)["download"], let local = extras["local"] {

@@ -8,6 +8,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
+import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta } from "./state.ts";
 
@@ -20,7 +21,7 @@ import { documents } from "./documents.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
-import { limitWait } from "./limitwait.ts";
+import { type EpisodeChange, limitWait, type Wait } from "./limitwait.ts";
 import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
@@ -46,6 +47,8 @@ export type Engine = {
 	log(...args: unknown[]): void;
 	agents(): Record<string, AgentProfile>;
 	library(): { conversations: Record<string, Meta> };
+	/** Chat mode's settings as they are now (chat.ts). */
+	chatSettings(): ChatSettings;
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
@@ -74,6 +77,8 @@ export type FeatureParts = {
 	wraps?: Wrap<any>[];
 	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
 	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean }): string[];
+	/** Which of this feature's tools a chat (chat.ts) is given, with chat mode's settings as they are now. */
+	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
 	withheld?(): string[];
 	/** Requests from the app, by method name. Throw an Error with a plain message to refuse. */
@@ -95,6 +100,13 @@ export type FeatureParts = {
 	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
 	 */
 	planLimits?(): ProviderLimits[];
+	/** The wait for a provider's limit a conversation's run is in, if any: for `sub_chats`' list. Only one feature answers it (limitwait.ts). */
+	limitWaitOf?(id: number): Wait | undefined;
+	/**
+	 * A provider's limit was reached (or what is known of it changed), the runs that waited for it carry on, or none waits
+	 * any more. Told to every feature by limitwait.ts; limits.ts keeps the Inbox notice.
+	 */
+	limitEpisode?(change: EpisodeChange): void;
 	/**
 	 * Fields of `local.status` and the `local` event, about models on this Mac: what is installed comes from localmodels.ts,
 	 * what is running from the feature that runs them. Call `localChanged()` (localmodels.ts) when they change.

@@ -55,7 +55,7 @@ import { McpServers } from "./mcp.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
-import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
+import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, newestOnly, Providers } from "./providers.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
@@ -241,6 +241,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	chatSettings: () => chatSettings(settings.chat),
 	providers: () => providers,
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
@@ -298,10 +299,14 @@ function withheld(): string[] {
 	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
 }
 
-/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on. */
+/**
+ * The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on, and what
+ * features add for chats (chat mode's memory while that is on, knowledge.ts).
+ */
 function chatTools(web: boolean) {
 	const held = withheld();
-	return chatToolNames(web)
+	const added = host.features.flatMap((feature) => feature.chatToolNames?.() ?? []);
+	return [...chatToolNames(web), ...added]
 		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
@@ -309,7 +314,7 @@ function chatTools(web: boolean) {
 
 /** How a new chat is configured: no folder, no instructions of an agent's, the assistant's tools. */
 function chatChange(model: ModelRef, web: boolean): AgentChange {
-	return { model, thinkingLevel: null, instructions: null, tools: chatTools(web), cwd: null, maxTurns: null };
+	return { model, thinkingLevel: defaultThinking(model), instructions: null, tools: chatTools(web), cwd: null, maxTurns: null };
 }
 
 /** Whether chat `id` (or the chat it is a version of) may read the web: its own switch, which starts as chat mode's setting. */
@@ -332,7 +337,7 @@ async function agentChange(agent: AgentProfile, options: { subChat: boolean }): 
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
-		thinkingLevel: (agent.thinkingLevel as never) ?? null,
+		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
 		tools: toolsFor(agent.access, agent, options.subChat),
 		cwd: agent.cwd,
@@ -1117,7 +1122,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
-				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef } : change,
+				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : change,
 				init: async (tx, id) => {
 					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
 				},
@@ -1450,7 +1455,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.defaultModel !== undefined) delete settings.lastChatModel;
 		saveSettings();
 		broadcast(chatEvent());
-		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287).
+		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287). The memory
+		// switch changes what every chat is offered, from its next message (syncTools).
 		return after;
 	},
 	/** Continue with an Agent (#289): `{ id, agentId, cwd?, text? }`, answered with the new conversation's `{ id }`. */
@@ -1476,7 +1482,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
-			await conv.configure({ model: { provider: model.provider, modelId: model.modelId } }, context);
+			// A model on this Mac comes with its own thinking level when the conversation has none (defaultThinking).
+			const thinking = params.thinkingLevel === undefined && ((await harness.snapshot(AgentDoc, conv.id, context))?.thinkingLevel ?? null) === null ? defaultThinking(model) : null;
+			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
 			// The next conversation starts with it: the next chat for a chat, else the next of an agent's.
 			if (chat) settings.lastChatModel = { provider: model.provider, modelId: model.modelId };
 			else settings.defaultModel = { provider: model.provider, modelId: model.modelId };

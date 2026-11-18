@@ -39,7 +39,10 @@ struct MenuBarView: View {
                         AgentAvatar(agent: engine.agent(run.agentId), size: 16)
                         Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
                         Spacer()
-                        Text(run.status == "waiting" ? "waiting" : run.limit != nil ? "waiting for limit" : "working").font(.caption).foregroundStyle(run.status == "waiting" || run.limit != nil ? Theme.warn : Theme.tx2)
+                        let atLimit = engine.subChatLimitWaits[run.conversationId]?.count ?? 0
+                        let status = run.status == "waiting" ? "waiting" : run.limit?.tag ?? (atLimit > 0 ? "working · \(atLimit) sub-chat\(atLimit == 1 ? "" : "s") at limit" : "working")
+                        Text(status).font(.caption).lineLimit(1).foregroundStyle(run.status == "waiting" || run.limit != nil || atLimit > 0 ? Theme.warn : Theme.tx2)
+                            .help(run.limit?.sentence ?? LimitWait.subChatsLine(engine.subChatLimitWaits[run.conversationId] ?? []) ?? "")
                     }
                     .contentShape(.rect)
                 }

@@ -172,10 +172,14 @@ function giving(slot: Slot, args: Record<string, unknown>): string {
 /**
  * What a message sent to steer the conversation now would wait for, while it is working: `holds`, the calls it is placed
  * after, each in words; and `ends`, the waits it would end. No holds: it reaches the agent once its current step ends.
+ * `retryAt`: the run is waiting to ask the model again (a retry, or a wait for a provider's limit, #324), and the message
+ * is placed when it does, so that request carries it; not before, however long the wait.
  */
-export function messageWaits(view: ConversationView, conversationId: number, approvals: { callId: string; conversationId: number }[]): { holds: string[]; ends: string[] } | null {
-	const live = (view.docs["pi.live"] ?? {}) as { run?: unknown; tools?: Slot[] };
+export function messageWaits(view: ConversationView, conversationId: number, approvals: { callId: string; conversationId: number }[]): { holds: string[]; ends: string[]; retryAt?: number } | null {
+	const live = (view.docs["pi.live"] ?? {}) as { run?: unknown; tools?: Slot[]; generation?: { retry?: { at?: unknown } } };
 	if (live.run === undefined) return null;
+	const retryAt = live.generation?.retry?.at;
+	if (typeof retryAt === "number") return { holds: [], ends: [], retryAt };
 	const slots = (live.tools ?? []).filter((slot) => slot.status !== "done");
 	if (slots.length === 0) return { holds: [], ends: [] };
 	const args = callArguments(view);
