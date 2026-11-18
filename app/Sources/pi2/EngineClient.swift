@@ -23,6 +23,8 @@ final class EngineClient {
     /// The conversations the app has asked the engine for, which it keeps sending. The list changes only as one is opened
     /// or closed; each conversation's updates go to its own object, so they redraw only the views that show it.
     private(set) var open: [Int: OpenConversation] = [:]
+    /// Only drafts with input survive closing a transcript. Keeping one here does not subscribe to the conversation.
+    @ObservationIgnored private var parkedDrafts: [Int: ConversationDraft] = [:]
     /// Messages the person sent that the conversation does not show yet, by conversation, oldest first.
     private(set) var outgoing: [Int: [OutgoingMessage]] = [:]
     private(set) var providers: [ProviderInfo] = []
@@ -168,7 +170,7 @@ final class EngineClient {
         PerfProbe.opening(id, "asked")
         lastWanted[id] = Date()
         guard open[id] == nil else { return }
-        open[id] = OpenConversation()
+        open[id] = OpenConversation(draft: parkedDrafts.removeValue(forKey: id) ?? ConversationDraft())
         // Panes restored at launch appear before the app has connected. Connecting asks for every open conversation,
         // so one opened before then waits for that rather than failing.
         guard status == .connected else { return }
@@ -219,6 +221,7 @@ final class EngineClient {
         let now = Date()
         for id in open.keys where !shown.contains(id) && id != quickAskConversation && outgoing[id] == nil {
             guard now.timeIntervalSince(lastWanted[id] ?? .distantPast) > Self.keptOpen else { continue }
+            if let draft = open[id]?.draft, draft.hasInput { parkedDrafts[id] = draft }
             open[id] = nil
             lastWanted[id] = nil
             Task { _ = try? await call("conversation.close", ["id": id]) }
@@ -231,15 +234,17 @@ final class EngineClient {
         Task { _ = try? await call("conversations.shown", ["ids": ids]) }
     }
 
-    /// Sends a message. Returns false, after showing why, when the engine refused it.
+    enum SubmitOutcome { case sent, refused, unconfirmed }
+
+    /// Sends a message and shows why if it is refused or could not be confirmed.
     /// `attachments` are pictures and files to go with it, as `ComposerAttachments.Draft.payload` makes them.
     ///
     /// Until the engine has it, and then until the conversation shows it, the message is in `outgoing`, which the
     /// message field shows. When no answer comes because the engine is not connected or the connection goes, the message
     /// is sent again once the engine is back, with the same request id, which makes the engine find the submission it
-    /// may already have taken rather than take it twice. Only after a minute without an engine is it given back.
+    /// may already have taken rather than take it twice. After a minute without an engine, acceptance is unknown.
     @discardableResult
-    func submit(_ text: String, attachments: [[String: Any]] = [], to id: Int, steer: Bool) async -> Bool {
+    func submit(_ text: String, attachments: [[String: Any]] = [], to id: Int, steer: Bool) async -> SubmitOutcome {
         let requestId = UUID().uuidString
         var params: [String: Any] = ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": requestId]
         if !attachments.isEmpty { params["attachments"] = attachments }
@@ -249,6 +254,7 @@ final class EngineClient {
         let asked = PerfProbe.now()
         let shownBefore = open[id]?.items.count ?? 0
         let deadline = ContinuousClock.now + .seconds(60)
+        var unanswered = false
         while true {
             do {
                 let result = try await call("submit", params)
@@ -267,16 +273,20 @@ final class EngineClient {
                     try? await Task.sleep(for: .seconds(open[id] == nil ? 0 : 3))
                     dropOutgoing(requestId, from: id)
                 }
-                return true
+                return .sent
             } catch let error as EngineError where error.unanswered {
+                unanswered = true
                 if await connected(by: deadline) { continue }
                 dropOutgoing(requestId, from: id)
-                lastError = "The engine did not come back for a minute, so the message was put back in its field. It may have been sent before the engine stopped: check the conversation before sending it again."
-                return false
+                lastError = "The engine did not come back for a minute. The message may have been sent before it stopped. Check the conversation before sending it again."
+                return .unconfirmed
             } catch {
                 dropOutgoing(requestId, from: id)
-                lastError = error.localizedDescription
-                return false
+                // A retry can be refused before it reaches the engine's submission lookup (e.g. after archiving).
+                lastError = unanswered
+                    ? "The message may have been sent before the connection was lost. Check the conversation before sending it again. \(error.localizedDescription)"
+                    : error.localizedDescription
+                return unanswered ? .unconfirmed : .refused
             }
         }
     }
@@ -522,6 +532,14 @@ final class EngineClient {
             switch envelope.event {
             case "library":
                 let event = try decoder.decode(LibraryEvent.self, from: line)
+                if (!parkedDrafts.isEmpty || !open.isEmpty), event.conversations != conversations {
+                    let listed = Set(event.conversations.map(\.id))
+                    // The previous list also covers sub-chats that disappear when their parent is put away.
+                    for row in conversations where !listed.contains(row.id) {
+                        open[row.id]?.draft.discard()
+                        parkedDrafts.removeValue(forKey: row.id)?.discard()
+                    }
+                }
                 update(\.conversations, event.conversations)
                 update(\.archived, event.archived ?? [])
                 update(\.autoArchiveDays, event.autoArchiveDays)
@@ -806,7 +824,6 @@ final class EngineClient {
         defer {
             holdEngine = false
             lastLaunch = .distantPast
-            open = [:]
         }
         stopEngine()
         for _ in 0..<50 where enginePID != nil { try await Task.sleep(for: .milliseconds(100)) }
@@ -824,6 +841,11 @@ final class EngineClient {
             let message = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw EngineError(message: message?.isEmpty == false ? message! : "The backup could not be restored.")
         }
+        // The restored database can use the same IDs for different conversations.
+        for conversation in open.values { conversation.draft.discard() }
+        for draft in parkedDrafts.values { draft.discard() }
+        parkedDrafts.removeAll()
+        open = [:]
     }
 
     /// Simulates a crash: SIGKILL, no chance to clean up.

@@ -364,10 +364,25 @@ final class ComposerAttachments {
     }
 
     private(set) var items: [Draft] = []
+    private var pendingDrops = 0
+    @ObservationIgnored private var generation = 0
 
     var isEmpty: Bool { items.isEmpty }
+    var hasPendingDrops: Bool { pendingDrops > 0 }
+
+    func discard() {
+        generation += 1
+        pendingDrops = 0
+        items = []
+    }
+
+    private func finishDrop(_ revision: Int, add: () -> Void) {
+        guard revision == generation else { return }
+        pendingDrops -= 1
+        add()
+    }
     var isReading: Bool {
-        items.contains { item in
+        hasPendingDrops || items.contains { item in
             if case .reading = item.state { return true }
             return false
         }
@@ -460,18 +475,23 @@ final class ComposerAttachments {
 
     /// Files or pictures dropped on the conversation.
     func add(dropped providers: [NSItemProvider]) {
+        let revision = generation
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                pendingDrops += 1
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
-                    Task { @MainActor in self.add(files: [url]) }
+                    Task { @MainActor in
+                        self.finishDrop(revision) { if let url { self.add(files: [url]) } }
+                    }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 // A picture dragged out of a web page or another app, with no file behind it.
+                pendingDrops += 1
                 let name = provider.suggestedName ?? "Dropped picture"
                 _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
-                    guard let data else { return }
-                    Task { @MainActor in self.add(picture: data, name: name) }
+                    Task { @MainActor in
+                        self.finishDrop(revision) { if let data { self.add(picture: data, name: name) } }
+                    }
                 }
             }
         }

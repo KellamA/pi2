@@ -18,10 +18,7 @@ struct ChatView: View {
     var onFocus: () -> Void = {}
     @Environment(\.inSplitPane) private var inSplitPane
 
-    @State private var draft = ""
     @State private var steer = true
-    /// Pictures and files waiting to go with the draft.
-    @State private var attachments = ComposerAttachments()
     @State private var dropTargeted = false
     @FocusState private var composerFocused: Bool
 
@@ -42,8 +39,8 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             AllowEverythingBanner(engine: engine, conversation: summary, inset: inset)
-            if isChat, isEmpty, !archived {
-                ChatStart(pick: start) { composer }
+            if isChat, isEmpty, !archived, let draft = data?.draft {
+                ChatStart(pick: { start($0, draft: draft) }) { composer(draft) }
             } else {
                 conversation
             }
@@ -51,7 +48,8 @@ struct ChatView: View {
         .background(Theme.window)
         // Files and pictures dropped anywhere on the conversation are attached to the draft.
         .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
-            attachments.add(dropped: providers)
+            guard !archived, let draft = data?.draft else { return false }
+            draft.attachments.add(dropped: providers)
             composerFocused = true
             return true
         }
@@ -75,9 +73,9 @@ struct ChatView: View {
     }
 
     /// A way to begin an empty chat, put in the message field to finish or send.
-    private func start(_ starter: ChatStarter) {
-        draft = starter.text
-        if starter.attaches { attachments.chooseFiles() }
+    private func start(_ starter: ChatStarter, draft: ConversationDraft) {
+        draft.text = starter.text
+        if starter.attaches { draft.attachments.chooseFiles() }
         composerFocused = true
     }
 
@@ -143,7 +141,7 @@ struct ChatView: View {
                 archivedBar
             } else {
                 queue
-                composer
+                if let draft = data?.draft { composer(draft) }
             }
         }
         .frame(maxWidth: isChat ? ChatColumn.width : .infinity)
@@ -288,18 +286,21 @@ struct ChatView: View {
         }
     }
 
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func composer(_ draft: ConversationDraft) -> some View {
+        @Bindable var draft = draft
+        let attachments = draft.attachments
+        let canSend = canSend(draft)
+        return VStack(alignment: .leading, spacing: 10) {
             AttachmentStrip(attachments: attachments, blindModel: blindModel)
             arrival
             if isChat, state?.web == false { ChatWebOffNote() }
-            TextField(isChat ? chatPlaceholder : placeholder, text: $draft, axis: .vertical)
+            TextField(isChat ? chatPlaceholder : placeholder, text: $draft.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
                 .lineLimit(1...10)
                 .focused($composerFocused)
                 // Return sends; Shift-Return or Option-Return starts a new line.
-                .sendsOnReturn(send)
+                .sendsOnReturn { send(draft) }
                 .accessibilityIdentifier("composer")
                 .padding(.horizontal, 2).padding(.top, 2)
                 // ⌘V with a picture, files or a very long text on the pasteboard attaches them.
@@ -332,7 +333,7 @@ struct ChatView: View {
                         .buttonStyle(.piDanger)
                         .help(isChat ? "Stop the answer (⌘.)" : "Stop the run and everything it started (⌘.)")
                 }
-                Button { send() } label: {
+                Button { send(draft) } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(Theme.onAcc)
@@ -353,26 +354,17 @@ struct ChatView: View {
         .padding(.horizontal, inset).padding(.top, 10).padding(.bottom, 18)
     }
 
-    private var canSend: Bool {
+    private func canSend(_ draft: ConversationDraft) -> Bool {
         // Attachments can be the whole message. One still being read, or one the model cannot take, holds it back.
-        let hasContent = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.ready.isEmpty
-        return engine.status == .connected && hasContent && !attachments.isReading && attachments.problem(blindModel: blindModel) == nil
+        let attachments = draft.attachments
+        let hasContent = !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.ready.isEmpty
+        return !archived && engine.status == .connected && hasContent && !attachments.isReading && attachments.problem(blindModel: blindModel) == nil
     }
 
-    private func send() {
-        guard canSend else { return }
-        let text = draft
-        let carried = attachments.takeReady()
+    private func send(_ draft: ConversationDraft) {
+        guard canSend(draft) else { return }
         // A chat has no work to steer: a message sent during an answer is answered after it.
-        let steering = busy && steer && !isChat
-        draft = ""
-        Task {
-            // A refused message goes back in the box, with what it carried, rather than being lost.
-            if await !engine.submit(text, attachments: carried.compactMap(\.payload), to: id, steer: steering) {
-                if draft.isEmpty { draft = text }
-                attachments.restore(carried)
-            }
-        }
+        draft.send(using: engine, to: id, steer: busy && steer && !isChat)
     }
 }
 

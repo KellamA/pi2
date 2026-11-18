@@ -1037,7 +1037,10 @@ final class ExtraEvents {
 @MainActor
 @Observable
 final class OpenConversation {
+    let draft: ConversationDraft
     private(set) var items: [Item] = []
+
+    init(draft: ConversationDraft) { self.draft = draft }
     /// Nil until the engine has sent the conversation.
     private(set) var state: ConversationState?
 
