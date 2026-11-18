@@ -12,6 +12,8 @@ Archiving puts a conversation away without losing it. It leaves the sidebar, and
 
 Archive a conversation from its menu in the sidebar, from Conversation › Archive Conversation (⌃⌘A), or leave it to pi² (below).
 
+Chats are archived the same way. The Archive marks them as chats, with the chat mark where an agent's avatar would be, and chat mode lists its own archived chats at the foot of its sidebar, under Archived ([chat.md](chat.md#in-the-app)). A chat restored from either goes back to chat mode's list.
+
 ## Restoring
 
 Restore puts the conversation and its sub-chats back in the sidebar as they were. It can then be continued from where it stopped. Work that was stopped when it was archived is not restarted on its own; send a message or choose Continue.
