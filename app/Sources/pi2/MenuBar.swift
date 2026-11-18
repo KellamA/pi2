@@ -28,7 +28,7 @@ struct MenuBarView: View {
             }
 
             section("Running")
-            if engine.activity.isEmpty && engine.backgroundCommands.isEmpty {
+            if engine.activity.isEmpty && engine.backgroundCommands.isEmpty && engine.localRunning.isEmpty {
                 Text("Nothing is running.").font(.callout).foregroundStyle(.secondary)
             }
             ForEach(engine.activity.filter { $0.parent == nil }) { run in
@@ -44,6 +44,10 @@ struct MenuBarView: View {
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+            }
+            // Models loaded on this Mac: each with Stop, and Activity for the rest.
+            ForEach(engine.localRunning) { server in
+                LocalServerMenuRow(engine: engine, server: server) { show(.activity) }
             }
             // Commands agents left running in the background: each opens its output.
             ForEach(engine.backgroundCommands) { command in

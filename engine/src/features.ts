@@ -21,6 +21,7 @@ import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
 import { limitWait } from "./limitwait.ts";
+import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
@@ -48,6 +49,8 @@ export type Engine = {
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
 	busy(id: number): boolean;
+	/** The conversations the connected apps show: open in a pane, or chat mode's current chat (`conversations.shown`). */
+	shown(): ReadonlySet<number>;
 	/** How many apps are connected. */
 	apps(): number;
 	/** Send a conversation's state again to the apps showing it: for a change to what a feature's `state` reads from outside the conversation's documents. */
@@ -113,6 +116,10 @@ export type FeatureParts = {
 	deletingAgent?(agentId: string): Promise<void>;
 	/** A conversation's folder was changed by the person. */
 	folderChanged?(id: number): void;
+	/** A conversation's model was changed by the person. */
+	modelChanged?(id: number): void;
+	/** Which conversations the apps show changed: one was opened or closed in a pane, or an app connected or quit. */
+	shownChanged?(): void;
 	/** Which conversations are archived or deleted has changed; `engine.library()` already says so. */
 	putAwayChanged?(): void;
 	/** The engine is stopping cleanly: stop what this feature started. The app waits a few seconds for the engine, so be quick. */
@@ -148,6 +155,7 @@ export const FEATURES: Feature[] = [
 	coauthor,
 	background,
 	heed,
+	localRun,
 	order,
 	localModels,
 ];

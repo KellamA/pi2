@@ -40,6 +40,8 @@ final class Workspace {
     var isSplit: Bool { !root.isPane }
     var canSplit: Bool { panes.count < Self.maxPanes }
     var focusedConversation: Int? { root.find(focused)?.conversation }
+    /// The conversations open in the panes, whichever page the window shows (see `AppModel.shownConversations`).
+    var shownConversations: Set<Int> { Set(panes.compactMap(\.conversation)) }
 
     func save() {
         if let data = SavedLayout(root: root, focused: focused).encoded() {

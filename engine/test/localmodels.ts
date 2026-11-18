@@ -244,10 +244,11 @@ try {
 
 // ---- A real engine, with a catalog of its own
 
-// The engine: a small archive with an executable that is never run, stored without its execute bit.
+// The engine: a small archive with an executable, stored without its execute bit. It is no server: trying the model
+// starts it, and it ends at once.
 const packaging = folder("pi2-local-pack-");
 mkdirSync(join(packaging, "strata-test", "bin"), { recursive: true });
-writeFileSync(join(packaging, "strata-test", "bin", "strata"), "#!/bin/sh\necho never run\n");
+writeFileSync(join(packaging, "strata-test", "bin", "strata"), "#!/bin/sh\necho not a server\n");
 chmodSync(join(packaging, "strata-test", "bin", "strata"), 0o644);
 writeFileSync(join(packaging, "strata-test", "README"), "a stand-in engine\n");
 execFileSync("/usr/bin/tar", ["-czf", join(packaging, "engine.tar.gz"), "-C", packaging, "strata-test"]);
@@ -427,8 +428,9 @@ try {
 	await assert.rejects(client.call("local.model.configure", { id: "test-small", options: { parallel: 9 } }), /from 1 to 4/);
 	step("a model's context size and requests at once are set, and wrong values refused");
 
-	await assert.rejects(client.call("local.model.try", { id: "test-small" }), /needs the part of pi² that runs models on this Mac/);
-	step("trying a model says plainly when nothing can run it yet");
+	// The test's engine is no server: it ends at once, and trying the model says so (the running part, #291, starts it).
+	await assert.rejects(client.call("local.model.try", { id: "test-small" }), /could not be started on this Mac: Strata exited with code 0 before the model was loaded/);
+	step("trying a model that cannot start says why");
 
 	// A folder of the person's, and cancelling: what the download left goes.
 	const chosen = folder("pi2-local-chosen-");
