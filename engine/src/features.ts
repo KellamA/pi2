@@ -13,6 +13,7 @@ import type { Access, AgentProfile, Meta } from "./state.ts";
 
 import { background } from "./background.ts";
 import { promptCache } from "./cache.ts";
+import { chat } from "./chat.ts";
 import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
@@ -92,7 +93,7 @@ export type FeatureParts = {
 	greeting?(): unknown[];
 	/** A provider was signed in or out, or its key or endpoint changed. */
 	providersChanged?(): void;
-	/** The person started a conversation from `agent` (not a sub-chat, fork or scheduled run). */
+	/** The person started a conversation from `agent` (not a chat, sub-chat, fork or scheduled run). */
 	created?(id: number, agent: AgentProfile): Promise<void>;
 	/** An agent was duplicated: copy person-set feature settings, never its history. */
 	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
@@ -121,6 +122,7 @@ export const FEATURES: Feature[] = [
 	knowledge,
 	look,
 	documents,
+	chat,
 	limits,
 	promptCache,
 	selfSchedule,
