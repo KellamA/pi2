@@ -149,13 +149,25 @@ export async function sweepRuns(): Promise<void> {
 	});
 	if (listed === undefined) return;
 	const held = new Set<string>();
+	let inFile = false;
 	let device: bigint | undefined;
+	let inode: bigint | undefined;
+	const complete = () => {
+		if (!inFile) return true;
+		if (device === undefined || inode === undefined) return false;
+		held.add(`${device}:${inode}`);
+		return true;
+	};
 	for (const line of listed.split("\n")) {
-		if (line.startsWith("p") || line.startsWith("f")) device = undefined;
-		else if (/^D0x[0-9a-f]+$/i.test(line)) device = BigInt(line.slice(1));
-		else if (/^i\d+$/.test(line) && device !== undefined) held.add(`${device}:${BigInt(line.slice(1))}`);
+		if (/^p\d+$/.test(line) || /^f.+$/.test(line)) {
+			if (!complete()) return;
+			inFile = line.startsWith("f");
+			[device, inode] = [undefined, undefined];
+		} else if (inFile && /^D0x[0-9a-f]+$/i.test(line)) device = BigInt(line.slice(1));
+		else if (inFile && /^i\d+$/.test(line)) inode = BigInt(line.slice(1));
 		else if (line !== "") return; // An answer whose fields we cannot read is not proof of absence.
 	}
+	if (!complete() || (listed !== "" && held.size === 0)) return;
 	for (const { path, before } of candidates) {
 		if (held.has(`${before.dev}:${before.ino}`) || liveFiles.has(path)) continue;
 		const after = await lstat(path, { bigint: true }).catch(() => undefined);
