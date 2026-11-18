@@ -217,6 +217,54 @@ try {
 		step("a background command started with wake: true wakes the agent when it ends, with how and the end of its output; not when it was stopped by the agent or seen to end, nor in a sub-chat");
 	}
 
+	// ---- Watching an already running command (#317), including one moved at its time limit
+	{
+		const b = await open(lead);
+		const g = gate();
+		const moved = await client.tool(b, `/timeout 1 ${g.wait}; echo watched-later`);
+		assert.equal(moved.isError, false, moved.text);
+		const bg = moved.details.background.id as string;
+		assert.deepEqual(client.watched(b), []);
+		for (let n = 0; n < 2; n++) {
+			const watching = await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: bg })}`);
+			assert.equal(watching.isError, false, watching.text);
+		}
+		assert.equal(client.watched(b).length, 1, "watching twice is idempotent");
+		g.open();
+		await client.woken(b, 1);
+		assert.match(client.items(b, "assistant").at(-1)!.text, /watched-later/);
+		const ended = await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: bg })}`);
+		assert.equal(ended.isError, true);
+		assert.match(ended.text, /already over/);
+		const missing = await client.tool(b, '/tool background {"action":"wake","id":"bg-999999"}');
+		assert.equal(missing.isError, true);
+		const other = await open(lead);
+		const foreign = await client.tool(other, `/tool background ${JSON.stringify({ action: "wake", id: bg })}`);
+		assert.equal(foreign.isError, true, "another conversation cannot watch it");
+		const cancelGate = gate();
+		const started = await client.tool(b, `/background ${cancelGate.wait}`);
+		const canceled = started.details.background.id as string;
+		await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: canceled })}`);
+		await client.call("wakes.cancel", { conversationId: b, key: `bg:${canceled}` });
+		const rearm = await client.tool(b, `/tool background ${JSON.stringify({ action: "wake", id: canceled })}`);
+		assert.equal(rearm.isError, true);
+		assert.match(rearm.text, /already turned off/);
+		cancelGate.open();
+		await client.until("canceled command ended", () => client.markers(b).some((line) => line.startsWith(`Background command ${canceled} finished`)));
+		assert.equal(client.wakes(b).length, 1);
+		const sub = await client.tool(b, `/tool delegate ${JSON.stringify({ agent: "Worker", task: "/background sleep 600" })}`);
+		const child = sub.details.conversationId as number;
+		await client.call("conversation.open", { id: child });
+		const commands = await client.tool(child, '/tool background {"action":"list"}');
+		const childBg = /bg-\d+/.exec(commands.text)?.[0];
+		assert.ok(childBg);
+		const refused = await client.tool(child, `/tool background ${JSON.stringify({ action: "wake", id: childBg })}`);
+		assert.equal(refused.isError, true);
+		assert.match(refused.text, /sub-chat is not woken/);
+		await client.tool(child, `/tool background ${JSON.stringify({ action: "stop", id: childBg })}`);
+		step("background wake watches a command moved at its limit once, refuses ended, missing, foreign and sub-chat commands");
+	}
+
 	// ---- The turn limit
 	{
 		const limited = await save({ name: "Limited", description: "One turn", access: "full", cwd: work, maxTurns: 1 });
