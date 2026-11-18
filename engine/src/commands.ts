@@ -15,8 +15,9 @@
 // ran is not lost: it becomes a background command like one started with `background: true` (background.ts `adopt`).
 // Only where starting it in the background would not have asked the person (extensions.ts `commandAsks`), so moving it
 // never lets something run on that was approved only to be waited for; otherwise, and for a command that only sleeps,
-// it is stopped as before. pi durable's `exec` still starts it and passes on its output; the wrap gives it a run marker,
-// by which its process is known as it starts (processes.ts `lookOutFor`), keeps the limit itself, and stops it when the
+// it is stopped as before. pi durable's `exec` still starts it and passes on its output; a narrow dependency patch lets
+// it inherit its run's file from the start. The wrap gives it a marker, by which its process is known as it starts
+// (processes.ts `lookOutFor`), keeps the limit itself, and stops it when the
 // run is stopped only until it is moved.
 //
 // The result shows the end of a long output only. The wrap runs the command itself, as pi durable's `bash` does but
@@ -38,7 +39,7 @@ import { commandEnvironment } from "./environment.ts";
 import { commandAsks } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore, type Recorder } from "./output.ts";
-import { lookOutFor, newRunMarker, RUN_VARIABLE } from "./processes.ts";
+import { forgetRun, lookOutFor, newRun, RUN_VARIABLE } from "./processes.ts";
 import { runningCommands } from "./running.ts";
 import { scratchVariable } from "./scratch.ts";
 import { agentVariables } from "./variables.ts";
@@ -262,10 +263,10 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	const started = Date.now();
 	let lastPrinted: number | undefined;
 	let longestQuietMs = 0;
-	// A marker of this run in the command's environment, as a background command has (background.ts): it tells this
-	// command's process apart as it is started, and is what the next engine knows what it started by, should the command
-	// move to the background and this engine die.
-	const marker = newRunMarker();
+	// As for a background command: the marker identifies its process as it starts, and the file proves what it started
+	// after a crash if it is moved to the background. Give it the file from the start, never by reopening it later.
+	const run = newRun();
+	const marker = run.marker;
 	const watched = handOver === undefined ? undefined : lookOutFor(marker);
 	// The end of what it has printed, and how much in all: where its output starts from should it move to the background.
 	let tail = "";
@@ -288,6 +289,8 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 			// variables (issue #96) and the conversation's scratch folder (issue #180).
 			env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: marker }),
 			inheritEnv: false,
+			// The pinned Node environment is patched to append descriptors 3+, leaving its three streams unchanged.
+			extraStdio: run.stdio.slice(3),
 			// No `window`: every chunk is wanted for the file, not only the tail the result keeps.
 			onOutput: (text, _context, info) => {
 				if (movedTo !== undefined) return movedTo(text);
@@ -350,7 +353,10 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	} finally {
 		clearTimeout(timer);
 		watched?.done();
-		if (movedTo === undefined) context.abortSignal?.removeEventListener("abort", forward);
+		if (movedTo === undefined) {
+			context.abortSignal?.removeEventListener("abort", forward);
+			forgetRun(marker);
+		}
 		// Ended, stopped, or moved to the background, where it has a row of its own: no longer running here.
 		clock.end();
 	}

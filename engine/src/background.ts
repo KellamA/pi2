@@ -465,7 +465,7 @@ export async function adopt(given: {
 	const { output, total } = given.printed();
 	const command: Command = { id, conversationId, command: given.command, cwd: given.cwd, startedAt: given.startedAt, child, output: output.slice(-KEEP_CHARS), total, read: total, settled: Promise.resolve(), waiters: new Set() };
 	commands.set(id, command);
-	const followed = follow(host, command, child, given.marker, undefined, forget);
+	const followed = follow(host, command, child, given.marker, undefined, () => forget().finally(() => forgetRun(given.marker)));
 	given.route(followed.keep);
 	host.log(logName(id, conversationId), "reached its time limit in the foreground and was moved to the background");
 	announce();

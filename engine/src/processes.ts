@@ -8,7 +8,7 @@
 // number alone proves nothing. Both kinds of command read `ps` through here, so a start time noted by one is read the
 // same way by the other.
 
-import { type ChildProcess, execFile, type StdioOptions } from "node:child_process";
+import { type ChildProcess, execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { subscribe } from "node:diagnostics_channel";
 import { type BigIntStats, closeSync, constants, mkdirSync, openSync, rmSync } from "node:fs";
@@ -71,7 +71,7 @@ const RUN_FD = 19;
 const runFile = (folder: string, marker: string) => join(folder, marker);
 
 /** A run about to be started: its marker, and the `stdio` to start it with, which hands it its file. */
-export type NewRun = { marker: string; stdio: StdioOptions };
+export type NewRun = { marker: string; stdio: ("ignore" | "pipe" | number)[] };
 /** Held until `forgetRun`, even if the command closes its copy: another engine must not sweep a live run's file. */
 const liveFiles = new Map<string, number>();
 
@@ -99,7 +99,7 @@ export function newRun(): NewRun {
 			fd = undefined;
 		}
 	}
-	const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...(fd === undefined ? [] : [...Array<"ignore">(RUN_FD - 3).fill("ignore"), fd])];
+	const stdio: NewRun["stdio"] = ["ignore", "pipe", "pipe", ...(fd === undefined ? [] : [...Array<"ignore">(RUN_FD - 3).fill("ignore"), fd])];
 	return { marker, stdio };
 }
 

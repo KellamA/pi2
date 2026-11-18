@@ -14,6 +14,25 @@ type Patch = { why: string; file: string; find: string; replace: string };
 
 const PATCHES: Patch[] = [
 	{
+		// Commands moved to the background at their time limit must inherit the run's file from their very start (#300).
+		// Keep exec's own stdin/stdout/stderr, output handling and cancellation; append only caller-owned descriptors 3+.
+		why: "foreground commands cannot inherit their run's file",
+		file: "node_modules/@earendil-works/pi-durable/dist/env/node.js",
+		find: `                    stdio: [stdinCommand === undefined ? "ignore" : "pipe", "pipe", "pipe"],`,
+		replace: `                    // Patched by pi2: extra descriptors carry the run's file, without changing exec's three streams.
+                    stdio: [stdinCommand === undefined ? "ignore" : "pipe", "pipe", "pipe", ...(options?.extraStdio ?? [])],`,
+	},
+	{
+		why: "type the Node exec option for inherited run descriptors",
+		file: "node_modules/@earendil-works/pi-durable/dist/env/index.d.ts",
+		find: `export interface ShellExecOptions {
+    cwd?: string;`,
+		replace: `export interface ShellExecOptions {
+    /** Patched by pi2: local Node exec only; inherited descriptors starting at fd 3. */
+    extraStdio?: readonly ("ignore" | "pipe" | number)[];
+    cwd?: string;`,
+	},
+	{
 		// After a command exits, pi-durable waits 100 ms for more output and then closes the pipes. Each turn of the event
 		// loop runs timers before it reads pipes, so when the engine is busy for longer than that (just after a restart,
 		// say) the timer fires first and output already in the pipe is thrown away: the command succeeds with no output.
