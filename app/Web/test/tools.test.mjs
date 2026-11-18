@@ -68,6 +68,8 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("remember", { note: "Prefers tabs" }), "Remembered “Prefers tabs”");
 	assert.equal(line("forget", { id: "m3" }), "Forgot “m3”");
 	assert.equal(line("forget", {}), "Forgot something");
+	assert.equal(line("agent_notes", {}), "Read the agents’ notes");
+	assert.equal(line("agent_notes", { agent: "Forge", search: "tabs" }, "running"), "Reading Forge’s notes for “tabs”…");
 });
 
 test("a read of several files is one row that names them, and opens to a section per file", () => {

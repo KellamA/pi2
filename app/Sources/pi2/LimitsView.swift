@@ -28,7 +28,9 @@ struct PlanLimits: Decodable, Equatable {
         let refreshing: Bool?
     }
 
-    /// A window that passed 90% while runs on its subscription were going: shown in the Inbox until dismissed or reset.
+    /// A subscription's window in the Inbox, one story in up to three stages (engine/src/limits.ts): it passed 90% while
+    /// runs on it were going (`nearly`), the provider refused runs for its limit and they wait (`reached`), and it
+    /// answered again so they carry on (`carried_on`).
     struct Notice: Decodable, Equatable, Identifiable {
         struct Run: Decodable, Equatable {
             let conversationId: Int
@@ -43,16 +45,64 @@ struct PlanLimits: Decodable, Equatable {
         let provider: String
         let name: String
         let plan: String?
+        /// Empty for a provider that reports no windows.
         let label: String
-        /// 0–100.
-        let usedPercent: Double
+        /// 0–100; nil for a provider that reports no windows.
+        let usedPercent: Double?
         /// Milliseconds since 1970.
         let resetsAt: Double?
-        /// When it was noticed.
+        /// When it was first noticed.
         let at: Double
-        /// The runs going on that subscription then; `more` counts those left out.
+        /// "nearly", "reached" or "carried_on"; nil from an engine older than the stages, which meant "nearly".
+        let stage: String?
+        let nearlyAt: Double?
+        let reachedAt: Double?
+        let carriedOnAt: Double?
+        /// While reached: how many runs wait, until when (ms since 1970), and whether the provider named that time.
+        let waiting: Int?
+        let until: Double?
+        let told: Bool?
+        /// The runs it is about: going when it passed 90%, waiting once reached, that waited once carried on; `more`
+        /// counts those left out.
         let runs: [Run]
         let more: Int?
+
+        var currentStage: String { stage ?? "nearly" }
+
+        /// "Anthropic Max", "Anthropic Max, 5-hour window", "Stand-in".
+        var subject: String {
+            let name = "\(self.name)\(plan.map { " \($0)" } ?? "")"
+            return label.isEmpty ? name : "\(name), \(label.prefix(1).lowercased() + label.dropFirst())"
+        }
+
+        /// "Passed 90% at 16:02 · refused at 16:35 · carried on at 18:20": how the story went, as far as it has.
+        var history: String {
+            func time(_ ms: Double) -> String { LimitsFormat.date(ms).formatted(date: .omitted, time: .shortened) }
+            let story = [
+                nearlyAt.map { "passed 90% at \(time($0))" },
+                reachedAt.map { "limit reached at \(time($0))" },
+                carriedOnAt.map { "carried on at \(time($0))" },
+            ].compactMap { $0 }.joined(separator: " · ")
+            return story.prefix(1).uppercased() + story.dropFirst()
+        }
+
+        /// What a notification says at this stage: nil for `nearly`, which is quiet (#232).
+        var notification: (title: String, body: String)? {
+            let count = runs.count + (more ?? 0)
+            switch currentStage {
+            case "reached":
+                let when = until.map { LimitsFormat.date($0).formatted(date: .omitted, time: .shortened) }
+                let waits = (waiting ?? count) == 1 ? "1 run waits" : "\(waiting ?? count) runs wait"
+                let body = told == true && when != nil
+                    ? "\(waits) until \(when!), then \((waiting ?? count) == 1 ? "carries" : "carry") on by \((waiting ?? count) == 1 ? "itself" : "themselves")."
+                    : "\(waits) and \((waiting ?? count) == 1 ? "asks" : "ask") again by \((waiting ?? count) == 1 ? "itself" : "themselves"); \(name) named no time."
+                return ("\(subject): limit reached", body)
+            case "carried_on":
+                return ("\(subject): carrying on", "\(name) answers again. \(count == 1 ? "The run that waited carries" : "The \(count) runs that waited carry") on by \(count == 1 ? "itself" : "themselves").")
+            default:
+                return nil
+            }
+        }
     }
 
     let providers: [Provider]
@@ -88,21 +138,48 @@ struct LimitNoticeCard: View {
         }
     }
 
-    private func content(now: Date) -> some View {
-        let reset = notice.resetsAt.map { LimitsFormat.date($0) }
-        let when = reset.map { "It resets \(LimitsFormat.exact($0)), in \(LimitsFormat.duration($0.timeIntervalSince(now)))." } ?? "\(notice.name) did not say when it resets."
+    /// The headline, its icon and colour, and what the card says before the runs, at each stage.
+    private func words(now: Date) -> (icon: String, color: Color, title: String, intro: String, footer: String) {
         let count = notice.runs.count + (notice.more ?? 0)
+        switch notice.currentStage {
+        case "reached":
+            let waiting = notice.waiting ?? count
+            let runs = waiting == 1 ? "One run waits" : "\(waiting) runs wait"
+            let intro: String
+            if let until = notice.until.map(LimitsFormat.date), notice.told == true {
+                intro = "\(notice.name) refused \(waiting == 1 ? "it" : "them") for its limit. \(runs) until \(LimitsFormat.exact(until)), in \(LimitsFormat.duration(until.timeIntervalSince(now))), the time \(notice.name) named, then \(waiting == 1 ? "carries" : "carry") on by \(waiting == 1 ? "itself" : "themselves"):"
+            } else {
+                let next = notice.until.map { ", next at \(LimitsFormat.date($0).formatted(date: .omitted, time: .shortened))" } ?? ""
+                intro = "\(notice.name) refused \(waiting == 1 ? "it" : "them") for its limit and named no time. \(runs) and \(waiting == 1 ? "asks" : "ask") again by \(waiting == 1 ? "itself" : "themselves")\(next):"
+            }
+            return ("hourglass", Theme.warn, "\(notice.subject): limit reached", intro, "Nothing needs doing: \(waiting == 1 ? "it carries" : "they carry") on when the limit resets. Stop on a run ends its wait.")
+        case "carried_on":
+            let waited = notice.reachedAt.flatMap { start in notice.carriedOnAt.map { " after \(LimitsFormat.duration(($0 - start) / 1000))" } } ?? ""
+            let intro = "\(notice.name) answers again\(waited). \(count == 1 ? "The run that waited carries" : "The \(count) runs that waited carry") on by \(count == 1 ? "itself" : "themselves"):"
+            return ("checkmark.circle", Theme.ok, "\(notice.subject): carrying on", intro, "Nothing needs doing.")
+        default:
+            let reset = notice.resetsAt.map { LimitsFormat.date($0) }
+            let when = reset.map { "It resets \(LimitsFormat.exact($0)), in \(LimitsFormat.duration($0.timeIntervalSince(now)))." } ?? "\(notice.name) did not say when it resets."
+            let used = notice.usedPercent.map { " \(LimitsFormat.percent($0))% used" } ?? ""
+            return ("gauge.with.dots.needle.67percent", Theme.acc, "\(notice.name)\(notice.plan.map { " \($0)" } ?? ""): \(notice.label)\(used)",
+                    "\(when) \(count == 1 ? "One run was" : "\(count) runs were") going on this subscription when it passed 90%:",
+                    "If \(notice.name) refuses a request before then, that run waits for the reset and carries on by itself. Nothing needs doing.")
+        }
+    }
+
+    private func content(now: Date) -> some View {
+        let words = words(now: now)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: "gauge.with.dots.needle.67percent").foregroundStyle(Theme.acc)
-                Text("\(notice.name)\(notice.plan.map { " \($0)" } ?? ""): \(notice.label) \(LimitsFormat.percent(notice.usedPercent))% used")
+                Image(systemName: words.icon).foregroundStyle(words.color)
+                Text(words.title)
                     .font(.system(size: 13, weight: .semibold))
                 Spacer(minLength: 6)
                 Text("noticed \(LimitsFormat.ago(LimitsFormat.date(notice.at), now: now))")
                     .font(.system(size: 11)).foregroundStyle(Theme.tx3)
                     .help(LimitsFormat.exact(LimitsFormat.date(notice.at)))
             }
-            Text("\(when) \(count == 1 ? "One run was" : "\(count) runs were") going on this subscription when it passed 90%:")
+            Text(words.intro)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(notice.runs, id: \.conversationId) { run in
@@ -121,7 +198,12 @@ struct LimitNoticeCard: View {
                 }
             }
             .padding(.leading, 4)
-            Text("If \(notice.name) refuses a request before then, that run waits for the reset and carries on by itself. Nothing needs doing.")
+            // One story, not three alarms: what came before this stage, in one quiet line.
+            if notice.currentStage != "nearly", !notice.history.isEmpty {
+                Text(notice.history)
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+            }
+            Text(words.footer)
                 .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {

@@ -194,12 +194,37 @@ export type WaitSettings = {
 	maxWaitMs: number;
 	/** The furthest time a provider may name that a run still waits for. */
 	maxNamedMs: number;
+	/**
+	 * A provider's limit counts as reached, for the person to be told (an Inbox notice, a notification), once a run waits
+	 * for it this long from its first refusal: a limit of a minute or less is not news, a used-up window is.
+	 */
+	reachedAfterMs: number;
 };
+
+/**
+ * A provider's limit reached: the runs on it that wait for its rate limit, from the first refusal until one of them is
+ * answered again (the limit has reset, and work carries on) or none waits any more (they were stopped).
+ */
+export type Episode = {
+	provider: string;
+	providerName: string;
+	/** When the first of its runs was refused. */
+	since: number;
+	/** The latest time one of its runs waits until, and whether the provider named it (otherwise it is a backoff). */
+	until: number;
+	told: boolean;
+	/** The conversations waiting now, and every one that waited in it. */
+	waiting: number[];
+	runs: number[];
+};
+
+/** What became of an episode: it was reached (or what is known of it changed), work carried on, or nothing waits any more. */
+export type EpisodeChange = { phase: "reached" | "carried_on" | "ended"; episode: Episode; at: number };
 
 const HOUR = 3_600_000;
 /** The backoff grows to 40 times the first wait (10 minutes, by default) and stays there. */
 const BACKOFF_CAP = 40;
-export const DEFAULTS: WaitSettings = { backoffMs: 15_000, maxWaitMs: 6 * HOUR, maxNamedMs: 8 * 24 * HOUR };
+export const DEFAULTS: WaitSettings = { backoffMs: 15_000, maxWaitMs: 6 * HOUR, maxNamedMs: 8 * 24 * HOUR, reachedAfterMs: 5 * 60_000 };
 
 /** What the engine's settings answer pi-durable (see the patch): how long to wait, and the attempts spent waiting. */
 export type Decision = { waitMs?: number | false; spent: number };
@@ -211,18 +236,55 @@ type Callbacks = {
 	/** A wait began, changed or ended: save it, and tell the apps. */
 	changed(id: number, wait: Wait | undefined): void;
 	log(line: string): void;
+	/** A provider's limit was reached, work carried on, or nothing waits for it any more (see `Episode`). */
+	episode?(change: EpisodeChange): void;
 };
+
+/** An episode as it is kept: what is told of it is worked out from the waits whenever one changes. */
+type Kept = { providerName: string; since: number; runs: Set<number>; reached: boolean; told?: { until: number; waiting: number } };
 
 /** The waits of every conversation, and the decisions about them. Pure apart from its callbacks, so a test can drive it. */
 export class Waits {
 	readonly #waits = new Map<number, Wait>();
 	readonly #settings: WaitSettings;
 	readonly #callbacks: Callbacks;
+	/** By provider: the runs waiting for its rate limit since the last time it answered one of them. */
+	readonly #episodes = new Map<string, Kept>();
+	/**
+	 * Runs still asleep for an episode that is over (another run on the provider was answered): they ask again in a moment
+	 * and are no news, unless refused again.
+	 */
+	readonly #released = new Set<number>();
 
 	constructor(settings: WaitSettings, callbacks: Callbacks, saved: Record<string, Wait> = {}) {
 		this.#settings = settings;
 		this.#callbacks = callbacks;
 		for (const [id, wait] of Object.entries(saved)) this.#waits.set(Number(id), wait);
+		// The episodes the waits were in, as the last engine left them: already told, so not told again.
+		for (const wait of this.#waits.values()) {
+			if (wait.kind !== "rate_limit") continue;
+			const kept = this.#episodes.get(wait.provider) ?? { providerName: wait.providerName, since: wait.since, runs: new Set<number>(), reached: false };
+			kept.since = Math.min(kept.since, wait.since);
+			this.#episodes.set(wait.provider, kept);
+		}
+		for (const [provider, kept] of this.#episodes) {
+			const waiting = this.#waitingOn(provider);
+			for (const [id] of waiting) kept.runs.add(id);
+			kept.reached = waiting.some(([, wait]) => this.#long(wait));
+			const latest = waiting.reduce((a, b) => (b[1].until > a[1].until ? b : a));
+			if (kept.reached) kept.told = { until: latest[1].until, waiting: waiting.length };
+		}
+	}
+
+	/** The episode of a provider's limit going on now, if one has been reached. */
+	episode(provider: string): Episode | undefined {
+		const kept = this.#episodes.get(provider);
+		return kept?.reached === true ? this.#describe(provider, kept) : undefined;
+	}
+
+	/** Every episode going on now that has been reached. */
+	reached(): Episode[] {
+		return [...this.#episodes].filter(([, kept]) => kept.reached).map(([provider, kept]) => this.#describe(provider, kept));
 	}
 
 	get(id: number): Wait | undefined {
@@ -239,17 +301,30 @@ export class Waits {
 	 */
 	decide(message: AssistantMessage | undefined, attempt: number, id: number): Decision {
 		const known = this.#waits.get(id);
+		try {
+			return this.#decide(message, attempt, id, known);
+		} finally {
+			// Looked at once the decision is made, so a wait that only changes is not told as one ending and another starting.
+			const now = this.#waits.get(id);
+			if (known !== undefined && known.provider !== now?.provider) this.#review(known.provider);
+			if (now !== undefined) this.#review(now.provider);
+		}
+	}
+
+	#decide(message: AssistantMessage | undefined, attempt: number, id: number, known: Wait | undefined): Decision {
 		// A wait noted for an attempt at or after this one belongs to an earlier request of the run, which then answered.
 		const current = known !== undefined && known.attempt < attempt ? known : undefined;
-		if (known !== undefined && current === undefined) this.#end(id, undefined);
+		if (known !== undefined && current === undefined) this.#end(id, undefined, false, false);
 		const spent = current?.refusals ?? 0;
 		if (message === undefined) return { spent };
 		const now = this.#callbacks.now();
 		const limit = limitOf(message.errorMessage ?? "", refusals.get(message), now);
 		if (limit === undefined) {
-			if (current !== undefined) this.#end(id, `${current.providerName} answered with another error`);
+			if (current !== undefined) this.#end(id, `${current.providerName} answered with another error`, false, false);
 			return { spent };
 		}
+		// Refused again: news again, whatever episode it slept for.
+		this.#released.delete(id);
 		const since = current?.since ?? now;
 		const count = spent + 1;
 		const providerName = this.#callbacks.providerName(message.provider);
@@ -298,13 +373,24 @@ export class Waits {
 		this.#waits.set(id, wait);
 		this.#callbacks.changed(id, wait);
 		this.#callbacks.log(`conversation ${id} is waiting for a limit, as before the engine stopped: until ${new Date(sleep.at).toISOString().replace(/\.\d+Z$/, "Z")}`);
+		this.#review(provider);
 	}
 
 	/** A response that is not an error came for the conversation: a wait it had is over. */
 	answered(id: number): void {
 		const wait = this.#waits.get(id);
 		if (wait === undefined) return;
-		const waited = duration(this.#callbacks.now() - wait.since);
+		const now = this.#callbacks.now();
+		const waited = duration(now - wait.since);
+		// The provider answers again: its limit has reset, and the episode is over. The runs still asleep for it ask again
+		// within moments of each other, and are not a new one.
+		const kept = wait.kind === "rate_limit" && !this.#released.has(id) ? this.#episodes.get(wait.provider) : undefined;
+		if (kept !== undefined) {
+			const episode = this.#describe(wait.provider, kept);
+			this.#episodes.delete(wait.provider);
+			for (const [other] of this.#waitingOn(wait.provider)) if (other !== id) this.#released.add(other);
+			if (kept.reached) this.#callbacks.episode?.({ phase: "carried_on", episode, at: now });
+		}
 		this.#end(id, `carries on: ${wait.providerName} answered after ${waited} of waiting (${wait.refusals} refusal${wait.refusals === 1 ? "" : "s"})`, true);
 	}
 
@@ -323,10 +409,65 @@ export class Waits {
 		return { waitMs: false, spent };
 	}
 
-	#end(id: number, line: string | undefined, plain = false): void {
-		if (!this.#waits.delete(id)) return;
+	#end(id: number, line: string | undefined, plain = false, review = true): void {
+		const wait = this.#waits.get(id);
+		if (wait === undefined || !this.#waits.delete(id)) return;
+		this.#released.delete(id);
 		this.#callbacks.changed(id, undefined);
 		if (line !== undefined) this.#callbacks.log(plain ? `conversation ${id} ${line}` : `conversation ${id} stopped waiting: ${line}`);
+		if (review) this.#review(wait.provider);
+	}
+
+	/** The waits for a provider's rate limit that belong to its episode: not those of runs released from one that is over. */
+	#waitingOn(provider: string): [number, Wait][] {
+		return [...this.#waits].filter(([id, wait]) => wait.kind === "rate_limit" && wait.provider === provider && !this.#released.has(id));
+	}
+
+	/** Whether a wait is long enough for its limit to count as reached. */
+	#long(wait: Wait): boolean {
+		return wait.until - wait.since >= this.#settings.reachedAfterMs;
+	}
+
+	#describe(provider: string, kept: Kept): Episode {
+		const waiting = this.#waitingOn(provider);
+		const latest = waiting.reduce<Wait | undefined>((a, [, b]) => (a === undefined || b.until > a.until ? b : a), undefined);
+		return {
+			provider,
+			providerName: kept.providerName,
+			since: kept.since,
+			until: latest?.until ?? kept.told?.until ?? kept.since,
+			told: latest?.told ?? false,
+			waiting: waiting.map(([id]) => id).sort((a, b) => a - b),
+			runs: [...kept.runs].sort((a, b) => a - b),
+		};
+	}
+
+	/**
+	 * A wait on `provider` began, changed or ended: the episode of its limit begins, is reached, changes or ends. Told when
+	 * it is reached, and again only when the time it waits until moves by a minute or more or another run joins or
+	 * leaves it, so that what the person is shown stays true without a word for each refusal.
+	 */
+	#review(provider: string): void {
+		const now = this.#callbacks.now();
+		const waiting = this.#waitingOn(provider);
+		let kept = this.#episodes.get(provider);
+		if (waiting.length === 0) {
+			if (kept === undefined) return;
+			this.#episodes.delete(provider);
+			if (kept.reached) this.#callbacks.episode?.({ phase: "ended", episode: this.#describe(provider, kept), at: now });
+			return;
+		}
+		if (kept === undefined) {
+			kept = { providerName: waiting[0]![1].providerName, since: Math.min(...waiting.map(([, wait]) => wait.since)), runs: new Set(), reached: false };
+			this.#episodes.set(provider, kept);
+		}
+		for (const [id] of waiting) kept.runs.add(id);
+		if (!kept.reached && !waiting.some(([, wait]) => this.#long(wait))) return;
+		const episode = this.#describe(provider, kept);
+		if (kept.reached && kept.told !== undefined && Math.abs(kept.told.until - episode.until) < 60_000 && kept.told.waiting === episode.waiting.length) return;
+		kept.reached = true;
+		kept.told = { until: episode.until, waiting: episode.waiting.length };
+		this.#callbacks.episode?.({ phase: "reached", episode, at: now });
 	}
 }
 
@@ -362,11 +503,12 @@ function shown(wait: Wait) {
 	return { kind: wait.kind, since: wait.since, until: wait.until, told: wait.told, refusals: wait.refusals, provider: wait.providerName };
 }
 
-export const limitWait: Feature = (_host, engine: Engine) => {
+export const limitWait: Feature = (host, engine: Engine) => {
 	const settings: WaitSettings = {
 		backoffMs: setting("PI2_LIMIT_BACKOFF_MS", DEFAULTS.backoffMs),
 		maxWaitMs: setting("PI2_LIMIT_WAIT_MAX_MS", DEFAULTS.maxWaitMs),
 		maxNamedMs: DEFAULTS.maxNamedMs,
+		reachedAfterMs: setting("PI2_LIMIT_REACHED_MS", DEFAULTS.reachedAfterMs),
 	};
 	/** Saves so far; a save stores the waits only if no later one has been stored before it. */
 	let saves = 0;
@@ -399,6 +541,16 @@ export const limitWait: Feature = (_host, engine: Engine) => {
 			});
 		},
 		log: (line) => engine.log(line),
+		// The limits feature keeps the Inbox notice (limits.ts).
+		episode: (change) => {
+			for (const feature of host.features) {
+				try {
+					feature.limitEpisode?.(change);
+				} catch (error) {
+					engine.log("limit waits: a feature failed on a limit reached:", error instanceof Error ? error.message : String(error));
+				}
+			}
+		},
 	};
 	/** Whether the runs the last engine left have been looked at for a sleep with no wait noted. */
 	let looked = false;
@@ -429,8 +581,11 @@ export const limitWait: Feature = (_host, engine: Engine) => {
 			// Anything decided before this (nothing, as the features start in order) is newer than what was saved.
 			for (const [id, wait] of waits?.all() ?? []) saved[String(id)] = wait;
 			waits = new Waits(settings, callbacks, saved);
+			// Told again, in case the last engine stopped before its notice was kept; the notice is the same one if it was.
+			for (const episode of waits.reached()) callbacks.episode?.({ phase: "reached", episode, at: Date.now() });
 		},
 		retry: (message, attempt, id) => waitsOf().decide(message, attempt, id),
+		limitWaitOf: (id) => waitsOf().get(id),
 		hooks: [
 			hook(GenerationTask, {
 				afterResponse: (message, api) => {

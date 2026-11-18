@@ -53,6 +53,8 @@ Usage: scripts/test-copy <command> [arguments]
   call <suffix> <method> [<json params>]
                                    Send one request to the copy's own engine socket and print its JSON response.
                                    Params default to {}. An engine error exits non-zero; this does not wait for a run.
+  socket <suffix>                  Print the path of the copy's own engine socket, after the checks call makes, for a
+                                   program that keeps a connection open, such as scripts/load.mts.
   send <suffix> <conversation> <text> [--timeout <seconds>]
                                    Submit and wait for this message\'s run to finish (default 600 seconds, at most 600).
                                    JSON status: done (exit 0), failed/error (1), waiting on the person (2), timeout
@@ -514,6 +516,12 @@ case $cmd in
 		# -l captures that window only, wherever it is and whatever covers it; -o leaves out its shadow, -x the sound.
 		screencapture -x -o -l "$wid" "$file"
 		echo "Captured window $wid of $NAME into $(tidy "$file")."
+		;;
+	socket)
+		names "${1-}"; shift
+		(($# == 0)) || die "use: scripts/test-copy socket $SUFFIX"
+		require_engine
+		echo "$DATA/engine.sock"
 		;;
 	call)
 		names "${1-}"; shift

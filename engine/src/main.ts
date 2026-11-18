@@ -60,6 +60,7 @@ import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
 import { timeLines } from "./log.ts";
+import { LagMonitor } from "./lag.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
@@ -94,6 +95,8 @@ const build = (() => {
 function log(...parts: unknown[]): void {
 	console.error("[pi2-engine]", ...parts);
 }
+/** How late the engine's thread runs (lag.ts). */
+const lag = new LagMonitor((line) => log(line));
 
 // Anything that would kill the process is written to the log first. The app restarts the engine, and reopening the
 // storage recovers whatever was running.
@@ -238,6 +241,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	chatSettings: () => chatSettings(settings.chat),
 	providers: () => providers,
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
@@ -295,10 +299,14 @@ function withheld(): string[] {
 	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
 }
 
-/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on. */
+/**
+ * The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on, and what
+ * features add for chats (chat mode's memory while that is on, knowledge.ts).
+ */
 function chatTools(web: boolean) {
 	const held = withheld();
-	return chatToolNames(web)
+	const added = host.features.flatMap((feature) => feature.chatToolNames?.() ?? []);
+	return [...chatToolNames(web), ...added]
 		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
@@ -1101,6 +1109,8 @@ const text = (params: Params, key: string): string => {
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	/** How late the engine's thread ran since the last time this was asked (lag.ts): for the load script. */
+	"engine.lag": async () => lag.take(),
 	"conversation.create": async (params) => {
 		if (params.chat !== undefined && typeof params.chat !== "boolean") throw new Error("chat must be true or false");
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
@@ -1445,7 +1455,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.defaultModel !== undefined) delete settings.lastChatModel;
 		saveSettings();
 		broadcast(chatEvent());
-		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287).
+		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287). The memory
+		// switch changes what every chat is offered, from its next message (syncTools).
 		return after;
 	},
 	/** Continue with an Agent (#289): `{ id, agentId, cwd?, text? }`, answered with the new conversation's `{ id }`. */

@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { GITHUB_COPILOT_MODELS } from "@earendil-works/pi-ai/providers/github-copilot.models";
 import { KeychainCredentialStore } from "../src/credentials.ts";
-import { limitsReport, nearlyUsedUp, type ProviderLimits, resetWords, windowWords } from "../src/limits.ts";
+import { limitsReport, nearlyUsedUp, type ProviderLimits, refusedWindow, resetWords, windowWords } from "../src/limits.ts";
 import { EngineClient, PATIENT_MS, stop } from "./patience.ts";
 
 function step(name: string): void {
@@ -76,6 +76,19 @@ function step(name: string): void {
 	]);
 	assert.deepEqual(limitsReport([], new Map(), now), ["Plan limits: no subscription is signed in, so there are no plan windows to watch."]);
 	step("the windows in words: delegate's line at 80% or more, naming the subscription, and the whole report for sub_chats");
+
+	// Which window a refusal was for (#343): the one whose reset is the time named, give or take the jitter; else the
+	// one most used at 90% or more; else none.
+	const windows = [
+		{ id: "five_hour", label: "5-hour window", usedPercent: 100, resetsAt: five },
+		{ id: "seven_day", label: "This week", usedPercent: 95, resetsAt: week },
+	];
+	assert.equal(refusedWindow(windows, week + 25_000, true, now)?.id, "seven_day", "the week, whose reset was named, though the 5-hour is fuller");
+	assert.equal(refusedWindow(windows, five + 3000, true, now)?.id, "five_hour");
+	assert.equal(refusedWindow(windows, now + 30_000, false, now)?.id, "five_hour", "no time named: the fullest");
+	assert.equal(refusedWindow([{ ...windows[1]!, usedPercent: 60 }], now + 30_000, false, now), undefined, "none past 90%, none");
+	assert.equal(refusedWindow([], now + 30_000, true, now), undefined);
+	step("a refusal is matched to the window whose reset it named, or the fullest past 90%");
 }
 
 // ---- A real engine with two stand-in subscriptions
@@ -157,7 +170,7 @@ function startEngine(): ChildProcess {
 }
 
 type Item = { kind: string; text: string; isError?: boolean; details?: any };
-type Notice = { id: string; at: number; provider: string; name: string; plan: string | null; window: string; label: string; usedPercent: number; resetsAt: number | null; runs: { conversationId: number; rootConversationId: number; title: string; agentName: string | null; subChat: boolean }[] };
+type Notice = { id: string; at: number; provider: string; name: string; plan: string | null; window: string; label: string; usedPercent: number; resetsAt: number | null; stage?: string; nearlyAt?: number; runs: { conversationId: number; rootConversationId: number; title: string; agentName: string | null; subChat: boolean }[] };
 class Client extends EngineClient {
 	get notices(): Notice[] {
 		return this.events.limits?.notices ?? [];
@@ -232,7 +245,8 @@ try {
 	await client.call("submit", { id: lead, text: `/continue ${sub}: once more` });
 	const notice = await client.until("a notice", () => client.notices[0]);
 	assert.equal(client.notices.length, 1);
-	const { id: _id, at: _at, ...shown } = notice;
+	const { id: _id, at: _at, nearlyAt, ...shown } = notice;
+	assert.equal(nearlyAt, notice.at, "the first stage of its story");
 	assert.deepEqual(shown, {
 		provider: "github-copilot",
 		name: "GitHub Copilot",
@@ -241,6 +255,7 @@ try {
 		label: "Premium requests",
 		usedPercent: 91,
 		resetsAt: Date.parse(new Date(monthReset).toISOString()),
+		stage: "nearly",
 		runs: [{ conversationId: sub, rootConversationId: lead, title: "Scout: hello", agentName: "Scout", subChat: true }],
 	});
 	assert.match(log, new RegExp(`limits: GitHub Copilot, premium requests 91% used \\(resets .*Z\\), with 1 conversation working on it: ${sub}; a notice is in the Inbox`));

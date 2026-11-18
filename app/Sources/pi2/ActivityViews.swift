@@ -41,7 +41,11 @@ struct ActivityView: View {
     private var subtitle: String {
         let commands = engine.backgroundCommands.count
         let left = commands == 0 ? nil : "\(commands) background command\(commands == 1 ? "" : "s")"
-        let working = engine.activity.isEmpty ? nil : "\(engine.activity.count) running"
+        // A run waiting for a provider's limit is not counted as running (#343).
+        let waiting = engine.limitWaits.count
+        let running = engine.activity.count - waiting
+        let counts = [running > 0 ? "\(running) running" : nil, waiting > 0 ? "\(waiting) waiting for a limit" : nil].compactMap(\.self)
+        let working = counts.isEmpty ? nil : counts.joined(separator: ", ")
         let models = engine.localRunning.count
         let loaded = models == 0 ? nil : "\(models) model\(models == 1 ? "" : "s") on this Mac"
         let parts = [working, loaded, left].compactMap(\.self)

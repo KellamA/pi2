@@ -50,7 +50,16 @@ A run whose request a provider refuses for its limit does not end. It waits, and
 
 **What is not waited for.** An error that is not a limit ends the run at once, as before: a bad key, a refused request, a model that does not exist. So do refusals that waiting does not cure, even with HTTP 429: money or an allowance used up for good (`insufficient_quota`, billing, a monthly cap, "credit balance is too low", a plan that does not include the model), a workspace cap only its admin can raise, and a single request larger than the limit itself ("request too large"). Other passing errors (a dropped connection, a 500) are retried three times, 2, 4 and 8 seconds apart, as before; attempts spent waiting for a limit do not use those three up.
 
-**What is shown.** The conversation says who refused, why, and until when it waits ("Anthropic refused the request for its rate limit. The run waits until 14:32, the time it named, then carries on by itself. Stop ends it."), and whether that time is the provider's or pi²'s own backoff. Activity shows the run with "rate limit · until 14:32" (or "provider overloaded") in place of the spinner, and the menu bar's list says "waiting for limit" for one that is not a sub-chat. Each refusal stays in the transcript as a failed attempt; attempts that failed in a row show as one row, which says how many there were. The run is busy all the while, so a sub-chat's `delegate` call keeps waiting for it, and a message typed meanwhile is queued as usual.
+**What is shown.** A run that waits for a limit is shown as waiting, not working, wherever a run is shown (#343):
+
+- **The conversation** says who refused, why, and until when it waits ("Anthropic refused the request for its rate limit. The run waits until 14:32, the time it named, then carries on by itself. Stop ends it."), and whether that time is the provider's or pi²'s own backoff.
+- **Its row in the sidebar**, and its pane's header and its row in Branches, have an hourglass in place of the spinner, and the sidebar row "until 14:32"; the full sentence is on hover. A conversation whose sub-chats are folded away says "3 at limit" when three of them wait.
+- **Activity** shows the run with "waiting for Anthropic's limit · until 14:32" (or "Anthropic overloaded · until 14:32") in place of the spinner, and counts it apart: "11 running, 8 waiting for a limit" at the top, "11 running" and "8 at limit" in the sidebar.
+- **The conversation that handed out the work** has one line above its message field, kept up to date rather than repeated: "8 sub-chats wait for Anthropic's limit until 18:20. They carry on by themselves; Stop on a sub-chat ends its wait.", a part for each provider when they differ.
+- **The menu bar** says the same of each conversation in its list: "waiting for Anthropic's limit · until 14:32", or "working · 8 sub-chats at limit".
+- **The Inbox, and a notification**, once when a provider's limit is reached and once when work carries on ([below](#in-the-inbox-and-as-a-notification)).
+
+All of it comes from Activity's `limit`, so it is shown as long as the run waits: between two refusals as well as during a sleep. Each refusal stays in the transcript as a failed attempt; attempts that failed in a row show as one row, which says how many there were. The run is busy all the while, so a sub-chat's `delegate` call keeps waiting for it, and a message typed meanwhile goes with the first request after the wait (**A message meanwhile**, below).
 
 **Stopping it.** Stop, in the conversation or in Activity, ends the run as it ends any run. Stopping the conversation a sub-chat belongs to stops the sub-chat too.
 
@@ -82,9 +91,25 @@ Plan limits, as last read. A run the provider refuses for its limit waits for th
 
 This is not a tool of its own: `sub_chats` is offered only with `delegate`, so an agent that cannot hand out work is sent nothing more in its prompt, and one that can is sent a sentence more in `sub_chats`' description. Listing asks no provider; it says what was last read, and how long ago.
 
-**In the Inbox, for the person.** When a window of a signed-in subscription passes 90% while runs on that subscription are going (conversations whose model is on it, sub-chats included, with work running), a notice goes to the Inbox: which subscription and window, how much is used, when it resets, and which runs were going, each a link to its conversation. It is information, not a request: it says that a run the provider refuses waits for the reset and carries on by itself, and that nothing needs doing. It is not counted in the Dock's badge or the menu bar, which count what waits on the person, and posts no notification; the sidebar's Inbox row counts it in grey. engine.log has a line for it too.
+**In `sub_chats`' list, which sub-chats wait.** Each sub-chat's line says how it stands, and one that waits for a limit says for which and until when, so an agent can hand new work to an agent on another subscription rather than one that waits:
 
-A window is noticed once per reset: not again while it stays above 90%, nor after the notice is dismissed, until its reset time has passed or, for a window whose provider gives none, a reading shows it below 80%. A notice leaves the Inbox by itself when its window resets, and with its subscription when that is signed out. A window past 90% with no run on its subscription is not noticed until a run on it starts. Notices, and which windows were noticed, are kept in `limits.json`, so a restart neither loses nor repeats one.
+```
+- 14: Scout, “Fix the parser”. Waiting for Anthropic's rate limit until 18:20 (in 1 h 45 min), the time Anthropic named; it carries on by itself then; last used 12 min ago. …
+```
+
+### In the Inbox, and as a notification
+
+The person is told the story of a subscription's window in one notice, which goes from stage to stage rather than adding a card for each, so that it reads as one story and not three alarms (#343):
+
+1. **Nearly used up.** When a window of a signed-in subscription passes 90% while runs on that subscription are going (conversations whose model is on it, sub-chats included, with work running), a notice goes to the Inbox: which subscription and window, how much is used, when it resets, and which runs were going, each a link to its conversation. It says that a run the provider refuses waits for the reset and carries on by itself, and that nothing needs doing. No notification.
+2. **Limit reached.** When the provider refuses runs for its rate limit and one of them waits five minutes or more from its first refusal (a time named that far off, or a backoff grown that long), the notice of the window that refused becomes "Anthropic Max, 5-hour window: limit reached": how many runs wait, until when, whether the provider named the time, and which runs, kept up to date as more are refused or the time moves. A shorter wait, such as a per-minute limit of 30 seconds, is no news. The window is the one whose reset is the time named, give or take ten minutes, or else the one most used at 90% or more; with no such window, as for a key or an endpoint, which report no windows, the notice names only the provider. While it stands, no 90% notice comes for that subscription. A waiting run that is overloaded rather than limited is not counted.
+3. **Carrying on.** When the provider answers one of those runs again, the limit has reset: the notice becomes "…: carrying on", with the runs that waited and how long, and leaves the Inbox twelve hours later unless dismissed first. The other runs, asleep until the same time give or take their jitter, carry on in the next moments and are not news again.
+
+The notice says how the story went in one line ("Passed 90% at 16:02 · limit reached at 16:35 · carried on at 18:20"). If every run that waited is stopped before the provider answers, nothing waits any more and a "limit reached" notice goes.
+
+Notices are information, not requests: they are not counted in the Dock's badge or the menu bar, which count what waits on the person; the sidebar's Inbox row counts them in grey. The second and third stages also post a macOS notification, once each, while pi² is in the background, unless **Notify me when a subscription's limit is reached, and when work carries on** is off in Settings › General (it is on by default). It asks macOS nothing by itself: without notifications allowed for pi² (turning on either switch there asks), nothing is posted. The first stage posts none. engine.log has a line for each stage.
+
+A window is noticed at 90% once per reset: not again while it stays above 90%, nor after the notice is dismissed, until its reset time has passed or, for a window whose provider gives none, a reading shows it below 80%. A 90% notice leaves the Inbox by itself when its window resets, and with its subscription when that is signed out. A window past 90% with no run on its subscription is not noticed until a run on it starts. A dismissed notice that its limit was reached is not shown again in that episode, but carrying on is: it is news of its own. Notices, and which windows were noticed, are kept in `limits.json`, and the episode a run waits in is worked out again from the waits the engine keeps, so a restart neither loses nor repeats one.
 
 ### How it works
 
@@ -144,16 +169,20 @@ and each notice:
 
 ```
 { id, provider, name, plan, window, label, usedPercent, resetsAt, at,
+  stage: "nearly" | "reached" | "carried_on", nearlyAt?, reachedAt?, carriedOnAt?,
+  waiting?, until?, told?,
   runs: [{ conversationId, rootConversationId, title, agentName, subChat }], more? }
 ```
 
-Times are milliseconds since 1970; `usedPercent` is 0–100. `limits.refresh` (optionally `{ id }`) asks again, within the limits above, and answers with the same event. `limits.dismiss` `{ id }` takes a notice away.
+Times are milliseconds since 1970; `usedPercent` is 0–100, or null (with `window` and `label` empty) for a provider that reports no windows. A notice kept before the stages has no `stage`, which means `nearly`. `waiting`, `until` and `told` are set while it is `reached`. `limits.refresh` (optionally `{ id }`) asks again, within the limits above, and answers with the same event. `limits.dismiss` `{ id }` takes a notice away.
 
 The limits feature answers `planLimits()` ([features.ts](../engine/src/features.ts)) with the providers above, which `delegate` (`engine/src/extensions.ts`) and `sub_chats` (`engine/src/subchats.ts`) put in words with `nearlyUsedUp` and `limitsReport` from `engine/src/limits.ts`. The notices are its own: it looks for a window to notice when a reading comes and when what is running changes, and only reads which model a running conversation is on when some window is past 90% and not yet noticed. `engine/test/planwindows.ts` checks the wording, then runs an engine with two stand-in subscriptions signed in under a test Keychain service: Claude, whose usage address is a stand-in on 127.0.0.1, and GitHub Copilot, whose requests go to a stand-in over TLS that sets the premium requests in its answers' headers and can hold an answer back so a run is going when they arrive.
 
 For tests, the usage addresses can be pointed elsewhere with `PI2_LIMITS_ANTHROPIC_URL`, `PI2_LIMITS_CODEX_URL` and `PI2_LIMITS_KIMI_URL`, and the minimum time between two requests to one provider set with `PI2_LIMITS_MIN_INTERVAL_MS`.
 
-A conversation's state has `limitWait` while its run sleeps for a limit, and its row in the `activity` event has `limit` while it waits; both are `{ kind: "rate_limit" | "overloaded", since, until, told, refusals, provider }`, with times in milliseconds since 1970, `told` saying whether the provider named `until`, and `provider` its name. `engine/test/limitwait.ts` checks the reading of refusals and the waits, and runs an engine against a stand-in provider on 127.0.0.1 that refuses with 429 and 529, with and without a time; `PI2_LIMIT_BACKOFF_MS` sets the first backoff step (15 seconds otherwise) and `PI2_LIMIT_WAIT_MAX_MS` the longest wait when no time is named (6 hours otherwise).
+A conversation's state has `limitWait` while its run sleeps for a limit, and its row in the `activity` event has `limit` while it waits; both are `{ kind: "rate_limit" | "overloaded", since, until, told, refusals, provider }`, with times in milliseconds since 1970, `told` saying whether the provider named `until`, and `provider` its name. `engine/test/limitwait.ts` checks the reading of refusals and the waits, and runs an engine against a stand-in provider on 127.0.0.1 that refuses with 429 and 529, with and without a time; `PI2_LIMIT_BACKOFF_MS` sets the first backoff step (15 seconds otherwise), `PI2_LIMIT_WAIT_MAX_MS` the longest wait when no time is named (6 hours otherwise), and `PI2_LIMIT_REACHED_MS` how long a run must wait for a limit to count as reached (5 minutes otherwise).
+
+The episodes of a provider's limit (the runs that wait for its rate limit, from the first refusal to the first answer after it) are worked out by `Waits` in `engine/src/limitwait.ts` from the waits it keeps, and told to every feature's `limitEpisode` as `{ phase: "reached" | "carried_on" | "ended", episode: { provider, providerName, since, until, told, waiting, runs }, at }`; the limits feature turns them into the stages of its notices. `limitWaitOf(id)` gives a conversation's wait, for `sub_chats`' list. The app shows a run as waiting from Activity's `limit`, and a parent's line from its sub-chats' rows there; it posts a notification for a notice that comes to `reached` or `carried_on` after it first heard of the notices (`Notifier.limitNotices`), so a launch posts none.
 
 ## Known limits
 
