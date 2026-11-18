@@ -2,9 +2,9 @@
 # Checks what scripts/test-copy refuses before it changes anything, in a stand-in checkout in a temporary folder:
 # suffixes that are not its own, a missing build, a release build, a build of another checkout, a suffix already
 # started, a stop, call or picture for a copy that was not started, malformed call params, socket symlinks and a
-# picture outside the checkout. Launches no
-# app and touches nothing outside the temporary folder. Starting, capturing and stopping a real copy is checked by
-# hand, as CONTRIBUTING.md says.
+# picture outside the checkout. Also checks shot's retry and permission handling with stand-ins for macOS.
+# Launches no app and touches nothing outside the temporary folder. Starting, capturing and stopping a real copy
+# is checked by hand, as CONTRIBUTING.md says.
 #
 #   scripts/test-test-copy
 
@@ -209,6 +209,50 @@ if ((status == 0)) && [[ $out == *"engine pid        none recorded"* && $out != 
 	echo "ok: test-copy status before engine.pid exists is quiet"
 else
 	echo "FAIL: test-copy status before engine.pid exists (exit $status): $out"
+	failures=$((failures + 1))
+fi
+
+# Use the recorded stand-in app above. No real permission query or capture is made: the commands below first
+# refuse permission, then simulate an absent window, a window whose image isn't ready, and a replacement window.
+mkdir "$T/bin"
+cat >"$T/bin/osascript" <<'SH'
+#!/bin/bash
+[[ $1 == -l && $2 == JavaScript && $3 == - && $4 == window && $5 == "$SHOT_APP_PID" && $6 == 'Late window' ]] || exit 1
+if [[ $SHOT_ALLOWED == no ]]; then
+	echo not-permitted
+elif [[ ! -e $SHOT_LOG ]]; then
+	echo waiting >"$SHOT_LOG"
+else
+	case $(<"$SHOT_LOG") in
+		waiting) echo 100 ;;
+		'waiting
+100') echo 101 ;;
+		*) exit 1 ;;
+	esac
+fi
+SH
+cat >"$T/bin/screencapture" <<'SH'
+#!/bin/bash
+[[ $1 == -x && $2 == -o && $3 == -l && $(<"$SHOT_DEST") == original ]] || exit 1
+case $4 in
+	100) echo 100 >>"$SHOT_LOG"; printf partial >"$5"; echo 'could not create image from window' >&2; exit 1 ;;
+	101) echo 101 >>"$SHOT_LOG"; printf 'stand-in picture' >"$5" ;;
+	*) exit 1 ;;
+esac
+SH
+chmod +x "$T/bin/osascript" "$T/bin/screencapture"
+shot_dest="$root/shot.png"
+printf original >"$shot_dest"
+PATH="$T/bin:$PATH" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=no \
+	expect "screen capture is not allowed" shot test-7 "$shot_dest" --window 'Late window'
+out=$(PATH="$T/bin:$PATH" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=yes \
+	"$copy" shot test-7 "$shot_dest" --window 'Late window' 2>&1)
+status=$?
+if ((status == 0)) && [[ $out == *'Captured window 101'* && $(<"$T/shot.log") == $'waiting\n100\n101' &&
+	$(<"$shot_dest") == 'stand-in picture' && -z $(find "$root" -name '.test-copy-shot.*' -print) ]]; then
+	echo "ok: test-copy shot waits for the named window and retries a capture that isn't ready"
+else
+	echo "FAIL: test-copy shot did not publish and clean up a retried capture (exit $status): $out"
 	failures=$((failures + 1))
 fi
 
