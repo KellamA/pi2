@@ -251,7 +251,7 @@ struct QuickAskView: View {
         draft = ""
         Task {
             if conversationID == nil { conversationID = await engine.createConversation() }
-            if let conversationID, await !engine.submit(text, to: conversationID, steer: false), draft.isEmpty { draft = text }
+            if let conversationID, await engine.submit(text, to: conversationID, steer: false) == .refused, draft.isEmpty { draft = text }
         }
     }
 }

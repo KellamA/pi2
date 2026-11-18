@@ -10,6 +10,8 @@ A message can carry pictures and files as well as what you type. It can also be 
 
 Each attachment shows as a chip above the message field, with a button to remove it. If something cannot be used, its chip says why, and the message goes without it. Attachments can be sent while the agent is working, to steer it or to queue behind it, like any message.
 
+Unsent text and attachments stay with their conversation (including a new chat) when you switch conversations or modes, or close a pane. They stay in memory until you send or clear them, archive or delete the conversation, or quit pi². Restoring an archived conversation does not bring back its draft.
+
 ## What can be attached
 
 | Kind | What the model gets |

@@ -36,7 +36,7 @@ With twenty runs going, the engine sends the app dozens of events a second: `act
 
 - **A property is set only when its value changed.** A property of an observable object tells every view that reads it of each set, even to the same value, and the engine sends most events whole again for any change in them.
 - **Each open conversation is an object of its own** (`OpenConversation`). An update to one conversation redraws the views that show it, not the toolbar, the menus and every pane, which reading it from one dictionary of all of them did.
-- **A conversation no pane shows is closed after two minutes** (`conversation.close`), unless Quick Ask has it or a message to it is on its way. Until then going back to it is instant; after, it is asked for again.
+- **A conversation no pane shows is closed after two minutes** (`conversation.close`), unless Quick Ask has it or a message to it is on its way. Until then going back to it is instant; after, it is asked for again. Its unsent text and attachments are kept apart from the closed transcript, in memory only. They neither keep a subscription open nor generate engine events.
 - **Views that change often are small views of their own**, such as the count of runs on Activity's row, so the sidebar is not drawn again with them.
 - **Spinners turn in Core Animation** (`Spinner` in `Theme.swift`), not with a SwiftUI animation, which laid the window out again every frame for each one: twenty in the sidebar kept the main thread about a third busy on their own.
 
