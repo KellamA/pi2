@@ -91,6 +91,11 @@ export type Meta = {
 	renamed?: boolean;
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
+	/**
+	 * One of a chat's versions after the first (versions.ts), with the chat as its `parent`: shown in the chat's place when
+	 * current, and never on its own.
+	 */
+	version?: true;
 	/** A chat: a conversation of pi²'s built-in chat assistant (chat.ts), with no `agentId`. */
 	chat?: true;
 	/** The person pinned it to the top of its list (`conversation.pin`). */

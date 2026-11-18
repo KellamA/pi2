@@ -432,6 +432,14 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/read ")) {
 			return fauxAssistantMessage([fauxText("Reading that file."), fauxToolCall("read", { path: prompt.slice(6).trim() })], { stopReason: "toolUse" });
 		}
+		if (prompt === "/context") {
+			// What the person said in the conversation as the model was sent it, one message a line, and how many answers
+			// came between: so a test can see which version of a chat a request saw (versions.ts).
+			const said = (request.messages as readonly DemoMessage[]).flatMap((message) =>
+				message.role === "user" ? [demoPrompt(message)] : message.role === "assistant" ? ["(answer)"] : [],
+			);
+			return fauxAssistantMessage(`CONTEXT\n${said.join("\n")}`);
+		}
 		// Says what came with the message, so it is visible that attachments reach the model.
 		const pictures = blocks.filter((block) => block?.type === "image").length;
 		const files = blocks.filter(isAttached).length;
