@@ -540,8 +540,19 @@ struct SidebarView: View {
                         .help("The engine restarted after stopping unexpectedly")
                         .accessibilityLabel("Engine restarted")
                 }
-                if !engine.activity.isEmpty {
-                    Tag("\(engine.activity.count) running", .acc)
+                // A run waiting for a provider's limit is counted apart from those working (#343).
+                let waiting = engine.limitWaits.count
+                if engine.activity.count > waiting {
+                    // Beside the count at the limit, the word gives way so that the row's own title fits.
+                    let running = engine.activity.count - waiting
+                    Tag(waiting > 0 ? "\(running)" : "\(running) running", .acc).fixedSize()
+                        .help("\(running) running")
+                        .accessibilityLabel("\(running) running")
+                }
+                if waiting > 0 {
+                    Tag("\(waiting) at limit", .warn).fixedSize()
+                        .help("\(waiting) waiting for a provider’s limit; they carry on by themselves")
+                        .accessibilityLabel("\(waiting) waiting for a limit")
                 }
             }
             navRow("Usage", icon: "chart.bar", tag: .usage) {
@@ -647,8 +658,19 @@ struct SidebarView: View {
         .tag(tag)
     }
     private func conversationRow(_ conversation: ConversationSummary, subChats: Int) -> some View {
-        HStack(spacing: 8) {
-            if conversation.busy {
+        let wait = engine.limitWaits[conversation.id]
+        return HStack(spacing: 8) {
+            if let wait {
+                // Waiting for a provider's limit is not working: no spinner (#343).
+                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                    .help(wait.sentence)
+                    .accessibilityLabel(wait.tag)
+            } else if engine.heldByLimits.contains(conversation.id) {
+                // Nothing of it works: all its sub-chats wait for a limit.
+                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                    .help(LimitWait.subChatsLine(engine.subChatLimitWaits[conversation.id] ?? []) ?? "")
+                    .accessibilityLabel("Waiting for a limit")
+            } else if conversation.busy {
                 Spinner().frame(width: 16)
             } else {
                 AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
@@ -662,6 +684,12 @@ struct SidebarView: View {
                 : engine.inbox.contains { $0.conversationId == conversation.id }
             if needsYou {
                 Tag("needs you", .warn).accessibilityLabel("Needs you")
+            } else if let wait {
+                // The title gives way, not the time.
+                Tag(wait.shortTag, .warn).fixedSize().help(wait.sentence)
+            } else if subChats > 0, model.collapsed.contains(conversation.id), let waits = engine.subChatLimitWaits[conversation.id] {
+                // Folded away, its sub-chats' rows cannot say it.
+                Tag("\(waits.count) at limit", .warn).fixedSize().help(LimitWait.subChatsLine(waits) ?? "")
             }
             // Which branch the conversation's folder is on, coloured by how it stands. On every row, sub-chats too, so
             // each one's branch can be followed from the sidebar; one in its parent's checkout draws it faded.

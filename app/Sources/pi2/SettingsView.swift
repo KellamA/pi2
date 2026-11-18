@@ -159,6 +159,7 @@ struct GeneralSettings: View {
     /// This copy's data folder.
     let home: String
     @AppStorage(Notifier.defaultsKey) private var notify = false
+    @AppStorage(Notifier.limitsKey) private var notifyLimits = true
     @AppStorage(AppAppearance.key) private var appearance = AppAppearance.dark.rawValue
     @State private var denied = false
 
@@ -184,12 +185,22 @@ struct GeneralSettings: View {
                             }
                         }
                     }
+                Toggle("Notify me when a subscription’s limit is reached, and when work carries on", isOn: $notifyLimits)
+                    .onChange(of: notifyLimits) { _, on in
+                        guard on else { return }
+                        Task {
+                            if await !Notifier.shared.requestPermission() {
+                                notifyLimits = false
+                                denied = true
+                            }
+                        }
+                    }
                 if denied {
                     Text("macOS is not allowing notifications from pi². Turn them on in System Settings › Notifications.")
                         .font(.callout).foregroundStyle(.orange)
                 }
             } footer: {
-                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting.").formFooter()
+                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting. A run a provider refuses for its limit waits and carries on by itself; the Inbox says so either way, and the second switch adds a notification once when the limit is reached and once when work carries on.").formFooter()
             }
             .id(SettingsSection.notifications)
             BackgroundSettings(home: home)

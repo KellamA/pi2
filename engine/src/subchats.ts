@@ -12,7 +12,8 @@ import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type ConversationId, defineTool, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { arr, bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { isArchived, isDeleted } from "./archive.ts";
-import { limitsReport } from "./limits.ts";
+import { limitsReport, resetWords } from "./limits.ts";
+import type { Wait } from "./limitwait.ts";
 import { elapsed, runningCommandsOf, stopCommandsOf } from "./background.ts";
 import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
@@ -101,12 +102,28 @@ export function keeps(info: BranchInfo | undefined): string | undefined {
 	return undefined;
 }
 
-/** Whether a sub-chat or one of its own sub-chats is busy or waiting on the person, and if so, in words. */
+/**
+ * Whether a sub-chat or one of its own sub-chats is busy, waiting on the person or waiting for a provider's limit, and if
+ * so, in words.
+ */
 function activity(host: Host, ids: number[]): string | undefined {
 	const waiting = host.inbox.list().filter((item) => ids.includes(item.conversationId));
 	if (waiting.length > 0) return `waiting on the person (${waiting[0]!.kind === "question" ? "a question" : "an approval"})`;
-	if (ids.some((id) => host.working(id))) return "working";
-	return undefined;
+	if (!ids.some((id) => host.working(id))) return undefined;
+	const feature = host.features.find((candidate) => candidate.limitWaitOf !== undefined);
+	for (const id of ids) {
+		const wait = feature?.limitWaitOf?.(id);
+		if (wait !== undefined) return limitWaitWords(wait, Date.now());
+	}
+	return "working";
+}
+
+/** "waiting for Anthropic's rate limit until 18:20 (in 1 h 45 min), the time Anthropic named; it carries on by itself then". */
+export function limitWaitWords(wait: Pick<Wait, "kind" | "until" | "told" | "providerName">, now: number): string {
+	const name = wait.providerName;
+	if (wait.kind === "overloaded") return `waiting for ${name}, which is overloaded; it asks again ${resetWords(wait.until, now)} and carries on by itself`;
+	if (wait.told) return `waiting for ${name}'s rate limit until ${resetWords(wait.until, now).replace(/^(at|on) /, "")}, the time ${name} named; it carries on by itself then`;
+	return `waiting for ${name}'s rate limit; ${name} named no time, so it asks again ${resetWords(wait.until, now)} and carries on by itself`;
 }
 
 type Where = { cwd: string | null; own: Worktree | undefined; info: BranchInfo | undefined; shared: Worktree | undefined };
@@ -154,7 +171,7 @@ async function limitsOf(host: Host, api: ToolExecutionApi, context: Context): Pr
 
 export const SUB_CHATS_DESCRIPTION =
 	"See the sub-chats this conversation opened with delegate, and archive the ones whose work is finished. Actions:\n" +
-	"- list: each sub-chat's number, agent and title; whether it is working, waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are named at the end. " +
+	"- list: each sub-chat's number, agent and title; whether it is working, waiting for a provider's limit (and until when), waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are named at the end. " +
 	"Then how much of each signed-in subscription's allowance is used and when each window resets, and which subscription you and each of your agents run on: list before starting more sub-chats when a window may be nearly used up.\n" +
 	"- archive: put away the sub-chats numbered in `chats`. Use it once you have what you needed from a sub-chat and will not continue it, or when the person asks you to tidy up. " +
 	"An archived sub-chat leaves the sidebar for the Archive, where the person can read and restore it; nothing is deleted. Commands it left running in the background are stopped, and the answer says which. " +

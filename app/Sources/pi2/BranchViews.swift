@@ -491,7 +491,9 @@ struct BranchesView: View {
 
     private func rowView(_ row: Row) -> some View {
         HStack(spacing: 10) {
-            if row.conversation.busy {
+            if let wait = engine.limitWaits[row.conversation.id] {
+                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 20).help(wait.sentence)
+            } else if row.conversation.busy {
                 Spinner().frame(width: 20)
             } else {
                 AgentAvatar(agent: engine.agent(row.conversation.agentId), size: 20)

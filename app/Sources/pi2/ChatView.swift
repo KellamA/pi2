@@ -102,6 +102,10 @@ struct ChatView: View {
             if let error = state?.compactionError, state?.compacting != true {
                 banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: Theme.warn)
             }
+            // Its sub-chats that wait for a provider's limit, in one line kept up to date (#343).
+            if let line = LimitWait.subChatsLine(engine.subChatLimitWaits[id] ?? []) {
+                banner(line, systemImage: "hourglass", color: Theme.warn)
+            }
             if let wait = state?.limitWait {
                 banner(wait.sentence, systemImage: "hourglass", color: Theme.warn)
             } else if let retry = state?.retry {

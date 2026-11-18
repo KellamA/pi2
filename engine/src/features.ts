@@ -20,7 +20,7 @@ import { documents } from "./documents.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
-import { limitWait } from "./limitwait.ts";
+import { type EpisodeChange, limitWait, type Wait } from "./limitwait.ts";
 import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
@@ -95,6 +95,13 @@ export type FeatureParts = {
 	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
 	 */
 	planLimits?(): ProviderLimits[];
+	/** The wait for a provider's limit a conversation's run is in, if any: for `sub_chats`' list. Only one feature answers it (limitwait.ts). */
+	limitWaitOf?(id: number): Wait | undefined;
+	/**
+	 * A provider's limit was reached (or what is known of it changed), the runs that waited for it carry on, or none waits
+	 * any more. Told to every feature by limitwait.ts; limits.ts keeps the Inbox notice.
+	 */
+	limitEpisode?(change: EpisodeChange): void;
 	/**
 	 * Fields of `local.status` and the `local` event, about models on this Mac: what is installed comes from localmodels.ts,
 	 * what is running from the feature that runs them. Call `localChanged()` (localmodels.ts) when they change.
