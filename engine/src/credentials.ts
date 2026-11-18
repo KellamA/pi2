@@ -19,6 +19,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
+import { testCredentials } from "./testcredentials.ts";
+
+/** macOS always uses Keychain. Other platforms have a file stand-in for tests, not a supported pi² runtime. */
+export function credentialStore(home: string): CredentialStore {
+	return process.platform === "darwin" ? new KeychainCredentialStore(home) : testCredentials(home);
+}
+
 const SECURITY = "/usr/bin/security";
 const NOT_FOUND = 44;
 /** Longest command line `security -i` takes whole is 4095 bytes; stay clear of it. */

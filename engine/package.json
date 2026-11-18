@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test --test-reporter=spec 'test/!(patience|browser|localserver).ts'",
+    "test:linux": "node scripts/test-platform.ts linux",
+    "test:macos": "node scripts/test-platform.ts macos",
     "test:engine": "node test/engine.ts",
     "test:browser": "node test/browser.ts",
     "start": "node src/main.ts",
