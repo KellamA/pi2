@@ -404,8 +404,6 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		await forget();
 		await unwatch(wakeKey(id));
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);
-	} finally {
-		run?.started();
 	}
 	const marker = run.marker;
 	const command: Command = { id, conversationId, command: args.command, cwd, startedAt, child, output: "", total: 0, read: 0, settled: Promise.resolve(), waiters: new Set() };
