@@ -60,14 +60,14 @@ struct ChatSettingsView: View {
                 ChatModelPicker(engine: engine, selection: settings.defaultModel) { model in
                     change(["defaultModel": model.map { ["provider": $0.provider, "modelId": $0.modelId] } ?? NSNull()])
                 }
-                Toggle("Search the web and read pages", isOn: Binding(
+                Toggle("Start with the web on", isOn: Binding(
                     get: { settings.web },
                     set: { on in change(["web": on]) }
                 ))
             } header: {
                 Text("New chats")
             } footer: {
-                Text("A new chat starts with this model, or with the one you chose last in a chat. You can change it in any chat. With the web on, a chat searches the web and reads pages when an answer depends on facts it may not have, and names its sources.").formFooter()
+                Text("A new chat starts with this model, or with the one you chose last in a chat, and you can change it in any chat. With the web on, a chat searches the web and reads pages when an answer depends on facts it may not have, and names its sources. Each chat has its own Web switch by the message field; this is where a new chat's starts, and changing it here changes no chat already made.").formFooter()
             }
             .id(SettingsSection.newChats)
 
