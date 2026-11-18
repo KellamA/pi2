@@ -1,0 +1,2 @@
+### For contributors
+- The app starts the engine as its own responsible process (`EngineSpawn.swift`). In a development build or a throwaway copy, whose Node is outside the bundle, an agent's commands therefore have none of the build's macOS permissions. `app/check-release-build.mts --open-app` now also fails if macOS holds the app, or anything but the engine itself, responsible for the engine the app started.

@@ -58,7 +58,7 @@ What macOS needs: **Accessibility for pi²**, the pi² the agent runs in, grante
 
 ## Commands an agent runs
 
-Computer use is not the only way an agent can see the screen. A shell command it runs, such as `screencapture`, acts under pi²'s own macOS permissions, not the computer tool's rules: once pi² has Screen Recording, an agent's command can capture the whole screen, whichever apps computer use allows and whether or not computer use is on, and one that runs without asking (Full access, or a rule) needs no approval to do it. Accessibility is different: an agent's commands have pi²'s when the app started the engine, and not when the login item did. A capture without the permission fails, and the first one puts a macOS prompt on your screen naming pi². [architecture.md](architecture.md#whose-macos-permissions-commands-have) has the details.
+Computer use is not the only way an agent can see the screen. A shell command it runs, such as `screencapture`, acts under pi²'s own macOS permissions, not the computer tool's rules: once pi² has Screen Recording, an agent's command can capture the whole screen, whichever apps computer use allows and whether or not computer use is on, and one that runs without asking (Full access, or a rule) needs no approval to do it. Accessibility is different: an agent's commands never have pi²'s, however the engine was started, so a command cannot work other apps around the list of apps and the approvals above. Until #263 they had it when the app itself started the engine. A capture without the permission fails, and the first one puts a macOS prompt on your screen naming pi². [architecture.md](architecture.md#whose-macos-permissions-commands-have) has the details.
 
 ## Limits
 

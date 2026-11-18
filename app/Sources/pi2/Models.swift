@@ -73,6 +73,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let createdAt: Double?
     /// Set for a sub-chat: the conversation whose agent opened it.
     let parent: Int?
+    /// A chat with pi²'s own assistant, shown in chat mode only (ChatMode.swift), rather than an agent's conversation.
+    var chat: Bool? = nil
+    /// A chat kept at the top of chat mode's sidebar.
+    var pinned: Bool? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
@@ -129,6 +133,8 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
     /// For a sub-chat its conversation's agent archived on its own: that conversation, which stays in the sidebar.
     let parent: Int?
     let parentTitle: String?
+    /// An archived chat with pi²'s own assistant.
+    var chat: Bool? = nil
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {
@@ -507,6 +513,8 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     let limit: LimitWait?
     /// Its shell commands running in the foreground, oldest first, with their clocks (#196). Absent from an older engine.
     var commands: [RunningCommand]?
+    /// A chat answering, rather than an agent's work (docs/chat.md).
+    var chat: Bool?
     var id: Int { conversationId }
 }
 
@@ -673,11 +681,11 @@ struct ConversationState: Codable, Equatable {
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
     let setup: LiveSetup?
-    /// A chat of pi²'s own assistant, not an agent's conversation. Nil from an engine older than this field.
-    let chat: Bool?
+    /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
+    var chat: Bool? = nil
     /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
     /// offered: an agent's conversation, or an engine older than this field.
-    let versions: [VersionPoint]?
+    var versions: [VersionPoint]? = nil
 }
 
 /// A point where a chat's versions part: after entry `after` (nil: before the first message), version `index` of `count`.
@@ -866,6 +874,8 @@ struct SearchResult: Codable, Equatable, Identifiable {
     let snippet: String
     /// Found in an archived conversation.
     let archived: Bool?
+    /// Found in a chat rather than an agent's conversation.
+    var chat: Bool? = nil
     var id: Int { entryId }
 }
 
