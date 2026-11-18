@@ -45,7 +45,7 @@ When the app tells the page the conversation is a chat (`chat.enabled`), the pag
 - **‹ 2 / 3 ›** under a message or a turn with several versions shows which is shown and steps to the others. It stays in view without the pointer over the row, and is unavailable while an answer is being written. It sits under the first message or answer after the point where the versions part (`PiChat.versionRows`), which for Try Again is the end of the turn and for Edit the message.
 - **Sources** under a turn name the pages it read with `web_fetch`, each once, as links: the page's title and its site. A page a search only listed is not a source.
 
-Fork from here is not offered in a chat. Until chats exist (#283), a development build shows these on any conversation the engine offers versions for (`TranscriptFeed.Chat.shown`), so they can be tried.
+Fork from here is not offered in a chat. The app decides from the conversation's state, which says `chat: true` for a chat (`TranscriptFeed.Chat.shown`).
 
 Retries, failures, compaction, a wait for a provider's limit and queued messages are shown outside the transcript by `ChatView`, as before. Inside it, each failed attempt of a request is an answer row that says "This attempt failed" with the error; attempts that failed in a row, with nothing else in them, show as one row, the last, which says how many there were ("6 attempts in a row failed; the last said:"), since a run waiting for a provider's limit can leave dozens ([limits.md](limits.md#when-a-limit-is-reached); `failedRuns` in `tools.js`).
 

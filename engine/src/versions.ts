@@ -12,12 +12,12 @@
 // app's conversation event for the chat follows it (main.ts). A fork is always made from the conversation that owns the
 // entry, so the versions at a point are that conversation's own continuation and the forks made there, oldest first.
 //
-// Only for chats: an agent's conversation may have changed files that going back would not undo. Until chats exist
-// (#283), a development engine allows them on any conversation, to try them.
+// Only for chats: an agent's conversation may have changed files that going back would not undo.
 
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type Conversation, type ConversationId, defineDoc, type EntryId, type EntryRecord, type Harness, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { isAttachmentBlock, readUserEntryData, USER_ENTRY_KIND } from "./attachments.ts";
+import { isChat } from "./chat.ts";
 import { Library, type Meta, type ModelRef } from "./state.ts";
 
 /** One version of a chat: where it parts from the one it was made from (`at`, an entry of `from`), and when it was last shown. */
@@ -99,10 +99,15 @@ export function landing(chat: ChatVersions | undefined, chatId: number, owner: n
 	return candidates.reduce((best, id) => ((lineOf(chat, chatId, id)?.shown ?? 0) > (lineOf(chat, chatId, best)?.shown ?? 0) ? id : best));
 }
 
-/** Whether Try Again, Edit and versions are offered for a conversation: a chat; in a development engine, any conversation of its own. */
-export function versionsAllowed(meta: Meta | undefined, development: boolean): boolean {
-	if (meta === undefined || meta.parent !== undefined) return false;
-	return (meta as { chat?: unknown }).chat === true || development;
+/** The chat a conversation is a version of, or the conversation itself. */
+export function chatIdOf(conversations: Record<string, Meta>, id: number): number {
+	const meta = conversations[String(id)];
+	return meta?.version === true && meta.parent !== undefined ? meta.parent : id;
+}
+
+/** Whether Try Again, Edit and versions are offered for a conversation: only a chat (chat.ts). */
+export function versionsAllowed(meta: Meta | undefined): boolean {
+	return isChat(meta) && meta?.parent === undefined;
 }
 
 /** Whether an entry is a message the person sent: plain, or with attachments. */
@@ -127,7 +132,6 @@ export function editedInput(original: EntryRecord, text: string): { content: unk
 export type VersionsHost = {
 	harness: Harness;
 	context: Context;
-	development: boolean;
 	library(): Record<string, Meta>;
 	versions(): { chats: Record<string, ChatVersions> };
 	/** Whether the conversation has work running. */
@@ -161,7 +165,7 @@ export function versionRequests(host: VersionsHost): Record<string, (params: Rec
 		const chatId = integer(params.id, "id");
 		const meta = host.library()[String(chatId)];
 		if (meta === undefined) throw new Error(`Unknown conversation: ${chatId}`);
-		if (!versionsAllowed(meta, host.development)) throw new Error("Try Again, Edit and versions are for chats only: an agent's conversation may have changed files that going back would not undo.");
+		if (!versionsAllowed(meta)) throw new Error("Try Again, Edit and versions are for chats only: an agent's conversation may have changed files that going back would not undo.");
 		const chat = host.versions().chats[String(chatId)];
 		return { chatId, chat, current: await open(chat?.current ?? chatId) };
 	}

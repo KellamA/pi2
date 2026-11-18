@@ -58,15 +58,9 @@ struct TranscriptFeed {
 
         static let none = Chat(enabled: false, versions: [], models: [], model: "")
 
-        /// Whether the page shows a chat's controls: for a chat; and, until chats exist (#283), in a development build
-        /// for any conversation the engine offers versions for, so they can be tried. The one place that decides it.
+        /// Whether the page shows a chat's controls: only for a chat, as the engine says (#283).
         static func shown(for state: ConversationState?) -> Bool {
-            if state?.chat == true { return true }
-            #if PI2_DEVELOPMENT
-            return state?.versions != nil
-            #else
-            return false
-            #endif
+            state?.chat == true
         }
     }
 

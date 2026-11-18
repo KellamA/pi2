@@ -63,6 +63,19 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 	},
 ];
 
+/**
+ * The built-in tools pi²'s chat assistant is offered (chat.ts), by key, fixed in the engine: reading the web while the
+ * chat's web switch is on, writing documents, and making pictures and working things out with code once the list has
+ * them. Nothing else, so nothing a chat does needs an approval. A key the list does not have yet is offered as soon as
+ * it does, with whatever tools it stands for.
+ */
+export const CHAT_TOOLS: readonly string[] = ["web", "documents", "pictures", "code"];
+
+/** The names of the tools a chat is offered, with the web on or off. */
+export function chatToolNames(web: boolean): string[] {
+	return BUILT_IN_TOOLS.filter((tool) => CHAT_TOOLS.includes(tool.key) && (web || tool.key !== "web")).flatMap((tool) => tool.tools);
+}
+
 /** The names of the tools `agent` leaves out. */
 export function toolsLeftOut(agent: AgentProfile | undefined): Set<string> {
 	const off = new Set(agent?.toolsOff ?? []);

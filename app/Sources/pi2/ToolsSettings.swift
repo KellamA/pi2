@@ -5,6 +5,8 @@ import SwiftUI
 struct ToolsSettings: View {
     let engine: EngineClient
     @State private var adding = false
+    /// The server whose variables are being looked at.
+    @State private var variablesOf: McpServer?
 
     var body: some View {
         Form {
@@ -19,11 +21,19 @@ struct ToolsSettings: View {
                             Text(server.name)
                             Text(statusText(server)).font(.caption).foregroundStyle(.secondary)
                             Spacer()
+                            if server.transport == "stdio" {
+                                Button("Variables…") { variablesOf = server }
+                                    .help("Environment variables this server’s program is started with, such as a token it needs")
+                            }
                             Button("Reconnect") { engine.perform("mcp.reconnect", ["id": server.id]) }
                             Button("Remove", role: .destructive) { engine.perform("mcp.delete", ["id": server.id]) }
                         }
                         Text(server.transport == "stdio" ? ([server.command ?? ""] + (server.args ?? [])).joined(separator: " ") : (server.url ?? ""))
                             .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        if let variables = server.variables, !variables.isEmpty {
+                            Text("Variables: " + variables.map(\.name).joined(separator: ", "))
+                                .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        }
                         if let error = server.error {
                             Text(error).font(.caption).foregroundStyle(.red).lineLimit(3)
                         }
@@ -45,6 +55,20 @@ struct ToolsSettings: View {
         .formStyle(.grouped)
         .settingsPage(.tools)
         .sheet(isPresented: $adding) { McpServerSheet(engine: engine) }
+        .sheet(item: $variablesOf) { server in McpVariablesSheet(engine: engine, serverID: server.id) }
+        #if PI2_DEVELOPMENT
+        .task {
+            // The servers arrive a moment after the tab appears.
+            guard let wanted = SettingsLaunch.takeVariablesSheet() else { return }
+            for _ in 0..<100 {
+                if let server = engine.mcpServers.first(where: { $0.id == wanted }) {
+                    variablesOf = server
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        #endif
     }
 
     private func color(_ status: String) -> Color {
@@ -63,6 +87,46 @@ struct ToolsSettings: View {
         case "error": "not connected"
         default: "off"
         }
+    }
+}
+
+/// A server's own environment variables (issue #273), which its program is started with: listed by name, set, replaced
+/// and removed as an agent's are. Each change starts the server again with them, letting a call running on it finish.
+struct McpVariablesSheet: View {
+    let engine: EngineClient
+    let serverID: String
+    @Environment(\.dismiss) private var dismiss
+
+    private var server: McpServer? { engine.mcpServers.first { $0.id == serverID } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Form {
+                Section {
+                    Label("The server’s program can read these values, and so can whatever it starts.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(Theme.warn)
+                    VariablesEditor(
+                        variables: server?.variables ?? [],
+                        unsetText: "no value: the server does not get it",
+                        removeHelp: "the server is started again without it",
+                        onSet: { name, value in _ = try await engine.call("mcp.setVariable", ["id": serverID, "name": name, "value": value]) },
+                        onRemove: { name in _ = try await engine.call("mcp.removeVariable", ["id": serverID, "name": name]) }
+                    )
+                } header: {
+                    Text("Variables for \(server?.name ?? "the server")")
+                } footer: {
+                    Text("pi² starts the server’s program with these as environment variables: for example a token it needs, which would otherwise have to go in its command. Only this server gets them, not agents’ commands. Values are kept in your macOS Keychain, never in pi²’s files or backups, and cannot be shown here again, only replaced. Removing the server removes them. Each change applies at once: the server is started again with it, and a call running on it finishes first.").formFooter()
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                // Not the default button: Return in a value field adds or saves the variable, never closes the sheet.
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(20)
+        }
+        .frame(width: 560, height: 380)
     }
 }
 

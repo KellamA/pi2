@@ -76,7 +76,7 @@ In your own clone or worktree, build a development build. The script builds noth
 
 For a problem that only happens with optimisation, use `./app/build.sh optimised` instead. It uses Swift's release configuration but keeps the development build's isolation and switches, including `PI2_SHOW` and the window placement below. Do not use a release build just to turn optimisation on.
 
-Choose a suffix of your own, in lower-case letters, digits and hyphens, such as your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. Then:
+Choose a suffix of your own, in lower-case letters, digits and hyphens, such as `test-` and your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. Then:
 
 ```bash
 scripts/test-copy start test-7 --show inbox
@@ -92,7 +92,24 @@ A new data folder shows the first-run "Welcome to pi²" sheet, which would sit o
 
 It waits until the copy's own engine, the app's child, is listening in the copy's data folder, then prints the data folder and the app's and the engine's process ids, and keeps them in `app/build/test-copies/<suffix>/state` with each one's start time and executable. If it fails part way, it stops and removes what it made.
 
+An agent whose computer use has **Test copies of pi²** on may click, type and choose menu commands in a copy whose suffix begins with `test`, by its bundle id (`dev.pi2.app.test-7`), with the approvals its settings ask for: pi² checks that the app running under that id is a copy this script made of a development build ([docs/computer-use.md](docs/computer-use.md#clicking-in-test-copies)). An agent without it, and a person checking from the shell, can only look: computer use keeps every other copy of pi² look-only, and working a copy from the shell would need Accessibility, which must not be asked for. Everything below that checks a copy without clicking is for them.
+
 Two things an agent cannot click to see, it can still check. `--show palette:<query>` opens the command palette with that query typed, so a capture shows the entries that match, such as `--show palette:duplicate`. `--menu <label>` sets `PI2_MENU`: the copy writes the items of the context menu on the element with that label (a conversation's title or number, an agent's name or id), in order and with the disabled ones marked, to `context-menu.txt` in its data folder, and `start` prints the file once it is there. A context menu cannot be captured, since macOS draws it only while the app is in front, and a copy must not take the focus. A row made after launch, such as a conversation made through the copy's engine socket, writes the file again when it comes on screen; read it then. [docs/development.md](docs/development.md) says how both work.
+
+**`call <suffix> <method> [<json params>]`** sends one request to the engine socket in that copy's own data folder. It requires a copy started by this checkout and a still-recorded engine, ignores `PI2_HOME` and other socket overrides, and refuses a symlink for the data folder or socket. Params default to `{}` and must be a JSON object. It prints the complete JSON response (`{"id":1,"result":…}` or `{"id":1,"error":…}`), ignoring events, and exits non-zero on an engine error, a closed connection or a ten-minute wait without a response.
+
+For example, with `test-7` running, make a conversation explicitly on the scripted demo model (no provider or sign-in), then send it a message:
+
+```bash
+CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
+```
+
+`submit` returns a submission id when the message is accepted, **not when the answer is finished**. Once it has finished, put the conversation away (archiving stops any work still running):
+
+```bash
+scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
+```
 
 **`shot <suffix> <file.png> [--window <title>]`** captures the copy's largest window, or the one with that title (Settings is titled after its tab, such as `General`), with `screencapture -l`, which takes that window only, whatever covers it. It first checks `CGPreflightScreenCaptureAccess()`, and refuses when screen capture is not already allowed, since capturing without it makes macOS ask; say then that the change was not seen on screen. The picture goes inside the checkout: one in `app/build/test-copies/<suffix>` goes with the copy at `stop`. A page settles for a few seconds after the window opens, so wait before capturing it.
 
@@ -105,7 +122,7 @@ What it refuses, before it changes anything:
 - a suffix that is empty, not lower-case letters, digits and hyphens, longer than 32 characters (the engine's socket path has a limit), or `dev`, the suffix every development build has as built; and so any bundle id, data folder or Keychain service that could be the usual one;
 - a bundle that is not a development build of this checkout, so never a release build, which runs on the usual data folder;
 - a suffix already in use, by this checkout or any other: the copy's folder in the checkout and its data folder are each made with `mkdir`, which only one of two `start`s at the same moment can do, so a second `start` with the same suffix fails and touches nothing of the first. Copies with different suffixes, from one checkout or several, are independent;
-- a `stop` or `shot` for a copy this checkout did not start, and a signal to a pid it did not record;
+- a `stop`, `shot` or `call` for a copy this checkout did not start, and a signal to a pid it did not record;
 - a picture outside the checkout.
 
 It never uses `pkill` or `killall`, and never passes a pattern to `rm` or `security`. To see that the copy runs on its own folder, not the real one: its data folder holds `engine.sock`, `engine.pid` and an `engine.log` that ends with `listening on` and the path of that socket, and `ps -E -o command= -p <engine pid>` shows the copy's `PI2_KEYCHAIN_SERVICE`.

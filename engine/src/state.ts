@@ -94,6 +94,10 @@ export type Meta = {
 	 * current, and never on its own.
 	 */
 	version?: true;
+	/** A chat: a conversation of pi²'s built-in chat assistant (chat.ts), with no `agentId`. */
+	chat?: true;
+	/** The person pinned it to the top of its list (`conversation.pin`). */
+	pinned?: true;
 };
 
 /** Index of conversations: titles, order, tool access. */

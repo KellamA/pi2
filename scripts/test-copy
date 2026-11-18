@@ -1,5 +1,5 @@
 #!/bin/bash
-# Starts, captures and stops a throwaway copy of this checkout's development build, so that a change can be seen in
+# Starts, captures, calls and stops a throwaway copy of this checkout's development build, so a change can be seen in
 # the app on a Mac where pi² is in real use without touching the installed copy (CONTRIBUTING.md, "Testing safely").
 #
 # A copy is named by a suffix of your own, such as test-181. The suffix gives it everything of its own: the bundle id
@@ -21,6 +21,10 @@
 #   folder; anything else running there makes "stop" remove nothing.
 # - "shot" checks that screen capture is already allowed and refuses otherwise: capturing without it puts a
 #   permission prompt on the person's screen.
+#
+# Clicking in a copy is computer use's, not this script's: an agent whose computer use has "Test copies of pi²" on may
+# work a copy whose suffix begins with test (bundle id dev.pi2.app.test-…), which pi² checks is a copy made here of a
+# development build (docs/computer-use.md). Without that, a copy can only be looked at; nothing here works it.
 #
 # Two copies with different suffixes, from one checkout or several, are independent. A second "start" with a suffix
 # already in use (from this checkout or any other) is refused before it changes anything: the copy's folder here and
@@ -44,13 +48,19 @@ Usage: scripts/test-copy <command> [arguments]
   shot <suffix> <file.png> [--window <title>]
                                    Capture the copy's largest window (or the one with that title) into a file inside this
                                    checkout. Refuses if screen capture is not already allowed.
+  call <suffix> <method> [<json params>]
+                                   Send one request to the copy's own engine socket and print its JSON response.
+                                   Params default to {}. An engine error exits non-zero; this does not wait for a run.
   stop <suffix>                    Stop the copy's app, then its engine, by the pids recorded at start, and remove the
                                    copy, its data folder, preferences, Keychain items, Launch Services registration
                                    and the files its browser leaves.
   status [<suffix>]                What is recorded for a copy and whether it runs; without a suffix, every copy this
                                    checkout started.
 
-A suffix is lower-case letters, digits and hyphens, such as your issue number: test-181.
+A suffix is lower-case letters, digits and hyphens, such as test- and your issue number: test-181.
+
+An agent whose computer use has "Test copies of pi²" on may click, type and choose menu commands in a copy whose
+suffix begins with test, by its bundle id (dev.pi2.app.test-181); one without it can only look at a copy.
 EOF
 }
 
@@ -403,6 +413,11 @@ case $cmd in
 		echo "  app pid           $APP_PID"
 		echo "  engine pid        $ENGINE_PID"
 		echo "Capture it with scripts/test-copy shot $SUFFIX <file.png>; stop it with scripts/test-copy stop $SUFFIX."
+		if [[ $SUFFIX == test* ]]; then
+			echo "An agent whose computer use has Test copies of pi² on may click in it as $ID; without that, it can only look."
+		else
+			echo "Computer use can only look at it: the suffix does not begin with test, so it is not a test copy for Test copies of pi²."
+		fi
 		if [[ -n $MENU ]]; then
 			# The app writes the file once the page has settled and it has looked for the element, found or not.
 			waited=0
@@ -443,6 +458,61 @@ case $cmd in
 		# -l captures that window only, wherever it is and whatever covers it; -o leaves out its shadow, -x the sound.
 		screencapture -x -o -l "$wid" "$file"
 		echo "Captured window $wid of $NAME into $(tidy "$file")."
+		;;
+	call)
+		names "${1-}"; shift
+		[[ -n ${1-} && $# -le 2 ]] || die "use: scripts/test-copy call $SUFFIX <method> [<json params>]"
+		method=$1 params=${2-'{}'}
+		load_state || die "no copy named $SUFFIX was started from this checkout"
+		follow_engine
+		is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
+		# Never follow a socket or data-folder symlink to another copy, and never use PI2_HOME or a socket override.
+		[[ ! -L $DATA && ! -L $DATA/engine.sock ]] || die "refusing a symlink for the copy's data folder or engine socket"
+		node --input-type=module - "$DATA/engine.sock" "$method" "$params" <<'JS'
+import { connect } from 'node:net';
+const [path, method, json] = process.argv.slice(2);
+let params;
+try {
+	params = JSON.parse(json);
+	if (params === null || typeof params !== 'object' || Array.isArray(params)) throw new Error('expected a JSON object');
+} catch (error) {
+	console.error(`test-copy: invalid JSON params: ${error.message}`);
+	process.exit(1);
+}
+const socket = connect(path);
+let buffer = '', done = false;
+const timer = setTimeout(() => fail('the engine did not answer within ten minutes'), 600_000);
+function finish() {
+	done = true;
+	clearTimeout(timer);
+	socket.destroy();
+}
+function fail(message) {
+	if (done) return;
+	console.error(`test-copy: ${message}`);
+	process.exitCode = 1;
+	finish();
+}
+socket.once('connect', () => socket.write(JSON.stringify({ id: 1, method, params }) + '\n'));
+socket.once('error', error => fail(error.message));
+socket.once('close', () => { if (!done) fail('the connection to the engine closed before it answered'); });
+socket.setEncoding('utf8').on('data', chunk => {
+	buffer += chunk;
+	const lines = buffer.split('\n');
+	buffer = lines.pop();
+	try {
+		for (const line of lines) {
+			const answer = JSON.parse(line);
+			// Events (including a conversation event with its own id) are not the response.
+			if (answer.event !== undefined || answer.id !== 1) continue;
+			console.log(JSON.stringify(answer));
+			if (answer.error !== undefined) process.exitCode = 1;
+			finish();
+			return;
+		}
+	} catch (error) { fail(`invalid engine response: ${error.message}`); }
+});
+JS
 		;;
 	stop)
 		names "${1-}"

@@ -1,8 +1,6 @@
 // A chat's versions (#285): Try Again, with the same model or another, Edit, the step between versions, and the sources
 // an answer read. A real engine on a throwaway data folder, driven over its socket with the scripted demo model.
-//
-// Until chats exist (#283), a development engine (one without a BUILD file, as here) offers versions on any conversation
-// of its own, so this uses an ordinary one.
+// An agent's conversation is offered none of it.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
@@ -90,9 +88,18 @@ try {
 	let engine = startEngine({ PI2_TEST_ALLOW_ADDRESS: address });
 	let client = await Client.connect(engine, home);
 
-	// An agent that may read the web, for the sources.
-	await client.call("agents.save", { agent: { name: "Reader", access: "none", browser: { enabled: true, ask: false } } });
-	const { id: chat } = await client.call("conversation.create", { agentId: "reader" });
+	// Not for an agent's conversation: going back would not undo what its agent did.
+	const { id: agentConversation } = await client.call("conversation.create");
+	await client.call("conversation.open", { id: agentConversation });
+	await client.call("submit", { id: agentConversation, text: "hello" });
+	const agentAnswered = await client.answered(agentConversation, 'You said: "hello"');
+	assert.equal(agentAnswered.state.versions, null, "no versions offered");
+	await assert.rejects(client.call("conversation.retry", { id: agentConversation, entryId: answers(agentAnswered)[0]!.id }), /for chats only/);
+	await assert.rejects(client.call("conversation.edit", { id: agentConversation, entryId: agentAnswered.items.find((item) => item.kind === "user")!.id, text: "x" }), /for chats only/);
+	step("an agent's conversation is offered no versions");
+
+	// A chat, whose assistant reads the web by default, for the sources.
+	const { id: chat } = await client.call("conversation.create", { chat: true });
 	await client.call("conversation.open", { id: chat });
 	await client.call("submit", { id: chat, text: "first" });
 	await client.answered(chat, 'You said: "first"');
@@ -102,7 +109,7 @@ try {
 	const second = conv.items.find((item) => item.kind === "user" && item.text === "second")!;
 	const originalAnswer = answers(conv).at(-1)!;
 	assert.deepEqual(conv.state.versions, [], "one version: no points to step between");
-	assert.equal(conv.state.chat, false, "an ordinary conversation, offered versions by a development engine");
+	assert.equal(conv.state.chat, true);
 
 	// ---- Try Again: a new version of the answer, and the earlier one kept
 
@@ -119,6 +126,12 @@ try {
 	assert.ok(!client.library.some((row) => row.id === tried.version), "a version is never listed on its own");
 	assert.ok(client.library.some((row) => row.id === chat));
 	step("Try Again answers the message again as a new version, under the chat's id");
+
+	// A version's documents go in the chat's own folder, as the chat's do.
+	await client.call("submit", { id: chat, text: '/tool write_document {"path": "note.html", "markdown": "# Kept"}' });
+	conv = await client.answered(chat, "Done. The tool returned");
+	assert.equal(conv.items.findLast((item) => item.kind === "tool")!.details?.path, join(realpathSync(home), "chats", String(chat), "note.html"));
+	step("a version writes its documents in the chat's folder");
 
 	// With another model.
 	await client.call("conversation.retry", { id: chat, entryId: second.id, model: { provider: "demo", modelId: "demo-text" } });
@@ -216,7 +229,7 @@ try {
 	// ---- What versions take with them: usage counts for each, under the chat
 
 	await client.until("usage counted", () => client.usage?.conversations?.some((row: { id: number; tokens: number }) => row.id === chat && row.tokens > 0) || undefined);
-	assert.ok(!client.usage.conversations.some((row: { id: number }) => row.id !== chat), "every version's usage is the chat's");
+	assert.deepEqual(client.usage.conversations.map((row: { id: number }) => row.id).filter((id: number) => id !== agentConversation), [chat], "every version's usage is the chat's");
 	const search = await client.call("search", { query: "a long answer to stop" });
 	assert.ok(search.results.every((result: { conversationId: number }) => result.conversationId === chat));
 	step("usage and search count a chat's versions as the chat");
