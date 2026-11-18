@@ -11,7 +11,7 @@ enum SettingsSection: String {
     // General
     case appearance, notifications, background, updates
     // Providers
-    case subscriptions, endpoints, keys
+    case subscriptions, endpoints, local, keys
     // Tools
     case servers, commits
     // Storage
@@ -28,6 +28,9 @@ struct SettingsLaunch {
     /// On Providers, `#models=<provider>` opens that provider's Models sheet, and `#add-model=<provider>/<id>` its sheet
     /// for adding a model by id, with the id typed and looked up: the provider and, when asked, the id.
     var modelsSheet: (provider: String, adding: String?)?
+    /// On Providers, `#local=engine`, `#local=model` or `#local=configure:<model id>` opens that sheet of the section for
+    /// models on this Mac, once it has what it needs.
+    var localSheet: String?
 
     init?(_ value: String?) {
         guard let value, value == "settings" || value.hasPrefix("settings:") else { return nil }
@@ -38,6 +41,9 @@ struct SettingsLaunch {
             section = SettingsSection(rawValue: part)
             if part.hasPrefix("models=") {
                 modelsSheet = (String(part.dropFirst("models=".count)), nil)
+            } else if part.hasPrefix("local=") {
+                section = .local
+                localSheet = String(part.dropFirst("local=".count))
             } else if part.hasPrefix("add-model=") {
                 let target = part.dropFirst("add-model=".count).split(separator: "/", maxSplits: 1)
                 if let provider = target.first { modelsSheet = (String(provider), target.count > 1 ? String(target[1]) : "") }
@@ -51,6 +57,14 @@ struct SettingsLaunch {
         guard !sheetShown, let sheet = asked?.modelsSheet, asked?.tab == .providers else { return nil }
         sheetShown = true
         return sheet.provider
+    }
+
+    /// The sheet of the section for models on this Mac that was asked for, once.
+    @MainActor private static var localShown = false
+    @MainActor static func takeLocalSheet() -> String? {
+        guard !localShown, let sheet = asked?.localSheet, asked?.tab == .providers else { return nil }
+        localShown = true
+        return sheet
     }
 
     /// The id to add to `provider` in its Models sheet, once: empty to open the form with none typed.
@@ -301,6 +315,9 @@ struct ProvidersSettings: View {
                 Text("Any server that speaks the OpenAI or Anthropic API: Ollama, LM Studio, vLLM, llama.cpp, or a gateway you run.").formFooter()
             }
             .id(SettingsSection.endpoints)
+
+            LocalModelsSection(engine: engine)
+                .id(SettingsSection.local)
 
             Section("API keys") {
                 TextField("Search providers", text: $search)

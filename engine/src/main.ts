@@ -245,6 +245,7 @@ const engine: Engine = {
 		for (const client of clients) client.subscriptions.get(id)?.push();
 	},
 	activityChanged: () => broadcast(activityEvent()),
+	providersChanged: () => void announceProviders(),
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
 // `read` shrinks a picture larger than the model takes (a Retina screenshot, say) and converts BMP, rather than refusing

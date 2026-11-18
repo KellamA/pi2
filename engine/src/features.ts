@@ -50,6 +50,8 @@ export type Engine = {
 	stateChanged(id: number): void;
 	/** Send Activity again to every app: for a change to what a feature's `activity` says. */
 	activityChanged(): void;
+	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
+	providersChanged(): void;
 };
 
 export type FeatureParts = {

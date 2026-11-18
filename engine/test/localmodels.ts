@@ -252,20 +252,25 @@ chmodSync(join(packaging, "strata-test", "bin", "strata"), 0o644);
 writeFileSync(join(packaging, "strata-test", "README"), "a stand-in engine\n");
 execFileSync("/usr/bin/tar", ["-czf", join(packaging, "engine.tar.gz"), "-C", packaging, "strata-test"]);
 const engineArchive = serve("/engine/strata-test.tar.gz", readFileSync(join(packaging, "engine.tar.gz")), "wrong");
+// Its control package: the server, which is not run here either.
+mkdirSync(join(packaging, "strata-control", "serve"), { recursive: true });
+writeFileSync(join(packaging, "strata-control", "serve", "server.py"), "print('never run')\n");
+execFileSync("/usr/bin/tar", ["-czf", join(packaging, "control.tar.gz"), "-C", packaging, "strata-control"]);
+const controlArchive = serve("/engine/strata-control-test.tar.gz", readFileSync(join(packaging, "control.tar.gz")));
 
 const bigFiles = [serve("/packs/big-1.gguf", randomBytes(3 * 1024 * 1024)), serve("/packs/big-2.gguf", randomBytes(1024 * 1024)), serve("/packs/big-vision.gguf", randomBytes(64 * 1024))];
 const smallFiles = [serve("/packs/small-1.gguf", randomBytes(8 * 1024 * 1024), "slow")];
 const licence = { name: "Test Licence", url: "https://example.invalid/licence", summary: "For tests." };
 const catalog: Catalog = {
-	engine: { version: "0.0.1-test", archive: engineArchive, executable: "strata", licences: [licence] },
+	engine: { version: "0.0.1-test", archive: engineArchive, executable: "strata", control: { version: "0.0.2-test", archive: controlArchive }, licences: [licence] },
 	models: [
 		{
 			id: "test-model",
 			name: "Test Model",
 			packs: [
-				{ id: "test-big", pack: "BIG", provider: "Tests", note: "The better one.", needsGB: 63, recommendedFromGB: 96, files: bigFiles, visionFile: "big-vision.gguf", licences: [licence] },
-				{ id: "test-small", pack: "SMALL", provider: "Tests", note: "Too big for any Mac.", needsGB: 200, recommendedFromGB: 256, files: smallFiles, visionFile: null, licences: [licence] },
-				{ id: "test-later", pack: "LATER", provider: "Tests", note: "Not yet.", needsGB: 10, recommendedFromGB: 16, files: [], visionFile: null, licences: [licence], unavailable: "Not offered yet, for a test." },
+				{ id: "test-big", pack: "BIG", provider: "Tests", note: "The better one.", needsGB: 63, recommendedFromGB: 96, files: bigFiles, visionFile: "big-vision.gguf", prepareBytes: 0, licences: [licence] },
+				{ id: "test-small", pack: "SMALL", provider: "Tests", note: "Too big for any Mac.", needsGB: 200, recommendedFromGB: 256, files: smallFiles, visionFile: null, prepareBytes: 0, licences: [licence] },
+				{ id: "test-later", pack: "LATER", provider: "Tests", note: "Not yet.", needsGB: 10, recommendedFromGB: 16, files: [], visionFile: null, prepareBytes: 0, licences: [licence], unavailable: "Not offered yet, for a test." },
 			],
 		},
 	],
@@ -301,7 +306,7 @@ function startEngine(extra: Record<string, string> = {}): ChildProcess {
 type Download = { id: string; state: string; phase: string | null; error: string | null; received: number; total: number };
 type Status = {
 	platform: { supported: boolean; memoryGB: number };
-	engine: { installed: { version: string; path: string } | null; pinned: { version: string }; update: boolean };
+	engine: { installed: { version: string; path: string; folder: string; control: { version: string; folder: string } } | null; pinned: { version: string }; update: boolean };
 	catalog: { packs: { id: string; fit: string; recommended: boolean; unavailable: string | null; installed: boolean; size: number }[] }[];
 	models: { id: string; path: string; contextSize: number; options: { vision: boolean; visionFile: string | null; parallel: number } }[];
 	downloads: Download[];
@@ -319,7 +324,7 @@ class Client extends EngineClient {
 		return this.status?.downloads.find((d) => d.id === id);
 	}
 }
-const onDisk = (): { engine: { version: string; path: string } | null; models: Status["models"] } => JSON.parse(readFileSync(join(home, "local-models.json"), "utf8"));
+const onDisk = (): { engine: Status["engine"]["installed"]; models: Status["models"] } => JSON.parse(readFileSync(join(home, "local-models.json"), "utf8"));
 const excluded = (path: string) => execFileSync("/usr/bin/tmutil", ["isexcluded", path], { encoding: "utf8" }).startsWith("[Excluded]");
 
 let engine = startEngine();
@@ -346,6 +351,7 @@ try {
 	await assert.rejects(client.call("local.model.install", { pack: "test-big" }), /Read Test Model's licence first/);
 	await assert.rejects(client.call("local.model.install", { pack: "test-later", accept: true }), /Not offered yet, for a test\./);
 	assert.equal(requests.filter((r) => r.path.startsWith("/engine") || r.path.startsWith("/packs")).length, 0);
+	await assert.rejects(client.call("local.engine.install", { accept: "yes" }), /Read Strata's licence first/);
 	step("nothing is downloaded before its licence is agreed to");
 
 	// The server sends the wrong bytes: the archive is deleted, and nothing is unpacked or made runnable.
@@ -364,8 +370,14 @@ try {
 	const executable = status.engine.installed!.path;
 	assert.equal(executable, join(home, "local", "engine", "0.0.1-test", "strata-test", "bin", "strata"));
 	assert.equal(statSync(executable).mode & 0o777, 0o755, "made runnable once checked");
-	assert.deepEqual(onDisk().engine, { version: "0.0.1-test", path: executable });
-	assert.equal(existsSync(join(home, "local", "downloads", "strata-test.tar.gz")), false, "the archive goes once unpacked");
+	assert.deepEqual(onDisk().engine, {
+		version: "0.0.1-test",
+		path: executable,
+		folder: join(home, "local", "engine", "0.0.1-test"),
+		control: { version: "0.0.2-test", folder: join(home, "local", "control", "0.0.2-test") },
+	});
+	assert.ok(existsSync(join(home, "local", "control", "0.0.2-test", "strata-control", "serve", "server.py")), "the control package is unpacked whole");
+	assert.equal(existsSync(join(home, "local", "downloads")), false, "the archives go once unpacked");
 	assert.equal(excluded(join(home, "local")), true, "Time Machine skips the folder");
 	assert.equal(status.engine.update, false);
 	step("the engine is downloaded through a dropped connection, checked, unpacked and made runnable, outside backups");
@@ -464,6 +476,7 @@ try {
 
 	await client.call("local.engine.remove");
 	assert.equal(existsSync(join(home, "local", "engine")), false);
+	assert.equal(existsSync(join(home, "local", "control")), false);
 	assert.equal(onDisk().engine, null);
 	step("removing the engine removes it");
 	client.close();

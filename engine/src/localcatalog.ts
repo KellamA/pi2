@@ -6,9 +6,11 @@
 // SHA256SUMS file, a release's digest, a server's header): a file that does not match what is written here is deleted
 // and nothing from it is run. So a newer engine reaches the person only with a pi² update that pins it.
 //
-// Sources, read on 2026-11-17 (see #173 for what #290 found when it tried them on a Mac):
+// Sources, read on 2026-11-17, and confirmed by #290, which downloaded and ran them on a Mac (see #173):
 // - The engine: Strata's release v0.2.14 on GitHub, asset strata-engine-0.1.60-macos-arm64-metal.tar.gz (the Metal
-//   engine alone, without the desktop app), size and SHA-256 as GitHub lists them for that asset.
+//   engine alone, without the desktop app), size and SHA-256 as GitHub lists them for that asset. The newest Metal
+//   engine is in that release, not the latest one.
+// - The control package (the server): release v0.2.15, asset strata-control-0.1.61-macos-arm64.tar.gz.
 // - The packs: Hugging Face's listing of each repository's files (size, and the SHA-256 of each large file).
 // - Memory: Strata's docs/MAC.md, "What you need" (the M5 Max with 128 GB they were measured on).
 
@@ -26,10 +28,15 @@ export type Licence = {
 
 export type CatalogEngine = {
 	version: string;
-	/** A .tar.gz holding the engine. */
+	/** A .tar.gz holding the engine package: `strata`, `strata-vision`, the Metal kernels it compiles as it starts. */
 	archive: CatalogFile;
 	/** The engine's executable, by its name: the shallowest regular file of that name in the archive. */
 	executable: string;
+	/**
+	 * Strata's control package: the OpenAI- and Anthropic-compatible server (Python, with a Python of its own) that starts
+	 * the engine, and Strata's setup, which prepares a model. The engine has no HTTP server of its own (#290).
+	 */
+	control: { version: string; archive: CatalogFile };
 	licences: Licence[];
 };
 
@@ -49,6 +56,11 @@ export type CatalogPack = {
 	files: CatalogFile[];
 	/** The picture reader, among `files`, by name; null when the pack has none. */
 	visionFile: string | null;
+	/**
+	 * Disk space Strata's setup takes when it prepares the model after the download, in bytes: the draft layer it
+	 * fetches itself (5.2 GB for the ISTA-DASLab packs, #290) and the pack folder. Counted in the disk check.
+	 */
+	prepareBytes: number;
 	licences: Licence[];
 	/** Why it cannot be installed yet, when it cannot. */
 	unavailable?: string;
@@ -86,6 +98,8 @@ const istaVision: CatalogFile = {
 	size: 907_543_008,
 	sha256: "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
 };
+/** The draft layer Strata's setup fetches from Qwen's original model when it prepares a pack: 5.2 GB (#290). */
+const DRAFT_LAYER = 5.21e9;
 const istaLicences: Licence[] = [
 	QWEN_LICENCE,
 	{ name: "Apache License 2.0", url: `${ISTA}/blob/main/README.md`, summary: "ISTA-DASLab's quantised files of the model. Free to use, copy and change, with no warranty." },
@@ -101,6 +115,15 @@ export const CATALOG: Catalog = {
 			sha256: "31ce1cd98bef83938434c15fcc94c1768340037b8fe7f292ee82836db0ca074d",
 		},
 		executable: "strata",
+		control: {
+			version: "0.1.61",
+			archive: {
+				url: `${GITHUB}/releases/download/v0.2.15/strata-control-0.1.61-macos-arm64.tar.gz`,
+				name: "strata-control-0.1.61-macos-arm64.tar.gz",
+				size: 48_715_939,
+				sha256: "b5fcda16daee894260efc9726d19b526b70df869c46ed73f22e5345833c92a86",
+			},
+		},
 		licences: [{ name: "MIT License", url: `${GITHUB}/blob/main/LICENSE`, summary: "Strata is free to use, copy and change, with no warranty." }],
 	},
 	models: [
@@ -117,6 +140,7 @@ export const CATALOG: Catalog = {
 					recommendedFromGB: 96,
 					files: [istaFile("IQ3_S", 1, 54_817_524_224, "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"), istaTable("IQ3_S"), istaVision],
 					visionFile: istaVision.name,
+					prepareBytes: DRAFT_LAYER,
 					licences: istaLicences,
 				},
 				{
@@ -128,6 +152,7 @@ export const CATALOG: Catalog = {
 					recommendedFromGB: 74,
 					files: [istaFile("IQ3_XXS", 1, 47_039_860_096, "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15"), istaTable("IQ3_XXS"), istaVision],
 					visionFile: istaVision.name,
+					prepareBytes: DRAFT_LAYER,
 					licences: istaLicences,
 				},
 				{
@@ -139,6 +164,7 @@ export const CATALOG: Catalog = {
 					recommendedFromGB: 64,
 					files: [istaFile("Q2_0", 1, 37_623_740_192, "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720"), istaTable("Q2_0"), istaVision],
 					visionFile: istaVision.name,
+					prepareBytes: DRAFT_LAYER,
 					licences: istaLicences,
 				},
 				{
@@ -156,6 +182,8 @@ export const CATALOG: Catalog = {
 						{ url: `${UNSLOTH}/resolve/main/mmproj-BF16.gguf`, name: "mmproj-BF16.gguf", size: 907_542_944, sha256: "2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355" },
 					],
 					visionFile: "mmproj-BF16.gguf",
+					// Repacked into one file of about the model's size, beside the shards (MAC.md).
+					prepareBytes: 83e9,
 					licences: [QWEN_LICENCE],
 					unavailable: "Unsloth's files have to be repacked into one file for the Mac engine first, which pi² cannot do yet.",
 				},

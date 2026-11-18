@@ -2,10 +2,11 @@
 // checked, and setting them up. Starting and stopping a model is another piece's (#291), which reads what this one
 // writes to `local-models.json`:
 //
-//   { "engine": { "version", "path" } | null,
+//   { "engine": { "version", "path", "folder", "control": { "version", "folder" } } | null,
 //     "models": [{ "id", "name", "pack", "path", "contextSize", "options": { "vision", "visionFile", "parallel" } }] }
 //
-// `path` is the engine's executable, or a pack's first file with the others beside it. Nothing is listed there before
+// The engine's `path` is its executable, and `folder` the whole engine package; `control` is Strata's control package,
+// with the server that starts the engine (#290). A model's `path` is its pack's first file, with the others beside it. Nothing is listed there before
 // every one of its files has been downloaded and matched the size and SHA-256 written in localcatalog.ts, and the
 // engine's archive is unpacked, and its executable made runnable, only after that. See docs/local-models.md.
 //
@@ -39,7 +40,8 @@ const run = promisify(execFile);
 
 export type ModelOptions = { vision: boolean; visionFile: string | null; parallel: number };
 export type InstalledModel = { id: string; name: string; pack: string; path: string; contextSize: number; options: ModelOptions };
-export type Installed = { engine: { version: string; path: string } | null; models: InstalledModel[] };
+export type InstalledEngine = { version: string; path: string; folder: string; control: { version: string; folder: string } };
+export type Installed = { engine: InstalledEngine | null; models: InstalledModel[] };
 
 type DownloadState = "running" | "paused" | "failed";
 /** A download under way, as kept in `local-setup.json` so that the next engine carries on with it. */
@@ -47,7 +49,7 @@ type StoredDownload = {
 	/** "engine", or the pack's id. */
 	id: string;
 	kind: "engine" | "model";
-	/** The engine's version, or the pack's id. */
+	/** The engine's version and its control package's ("0.1.60/0.1.61"), or the pack's id. */
 	target: string;
 	/** For a model, the folder its files go in. */
 	folder: string | null;
@@ -114,7 +116,11 @@ export const localModels: Feature = (host, engine) => {
 		writeFileSync(temporary, `${JSON.stringify(value, null, "\t")}\n`);
 		renameSync(temporary, path);
 	}
-	const saveInstalled = () => writeJson(installedFile, installed);
+	/** Writes `local-models.json`, and sends the providers again: the model selector offers what is set up (#291). */
+	const saveInstalled = () => {
+		writeJson(installedFile, installed);
+		engine.providersChanged();
+	};
 	const saveSetup = () => writeJson(setupFile, setup);
 
 	/** Marks a folder for Time Machine to skip. pi²'s own backup copies named files only, never these folders. */
@@ -159,13 +165,15 @@ export const localModels: Feature = (host, engine) => {
 	function onDisk(files: CatalogFile[], folder: string): number {
 		return files.reduce((sum, file) => sum + (existsSync(join(folder, file.name)) ? file.size : sizeOf(join(folder, `${file.name}.part`))), 0);
 	}
-	const filesOf = (download: StoredDownload): CatalogFile[] => (download.kind === "engine" ? [catalog.engine.archive] : (findPack(download.target)?.pack.files ?? []));
+	const engineFiles = () => [catalog.engine.archive, catalog.engine.control.archive];
+	const engineTarget = () => `${catalog.engine.version}/${catalog.engine.control.version}`;
+	const filesOf = (download: StoredDownload): CatalogFile[] => (download.kind === "engine" ? engineFiles() : (findPack(download.target)?.pack.files ?? []));
 	const folderOf = (download: StoredDownload) => (download.kind === "engine" ? join(root, "downloads") : download.folder!);
 
 	function downloadStatus(download: StoredDownload) {
 		const running = live.get(download.id);
 		const total = filesOf(download).reduce((sum, file) => sum + file.size, 0);
-		const name = download.kind === "engine" ? `Strata ${download.target}` : (() => {
+		const name = download.kind === "engine" ? `Strata engine ${download.target.split("/")[0]}` : (() => {
 			const entry = findPack(download.target);
 			return entry === undefined ? download.target : `${entry.model.name} (${entry.pack.pack})`;
 		})();
@@ -206,8 +214,13 @@ export const localModels: Feature = (host, engine) => {
 			},
 			engine: {
 				installed: installed.engine,
-				pinned: { version: catalog.engine.version, size: catalog.engine.archive.size, licences: catalog.engine.licences },
-				update: installed.engine !== null && installed.engine.version !== catalog.engine.version,
+				pinned: {
+					version: catalog.engine.version,
+					controlVersion: catalog.engine.control.version,
+					size: engineFiles().reduce((sum, file) => sum + file.size, 0),
+					licences: catalog.engine.licences,
+				},
+				update: installed.engine !== null && !current(installed.engine),
 			},
 			catalog: catalog.models.map((model) => ({
 				id: model.id,
@@ -219,6 +232,7 @@ export const localModels: Feature = (host, engine) => {
 					note: pack.note,
 					needsGB: pack.needsGB,
 					size: pack.files.reduce((sum, file) => sum + file.size, 0),
+					prepareSize: pack.prepareBytes,
 					fit: fit(pack),
 					fitNote: FIT_NOTES[fit(pack)],
 					recommended: pack.id === best,
@@ -239,6 +253,8 @@ export const localModels: Feature = (host, engine) => {
 		};
 		return Object.assign(own, ...host.features.map((feature) => feature.localStatus?.() ?? {}));
 	}
+	/** Whether the engine set up is the one pi² pins, control package and all. */
+	const current = (set: InstalledEngine) => set.version === catalog.engine.version && set.control?.version === catalog.engine.control.version;
 	const announce = () => engine.broadcast({ event: "local", ...status() });
 	changed = announce;
 
@@ -260,7 +276,9 @@ export const localModels: Feature = (host, engine) => {
 		if (free === null) return;
 		const remaining = (d: StoredDownload) => {
 			const files = filesOf(d);
-			const total = files.reduce((sum, file) => sum + file.size, 0) * (d.kind === "engine" ? 3 : 1); // the engine is unpacked beside its archive
+			const bytes = files.reduce((sum, file) => sum + file.size, 0);
+			// The engine is unpacked beside its archives, to about three times their size; Strata's setup prepares a pack beside its files.
+			const total = d.kind === "engine" ? bytes * 4 : bytes + (findPack(d.target)?.pack.prepareBytes ?? 0);
 			return Math.max(0, total - onDisk(files, folderOf(d)));
 		};
 		// Other downloads under way on the same disk need their room too.
@@ -340,40 +358,54 @@ export const localModels: Feature = (host, engine) => {
 		const folder = join(root, "downloads");
 		await makeFolder(root);
 		mkdirSync(folder, { recursive: true });
-		const archive = join(folder, pinned.archive.name);
-		if (!existsSync(archive)) await downloadFile(pinned.archive, archive, options(download, entry, 0));
+		// Both archives are downloaded and checked before either is unpacked.
+		let before = 0;
+		for (const file of engineFiles()) {
+			const archive = join(folder, file.name);
+			// An archive is moved to its name only once it has matched, so one there is whole and checked.
+			if (!existsSync(archive)) await downloadFile(file, archive, options(download, entry, before));
+			before += file.size;
+			entry.received = before;
+		}
 		entry.phase = "unpacking";
 		announce();
-		const executable = await unpack(archive, pinned.version, pinned.executable);
-		rmSync(archive, { force: true });
+		const unpacked = await unpack(join(folder, pinned.archive.name), join(root, "engine"), pinned.version, pinned.executable);
+		const control = await unpack(join(folder, pinned.control.archive.name), join(root, "control"), pinned.control.version);
+		for (const file of engineFiles()) rmSync(join(folder, file.name), { force: true });
+		removeIfEmpty(folder);
 		const previous = installed.engine;
-		installed.engine = { version: pinned.version, path: executable };
+		installed.engine = { version: pinned.version, path: unpacked.executable!, folder: unpacked.folder, control: { version: pinned.control.version, folder: control.folder } };
 		saveInstalled();
-		if (previous !== null && previous.version !== pinned.version) rmSync(join(root, "engine", previous.version), { recursive: true, force: true });
+		if (previous?.folder !== undefined && previous.folder !== unpacked.folder) rmSync(previous.folder, { recursive: true, force: true });
+		if (previous?.control?.folder !== undefined && previous.control.folder !== control.folder) rmSync(previous.control.folder, { recursive: true, force: true });
 	}
+
 	/**
-	 * Unpacks the engine's archive, already checked, into `engine/<version>`, and returns its executable's path. Nothing
-	 * in it is run before this, and nothing outside that folder is written: entries with absolute paths or `..` are refused.
+	 * Unpacks an archive, already checked, into `<parent>/<version>`, and finds `executable` in it and makes it runnable.
+	 * Nothing in it is run here, and nothing outside that folder is written: entries with absolute paths or `..` are
+	 * refused, and macOS's tar does not write through a link it unpacked.
 	 */
-	async function unpack(archive: string, version: string, executable: string): Promise<string> {
+	async function unpack(archive: string, parent: string, version: string, executable?: string): Promise<{ folder: string; executable?: string }> {
 		const { stdout } = await run("/usr/bin/tar", ["-tzf", archive], { maxBuffer: 64 * 1024 * 1024 });
 		const entries = stdout.split("\n").filter((line) => line !== "");
 		if (entries.some((name) => isAbsolute(name) || name.split("/").includes(".."))) throw new Error("The engine's archive holds a file that would go outside its folder, so it was not unpacked.");
-		const engines = join(root, "engine");
-		const staging = join(engines, `.${version}.unpacking`);
+		const staging = join(parent, `.${version}.unpacking`);
 		rmSync(staging, { recursive: true, force: true });
 		mkdirSync(staging, { recursive: true });
 		await run("/usr/bin/tar", ["-xzf", archive, "-C", staging, "--no-same-owner"]);
-		const found = shallowest(staging, executable);
-		if (found === undefined) {
-			rmSync(staging, { recursive: true, force: true });
-			throw new Error(`The engine's archive has no ${executable} in it, so it cannot be used. pi² needs an update.`);
+		let found: string | undefined;
+		if (executable !== undefined) {
+			found = shallowest(staging, executable);
+			if (found === undefined) {
+				rmSync(staging, { recursive: true, force: true });
+				throw new Error(`The engine's archive has no ${executable} in it, so it cannot be used. pi² needs an update.`);
+			}
+			chmodSync(found, 0o755);
 		}
-		chmodSync(found, 0o755);
-		const final = join(engines, version);
+		const final = join(parent, version);
 		rmSync(final, { recursive: true, force: true });
 		renameSync(staging, final);
-		return join(final, found.slice(staging.length + 1));
+		return { folder: final, executable: found === undefined ? undefined : join(final, found.slice(staging.length + 1)) };
 	}
 
 	/** The shallowest regular file (not a link) called `name` under `folder`. */
@@ -433,9 +465,13 @@ export const localModels: Feature = (host, engine) => {
 		const folder = folderOf(download);
 		for (const file of filesOf(download)) {
 			rmSync(join(folder, `${file.name}.part`), { force: true });
-			if (download.kind === "model" || file === catalog.engine.archive) rmSync(join(folder, file.name), { force: true });
+			rmSync(join(folder, file.name), { force: true });
 		}
-		if (download.kind === "engine") rmSync(join(root, "engine", `.${download.target}.unpacking`), { recursive: true, force: true });
+		if (download.kind === "engine") {
+			const [version, control] = download.target.split("/");
+			rmSync(join(root, "engine", `.${version}.unpacking`), { recursive: true, force: true });
+			rmSync(join(root, "control", `.${control}.unpacking`), { recursive: true, force: true });
+		}
 		removeIfEmpty(folder);
 	}
 	function removeIfEmpty(folder: string): void {
@@ -482,7 +518,7 @@ export const localModels: Feature = (host, engine) => {
 		} catch {}
 		// What was removed by hand since is no longer offered.
 		let tidied = false;
-		if (installed.engine !== null && !existsSync(installed.engine.path)) {
+		if (installed.engine !== null && ![installed.engine.path, installed.engine.folder, installed.engine.control?.folder].every((path) => path !== undefined && existsSync(path))) {
 			engine.log(`local models: the engine at ${installed.engine.path} is gone; it is no longer listed`);
 			installed.engine = null;
 			tidied = true;
@@ -497,7 +533,7 @@ export const localModels: Feature = (host, engine) => {
 			installed.models = kept;
 			tidied = true;
 		}
-		if (tidied) saveInstalled();
+		if (tidied) writeJson(installedFile, installed);
 		setup.downloads = setup.downloads.filter((d) => (d.kind === "engine" ? true : findPack(d.target) !== undefined));
 	}
 
@@ -529,8 +565,8 @@ export const localModels: Feature = (host, engine) => {
 			"local.engine.install": async (params) => {
 				requireSupported();
 				requireAccepted(params, "Strata");
-				const version = catalog.engine.version;
-				if (installed.engine?.version === version) throw new Error(`Strata ${version} is already set up.`);
+				const version = engineTarget();
+				if (installed.engine !== null && current(installed.engine)) throw new Error(`Strata ${catalog.engine.version} is already set up.`);
 				let download = setup.downloads.find((d) => d.id === "engine");
 				if (download !== undefined && download.target !== version) {
 					await halt("engine", "replaced");
@@ -562,6 +598,7 @@ export const localModels: Feature = (host, engine) => {
 				}
 				if (installed.engine !== null) {
 					rmSync(join(root, "engine"), { recursive: true, force: true });
+					rmSync(join(root, "control"), { recursive: true, force: true });
 					installed.engine = null;
 					saveInstalled();
 				}
