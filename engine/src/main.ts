@@ -53,7 +53,7 @@ import { McpServers } from "./mcp.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
-import { DEMO_MODEL, DEMO_PROVIDER, newestOnly, Providers } from "./providers.ts";
+import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, newestOnly, Providers } from "./providers.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
@@ -304,7 +304,7 @@ function chatTools() {
 
 /** How a new chat is configured: no folder, no instructions of an agent's, the assistant's tools. */
 function chatChange(model: ModelRef): AgentChange {
-	return { model, thinkingLevel: null, instructions: null, tools: chatTools(), cwd: null, maxTurns: null };
+	return { model, thinkingLevel: defaultThinking(model), instructions: null, tools: chatTools(), cwd: null, maxTurns: null };
 }
 
 /**
@@ -324,7 +324,7 @@ async function agentChange(agent: AgentProfile, options: { subChat: boolean }): 
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
-		thinkingLevel: (agent.thinkingLevel as never) ?? null,
+		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
 		tools: toolsFor(agent.access, agent, options.subChat),
 		cwd: agent.cwd,
@@ -1033,7 +1033,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
-				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef } : change,
+				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : change,
 				init: async (tx, id) => {
 					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
 				},
@@ -1378,7 +1378,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
-			await conv.configure({ model: { provider: model.provider, modelId: model.modelId } }, context);
+			// A model on this Mac comes with its own thinking level when the conversation has none (defaultThinking).
+			const thinking = params.thinkingLevel === undefined && ((await harness.snapshot(AgentDoc, conv.id, context))?.thinkingLevel ?? null) === null ? defaultThinking(model) : null;
+			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
 			// The next conversation starts with it: the next chat for a chat, else the next of an agent's.
 			if (chat) settings.lastChatModel = { provider: model.provider, modelId: model.modelId };
 			else settings.defaultModel = { provider: model.provider, modelId: model.modelId };
