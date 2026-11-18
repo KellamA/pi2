@@ -1,2 +1,0 @@
-### For contributors
-- `node scripts/load.mts <suffix>` reproduces many agents working at once in a throwaway copy, without a provider, and measures how long opening a conversation and sending a message take meanwhile, how late the engine's thread runs and how many events it sends ([development.md](docs/development.md#measuring-under-load)). The demo model's `/work` makes its runs work as agents do, the engine's `engine.lag` request says how late its thread ran, and `scripts/test-copy socket <suffix>` gives a copy's socket to a program that keeps a connection open.
