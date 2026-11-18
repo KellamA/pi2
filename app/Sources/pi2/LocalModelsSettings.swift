@@ -103,7 +103,9 @@ extension JSONValue {
 
 enum LocalFormat {
     static func size(_ bytes: Double) -> String {
-        bytes < 1e9 ? String(format: "%.1f MB", bytes / 1e6) : String(format: bytes < 10e9 ? "%.1f GB" : "%.0f GB", bytes / 1e9)
+        if bytes < 1e9 { return String(format: "%.1f MB", bytes / 1e6) }
+        if bytes >= 1e12 { return String(format: "%.1f TB", bytes / 1e12) }
+        return String(format: bytes < 10e9 ? "%.1f GB" : "%.0f GB", bytes / 1e9)
     }
     static func gb(_ value: Double) -> String { String(format: value < 10 ? "%.1f GB" : "%.0f GB", value) }
     static func tokens(_ count: Int) -> String { "\(count / 1024)K tokens" }
@@ -312,7 +314,7 @@ private struct DownloadRow: View {
 
     private var caption: String {
         let amount = "\(LocalFormat.size(download.received)) of \(LocalFormat.size(download.total))"
-        if let error = download.error { return "\(amount). \(error)" }
+        if let error = download.error { return download.received > 0 ? "\(amount). \(error)" : error }
         if download.state == "paused" { return "Paused at \(amount)" }
         switch download.phase {
         case "checking": return "Checking what was already downloaded (\(amount))…"

@@ -534,7 +534,17 @@ export const localModels: Feature = (host, engine) => {
 			tidied = true;
 		}
 		if (tidied) writeJson(installedFile, installed);
-		setup.downloads = setup.downloads.filter((d) => (d.kind === "engine" ? true : findPack(d.target) !== undefined));
+		// A download of what pi² no longer offers (an engine pinned before an update, a pack withdrawn) goes, with what it left.
+		const offered = (d: StoredDownload) => (d.kind === "engine" ? d.target === engineTarget() : findPack(d.target) !== undefined);
+		for (const stale of setup.downloads.filter((d) => !offered(d))) {
+			if (stale.kind === "engine") {
+				const downloads = join(root, "downloads");
+				if (existsSync(downloads)) for (const name of readdirSync(downloads)) rmSync(join(downloads, name), { force: true, recursive: true });
+				removeIfEmpty(downloads);
+			} else if (stale.folder !== null) rmSync(stale.folder, { recursive: true, force: true });
+			engine.log(`local models: the download of ${stale.target} is no longer offered; what it left was removed`);
+		}
+		setup.downloads = setup.downloads.filter(offered);
 	}
 
 	return {
