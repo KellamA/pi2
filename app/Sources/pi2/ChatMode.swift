@@ -63,6 +63,9 @@ extension EngineClient {
         conversations.filter(\.isChat).sorted { $0.updatedAt > $1.updatedAt }
     }
 
+    /// Archived chats, most recently archived first (the engine sends the Archive in that order).
+    var archivedChats: [ArchivedConversation] { archived.filter(\.isChat) }
+
     /// Whether a conversation, listed, archived or open, is a chat.
     func isChat(_ id: Int) -> Bool {
         if let listed = conversations.first(where: { $0.id == id }) { return listed.isChat }
@@ -268,16 +271,21 @@ struct ChatSidebar: View {
     /// Chats whose messages have the query, from the engine's search.
     @State private var found: Set<Int> = []
     @FocusState private var searching: Bool
+    /// Whether the Archived section at the foot of the list is open. Folded by default, as archived chats are put away.
+    @AppStorage("chat.archivedOpen") private var archivedOpen = false
     private var engine: EngineClient { model.engine }
 
     var body: some View {
         let chats = engine.chats
         let groups = ChatGroups.make(chats, query: query, found: found)
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        // While searching, archived chats that match are listed too, so search still finds what was put away.
+        let archived = needle.isEmpty ? engine.archivedChats : engine.archivedChats.filter { $0.title.localizedCaseInsensitiveContains(needle) || found.contains($0.id) }
         List(selection: Binding(get: { model.chats.selection }, set: { if let id = $0 { model.chats.selection = id } })) {
             if chats.isEmpty && engine.hasLoadedLibrary {
                 Text("No chats yet").font(.callout).foregroundStyle(Theme.tx3)
-            } else if groups.isEmpty {
-                Text("No chats match “\(query.trimmingCharacters(in: .whitespaces))”.").font(.callout).foregroundStyle(Theme.tx3)
+            } else if groups.isEmpty && archived.isEmpty {
+                Text("No chats match “\(needle)”.").font(.callout).foregroundStyle(Theme.tx3)
             }
             ForEach(groups) { group in
                 Section {
@@ -286,6 +294,34 @@ struct ChatSidebar: View {
                     }
                 } header: {
                     Text(group.title).sectionLabel()
+                }
+            }
+            if !archived.isEmpty {
+                // Folded by hand rather than with the sidebar's own disclosure, which shows its chevron only under the
+                // pointer: a folded section of chats should say it can be opened.
+                Section {
+                    if archivedOpen || !needle.isEmpty {
+                        ForEach(archived) { chat in
+                            ArchivedChatRow(model: model, chat: chat).tag(chat.id)
+                        }
+                    }
+                } header: {
+                    Button { archivedOpen.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Text("Archived").sectionLabel()
+                            Text("\(archived.count)").sectionLabel()
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(Theme.tx3)
+                                .rotationEffect(.degrees(archivedOpen || !needle.isEmpty ? 90 : 0))
+                        }
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .help(archivedOpen ? "Hide archived chats" : "Show archived chats")
+                    .accessibilityLabel("Archived chats, \(archived.count)")
+                    .accessibilityValue(archivedOpen ? "Shown" : "Hidden")
                 }
             }
         }
@@ -373,6 +409,27 @@ private struct ChatRow: View {
             Button("Archive") { model.archive(chat) }
             Divider()
             Button("Delete", role: .destructive) { model.delete(chat) }
+        }
+    }
+}
+
+/// An archived chat at the foot of the sidebar. Choosing it shows it to read, with Restore in place of its message field.
+private struct ArchivedChatRow: View {
+    let model: AppModel
+    let chat: ArchivedConversation
+    private var title: String { chat.title.isEmpty ? "New chat" : chat.title }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).lineLimit(1).foregroundStyle(Theme.tx2)
+            Spacer(minLength: 0)
+        }
+        .help("Archived \(ArchiveRow.ago(chat.archivedAt)). Open it to read it, or restore it to carry on.")
+        .contextMenu(previewAs: title, String(chat.id)) {
+            Button("Open") { model.showChat(chat.id) }
+            Button("Restore") { model.engine.perform("conversation.unarchive", ["id": chat.id]) }
+            Divider()
+            Button("Delete", role: .destructive) { model.delete(id: chat.id, title: chat.title) }
         }
     }
 }

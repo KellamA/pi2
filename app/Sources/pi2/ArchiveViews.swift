@@ -11,7 +11,7 @@ struct ArchiveView: View {
         let words = query.split(whereSeparator: { $0.isWhitespace }).map { String($0) }
         guard !words.isEmpty else { return engine.archived }
         return engine.archived.filter { row in
-            let text = "\(row.title) \(engine.agent(row.agentId)?.name ?? "")"
+            let text = "\(row.title) \(row.isChat ? "Chat" : engine.agent(row.agentId)?.name ?? "")"
             return words.allSatisfy { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
         }
     }
@@ -43,7 +43,7 @@ struct ArchiveView: View {
     private var list: some View {
         VStack(alignment: .leading, spacing: 8) {
             if engine.archived.count > 6 {
-                TextField("Filter", text: $query, prompt: Text("Filter by title or agent"))
+                TextField("Filter", text: $query, prompt: Text("Filter by title or agent, or “chat”"))
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Filter archived conversations")
                     .padding(.bottom, 4)
@@ -106,11 +106,15 @@ struct ArchiveRow: View {
     let row: ArchivedConversation
     private var engine: EngineClient { model.engine }
 
-    private var title: String { row.title.isEmpty ? "New conversation" : row.title }
+    private var title: String { row.title.isEmpty ? (row.isChat ? "New chat" : "New conversation") : row.title }
 
     private var detail: String {
         var parts: [String] = []
-        if let agent = engine.agent(row.agentId)?.name { parts.append(agent) }
+        if row.isChat {
+            parts.append("Chat")
+        } else if let agent = engine.agent(row.agentId)?.name {
+            parts.append(agent)
+        }
         if row.parent != nil {
             let parent = (row.parentTitle ?? "").isEmpty ? "New conversation" : row.parentTitle!
             parts.append("sub-chat of “\(parent)”")
@@ -122,7 +126,17 @@ struct ArchiveRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            AgentAvatar(agent: engine.agent(row.agentId), size: 22)
+            if row.isChat {
+                // A chat has no agent: the mark chat mode's switch uses, in place of an empty avatar.
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.tx2)
+                    .frame(width: 22, height: 22)
+                    .background(Theme.card, in: .circle)
+                    .accessibilityLabel("Chat")
+            } else {
+                AgentAvatar(agent: engine.agent(row.agentId), size: 22)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).lineLimit(1)
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -131,7 +145,7 @@ struct ArchiveRow: View {
             Button("Open") { model.selection = .conversation(row.id) }
                 .help("Read it without restoring it")
             Button("Restore") { engine.perform("conversation.unarchive", ["id": row.id]) }
-                .help("Put it back in the sidebar, where it can be continued")
+                .help(row.isChat ? "Put it back in chat mode's list, where it can be continued" : "Put it back in the sidebar, where it can be continued")
             Button("Delete", systemImage: "trash") { model.delete(id: row.id, title: row.title) }
                 .labelStyle(.iconOnly)
                 .help("Delete “\(title)”")
