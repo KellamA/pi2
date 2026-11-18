@@ -824,6 +824,8 @@ struct McpServer: Codable, Equatable, Identifiable {
     let command: String?
     let args: [String]?
     let url: String?
+    /// A server run as a program: its own environment variables, by name. The values stay in the Keychain.
+    let variables: [AgentVariable]?
     let enabled: Bool
     let status: String
     let error: String?

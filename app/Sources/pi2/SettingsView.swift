@@ -28,6 +28,8 @@ struct SettingsLaunch {
     /// On Providers, `#models=<provider>` opens that provider's Models sheet, and `#add-model=<provider>/<id>` its sheet
     /// for adding a model by id, with the id typed and looked up: the provider and, when asked, the id.
     var modelsSheet: (provider: String, adding: String?)?
+    /// On Tools, `#variables=<server id>` opens that MCP server's Variables sheet.
+    var variablesSheet: String?
 
     init?(_ value: String?) {
         guard let value, value == "settings" || value.hasPrefix("settings:") else { return nil }
@@ -41,6 +43,8 @@ struct SettingsLaunch {
             } else if part.hasPrefix("add-model=") {
                 let target = part.dropFirst("add-model=".count).split(separator: "/", maxSplits: 1)
                 if let provider = target.first { modelsSheet = (String(provider), target.count > 1 ? String(target[1]) : "") }
+            } else if part.hasPrefix("variables=") {
+                variablesSheet = String(part.dropFirst("variables=".count))
             }
         }
     }
@@ -51,6 +55,14 @@ struct SettingsLaunch {
         guard !sheetShown, let sheet = asked?.modelsSheet, asked?.tab == .providers else { return nil }
         sheetShown = true
         return sheet.provider
+    }
+
+    /// The MCP server whose Variables sheet was asked for, once.
+    @MainActor private static var variablesShown = false
+    @MainActor static func takeVariablesSheet() -> String? {
+        guard !variablesShown, let server = asked?.variablesSheet, asked?.tab == .tools else { return nil }
+        variablesShown = true
+        return server
     }
 
     /// The id to add to `provider` in its Models sheet, once: empty to open the form with none typed.
