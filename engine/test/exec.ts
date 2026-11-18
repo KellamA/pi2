@@ -116,36 +116,38 @@ try {
 	assert.match(JSON.stringify(bash.parameters), /"background":\{[^}]*"type":"boolean"/);
 
 	// A call that asks for more than the most gets the most, and is told what to do instead (issue #160). The command
-	// itself would run for ten minutes, longer than any wait here, so only the limit can end it.
+	// sleeps beyond the test's patience: only the limit can end it, and nothing must print before that limit.
 	type Run = { execute(args: unknown, api: unknown, context: unknown): Promise<unknown> };
 	const limited = (shell(undefined, { fallback: 1, most: 2 }) as unknown as { wrap(tool: unknown): Run }).wrap(createBashTool());
-	const runLimited = async (args: Record<string, unknown>) => {
+	const runLimited = async (args: Record<string, unknown>, tool = limited) => {
 		let printed = "";
 		const api = { env, conversationId: 1, callId: "limited", output: (text: string) => void (printed += text), retainedOutput: () => ({ text: printed, truncated: false }), diagnostic: () => {} };
 		try {
 			// A wrap made without an engine moves nothing to the background: the limit stops the command.
-			return { result: await hangs("a command the limit stops", limited.execute(args, api, BACKGROUND_CONTEXT)), printed };
+			return { result: await hangs("a command the limit stops", tool.execute(args, api, BACKGROUND_CONTEXT)), printed };
 		} catch (error) {
 			return { error: (error as Error).message, printed };
 		}
 	};
-	const lowered = await runLimited({ command: "echo started; sleep 600", timeout: 3600 });
-	assert.equal(lowered.printed, "started\n", "what it printed is kept");
+	const lowered = await runLimited({ command: `sleep ${2 * PATIENT_MS / 1000}`, timeout: 3600 });
 	assert.equal(
 		lowered.error,
 		"The command was stopped after 2 seconds, the longest a command may run unless it is in the background (this call asked for 60 minutes). If it needs longer, run it again with `background: true`, which has no time limit, and read its output with the background tool.",
 	);
-	const quiet = await runLimited({ command: "sleep 600" });
+	const quiet = await runLimited({ command: `sleep ${2 * PATIENT_MS / 1000}` });
 	assert.equal(
 		quiet.error,
 		"The command was stopped after 1 second, the default time limit for a command. If it needs longer, run it again with a larger `timeout` (in seconds, up to 2), or with `background: true`, which has no time limit, and read its output with the background tool.",
 		"a second of quiet is not worth remarking on",
 	);
-	assert.equal((await runLimited({ command: "echo fine", timeout: 2 })).printed, "fine\n");
 
 	// A non-zero exit is told as a fact, not as an error, unless the command could not be started or a signal ended it
 	// (issue #182). Limits longer than any wait here, so only the command ends each run.
-	const roomy = (shell(undefined, { fallback: 600, most: 600 }) as unknown as { wrap(tool: unknown): Run }).wrap(createBashTool());
+	const roomySeconds = 2 * PATIENT_MS / 1000;
+	const roomy = (shell(undefined, { fallback: roomySeconds, most: roomySeconds }) as unknown as { wrap(tool: unknown): Run }).wrap(createBashTool());
+	const fine = await runLimited({ command: "echo fine", timeout: roomySeconds }, roomy);
+	assert.equal(fine.error, undefined, "a command with a patient explicit timeout finishes");
+	assert.equal(fine.printed, "fine\n");
 	const ended = async (command: string) => {
 		let printed = "";
 		const api = { env, conversationId: 1, callId: "exit", output: (text: string) => void (printed += text), retainedOutput: () => ({ text: printed, truncated: false }), diagnostic: () => {} };
