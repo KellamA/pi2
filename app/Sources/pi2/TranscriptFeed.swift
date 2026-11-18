@@ -38,6 +38,38 @@ struct TranscriptFeed {
         var apps: [String: String]
     }
 
+    /// A model Try Again can use, as the model selector lists it.
+    struct ModelChoice: Encodable, Equatable {
+        var provider: String
+        var id: String
+        var name: String
+        /// The provider's name, which the list is grouped by.
+        var group: String
+    }
+
+    /// What a chat adds to the page (#285): Try Again, Edit, the step between versions, and sources. `enabled` is
+    /// false for an agent's conversation, and the page shows none of it.
+    struct Chat: Encodable, Equatable {
+        var enabled: Bool
+        var versions: [VersionPoint]
+        var models: [ModelChoice]
+        /// The model in use, as "provider/id".
+        var model: String
+
+        static let none = Chat(enabled: false, versions: [], models: [], model: "")
+
+        /// Whether the page shows a chat's controls: for a chat; and, until chats exist (#283), in a development build
+        /// for any conversation the engine offers versions for, so they can be tried. The one place that decides it.
+        static func shown(for state: ConversationState?) -> Bool {
+            if state?.chat == true { return true }
+            #if PI2_DEVELOPMENT
+            return state?.versions != nil
+            #else
+            return false
+            #endif
+        }
+    }
+
     struct Message: Encodable {
         var reset: Bool?
         var items: [Item]?
@@ -45,6 +77,7 @@ struct TranscriptFeed {
         var inbox: [InboxItem]?
         var names: Names?
         var palette: [String: String]?
+        var chat: Chat?
     }
 
     private var sentCount = 0
@@ -54,6 +87,7 @@ struct TranscriptFeed {
     private var inbox: [InboxItem]?
     private var names: Names?
     private var palette: [String: String]?
+    private var chat: Chat?
     private var startOver = false
 
     /// Forget what was sent and start the page's list over: for a page that has just loaded (or reloaded after its
@@ -64,7 +98,7 @@ struct TranscriptFeed {
     }
 
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
-    mutating func update(items: [Item], state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String]) -> Message? {
+    mutating func update(items: [Item], state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String], chat: Chat = .none) -> Message? {
         var message = Message()
         var changed = false
 
@@ -104,6 +138,11 @@ struct TranscriptFeed {
         if palette != self.palette {
             message.palette = palette
             self.palette = palette
+            changed = true
+        }
+        if chat != self.chat {
+            message.chat = chat
+            self.chat = chat
             changed = true
         }
         return changed ? message : nil

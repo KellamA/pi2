@@ -15,11 +15,21 @@ struct ConversationTranscript: View {
         if let folder = TranscriptPage.folder {
             TranscriptWebView(
                 folder: folder, engine: engine, conversationID: conversationID, items: items, state: state,
-                inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names
+                inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names, chat: chat
             )
         } else {
             TranscriptView(engine: engine, conversationID: conversationID, items: items, state: state)
         }
+    }
+
+    /// What a chat adds to the page: its versions, and the models Try Again offers, which are the model selector's.
+    private var chat: TranscriptFeed.Chat {
+        guard TranscriptFeed.Chat.shown(for: state) else { return .none }
+        let models = engine.modelGroups.flatMap { group in
+            group.models.map { TranscriptFeed.ModelChoice(provider: $0.provider, id: $0.id, name: $0.listName, group: group.name) }
+        }
+        let model = state?.agent.model.map { "\($0.provider)/\($0.modelId)" } ?? ""
+        return TranscriptFeed.Chat(enabled: true, versions: state?.versions ?? [], models: models, model: model)
     }
 
     /// The names the page shows that only the app knows, read here so that a change to any of them updates the page.
@@ -53,6 +63,7 @@ struct TranscriptWebView: NSViewRepresentable {
     let state: ConversationState?
     let inbox: [InboxItem]
     let names: TranscriptFeed.Names
+    let chat: TranscriptFeed.Chat
 
     func makeCoordinator() -> TranscriptBridge {
         TranscriptBridge(engine: engine, conversationID: conversationID)
@@ -65,7 +76,7 @@ struct TranscriptWebView: NSViewRepresentable {
     func updateNSView(_ view: TranscriptWebKitView, context: Context) {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
-        context.coordinator.show(conversationID: conversationID, items: items, state: state, inbox: inbox, names: names)
+        context.coordinator.show(conversationID: conversationID, items: items, state: state, inbox: inbox, names: names, chat: chat)
     }
 
     static func dismantleNSView(_ view: TranscriptWebKitView, coordinator: TranscriptBridge) {
@@ -86,6 +97,7 @@ final class TranscriptBridge {
     private var state: ConversationState?
     private var inbox: [InboxItem] = []
     private var names: TranscriptFeed.Names?
+    private var chat = TranscriptFeed.Chat.none
     /// Opens the window with a background command's output, as Activity's Output does.
     var showOutput: (String) -> Void = { _ in }
 
@@ -106,7 +118,7 @@ final class TranscriptBridge {
         return view
     }
 
-    func show(conversationID: Int, items: [Item], state: ConversationState?, inbox: [InboxItem], names: TranscriptFeed.Names) {
+    func show(conversationID: Int, items: [Item], state: ConversationState?, inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
         if conversationID != self.conversationID {
             self.conversationID = conversationID
             feed.restart()
@@ -115,13 +127,14 @@ final class TranscriptBridge {
         self.state = state
         self.inbox = inbox
         self.names = names
+        self.chat = chat
         push()
     }
 
     private func push() {
         guard ready, let view, let names else { return }
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
-        guard let message = feed.update(items: items, state: state, inbox: inbox, names: names, palette: palette),
+        guard let message = feed.update(items: items, state: state, inbox: inbox, names: names, palette: palette, chat: chat),
               let json = TranscriptFeed.json(message) else { return }
         send(json)
     }
@@ -162,6 +175,22 @@ final class TranscriptBridge {
         case .fork(let entry):
             guard items.contains(where: { $0.id == entry && $0.kind == "assistant" }) else { return }
             engine.fork(conversationID, at: entry)
+        case .retry(let entry, let model):
+            // Under an answer of a chat; another model only if it is one the model selector offers. The engine checks both again.
+            guard chat.enabled, items.contains(where: { $0.id == entry && $0.kind == "assistant" }) else { return }
+            var params: [String: Any] = ["id": conversationID, "entryId": entry]
+            if let model {
+                guard chat.models.contains(where: { $0.provider == model.provider && $0.id == model.modelId }) else { return }
+                params["model"] = ["provider": model.provider, "modelId": model.modelId]
+            }
+            engine.perform("conversation.retry", params)
+        case .edit(let entry, let text):
+            guard chat.enabled, items.contains(where: { $0.id == entry && $0.kind == "user" }) else { return }
+            engine.perform("conversation.edit", ["id": conversationID, "entryId": entry, "text": text])
+        case .version(let after, let index):
+            // A point the engine named, and a version it has.
+            guard chat.enabled, chat.versions.contains(where: { $0.after == after && index < $0.count }) else { return }
+            engine.perform("conversation.version", ["id": conversationID, "after": after.map { $0 as Any } ?? NSNull(), "index": index])
         case .picture(let entry, let index):
             guard let item = items.first(where: { $0.id == entry }), index < (item.images ?? 0) else { return }
             sendPicture(entry: entry, index: index)

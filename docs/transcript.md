@@ -10,8 +10,9 @@ app/Web/transcript/        the page: plain HTML, CSS and JavaScript, no build st
   tools.js                 what a tool call's row says and opens to (PiTools)
   clipboard.js             what a selection copies as (PiClipboard)
   keys.js                  what Return does in the answer to a question (PiKeys)
+  chat.js                  a chat's versions, sources and Try Again's models (PiChat)
   transcript.js            state, rows, scrolling, the bridge
-app/Web/test/              node --test: the four modules above, with a small fake DOM
+app/Web/test/              node --test: the five modules above, with a small fake DOM
 app/Sources/pi2/
   TranscriptPage.swift     the web view: loading, navigation policy, menu, drops; checking the page's messages
   TranscriptFeed.swift     what the page is sent, and only what changed since last time
@@ -32,8 +33,19 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 - A hand-off names the agent and the task, shows the answer folded to two lines, and has two buttons for the sub-chat: Open shows it in place of the conversation, and Beside splits the pane and shows it next to the conversation.
 - An approval or a question waiting on the person is a card at the call, with the Inbox's words and buttons. An edit's card also shows the change. A question's answer field grows with its lines: Return sends, Shift-Return or Option-Return starts a new line, and Return while an input method is composing confirms the candidate, as in the app's message field (`keys.js` mirrors ComposeKit's rule).
 - Thinking is a "Thinking…" line while it streams and a "Thought" row afterwards.
-- Hovering over the end of a turn shows Copy (the turn's Markdown) and Fork from here; hovering over a message of the person's shows Copy.
+- Hovering over the end of a turn shows Copy (the turn's Markdown) and Fork from here; hovering over a message of the person's shows Copy. A chat has its own controls there instead of Fork from here ([below](#a-chats-controls)).
 - The page follows new content while the reader is at the bottom. Scrolling up stops that, and a "Jump to latest" button appears. Sending a message brings the reader back.
+
+## A chat's controls
+
+When the app tells the page the conversation is a chat (`chat.enabled`), the page shows what a chat adds (#285; the engine's side is in [architecture.md](architecture.md#a-chats-versions)):
+
+- **Try Again** at the end of a turn answers the turn's message again, as a new version; the narrow button beside it opens the list of models to try again with, the model selector's, grouped by provider, with the one in use ticked. Escape or a click elsewhere closes it.
+- **Edit** on the person's message opens it in a field in place of the bubble: Return sends it as a new version, Shift-Return or Option-Return starts a new line, Escape or Cancel leaves it as it was. What it had attached goes with it.
+- **‹ 2 / 3 ›** under a message or a turn with several versions shows which is shown and steps to the others. It stays in view without the pointer over the row, and is unavailable while an answer is being written. It sits under the first message or answer after the point where the versions part (`PiChat.versionRows`), which for Try Again is the end of the turn and for Edit the message.
+- **Sources** under a turn name the pages it read with `web_fetch`, each once, as links: the page's title and its site. A page a search only listed is not a source.
+
+Fork from here is not offered in a chat. Until chats exist (#283), a development build shows these on any conversation the engine offers versions for (`TranscriptFeed.Chat.shown`), so they can be tried.
 
 Retries, failures, compaction, a wait for a provider's limit and queued messages are shown outside the transcript by `ChatView`, as before. Inside it, each failed attempt of a request is an answer row that says "This attempt failed" with the error; attempts that failed in a row, with nothing else in them, show as one row, the last, which says how many there were ("6 attempts in a row failed; the last said:"), since a run waiting for a provider's limit can leave dozens ([limits.md](limits.md#when-a-limit-is-reached); `failedRuns` in `tools.js`).
 
@@ -54,6 +66,7 @@ The app calls `window.pi2.receive(json)` with `callAsyncJavaScript`, passing the
 | `names` | What only the app knows: `mcp` (tool name to "Server: tool"), `agents` (name, colour, model), `apps` (bundle ID to name), the conversation's `agentName`. |
 | `palette` | Theme.swift's colours resolved for the view's appearance, and `appearance`. Sent again when the appearance changes. |
 | `image` | A picture the page asked for: `{entry, index, mimeType, data}`, or without `data` when it could not be had. |
+| `chat` | `{enabled, versions, models, model}`: whether it is a chat; where its versions part and which is shown (`{after, index, count}`, `after` null before the first message); the models Try Again offers (`{provider, id, name, group}`); and the model in use as `provider/id`. `enabled` false for an agent's conversation. |
 
 The page posts to the `pi2` message handler. `TranscriptAction` checks every message (a known type, fields of the right kinds, sizes within limits) and `TranscriptBridge` checks that what it names belongs to this conversation before acting, with the same engine requests the SwiftUI views make:
 
@@ -66,6 +79,9 @@ The page posts to the `pi2` message handler. `TranscriptAction` checks every mes
 | `{type: "answer", inbox, text}` | text not blank, at most 100,000 characters; the question is waiting in this conversation | `inbox.answer` |
 | `{type: "openChat", id, beside}` | a whole number; a sub-chat one of this conversation's hand-offs opened. `beside` is optional, true or absent | `openConversation`, then `onOpenBeside` (a pane beside this one) or `onNavigate` |
 | `{type: "fork", entry}` | a whole number; an answer in this conversation | `engine.fork` |
+| `{type: "retry", entry, model?}` | a whole number, an answer in this conversation; `model` `{provider, modelId}`, one Try Again offers; a chat | `conversation.retry` |
+| `{type: "edit", entry, text}` | a whole number, a message of the person's in this conversation; text at most a million characters; a chat | `conversation.edit` |
+| `{type: "version", after, index}` | `after` null or a whole number, `index` a whole number: a point the engine named, and a version it has; a chat | `conversation.version` |
 | `{type: "image", entry, index}` | whole numbers; the entry holds that many pictures | `conversation.image`, then an `image` message back |
 | `{type: "output", id}` | `bg-` and a number; a background command this conversation's rows name, as the engine's results and lines name it | The command's output window (`openWindow`), as Activity's Output opens it |
 
@@ -87,7 +103,7 @@ Everything in a transcript is untrusted: model output, tool output, web page tex
 cd app/Web && node --test test/
 ```
 
-covers the Markdown renderer (including hostile HTML, link schemes, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, and what a selection copies as. CI runs it.
+covers the Markdown renderer (including hostile HTML, link schemes, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, what a selection copies as, and a chat's versions, sources and models (`chat.test.mjs`). CI runs it.
 
 The page itself was checked with an offscreen harness: a throwaway Swift program, kept out of the repository, that compiled `Models.swift`, `Theme.swift`, `TranscriptFeed.swift` and `TranscriptPage.swift` with a stub for `AttachmentNote`, loaded the page in the app's own `TranscriptWebKitView` in an offscreen window, fed it a realistic conversation through `TranscriptFeed`, and took snapshots in dark and light: streaming, opened rows, approval and question cards, hostile content, a 400-entry conversation, and the text a select-all copies as.
 

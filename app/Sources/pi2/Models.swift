@@ -667,6 +667,41 @@ struct ConversationState: Codable, Equatable {
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
     let setup: LiveSetup?
+    /// A chat of pi²'s own assistant, not an agent's conversation. Nil from an engine older than this field.
+    let chat: Bool?
+    /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
+    /// offered: an agent's conversation in a release build, or an engine older than this field.
+    let versions: [VersionPoint]?
+}
+
+/// A point where a chat's versions part: after entry `after` (nil: before the first message), version `index` of `count`.
+struct VersionPoint: Codable, Equatable {
+    let after: Int?
+    let index: Int
+    let count: Int
+
+    private enum CodingKeys: String, CodingKey { case after, index, count }
+
+    init(after: Int?, index: Int, count: Int) {
+        self.after = after
+        self.index = index
+        self.count = count
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        after = try container.decodeIfPresent(Int.self, forKey: .after)
+        index = try container.decode(Int.self, forKey: .index)
+        count = try container.decode(Int.self, forKey: .count)
+    }
+
+    /// `after` as null when there is none: the page tells "before the first message" from a missing field.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(after, forKey: .after)
+        try container.encode(index, forKey: .index)
+        try container.encode(count, forKey: .count)
+    }
 }
 
 /// A worktree set-up command still running: which run it is (its transcript entry's `details.run`) and the end of its output.
