@@ -298,6 +298,8 @@ struct BuiltInTool: Codable, Equatable, Identifiable {
     /// Where it is offered at all: "files" (any access but none), "changes" (Ask first or Full access), "browser" (the
     /// browser on); nil for anywhere.
     let needs: String?
+    /// Off unless the agent turns it on (`toolsOn`), rather than on unless it leaves it out (`toolsOff`).
+    let offByDefault: Bool?
     var id: String { key }
 }
 
@@ -354,6 +356,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var schedule: ScheduleSettings?
     /// Keys of the built-in tools it is not offered, in the engine's order. Nil or empty: all of them.
     var toolsOff: [String]?
+    /// Keys of the built-in tools off by default that it is offered, in the engine's order. Nil or empty: none of them.
+    var toolsOn: [String]?
     /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
     var commandRules: [CommandRule]?
     /// Variables its commands get. Changed through their own requests, never by saving the agent.
@@ -382,6 +386,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "browser": ["enabled": browser?.enabled ?? false, "ask": browser?.ask ?? true],
             "schedule": ["enabled": schedule?.enabled ?? false],
             "toolsOff": toolsOff ?? [],
+            "toolsOn": toolsOn ?? [],
         ]
     }
 
@@ -413,6 +418,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
         agent.browser = browser ?? BrowserSettings()
         agent.schedule = schedule ?? ScheduleSettings()
         agent.toolsOff = toolsOff ?? []
+        agent.toolsOn = toolsOn ?? []
         agent.commandRules = nil
         agent.variables = nil
         return agent

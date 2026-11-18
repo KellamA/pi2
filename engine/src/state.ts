@@ -51,6 +51,8 @@ export type AgentProfile = {
 	schedule?: ScheduleSettings;
 	/** Keys of the built-in tools it is not offered (builtins.ts). Absent or empty: all of them. */
 	toolsOff?: string[];
+	/** Keys of the built-in tools off by default that it is offered (builtins.ts). Absent or empty: none of them. */
+	toolsOn?: string[];
 	/**
 	 * Shell commands it may run without asking under "ask first", folder by folder (see rules.ts). Changed only through
 	 * `rules.add`, `rules.remove` and an approval's "rule" answer, never by saving the agent.

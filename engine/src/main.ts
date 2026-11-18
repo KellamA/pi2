@@ -35,7 +35,7 @@ import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY
 import { createBackup, restoreBackup } from "./backup.ts";
 import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
-import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff } from "./builtins.ts";
+import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validateToolsOn } from "./builtins.ts";
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
 import { codemodeExtension } from "./codemode.ts";
 import { holdingPlaces } from "./sections.ts";
@@ -457,6 +457,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
+		toolsOn: input.toolsOn === undefined ? (previous?.toolsOn ?? []) : validateToolsOn(input.toolsOn),
 		createdAt: previous?.createdAt ?? Date.now(),
 	};
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {

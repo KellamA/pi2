@@ -50,6 +50,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out, and the chat assistant's fixed set. See [Built-in tools](#built-in-tools) |
 | `src/chat.ts` | Chat mode's built-in assistant: its settings, the folder its documents go in, and what it is told. See [chat.md](chat.md) |
 | `src/plan.ts` | The agent's task list |
+| `src/runcode.ts` | `run_code`: a short program run in a sandbox with no tools, files or network. See [code.md](code.md) |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, and an agent's memory |
@@ -95,9 +96,10 @@ Every conversation with tools used to be offered the same few tools whatever its
 | Ask you questions | `ask_user` | always |
 | Keep a task list | `update_plan` | always |
 | Read the web | `web_fetch`, `web_search` | the browser is on |
+| Work things out with code (off by default) | `run_code` | always |
 
 - **Only tools no other switch governs.** The shell and the file tools, and `background`, which works the shell's background commands, follow the access level. Computer use, the browser, scheduling, code mode, memory, reference files and handing work on keep their own switches and are not listed twice. Reading the web still needs the browser on: the list can take it away, never give it to an agent without the browser.
-- **All on by default.** The agent keeps the keys of the ones left out, `toolsOff` (`src/builtins.ts`), so an agent saved before the list, or a tool added to it later, is offered as before. `agents.save` refuses a key it does not know; `agents.duplicate` copies the list, as it copies every saved setting.
+- **On by default, but for a few.** The agent keeps the keys of the ones left out, `toolsOff` (`src/builtins.ts`), so an agent saved before the list, or a tool added to it later, is offered as before. A tool added for some agents only, such as those of the chat assistant (#286), is marked `offByDefault` instead, and the agent keeps the keys of those it is given, `toolsOn`: no existing agent is offered it, or pays for it in its prompt, until the person turns it on. `agents.save` refuses a key it does not know, and one in the wrong list; `agents.duplicate` copies both lists, as it copies every saved setting.
 - **None is forced on.** Where leaving one out has a consequence the person might not expect, its line says so: without asking, an agent that needs a decision can only stop; without the task list, the person sees no plan.
 - **Gone everywhere.** `toolsFor` in `main.ts` drops them last, after everything else has decided what is offered, so a sub-chat follows its own agent's list, and code mode's listing and `ALL_TOOLS` lack them: a script calling one finds it does not exist. A tool that is not offered is never called, so it is never asked about either. The section of the system prompt that goes with a tool goes with it (`documents`, `look_web`, `update_plan`'s part of `task_list`); the sentence about sending calls together stays in `task_list` without the task list.
 - **From the next message.** An existing conversation is changed at its next message, as for any switch: the tools that went are taken away, and the sections that changed are sent alone ([The system prompt's sections](#the-system-prompts-sections)).
