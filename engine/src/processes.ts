@@ -11,8 +11,8 @@
 import { type ChildProcess, execFile, type StdioOptions } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { subscribe } from "node:diagnostics_channel";
-import { closeSync, constants, mkdirSync, openSync, rmSync } from "node:fs";
-import { lstat } from "node:fs/promises";
+import { type BigIntStats, closeSync, constants, mkdirSync, openSync, rmSync } from "node:fs";
+import { lstat, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -71,7 +71,9 @@ const RUN_FD = 19;
 const runFile = (folder: string, marker: string) => join(folder, marker);
 
 /** A run about to be started: its marker, and the `stdio` to start it with, which hands it its file. */
-export type NewRun = { marker: string; stdio: StdioOptions; started(): void };
+export type NewRun = { marker: string; stdio: StdioOptions };
+/** Held until `forgetRun`, even if the command closes its copy: another engine must not sweep a live run's file. */
+const liveFiles = new Map<string, number>();
 
 /**
  * A new run of a command: a marker for its environment (`RUN_VARIABLE`), and an empty file of the run's own, named by
@@ -79,9 +81,9 @@ export type NewRun = { marker: string; stdio: StdioOptions; started(): void };
  * The file is made with no permissions at all, so that no process, the person's own included, can open it once it is
  * made: a process that has it open got it from the command. macOS lets `lsof` list the files of the person's own
  * processes, the programs that come with macOS too, whose environment it does not show. So the file proves a process the
- * run's where the environment cannot (`holding`). `started()` closes the engine's own copy, once the command is started
- * or could not be; call it either way. Without a folder for it, or should it not be made, there is no file, and the
- * command is started as before.
+ * run's where the environment cannot (`holding`). The engine keeps its own copy until `forgetRun`, including when the
+ * command could not be started. This keeps a live run's file safe from cleanup even if the command closes its copy.
+ * Without a folder for it, or should it not be made, there is no file, and the command is started as before.
  */
 export function newRun(): NewRun {
 	const marker = newRunMarker();
@@ -90,34 +92,75 @@ export function newRun(): NewRun {
 		try {
 			mkdirSync(runFolder, { recursive: true, mode: 0o700 });
 			// Node opens it close-on-exec, so no other process this engine starts gets it.
-			fd = openSync(runFile(runFolder, marker), constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o000);
+			const path = runFile(runFolder, marker);
+			fd = openSync(path, constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o000);
+			liveFiles.set(path, fd);
 		} catch {
 			fd = undefined;
 		}
 	}
 	const stdio: StdioOptions = ["ignore", "pipe", "pipe", ...(fd === undefined ? [] : [...Array<"ignore">(RUN_FD - 3).fill("ignore"), fd])];
-	return {
-		marker,
-		stdio,
-		started: () => {
-			if (fd === undefined) return;
-			try {
-				closeSync(fd);
-			} catch {
-				// Closed already.
-			}
-			fd = undefined;
-		},
-	};
+	return { marker, stdio };
 }
 
 /** Remove the file of a run that is over, or that the engine after the one that started it has dealt with. */
 export function forgetRun(marker: string | undefined): void {
 	if (runFolder === undefined || !isRunMarker(marker)) return;
+	const path = runFile(runFolder, marker);
+	const fd = liveFiles.get(path);
+	if (fd !== undefined) {
+		liveFiles.delete(path);
+		closeSync(fd);
+	}
 	try {
-		rmSync(runFile(runFolder, marker), { force: true });
+		rmSync(path, { force: true });
 	} catch {
-		// Left for good: an empty file, which proves nothing once its run's record is gone.
+		// A later engine's sweep can remove it once nothing holds it.
+	}
+}
+
+/**
+ * Remove files left before a dead engine noted a run's process. No process is signalled. A complete, successful lsof
+ * answer must show no holder, anywhere, including another engine and groups whose process was never recorded. Since
+ * newRun creates and opens the file atomically and keeps it open until forgetRun, even an about-to-start run is safe.
+ * Only unchanged empty private run files count; doubt, a failed listing or any diagnostic leaves the file alone.
+ */
+export async function sweepRuns(): Promise<void> {
+	const folder = runFolder;
+	if (folder === undefined) return;
+	const names = await readdir(folder).catch(() => []);
+	const candidates: { path: string; before: BigIntStats }[] = [];
+	for (const marker of names) {
+		if (!isRunMarker(marker)) continue;
+		const path = runFile(folder, marker);
+		if (liveFiles.has(path)) continue;
+		const before = await lstat(path, { bigint: true }).catch(() => undefined);
+		if (before === undefined || !before.isFile() || before.size !== 0n || (before.mode & 0o7777n) !== 0n || before.uid !== BigInt(process.getuid?.() ?? -1)) continue;
+		candidates.push({ path, before });
+	}
+	if (candidates.length === 0) return;
+	// One scan for the folder, not one per file: listing every process's files can be slow on a busy Mac. This runs
+	// outside startup's wait, with a longer deadline than a targeted ps/lsof query. Too many paths fails closed too.
+	const listed = await new Promise<string | undefined>((resolve) => {
+		execFile("/usr/sbin/lsof", ["-n", "-P", "-F", "pDi", "--", ...candidates.map(({ path }) => path)], { timeout: 120_000, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout, stderr) => {
+			// Exit 1 is the normal answer when none of the files is held. Diagnostics or any other failure are doubt.
+			resolve(stderr !== "" || (error !== null && (error as { code?: unknown }).code !== 1) ? undefined : stdout);
+		});
+	});
+	if (listed === undefined) return;
+	const held = new Set<string>();
+	let device: bigint | undefined;
+	for (const line of listed.split("\n")) {
+		if (line.startsWith("p") || line.startsWith("f")) device = undefined;
+		else if (/^D0x[0-9a-f]+$/i.test(line)) device = BigInt(line.slice(1));
+		else if (/^i\d+$/.test(line) && device !== undefined) held.add(`${device}:${BigInt(line.slice(1))}`);
+		else if (line !== "") return; // An answer whose fields we cannot read is not proof of absence.
+	}
+	for (const { path, before } of candidates) {
+		if (held.has(`${before.dev}:${before.ino}`) || liveFiles.has(path)) continue;
+		const after = await lstat(path, { bigint: true }).catch(() => undefined);
+		if (after === undefined || after.dev !== before.dev || after.ino !== before.ino || after.mode !== before.mode || after.uid !== before.uid || after.size !== before.size || after.ctimeNs !== before.ctimeNs) continue;
+		await unlink(path).catch(() => {});
 	}
 }
 
