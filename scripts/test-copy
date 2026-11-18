@@ -51,6 +51,8 @@ Usage: scripts/test-copy <command> [arguments]
   call <suffix> <method> [<json params>]
                                    Send one request to the copy's own engine socket and print its JSON response.
                                    Params default to {}. An engine error exits non-zero; this does not wait for a run.
+  socket <suffix>                  Print the path of the copy's own engine socket, after the checks call makes, for a
+                                   program that keeps a connection open, such as scripts/load.mts.
   stop <suffix>                    Stop the copy's app, then its engine, by the pids recorded at start, and remove the
                                    copy, its data folder, preferences, Keychain items, Launch Services registration
                                    and the files its browser leaves.
@@ -310,6 +312,16 @@ function run(argv) {
 JS
 }
 
+# Checks that the copy's engine socket is this checkout's own copy's, with its recorded engine running: for call and
+# socket.
+owned_socket() {
+	load_state || die "no copy named $SUFFIX was started from this checkout"
+	follow_engine
+	is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
+	# Never follow a socket or data-folder symlink to another copy, and never use PI2_HOME or a socket override.
+	[[ ! -L $DATA && ! -L $DATA/engine.sock ]] || die "refusing a symlink for the copy's data folder or engine socket"
+}
+
 cmd=${1-}; shift || true
 case $cmd in
 	start)
@@ -459,15 +471,17 @@ case $cmd in
 		screencapture -x -o -l "$wid" "$file"
 		echo "Captured window $wid of $NAME into $(tidy "$file")."
 		;;
+	socket)
+		names "${1-}"; shift
+		(($# == 0)) || die "use: scripts/test-copy socket $SUFFIX"
+		owned_socket
+		echo "$DATA/engine.sock"
+		;;
 	call)
 		names "${1-}"; shift
 		[[ -n ${1-} && $# -le 2 ]] || die "use: scripts/test-copy call $SUFFIX <method> [<json params>]"
 		method=$1 params=${2-'{}'}
-		load_state || die "no copy named $SUFFIX was started from this checkout"
-		follow_engine
-		is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
-		# Never follow a socket or data-folder symlink to another copy, and never use PI2_HOME or a socket override.
-		[[ ! -L $DATA && ! -L $DATA/engine.sock ]] || die "refusing a symlink for the copy's data folder or engine socket"
+		owned_socket
 		node --input-type=module - "$DATA/engine.sock" "$method" "$params" <<'JS'
 import { connect } from 'node:net';
 const [path, method, json] = process.argv.slice(2);
