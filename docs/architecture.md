@@ -41,6 +41,9 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
 | `src/modellists.ts` | Asking a built-in provider which models a key or sign-in can use; the store of catalogs the library refreshes itself (`model-catalogs.json`) |
+| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs, setting them up, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
+| `src/localcatalog.ts` | What can be downloaded for models on this Mac: the pinned engine and the packs, with their checksums and memory figures |
+| `src/download.ts` | Downloading one large file that carries on where it stopped and is checked against a checksum known in advance |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
 | `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
