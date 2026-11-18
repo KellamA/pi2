@@ -32,6 +32,8 @@ final class ChatModeState {
     }
     /// A new chat is being made, so a second click does not make two.
     var creating = false
+    /// The chat whose Continue with an Agent sheet is showing (ChatContinue.swift).
+    var continuing: Int?
     /// Set while the agent view's selection is changed for it (at launch, or when its conversation went away) rather than
     /// by the person, so the window stays on the side it is on.
     @ObservationIgnored var holdingMode = false
@@ -363,6 +365,8 @@ private struct ChatRow: View {
         .contextMenu(previewAs: title, String(chat.id)) {
             Button("Rename…") { model.beginRename(chat) }
             Button(chat.isPinned ? "Unpin" : "Pin") { model.engine.pin(chat.id, !chat.isPinned) }
+            Button("Continue with an Agent…") { model.continueWithAgent(chat.id) }
+                .disabled(!model.engine.canContinueWithAgent(chat.id))
             Button("Archive") { model.archive(chat) }
             Divider()
             Button("Delete", role: .destructive) { model.delete(chat) }
@@ -409,8 +413,16 @@ struct ChatModeDetail: View {
         .navigationSubtitle("Chat")
         .toolbar {
             ToolbarItemGroup {
-                if let id { ModelMenu(engine: engine, id: id, agent: engine.open[id]?.state?.agent) }
+                if let id {
+                    Button("Continue with an Agent…", systemImage: "arrowshape.turn.up.right") { model.continueWithAgent(id) }
+                        .disabled(!engine.canContinueWithAgent(id))
+                        .help("Continue with an Agent: hand this chat to one of your agents, in a folder you choose")
+                    ModelMenu(engine: engine, id: id, agent: engine.open[id]?.state?.agent)
+                }
             }
+        }
+        .sheet(isPresented: Binding(get: { model.chats.continuing != nil }, set: { if !$0 { model.chats.continuing = nil } })) {
+            if let chat = model.chats.continuing { ContinueWithAgentSheet(model: model, chat: chat) }
         }
         .task(id: needsChat) { if needsChat { model.newChat() } }
         .onAppear { forgetMissing() }
@@ -434,6 +446,50 @@ extension EngineClient {
     func conversationTitle(_ id: Int, chat: Bool) -> String {
         let title = conversations.first { $0.id == id }?.title ?? archived.first { $0.id == id }?.title ?? open[id]?.state?.title ?? ""
         return title.isEmpty ? (chat ? "New chat" : "New conversation") : title
+    }
+}
+
+// MARK: - The web switch
+
+/// The chat's web switch, by its message field (#287): whether the assistant may search the web and read pages. A new
+/// chat starts as Settings › Chat says; the switch is the chat's own and counts from its next message.
+struct ChatWebSwitch: View {
+    let engine: EngineClient
+    let id: Int
+    let on: Bool
+
+    var body: some View {
+        Button {
+            engine.perform("conversation.configure", ["id": id, "web": !on])
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: on ? "globe" : "network.slash")
+                Text(on ? "Web" : "Web off")
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(on ? Theme.acc : Theme.tx2)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(on ? Theme.acc.opacity(0.12) : Theme.card, in: .rect(cornerRadius: 7))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(engine.status != .connected)
+        .help(on ? "The assistant can search the web and read pages in this chat. Click to turn the web off for this chat, from your next message." : "The web is off for this chat: the assistant answers from what it knows. Click to let it search the web and read pages again, from your next message.")
+        .accessibilityLabel("Web")
+        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// Above a chat's message field while its web switch is off, so the person knows why an answer reads no pages.
+struct ChatWebOffNote: View {
+    var body: some View {
+        Label("The web is off for this chat. Answers come from what the model already knows.", systemImage: "network.slash")
+            .font(.system(size: 11.5))
+            .foregroundStyle(Theme.tx3)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("chat-web-off")
     }
 }
 

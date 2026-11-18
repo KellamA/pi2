@@ -77,6 +77,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var chat: Bool? = nil
     /// A chat kept at the top of chat mode's sidebar.
     var pinned: Bool? = nil
+    /// An agent's conversation a chat was continued in (Continue with an Agent, ChatContinue.swift): that chat.
+    var continuedFrom: Int? = nil
+    /// A chat continued with an agent: the conversations it went on in, oldest first.
+    var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
     var allowEverything: Bool? = nil
 }
@@ -747,6 +751,9 @@ struct ConversationState: Codable, Equatable {
     let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
     var chat: Bool? = nil
+    /// A chat's web switch (#287): whether its next message may search the web and read pages. Nil for any other
+    /// conversation, and from an engine older than the switch.
+    var web: Bool? = nil
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
     var messageWaits: MessageWaits? = nil

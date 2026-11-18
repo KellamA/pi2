@@ -507,7 +507,7 @@ try {
 	assert.equal(conv.state.failure?.reason, "model_error");
 	assert.match(conv.state.failure!.detail!, /the longest it waits by itself when the provider names no time\. Continue the conversation to try again\.$/);
 	assert.equal(requests["never answers"], 2, "asked once more, then gave up");
-	assert.match(log, new RegExp(`conversation ${never} gave up waiting: pi² waited .* for Stand-in's rate limit`));
+	await client.until("giving up logged", () => new RegExp(`conversation ${never} gave up waiting: pi² waited .* for Stand-in's rate limit`).test(log));
 	step("a run that has waited as long as it waits by itself ends, and its error says why and how to carry on");
 	console.log("PASS");
 } finally {
