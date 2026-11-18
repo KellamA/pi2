@@ -281,7 +281,7 @@ try {
 	assert.equal((first.result.text + read.text).split("early\n").length, 2, `what it printed is given once: ${first.result.text} / ${read.text}`);
 	read = await client.background(a, { action: "read", id: "bg-1" });
 	assert.equal(read.isError, false);
-	assert.match(read.text, /^bg-1 \(`echo early; .*`\): running for \d+ seconds?\.\nNothing new since you last read it\.$/, read.text);
+	assert.match(read.text, /^bg-1 \(`echo early; .*`\): running for \d+ (?:seconds?|minutes?|hours?(?: \d+ minutes?)?)\.\nNothing new since you last read it\.$/, read.text);
 	assert.deepEqual({ ...read.details, command: "" }, { action: "read", id: "bg-1", command: "", status: "running" });
 	// A read that waits returns when the command prints, not when the wait is over: it waits as long as it may, and the
 	// command prints in a moment.
@@ -322,12 +322,12 @@ try {
 	assert.equal(client.running().length, 1, "a command that only sleeps is not moved to the background");
 	const stopped = await client.background(a, { action: "stop", id: "bg-1" });
 	assert.equal(stopped.isError, false);
-	assert.match(stopped.text, /^Stopped bg-1 \(`echo early; .*`\) and everything it started, after \d+ seconds\.$/, stopped.text);
+	assert.match(stopped.text, /^Stopped bg-1 \(`echo early; .*`\) and everything it started, after \d+ (?:seconds?|minutes?|hours?(?: \d+ minutes?)?)\.$/, stopped.text);
 	assert.equal(stopped.details.status, "ended");
 	await client.until("stopped, with what it started", () => !alive(leader) && !alive(child));
 	await client.until("no longer listed", () => client.running().length === 0);
-	assert.match((await client.background(a, { action: "stop", id: "bg-1" })).text, /^bg-1 \(.*\) was already over: it was stopped by the agent after \d+ seconds\.$/);
-	assert.match((await client.background(a, { action: "read", id: "bg-1" })).text, /: was stopped by the agent after \d+ seconds\.\nNothing new since you last read it\.$/);
+	assert.match((await client.background(a, { action: "stop", id: "bg-1" })).text, /^bg-1 \(.*\) was already over: it was stopped by the agent after \d+ (?:seconds?|minutes?|hours?(?: \d+ minutes?)?)\.$/);
+	assert.match((await client.background(a, { action: "read", id: "bg-1" })).text, /: was stopped by the agent after \d+ (?:seconds?|minutes?|hours?(?: \d+ minutes?)?)\.\nNothing new since you last read it\.$/);
 	// A wait is kept under the five minutes the prompt cache lasts (#159); one asked for longer is lowered, and the result says so.
 	assert.ok(MAX_WAIT_SECONDS < 300, `the longest wait, ${MAX_WAIT_SECONDS} seconds, is under five minutes`);
 	const lowered = await client.background(a, { action: "read", id: "bg-1", wait: 600 });
@@ -345,9 +345,9 @@ try {
 		const { bg } = await client.start(a, cmd);
 		const pids = [await pidIn(leaderPid), await pidIn(childPid)];
 		const answer = await client.background(a, { action: "stop", id: bg });
-		assert.match(answer.text, new RegExp(`^Stopped ${bg} \\(.*\\) and everything it started, after \\d+ seconds?\\.`), answer.text);
+		assert.match(answer.text, new RegExp(`^Stopped ${bg} \\(.*\\) and everything it started, after \\d+ (?:seconds?|minutes?|hours?(?: \\d+ minutes?)?)\\.`), answer.text);
 		await client.until("stopped, with what outlived it", () => pids.every((pid) => !alive(pid)));
-		const again = new RegExp(`^${bg} \\(.*\\) was already over: it was stopped by the agent after \\d+ seconds?\\.$`);
+		const again = new RegExp(`^${bg} \\(.*\\) was already over: it was stopped by the agent after \\d+ (?:seconds?|minutes?|hours?(?: \\d+ minutes?)?)\\.$`);
 		assert.match((await client.background(a, { action: "stop", id: bg })).text, again);
 		assert.match(await client.told(a), new RegExp(`- ${bg}: .* is over: it was stopped by the agent, at \\d\\d:\\d\\d\\.`));
 		assert.deepEqual(client.markers(a), [], "still no line of its own");
@@ -386,7 +386,7 @@ try {
 		// The answer that ran it is over (`tool` waits for it), and it is still running.
 		assert.ok(pids.every(alive) && client.running().some((each) => each.id === id), "it outlives its answer");
 		const stopped = await client.background(a, { action: "stop", id });
-		assert.match(stopped.text, new RegExp(`^Stopped ${id} \\(.*\\) and everything it started, after \\d+ seconds?\\.$`), stopped.text);
+		assert.match(stopped.text, new RegExp(`^Stopped ${id} \\(.*\\) and everything it started, after \\d+ (?:seconds?|minutes?|hours?(?: \\d+ minutes?)?)\\.$`), stopped.text);
 		await client.until("stopped, with what it started", () => pids.every((pid) => !alive(pid)));
 		await logs(`background command ${id} of conversation ${a} reached its time limit in the foreground and was moved to the background`);
 		step("a command that reaches its time limit in the foreground is moved to the background: an id, its output so far and on, listed, told to the agent, outliving its answer, stopped like any other");
@@ -407,7 +407,7 @@ try {
 	assert.ok(!client.markers(a).some((text) => text.includes(`${quick.bg} `) || text.includes(`${fine.bg} `)), "an end the call that started the command saw is in that call's row, not in a line of its own");
 	told = await client.told(a);
 	assert.ok(told.includes(`- ${later.bg}: \`sleep 2; echo done-late; exit 4\` is over: it exited with code 4, at `), `the agent is told at its next request: ${told}`);
-	assert.match((await client.background(a, { action: "read", id: later.bg })).text, /: exited with code 4 after \d+ seconds\.\ndone-late\n$/);
+	assert.match((await client.background(a, { action: "read", id: later.bg })).text, /: exited with code 4 after \d+ (?:seconds?|minutes?|hours?(?: \d+ minutes?)?)\.\ndone-late\n$/);
 	const exported = (await client.call("conversation.export", { id: a, format: "markdown" })).text as string;
 	assert.ok(exported.includes(`*${marker}*`), "an export has the line too");
 	// What a command leaves running when its own process ends is stopped with it.
@@ -523,7 +523,7 @@ try {
 		assert.equal(after.output, "one\ntwo\n", "an ended command's output can still be read");
 		assert.equal(after.running, false);
 		assert.equal(after.ended.failed, false, "stopped is not failed");
-		assert.match(after.ended.how, /^was stopped by the person after \d+ seconds?$/, after.ended.how);
+		assert.match(after.ended.how, /^was stopped by the person after \d+ (?:seconds?|minutes?|hours?(?: \d+ minutes?)?)$/, after.ended.how);
 		await assert.rejects(client.call("background.output", { id: "bg-9999" }), /no longer has this command's output/);
 		await assert.rejects(client.call("background.output", {}), /no longer has this command's output/);
 		step("the person can read a command's output from any point, waiting for more, without changing what the agent has read");
