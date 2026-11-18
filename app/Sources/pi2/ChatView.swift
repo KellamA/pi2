@@ -6,6 +6,9 @@ import WebKit
 struct ChatView: View {
     let engine: EngineClient
     let id: Int
+    /// Shown in chat mode (ChatMode.swift): one centred column, no agent, and while it is empty the message field in the
+    /// middle with a few ways to begin.
+    var chat = false
     /// Whether this is the conversation with the person's attention: the only one, or the focused one of several
     /// panes. Only that one takes the keyboard and ⌘Return.
     var active = true
@@ -31,17 +34,62 @@ struct ChatView: View {
     private var archived: Bool { state?.archived == true || engine.archived.contains { $0.id == id } }
     /// The room either side, less in a pane.
     private var inset: CGFloat { inSplitPane ? 12 : 28 }
+    private var isChat: Bool { chat || engine.isChat(id) }
+    private var isEmpty: Bool { state != nil && data.items.isEmpty && !busy && state?.partial == nil }
 
     var body: some View {
         VStack(spacing: 0) {
-            if let state, data.items.isEmpty, !busy, state.partial == nil {
-                AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions, projectInstructionFiles: state.projectInstructionFiles)
-                    // In a short pane the introduction gives way, so the message field stays in view.
-                    .frame(minHeight: 0)
-                    .clipped()
+            if isChat, isEmpty, !archived {
+                ChatStart(pick: start) { composer }
             } else {
-                ConversationTranscript(engine: engine, conversationID: id, items: data.items, state: state)
+                conversation
             }
+        }
+        .background(Theme.window)
+        // Files and pictures dropped anywhere on the conversation are attached to the draft.
+        .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
+            attachments.add(dropped: providers)
+            composerFocused = true
+            return true
+        }
+        .overlay { if dropTargeted { DropHighlight() } }
+        // The window's title and toolbar are WorkspaceView's: they follow whichever conversation is active.
+        .onAppear {
+            engine.openConversation(id)
+            if active { composerFocused = true }
+        }
+        .onChange(of: focusRequest) { if active { composerFocused = true } }
+        // Moving to another pane takes the keyboard along, so typing never goes to a pane the person has left. A click
+        // on the conversation page leaves the keyboard with the page, where it can copy what was selected.
+        .onChange(of: active) { _, active in
+            if !active {
+                composerFocused = false
+            } else if !Self.pageHasKeyboard {
+                composerFocused = true
+            }
+        }
+        .onChange(of: composerFocused) { _, focused in if focused && !active { onFocus() } }
+    }
+
+    /// A way to begin an empty chat, put in the message field to finish or send.
+    private func start(_ starter: ChatStarter) {
+        draft = starter.text
+        if starter.attaches { attachments.chooseFiles() }
+        composerFocused = true
+    }
+
+    /// The transcript, what is going on, and the message field. A chat keeps them in one column.
+    @ViewBuilder
+    private var conversation: some View {
+        if !isChat, let state, isEmpty {
+            AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions, projectInstructionFiles: state.projectInstructionFiles)
+                // In a short pane the introduction gives way, so the message field stays in view.
+                .frame(minHeight: 0)
+                .clipped()
+        } else {
+            ConversationTranscript(engine: engine, conversationID: id, items: data.items, state: state)
+        }
+        VStack(spacing: 0) {
             // A subagent of this conversation is waiting on the person.
             ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in
                 InboxCard(engine: engine, item: item, showsSource: true)
@@ -86,30 +134,7 @@ struct ChatView: View {
                 composer
             }
         }
-        .background(Theme.window)
-        // Files and pictures dropped anywhere on the conversation are attached to the draft.
-        .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
-            attachments.add(dropped: providers)
-            composerFocused = true
-            return true
-        }
-        .overlay { if dropTargeted { DropHighlight() } }
-        // The window's title and toolbar are WorkspaceView's: they follow whichever conversation is active.
-        .onAppear {
-            engine.openConversation(id)
-            if active { composerFocused = true }
-        }
-        .onChange(of: focusRequest) { if active { composerFocused = true } }
-        // Moving to another pane takes the keyboard along, so typing never goes to a pane the person has left. A click
-        // on the conversation page leaves the keyboard with the page, where it can copy what was selected.
-        .onChange(of: active) { _, active in
-            if !active {
-                composerFocused = false
-            } else if !Self.pageHasKeyboard {
-                composerFocused = true
-            }
-        }
-        .onChange(of: composerFocused) { _, focused in if focused && !active { onFocus() } }
+        .frame(maxWidth: isChat ? ChatColumn.width : .infinity)
     }
 
     /// Whether a conversation page (a web view) has the keyboard in the key window.
@@ -132,7 +157,7 @@ struct ChatView: View {
                 Button("Restore") { engine.perform("conversation.unarchive", ["id": root]) }
                     .buttonStyle(.piPrimary)
             } else {
-                Text(state?.agent.parent == nil ? "This conversation is archived. You can read it; restore it to carry on." : "This sub-chat is archived. You can read it; restore it to carry on.").foregroundStyle(Theme.tx2)
+                Text(isChat ? "This chat is archived. You can read it; restore it to carry on." : state?.agent.parent == nil ? "This conversation is archived. You can read it; restore it to carry on." : "This sub-chat is archived. You can read it; restore it to carry on.").foregroundStyle(Theme.tx2)
                 Spacer()
                 Button("Restore") { engine.perform("conversation.unarchive", ["id": id]) }
                     .buttonStyle(.piPrimary)
@@ -203,6 +228,9 @@ struct ChatView: View {
         return parent == nil ? "Message \(agentName)…" : "Message \(agentName) directly…"
     }
 
+    /// A chat's message field: no agent to name, and a message written during an answer waits for it to finish.
+    private var chatPlaceholder: String { busy ? "Write your next message…" : "Ask anything" }
+
     /// The conversation's model, when it is known not to take pictures.
     private var blindModel: String? {
         guard let ref = state?.agent.model, let model = engine.allModels.first(where: { $0.ref == ref }), model.vision == false else { return nil }
@@ -212,7 +240,8 @@ struct ChatView: View {
     /// While the agent works: what happens to a message sent now, so the person knows before sending (heed.ts).
     @ViewBuilder
     private var arrival: some View {
-        if busy, let waits = state?.messageWaits {
+        // A chat's messages are always queued, and its line would only say so.
+        if busy, !isChat, let waits = state?.messageWaits {
             Text(waits.sentence(agent: engine.agent(state?.agent.agentId)?.name ?? "The agent", steer: steer))
                 .font(.system(size: 11.5))
                 .foregroundStyle(Theme.tx3)
@@ -226,7 +255,7 @@ struct ChatView: View {
         VStack(alignment: .leading, spacing: 10) {
             AttachmentStrip(attachments: attachments, blindModel: blindModel)
             arrival
-            TextField(placeholder, text: $draft, axis: .vertical)
+            TextField(isChat ? chatPlaceholder : placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
                 .lineLimit(1...10)
@@ -247,7 +276,7 @@ struct ChatView: View {
                 .foregroundStyle(Theme.tx2)
                 .help("Attach pictures or files. You can also paste them, or drop them on the conversation.")
                 .accessibilityLabel("Attach Files")
-                if let agent = engine.agent(state?.agent.agentId) {
+                if !isChat, let agent = engine.agent(state?.agent.agentId) {
                     HStack(spacing: 6) {
                         AgentAvatar(agent: agent, size: 16)
                         Text(agent.name).foregroundStyle(Theme.tx2)
@@ -259,10 +288,10 @@ struct ChatView: View {
                 }
                 Spacer()
                 if busy {
-                    SteerQueuePicker(steer: $steer)
+                    if !isChat { SteerQueuePicker(steer: $steer) }
                     Button("Stop", systemImage: "stop.fill") { engine.perform("abort", ["id": id]) }
                         .buttonStyle(.piDanger)
-                        .help("Stop the run and everything it started (⌘.)")
+                        .help(isChat ? "Stop the answer (⌘.)" : "Stop the run and everything it started (⌘.)")
                 }
                 Button { send() } label: {
                     Image(systemName: "arrow.up")
@@ -295,7 +324,8 @@ struct ChatView: View {
         guard canSend else { return }
         let text = draft
         let carried = attachments.takeReady()
-        let steering = busy && steer
+        // A chat has no work to steer: a message sent during an answer is answered after it.
+        let steering = busy && steer && !isChat
         draft = ""
         Task {
             // A refused message goes back in the box, with what it carried, rather than being lost.

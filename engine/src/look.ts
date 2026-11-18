@@ -708,11 +708,20 @@ export async function webSearch(query: string, context: Pick<Context, "abortSign
 	if (query.trim() === "") return { text: "web_search needs `query`.", isError: true };
 	const page = await fetchPage(searchAddress(query), context);
 	if ("refused" in page) return { text: `${page.refused} ${SEARCH_FAILED}`, isError: true };
+	return describeSearch(page, query);
+}
+
+/** Keep an explicitly empty search distinct from a page the reader could not understand. */
+export function describeSearch(page: Fetched, query: string): { text: string; isError?: boolean } {
 	const html = decodeBody(page.body, page.type);
 	const results = parseSearchResults(html);
 	if (results.length === 0) {
+		const advice = "Try fewer words or remove quotes. For source code, try `gh search code`.";
+		// Match the page's marker, not words in the echoed query (which can itself contain "captcha").
+		const empty = /class\s*=\s*["'][^"']*\bno-results(?:__message)?\b[^"']*["']/i.test(html);
+		if (page.status === 200 && empty) return { text: `No results found for "${query.slice(0, 100)}". ${advice}`, isError: true };
 		const check = page.status !== 200 || /anomaly|captcha|unusual traffic|are you a human/i.test(html);
-		return { text: check ? `The search engine answered with a check instead of results (status ${page.status}). ${SEARCH_FAILED}` : `No results could be read for "${query.slice(0, 100)}". The search page may have changed, or nothing matched. ${SEARCH_FAILED}`, isError: true };
+		return { text: check ? `The search engine answered with a check instead of results (status ${page.status}). ${SEARCH_FAILED}` : `No results could be read for "${query.slice(0, 100)}". The search page may have changed. ${advice} ${SEARCH_FAILED}`, isError: true };
 	}
 	const out = [`Results for "${query.trim().slice(0, 100)}":`];
 	results.slice(0, 10).forEach((result, i) => {

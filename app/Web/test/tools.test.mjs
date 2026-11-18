@@ -29,6 +29,12 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("write_document", {}), "Wrote a document");
 	assert.equal(line("read_reference", { path: "/refs/style.md" }), "Read reference style.md");
 	assert.equal(line("codemode", { code: "1+1" }), "Ran a script");
+	assert.equal(line("run_code", { code: "return 1+1" }), "Worked it out with code");
+	assert.equal(line("run_code", { code: "return 1+1" }, "running"), "Working it out with code…");
+	assert.deepEqual(T.detailFor(call("run_code", { code: "return 1+1" }), "done", { text: "Returned: 2" }, null), [
+		{ kind: "text", label: "Program", text: "return 1+1", language: "js" },
+		{ kind: "text", label: "What it printed", text: "Returned: 2", failed: false },
+	]);
 	assert.equal(line("update_plan", { items: [] }), "Updated the task list");
 	assert.equal(line("ask_user", { question: "Which one?" }), "Asked “Which one?”");
 	assert.equal(line("web_search", { query: "swift 6" }, "running"), "Searching the web for “swift 6”…");

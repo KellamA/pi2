@@ -73,6 +73,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let createdAt: Double?
     /// Set for a sub-chat: the conversation whose agent opened it.
     let parent: Int?
+    /// A chat with pi²'s own assistant, shown in chat mode only (ChatMode.swift), rather than an agent's conversation.
+    var chat: Bool? = nil
+    /// A chat kept at the top of chat mode's sidebar.
+    var pinned: Bool? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
@@ -129,6 +133,8 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
     /// For a sub-chat its conversation's agent archived on its own: that conversation, which stays in the sidebar.
     let parent: Int?
     let parentTitle: String?
+    /// An archived chat with pi²'s own assistant.
+    var chat: Bool? = nil
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {
@@ -292,6 +298,8 @@ struct BuiltInTool: Codable, Equatable, Identifiable {
     /// Where it is offered at all: "files" (any access but none), "changes" (Ask first or Full access), "browser" (the
     /// browser on); nil for anywhere.
     let needs: String?
+    /// Off unless the agent turns it on (`toolsOn`), rather than on unless it leaves it out (`toolsOff`).
+    let offByDefault: Bool?
     var id: String { key }
 }
 
@@ -348,6 +356,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var schedule: ScheduleSettings?
     /// Keys of the built-in tools it is not offered, in the engine's order. Nil or empty: all of them.
     var toolsOff: [String]?
+    /// Keys of the built-in tools off by default that it is offered, in the engine's order. Nil or empty: none of them.
+    var toolsOn: [String]?
     /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
     var commandRules: [CommandRule]?
     /// Variables its commands get. Changed through their own requests, never by saving the agent.
@@ -376,6 +386,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "browser": ["enabled": browser?.enabled ?? false, "ask": browser?.ask ?? true],
             "schedule": ["enabled": schedule?.enabled ?? false],
             "toolsOff": toolsOff ?? [],
+            "toolsOn": toolsOn ?? [],
         ]
     }
 
@@ -407,6 +418,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
         agent.browser = browser ?? BrowserSettings()
         agent.schedule = schedule ?? ScheduleSettings()
         agent.toolsOff = toolsOff ?? []
+        agent.toolsOn = toolsOn ?? []
         agent.commandRules = nil
         agent.variables = nil
         return agent
@@ -507,6 +519,8 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     let limit: LimitWait?
     /// Its shell commands running in the foreground, oldest first, with their clocks (#196). Absent from an older engine.
     var commands: [RunningCommand]?
+    /// A chat answering, rather than an agent's work (docs/chat.md).
+    var chat: Bool?
     var id: Int { conversationId }
 }
 
@@ -673,9 +687,11 @@ struct ConversationState: Codable, Equatable {
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
     let setup: LiveSetup?
+    /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
+    var chat: Bool? = nil
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
-    let messageWaits: MessageWaits?
+    var messageWaits: MessageWaits? = nil
 }
 
 /// What a message sent to steer a working agent waits for (engine/src/heed.ts): `holds`, the calls it comes after, such
@@ -860,6 +876,8 @@ struct SearchResult: Codable, Equatable, Identifiable {
     let snippet: String
     /// Found in an archived conversation.
     let archived: Bool?
+    /// Found in a chat rather than an agent's conversation.
+    var chat: Bool? = nil
     var id: Int { entryId }
 }
 

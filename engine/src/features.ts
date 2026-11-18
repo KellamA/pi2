@@ -25,6 +25,7 @@ import { look } from "./look.ts";
 import { order } from "./order.ts";
 import { plan } from "./plan.ts";
 import { reads } from "./reading.ts";
+import { runCode } from "./runcode.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
 import { variables } from "./variables.ts";
@@ -122,6 +123,7 @@ export const FEATURES: Feature[] = [
 	knowledge,
 	look,
 	documents,
+	runCode,
 	chat,
 	limits,
 	promptCache,
