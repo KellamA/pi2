@@ -15,6 +15,8 @@ struct LocalModelState: Codable, Equatable {
     let since: Double?
     /// How far loading has got, 0 to 1, when the engine says.
     let progress: Double?
+    /// What the engine says it is doing while it loads, in its own words ("mapping the experts").
+    let stage: String?
     /// Why it could not start, or why it stopped, when it failed.
     let error: String?
     /// The last lines of its log, when it failed.
@@ -31,7 +33,8 @@ struct LocalServer: Codable, Equatable, Identifiable {
     let startedAt: Double
     let readyAt: Double?
     let progress: Double?
-    /// Bytes its processes hold in memory, at the engine's last look.
+    let stage: String?
+    /// Bytes its processes hold in memory, at the engine's last look: its own and those it started.
     let memory: Double?
     let pid: Int?
     /// The conversations using it.
@@ -52,7 +55,7 @@ enum LocalModels {
     /// "loaded since 14:05", "loading, 40%": a running model's state in a few words.
     static func standing(_ server: LocalServer) -> String {
         switch server.status {
-        case "starting": server.progress.map { "loading, \(Int(($0 * 100).rounded()))%" } ?? "loading"
+        case "starting": server.progress.map { "loading, \(Int(($0 * 100).rounded()))%" } ?? server.stage.map { "loading: \($0)" } ?? "loading"
         case "stopping": "stopping"
         default: "loaded since \(Date(timeIntervalSince1970: (server.readyAt ?? server.startedAt) / 1000).formatted(date: .omitted, time: .shortened))"
         }
@@ -116,7 +119,8 @@ struct LocalModelStrip: View {
         switch state.status {
         case "starting":
             let percent = state.progress.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
-            return "Starting \(state.name) on this Mac\(percent). A message sent now is answered once it has loaded."
+            let stage = state.stage.map { ": \($0)" } ?? ""
+            return "Starting \(state.name) on this Mac\(percent)\(stage). A message sent now is answered once it has loaded."
         case "stopping": return "Stopping \(state.name)…"
         case "failed": return "\(state.name) could not run on this Mac: \(state.error ?? "it stopped unexpectedly"). Your next message tries again."
         case "stopped" where state.since != nil: return "\(state.name) is not loaded. Your next message starts it on this Mac."

@@ -20,7 +20,7 @@ export type LocalModel = {
 	/** Strata's run config for the model, which its installer writes once the model is prepared (#290); absent until then. */
 	config?: string;
 	/** Settings of the engine for this model. Keys pi² does not know are kept and ignored. */
-	options: { vision?: boolean; visionFile?: string | null; parallel?: number; tools?: boolean; [key: string]: unknown };
+	options: { vision?: boolean; visionFile?: string | null; parallel?: number; reasoning?: boolean; [key: string]: unknown };
 };
 
 /**
@@ -113,6 +113,8 @@ export type EngineRecipe = {
 	readyPath: string;
 	/** How far loading has got, from 0 to 1, from one line the engine printed; undefined when the line does not say. */
 	progress(line: string): number | undefined;
+	/** What the engine is doing while it loads, in its own words, from one line it printed; undefined when the line does not say. */
+	stage?(line: string): string | undefined;
 };
 
 /**
@@ -131,11 +133,10 @@ export function strataEnvironment(home: string): Record<string, string> {
  * `strata` executable itself, with the run config Strata's installer writes for a prepared model (`config`). A model
  * without one, or an engine without its control package, is started with the executable's own flags, as the stand-in
  * the tests use is. To check:
- * - the server's flags besides `--engine` and `--config` (address and port), and the executable's own;
- * - that it reads a key from the environment, and under which name (its setup takes `--api-key`, which would put it
- *   where every process can read it: rather none than that);
- * - that `/v1/models` answers 200 only once the model is loaded;
- * - what it prints while loading, and whether that says how far it has got.
+ * - the executable's own flags, for a model with no run config (the server's, `--engine`, `--config`, `--host` and
+ *   `--port`, and the key in `STRATA_API_KEY`, are as #290 ran it);
+ * - whether the executable alone reads the key from the environment as the server does;
+ * - that `/v1/models` answers 200 once the model is loaded (#290: the server does not listen at all until then).
  */
 export const STRATA: EngineRecipe = {
 	name: "Strata",
@@ -167,6 +168,7 @@ export const STRATA: EngineRecipe = {
 			],
 		};
 	},
+	// Read from there, as #290 saw.
 	keyVariable: "STRATA_API_KEY",
 	apiPath: "/v1",
 	readyPath: "/v1/models",
@@ -177,5 +179,11 @@ export const STRATA: EngineRecipe = {
 		if (found === undefined) return undefined;
 		const value = Number(found[1]) / 100;
 		return value >= 0 && value <= 1 ? value : undefined;
+	},
+	// It says what it is doing in lines of its own while it loads, with no percentage (#290): "[strata] mapping the experts …".
+	stage: (line) => {
+		const said = /^\[strata\]\s+(.*\S)/.exec(line.trim())?.[1]?.replace(/\s*(\.\.\.|…)$/, "");
+		if (said === undefined || said === "" || /^ready\b/i.test(said)) return undefined;
+		return said.length > 120 ? `${said.slice(0, 119)}…` : said;
 	},
 };

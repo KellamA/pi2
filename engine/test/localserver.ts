@@ -5,10 +5,11 @@
 //
 //   { "gate": "<path>" }     loading ends once that file exists, so a test decides when it is loaded; else at once
 //   { "fail": "<words>" }    it prints them and exits 1 while loading, as an engine that cannot load the model does
-//   { "child": true }        it starts a program of its own that stays in its process group, as a worker would
+//   { "child": true }        it starts a program of its own in a process group of its own, as Strata's server starts
+//                            its engine (#290), which a signal to the stand-in's group does not reach
 //   { "ignoreTerm": true }   it ignores SIGTERM, so only SIGKILL ends it
 //
-// While loading it prints "loading model … N%" and answers 503; once loaded, `GET /v1/models` lists the model and
+// While loading it prints "loading model … N%" and "[strata] mapping the experts ...", as Strata does, and answers 503; once loaded, `GET /v1/models` lists the model and
 // `POST /v1/chat/completions` answers "You said: <the last message>". A message holding "/crash" makes it exit
 // mid-answer, once per model file (a `.crashed` file beside it remembers). One holding "/hold <path>" is answered in
 // part, and finished once that file exists. When the engine gave it a key (STRATA_API_KEY), a request without it is
@@ -35,7 +36,7 @@ writeFileSync(`${modelPath}.pid`, String(process.pid));
 writeFileSync(`${modelPath}.args`, JSON.stringify(args));
 if (behaviour.ignoreTerm === true) process.on("SIGTERM", () => console.log("SIGTERM ignored"));
 if (behaviour.child === true) {
-	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)"], { stdio: "ignore" });
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)"], { stdio: "ignore", detached: true });
 	writeFileSync(`${modelPath}.child`, String(child.pid));
 }
 
@@ -57,7 +58,10 @@ const loading = setInterval(() => {
 		console.log("model loaded; ready");
 		loaded = true;
 		clearInterval(loading);
-	} else console.log("loading model … 40%");
+	} else {
+		console.log("loading model … 40%");
+		console.log("[strata] mapping the experts ...");
+	}
 }, 50);
 
 function refuse(response: ServerResponse, status: number, message: string): void {

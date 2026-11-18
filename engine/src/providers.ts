@@ -529,6 +529,7 @@ function localProvider(runner: () => LocalRunner | undefined): Provider {
 			const stamp = JSON.stringify(entry);
 			const known = built.get(entry.id);
 			if (known?.stamp === stamp) return known.model;
+			const thinks = entry.options.reasoning !== false;
 			const model = {
 				id: entry.id,
 				name: entry.name,
@@ -536,12 +537,15 @@ function localProvider(runner: () => LocalRunner | undefined): Provider {
 				provider: LOCAL_PROVIDER,
 				// Where it runs is known only once it is started: a lease gives it.
 				baseUrl: "http://127.0.0.1",
-				reasoning: false,
+				// Qwen3.8-Flash-Next thinks, and Strata takes `reasoning_effort` none, low, medium, high and xhigh, minimal
+				// being none to it (#290). `options.reasoning: false` says a model does not.
+				reasoning: thinks,
+				...(thinks ? { thinkingLevelMap: { off: "none", minimal: null, xhigh: "xhigh" } } : {}),
 				input: entry.options.vision === true ? ["text", "image"] : ["text"],
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: entry.contextSize,
 				maxTokens: Math.min(16_384, Math.floor(entry.contextSize / 4)),
-				compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, supportsLongCacheRetention: false },
+				compat: { supportsDeveloperRole: false, supportsReasoningEffort: thinks, supportsLongCacheRetention: false },
 			} as Model<"openai-completions">;
 			built.set(entry.id, { stamp, model });
 			return model;

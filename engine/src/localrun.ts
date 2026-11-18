@@ -64,6 +64,8 @@ type Server = {
 	readyAt?: number;
 	/** How far loading has got, 0 to 1, when the engine says. */
 	progress?: number;
+	/** What the engine last said it is doing while it loads ("mapping the experts"), when it says. */
+	stage?: string;
 	port: number;
 	key: string;
 	log: string;
@@ -87,10 +89,18 @@ type Server = {
 	/** When it stops for want of anyone using it, while that is counting down. */
 	stopsAt?: number;
 	timer?: ReturnType<typeof setTimeout>;
-	/** Bytes its process group holds in memory, at the last look. */
+	/** Bytes its processes hold in memory, at the last look: its own and those it started, in whatever group. */
 	memory?: number;
+	/**
+	 * What it started, at any depth and in any process group, at the last look: Strata's server starts the engine in a
+	 * group of its own (#290), which a signal to the server's group does not reach. Whatever of it is still the same
+	 * process once the server has gone is ended with it.
+	 */
+	family: [number, Listed][];
 	/** Its process is on record, for the next engine should this one die. */
 	recorded?: boolean;
+	/** The look at its family taken as its stop began. */
+	listed?: Promise<void>;
 };
 
 /** How a model's last server ended, for the conversation and Settings to say. */
@@ -157,19 +167,60 @@ function lastLines(path: string, count = 6): string[] {
 	}
 }
 
-/** Bytes held in memory by the processes of `group`, by what `ps` says each has resident. */
-function memoryOf(group: number): Promise<number | undefined> {
-	return new Promise((resolve) => {
-		execFile("/bin/ps", ["-A", "-o", "pgid=,rss="], { timeout: 10_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } }, (error, stdout) => {
-			if (error) return resolve(undefined);
-			let kilobytes = 0;
+/** A process as `ps` lists it here: its parent, group, resident memory in KB and start, as `processes()` reads it. */
+type Row = { ppid: number; group: number; rss: number; start: string };
+
+/** Every process, by pid, from one reading of `ps`. Those that have ended and wait only to be reaped are left out. */
+function table(): Promise<Map<number, Row>> {
+	return new Promise((resolve, reject) => {
+		execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid=,rss=,stat=,lstart="], { timeout: 10_000, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
+			if (error) return reject(error);
+			const rows = new Map<number, Row>();
 			for (const line of String(stdout).split("\n")) {
-				const [pgid, rss] = line.trim().split(/\s+/).map(Number);
-				if (pgid === group && Number.isFinite(rss)) kilobytes += rss!;
+				const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line);
+				if (match && !match[5]!.startsWith("Z")) rows.set(Number(match[1]), { ppid: Number(match[2]), group: Number(match[3]), rss: Number(match[4]), start: match[6]!.replace(/\s+/g, " ") });
 			}
-			resolve(kilobytes * 1024);
+			resolve(rows);
 		});
 	});
+}
+
+/**
+ * The processes `root` started, and those they started, whatever their group, from one listing: a process's parent is
+ * the one that started it, or launchd's once that has ended, so what an ended process started is no longer found here.
+ */
+function descendants(rows: Map<number, Row>, root: number): [number, Listed][] {
+	const children = new Map<number, number[]>();
+	for (const [pid, row] of rows) {
+		if (!children.has(row.ppid)) children.set(row.ppid, []);
+		children.get(row.ppid)!.push(pid);
+	}
+	const found: [number, Listed][] = [];
+	const queue = [...(children.get(root) ?? [])];
+	while (queue.length > 0) {
+		const pid = queue.shift()!;
+		const row = rows.get(pid)!;
+		if (!signallable(pid) || found.some(([seen]) => seen === pid)) continue;
+		found.push([pid, { group: row.group, start: row.start }]);
+		queue.push(...(children.get(pid) ?? []));
+	}
+	return found;
+}
+
+/** Look again at a server's family and memory, while its first process is known not to have been reaped. */
+async function look(server: Server): Promise<void> {
+	const pid = server.child?.pid;
+	if (pid === undefined || server.child?.exitCode !== null || server.child?.signalCode !== null) return;
+	const rows = await table().catch(() => undefined);
+	if (rows === undefined || !live.has(server) || server.child.exitCode !== null || server.child.signalCode !== null) return;
+	const family = descendants(rows, pid);
+	// Only the members still listed: one that ended since the last look is not ended again by its number.
+	server.family = [...new Map([...server.family.filter(([member]) => rows.has(member)), ...family]).entries()];
+	const memory = [pid, ...family.map(([member]) => member)].reduce((sum, member) => sum + (rows.get(member)?.rss ?? 0), 0) * 1024;
+	if (memory !== server.memory && server.status === "ready") {
+		server.memory = memory;
+		announce();
+	}
 }
 
 // ---- What the app is told
@@ -183,6 +234,7 @@ function describe(server: Server) {
 		startedAt: server.startedAt,
 		readyAt: server.readyAt ?? null,
 		progress: server.progress ?? null,
+		stage: server.stage ?? null,
 		memory: server.memory ?? null,
 		pid: server.child?.pid ?? null,
 		users: [...server.users].sort((a, b) => a - b),
@@ -206,11 +258,11 @@ function forConversation(modelId: string) {
 	const model = server?.model ?? readSetup().models.find((each) => each.id === modelId);
 	const name = model?.name ?? modelId;
 	if (server !== undefined) {
-		return { model: modelId, name, status: server.status, since: server.status === "ready" ? (server.readyAt ?? server.startedAt) : server.startedAt, progress: server.progress ?? null, error: null, lines: [], log: server.log };
+		return { model: modelId, name, status: server.status, since: server.status === "ready" ? (server.readyAt ?? server.startedAt) : server.startedAt, progress: server.progress ?? null, stage: server.stage ?? null, error: null, lines: [], log: server.log };
 	}
 	const end = ended.get(modelId);
-	if (end?.failed === true) return { model: modelId, name, status: "failed", since: end.at, progress: null, error: end.how, lines: end.lines, log: end.log };
-	return { model: modelId, name, status: "stopped", since: end?.at ?? null, progress: null, error: null, lines: [], log: end?.log ?? null };
+	if (end?.failed === true) return { model: modelId, name, status: "failed", since: end.at, progress: null, stage: null, error: end.how, lines: end.lines, log: end.log };
+	return { model: modelId, name, status: "stopped", since: end?.at ?? null, progress: null, stage: null, error: null, lines: [], log: end?.log ?? null };
 }
 
 let announced: ReturnType<typeof setTimeout> | undefined;
@@ -275,6 +327,7 @@ function start(modelId: string): Server {
 		abort: new AbortController(),
 		users: lastUsers.get(modelId) ?? new Set(),
 		requests: 0,
+		family: [],
 	};
 	server.ready.catch(() => {});
 	servers.set(modelId, server);
@@ -339,8 +392,10 @@ function start(modelId: string): Server {
 		});
 		child.once("exit", (code, signal) => {
 			const how = code !== null ? `exited with code ${code}` : `was ended by ${signal ?? "a signal"}`;
-			// What it left in its group goes with it.
+			// What it left in its group goes with it, and what it started in groups of their own, once it has had the
+			// moment it takes to end them itself.
 			if (signallable(child.pid)) void sweep(child.pid);
+			if (server.family.length > 0) killLater(server.family, STOP_GRACE_MS);
 			if (server.status === "starting") fail(`${recipe.name} ${how} before the model was loaded`);
 			else if (server.stopping === undefined) {
 				// It was ready and nobody stopped it: it crashed. The requests on it end on their own; the next one starts it again.
@@ -389,7 +444,13 @@ function start(modelId: string): Server {
 							server.progress = progress;
 							announceSoon();
 						}
+						const stage = recipe.stage?.(line);
+						if (stage !== undefined && stage !== server.stage) {
+							server.stage = stage;
+							announceSoon();
+						}
 					}
+					void look(server);
 				}
 			} catch {
 				// No log yet.
@@ -403,10 +464,11 @@ function start(modelId: string): Server {
 				server.status = "ready";
 				server.readyAt = Date.now();
 				server.progress = 1;
+				server.stage = undefined;
 				host.log(`${model.id} is ready on this Mac, after ${Math.round((server.readyAt - server.startedAt) / 1000)} s`);
 				markReady();
 				announce();
-				void watchMemory(server);
+				void watch(server);
 				break;
 			}
 			if (Date.now() - server.startedAt > LOAD_LIMIT_MS) {
@@ -465,8 +527,13 @@ function stop(server: Server, why: string, graceMs = STOP_GRACE_MS): Promise<voi
 			if (!ended.has(server.model.id)) ended.set(server.model.id, { at: Date.now(), how: why, failed: false, lines: [], log: server.log });
 			server.refuse(new Error(`${server.model.name} ${why} before it had loaded. A message to it starts it again.`));
 		}
+		// Its family as it is now, before the signal: what it started in groups of its own, which the signal does not reach.
+		server.listed = look(server);
 		signal(server, "SIGTERM");
-		const later = setTimeout(() => signal(server, "SIGKILL"), graceMs);
+		const later = setTimeout(() => {
+			signal(server, "SIGKILL");
+			void killRemaining(server.family);
+		}, graceMs);
 		later.unref();
 		void server.gone.then(() => clearTimeout(later));
 		announce();
@@ -474,15 +541,10 @@ function stop(server: Server, why: string, graceMs = STOP_GRACE_MS): Promise<voi
 	return server.gone;
 }
 
-/** Look at a ready server's memory now and then, while it runs. */
-async function watchMemory(server: Server): Promise<void> {
-	while (live.has(server) && server.child?.pid !== undefined) {
-		const memory = await memoryOf(server.child.pid);
-		if (!live.has(server)) return;
-		if (memory !== undefined && memory !== server.memory) {
-			server.memory = memory;
-			announce();
-		}
+/** Look at a ready server's family and memory now and then, while it runs. */
+async function watch(server: Server): Promise<void> {
+	while (live.has(server) && server.status === "ready") {
+		await look(server);
 		await new Promise((resolve) => setTimeout(resolve, MEMORY_MS).unref());
 	}
 }
@@ -633,7 +695,14 @@ export const localRun: Feature = (_host, running) => {
 			const doc = await running.harness().snapshot(LocalRuns, running.context());
 			const left: Left[] = JSON.parse(JSON.stringify(Object.values(doc?.running ?? {})));
 			for (const record of left) {
+				// What its first process started in groups of its own, from the moment that process is proved the same: the
+				// signal to its group does not reach them. Strata's server ends them itself when asked to, in a few seconds;
+				// whatever of them is still there, and still the same, after that is ended.
+				const rows = record.process === undefined ? undefined : await table().catch(() => undefined);
+				const leader = record.process === undefined ? undefined : rows?.get(record.process.group);
+				const family = rows !== undefined && leader !== undefined && leader.group === record.process!.group && leader.start === record.process!.start ? descendants(rows, record.process!.group) : [];
 				const found = record.process === undefined ? "unsure" : await stopLeftOver(record.process).catch(() => "unsure" as const);
+				if (family.length > 0) killLater(family, STOP_GRACE_MS);
 				running.log(`${record.model} on this Mac, left by the last engine,`, record.process === undefined ? "may still be running: its process had not been noted" : leftOverLog[found]);
 			}
 			if (left.length > 0) await save((stored) => void (stored.running = {}));
@@ -658,6 +727,9 @@ export const localRun: Feature = (_host, running) => {
 			const ends = Promise.all(all.map((server) => stop(server, "was stopped when pi²’s engine stopped", SHUTDOWN_GRACE_MS)));
 			await Promise.race([ends, new Promise((resolve) => setTimeout(resolve, SHUTDOWN_GRACE_MS).unref())]);
 			for (const server of all) signal(server, "SIGKILL");
+			// And what each started in groups of their own: Strata's engine, which its server would have ended had it had time.
+			await Promise.all(all.map((server) => server.listed));
+			await killRemaining(all.flatMap((server) => server.family));
 			const leaderless = new Set(all.filter((server) => server.child !== undefined && (server.child.exitCode !== null || server.child.signalCode !== null)).map((server) => server.child!.pid));
 			await killRemaining((await listing).filter(([, each]) => leaderless.has(each.group)));
 			// Nothing of them is left for the next engine to look for: their records go, so it does not report them.

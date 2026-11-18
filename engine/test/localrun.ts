@@ -32,6 +32,10 @@ assert.equal(STRATA.progress("loading model … 40%"), 0.4);
 assert.equal(STRATA.progress("Loading tensors: 12.5 % done"), 0.125);
 assert.equal(STRATA.progress("served 40% of requests"), undefined, "a percentage that is not about loading says nothing");
 assert.equal(STRATA.progress("loading the vocabulary"), undefined);
+assert.equal(STRATA.stage?.("[strata] starting the engine: reading the model's weights ..."), "starting the engine: reading the model's weights");
+assert.equal(STRATA.stage?.("[strata] mapping the experts …"), "mapping the experts");
+assert.equal(STRATA.stage?.("[strata] ready: http://127.0.0.1:4321/v1"), undefined, "being ready is not a stage of loading");
+assert.equal(STRATA.stage?.("some other line"), undefined);
 step("how far loading has got is read from what the engine prints");
 {
 	// A prepared model is served by Strata's control package, with its run config, and Strata's own folders in pi²'s.
@@ -167,6 +171,7 @@ try {
 	const loading = await client.until("alpha starting", () => client.server("alpha"));
 	assert.equal(loading.status, "starting");
 	await client.until("the conversation says it is starting, and how far it has got", () => client.state(a).local.status === "starting" && client.state(a).local.progress === 0.4);
+	await client.until("and what the engine says it is doing", () => client.state(a).local.stage === "mapping the experts");
 	const alphaPid = note(await until("the stand-in's pid", () => existsSync(`${alpha}.pid`) && pidOf(alpha)));
 	await client.call("submit", { id: a, text: "hello while loading" });
 	await client.until("the message waits", () => client.state(a).busy === true);
@@ -254,6 +259,7 @@ try {
 	const betaPid = note(pidOf(beta));
 	const betaChild = note(pidOf(beta, ".child"));
 	await client.until("its process on record", () => client.server("beta")?.recorded === true);
+	assert.notEqual(Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(betaChild)], { encoding: "utf8" }).trim()), betaPid, "what it started is in a group of its own, as Strata's engine is");
 	await stop(engine, "SIGKILL");
 	assert.ok(alive(betaPid) && alive(betaChild), "an engine killed outright leaves it running for the moment");
 	engine = boot({ PI2_LOCAL_GRACE_SECONDS: "0" });
