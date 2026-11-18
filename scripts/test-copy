@@ -53,6 +53,10 @@ Usage: scripts/test-copy <command> [arguments]
   call <suffix> <method> [<json params>]
                                    Send one request to the copy's own engine socket and print its JSON response.
                                    Params default to {}. An engine error exits non-zero; this does not wait for a run.
+  send <suffix> <conversation> <text> [--timeout <seconds>]
+                                   Submit and wait for this message\'s run to finish (default 600 seconds, at most 600).
+                                   JSON status: done (exit 0), failed/error (1), waiting on the person (2), timeout
+                                   (124). Never answers approvals or stops work when its wait ends.
   stop <suffix>                    Stop the copy's app, then its engine, by the pids recorded at start, and remove the
                                    copy, its data folder, preferences, Keychain items, Launch Services registration
                                    and the files its browser leaves.
@@ -313,6 +317,14 @@ function run(argv) {
 JS
 }
 
+require_engine() {
+	load_state || die "no copy named $SUFFIX was started from this checkout"
+	follow_engine
+	is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
+	# Never follow a socket or data-folder symlink to another copy, and never use PI2_HOME or a socket override.
+	[[ ! -L $DATA && ! -L $DATA/engine.sock ]] || die "refusing a symlink for the copy's data folder or engine socket"
+}
+
 # Shared by start and reopen: the same clean environment and pid recording on every launch.
 launch_app() {
 	# A clean environment, so nothing the caller's shell has (PI2_HOME naming the usual data folder, above all)
@@ -507,11 +519,7 @@ case $cmd in
 		names "${1-}"; shift
 		[[ -n ${1-} && $# -le 2 ]] || die "use: scripts/test-copy call $SUFFIX <method> [<json params>]"
 		method=$1 params=${2-'{}'}
-		load_state || die "no copy named $SUFFIX was started from this checkout"
-		follow_engine
-		is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
-		# Never follow a socket or data-folder symlink to another copy, and never use PI2_HOME or a socket override.
-		[[ ! -L $DATA && ! -L $DATA/engine.sock ]] || die "refusing a symlink for the copy's data folder or engine socket"
+		require_engine
 		node --input-type=module - "$DATA/engine.sock" "$method" "$params" <<'JS'
 import { connect } from 'node:net';
 const [path, method, json] = process.argv.slice(2);
@@ -557,6 +565,19 @@ socket.setEncoding('utf8').on('data', chunk => {
 	} catch (error) { fail(`invalid engine response: ${error.message}`); }
 });
 JS
+		;;
+	send)
+		names "${1-}"; shift
+		(($# >= 2)) || die "use: scripts/test-copy send $SUFFIX <conversation> <text> [--timeout <seconds>]"
+		conversation=$1 message=$2 seconds=600; shift 2
+		while (($#)); do
+			case $1 in
+				--timeout) [[ -n ${2-} ]] || die "--timeout needs seconds"; seconds=$2; shift 2 ;;
+				*) die "unknown option $1" ;;
+			esac
+		done
+		require_engine
+		node "$ROOT/scripts/test-copy-send.mjs" "$DATA/engine.sock" "$conversation" "$message" "$seconds"
 		;;
 	stop)
 		names "${1-}"
