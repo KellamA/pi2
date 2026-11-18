@@ -11,8 +11,12 @@
 //   engine alone, without the desktop app), size and SHA-256 as GitHub lists them for that asset. The newest Metal
 //   engine is in that release, not the latest one.
 // - The control package (the server): release v0.2.15, asset strata-control-0.1.61-macos-arm64.tar.gz.
-// - The packs: Hugging Face's listing of each repository's files (size, and the SHA-256 of each large file).
-// - Memory: Strata's docs/MAC.md, "What you need" (the M5 Max with 128 GB they were measured on).
+// - The packs: Hugging Face's listing of each repository's files (size, and the SHA-256 of each large file) at the commit
+//   Strata 0.2.15's setup pins (its HF_REVISIONS), read again on 2026-11-18 (#342). Downloads ask for that commit, not
+//   `main`: a repository that replaces a file on `main` would otherwise fail every download until pi² was updated, as
+//   Unsloth's had by then.
+// - Memory: Strata's docs/MAC.md, "What you need" (the M5 Max with 128 GB they were measured on), checked against what
+//   IQ3_S held when pi² ran it (#293).
 
 /** A file to download, checked against `sha256` (lower-case hex) before it is used. */
 export type CatalogFile = { url: string; name: string; size: number; sha256: string };
@@ -24,6 +28,8 @@ export type Licence = {
 	url: string;
 	/** What it means for the person, in a sentence or two. Not a substitute for the text. */
 	summary: string;
+	/** A part of it the person must read before agreeing, quoted in full where they agree: its own words, unchanged. */
+	quote?: string;
 };
 
 export type CatalogEngine = {
@@ -61,6 +67,11 @@ export type CatalogPack = {
 	 * fetches itself (5.2 GB for the ISTA-DASLab packs, #290) and the pack folder. Counted in the disk check.
 	 */
 	prepareBytes: number;
+	/**
+	 * How Strata's setup names the model, to prepare it (`setup.py --family <family> --model <model>`), and the run
+	 * config it writes for it in the control package's folder. Null for a pack pi² cannot prepare.
+	 */
+	prepare: { family: string; model: string; config: string } | null;
 	licences: Licence[];
 	/** Why it cannot be installed yet, when it cannot. */
 	unavailable?: string;
@@ -78,28 +89,43 @@ export type Catalog = {
 const GITHUB = "https://github.com/Niko1221/Strata";
 const ISTA = "https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF";
 const UNSLOTH = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF";
+/** The commits Strata 0.2.15's setup pins (setup.py, HF_REVISIONS), whose files the checksums below are of (#342). */
+const ISTA_FILES = `${ISTA}/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09`;
+const UNSLOTH_FILES = `${UNSLOTH}/resolve/38bb39ee97821de2c9009abb7e93950eec396e66`;
 
 const QWEN_LICENCE: Licence = {
 	name: "Qwen Community License 1.0",
 	url: "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE",
 	summary:
-		"The model's own licence, from Qwen. Free to use, copy and change, with no warranty. A business that offers models as a service, or an AI coding or office assistant, needs a separate licence from Qwen for commercial use; using it for your own work does not.",
+		"The model's own licence, from Qwen. Free to use, copy, change and run, with no warranty. Its second clause, quoted below, asks a business that offers models as a service, or an AI coding or office assistant, to get a separate licence from Qwen for commercial use.",
+	// Clause 2 and its two definitions, word for word from the licence's text on Hugging Face (read on 2026-11-18).
+	quote: [
+		"2. If the licensee or any of its affiliates conducts a Model as a Service or AI Work Assistant business, the licensee shall obtain a separate license from Qwen before Using the Software or its derivative works for any commercial purpose. The foregoing requirement shall not apply to the licensee's internal Use of the Software, provided that such Use does not make the Software, its outputs, or its underlying model capabilities available to any third party.",
+		"\"Model as a Service\" means giving a third party access to language model inference or fine-tuning (e.g., via API or a hosted endpoint) in a manner that allows such third parties to exercise meaningful control over the inputs, parameters, or training data. This does not include the mere relaying of requests to models hosted by other third parties.",
+		"\u201cAI Work Assistant\u201d means an independent AI-powered product primarily designed for AI-assisted coding or office productivity (e.g., Qoder and QwenWork). It does not include: (a) a single-purpose AI tool (such as an AI translation tool); (b) an AI assistant primarily designed for a domain other than coding or office productivity (such as Taobao AI Shopping Assistant or AMap AI Chat); or (c) an AI assistant that is a feature of a product whose primary purpose is not AI-assisted coding or office productivity.",
+	].join("\n\n"),
 };
 
 const istaFile = (pack: string, part: number, size: number, sha256: string): CatalogFile => {
 	const name = `Qwen3.8-Flash-Next-GSQ-RCO-${pack}-0000${part}-of-00002.gguf`;
-	return { url: `${ISTA}/resolve/main/${pack}/${name}`, name, size, sha256 };
+	return { url: `${ISTA_FILES}/${pack}/${name}`, name, size, sha256 };
 };
 /** The second part of every ISTA-DASLab pack: the n-gram table, read from the SSD a few rows at a time. The same file in each. */
 const istaTable = (pack: string) => istaFile(pack, 2, 28_800_138_432, "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113");
 const istaVision: CatalogFile = {
-	url: `${ISTA}/resolve/main/mmproj-Qwen3.8-Flash-Next-BF16.gguf`,
+	url: `${ISTA_FILES}/mmproj-Qwen3.8-Flash-Next-BF16.gguf`,
 	name: "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
 	size: 907_543_008,
 	sha256: "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
 };
-/** The draft layer Strata's setup fetches from Qwen's original model when it prepares a pack: 5.2 GB (#290). */
-const DRAFT_LAYER = 5.21e9;
+/**
+ * What Strata's setup adds when it prepares an ISTA-DASLab pack: the draft layer's tensors it fetches from Qwen's original
+ * model (5.2 GB, kept so that preparing again after an update does not fetch them again), the draft layer packed from
+ * them (0.9 GB) and the pack folder (1.5 GB). Measured on IQ3_S (#293): 7.65 GB.
+ */
+const PREPARED = 7.7e9;
+/** Strata's setup's names for an ISTA-DASLab pack, and the run config it writes for it. */
+const istaPrepare = (model: string) => ({ family: "qwen", model, config: `strata-${model.toLowerCase()}.json` });
 const istaLicences: Licence[] = [
 	QWEN_LICENCE,
 	{ name: "Apache License 2.0", url: `${ISTA}/blob/main/README.md`, summary: "ISTA-DASLab's quantised files of the model. Free to use, copy and change, with no warranty." },
@@ -140,7 +166,8 @@ export const CATALOG: Catalog = {
 					recommendedFromGB: 96,
 					files: [istaFile("IQ3_S", 1, 54_817_524_224, "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"), istaTable("IQ3_S"), istaVision],
 					visionFile: istaVision.name,
-					prepareBytes: DRAFT_LAYER,
+					prepareBytes: PREPARED,
+					prepare: istaPrepare("IQ3_S"),
 					licences: istaLicences,
 				},
 				{
@@ -152,7 +179,8 @@ export const CATALOG: Catalog = {
 					recommendedFromGB: 74,
 					files: [istaFile("IQ3_XXS", 1, 47_039_860_096, "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15"), istaTable("IQ3_XXS"), istaVision],
 					visionFile: istaVision.name,
-					prepareBytes: DRAFT_LAYER,
+					prepareBytes: PREPARED,
+					prepare: istaPrepare("IQ3_XXS"),
 					licences: istaLicences,
 				},
 				{
@@ -164,7 +192,8 @@ export const CATALOG: Catalog = {
 					recommendedFromGB: 64,
 					files: [istaFile("Q2_0", 1, 37_623_740_192, "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720"), istaTable("Q2_0"), istaVision],
 					visionFile: istaVision.name,
-					prepareBytes: DRAFT_LAYER,
+					prepareBytes: PREPARED,
+					prepare: istaPrepare("Q2_0"),
 					licences: istaLicences,
 				},
 				{
@@ -174,16 +203,18 @@ export const CATALOG: Catalog = {
 					note: "Closer to the full model than IQ3_S, and slower. Needs a Mac with 128 GB.",
 					needsGB: 91,
 					recommendedFromGB: 128,
+					// At the commit Strata pins, which are not the files on `main` today: Unsloth has since re-sharded them.
 					files: [
-						{ url: `${UNSLOTH}/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", size: 10_946_618, sha256: "acc44040f74d0e55fb89c3967056cce5dbda1bcc52e909c3ba6fc72b5e9c0858" },
-						{ url: `${UNSLOTH}/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf", size: 49_720_539_552, sha256: "45792ae869072d8229384c51c7c73dd959e191505252b41dd71852d9746f5ce4" },
-						{ url: `${UNSLOTH}/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf", size: 32_803_030_176, sha256: "8c76e79d444b16a663d9c8db54e585ed3b1da13eebd2619c37b0c355da803c82" },
-						{ url: `${UNSLOTH}/resolve/main/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf", size: 28_800_138_432, sha256: "5de8b5dbf89409acc39468decafd4a4a95b13c29d88a14b0356107897829ec36" },
-						{ url: `${UNSLOTH}/resolve/main/mmproj-BF16.gguf`, name: "mmproj-BF16.gguf", size: 907_542_944, sha256: "2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355" },
+						{ url: `${UNSLOTH_FILES}/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf", size: 10_946_624, sha256: "4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082" },
+						{ url: `${UNSLOTH_FILES}/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf", size: 49_859_583_136, sha256: "3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9" },
+						{ url: `${UNSLOTH_FILES}/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf", size: 49_376_141_504, sha256: "56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3" },
+						{ url: `${UNSLOTH_FILES}/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf`, name: "Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf", size: 12_087_983_520, sha256: "753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a" },
+						{ url: `${UNSLOTH_FILES}/mmproj-BF16.gguf`, name: "mmproj-BF16.gguf", size: 907_542_944, sha256: "2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355" },
 					],
 					visionFile: "mmproj-BF16.gguf",
 					// Repacked into one file of about the model's size, beside the shards (MAC.md).
 					prepareBytes: 83e9,
+					prepare: null,
 					licences: [QWEN_LICENCE],
 					unavailable: "Unsloth's files have to be repacked into one file for the Mac engine first, which pi² cannot do yet.",
 				},
@@ -199,11 +230,14 @@ export const KV_BYTES_PER_TOKEN = 0.65e9 / 36_864;
 /** The context sizes offered. Strata measured up to 32K on a Mac, and the model takes up to 262K. */
 export const CONTEXT_SIZES = [16_384, 32_768, 65_536, 131_072, 262_144];
 
-/** Above this, Strata has not measured how the model does on a Mac. */
-export const CONTEXT_MEASURED = 65_536;
+/** Above this, Strata has not measured how the model does on a Mac (its setup's TESTED_CONTEXT: needles found at 8K to 32K). */
+export const CONTEXT_MEASURED = 32_768;
 
-/** The share of the Mac's memory Metal lets one program keep resident (MAC.md: 107.5 GB of 128 GB, about 3/4). */
-export const METAL_SHARE = 0.75;
+/**
+ * The share of the Mac's memory Metal lets one program keep resident: MAC.md's 107.5 GB of 128 GB, which are GiB, and
+ * Metal's own `recommendedMaxWorkingSetSize` on the M5 Max with 128 GB, 115.4 GB of 137.4 GB (#293). Not three quarters.
+ */
+export const METAL_SHARE = 0.84;
 
 /** Below this much memory, Strata says the model does not fit at all (MAC.md). */
 export const SMALLEST_MAC_GB = 16;
