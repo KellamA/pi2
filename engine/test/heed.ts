@@ -2,7 +2,8 @@
 // driven over its socket with the demo model. A message sent to steer ends a wait on a sub-chat at once, and the sub-chat
 // carries on and can be waited for again (sub_chats with wait, which gives way too), or wakes the agent with its answer
 // later, once; one sent during a command in the foreground comes after the command; both in one answer; a background
-// read and a question to the person give way too; and what the person is shown a message waits for.
+// read and a question to the person give way too; scripts keep their nested waits and give the message its turn only
+// once the script has finished; and what the person is shown a message waits for.
 //
 // Nothing here is timed. Each command the agents run waits for a file the test makes (a gate), and says it has started by
 // making one of its own, so the test knows where every call stands however busy the Mac is.
@@ -80,7 +81,7 @@ try {
 	const client = await Client.connect(engine, home);
 	await client.until("first events", () => client.events.agents && client.events.library);
 	const { id: worker } = await client.call("agents.save", { agent: { name: "Worker", access: "full", cwd: scratch } });
-	const { id: leadAgent } = await client.call("agents.save", { agent: { name: "Lead", access: "full", cwd: scratch, delegates: [worker] } });
+	const { id: leadAgent } = await client.call("agents.save", { agent: { name: "Lead", access: "full", cwd: scratch, delegates: [worker], codeMode: true } });
 	await client.until("the agents", () => client.events.agents.agents.some((agent: Event) => agent.id === leadAgent && agent.delegates.includes(worker)));
 	const { id: lead } = await client.call("conversation.create", { agentId: leadAgent });
 	await client.call("conversation.open", { id: lead });
@@ -164,6 +165,51 @@ try {
 	const message = items.findIndex((item) => item.kind === "user" && item.text === "after the command");
 	assert.ok(result >= 0 && message > result, "the message is placed after the command's result");
 	step("a message during a command in the foreground reaches the agent once the command has ended");
+
+	// ---- A script owns the meaning of its nested results: a message cannot change them (#325)
+
+	const [scriptOne, openScriptOne, scriptOneStarted] = gated("script-one-done");
+	const [scriptTwo, openScriptTwo, scriptTwoStarted] = gated("script-two-done");
+	const scriptCalls = [scriptOne, scriptTwo].map((task) => `tools.delegate(${JSON.stringify({ agent: "Worker", task })})`);
+	const script = `const replies = await Promise.all([${scriptCalls.join(",")}]); for (const reply of replies) text(reply); text(await tools.bash({command:"echo script-continued"}));`;
+	const scriptsBefore = client.items(lead, "tool").length;
+	const chatsBeforeScript = new Set(client.subChats(lead).map((meta) => meta.id));
+	await client.call("submit", { id: lead, text: `/code ${script}` });
+	await until("both of the script's sub-chats to start", () => scriptOneStarted() && scriptTwoStarted());
+	const scriptChats = client.subChats(lead).filter((meta) => !chatsBeforeScript.has(meta.id)).map((meta) => meta.id as number);
+	assert.equal(scriptChats.length, 2);
+	await client.until("both script sub-chats working", () => scriptChats.every((id) => client.working(id)));
+	await client.until("the script's hold", () => client.state(lead)?.messageWaits?.holds?.[0] === "the script");
+	assert.deepEqual(client.state(lead)?.messageWaits, { holds: ["the script"], ends: [] }, "the field names the script, not its nested waits");
+	await steer("after the script");
+	await client.until("message held by the script", () => client.state(lead)?.queued?.some((item: Event) => item.mode === "steer" && item.text === "after the script"));
+	assert.ok(!userTexts().includes("after the script"));
+	openScriptOne();
+	await client.until("one script sub-chat answered", () => scriptChats.some((id) => !client.working(id)));
+	assert.ok(client.state(lead)!.busy);
+	assert.deepEqual(client.state(lead)?.messageWaits, { holds: ["the script"], ends: [] });
+	assert.ok(!userTexts().includes("after the script"), "even a partial batch does not release the message");
+	openScriptTwo();
+	await client.until("message after the script answered", () => client.idle(lead) && client.items(lead, "assistant").at(-1)?.text?.includes("after the script"));
+	const scriptResult = client.items(lead, "tool")[scriptsBefore]!;
+	assert.equal(scriptResult.name, "codemode");
+	assert.equal(scriptResult.isError, false, scriptResult.text);
+	assert.match(scriptResult.text, /script-one-done/);
+	assert.match(scriptResult.text, /script-two-done/);
+	assert.match(scriptResult.text, /script-continued/, "the script continued with the real replies");
+	assert.doesNotMatch(scriptResult.text, /stopped waiting|waitEnded/);
+	assert.ok(client.items(lead).findIndex((item) => item.kind === "user" && item.text === "after the script") > client.items(lead).indexOf(scriptResult));
+	step("a steer waits for a code mode script and both nested delegate results, without changing the script's continuation");
+
+	// Stop is still cancellation, not an early result for the script to mistake for an answer.
+	const [stoppingScript, , stoppingScriptStarted] = gated("script-stopped");
+	await client.call("submit", { id: lead, text: `/code text(await tools.delegate(${JSON.stringify({ agent: "Worker", task: stoppingScript })}));` });
+	await until("the stopped script's sub-chat to start", stoppingScriptStarted);
+	const stoppedChat = client.newestSubChat(lead);
+	await client.call("abort", { id: lead });
+	await client.until("the script and its waiting delegate stopped", () => client.idle(lead) && !client.working(stoppedChat));
+	assert.equal(client.state(lead)?.messageWaits, null);
+	step("Stop still cancels a script waiting on delegate and stops the work that call was waiting for");
 
 	// ---- Both in one answer: the command holds the message; the wait after it does not
 
