@@ -74,17 +74,26 @@ enum PerfProbe {
         }
         CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
         self.observer = observer
-        // How late the main thread answers: a block is sent to it every 50 ms from another queue.
+        heartbeat = makeHeartbeat()
+    }
+
+    /// How late the main thread answers: a block is sent to it every 50 ms from another queue. Made outside the main
+    /// actor, so that the timer's handler, which runs on that other queue, is not taken to belong to it.
+    nonisolated private static func makeHeartbeat() -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
         timer.schedule(deadline: .now(), repeating: .milliseconds(50))
         timer.setEventHandler {
             let sent = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { if active { lags.append(now() - sent) } }
+                MainActor.assumeIsolated { lagged(since: sent) }
             }
         }
         timer.resume()
-        heartbeat = timer
+        return timer
+    }
+
+    private static func lagged(since sent: Double) {
+        if active { lags.append(now() - sent) }
     }
 
     private static func end() {
