@@ -17,6 +17,7 @@ import { chat } from "./chat.ts";
 import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
+import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
 import { limitWait } from "./limitwait.ts";
@@ -163,6 +164,7 @@ export const FEATURES: Feature[] = [
 	coauthor,
 	wakes,
 	background,
+	heed,
 	localRun,
 	order,
 	localModels,

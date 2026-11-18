@@ -17,6 +17,7 @@ import { elapsed, runningCommandsOf, stopCommandsOf } from "./background.ts";
 import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
 import { nextSubChats, watchedSubChats } from "./wakes.ts";
+import { unlessMessaged } from "./heed.ts";
 import { type BranchInfo, inspect, removeWorktree, type Worktree, worktreeOf } from "./worktrees.ts";
 
 /** A line in the calling conversation's transcript: which sub-chats were archived, or restored to be continued. */
@@ -205,7 +206,15 @@ export function subChatsTool(host: Host) {
 			}
 
 			if (action === "wait") {
-				const came = await nextSubChats(caller, args.chats, context);
+				// A message from the person ends the wait (heed.ts): what has not come yet still wakes the agent when it does.
+				const waited = await unlessMessaged(api, (waiting) => nextSubChats(caller, args.chats, waiting), context);
+				if ("messaged" in waited) {
+					return {
+						output: text("The person sent you a message, so this stopped waiting; their message follows. The sub-chats are still working: their answers will come to you as messages when they are done, or wait for them here again."),
+						details: { action, count: 0, waitEnded: true },
+					};
+				}
+				const came = waited.value;
 				if (came === "none") {
 					return { output: text("No sub-chat of this conversation is working without being waited for, so there is nothing to wait for. delegate with `wait: false` starts one; list shows how each stands."), details: { action, count: 0 } };
 				}

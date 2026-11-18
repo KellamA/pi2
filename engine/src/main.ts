@@ -47,6 +47,7 @@ import { noticingRefusals } from "./limitwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
+import { messageSent } from "./heed.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
@@ -205,31 +206,10 @@ const host: Host = {
 			(error) => log("could not keep the rule:", error instanceof Error ? error.message : error),
 		),
 	agentChange: (agent, options) => agentChange(agent, options),
-	continueChat: async (id, content, requestId, callerContext) => {
-		const conv = await harness.conversation(id as unknown as ConversationId, context);
-		if (conv === undefined) return { reason: "the sub-chat no longer exists" };
-		await takeSwitch(conv.id);
-		await syncTools(conv).catch(() => {});
-		const submission = await conv.submit({ type: "input", content, requestId }, context);
-		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
-		// The sub-chat was created by an earlier call, so this call does not own it: stop it by hand if the caller stops.
-		const stop = () => void conv.abort(context).catch(() => {});
-		callerContext.abortSignal?.addEventListener("abort", stop, { once: true });
-		try {
-			const settled = await submission.wait(callerContext);
-			if (settled.status !== "done" || settled.type !== "input") {
-				const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : "no answer";
-				return "detail" in settled && settled.detail !== undefined ? { reason, detail: String(settled.detail) } : { reason };
-			}
-			const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-			return { answer: textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content) };
-		} finally {
-			callerContext.abortSignal?.removeEventListener("abort", stop);
-		}
-	},
 	sendToChat: async (id, content, requestId) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
 		if (conv === undefined) return undefined;
+		await takeSwitch(conv.id);
 		await syncTools(conv).catch(() => {});
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
 		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
@@ -453,7 +433,7 @@ async function syncTools(conv: Conversation): Promise<void> {
 /**
  * A message is about to be sent to conversation `id`: it takes its own agent's Allow everything switch as it is now
  * (state.ts, `takeAgentSwitch`). Every way a message reaches a conversation calls this first: the person's (`submit`,
- * `continue`), a schedule's (`deliver`) and an agent's continuing a sub-chat (`continueChat`); `delegate` sets a new
+ * `continue`), a schedule's (`deliver`) and an agent's continuing a sub-chat (`sendToChat`); `delegate` sets a new
  * sub-chat's from its own agent as it makes it.
  */
 async function takeSwitch(id: ConversationId): Promise<void> {
@@ -1454,6 +1434,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			context,
 		);
 		for (const feature of host.features) feature.messageSent?.(params.id as number);
+		// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
+		if (params.mode === "steer") messageSent(conv.id as unknown as number);
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
 			// A message that is only attachments is titled after the first of them.

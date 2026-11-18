@@ -307,13 +307,21 @@ test("diffs: from the result's details, and built from the edits", () => {
 test("hand-offs", () => {
 	assert.equal(T.subagentAnswer("Done.\n\n(Sub-chat 4 with Atlas. To continue it, call delegate again with chat: 4.)"), "Done.");
 	assert.deepEqual(T.delegation(call("delegate", { agent: "Atlas", task: "Review" }), { details: { conversationId: 4, agentId: "atlas", agentName: "Atlas" } }, null), {
-		agentName: "Atlas", task: "Review", chat: 4, continued: false, agentId: "atlas",
+		agentName: "Atlas", task: "Review", chat: 4, continued: false, agentId: "atlas", waitEnded: false,
 	});
 	const continued = T.delegation(call("delegate", { agent: "", task: "More", chat: 4 }), null, { details: { conversationId: 4, agentName: "Atlas" } });
 	assert.equal(continued.agentName, "Atlas");
 	assert.equal(continued.continued, true);
 	assert.equal(T.delegation(call("delegate", {}), null, null).chat, null);
 	assert.equal(T.delegation(call("delegate", {}), { details: { conversationId: "4" } }, null).chat, null);
+});
+
+test("a hand-off whose wait a message from the person ended", () => {
+	const ended = T.delegation(call("delegate", { agent: "Atlas", task: "Review" }), { details: { conversationId: 4, agentName: "Atlas", waitEnded: true } }, null);
+	assert.equal(ended.waitEnded, true);
+	// Only a result says the wait ended; the running call's details never do.
+	assert.equal(T.delegation(call("delegate", { agent: "Atlas", task: "Review" }), null, { details: { conversationId: 4, waitEnded: true } }).waitEnded, false);
+	assert.equal(T.delegation(call("delegate", { agent: "Atlas", task: "Review" }), { details: { conversationId: 4, waitEnded: "yes" } }, null).waitEnded, false);
 });
 
 test("a command one of the person's rules let through says which rule", () => {

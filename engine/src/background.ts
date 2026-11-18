@@ -28,6 +28,7 @@ import type { Engine, Feature } from "./features.ts";
 import { scratchVariable } from "./scratch.ts";
 import { arrive, unwatch, watch, watched } from "./wakes.ts";
 import { agentVariables } from "./variables.ts";
+import { unlessMessaged } from "./heed.ts";
 import { forgetRun, killLater, killRemaining, type Listed, type LeftOver, leftOverLog, type NewRun, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
@@ -756,19 +757,26 @@ export const background: Feature = (_host, running) => {
 				return { output: text(command.output === "" ? `${head()} It has printed nothing${command.child === undefined ? " that was kept" : ""}.` : `${head()} ${which}:\n${last}`), details: details() };
 			}
 			const nothingNew = () => command.total - Math.max(command.read, command.total - command.output.length) === 0;
+			let messaged = false;
 			if (nothingNew() && isRunning(command) && (args.wait ?? 0) > 0) {
-				// Until it prints, ends, the time is up, or the run is stopped.
+				// Until it prints, ends, the time is up, the run is stopped, or the person sends a message (heed.ts).
 				let waiter: (() => void) | undefined;
 				let timer: ReturnType<typeof setTimeout> | undefined;
 				try {
-					await awaitWithContext(
-						new Promise<void>((resolve) => {
-							waiter = resolve;
-							command.waiters.add(resolve);
-							timer = setTimeout(resolve, Math.min(args.wait!, MAX_WAIT_SECONDS) * 1000);
-						}),
+					const outcome = await unlessMessaged(
+						api,
+						(waiting) =>
+							awaitWithContext(
+								new Promise<void>((resolve) => {
+									waiter = resolve;
+									command.waiters.add(resolve);
+									timer = setTimeout(resolve, Math.min(args.wait!, MAX_WAIT_SECONDS) * 1000);
+								}),
+								waiting,
+							),
 						context,
 					);
+					messaged = "messaged" in outcome;
 				} finally {
 					clearTimeout(timer);
 					if (waiter !== undefined) command.waiters.delete(waiter);
@@ -776,6 +784,7 @@ export const background: Feature = (_host, running) => {
 			}
 			const part = unread(command);
 			const lines = [head()];
+			if (messaged) lines.push(`[The person sent you a message, so this read stopped waiting; their message follows.${isRunning(command) ? ` ${command.id} is still running: read it again with wait to carry on waiting.` : ""}]`);
 			// Said whether or not it came to waiting, so that the next read asks for no more than it gets.
 			if ((args.wait ?? 0) > MAX_WAIT_SECONDS) lines.push(`[The wait was lowered to ${MAX_WAIT_SECONDS} seconds, the most a read waits: a longer pause costs more than reading again.]`);
 			if (command.child === undefined) lines.push("Its output was in the engine that stopped, and was not kept.");
@@ -785,7 +794,7 @@ export const background: Feature = (_host, running) => {
 				else lines.push(part.text);
 				if (part.waiting > 0) lines.push(`[${count(part.waiting)} more: read again for them.]`);
 			}
-			return { output: text(lines.join("\n")), details: details() };
+			return { output: text(lines.join("\n")), details: { ...details(), ...(messaged ? { waitEnded: true } : {}) } };
 		},
 	});
 

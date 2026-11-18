@@ -726,9 +726,38 @@ struct ConversationState: Codable, Equatable {
     let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
     var chat: Bool? = nil
+    /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
+    /// and from an engine older than this field.
+    var messageWaits: MessageWaits? = nil
     /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
     /// offered: an agent's conversation, or an engine older than this field.
     var versions: [VersionPoint]? = nil
+}
+
+/// What a message sent to steer a working agent waits for (engine/src/heed.ts): `holds`, the calls it comes after, such
+/// as "the command `npm test`"; and `ends`, the waits it ends at once, such as "the wait for Scout's sub-chat 12".
+struct MessageWaits: Codable, Equatable {
+    let holds: [String]
+    let ends: [String]
+
+    private static func joined(_ parts: [String]) -> String {
+        ListFormatter.localizedString(byJoining: parts)
+    }
+
+    /// What happens to a message sent now, in a line for the message field: steered, or queued until the answer.
+    func sentence(agent: String, steer: Bool) -> String {
+        guard steer else { return "\(agent) reads this once it has answered." }
+        let ended = ends.isEmpty ? "" : " It ends \(Self.joined(ends)); \(ends.count == 1 ? "that work carries on" : "the work carries on")."
+        if holds.isEmpty {
+            return ends.isEmpty ? "\(agent) reads this after its current step." : "\(agent) reads this at once.\(ended)"
+        }
+        return "\(agent) reads this once \(Self.joined(holds)) \(holds.count == 1 ? "has" : "have") finished.\(ended)"
+    }
+
+    /// What a message already sent to steer is waiting for, for its chip; nil when it is only waiting for the current step.
+    var waitingFor: String? {
+        holds.isEmpty ? nil : Self.joined(holds)
+    }
 }
 
 /// A point where a chat's versions part: after entry `after` (nil: before the first message), version `index` of `count`.
