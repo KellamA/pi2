@@ -49,6 +49,8 @@ Tool access is set per conversation: off, read only, ask first, or full. With "a
 
 Being asked about every `git status` gets old, and switching approvals off for the whole shell gives too much away. So an approval for a command offers a third choice: allow commands that start the same way, for that agent in that folder, from now on. Anything more involved still asks: two commands joined together unless each is covered, writing to a file, a variable, `sudo`. Rules that would allow anything, such as `bash` or `rm` on their own, cannot be made. You can review and remove rules in the agent's settings. [What a rule covers](docs/rules.md).
 
+For an agent working somewhere you can afford to lose, such as a spare Mac or a virtual machine, **Allow everything** lifts every approval and lets computer use work any app, browsers included. It is per agent, off by default, turned on only after a confirmation, and marked in red wherever the agent shows. [What it lifts and what it does not](docs/allow-everything.md).
+
 <p align="center"><img src="docs/images/rules.png" alt="An approval for npm test with the choice to always allow npm test here" width="820"></p>
 
 ### Let an agent use your apps
@@ -123,8 +125,9 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent. [What a server's read-only marks do](docs/mcp.md).
 - **Scripts**: let a model chain many tool calls in one step.
+- **Making pictures**: turn it on for an agent and, with an OpenRouter key, it can make a picture from a description or change one, shown in the conversation. [Which models, and what it costs](docs/pictures.md).
 - **Working things out with code**: turn it on for an agent and it can run a short JavaScript program to do sums, dates and data rather than guess them, in a sandbox that cannot reach your files, the network or any other tool. [What it can and cannot do](docs/code.md).
-- **A shorter tool list**: an agent's settings list the built-in tools it is offered (looking around, documents, asking you, the task list, reading the web), all on until you leave some out, and working things out with code, off until you turn it on. Every tool's description is read again on every turn, so an agent that never uses one is cheaper without it.
+- **A shorter tool list**: an agent's settings list the built-in tools it is offered (looking around, documents, asking you, the task list, reading the web), all on until you leave some out, and making pictures and working things out with code, off until you turn them on. Every tool's description is read again on every turn, so an agent that never uses one is cheaper without it.
 - **Archive**: put a conversation away without losing it. It leaves the sidebar, stays readable and searchable, and can be restored; pi² can archive what has gone unused for a while on its own. [How the Archive works](docs/archive.md).
 - **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).
 - **pi² as a co-author**: a switch in Settings, off by default, asks agents to end their commit messages with a `Co-authored-by` line naming pi². It is an instruction to the agent; pi² never changes your git settings or a commit's author. [How it works](docs/commits.md).
@@ -205,12 +208,13 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Browser](docs/browser.md): the agents' own browser, what it asks about, and what it will not do.
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
 - [Transcript](docs/transcript.md): how the conversation page is built, and how it is kept from running anything a model writes.
-- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md), [code](docs/code.md).
+- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md), [code](docs/code.md), [pictures](docs/pictures.md).
 - [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
 - [Worktrees and branches](docs/worktrees.md): working on one repository in parallel, and what the branch colours mean.
 - [pi² as a co-author](docs/commits.md): the setting that asks agents to name pi² in their commits, and what it does not do.
 - [Development](docs/development.md): building, testing, and the layout of the code.
+- [Models on this Mac](docs/local-models.md): getting the engine and a model; [Strata and Qwen3.8-Flash-Next](docs/strata.md): what running them needs, as found on a real Mac.
 - [Releasing](docs/releasing.md): signed downloads, updates, and what to set up before the first release.
 - [Changelog](CHANGELOG.md)
 - [The original plan and mockups](docs/design/PLAN.md)

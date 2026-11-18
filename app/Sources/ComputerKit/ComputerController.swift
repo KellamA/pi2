@@ -42,11 +42,11 @@ public actor ComputerController {
     // MARK: - Entry point
 
     public func perform(_ request: ComputerRequest) async -> ComputerReply {
-        if request.action == "list_apps" { return listApps(request.apps, testCopies: request.testCopies) }
+        if request.action == "list_apps" { return listApps(request.apps, testCopies: request.testCopies, anyApp: request.anyApp) }
         guard let bundleID = request.app, !bundleID.isEmpty else { return .failure("\(request.action) needs `app`, a bundle ID from list_apps.") }
         let acting = request.action == "describe" ? (request.of ?? "") : request.action
         if ComputerPolicy.same(bundleID, ownBundleID) || ComputerPolicy.isNever(bundleID) { return .failure("\(bundleID) cannot be used by an agent.") }
-        if ComputerPolicy.isViewOnly(bundleID), !["screenshot", "open_app"].contains(acting), !(request.testCopies && isTestCopy(bundleID)) {
+        if ComputerPolicy.isViewOnly(bundleID, anyApp: request.anyApp), !["screenshot", "open_app"].contains(acting), !(request.testCopies && isTestCopy(bundleID)) {
             if request.testCopies, TestCopy.hasTestCopyID(bundleID) {
                 return .failure("\(Self.name(of: bundleID)) can only be looked at, not controlled: it is not running as a throwaway test copy of a development build, as scripts/test-copy starts one.")
             }
@@ -92,7 +92,9 @@ public actor ComputerController {
         return bundleID
     }
 
-    private func listApps(_ apps: [String], testCopies: Bool) -> ComputerReply {
+    private func listApps(_ apps: [String], testCopies: Bool, anyApp: Bool) -> ComputerReply {
+        // Allow everything: any app may be used by its bundle id, and the person's list is only a start.
+        let any = "You may use any app on this Mac by its bundle ID, except terminals, script editors, password managers and pi² itself; System Settings can only be looked at."
         var apps = apps
         if testCopies {
             // The test copies running now, which the agent may use without their being listed.
@@ -101,6 +103,7 @@ public actor ComputerController {
                 apps.append(id)
             }
         }
+        if anyApp, apps.isEmpty { return ComputerReply(ok: true, text: any, summary: "Listed apps") }
         guard !apps.isEmpty else {
             if testCopies {
                 return ComputerReply(ok: true, text: "No apps listed, and no test copy of pi² is running. Start one with scripts/test-copy start test-<number>.", summary: "Listed apps")
@@ -111,10 +114,11 @@ public actor ComputerController {
             let installed = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
             let state = Self.running(bundleID) != nil ? "running" : installed ? "not running" : "not installed"
             let copy = testCopies && isTestCopy(bundleID)
-            let limit = copy ? ", a test copy of pi²" : ComputerPolicy.isViewOnly(bundleID) ? ", look only" : ""
+            let limit = copy ? ", a test copy of pi²" : ComputerPolicy.isViewOnly(bundleID, anyApp: anyApp) ? ", look only" : ""
             return "\(bundleID) — \(Self.name(of: bundleID)) (\(state)\(limit))"
         }
-        return ComputerReply(ok: true, text: "Apps you may use:\n" + lines.joined(separator: "\n"), summary: "Listed apps")
+        let heading = anyApp ? "\(any) The apps the person listed:" : "Apps you may use:"
+        return ComputerReply(ok: true, text: heading + "\n" + lines.joined(separator: "\n"), summary: "Listed apps")
     }
 
     private func open(_ request: ComputerRequest, bundleID: String) async -> ComputerReply {

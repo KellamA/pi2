@@ -69,8 +69,12 @@ class Client extends EngineClient {
 	}
 }
 
-/** The chat's tools as the engine's list has them: those of `CHAT_TOOLS` it knows, the web's only with the web on. */
-const expected = (builtIns: any[], web: boolean) => builtIns.filter((entry) => CHAT_TOOLS.includes(entry.key) && (web || entry.key !== "web")).flatMap((entry) => entry.tools as string[]);
+/**
+ * The chat's tools as the engine's list has them: those of `CHAT_TOOLS` it knows, the web's only with the web on, and not
+ * making pictures, since this engine has no picture model (pictures.ts; tested in pictures.ts).
+ */
+const expected = (builtIns: any[], web: boolean) =>
+	builtIns.filter((entry) => CHAT_TOOLS.includes(entry.key) && (web || entry.key !== "web") && entry.needs !== "pictures").flatMap((entry) => entry.tools as string[]);
 
 engine = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
 const client = await Client.connect(engine, home);

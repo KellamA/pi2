@@ -26,8 +26,11 @@ export type BuiltInTool = {
 	/** What the person reads in the agent's settings: what it does, and what leaving it out means where that may surprise. */
 	title: string;
 	detail: string;
-	/** Where it is offered at all: any access but none, Ask first or Full access, the browser on; anywhere when absent. */
-	needs?: "files" | "changes" | "browser";
+	/**
+	 * Where it is offered at all: any access but none, Ask first or Full access, the browser on, one of the person's
+	 * providers having a picture model (pictures.ts); anywhere when absent.
+	 */
+	needs?: "files" | "changes" | "browser" | "pictures";
 	/** Off unless the agent's `toolsOn` names it; `toolsOff` names only the others. */
 	offByDefault?: true;
 };
@@ -66,6 +69,14 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 		title: "Read the web",
 		detail: "Searches the web and reads pages without opening the browser.",
 		needs: "browser",
+	},
+	{
+		key: "pictures",
+		tools: ["make_picture"],
+		title: "Make pictures",
+		detail: "Makes a picture from a description, or changes the newest one in the conversation, with one of your providers' picture models, and shows it in the conversation. Each picture is charged by the provider.",
+		needs: "pictures",
+		offByDefault: true,
 	},
 	{
 		key: "code",
