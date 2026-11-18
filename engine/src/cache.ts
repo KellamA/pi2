@@ -208,7 +208,8 @@ function observe(session: string, conversation: number, retention: Retention, st
 
 export const promptCache: Feature = (_host, engine) => {
 	policy = {
-		handsOutWork: (id) => Object.values(engine.library().conversations).some((meta) => meta.parent === id),
+		// A chat's versions (versions.ts) are not work handed out.
+		handsOutWork: (id) => Object.values(engine.library().conversations).some((meta) => meta.parent === id && meta.version !== true),
 		providerName: (id) => engine.providers().models.getProvider(id)?.name ?? id,
 		log: (line) => engine.log(line),
 	};

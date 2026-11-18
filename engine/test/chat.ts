@@ -143,6 +143,16 @@ try {
 	assert.ok(!existsSync(join(outside, "away.html")), "a chat cannot write outside its own folder");
 	step("write_document in a chat writes in the chat's own folder, asks nothing, and nowhere else");
 
+	// ---- Working things out with code (#286): the chat has it, and it asks nothing.
+	assert.ok(seen.tools.includes("run_code"), seen.tools.join(" "));
+	await client.answer(chat, '/tool run_code {"code":"return 6 * 7"}');
+	const ran = client.tools(chat).at(-1);
+	assert.equal(ran.name, "run_code");
+	assert.equal(ran.isError, false, ran.text);
+	assert.equal(ran.text, "Returned: 42");
+	assert.deepEqual(client.events.inbox?.items ?? [], [], "nothing asked");
+	step("run_code in a chat runs without asking");
+
 	// ---- What cannot be changed in a chat, and what can.
 	await assert.rejects(client.call("conversation.configure", { id: chat, cwd: outside }), /A chat has no folder/);
 	await assert.rejects(client.call("conversation.configure", { id: chat, access: "full" }), /tools are fixed/);

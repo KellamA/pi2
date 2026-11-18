@@ -211,8 +211,9 @@ final class EngineClient {
         return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
     }
 
-    /// Conversations that are not sub-chats, newest first.
-    var rootConversations: [ConversationSummary] { conversations.filter { $0.parent == nil } }
+    /// Conversations that are not sub-chats, newest first. Chats are chat mode's own (`chats`), so the agent view never
+    /// lists them.
+    var rootConversations: [ConversationSummary] { conversations.filter { $0.parent == nil && !$0.isChat } }
 
     /// The sub-chats an agent opened from a conversation, oldest first.
     func subChats(of id: Int) -> [ConversationSummary] {
@@ -434,9 +435,14 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor":
+            case "limits", "memory", "coauthor", "local":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
+            case "local.progress":
+                // One download's progress, kept in the `local` event it belongs to (LocalModelsSettings.swift).
+                if let download = try decoder.decode(JSONValue.self, from: line)["download"] {
+                    extras["local"] = extras["local"]?.replacingDownload(download)
+                }
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
                 if let error = envelope.error {
@@ -543,29 +549,30 @@ final class EngineClient {
            EngineLoginItem.start(home: home.path) {
             return
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [main]
-        process.environment = environment.merging(["PI2_HOME": home.path]) { _, new in new }
         let logURL = home.appendingPathComponent("engine.log")
         // Append, so the output of an engine that crashed is still there after the restart.
         if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
-        if let log = try? FileHandle(forWritingTo: logURL) {
-            _ = try? log.seekToEnd()
-            process.standardOutput = log
-            process.standardError = log
-        }
-        process.terminationHandler = { [weak self] process in
-            let ending = process.terminationReason == .uncaughtSignal
-                ? "was stopped by signal \(process.terminationStatus)"
-                : "exited with status \(process.terminationStatus)"
-            Task { @MainActor in
-                guard let self, self.status != .connected else { return }
-                self.lastExit = ending
-            }
-        }
+        let log = try? FileHandle(forWritingTo: logURL)
+        _ = try? log?.seekToEnd()
+        defer { try? log?.close() }
+        // Responsible for itself, so agents' commands do not have the app's Accessibility (EngineSpawn).
+        if !EngineSpawn.canDisclaim { note("this macOS cannot start the engine as its own responsible process; it runs under the app's permissions") }
         do {
-            try process.run()
+            try EngineSpawn.run(
+                node,
+                arguments: [main],
+                environment: environment.merging(["PI2_HOME": home.path]) { _, new in new },
+                output: log
+            ) { [weak self] ending in
+                let text = switch ending {
+                case .signal(let signal): "was stopped by signal \(signal)"
+                case .exited(let status): "exited with status \(status)"
+                }
+                Task { @MainActor in
+                    guard let self, self.status != .connected else { return }
+                    self.lastExit = text
+                }
+            }
         } catch {
             launchFailure = "Node could not be run from \(node): \(error.localizedDescription)"
         }
@@ -727,15 +734,13 @@ final class EngineClient {
         let loginItem = EngineLoginItem.current?.serves(home: home.path) == true
         guard loginItem || UserDefaults.standard.bool(forKey: BackgroundSettings.keepEngineKey),
               let (node, main) = Self.enginePaths else { return }
-        let later = Process()
-        later.executableURL = URL(fileURLWithPath: "/bin/sh")
-        later.arguments = loginItem
-            ? ["-c", "sleep 20; exec /bin/launchctl kickstart \"gui/$(id -u)/$0\"", EngineLoginItem.label]
-            : ["-c", "sleep 20; exec \"$0\" \"$1\" >> \"$2\" 2>&1", node, main, home.appendingPathComponent("engine.log").path]
-        later.environment = ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path]) { _, new in new }
-        later.standardInput = FileHandle.nullDevice
-        later.standardOutput = FileHandle.nullDevice
-        later.standardError = FileHandle.nullDevice
-        try? later.run()
+        // Responsible for itself, as the app would start the engine (EngineSpawn), and with no output of its own.
+        _ = try? EngineSpawn.run(
+            "/bin/sh",
+            arguments: loginItem
+                ? ["-c", "sleep 20; exec /bin/launchctl kickstart \"gui/$(id -u)/$0\"", EngineLoginItem.label]
+                : ["-c", "sleep 20; exec \"$0\" \"$1\" >> \"$2\" 2>&1", node, main, home.appendingPathComponent("engine.log").path],
+            environment: ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path]) { _, new in new }
+        )
     }
 }

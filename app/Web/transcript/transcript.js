@@ -17,6 +17,7 @@
 	const T = window.PiTools;
 	const C = window.PiClipboard;
 	const K = window.PiKeys;
+	const Ch = window.PiChat;
 	const char = String.fromCharCode;
 	const ELLIPSIS = char(0x2026);
 	const RSQUO = char(0x2019);
@@ -56,6 +57,13 @@
 	/** Pictures by "entry/index": { state: "loading" | "ready" | "failed", url }. */
 	const pictures = new Map();
 	let rendered = false;
+	/** A chat's own controls and what they need (chat.js); nothing for an agent's conversation. */
+	let chat = Ch.NONE;
+	let chatRevision = 0;
+	/** The person's message being edited, and what the field holds so far: { id, text }, or null. */
+	let editing = null;
+	/** The answer whose list of models for Try Again is open, or null. */
+	let menuFor = null;
 
 	const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 	const str = (value) => (typeof value === "string" ? value : "");
@@ -134,6 +142,11 @@
 			};
 			namesRevision = ++revision;
 		}
+		if (isObject(message.chat)) {
+			chat = Ch.read(message.chat);
+			chatRevision = ++revision;
+			if (!chat.enabled) editing = menuFor = null;
+		}
 		if (isObject(message.palette)) applyPalette(message.palette);
 		if (isObject(message.image)) receivePicture(message.image);
 
@@ -201,6 +214,10 @@
 			"M11 4.6a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2z", "M5 4.6v6.8", "M11 4.6v1a3 3 0 0 1-3 3H7a2 2 0 0 0-2 2",
 		],
 		check: ["M3 8.6l3 3 7-7.2"],
+		retry: ["M13 8a5 5 0 1 1-1.5-3.6", "M13 2.2v2.6h-2.6"],
+		caret: ["M4.5 6.5 8 10l3.5-3.5"],
+		back: ["M10 3.8 5.8 8l4.2 4.2"],
+		forward: ["M6 3.8 10.2 8 6 12.2"],
 		open: ["M5.5 10.5l6-6", "M6.5 4.5h5v5"],
 		beside: ["M2.5 3h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z", "M8 3v10"],
 		down: ["M8 3v10", "M4 9l4 4 4-4"],
@@ -312,16 +329,20 @@
 		const shownCalls = new Set();
 		// Failed attempts in a row show as one row, the last (a run waiting for a provider's limit can leave dozens).
 		const failures = T.failedRuns(visible);
+		// In a chat, the rows under which a control steps between versions.
+		const versionAt = chat.enabled ? Ch.versionRows(visible, chat.versions) : new Map();
 		visible.forEach((item, index) => {
 			const next = visible[index + 1];
 			if (failures.hidden.has(item.id)) return;
 			if (item.kind === "user") {
-				specs.push({ key: "i" + item.id, sig: "u" + rev(item), build: () => userRow(item) });
+				const point = versionAt.get(item.id) ?? null;
+				const own = chat.enabled ? [chatRevision, live.busy ? 1 : 0, editing && editing.id === item.id ? 1 : 0].join("/") : "";
+				specs.push({ key: "i" + item.id, sig: "u" + rev(item) + "/" + own, build: () => userRow(item, point) });
 			} else if (item.kind === "assistant") {
 				for (const call of calls(item)) shownCalls.add(call.callId);
 				// A turn ends at the person's next message, or when the run is over; its actions wait until then.
 				const turnEnd = next ? next.kind !== "assistant" : !live.partial && !live.busy;
-				specs.push(assistantSpec(item, turnEnd, visible, index, failures.shown.get(item.id) ?? 1));
+				specs.push(assistantSpec(item, turnEnd, visible, index, failures.shown.get(item.id) ?? 1, versionAt.get(item.id) ?? null));
 			} else if (item.kind === "setup") {
 				const spec = setupSpec(item, visible);
 				if (spec) specs.push(spec);
@@ -403,22 +424,56 @@
 		return row;
 	}
 
-	function actionsBar(actions) {
-		const bar = el("div", "actions");
+	/**
+	 * The buttons under a message or a turn, shown while the pointer is over it. A control that steps between versions
+	 * (`point`) stays in view: it says there are other versions, at the bar's outer end (its start under an answer, which
+	 * lines up on the left, its end under a message of the person's). `after` comes last in the bar (the list of models).
+	 */
+	function actionsBar(actions, point = null, after = null, pointFirst = false) {
+		const bar = el("div", "actions" + (point ? " has-versions" : ""));
 		bar.setAttribute("role", "toolbar");
 		bar.setAttribute("aria-label", "Message actions");
 		bar.setAttribute("data-nocopy", "");
+		if (point && pointFirst) bar.appendChild(versionStepper(point));
 		for (const action of actions) {
-			const b = button("action", action.label);
+			const b = button("action" + (action.narrow ? " narrow" : ""), action.label);
 			b.title = action.label;
 			b.appendChild(glyph(action.glyph, "action-glyph"));
+			if (action.expanded !== undefined) {
+				b.setAttribute("aria-haspopup", "menu");
+				b.setAttribute("aria-expanded", String(action.expanded));
+			}
 			b.addEventListener("click", (event) => {
 				event.stopPropagation();
 				action.run(b);
 			});
 			bar.appendChild(b);
 		}
+		if (point && !pointFirst) bar.appendChild(versionStepper(point));
+		if (after) bar.appendChild(after);
 		return bar;
+	}
+
+	/** "‹ 2 / 3 ›": which version of a message or an answer is shown, and a way to the others. Not while an answer is being written. */
+	function versionStepper(point) {
+		const box = el("span", "versions");
+		box.setAttribute("role", "group");
+		box.setAttribute("aria-label", `Version ${point.index + 1} of ${point.count}`);
+		const go = (index, label, glyphName) => {
+			const b = button("action narrow", label);
+			b.title = live.busy ? label + " (once the answer is finished)" : label;
+			b.appendChild(glyph(glyphName, "action-glyph"));
+			b.disabled = live.busy || index < 0 || index >= point.count;
+			b.addEventListener("click", (event) => {
+				event.stopPropagation();
+				if (!b.disabled) post({ type: "version", after: point.after, index });
+			});
+			return b;
+		};
+		box.appendChild(go(point.index - 1, "Previous version", "back"));
+		box.appendChild(el("span", "version-count", `${point.index + 1} / ${point.count}`));
+		box.appendChild(go(point.index + 1, "Next version", "forward"));
+		return box;
 	}
 
 	function flash(b, text) {
@@ -442,7 +497,7 @@
 
 	// MARK: The person's messages
 
-	function userRow(item) {
+	function userRow(item, point) {
 		const row = article("user", "You");
 		const notes = Array.isArray(item.attachments) ? item.attachments.filter(isObject) : [];
 		const count = Number.isInteger(item.images) && item.images > 0 ? Math.min(item.images, 50) : 0;
@@ -469,9 +524,92 @@
 			}
 			row.appendChild(strip);
 		}
+		if (editing && editing.id === item.id) {
+			row.appendChild(editor(item));
+			return row;
+		}
 		if (str(item.text) !== "") row.appendChild(el("div", "bubble", item.text));
-		row.appendChild(actionsBar([copyAction(() => str(item.text))]));
+		const actions = [copyAction(() => str(item.text))];
+		// Edit sends the message again in its place, as a new version; the earlier one stays, a step away.
+		if (chat.enabled) {
+			actions.push({ label: "Edit", glyph: "pencil", run: () => {
+				editing = { id: item.id, text: str(item.text) };
+				menuFor = null;
+				schedule();
+			} });
+		}
+		row.appendChild(actionsBar(actions, point));
 		return row;
+	}
+
+	/** The person's message, open for editing: Return sends it as a new version, Escape or Cancel leaves it as it was. */
+	function editor(item) {
+		const box = el("div", "editor");
+		box.setAttribute("data-nocopy", "");
+		const field = el("textarea", "answer-field edit-field");
+		field.rows = 1;
+		field.value = editing.text;
+		field.setAttribute("aria-label", "Your message, edited");
+		const buttons = el("div", "editor-buttons");
+		const cancel = button("btn", null, "Cancel");
+		const send = button("btn primary", null, "Send");
+		const hasFiles = (Array.isArray(item.attachments) && item.attachments.length > 0) || (Number.isInteger(item.images) && item.images > 0);
+		const ready = () => (send.disabled = field.value.trim() === "" && !hasFiles);
+		ready();
+		const close = () => {
+			editing = null;
+			schedule();
+		};
+		const submit = () => {
+			if (send.disabled) return;
+			post({ type: "edit", entry: item.id, text: field.value });
+			pinned = true;
+			close();
+		};
+		const fit = () => {
+			field.style.height = "auto";
+			field.style.height = field.scrollHeight + 2 + "px";
+		};
+		field.addEventListener("input", () => {
+			if (editing) editing.text = field.value;
+			ready();
+			fit();
+		});
+		field.addEventListener("keydown", (event) => {
+			if (event.key === "Escape") {
+				event.preventDefault();
+				event.stopPropagation();
+				close();
+				return;
+			}
+			// Return sends; Shift-Return or Option-Return starts a new line, as in the app's message field.
+			const action = K.returnKey(event);
+			if (action === "send") {
+				event.preventDefault();
+				submit();
+			} else if (action === "newLine") {
+				event.preventDefault();
+				if (!document.execCommand("insertText", false, "\n")) {
+					field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
+					field.dispatchEvent(new Event("input"));
+				}
+			} else if (action === "nothing") {
+				event.preventDefault();
+			}
+		});
+		cancel.addEventListener("click", close);
+		send.addEventListener("click", submit);
+		buttons.append(cancel, send);
+		box.append(field, buttons);
+		const note = el("p", "editor-note", "Sent as a new version. The one before stays, a step away.");
+		box.appendChild(note);
+		setTimeout(() => {
+			if (!field.isConnected) return;
+			fit();
+			field.focus();
+			field.setSelectionRange(field.value.length, field.value.length);
+		}, 0);
+		return box;
 	}
 
 	// MARK: Answers
@@ -506,15 +644,24 @@
 		].join(":");
 	}
 
-	function assistantSpec(item, turnEnd, visible, index, attempts) {
+	function assistantSpec(item, turnEnd, visible, index, attempts, point) {
 		const phase = phaseOf(item);
-		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, attempts, ...calls(item).map((call) => callSignature(call, phase))].join("|");
+		// A chat's controls at the end of a turn change with the chat, its sources with the results of the turn's calls.
+		const own = chat.enabled && turnEnd ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, ...turnOf(visible, index).map((answer) => calls(answer).map((call) => rev(results.get(call.callId))).join(","))].join("/") : "";
+		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase))].join("|");
 		return {
 			key: "i" + item.id,
 			sig,
 			build: () => article("assistant", names.agentName || "Answer"),
-			update: (row) => fillAnswer(row, item, turnEnd, visible, index, attempts),
+			update: (row) => fillAnswer(row, item, turnEnd, visible, index, attempts, point),
 		};
+	}
+
+	/** The answers of the turn that ends at `index`: it and the answers just before it. */
+	function turnOf(visible, index) {
+		const turn = [];
+		for (let i = index; i >= 0 && visible[i].kind === "assistant"; i--) turn.unshift(visible[i]);
+		return turn;
 	}
 
 	/** The text of the whole turn an answer ends: its own and that of the answers just before it. */
@@ -526,7 +673,7 @@
 		return parts.join("\n\n");
 	}
 
-	function fillAnswer(row, item, turnEnd, visible, index, attempts) {
+	function fillAnswer(row, item, turnEnd, visible, index, attempts, point) {
 		const stop = str(item.stop);
 		const interrupted = stop === "aborted" || stop === "error";
 		const text = str(item.text);
@@ -557,16 +704,31 @@
 			});
 		}
 		if (stop === "length") parts.push({ key: "length", sig: "l", build: () => noteRow("muted", "The answer was cut off at the model" + RSQUO + "s output limit.") });
+		// The pages a chat's answer read, named under it as links.
+		const read = chat.enabled && turnEnd ? Ch.sources(turnOf(visible, index), results, MD.safeURL) : [];
+		if (read.length > 0) parts.push({ key: "sources", sig: "s" + read.map((source) => source.url + "\n" + source.title).join("\n"), build: () => sourcesList(read) });
 		if (turnEnd) {
+			const own = chat.enabled ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0].join("/") : "";
 			parts.push({
 				key: "actions",
-				sig: "x" + rev(item),
+				sig: "x" + rev(item) + "/" + own,
 				build: () => {
 					const actions = [];
 					const words = turnText(visible, index);
 					if (words !== "") actions.push(copyAction(() => words));
-					actions.push({ label: "Fork from here", glyph: "fork", run: () => post({ type: "fork", entry: item.id }) });
-					return actionsBar(actions);
+					if (!chat.enabled) {
+						actions.push({ label: "Fork from here", glyph: "fork", run: () => post({ type: "fork", entry: item.id }) });
+						return actionsBar(actions);
+					}
+					// Try Again answers the turn's message again, as a new version; the list beside it does so with another model.
+					actions.push({ label: "Try Again", glyph: "retry", run: () => post({ type: "retry", entry: item.id }) });
+					if (chat.models.length > 0) {
+						actions.push({ label: "Try Again with Another Model", glyph: "caret", narrow: true, expanded: menuFor === item.id, run: () => {
+							menuFor = menuFor === item.id ? null : item.id;
+							schedule();
+						} });
+					}
+					return actionsBar(actions, point, menuFor === item.id ? modelMenu(item) : null, true);
 				},
 			});
 		}
@@ -576,6 +738,71 @@
 		row.classList.toggle("ends-with-tools", itemCalls.length > 0 && stop !== "length" && str(item.error) === "");
 		row.classList.toggle("turn-end", turnEnd);
 	}
+
+	/** "Sources" and a link to each page the answer read; a click opens it in the person's browser, as any link here. */
+	function sourcesList(read) {
+		const box = el("div", "sources");
+		box.setAttribute("role", "group");
+		box.setAttribute("aria-label", "Sources");
+		box.appendChild(el("span", "sources-label", "Sources"));
+		const list = el("ol", "sources-list");
+		for (const source of read) {
+			const li = el("li");
+			const link = el("a", "source");
+			link.setAttribute("href", source.url);
+			link.title = source.url;
+			link.appendChild(glyph("globe", "source-glyph"));
+			link.appendChild(el("span", "source-title", Ch.sourceLabel(source)));
+			li.appendChild(link);
+			list.appendChild(li);
+		}
+		box.appendChild(list);
+		return box;
+	}
+
+	/** The models Try Again can use, as the model selector lists them, with the one in use ticked. */
+	function modelMenu(item) {
+		const menu = el("div", "model-menu");
+		menu.setAttribute("role", "menu");
+		menu.setAttribute("aria-label", "Try again with");
+		menu.appendChild(el("div", "model-menu-title", "Try again with"));
+		for (const group of Ch.modelGroups(chat.models)) {
+			const section = el("div", "model-group");
+			section.setAttribute("role", "group");
+			section.setAttribute("aria-label", group.name);
+			section.appendChild(el("div", "model-group-name", group.name));
+			for (const model of group.models) {
+				const current = chat.model === model.provider + "/" + model.id;
+				const choice = button("model-choice" + (current ? " current" : ""), null);
+				choice.setAttribute("role", "menuitem");
+				if (current) choice.appendChild(glyph("check", "model-check"));
+				choice.appendChild(el("span", "", model.name));
+				choice.addEventListener("click", (event) => {
+					event.stopPropagation();
+					menuFor = null;
+					post({ type: "retry", entry: item.id, model: { provider: model.provider, modelId: model.id } });
+					schedule();
+				});
+				section.appendChild(choice);
+			}
+			menu.appendChild(section);
+		}
+		setTimeout(() => menu.isConnected && menu.querySelector(".model-choice")?.focus(), 0);
+		return menu;
+	}
+
+	// The list of models closes on a click elsewhere, or Escape.
+	const closeMenu = () => {
+		if (menuFor === null) return;
+		menuFor = null;
+		schedule();
+	};
+	document.addEventListener("click", (event) => {
+		if (!(event.target instanceof Element && event.target.closest(".model-menu"))) closeMenu();
+	});
+	document.addEventListener("keydown", (event) => {
+		if (event.key === "Escape") closeMenu();
+	});
 
 	function noteRow(tone, text, glyphName) {
 		const note = el("div", "note " + tone);

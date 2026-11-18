@@ -125,7 +125,8 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 - **Reference files**: give an agent files and folders it can always read, including Word and RTF documents. It opens them when it needs them, so they cost nothing until then.
 - **MCP servers**: add tools from other apps and services, per agent. [What a server's read-only marks do](docs/mcp.md).
 - **Scripts**: let a model chain many tool calls in one step.
-- **A shorter tool list**: an agent's settings list the built-in tools it is offered (looking around, documents, asking you, the task list, reading the web), all on until you leave some out. Every tool's description is read again on every turn, so an agent that never uses one is cheaper without it.
+- **Working things out with code**: turn it on for an agent and it can run a short JavaScript program to do sums, dates and data rather than guess them, in a sandbox that cannot reach your files, the network or any other tool. [What it can and cannot do](docs/code.md).
+- **A shorter tool list**: an agent's settings list the built-in tools it is offered (looking around, documents, asking you, the task list, reading the web), all on until you leave some out, and working things out with code, off until you turn it on. Every tool's description is read again on every turn, so an agent that never uses one is cheaper without it.
 - **Archive**: put a conversation away without losing it. It leaves the sidebar, stays readable and searchable, and can be restored; pi² can archive what has gone unused for a while on its own. [How the Archive works](docs/archive.md).
 - **Worktrees and a branch tracker**: let several agents change one git repository at once, each in a worktree of its own on its own branch. Every conversation in a repository shows its branch in the sidebar, coloured by how it stands: changes, commits to push or merge, merged, conflicts. [How worktrees work](docs/worktrees.md).
 - **pi² as a co-author**: a switch in Settings, off by default, asks agents to end their commit messages with a `Co-authored-by` line naming pi². It is an instruction to the agent; pi² never changes your git settings or a commit's author. [How it works](docs/commits.md).
@@ -206,7 +207,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Browser](docs/browser.md): the agents' own browser, what it asks about, and what it will not do.
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
 - [Transcript](docs/transcript.md): how the conversation page is built, and how it is kept from running anything a model writes.
-- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md).
+- [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md), [code](docs/code.md).
 - [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
 - [Worktrees and branches](docs/worktrees.md): working on one repository in parallel, and what the branch colours mean.

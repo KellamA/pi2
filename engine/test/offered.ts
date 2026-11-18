@@ -150,11 +150,19 @@ try {
 
 	assert.deepEqual(
 		client.events.agents.builtInTools.map((tool: any) => tool.key),
-		["files", "documents", "ask", "plan", "web"],
+		["files", "documents", "ask", "plan", "web", "code"],
 		"the settings are sent the list, each with what it is for",
+	);
+	assert.deepEqual(
+		client.events.agents.builtInTools.filter((tool: any) => tool.offByDefault === true).map((tool: any) => tool.key),
+		["code"],
+		"and which are off unless turned on",
 	);
 	assert.ok(client.events.agents.builtInTools.every((tool: any) => tool.title !== "" && tool.detail !== "" && tool.tools.length > 0));
 	await assert.rejects(client.call("agents.save", { agent: { name: "Odd", toolsOff: ["bash"] } }), /Unknown built-in tool: bash/, "the shell is not on the list");
+	await assert.rejects(client.call("agents.save", { agent: { name: "Odd", toolsOff: ["code"] } }), /code is off unless toolsOn names it/);
+	await assert.rejects(client.call("agents.save", { agent: { name: "Odd", toolsOn: ["ask"] } }), /ask is on unless toolsOff names it/);
+	for (const seen of [plainSeen, leadSeen, subSeen]) assert.ok(!seen.tools.includes("run_code"), "no agent is offered run_code unless it turns it on");
 
 	// A worker-like agent: full access, every other switch off, its sub-chat measured with every built-in tool, then with
 	// those a worker never uses left out. The lead keeps all of them, and its sub-chat follows the worker's list only.
@@ -210,10 +218,37 @@ try {
 	assert.ok(!existsSync(join(scratch, "x.html")), "and nothing was written");
 	step("code mode: a tool left out is not listed, and a script cannot call it");
 
+	// Working things out with code (#286): off until the agent turns it on, then offered with no access at all, alone.
+	const thinker = { name: "Thinker", access: "none" };
+	const thinkerId = await agentOf(thinker);
+	const thought = await conversationOf(thinkerId);
+	const without = await client.offered(thought);
+	assert.ok(!without.tools.includes("run_code"), without.tools.join(" "));
+	const sentBefore = await history(thought);
+	const { id: savedThinker } = await client.call("agents.save", { agent: { ...thinker, id: thinkerId, toolsOn: ["code"] } });
+	await client.until("run_code turned on", () => client.events.agents?.agents?.some((x: any) => x.id === savedThinker && JSON.stringify(x.toolsOn) === '["code"]'));
+	const withCode = await client.offered(thought);
+	assert.deepEqual(withCode.tools.filter((name) => !without.tools.includes(name)), ["run_code"]);
+	assert.equal(withCode.prompt, without.prompt, "no section comes with it");
+	const cameNow = (await history(thought)).slice(sentBefore.length).join(" ").split(" ").filter((part) => part !== "");
+	assert.deepEqual(cameNow, ["+tool:run_code"], "only the tool is sent");
+	console.log(`#   run_code's definition: ${withCode.definitions - without.definitions} characters`);
+	const thoughtResults = () => (client.conversations.get(thought)?.items ?? []).filter((item: any) => item.kind === "tool");
+	await client.answer(thought, `/tool run_code {"code":"console.log(17 * 23); return typeof require"}`);
+	const ran = thoughtResults().at(-1);
+	assert.equal(ran.name, "run_code");
+	assert.equal(ran.isError, false);
+	assert.equal(ran.text, "391\nReturned: undefined");
+	assert.equal((client.events.inbox?.items ?? []).length, 0, "nothing asked");
+	step("run_code: off unless turned on, then offered alone at any access, and runs without asking");
+
 	// Duplicating the agent copies its list, through the same path as every other saved setting.
 	const { id: copy } = await client.call("agents.duplicate", { id: builderId });
 	const copied = await client.until("the copy", () => client.events.agents?.agents?.find((x: any) => x.id === copy));
 	assert.deepEqual(copied.toolsOff, ["documents", "ask"], "the copy leaves out what the original does");
+	const { id: thinkerCopy } = await client.call("agents.duplicate", { id: thinkerId });
+	const thinkerCopied = await client.until("the thinker's copy", () => client.events.agents?.agents?.find((x: any) => x.id === thinkerCopy));
+	assert.deepEqual(thinkerCopied.toolsOn, ["code"], "and is given what the original is given");
 	step("a duplicated agent keeps the list");
 } finally {
 	client.close();
