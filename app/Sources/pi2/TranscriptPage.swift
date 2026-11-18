@@ -64,6 +64,13 @@ enum TranscriptAction: Equatable {
     case picture(entry: Int, index: Int)
     /// The window with a background command's output, by the id the engine gave it ("bg-3").
     case output(String)
+    /// Save text from the page (a code block, an output, a long answer) as a file, offering `name`: the person chooses where.
+    case save(text: String, name: String)
+    /// Save one of an entry's pictures as a file.
+    case savePicture(entry: Int, index: Int)
+    /// Open, or save a copy of, the document a `write_document` call wrote: named by the call's entry, never by a path.
+    case openDocument(entry: Int)
+    case saveDocument(entry: Int)
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
@@ -123,6 +130,16 @@ enum TranscriptAction: Equatable {
         case "output":
             guard let id = Self.backgroundCommand(body["id"]) else { return nil }
             self = .output(id)
+        case "save":
+            guard let text = body["text"] as? String, !text.isEmpty, text.utf16.count <= Self.copyLimit,
+                  let name = Self.fileName(body["name"]) else { return nil }
+            self = .save(text: text, name: name)
+        case "savePicture":
+            guard let entry = Self.integer(body["entry"]), let index = Self.integer(body["index"]), index >= 0, index < 1000 else { return nil }
+            self = .savePicture(entry: entry, index: index)
+        case "openDocument", "saveDocument":
+            guard let entry = Self.integer(body["entry"]) else { return nil }
+            self = type == "openDocument" ? .openDocument(entry: entry) : .saveDocument(entry: entry)
         default:
             return nil
         }
@@ -141,6 +158,15 @@ enum TranscriptAction: Equatable {
         default:
             return nil
         }
+    }
+
+    /// A name the page offers for a file, which the save panel shows and the person can change: one name, no folder,
+    /// nothing hidden, nothing that is not printable.
+    static func fileName(_ value: Any?) -> String? {
+        guard let text = value as? String, (1...120).contains(text.count), !text.hasPrefix("."),
+              !text.contains("/"), !text.contains(":"),
+              text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        return text
     }
 
     /// An id the engine gives a background command, "bg-" and a number, and nothing else.
