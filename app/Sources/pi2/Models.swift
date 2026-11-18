@@ -692,6 +692,9 @@ struct ConversationState: Codable, Equatable {
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
     var messageWaits: MessageWaits? = nil
+    /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
+    /// offered: an agent's conversation, or an engine older than this field.
+    var versions: [VersionPoint]? = nil
 }
 
 /// What a message sent to steer a working agent waits for (engine/src/heed.ts): `holds`, the calls it comes after, such
@@ -717,6 +720,36 @@ struct MessageWaits: Codable, Equatable {
     /// What a message already sent to steer is waiting for, for its chip; nil when it is only waiting for the current step.
     var waitingFor: String? {
         holds.isEmpty ? nil : Self.joined(holds)
+    }
+}
+
+/// A point where a chat's versions part: after entry `after` (nil: before the first message), version `index` of `count`.
+struct VersionPoint: Codable, Equatable {
+    let after: Int?
+    let index: Int
+    let count: Int
+
+    private enum CodingKeys: String, CodingKey { case after, index, count }
+
+    init(after: Int?, index: Int, count: Int) {
+        self.after = after
+        self.index = index
+        self.count = count
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        after = try container.decodeIfPresent(Int.self, forKey: .after)
+        index = try container.decode(Int.self, forKey: .index)
+        count = try container.decode(Int.self, forKey: .count)
+    }
+
+    /// `after` as null when there is none: the page tells "before the first message" from a missing field.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(after, forKey: .after)
+        try container.encode(index, forKey: .index)
+        try container.encode(count, forKey: .count)
     }
 }
 

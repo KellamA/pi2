@@ -16,6 +16,7 @@ import { AgentDoc, defineTool, section } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 import { isChat, makeChatFolder } from "./chat.ts";
 import type { Feature } from "./features.ts";
+import { chatIdOf } from "./versions.ts";
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
@@ -689,8 +690,10 @@ export const documents: Feature = (host, engine) => {
 		replay: "unsafe",
 		execute: async (args, api, context: Context) => {
 			const doc = (await api.snapshot(AgentDoc, api.conversationId, context)) as { cwd?: string | null } | undefined;
-			// A chat has no folder: its documents are kept in one of its own in the data folder (chat.ts).
-			const own = isChat(host.meta(api.conversationId)) ? makeChatFolder(engine.home, api.conversationId as unknown as number) : undefined;
+			// A chat has no folder: its documents are kept in one of its own in the data folder (chat.ts), the same for
+			// all of its versions (versions.ts).
+			const id = chatIdOf(engine.library().conversations, api.conversationId as unknown as number);
+			const own = isChat(host.meta(api.conversationId)) ? makeChatFolder(engine.home, id) : undefined;
 			const root = await realpath(own ?? doc?.cwd ?? host.scratchFolder());
 			const result = await writeDocument(root, args);
 			// The full path, so the conversation can offer to open the document.

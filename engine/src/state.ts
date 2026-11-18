@@ -98,6 +98,11 @@ export type Meta = {
 	 * not had yet. Cleared by whichever delivers it: a call that waits for it again, or the answer added to the parent (heed.ts).
 	 */
 	answerOwed?: number;
+	/**
+	 * One of a chat's versions after the first (versions.ts), with the chat as its `parent`: shown in the chat's place when
+	 * current, and never on its own.
+	 */
+	version?: true;
 	/** A chat: a conversation of pi²'s built-in chat assistant (chat.ts), with no `agentId`. */
 	chat?: true;
 	/** The person pinned it to the top of its list (`conversation.pin`). */

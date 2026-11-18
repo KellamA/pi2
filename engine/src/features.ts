@@ -21,6 +21,7 @@ import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
 import { limitWait } from "./limitwait.ts";
+import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
 import { plan } from "./plan.ts";
@@ -52,6 +53,8 @@ export type Engine = {
 	stateChanged(id: number): void;
 	/** Send Activity again to every app: for a change to what a feature's `activity` says. */
 	activityChanged(): void;
+	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
+	providersChanged(): void;
 };
 
 export type FeatureParts = {
@@ -83,6 +86,11 @@ export type FeatureParts = {
 	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
 	 */
 	planLimits?(): ProviderLimits[];
+	/**
+	 * Fields of `local.status` and the `local` event, about models on this Mac: what is installed comes from localmodels.ts,
+	 * what is running from the feature that runs them. Call `localChanged()` (localmodels.ts) when they change.
+	 */
+	localStatus?(): Record<string, unknown>;
 	/** Runs once when the harness is open, before the engine listens or runs anything: load what the rest needs at once. */
 	start?(): Promise<void>;
 	/**
@@ -137,4 +145,5 @@ export const FEATURES: Feature[] = [
 	background,
 	heed,
 	order,
+	localModels,
 ];
