@@ -223,6 +223,8 @@ private struct ChatMemorySection: View {
 private struct AgentNotesSection: View {
     let engine: EngineClient
     let enabled: Bool
+    /// The agents whose notes the person folded away; each is open to begin with, so that what a chat can read shows.
+    @State private var folded: Set<String> = []
 
     var body: some View {
         // The engine's order of agents, as the sidebar has them; only those with memory on and a note, as a chat reads them.
@@ -235,7 +237,10 @@ private struct AgentNotesSection: View {
                 Text("None of your agents keeps notes. An agent does once Remember things between conversations is on in its settings.").foregroundStyle(.secondary)
             }
             ForEach(agents, id: \.0.id) { agent, notes in
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: Binding(
+                    get: { !folded.contains(agent.id) },
+                    set: { open in if open { folded.remove(agent.id) } else { folded.insert(agent.id) } }
+                )) {
                     ForEach(notes) { note in
                         Text(note.text)
                             .textSelection(.enabled)

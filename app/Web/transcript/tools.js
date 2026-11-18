@@ -587,6 +587,15 @@
 				label = what ? [t(verb + " "), muted(quoted(what)), t(dots)] : [t(verb + (active ? ELLIPSIS : " something"))];
 				break;
 			}
+			case "agent_notes": {
+				// A chat reading what the person's agents remember (#288).
+				glyph = "memory";
+				const agent = str(args.agent).trim();
+				const search = str(args.search).trim();
+				const whose = agent ? agent + "’s notes" : "the agents’ notes";
+				label = [t((active ? "Reading " : "Read ") + whose), ...(search ? [t(" for "), muted(quoted(search))] : []), t(dots)];
+				break;
+			}
 			case "list_files": {
 				glyph = "folder";
 				const where = str(args.path) || str(args.dir) || str(args.directory);
