@@ -190,6 +190,32 @@ try {
 			assert.equal(keychain(serverVariablesAccount("tok")).status, 44, "removing a server removes its values from the Keychain");
 			await until("the removed server to stop", () => !alive(last));
 			step("removing a server removes its values from the Keychain");
+
+			// Added with its variables (#298): checked first, kept in the Keychain, and the server started once, with them.
+			const adding = { name: "Added", transport: "stdio", command: process.execPath, args: [serverPath, "added", startsFile, scratch] };
+			const ADDED = `added-${randomUUID()}`;
+			await assert.rejects(servers.save({ ...adding, variables: [{ name: "PATH", value: "x" }] }), (error: Error) => error.message === refusal("PATH"));
+			await assert.rejects(servers.save({ ...adding, variables: [{ name: "A", value: "1" }, { name: " A ", value: "2" }] }), /A is given twice/);
+			await assert.rejects(servers.save({ ...adding, variables: [{ name: "A", value: "a\0b" }] }), /NUL/);
+			await assert.rejects(servers.save({ name: "Remote", transport: "http", url: "https://mcp.example.invalid/mcp", variables: [{ name: "A", value: "1" }] }), /Only a server pi² runs as a program/);
+			await assert.rejects(servers.save({ ...adding, id: "web", variables: [{ name: "A", value: "1" }] }), /Variables…/);
+			assert.equal(server("added"), undefined, "nothing refused was added");
+			assert.deepEqual(starts("added"), [], "or started");
+			const { id: addedId } = await servers.save({ ...adding, variables: [{ name: "SERVER_TOKEN", value: ADDED }, { name: "OTHER", value: "two words" }] });
+			assert.equal(addedId, "added");
+			assert.equal(server("added").status, "connected", server("added").error ?? "");
+			const addedStarts = starts("added");
+			assert.equal(addedStarts.length, 1, "the server is started once");
+			assert.equal(envOf(addedStarts[0]!.pid).SERVER_TOKEN, ADDED, "with its variables from the first start");
+			assert.equal(envOf(addedStarts[0]!.pid).OTHER, "two words");
+			assert.deepEqual(server("added").variables, [{ name: "SERVER_TOKEN", set: true }, { name: "OTHER", set: true }]);
+			const addedSaved = JSON.parse(readFileSync(join(home, "mcp.json"), "utf8")).find((config: { id: string }) => config.id === "added");
+			assert.deepEqual(addedSaved.variables, [{ name: "SERVER_TOKEN", set: true }, { name: "OTHER", set: true }], "mcp.json holds the names");
+			assert.deepEqual(holding(home, ADDED), [], "and no file in the data folder the value");
+			assert.ok(keychain(serverVariablesAccount("added")).stdout.includes(ADDED), "which is in the Keychain");
+			await servers.remove("added");
+			assert.equal(keychain(serverVariablesAccount("added")).status, 44);
+			step("a server can be added with its variables, which it is started with from the first start");
 		} finally {
 			await servers.stop();
 		}

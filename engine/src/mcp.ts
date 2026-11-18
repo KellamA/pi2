@@ -145,12 +145,28 @@ export class McpServers {
 		return false;
 	}
 
-	async save(input: { id?: string; name: string; transport: string; command?: string; args?: string[]; url?: string; enabled?: boolean; token?: string }): Promise<McpServerConfig> {
+	/**
+	 * Add or change a server. A new server run as a program can be given `variables` too (issue #298), names with their
+	 * values: they are checked, the values put in the Keychain, and the server started once, with them. An existing
+	 * server's variables change through their own requests, and saving it keeps them.
+	 */
+	async save(input: {
+		id?: string;
+		name: string;
+		transport: string;
+		command?: string;
+		args?: string[];
+		url?: string;
+		enabled?: boolean;
+		token?: string;
+		variables?: { name: unknown; value: unknown }[];
+	}): Promise<McpServerConfig> {
 		const name = input.name.trim();
 		if (name === "") throw new Error("Give the server a name");
 		if (input.transport !== "stdio" && input.transport !== "http") throw new Error("Choose how to reach the server");
 		if (input.transport === "stdio" && (input.command ?? "").trim() === "") throw new Error("Enter the command that starts the server");
 		if (input.transport === "http" && !/^https?:\/\/\S+$/.test((input.url ?? "").trim())) throw new Error("The URL must start with http:// or https://");
+		const given = this.#givenVariables(input);
 		let id = input.id;
 		if (id === undefined) {
 			const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "server";
@@ -160,7 +176,20 @@ export class McpServers {
 			throw new Error(`Unknown server: ${id}`);
 		}
 		// Its variables are kept as they are: they change through their own requests.
-		const variables = this.#configs.find((c) => c.id === id)?.variables;
+		let variables = this.#configs.find((c) => c.id === id)?.variables;
+		if (given.length > 0) {
+			// The values first, so mcp.json never names one the Keychain does not hold. A new id starts with no item: one
+			// left by a server of the same name removed by hand is not inherited.
+			const account = serverVariablesAccount(id);
+			try {
+				await this.#values.forget(account);
+				for (const { name, value } of given) await this.#values.set(account, name, value);
+			} catch (error) {
+				await this.#values.forget(account).catch(() => {});
+				throw new Error(`The server was not added: its variables could not be kept in the Keychain (${error instanceof Error ? error.message : String(error)}).`);
+			}
+			variables = given.map(({ name }) => ({ name, set: true }));
+		}
 		const config: McpServerConfig = {
 			id,
 			name,
@@ -266,6 +295,23 @@ export class McpServers {
 	async stop(): Promise<void> {
 		this.#stopped = true;
 		await Promise.all([...this.#connections].map((connection) => this.#close(connection, "pi² stopped while this call was running, so the call was stopped.")));
+	}
+
+	/** The variables a new server is added with, checked as `setVariable` checks one, before anything is kept. */
+	#givenVariables(input: { id?: string; transport: string; variables?: unknown }): { name: string; value: string }[] {
+		if (input.variables === undefined) return [];
+		if (!Array.isArray(input.variables)) throw new Error("The variables must be a list of names and values.");
+		if (input.variables.length === 0) return [];
+		if (input.id !== undefined) throw new Error("Change an existing server's variables with Variables…, not by saving it.");
+		if (input.transport !== "stdio") throw new Error("Only a server pi² runs as a program has variables.");
+		if (input.variables.length > MAX_VARIABLES) throw new Error(`A server can have ${MAX_VARIABLES} variables at most.`);
+		const seen = new Set<string>();
+		return input.variables.map((variable: { name?: unknown; value?: unknown } | null) => {
+			const name = variableName(variable?.name);
+			if (seen.has(name)) throw new Error(`${name} is given twice.`);
+			seen.add(name);
+			return { name, value: variableValue(variable?.value) };
+		});
 	}
 
 	/** A server run as a program, the only kind that has variables. */
