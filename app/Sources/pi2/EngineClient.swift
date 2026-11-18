@@ -39,6 +39,9 @@ final class EngineClient {
     private(set) var agents: [AgentProfile] = []
     /// The built-in tools an agent's settings list, sent with the agents. Empty from an engine older than the list.
     private(set) var builtInTools: [BuiltInTool] = []
+    /// The picture models the person's providers can use, for making pictures (engine/src/pictures.ts), and the providers
+    /// that have such models at all, by name, for saying where to get one when there is none. Nil until the engine says.
+    private(set) var pictures: PictureModels?
     private(set) var inbox: [InboxItem] = [] {
         didSet {
             guard inbox != oldValue else { return }
@@ -348,6 +351,15 @@ final class EngineClient {
         let archived: [ArchivedConversation]?
         let autoArchiveDays: Int?
     }
+    struct PictureModels: Decodable, Equatable {
+        struct Model: Decodable, Equatable {
+            let provider: String
+            let id: String
+            let name: String
+        }
+        let models: [Model]
+        let makers: [String]
+    }
     private struct AgentsEvent: Decodable {
         let agents: [AgentProfile]
         let builtInTools: [BuiltInTool]?
@@ -397,6 +409,8 @@ final class EngineClient {
                 let event = try decoder.decode(AgentsEvent.self, from: line)
                 agents = event.agents
                 builtInTools = event.builtInTools ?? []
+            case "pictures":
+                pictures = try decoder.decode(PictureModels.self, from: line)
             case "inbox":
                 inbox = try decoder.decode(InboxEvent.self, from: line).items
             case "activity":

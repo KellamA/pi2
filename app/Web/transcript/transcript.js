@@ -806,7 +806,8 @@
 		head.insertBefore(toggle, outputLink);
 		row.appendChild(body);
 		const liveOutput = liveTool && str(liveTool.output) !== "";
-		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode", "pi2_setup"].includes(call.name));
+		// A picture that was made is what the call was for, so its row starts open to show it.
+		const defaultOpen = status === "failed" || (status === "running" && liveOutput && ["bash", "powershell", "codemode", "pi2_setup"].includes(call.name)) || (status === "done" && call.name === "make_picture");
 		const apply = (value) => {
 			row.classList.toggle("open", value);
 			body.hidden = !value;
@@ -908,7 +909,7 @@
 				case "images": {
 					const strip = el("div", "pictures");
 					for (let index = 0; index < Math.min(section.count, 20); index++) {
-						strip.appendChild(thumbnail(section.entry, index, "What the agent saw", "Screenshot the agent took", true));
+						strip.appendChild(thumbnail(section.entry, index, section.name || "What the agent saw", section.label || "Screenshot the agent took", true));
 					}
 					body.appendChild(strip);
 					break;

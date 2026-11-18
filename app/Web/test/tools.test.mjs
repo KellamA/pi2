@@ -31,6 +31,15 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("codemode", { code: "1+1" }), "Ran a script");
 	assert.equal(line("run_code", { code: "return 1+1" }), "Worked it out with code");
 	assert.equal(line("run_code", { code: "return 1+1" }, "running"), "Working it out with code…");
+	assert.equal(line("make_picture", { description: "A red  square" }, "done", { text: "Made", details: { modelName: "Gemini" } }), "Made a picture: “A red square” Gemini");
+	assert.equal(line("make_picture", { description: "Make it blue", change: true }, "running"), "Changing the picture: “Make it blue”…");
+	assert.equal(line("make_picture", {}, "preparing"), "Making a picture…");
+	assert.deepEqual(T.detailFor(call("make_picture", { description: "A cat" }), "done", { id: 9, text: "Made a picture", images: 1, details: { modelName: "Gemini" } }, null), [
+		{ kind: "images", entry: 9, count: 1, name: "Picture", label: "Picture made by Gemini" },
+	]);
+	assert.deepEqual(T.detailFor(call("make_picture", { description: "A cat" }), "failed", { id: 9, text: "Gemini could not make the picture" }, null), [
+		{ kind: "text", label: "Result", text: "Gemini could not make the picture", failed: true },
+	]);
 	assert.deepEqual(T.detailFor(call("run_code", { code: "return 1+1" }), "done", { text: "Returned: 2" }, null), [
 		{ kind: "text", label: "Program", text: "return 1+1", language: "js" },
 		{ kind: "text", label: "What it printed", text: "Returned: 2", failed: false },
