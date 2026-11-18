@@ -10,6 +10,8 @@ struct ComputerEvent: Decodable {
     let of: String?
     let app: String?
     let apps: [String]?
+    /// The agent allows everything: any app, browsers controllable.
+    let anyApp: Bool?
     let element: Int?
     let x: Double?
     let y: Double?
@@ -34,7 +36,7 @@ final class ComputerSession {
 
     func handle(_ event: ComputerEvent, engine: EngineClient) {
         let request = ComputerRequest(
-            action: event.action, of: event.of, app: event.app, apps: event.apps ?? [], element: event.element, x: event.x, y: event.y,
+            action: event.action, of: event.of, app: event.app, apps: event.apps ?? [], anyApp: event.anyApp ?? false, element: event.element, x: event.x, y: event.y,
             text: event.text, dy: event.dy, count: event.count, path: event.path, image: event.image ?? true, conversationId: event.conversationId
         )
         // Describing an action for approval and listing apps touch nothing, so they are not announced.
@@ -175,6 +177,8 @@ private struct IndicatorPill: View {
 /// The part of an agent's settings that lets it use apps on this Mac.
 struct ComputerUseSection: View {
     @Binding var settings: ComputerSettings
+    /// The agent allows everything: any app, not only those listed, and browsers can be controlled.
+    var allowsEverything = false
     @State private var refused: String?
 
     var body: some View {
@@ -188,7 +192,7 @@ struct ComputerUseSection: View {
                             Text(ComputerController.name(of: bundleID))
                             Text(bundleID).font(.caption.monospaced()).foregroundStyle(.secondary)
                         }
-                        if ComputerPolicy.isViewOnly(bundleID) {
+                        if ComputerPolicy.isViewOnly(bundleID, anyApp: allowsEverything) {
                             Tag("look only").help("The agent can see this app's windows but not click or type in them.")
                         }
                         Spacer()
@@ -200,7 +204,10 @@ struct ComputerUseSection: View {
                 }
                 HStack {
                     Button("Add Apps…") { add() }
-                    if settings.apps.isEmpty { Text("Until you add an app, the agent is not given computer use at all.").foregroundStyle(.secondary) }
+                    if settings.apps.isEmpty {
+                        Text(allowsEverything ? "Allow everything is on, so the agent may use any app without one listed here." : "Until you add an app, the agent is not given computer use at all.")
+                            .foregroundStyle(allowsEverything ? Theme.bad : .secondary)
+                    }
                 }
                 if let refused { Text(refused).font(.callout).foregroundStyle(Theme.warn) }
                 Toggle("Ask before each action", isOn: $settings.ask)
@@ -227,6 +234,9 @@ struct ComputerUseSection: View {
 
     private var footer: String {
         guard settings.enabled else { return "Off: this agent cannot see or control any app." }
+        if allowsEverything {
+            return "Allow everything is on: the agent works in any app, one window at a time, in the background, and acts without asking. Whatever those windows show is sent to its model. Browsers can be controlled, with the accounts you are signed in to there. Terminals, password managers and pi² itself still cannot be used, and System Settings and test copies of pi² can only be looked at."
+        }
         var text = "The agent works one app window at a time, in the background, and only in the apps listed. Whatever those windows show is sent to its model. "
         text += settings.ask
             ? "It asks before each click, keystroke or menu command; you can allow an app for the rest of a conversation. Looking is not asked about. "

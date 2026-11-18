@@ -49,6 +49,8 @@ Tool access is set per conversation: off, read only, ask first, or full. With "a
 
 Being asked about every `git status` gets old, and switching approvals off for the whole shell gives too much away. So an approval for a command offers a third choice: allow commands that start the same way, for that agent in that folder, from now on. Anything more involved still asks: two commands joined together unless each is covered, writing to a file, a variable, `sudo`. Rules that would allow anything, such as `bash` or `rm` on their own, cannot be made. You can review and remove rules in the agent's settings. [What a rule covers](docs/rules.md).
 
+For an agent working somewhere you can afford to lose, such as a spare Mac or a virtual machine, **Allow everything** lifts every approval and lets computer use work any app, browsers included. It is per agent, off by default, turned on only after a confirmation, and marked in red wherever the agent shows. [What it lifts and what it does not](docs/allow-everything.md).
+
 <p align="center"><img src="docs/images/rules.png" alt="An approval for npm test with the choice to always allow npm test here" width="820"></p>
 
 ### Let an agent use your apps

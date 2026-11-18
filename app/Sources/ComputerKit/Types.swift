@@ -8,6 +8,8 @@ public struct ComputerRequest: Sendable {
     public var app: String?
     /// For "list_apps": the apps the agent may use.
     public var apps: [String]
+    /// The agent allows everything: any app but those never usable, and browsers may be controlled, not only looked at.
+    public var anyApp: Bool
     public var element: Int?
     public var x: Double?
     public var y: Double?
@@ -21,13 +23,14 @@ public struct ComputerRequest: Sendable {
     public var conversationId: Int
 
     public init(
-        action: String, of: String? = nil, app: String? = nil, apps: [String] = [], element: Int? = nil, x: Double? = nil, y: Double? = nil,
+        action: String, of: String? = nil, app: String? = nil, apps: [String] = [], anyApp: Bool = false, element: Int? = nil, x: Double? = nil, y: Double? = nil,
         text: String? = nil, dy: Int? = nil, count: Int? = nil, path: String? = nil, image: Bool = true, conversationId: Int = 0
     ) {
         self.action = action
         self.of = of
         self.app = app
         self.apps = apps
+        self.anyApp = anyApp
         self.element = element
         self.x = x
         self.y = y
@@ -65,9 +68,11 @@ public enum ComputerPolicy {
         "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper", "com.apple.ScriptEditor2", "com.apple.Automator",
         "com.apple.keychainaccess", "com.apple.Passwords", "com.1password.1password", "com.agilebits.onepassword7", "com.bitwarden.desktop",
     ]
-    /// Browsers hold every signed-in account, and System Settings changes the Mac: these can be looked at only. So can copies of pi²; see `pi2`.
-    static let viewOnly = [
-        "com.apple.systempreferences", "com.apple.Safari", "com.google.Chrome", "org.mozilla.firefox", "com.microsoft.edgemac",
+    /// System Settings changes the Mac: it can be looked at only. So can copies of pi²; see `pi2`.
+    static let systemSettings = ["com.apple.systempreferences"]
+    /// Browsers hold every signed-in account: look-only, unless the agent allows everything (`anyApp`).
+    static let browsers = [
+        "com.apple.Safari", "com.google.Chrome", "org.mozilla.firefox", "com.microsoft.edgemac",
         "company.thebrowser.Browser", "company.thebrowser.dia", "com.brave.Browser", "com.operasoftware.Opera", "com.vivaldi.Vivaldi",
     ]
 
@@ -86,5 +91,7 @@ public enum ComputerPolicy {
     public static func same(_ a: String, _ b: String?) -> Bool { b.map { a.lowercased() == $0.lowercased() } ?? false }
 
     public static func isNever(_ bundleID: String) -> Bool { same(bundleID, pi2) || matches(never, bundleID) }
-    public static func isViewOnly(_ bundleID: String) -> Bool { bundleID.lowercased().hasPrefix(pi2 + ".") || matches(viewOnly, bundleID) }
+    public static func isViewOnly(_ bundleID: String, anyApp: Bool = false) -> Bool {
+        bundleID.lowercased().hasPrefix(pi2 + ".") || matches(systemSettings, bundleID) || (!anyApp && matches(browsers, bundleID))
+    }
 }

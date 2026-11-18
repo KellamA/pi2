@@ -27,6 +27,8 @@ The actions are: list the apps it may use, open an app, look at a window, click,
 
 With **Ask before each action** on, which is the default, every click, keystroke and menu command waits for you. The request says what will happen in words, such as "Click the “Send” button in Mail". You can allow once, allow that app for the rest of the conversation, or deny. Looking is never asked about.
 
+An agent with [Allow everything](allow-everything.md) on is asked about no action, may use any app, not only the ones listed, and may control browsers. The other limits below still hold, and System Settings stays look-only.
+
 While an agent is acting, a pill at the top of the screen says so. Its Stop button, or pressing Esc twice, stops the run.
 
 ## What it will not do

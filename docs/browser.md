@@ -35,6 +35,8 @@ With **Ask before clicking buttons, typing and uploading** on, which is the defa
 - Clicking a button or anything else that is not a plain link, typing, choosing from a list and uploading wait for you. The request says what will happen in words, such as "Click “Submit application” on boards.greenhouse.io" or "Type “ada@example.com” into the “Email” field on example.com". When the text to type is long, the request shows all of it.
 - You can allow once, allow that site for the rest of the conversation, or deny.
 
+An agent with [Allow everything](allow-everything.md) on is asked about none of these. What it does is still only what the app described for the action.
+
 What you approve is what is done. If the page changes between the request and your answer, so that the same number now means something else, the action is not done and the agent is told to look again.
 
 While an agent is browsing, a pill at the top of the screen says so. Its Show button brings up the page; its Stop button, or pressing Esc twice, stops the run.

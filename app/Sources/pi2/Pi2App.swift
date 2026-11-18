@@ -717,6 +717,9 @@ private struct AgentRow: View {
         HStack(spacing: 8) {
             AgentAvatar(agent: agent, size: 20)
             Text(agent.name).lineLimit(1)
+            if agent.allowEverything == true {
+                Tag(AllowEverything.tag, .bad).help("\(agent.name) asks you about nothing and may use any app")
+            }
             Spacer(minLength: 4)
             if hovering {
                 Button("New conversation with \(agent.name)", systemImage: "plus.bubble") {

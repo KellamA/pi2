@@ -34,6 +34,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            AllowEverythingBanner(engine: engine, conversation: summary, inset: inset)
             if let state, data.items.isEmpty, !busy, state.partial == nil {
                 AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions, projectInstructionFiles: state.projectInstructionFiles)
                     // In a short pane the introduction gives way, so the message field stays in view.

@@ -62,6 +62,12 @@ export type AgentProfile = {
 	 * `variables.remove`, never by saving the agent.
 	 */
 	variables?: AgentVariable[];
+	/**
+	 * Allow everything (#294): its conversations are asked about nothing and may use any app. Set only through
+	 * `agents.allowEverything`, after the app's confirmation; never by saving the agent, and never copied to a duplicate.
+	 * A conversation takes it at each message (`takeAgentSwitch`), so a change counts from its next message.
+	 */
+	allowEverything?: true;
 	createdAt: number;
 };
 
@@ -89,7 +95,24 @@ export type Meta = {
 	renamed?: boolean;
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
+	/**
+	 * Its agent had Allow everything on at this conversation's latest message: nothing it does waits for approval
+	 * (see `Inbox`). Taken from its own agent at each message, never from the conversation that handed it work.
+	 */
+	allowEverything?: true;
 };
+
+/**
+ * Take the agent's Allow everything switch into a conversation, as each message is sent: turning it on or off counts
+ * from each conversation's next message, never in the middle of a run. Returns whether anything changed.
+ */
+export function takeAgentSwitch(meta: Meta, agent: AgentProfile | undefined): boolean {
+	const on = agent?.allowEverything === true;
+	if ((meta.allowEverything === true) === on) return false;
+	if (on) meta.allowEverything = true;
+	else delete meta.allowEverything;
+	return true;
+}
 
 /** Index of conversations: titles, order, tool access. */
 export const Library = defineDoc<{ conversations: Record<string, Meta> }>({
@@ -178,10 +201,24 @@ export type InboxItem = {
  */
 export class Inbox {
 	readonly #waiting = new Map<string, { item: InboxItem; resolve: (answer: string) => void }>();
+	readonly #unasked: (conversationId: number) => Promise<boolean>;
 	onChange: () => void = () => {};
 
-	/** Show `item` and wait for the person. Rejects when the run is stopped. */
+	/**
+	 * `unasked` says whether a conversation's approvals go without asking: Allow everything (#294). Every approval an
+	 * agent waits on comes through `ask`, so this is the one place that decides it, whatever kind of approval it is.
+	 */
+	constructor(unasked: (conversationId: number) => Promise<boolean> = async () => false) {
+		this.#unasked = unasked;
+	}
+
+	/**
+	 * Show `item` and wait for the person. Rejects when the run is stopped. An approval in a conversation that allows
+	 * everything is answered "once" at once, without being shown: allowed this time, with nothing remembered (no rule,
+	 * no "always"), so turning the switch off later leaves nothing behind. A question is always asked.
+	 */
 	async ask(item: InboxItem, context: Context): Promise<string> {
+		if (item.kind === "approval" && (await this.#unasked(item.conversationId))) return "once";
 		const answer = new Promise<string>((resolve) => this.#waiting.set(item.id, { item, resolve }));
 		this.onChange();
 		try {

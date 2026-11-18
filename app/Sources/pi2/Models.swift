@@ -73,6 +73,8 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     let createdAt: Double?
     /// Set for a sub-chat: the conversation whose agent opened it.
     let parent: Int?
+    /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
+    var allowEverything: Bool? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
@@ -350,6 +352,9 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var commandRules: [CommandRule]?
     /// Variables its commands get. Changed through their own requests, never by saving the agent.
     var variables: [AgentVariable]?
+    /// Allow everything: nothing is asked about and any app may be used. Changed only through `agents.allowEverything`,
+    /// after a confirmation, never by saving the agent, and not copied to a duplicate.
+    var allowEverything: Bool?
     var createdAt: Double
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
@@ -403,6 +408,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
         agent.toolsOff = toolsOff ?? []
         agent.commandRules = nil
         agent.variables = nil
+        agent.allowEverything = nil
         return agent
     }
 }

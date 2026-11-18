@@ -42,11 +42,11 @@ public actor ComputerController {
     // MARK: - Entry point
 
     public func perform(_ request: ComputerRequest) async -> ComputerReply {
-        if request.action == "list_apps" { return listApps(request.apps) }
+        if request.action == "list_apps" { return listApps(request.apps, anyApp: request.anyApp) }
         guard let bundleID = request.app, !bundleID.isEmpty else { return .failure("\(request.action) needs `app`, a bundle ID from list_apps.") }
         let acting = request.action == "describe" ? (request.of ?? "") : request.action
         if ComputerPolicy.same(bundleID, ownBundleID) || ComputerPolicy.isNever(bundleID) { return .failure("\(bundleID) cannot be used by an agent.") }
-        if ComputerPolicy.isViewOnly(bundleID), !["screenshot", "open_app"].contains(acting) {
+        if ComputerPolicy.isViewOnly(bundleID, anyApp: request.anyApp), !["screenshot", "open_app"].contains(acting) {
             return .failure("\(Self.name(of: bundleID)) can only be looked at, not controlled.")
         }
         if request.action == "describe" { return ComputerReply(ok: true, text: describe(request, bundleID: bundleID)) }
@@ -81,17 +81,21 @@ public actor ComputerController {
         return bundleID
     }
 
-    private func listApps(_ apps: [String]) -> ComputerReply {
+    private func listApps(_ apps: [String], anyApp: Bool) -> ComputerReply {
+        // Allow everything: any app may be used by its bundle id, and the person's list is only a start.
+        let any = "You may use any app on this Mac by its bundle ID, except terminals, script editors, password managers and pi² itself; System Settings can only be looked at."
+        if anyApp, apps.isEmpty { return ComputerReply(ok: true, text: any, summary: "Listed apps") }
         guard !apps.isEmpty else {
             return ComputerReply(ok: true, text: "No apps yet. The person chooses them in this agent's settings in pi², under Computer use.", summary: "Listed apps")
         }
         let lines = apps.map { bundleID -> String in
             let installed = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
             let state = Self.running(bundleID) != nil ? "running" : installed ? "not running" : "not installed"
-            let limit = ComputerPolicy.isViewOnly(bundleID) ? ", look only" : ""
+            let limit = ComputerPolicy.isViewOnly(bundleID, anyApp: anyApp) ? ", look only" : ""
             return "\(bundleID) — \(Self.name(of: bundleID)) (\(state)\(limit))"
         }
-        return ComputerReply(ok: true, text: "Apps you may use:\n" + lines.joined(separator: "\n"), summary: "Listed apps")
+        let heading = anyApp ? "\(any) The apps the person listed:" : "Apps you may use:"
+        return ComputerReply(ok: true, text: heading + "\n" + lines.joined(separator: "\n"), summary: "Listed apps")
     }
 
     private func open(_ request: ComputerRequest, bundleID: String) async -> ComputerReply {
