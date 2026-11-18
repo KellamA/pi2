@@ -1,6 +1,6 @@
 # Models on this Mac: getting them
 
-pi² can run a model on the Mac itself with the [Strata](https://github.com/Niko1221/Strata) engine (#173). This page is about the part that gets the engine and a model onto the Mac and sets them up (#292): Settings › Providers › **On this Mac**. Starting and stopping a model is another part's (#291), which reads what this one writes.
+pi² can run a model on the Mac itself with the [Strata](https://github.com/Niko1221/Strata) engine (#173). This page is about the part that gets the engine and a model onto the Mac and sets them up (#292): Settings › Providers › **On this Mac**. Starting and stopping a model is another part's (#291), which reads what this one writes. What the engine and the model need, as found by running them on a Mac (#290), is in [strata.md](strata.md).
 
 The engine does all of it (`engine/src/localmodels.ts`, with `download.ts` and `localcatalog.ts`); the app shows it (`app/Sources/pi2/LocalModelsSettings.swift`).
 
@@ -70,7 +70,7 @@ A model's context size (16K to 262K tokens), whether it reads pictures (for a pa
 
 ### Not done here yet: preparing a pack
 
-Strata prepares a pack once after its download, with its own setup in the control package: a pack folder made from the first file, the draft layer (5.2 GB, which it fetches itself from Qwen's original model; it makes answers faster and can be left off) and a run config naming every flag the server starts the engine with (#290). That needs the real control package and model to check against, so it is left to #293, which runs the real thing; the disk check already counts the space it takes.
+Strata prepares a pack once after its download, with its own setup in the control package: a pack folder made from the first file, the draft layer (5.2 GB, which it fetches itself from Qwen's original model; it makes answers faster and can be left off) and a run config naming every flag the server starts the engine with (#290). [strata.md](strata.md#preparing-a-model) has the command that does it, how long it took and what it writes. That needs the real control package and model to check against, so it is left to #293, which runs the real thing; the disk check already counts the space it takes.
 
 ## Requests and events
 
