@@ -18,6 +18,7 @@ import { lazyStream } from "@earendil-works/pi-ai/api/lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import { openrouterImagesApi } from "@earendil-works/pi-ai/api/openrouter-images.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { isAttachmentBlock } from "./attachments.ts";
@@ -465,10 +466,32 @@ function demoProvider(): Provider {
 	fast.setResponses(Array.from({ length: 100_000 }, () => step));
 	const pace = (context: { messages: readonly unknown[] }, options?: object) =>
 		(options as { deferred?: unknown } | undefined)?.deferred === undefined && demoPrompt(demoLast(context.messages)).startsWith("/slow ") ? slow : fast;
+	// Tests give the demo a picture model on a stand-in server (PI2_DEMO_PICTURES, its address on 127.0.0.1), which
+	// speaks OpenRouter's picture API, so making pictures can be tried without a provider (pictures.ts). Priced, so
+	// Usage has a cost to count.
+	const standIn = demoPictureServer();
+	const pictureModels =
+		standIn === undefined
+			? []
+			: [
+					{
+						type: "image" as const,
+						id: "demo-pictures",
+						name: "Demo pictures (stand-in)",
+						api: "openrouter-images" as const,
+						provider: DEMO_PROVIDER,
+						baseUrl: standIn,
+						input: ["text" as const, "image" as const],
+						output: ["image" as const],
+						cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+					},
+				];
 	return createProvider({
 		id: DEMO_PROVIDER,
-		auth: { apiKey: { name: "Demo", resolve: async () => ({ auth: {} }) } },
-		models: fast.models,
+		// The picture API sends a key; the stand-in takes any.
+		auth: { apiKey: { name: "Demo", resolve: async () => ({ auth: standIn === undefined ? {} : { apiKey: "demo" } }) } },
+		models: [...fast.models, ...pictureModels],
+		...(standIn === undefined ? {} : { images: { "openrouter-images": openrouterImagesApi() } }),
 		api: {
 			stream: (model, context, options) => pace(context, options).stream(model, context, options),
 			streamSimple: (model, context, options) => pace(context, options).streamSimple(model, context, options),
@@ -477,6 +500,17 @@ function demoProvider(): Provider {
 			cancelDeferred: fast.cancelDeferred,
 		},
 	});
+}
+
+/** The stand-in picture server tests name in PI2_DEMO_PICTURES, if it is on 127.0.0.1; nothing else is ever used. */
+function demoPictureServer(): string | undefined {
+	const given = process.env.PI2_DEMO_PICTURES;
+	if (given === undefined || given === "") return undefined;
+	try {
+		return new URL(given).hostname === "127.0.0.1" ? given : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Sent as the key to an endpoint that was saved without one. */

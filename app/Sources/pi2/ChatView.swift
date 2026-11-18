@@ -39,6 +39,7 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            AllowEverythingBanner(engine: engine, conversation: summary, inset: inset)
             if isChat, isEmpty, !archived {
                 ChatStart(pick: start) { composer }
             } else {

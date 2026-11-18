@@ -468,6 +468,14 @@ struct RootView: View {
             if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }), !model.isArchived(id) {
                 model.restoreSelection(engine.rootConversations.first.map { .conversation($0.id) })
             }
+            #if PI2_DEVELOPMENT
+            // A conversation `PI2_SHOW` names that is made after launch, through the engine's socket, opens when it comes,
+            // as long as nothing else has been chosen.
+            if model.selection == nil, engine.hasLoadedLibrary,
+               let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: list, archived: engine.archived) {
+                model.selection = asked
+            }
+            #endif
         }
         .alert(engine.isChat(model.renaming?.id ?? 0) ? "Rename chat" : "Rename conversation", isPresented: Binding(get: { model.renaming != nil }, set: { if !$0 { model.renaming = nil } })) {
             TextField("Title", text: $model.newTitle)
@@ -768,7 +776,11 @@ private struct AgentRow: View {
     var body: some View {
         HStack(spacing: 8) {
             AgentAvatar(agent: agent, size: 20)
-            Text(agent.name).lineLimit(1)
+            // With the red tag beside it, the name keeps its room and the model's name gives way first.
+            Text(agent.name).lineLimit(1).layoutPriority(1)
+            if agent.allowEverything == true {
+                Tag(AllowEverything.tag, .bad).fixedSize().help("\(agent.name) asks you about nothing and may use any app")
+            }
             Spacer(minLength: 4)
             if hovering {
                 Button("New conversation with \(agent.name)", systemImage: "plus.bubble") {
@@ -779,7 +791,7 @@ private struct AgentRow: View {
                 .foregroundStyle(Theme.tx2)
                 .help("New conversation with \(agent.name)")
             } else {
-                Text(engine.shortModelName(agent.model)).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
+                Text(engine.shortModelName(agent.model)).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).layoutPriority(-1)
                     // Kept for VoiceOver and keyboard users, who never hover.
                     .accessibilityAction(named: "New conversation with \(agent.name)") { model.newConversation(agentId: agent.id) }
             }

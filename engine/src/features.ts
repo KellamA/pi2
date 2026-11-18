@@ -24,6 +24,7 @@ import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
+import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { reads } from "./reading.ts";
 import { runCode } from "./runcode.ts";
@@ -69,6 +70,8 @@ export type FeatureParts = {
 	wraps?: Wrap<any>[];
 	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
 	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean }): string[];
+	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
+	withheld?(): string[];
 	/** Requests from the app, by method name. Throw an Error with a plain message to refuse. */
 	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
@@ -138,6 +141,7 @@ export const FEATURES: Feature[] = [
 	look,
 	documents,
 	runCode,
+	pictures,
 	chat,
 	limits,
 	promptCache,
