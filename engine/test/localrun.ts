@@ -7,9 +7,9 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { STRATA } from "../src/localengine.ts";
 import { EngineClient, exited, running, stop, until } from "./patience.ts";
@@ -38,30 +38,50 @@ assert.equal(STRATA.stage?.("[strata] ready: http://127.0.0.1:4321/v1"), undefin
 assert.equal(STRATA.stage?.("some other line"), undefined);
 step("how far loading has got is read from what the engine prints");
 {
-	// A prepared model is served by Strata's control package, with its run config, and Strata's own folders in pi²'s.
-	const engine = { version: "0.1.60", path: "/e/strata", folder: "/e", control: { version: "0.1.61", folder: "/c" } };
-	const model = { id: "m", name: "M", pack: "IQ3_S", path: "/m/1.gguf", contextSize: 65_536, options: {} };
-	const served = STRATA.command(engine, { ...model, config: "/m/strata-m.json" }, 4321, "/data");
-	assert.equal(served.program, "/c/python/bin/python3");
-	assert.deepEqual(served.args.slice(0, 5), ["/c/serve/server.py", "--engine", "strata", "--config", "/m/strata-m.json"]);
-	assert.ok(served.args.includes("4321") && served.args.includes("127.0.0.1"));
-	assert.deepEqual(served.env, { HOME: "/data/local/strata/home", XDG_DATA_HOME: "/data/local/strata/data", STRATA_HOME: "/data/local/strata/strata", PYTHONNOUSERSITE: "1" });
-	assert.deepEqual(served.unset, ["PYTHONHOME", "PYTHONPATH"]);
-	assert.equal(STRATA.command(engine, model, 4321, "/data").program, "/e/strata", "a model not yet prepared has no run config");
-	assert.ok(!JSON.stringify(served).includes("key"), "no key on the command line");
+	// A prepared model is served by Strata's control package, with its run config as pi² adjusts it, and Strata's own folders in pi²'s.
+	const data = mkdtempSync(join(tmpdir(), "pi2-local-config-"));
+	try {
+		const written = join(data, "strata-m.json");
+		writeFileSync(written, JSON.stringify({ exe: "component:strata-engine", args: ["--pack", "/p", "--max-context", "32768", "--mmap-experts", "--vision"], vision: { mmproj: "/m/v.gguf" }, log: "/c/strata-m.log", port: 8080 }));
+		const engine = { version: "0.1.60", path: "/e/strata", folder: "/e", control: { version: "0.1.61", folder: "/c" } };
+		const model = { id: "m", name: "M", pack: "IQ3_S", path: "/m/1.gguf", contextSize: 65_536, options: { parallel: 2 } };
+		const served = STRATA.command(engine, { ...model, config: written }, 4321, data);
+		const run = join(data, "local", "run", "m.json");
+		assert.equal(served.program, "/c/python/bin/python3");
+		assert.deepEqual(served.args, ["/c/serve/server.py", "--engine", "strata", "--config", run, "--host", "127.0.0.1", "--port", "4321", "--parallel", "2", "--shutdown-timeout", "2"]);
+		const config = JSON.parse(readFileSync(run, "utf8"));
+		assert.deepEqual(config.args, ["--pack", "/p", "--max-context", "65536", "--mmap-experts"], "the context size set now, and pictures left out while they are off");
+		assert.equal(config.vision, undefined);
+		assert.equal(config.log, join(data, "local", "logs", "m.engine.log"));
+		assert.deepEqual(JSON.parse(readFileSync(written, "utf8")).args.at(-1), "--vision", "what setup wrote is left as it was");
+		STRATA.command(engine, { ...model, config: written, options: { vision: true } }, 4321, data);
+		assert.deepEqual(JSON.parse(readFileSync(run, "utf8")).args.slice(-4), ["--max-context", "65536", "--mmap-experts", "--vision"], "pictures on");
+		assert.deepEqual(served.env, { HOME: join(data, "local/strata/home"), XDG_DATA_HOME: join(data, "local/strata/data"), STRATA_HOME: join(data, "local/strata/strata"), PYTHONNOUSERSITE: "1" });
+		assert.deepEqual(served.unset, ["PYTHONHOME", "PYTHONPATH"]);
+		assert.match(STRATA.missing?.(engine, model) ?? "", /^M is not prepared for Strata yet/, "a model not yet prepared cannot be started");
+		assert.match(STRATA.missing?.({ version: "0.1.60", path: "/e/strata" }, { ...model, config: written }) ?? "", /from an earlier pi² and has no server/);
+		assert.ok(!JSON.stringify(served).includes("key"), "no key on the command line");
+	} finally {
+		rmSync(data, { recursive: true, force: true });
+	}
 }
-step("a prepared model is started through Strata's control package with its run config");
+step("a prepared model is started through Strata's control package with its run config, adjusted to its settings");
 
 // ---- The stand-in, as the engine set up on this Mac, and the models it serves
 
-const standIn = join(files, "strata");
-writeFileSync(standIn, `#!/bin/sh\nexec "${process.execPath}" "${join(import.meta.dirname, "localserver.ts")}" "$@"\n`);
+// Strata's control package, whose Python runs the stand-in in place of its server, and the engine beside it.
+const standIn = join(files, "python", "bin", "python3");
+mkdirSync(dirname(standIn), { recursive: true });
+writeFileSync(standIn, `#!/bin/sh\nshift\nexec "${process.execPath}" "${join(import.meta.dirname, "localserver.ts")}" "$@"\n`);
 chmodSync(standIn, 0o755);
+/** A model's behaviour, and the run config Strata's setup would have written for it, naming it as the engine's model file. */
 const model = (name: string, behaviour: Record<string, unknown>) => {
 	const path = join(files, `${name}.json`);
 	writeFileSync(path, JSON.stringify(behaviour));
+	writeFileSync(join(files, `strata-${name}.json`), JSON.stringify({ exe: "component:strata-engine", args: ["--native", path, "--max-context", "32768", "--vision"], vision: { mmproj: "x" } }));
 	return path;
 };
+const config = (name: string) => join(files, `strata-${name}.json`);
 const gate = join(files, "alpha.loaded");
 const alpha = model("alpha", { gate });
 const beta = model("beta", { child: true, ignoreTerm: true });
@@ -72,9 +92,10 @@ writeFileSync(
 		// The downloads piece drops an engine whose folders are gone; these are there.
 		engine: { version: "0.0.0-test", path: standIn, folder: files, control: { version: "0.0.0-test", folder: files } },
 		models: [
-			{ id: "alpha", name: "Alpha (stand-in)", pack: "Q2", path: alpha, contextSize: 40_960, options: { parallel: 2, unknown: "kept" } },
-			{ id: "beta", name: "Beta (stand-in)", pack: "Q2", path: beta, contextSize: 8_192, options: { vision: true, visionFile: join(files, "beta.mmproj") } },
-			{ id: "broken", name: "Broken (stand-in)", pack: "Q2", path: broken, contextSize: 8_192, options: {} },
+			{ id: "alpha", name: "Alpha (stand-in)", pack: "Q2", path: alpha, contextSize: 40_960, config: config("alpha"), options: { parallel: 2, unknown: "kept" } },
+			{ id: "beta", name: "Beta (stand-in)", pack: "Q2", path: beta, contextSize: 8_192, config: config("beta"), options: { vision: true, visionFile: join(files, "beta.mmproj") } },
+			{ id: "broken", name: "Broken (stand-in)", pack: "Q2", path: broken, contextSize: 8_192, config: config("broken"), options: {} },
+			{ id: "unprepared", name: "Unprepared (stand-in)", pack: "Q2", path: alpha, contextSize: 8_192, options: {} },
 		],
 	}),
 );
@@ -152,6 +173,7 @@ try {
 			["alpha", "Alpha (stand-in)", "On this Mac", 40_960, false],
 			["beta", "Beta (stand-in)", "On this Mac", 8_192, true],
 			["broken", "Broken (stand-in)", "On this Mac", 8_192, false],
+			["unprepared", "Unprepared (stand-in)", "On this Mac", 8_192, false],
 		],
 		"every model set up is offered, under On this Mac, with its context size, whether or not it runs",
 	);
@@ -167,6 +189,7 @@ try {
 	// ---- Start on first use; a message sent while it loads waits and is answered
 	const a = await client.conversation("alpha");
 	assert.equal(client.state(a).local.status, "stopped", "a conversation with the model, not shown and not working, does not start it");
+	assert.equal(client.state(a).agent.thinkingLevel, "low", "a new conversation with a model on this Mac thinks at Low");
 	assert.equal(client.server("alpha"), undefined);
 	await client.show(a);
 	const loading = await client.until("alpha starting", () => client.server("alpha"));
@@ -185,10 +208,12 @@ try {
 	assert.equal(client.server("alpha").status, "ready");
 	assert.equal(client.state(a).local.status, "ready");
 	assert.deepEqual(client.server("alpha").users, [a]);
-	// Its process: the command line localengine.ts gives, on 127.0.0.1 only, a group of its own with the run's marker.
+	// Its process: the command line localengine.ts gives Strata's server, on 127.0.0.1 only, a group of its own with the
+	// run's marker, and the run config adjusted to the model's settings.
 	const args = JSON.parse(readFileSync(`${alpha}.args`, "utf8")) as string[];
-	assert.deepEqual(args.slice(0, 4), ["--model", alpha, "--host", "127.0.0.1"]);
-	assert.deepEqual(args.slice(6), ["--context", "40960", "--parallel", "2", "--vision", "no"]);
+	assert.deepEqual(args.slice(0, 7), ["--engine", "strata", "--config", join(home, "local", "run", "alpha.json"), "--host", "127.0.0.1", "--port"]);
+	assert.deepEqual(args.slice(8), ["--parallel", "2", "--shutdown-timeout", "2"]);
+	assert.deepEqual(JSON.parse(readFileSync(`${alpha}.config`, "utf8")).args, ["--native", alpha, "--max-context", "40960"]);
 	assert.equal(client.server("alpha").pid, alphaPid);
 	assert.equal(Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(alphaPid)], { encoding: "utf8" }).trim()), alphaPid, "it leads a process group of its own");
 	assert.match(execFileSync("/bin/ps", ["-E", "-ww", "-o", "command=", "-p", String(alphaPid)], { encoding: "utf8" }), /PI2_RUN=[0-9a-f]{32}/, "it carries the run's marker");
@@ -252,6 +277,14 @@ try {
 	assert.match(said, /^Broken \(stand-in\) could not be started on this Mac: Strata exited with code 1 before the model was loaded\. What Strata printed is in its log, .*broken\.log\.$/);
 	assert.equal(isRetryableAssistantError({ role: "assistant", stopReason: "error", errorMessage: said } as never), false, "it is not asked again and again");
 	step("a model that cannot start says why in the conversation, and where its log is");
+
+	// ---- One whose files are here but that Strata's setup has not prepared yet
+	const u = await client.conversation("unprepared");
+	await client.show(b, u);
+	const early = await client.ask(u, "hello");
+	assert.match(client.answers(u).at(-1)?.error ?? early.failure?.detail ?? "", /^Unprepared \(stand-in\) is not prepared for Strata yet/);
+	assert.equal(client.server("unprepared"), undefined, "nothing is started for it");
+	step("a model not yet prepared is not started, and a message to it says why");
 
 	// ---- Left over by an engine killed outright
 	const e = await client.conversation("beta");

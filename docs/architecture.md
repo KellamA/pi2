@@ -42,7 +42,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
 | `src/modellists.ts` | Asking a built-in provider which models a key or sign-in can use; the store of catalogs the library refreshes itself (`model-catalogs.json`) |
-| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs, setting them up, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
+| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs (or taking a pack's files from a folder of the person's), preparing them with Strata's setup, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
 | `src/localcatalog.ts` | What can be downloaded for models on this Mac: the pinned engine and the packs, with their checksums and memory figures |
 | `src/download.ts` | Downloading one large file that carries on where it stopped and is checked against a checksum known in advance |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
@@ -81,7 +81,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/localrun.ts` | Running a model on this Mac: starting it when a conversation starts using it, sharing it, stopping it when none does, and its process. See [local-models-running.md](local-models-running.md) |
-| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of how the real engine is started and known to be ready |
+| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of the real engine: how its server is started, with what run config, and known to be ready, and how its setup installs the engine and prepares a pack |
 | `src/mcp.ts` | MCP servers and their tools. See [mcp.md](mcp.md) |
 | `src/backup.ts` | Backup and restore |
 | `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |

@@ -17,7 +17,7 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +26,7 @@ import { isPutAway } from "./archive.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { execFileOffThread } from "./offthread.ts";
-import { type EngineRecipe, type LocalModel, type LocalSetup, localSetupReader, STRATA } from "./localengine.ts";
+import { type EngineRecipe, fileName, type LocalModel, type LocalSetup, localSetupReader, STRATA } from "./localengine.ts";
 import { localChanged } from "./localmodels.ts";
 import { forgetRun, killLater, killRemaining, type Listed, leftOverLog, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 import { LOCAL_PROVIDER, type LocalLease } from "./providers.ts";
@@ -135,8 +135,6 @@ export function useRecipe(next: EngineRecipe): void {
 
 const tilde = (path: string) => (path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path);
 
-/** A file name from a model id: ids may hold "/", ":" and the like. */
-const fileName = (id: string) => id.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "") || "model";
 
 /** A port on 127.0.0.1 that nothing listens on right now. */
 function freePort(): Promise<number> {
@@ -310,6 +308,8 @@ function start(modelId: string): Server {
 	const model = setup.models.find((each) => each.id === modelId);
 	if (model === undefined) throw new Error(notSetUp(modelId));
 	if (setup.engine === null) throw new Error(notInstalled());
+	const missing = recipe.missing?.(setup.engine, model);
+	if (missing !== undefined) throw new Error(missing);
 	const host = engine!;
 	const folder = join(host.home, "local", "logs");
 	let markReady = () => {};
@@ -372,6 +372,9 @@ function start(modelId: string): Server {
 		const run = newRun();
 		const marker = run.marker;
 		server.marker = marker;
+		// A new file, not the old one emptied: a server of this model still ending (one the last engine left, being
+		// stopped) keeps writing to the old one, and its last lines must not land in this run's log.
+		rmSync(server.log, { force: true });
 		const output = openSync(server.log, "w");
 		let child: ChildProcess;
 		try {

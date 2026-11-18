@@ -19,6 +19,8 @@ struct LocalStatus: Decodable {
         let name: String
         let url: String
         let summary: String
+        /// A part of it the person must read before agreeing, in its own words, shown in full where they agree.
+        let quote: String?
     }
     struct InstalledEngine: Decodable { let version: String; let path: String }
     struct Engine: Decodable {
@@ -53,20 +55,36 @@ struct LocalStatus: Decodable {
         let contextSize: Int
         let options: Options
         let needsGB: Double?
+        /// Prepared for Strata, so it can run; false while it is being prepared again (after an update of Strata).
+        let prepared: Bool?
     }
     struct Download: Decodable, Identifiable {
         struct Retry: Decodable { let reason: String; let at: Double }
+        /// While Strata's setup prepares the model: the step it is at (of 7), what it says it is doing, and how far.
+        struct Prepare: Decodable { let step: Int?; let stage: String?; let fraction: Double?; let startedAt: Double }
         let id: String
         let kind: String
         let target: String
         let name: String
+        /// "running", "paused", "failed", or "waiting" (downloaded and checked, waiting for the engine to be prepared).
         let state: String
         let phase: String?
         let error: String?
         let received: Double
         let total: Double
         let retry: Retry?
+        /// "download", or "prepare" once its files are all here.
+        let stage: String?
+        /// A model set up before, being prepared again: it cannot be cancelled, only removed.
+        let again: Bool?
+        let prepare: Prepare?
+        /// The person's folder its files are taken from, where they match.
+        let from: String?
+        /// What Strata's setup printed while preparing it.
+        let log: String?
     }
+    /// A model loaded or loading, as the running part of pi² says (the same as Activity's).
+    struct Running: Decodable { let id: String; let status: String; let startedAt: Double; let stage: String? }
     struct Folder: Decodable { let path: String; let isDefault: Bool; let free: Double? }
     struct Context: Decodable { let sizes: [Int]; let `default`: Int; let measured: Int; let gbPerToken: Double }
 
@@ -77,6 +95,7 @@ struct LocalStatus: Decodable {
     let downloads: [Download]
     let folder: Folder
     let context: Context
+    let running: [Running]?
 
     init?(_ value: JSONValue?) {
         guard let value, let data = try? JSONEncoder().encode(value), let decoded = try? JSONDecoder().decode(LocalStatus.self, from: data) else { return nil }
@@ -193,7 +212,9 @@ struct LocalModelsSection: View {
                     Text("Strata engine")
                     Group {
                         if let installed = status.engine.installed {
-                            Text(status.engine.update ? "Version \(installed.version) · version \(status.engine.pinned.version) is available" : "Version \(installed.version) · ready")
+                            Text(!status.engine.update ? "Version \(installed.version) · ready"
+                                : installed.version == status.engine.pinned.version ? "Version \(installed.version) · set up by an earlier pi²: update it to run models"
+                                : "Version \(installed.version) · version \(status.engine.pinned.version) is available")
                         } else {
                             Text("Not downloaded · version \(status.engine.pinned.version), \(LocalFormat.size(status.engine.pinned.size))")
                         }
@@ -218,7 +239,7 @@ struct LocalModelsSection: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.name)
                     let memory = model.needsGB.map { status.memoryGB(needs: $0, context: model.contextSize, parallel: model.options.parallel) }
-                    Text("Context \(LocalFormat.tokens(model.contextSize))\(model.options.visionFile != nil ? (model.options.vision ? " · reads pictures" : " · pictures off") : "")\(model.options.parallel > 1 ? " · \(model.options.parallel) requests at once" : "")\(memory.map { " · about \(LocalFormat.gb($0)) of memory" } ?? "")")
+                    Text("\(model.prepared == false ? "Being prepared for Strata · " : "")Context \(LocalFormat.tokens(model.contextSize))\(model.options.visionFile != nil ? (model.options.vision ? " · reads pictures" : " · pictures off") : "")\(model.options.parallel > 1 ? " · \(model.options.parallel) requests at once" : "")\(memory.map { " · about \(LocalFormat.gb($0)) of memory" } ?? "")")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -226,12 +247,15 @@ struct LocalModelsSection: View {
                     ProgressView().controlSize(.small)
                 } else {
                     Button("Try It") { tryModel(model) }
-                        .disabled(status.engine.installed == nil)
-                        .help(status.engine.installed == nil ? "Get the Strata engine first" : "Start the model and send it one short message")
+                        .disabled(status.engine.installed == nil || model.prepared == false)
+                        .help(status.engine.installed == nil ? "Get the Strata engine first" : model.prepared == false ? "It is being prepared for Strata; it can be tried once that is done" : "Start the model and send it one short message")
                 }
                 Button("Configure…") { configuring = model }
                 Button("Remove", role: .destructive) { act("local.model.remove", ["id": model.id]) }
                     .help("Delete this model's files from this Mac")
+            }
+            if trying.contains(model.id) {
+                TryingLine(running: status.running?.first { $0.id == model.id })
             }
             if let trial = trials[model.id] {
                 Text(trial.failed ? trial.text : "It answered: “\(trial.text)”")
@@ -288,36 +312,82 @@ struct LocalModelsSection: View {
     fileprivate typealias Act = (String, [String: Any]) -> Void
 }
 
-/// A download under way, paused or stopped, with what can be done about it.
+/// While Try It starts a model: what the engine says it is doing and for how long, and what to expect of a first start.
+private struct TryingLine: View {
+    let running: LocalStatus.Running?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(text(at: context.date)).font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func text(at now: Date) -> String {
+        guard let running, running.status == "starting" else { return running?.status == "ready" ? "Loaded. Asking it a first question…" : "Starting it…" }
+        let seconds = max(0, Int(now.timeIntervalSince1970 - running.startedAt / 1000))
+        let elapsed = String(format: "%d:%02d", seconds / 60, seconds % 60)
+        return "Starting it on this Mac (\(elapsed))\(running.stage.map { ": \($0)" } ?? ""). The first start after setting it up can take about three minutes, while macOS prepares Strata for this Mac's graphics, and the Mac may be slow meanwhile; later starts take about 20 seconds."
+    }
+}
+
+/// A download under way, paused or stopped, or a model being prepared for Strata, with what can be done about it.
 private struct DownloadRow: View {
     let download: LocalStatus.Download
     let act: LocalModelsSection.Act
+
+    private var preparing: Bool { download.stage == "prepare" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(download.name)
                 Spacer()
+                if download.state == "failed" || download.stage == "prepare", download.error != nil, let log = download.log, FileManager.default.fileExists(atPath: log) {
+                    Button("Show Log") { LocalModels.showLog(log) }
+                        .help("Open what Strata's setup printed: \(log)")
+                }
                 if download.state == "running" {
                     Button("Pause") { act("local.download.pause", ["id": download.id]) }
-                } else {
+                } else if download.state != "waiting" {
                     Button(download.state == "failed" ? "Try Again" : "Resume") { act("local.download.resume", ["id": download.id]) }
                 }
-                Button("Cancel", role: .destructive) { act("local.download.cancel", ["id": download.id]) }
-                    .help("Stop the download and delete what it downloaded so far")
+                if download.again != true {
+                    Button("Cancel", role: .destructive) { act("local.download.cancel", ["id": download.id]) }
+                        .help(preparing ? "Stop, and delete the model's files and what preparing it made" : "Stop the download and delete what it downloaded so far")
+                }
             }
-            ProgressView(value: download.total > 0 ? min(download.received / download.total, 1) : 0)
-            Text(caption).font(.caption).foregroundStyle(download.error != nil ? Theme.bad : .secondary)
+            if preparing, download.state == "running" {
+                if let fraction = download.prepare?.fraction {
+                    ProgressView(value: fraction)
+                } else if let step = download.prepare?.step {
+                    ProgressView(value: Double(step - 1) / 7)
+                } else {
+                    ProgressView().progressViewStyle(.linear)
+                }
+            } else {
+                ProgressView(value: download.total > 0 ? min(download.received / download.total, 1) : 0)
+            }
+            Text(caption).font(.caption).foregroundStyle(download.error != nil && download.state != "waiting" ? Theme.bad : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
     private var caption: String {
         let amount = "\(LocalFormat.size(download.received)) of \(LocalFormat.size(download.total))"
-        if let error = download.error { return download.received > 0 ? "\(amount). \(error)" : error }
+        if let error = download.error { return download.received > 0 && !preparing ? "\(amount). \(error)" : error }
+        if preparing {
+            if download.state == "paused" { return "Downloaded and checked. Preparing it for Strata is paused; Resume carries on from where it stopped." }
+            let doing = download.prepare?.stage.map { ": \($0)" } ?? ""
+            let step = download.prepare?.step.map { " (step \($0) of 7)" } ?? ""
+            return "\(download.again == true ? "Preparing it again for the Strata installed now" : "Downloaded and checked. Preparing it for Strata")\(step)\(doing). This is done once, and takes a few minutes; Strata fetches 5.2 GB more from Hugging Face for it unless it has them already."
+        }
         if download.state == "paused" { return "Paused at \(amount)" }
+        let mine = download.from.map { " from \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? ""
         switch download.phase {
-        case "checking": return "Checking what was already downloaded (\(amount))…"
+        case "checking": return download.from == nil ? "Checking what was already downloaded (\(amount))…" : "Checking the files taken\(mine) (\(amount))…"
+        case "copying": return "Copying the files already on this Mac\(mine), and checking them (\(amount))…"
         case "unpacking": return "Checked; setting it up…"
         case "waiting": return "\(amount). \(download.retry?.reason ?? "") Trying again shortly."
         default: return amount
@@ -335,6 +405,19 @@ private struct LicenceView: View {
                 if let url = URL(string: licence.url) { Link("Read it", destination: url) }
             }
             Text(licence.summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let quote = licence.quote {
+                ScrollView {
+                    Text(quote)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(8)
+                }
+                .frame(minHeight: 90, maxHeight: 170)
+                .background(Theme.line2.opacity(0.35), in: .rect(cornerRadius: 6))
+                .accessibilityLabel("From the \(licence.name)")
+            }
         }
     }
 }
@@ -395,7 +478,7 @@ private struct ModelPackSheet: View {
                     }
                 }
             }
-            .frame(maxHeight: 300)
+            .frame(maxHeight: 240)
             if let selected {
                 Divider()
                 Text("Licences of \(selected.model.name) \(selected.pack.pack)").sectionLabel()
@@ -404,6 +487,13 @@ private struct ModelPackSheet: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             HStack {
+                Button("Agree and Use Files on This Mac…") {
+                    guard let chosen, let folder = chooseFiles() else { return }
+                    act("local.model.install", ["pack": chosen, "accept": true, "from": folder])
+                    dismiss()
+                }
+                .disabled(selected == nil)
+                .help("You already have this pack's files, from Strata or another download: choose the folder that holds them, or one above it. Those whose checksums match are used instead of being downloaded again.")
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Agree and Download") {
@@ -416,10 +506,21 @@ private struct ModelPackSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 560)
+        .frame(width: 600)
         .onAppear {
             chosen = packs.first { $0.pack.recommended && !$0.pack.installed }?.pack.id
         }
+    }
+
+    /// The folder of the person's own copy of the pack's files.
+    private func chooseFiles() -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Use These Files"
+        panel.message = "Choose the folder that holds the model's files (the .gguf files), or a folder above it, such as Strata's own data folder. pi² checks each file's checksum before it uses it, and downloads only what is missing or does not match."
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
     }
 
     private func packRow(_ pack: LocalStatus.Pack) -> some View {

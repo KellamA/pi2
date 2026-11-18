@@ -1,6 +1,6 @@
 # Strata and Qwen3.8-Flash-Next on a Mac: what they need
 
-This page is for whoever builds or changes local models in pi² (#173 and its pieces #291, #292, #293). It records what was found by running the real engine and model on a Mac (#290), so that the pieces can be built and checked without downloading 90 GB first. How pi² gets them onto the Mac is in [local-models.md](local-models.md). It describes **Strata 0.2.15** (engine 0.1.60, control 0.1.61), released on 2026-11-16. When pi² pins a newer Strata, check again everything below that is marked as pinned.
+This page is for whoever builds or changes local models in pi² (#173 and its pieces #291, #292, #293). It records what was found by running the real engine and model on a Mac (#290), so that the pieces can be built and checked without downloading 90 GB first, and what running them through pi² added (#293). How pi² gets them onto the Mac and prepares them is in [local-models.md](local-models.md), how it runs them in [local-models-running.md](local-models-running.md), with what #293 saw there. It describes **Strata 0.2.15** (engine 0.1.60, control 0.1.61), released on 2026-11-16. When pi² pins a newer Strata, check again everything below that is marked as pinned.
 
 Unless a line says it was read from Strata's code or documentation, it was run on an Apple M5 Max with 128 GB, macOS 27.2, on 2026-11-17, while seventeen other agents were building and testing on the same Mac. Times and speeds are from that busy Mac: a quiet Mac does better.
 
@@ -101,9 +101,11 @@ STRATA_CONTROL_INSTALL=1 HOME=… XDG_DATA_HOME=… STRATA_HOME=… PYTHONNOUSER
     --context 65536 --vision gpu --no-start --no-browser --yes
 ```
 
-It took 6 minutes 54 seconds on the busy Mac with the draft layer's tensors already fetched (it checks each against its SHA-256 again, then packs them, which took most of the time), and ended `All set.` with exit 0. It prints one line per step (`=== Step 6: preparing the model for Strata ===`, `[ok] model prepared: …`, `MTP draft layer:   0.87 / 5.21 GB (16%)`), which pi² can show as progress. A first run that also fetches the draft layer takes about 6 minutes more on a good connection.
+It took 6 minutes 54 seconds on the busy Mac with the draft layer's tensors already fetched (it checks each against its SHA-256 again, then packs them, which took most of the time), and ended `All set.` with exit 0. Run by pi² in #293, on a quieter Mac and with the tensors there already, the same took 55 seconds. It prints one line per step (`=== Step 6: preparing the model for Strata ===`, `[ok] model prepared: …`, `MTP draft layer:   0.87 / 5.21 GB (16%)`), which pi² can show as progress. A first run that also fetches the draft layer takes about 6 minutes more on a good connection.
 
 `--gguf-dir` files are taken as they are: the installer checks that each shard is as long as its own header says, not its hash, so pi² checks the SHA-256 itself after downloading (it did check the mmproj file's hash). The GGUF reader its tools use is in the control package (`third_party/strata-gguf-py`), so only the draft layer needs the network. Preparing belongs to the download step, not to starting.
+
+What it printed for pi² in #293 (abridged): `Strata on a Mac (Apple Silicon, Metal)`, then `=== Step 1: checking your Mac ===`, `=== Step 2: your choices ===` (with `context 65536: measured on the Mac up to 32768 (needles found at 8K-32K); longer is kept`), `=== Step 4: the Strata engine (Metal) ===` (`[ok] engine component: 0.1.60 (macos-arm64-metal)`: it needs the engine installed with `components install-file` first), `=== Step 5: downloading Qwen3.8-Flash-Next IQ3_S ===` (`[ok] model files present`, and the picture reader's SHA-256 checked), `=== Step 6: preparing the model for Strata ===` (`tools/iq_pack.py`, then `tools/mtp_fetch.py`, whose `MTP draft layer:   5.21 / 5.21 GB (100%)` goes to standard error, a line per tensor checked, then `tools/mtp_pack.py`), `=== Step 7: writing the run settings ===`, `All set.`. There is no step 3 on a Mac. When it fails it prints `  [X]  <what>`, a line of what to do, and `Setup stopped. Fix the item above and run it again - everything already done is kept and skipped.`, and exits 1.
 
 The run config written for this trial, `strata-iq3_s.json` (paths shortened to `<trial>`, `<control>` and `<engines>`):
 
@@ -180,7 +182,7 @@ STRATA_API_KEY=<key made for this run> HOME=… XDG_DATA_HOME=… STRATA_HOME=�
 | First start after installing | **162 s** to the ready file. About 140 s of it is macOS compiling the engine's Metal kernels (`MTLCompilerService` busy, the engine idle), once. |
 | Later starts | **21 s** to the ready file. |
 | First prompt longer than 64 tokens after the first start | **62 s** for a 391-token prompt (more kernels compiled on first use). After a later start the same prompt took 3.3 s. |
-| Memory | The engine held **58 to 61 GB** resident: its own memory ("physical footprint") was 14 GB; the rest is the 55 GB model file, mapped and kept resident for the GPU. The Mac's wired memory went from about 5 GB to 63 GB. The picture reader held about 1 GB more, the server 40 to 240 MB. `/v1/status` reports `machine.gpu.used_mib` (56,278 while answering) and `machine.ram`. |
+| Memory | The engine held **58 to 61 GB** resident: its own memory ("physical footprint") was 14 GB; the rest is the 55 GB model file, mapped and kept resident for the GPU. The Mac's wired memory went from about 5 GB to 63 GB. The picture reader held about 1 GB more, the server 40 to 240 MB. `/v1/status` reports `machine.gpu.used_mib` (56,278 while answering) and `machine.ram`. Through pi² in #293, at a 64K context: 59 to 69 GB resident in all, growing as answers paged more experts in; Activity Monitor showed 14 GB for `strata` and 1 GB for `strata-vision`; wired memory stayed about 5 GB. |
 | Effect on the Mac | With other agents building, about 250 MB went to swap while it was loaded, and memory pressure stayed normal. On a Mac with 64 GB this pack would not fit beside other work; Strata's own rule is IQ3_S from 96 GB. |
 | After stopping | Wired memory back to about 5 GB within 3 seconds. |
 
@@ -220,6 +222,7 @@ The model thinks before it answers, and the server sends the thinking separately
 
 - All of `none`, `minimal`, `low`, `medium`, `high` and `xhigh` were accepted. `none` and `minimal` gave no thinking at all; `low` a few lines; with none given the model thinks as it likes.
 - It thinks a lot by default: for "write a short story of about 200 words" it thought for about 2,200 tokens (25 s) before the first word of the story.
+- Any level given keeps it short. In #293, with an agent's system prompt and two tools, on three small agent tasks ("Which file in the current folder is the largest? Find out." and the like), a short sum and the 200-word story: `low` thought 120 to 320 characters and answered or called a tool within 1.1 to 1.8 seconds; `medium` and `high` about the same; none given, the story took 6,500 characters of thinking and 31 seconds before its first word. `none` called the tool in three of four tries, and once only said it would; `low` in all four. So pi² gives a new conversation with this model Low ([local-models-running.md](local-models-running.md#in-the-model-selector)).
 - The server caps the thinking at 75% of `max_tokens` (`[strata] thinking limited to 2250 of max_tokens 3000 so the answer has room`) and then makes it wrap up.
 - So pi² marks the model as a reasoning model whose effort can be set, and maps its thinking levels to `reasoning_effort`.
 
@@ -259,7 +262,9 @@ On the busy M5 Max, context 32K, draft layer on, one slot:
 
 The draft layer (MTP) proposes tokens that the full model checks, which changes nothing in the answer: the server reported 80 to 90% of the drafts accepted.
 
-## What this changes in the design (#173)
+## What this changed in the design (#173)
+
+All of it is built (#291, #292, #293); where pi² does it is in [local-models.md](local-models.md) and [local-models-running.md](local-models-running.md). Two things found while building it: Metal lets one program keep 115.4 GB of the M5 Max's 137.4 GB (`recommendedMaxWorkingSetSize`; MAC.md's "107.5 GB" is GiB), not three quarters; and Unsloth's files on `main` are no longer the ones Strata pins (it has re-sharded UD-Q4_K_XL), which is why pi² downloads from the pinned commit (#342).
 
 - **The engine is two components.** `local-models.json`'s `engine` names both the engine package (a folder, not one file) and the control package, with both versions, as #292 now writes it; for the server to find the engine, it is also installed into Strata's component folder with `strata components install-file`.
 - **Pin the model files' commit.** Strata downloads `resolve/<commit>/` at a pinned commit (`ed59f920…` for ISTA-DASLab), not `resolve/main/`: if a repository changes its files, a pinned URL still gives the bytes whose SHA-256 pi² knows, where `main` would give a file that fails the check.
@@ -302,3 +307,5 @@ STRATA_API_KEY=$(cat $T/run/key) HOME=$T/home XDG_DATA_HOME=$T/home/.local/share
 ```
 
 The whole folder can be deleted when it is no longer wanted; nothing outside it was installed or changed.
+
+#293 set the model up in a throwaway copy of pi² from this folder, with Settings' Agree and Use Files on This Mac…: pi² cloned the three model files and the draft layer's tensors from `models/` and `data/mtp/` (clones take no room on the same disk) and checked them, so nothing was downloaded again but the engine's 54 MB. The folder was not changed.
