@@ -238,8 +238,8 @@ export class ComputerHost extends AppHost<ComputerRequest, ComputerReply> {
 	constructor() {
 		super({
 			event: "computer",
-			notOpen: "The pi² app is not open, so there is no screen to use. Ask the person to open pi².",
-			closed: "The pi² app closed before the action finished. It may or may not have happened; take a screenshot to check once pi² is open again.",
+			notOpen: "The pi² app you run in is not open. That app does computer use and must be open, no matter which app or test copy you are trying to use. Nothing you do can restore computer use; the person needs to reopen your pi² app.",
+			closed: "The pi² app you run in closed before the action finished. The action may or may not have happened. Only the person can restore computer use by reopening your pi² app; take a screenshot to check once it is open again.",
 			late: "The app did not answer in time. The action may or may not have happened; take a screenshot to check.",
 		});
 	}

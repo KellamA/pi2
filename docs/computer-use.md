@@ -64,7 +64,7 @@ Computer use is not the only way an agent can see the screen. A shell command it
 
 ## Limits
 
-- pi² must be open.
+- The pi² app the agent runs in must be open, even when the app it wants to use is already running. If pi² is closed, only the person can reopen it to restore computer use; retrying or reopening a test copy will not help.
 - A click at a bare point, not on a listed control, is ignored by some apps while they are in the background. Such clicks go through accessibility where they can, and the agent is told when a click changed nothing.
 - Apps with little accessibility support may not be workable.
 - Whatever the chosen windows show is sent to the agent's model.

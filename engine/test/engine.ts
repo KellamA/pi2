@@ -854,7 +854,10 @@ try {
 	const lastAnswer = () => client.conversations.get(k)!.items.findLast((i) => i.kind === "assistant")!.text;
 
 	const noApp = await use({ action: "list_apps" });
-	assert.ok(noApp.isError && /not open/.test(noApp.text), "with no app connected there is no screen to use");
+	assert.ok(noApp.isError);
+	assert.match(noApp.text, /The pi² app you run in is not open/);
+	assert.match(noApp.text, /That app does computer use and must be open, no matter which app or test copy/);
+	assert.match(noApp.text, /Nothing you do can restore computer use; the person needs to reopen your pi² app/);
 
 	client.computerReply = (request) => {
 		if (request.action === "describe") return { ok: true, text: `Click the “New Note” button in ${request.app === MAIL ? "Mail" : "Notes"}` };
@@ -929,7 +932,10 @@ try {
 	await app.until("the second app is asked", () => app.computerRequests.some((r) => r.action === "click"));
 	app.socket.destroy();
 	await settled(k, computerCalls);
-	assert.ok(toolResults(k).at(-1)!.isError && /closed before/.test(toolResults(k).at(-1)!.text));
+	const disconnected = toolResults(k).at(-1)!;
+	assert.ok(disconnected.isError);
+	assert.match(disconnected.text, /The pi² app you run in closed before the action finished/);
+	assert.match(disconnected.text, /Only the person can restore computer use/);
 	assert.equal((await use({ action: "list_apps" })).text, "ok", "the app that was there before takes over again");
 	assert.deepEqual(sentToApp("list_apps").at(-1).apps, [NOTES, MAIL, "com.apple.Safari"], "the app is told which apps to list");
 
