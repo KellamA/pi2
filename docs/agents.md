@@ -27,7 +27,7 @@ A new worktree has none of the files git ignores, installed packages among them.
 
 ## Read first
 
-[CLAUDE.md](../CLAUDE.md), [CONTRIBUTING.md](../CONTRIBUTING.md) (all of it, and [Testing safely](../CONTRIBUTING.md#testing-safely) before you build, run or test anything), [development.md](development.md), [architecture.md](architecture.md), and the page in `docs/` for the area you touch. Then the issue with its comments:
+Read this page, [CLAUDE.md](../CLAUDE.md) and [CONTRIBUTING.md](../CONTRIBUTING.md) in full. Before you build, run or test anything, you must read all of [Testing safely](../CONTRIBUTING.md#testing-safely). Read the lists at the top of [development.md](development.md#what-to-read-for-what) and [architecture.md](architecture.md#what-to-read-for-what), then read only the sections that apply to your issue, and the page in `docs/` for the area you touch. The agent that hands out the work will usually name those sections. Read the issue with its comments:
 
 ```bash
 gh issue view N --json title,body,comments --jq '.title, .body, (.comments[] | "--- comment ---\n" + .body)'

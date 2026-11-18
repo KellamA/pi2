@@ -1,8 +1,6 @@
 # Working on pi²
 
-These are the project's instructions for any agent working in this repository, whatever tool it runs in: Claude Code, pi² itself, or another.
-
-Start with [CONTRIBUTING.md](CONTRIBUTING.md), [docs/development.md](docs/development.md) and [docs/architecture.md](docs/architecture.md). Before you build, run or test anything, read [Testing safely](CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md: the Mac you are working on may be running pi² for real work.
+These are the project's instructions for any agent working in this repository, whatever tool it runs in: Claude Code, pi² itself, or another. Read [CONTRIBUTING.md](CONTRIBUTING.md) in full, and read the worker's brief in full if you were given one. Read the lists at the top of [docs/development.md](docs/development.md#what-to-read-for-what) and [docs/architecture.md](docs/architecture.md#what-to-read-for-what), then read only the sections that apply to your issue. The agent that hands out the work will usually name those sections. Before you build, run or test anything, read all of [Testing safely](CONTRIBUTING.md#testing-safely): the Mac you are working on may be running pi² for real work.
 
 If you were handed issues to finish on your own, in a worktree of your own (as a worker of an orchestrating agent), also read [docs/agents.md](docs/agents.md) and follow it: where you are, what is not yours to touch, when to stop and what to report.
 

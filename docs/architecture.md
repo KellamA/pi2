@@ -1,5 +1,29 @@
 # Architecture
 
+## What to read for what
+
+Read only the sections that apply to your work. For more on one feature, see its own page in `docs/`.
+
+| Work | Sections to read |
+|---|---|
+| Finding where code lives | [The two programs](#the-two-programs), [Engine files](#engine-files) |
+| Connecting the app and engine | [How they talk](#how-they-talk) |
+| App and engine speed | [Keeping the app quick while agents work](#keeping-the-app-quick-while-agents-work), [Staying quick while agents work](#staying-quick-while-agents-work), [Agents' commands at a lower priority](#agents-commands-at-a-lower-priority) |
+| Agent settings and available tools | [Agent settings](#agent-settings), [Built-in tools](#built-in-tools) |
+| System prompts | [The system prompt's sections](#the-system-prompts-sections), [The list of prompt sections](#the-list-of-prompt-sections) |
+| Tool calls | [The calls of one answer](#the-calls-of-one-answer), [Reading files](#reading-files) for the `read` tool |
+| Approvals and permissions | [Approvals](#approvals), [Whose macOS permissions commands have](#whose-macos-permissions-commands-have) for shell commands |
+| Delegation and steering | [Sub-chats](#sub-chats), [A message while an agent waits](#a-message-while-an-agent-waits) |
+| Chat versions | [A chat's versions](#a-chats-versions) |
+| Provider thinking levels | [A thinking level refused by a provider](#a-thinking-level-refused-by-a-provider) |
+| Shell commands and worktrees | [What commands can find](#what-commands-can-find), [What an agent's commands get](#what-an-agents-commands-get), [An agent's own variables](#an-agents-own-variables), [A scratch folder](#a-scratch-folder) |
+| Shell command results and limits | [How long a command may run](#how-long-a-command-may-run), [A running command's clock](#a-running-commands-clock), [A command's exit code](#a-commands-exit-code), [A long output](#a-long-output), [A command's input](#a-commands-input) |
+| MCP servers | [An MCP server changed while a call runs on it](#an-mcp-server-changed-while-a-call-runs-on-it), [What commands can find](#what-commands-can-find), [What an agent's commands get](#what-an-agents-commands-get) |
+| Storage and credentials | [Where things live](#where-things-live) |
+| Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
+
+## The two programs
+
 pi² is two programs:
 
 ```
@@ -45,6 +69,8 @@ A message sent from the message field shows at once as a chip, "Sending", then "
 A development build measures this when asked: see [Measuring the app's speed](development.md#measuring-the-apps-speed).
 
 ## The engine
+
+### Engine files
 
 | File | What it holds |
 |---|---|
@@ -240,7 +266,7 @@ The app waits on the engine for everything it shows, and the engine has one thre
 
 The engine writes a line to `engine.log` whenever its thread was held for a second or more (`src/lag.ts`), and answers `engine.lag` with how late its thread ran since it was last asked.
 
-#### Agents' commands at a lower priority
+### Agents' commands at a lower priority
 
 The commands the engine starts for agents (shell commands, background commands and a worktree's set-up command) run under `nice -n 10`, and so does everything they start (`src/priority.ts`): when the Mac is busy, the processor goes to pi² and the person's other apps first. It changes nothing else: the same program, arguments, folder and environment, in the same process, as `nice` replaces itself with the command. A command can lower its own priority further but not raise it back. **Settings › Tools › Agents' commands** turns it off, for the commands started after.
 
@@ -290,6 +316,8 @@ A command's result shows the end of its output only: the last 2000 lines or 50 K
 The files are only text a program printed. They live in the data folder, in `output/<conversation>/`, one per call, named after the call's id, readable by the person's user only; never in the conversation's folder, which may be a project's. A conversation keeps the files of its last 50 shortened commands, each for 7 days at most, and a file holds at most the first 64 MB of an output (the result says so when it holds less). A deleted conversation's folder is removed. The engine tidies them as it starts, whenever conversations are archived or deleted, whenever a conversation keeps a new one, and once a day. They are not part of a backup.
 
 `src/commands.ts` runs the command itself rather than through pi durable's `bash`, the same way but without that tool's own file of the output, which goes to the system's temporary folder and is never removed. A script in code mode that calls `bash` gets the file's path as `fullOutputPath`, as before.
+
+### A command's input
 
 A command's standard input is `/dev/null`, as pi durable starts it, so a command that asks a question (a password, "are you sure?") gets no answer and fails at once instead of waiting for one. `engine/test/exec.ts` checks it stays that way.
 
@@ -356,6 +384,8 @@ A conversation's system prompt is its agent's sections, each tagged with its key
 The agent's instructions always come last, under a key no extension may use, so in a conversation whose agent has instructions a section that arrived after the first request would always be out of order, wherever it was declared. So every section keeps its place instead (`src/sections.ts`, applied to pi²'s extension and code mode's in `main.ts`): a section with nothing to say is empty rather than left out, and an empty section is not sent to the model at all. When it has something to say, its text changes in place and is sent as that one section; when it has nothing again, it goes back to empty, which is sent as that section with no text. A section is only given an empty place where that moves nothing: in a conversation's first request, or where the section is already shown. A conversation started before this goes on as before for each section it was sent without: when that section has something to say, the whole prompt is sent once more, and from then on the section keeps its place. Making room for them all at once would send the whole prompt to every such conversation at its next message, whether or not any of them ever came. Tools keep their order the same way: a conversation whose tools change (`syncTools`, or its access level changed) keeps the ones it has in the order it has them, and the new ones come after (`keepingOrder`). `engine/test/sections.ts` checks that each section and tool that arrives or goes is sent alone, with the demo model's `/system history`, which lists what each system message of the conversation changed.
 
 The cheaper of the two ways the issue offered was chosen. Declaring the sections that come and go after the steady ones cannot work while the instructions come last, and several of them can come in any order. A one-line "none" text for each would be sent in every conversation; an empty one costs nothing.
+
+### The list of prompt sections
 
 The sections, in the order they are declared:
 
