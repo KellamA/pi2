@@ -127,20 +127,23 @@ function sandbox(changelogText, entries, version = "1.2.3") {
 const plain = "# Changelog\n\nIntro.\n\n## Unreleased\n\nSee changelog.d.\n\n## 1.2.2\n\n### Fixed\n- Older.\n";
 
 test("0.7.8's published section is what gathering its entries from files makes, byte for byte", () => {
-	const start = changelog.indexOf("## 0.7.8\n");
-	const end = changelog.indexOf("## 0.7.7\n");
+	// The changelog as it was when 0.7.8 was the newest version: a release puts its section first, so the sections of
+	// later versions, which sit above 0.7.8's, are left out.
+	const then = changelog.slice(0, changelog.search(/^## \d/m)) + changelog.slice(changelog.indexOf("## 0.7.8\n"));
+	const start = then.indexOf("## 0.7.8\n");
+	const end = then.indexOf("## 0.7.7\n");
 	const entries = {};
 	let heading;
-	for (const line of changelog.slice(start, end).split("\n").slice(1)) {
+	for (const line of then.slice(start, end).split("\n").slice(1)) {
 		if (line.startsWith("### ")) heading = line;
 		else if (line.startsWith("- ")) entries[`${Object.keys(entries).length + 1}.md`] = `${heading}\n${line}\n`;
 		else assert.equal(line, "");
 	}
 	assert.ok(Object.keys(entries).length > 20);
-	using box = sandbox(changelog.slice(0, start) + changelog.slice(end), entries, "0.7.8");
+	using box = sandbox(then.slice(0, start) + then.slice(end), entries, "0.7.8");
 	const result = box.run("release", "0.7.8");
 	assert.equal(result.status, 0, result.stderr);
-	assert.equal(box.read(), changelog);
+	assert.equal(box.read(), then);
 	assert.deepEqual(box.files(), ["README.md"]);
 	assert.equal(releaseNotes(box.read(), "0.7.8"), releaseNotes(changelog, "0.7.8"));
 });
