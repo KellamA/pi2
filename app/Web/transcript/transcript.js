@@ -996,7 +996,8 @@
 		const info = T.delegation(call, result, liveTool);
 		const agent = agentFor(info.agentName, info.agentId);
 		const who = agent ? str(agent.name) : info.agentName;
-		const answer = result ? T.subagentAnswer(result.text) : "";
+		// A wait a message from the person ended has no answer to show: the row says the sub-chat carries on instead.
+		const answer = result && !info.waitEnded ? T.subagentAnswer(result.text) : "";
 		row.className = "tool delegate " + status;
 		row.replaceChildren();
 
@@ -1008,7 +1009,7 @@
 		if (colour) avatar.style.setProperty("--agent", colour);
 		head.appendChild(avatar);
 		const label = el("span", "tool-label");
-		label.appendChild(document.createTextNode(info.continued ? "Continued with " : "Handed to "));
+		label.appendChild(document.createTextNode(info.waitedAgain ? "Waited again for " : info.continued ? "Continued with " : "Handed to "));
 		label.appendChild(el("span", "name", who));
 		const model = agent ? str(agent.model) : "";
 		if (model) label.appendChild(el("span", "muted", " " + char(0xb7) + " " + model));
@@ -1019,6 +1020,11 @@
 			working.appendChild(spinner("Working"));
 			working.appendChild(document.createTextNode("Working"));
 			head.appendChild(working);
+		} else if (info.waitEnded) {
+			head.appendChild(document.createTextNode(" "));
+			const left = el("span", "tool-status none", "Stopped waiting for your message; still working");
+			left.title = "You sent a message, so the agent stopped waiting to read it. The sub-chat carries on, and its answer reaches the agent when it comes.";
+			head.appendChild(left);
 		} else if (status === "failed") {
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(el("span", "tool-status failed", "Did not finish"));

@@ -15,6 +15,7 @@ import {
 	type HookApi,
 	section,
 	type ToolExecutionApi,
+	type SubmissionId,
 	type ToolHookCall,
 	ToolTask,
 	type Tx,
@@ -44,6 +45,7 @@ import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { nearlyUsedUp } from "./limits.ts";
+import { owedBy, unlessMessaged, waitForChat } from "./heed.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -76,10 +78,10 @@ export type Host = {
 	agentChange(agent: AgentProfile, options: { subChat: boolean }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
 	/**
-	 * Send a message to a sub-chat that an earlier call created, and wait for its answer. Stopping the caller stops
-	 * the sub-chat's run too. Resolves with the answer, or `undefined` with a reason when there was none.
+	 * Send a message to a sub-chat that an earlier call created, without waiting for its answer (`waitForChat` in heed.ts
+	 * waits). Resolves with its submission, or a reason when it could not be sent.
 	 */
-	continueChat(conversationId: number, content: string, requestId: string, context: Context): Promise<{ answer: string } | { reason: string; detail?: string }>;
+	sendToChat(conversationId: number, content: string, requestId: string, context: Context): Promise<{ submission: SubmissionId } | { reason: string }>;
 	/** Every conversation pi² keeps, by id: sub-chats, archived and deleted ones included. */
 	conversations(): Record<string, Meta>;
 	/** Whether a conversation has work running: a run, a tool call, a question or approval it waits on. */
@@ -159,20 +161,27 @@ export function pi2Extension(host: Host): Extension {
 		parameters: obj({ question: str() }),
 		replay: "safe", // after a restart the question is simply asked again
 		execute: async (args, api, context) => {
-			const answer = await host.inbox.ask(
-				{
-					id: String(api.taskId),
-					kind: "question",
-					conversationId: api.conversationId as unknown as number,
-					callId: api.callId,
-					tool: "ask_user",
-					arguments: args,
-					question: args.question,
-					createdAt: Date.now(),
-				},
+			const asked = await unlessMessaged(
+				api,
+				(waiting) =>
+					host.inbox.ask(
+						{
+							id: String(api.taskId),
+							kind: "question",
+							conversationId: api.conversationId as unknown as number,
+							callId: api.callId,
+							tool: "ask_user",
+							arguments: args,
+							question: args.question,
+							createdAt: Date.now(),
+						},
+						waiting,
+					),
 				context,
 			);
-			return { output: text(answer) };
+			// The person wrote a message instead of answering (heed.ts): the question is taken away, and the message follows.
+			if ("messaged" in asked) return { output: text("The person sent you a message instead of answering this question; it follows. Ask again if you still need the answer."), details: { waitEnded: true } };
+			return { output: text(asked.value) };
 		},
 	});
 
@@ -186,10 +195,11 @@ export function pi2Extension(host: Host): Extension {
 			"A new sub-chat works in this conversation's folder. To give it a git worktree of its own instead, pass `worktree` with a branch name: use it when several sub-chats change the same repository at once, so each works on its own branch in its own checkout and none disturbs the others or this folder. " +
 			"pi² makes the worktree from the repository the sub-chat would work in, as New Worktree… does: the sub-chat works there and is told so, the agent's set-up command runs in it, and the person sees its branch. " +
 			"The new branch starts from the commit this conversation's folder is on, or from `from`: a branch, tag or commit as the repository has it now (it is not fetched first, so fetch first if you need the latest). A branch that already exists is checked out as it is, unless `from` is given. " +
-			"If the worktree cannot be made, the call fails with the reason and nothing is handed over. Continuing a sub-chat keeps the folder it has. Depending on the person's settings, they may be asked before the worktree is made.",
+			"If the worktree cannot be made, the call fails with the reason and nothing is handed over. Continuing a sub-chat keeps the folder it has. Depending on the person's settings, they may be asked before the worktree is made.\n" +
+			"If the person sends you a message while you wait, the call stops waiting and says so, and you get their message; the sub-chat carries on. To wait for its answer again, call delegate with its `chat` and no `task`. If you do not, its answer is added to this conversation when it comes.",
 		parameters: obj({
 			agent: str(),
-			task: str(),
+			task: opt(str({ description: "What to hand over. With chat, leave it out to wait again for the answer that sub-chat still owes you" })),
 			chat: opt(int({ description: "Number of an earlier sub-chat of this conversation to continue" })),
 			title: opt(str({ description: `A short name for the sub-chat that the person sees, ${TITLE_MAX} characters at most, such as "Fix login timeout". With chat, renames it` })),
 			worktree: opt(str({ description: "For a new sub-chat: the branch for a git worktree of its own, such as \"fix-login-timeout\"" })),
@@ -210,7 +220,34 @@ export function pi2Extension(host: Host): Extension {
 				const line = nearlyUsedUp(views.find((view) => view.id === provider), Date.now());
 				return line === undefined ? "" : `\n\n${line}`;
 			};
+			/**
+			 * Wait for a sub-chat's answer to `submission` and give it, unless the person sends a message first (heed.ts): then
+			 * the sub-chat carries on, and the agent is told how to wait for it again.
+			 */
+			const answer = async (chat: number, agent: AgentProfile, title: string, submission: SubmissionId, note = "") => {
+				const outcome = await waitForChat(api, chat, submission, context);
+				if ("messaged" in outcome) {
+					return {
+						output: text(
+							`The person sent you a message, so you stopped waiting for sub-chat ${chat} (“${title}”, with ${agent.name}); their message follows. ` +
+								`The sub-chat is still working on the task: nothing was stopped. To wait for its answer again, call delegate with chat: ${chat} and no task. ` +
+								"If you do not, its answer is added to this conversation when it comes." +
+								note,
+						),
+						details: { conversationId: chat, agentId: agent.id, agentName: agent.name, waitEnded: true },
+					};
+				}
+				const settled = outcome.settled;
+				if (settled.status !== "done" || settled.type !== "input") {
+					const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
+					const detail = "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
+					return { output: text(unfinished(agent.name, chat, reason, detail) + note + (await limits(chat))), isError: true };
+				}
+				const kept = (await api.snapshot(Library, context))?.conversations[String(chat)]?.title ?? title;
+				return { output: text((await host.answerText(chat as unknown as ConversationId, settled.answer)) + (await footer(chat, agent.name, kept, note)) + (await limits(chat))) };
+			};
 			const title = titleOf(args.title);
+			const task = args.task?.trim() === "" ? undefined : args.task;
 			if (args.from !== undefined && args.worktree === undefined) return { output: text("`from` says where a sub-chat's worktree starts; pass it with `worktree`."), isError: true };
 			if (args.worktree !== undefined && args.chat !== undefined) {
 				return { output: text("`worktree` is for a new sub-chat. A sub-chat that is continued keeps the folder it has; leave `chat` out to start a new one in a worktree."), isError: true };
@@ -241,10 +278,25 @@ export function pi2Extension(host: Host): Extension {
 					}
 				}
 				await api.details({ conversationId: args.chat, agentId: agent.id, agentName: agent.name }, context);
-				const result = await host.continueChat(args.chat, args.task, `delegate:${String(api.taskId)}`, context);
-				if ("reason" in result) return { output: text(unfinished(agent.name, args.chat, result.reason, result.detail) + note + (await limits(args.chat))), isError: true };
-				return { output: text(result.answer + (await footer(args.chat, agent.name, named, note)) + (await limits(args.chat))) };
+				if (task === undefined) {
+					// Waiting again for the answer a message from the person ended the wait for (heed.ts).
+					const owed = await owedBy(api, args.chat, context);
+					if (owed === undefined) {
+						const state = host.working(args.chat) ? "It is working on something the person gave it." : "It is idle.";
+						return {
+							output: text(
+								`Sub-chat ${args.chat} owes you no answer: you have had every answer it gave you (one that came after you stopped waiting for it is added to this conversation). ${state} To give it more work, call delegate with chat: ${args.chat} and a task.`,
+							),
+							isError: true,
+						};
+					}
+					return answer(args.chat, agent, named, owed, note);
+				}
+				const sent = await host.sendToChat(args.chat, task, `delegate:${String(api.taskId)}`, context);
+				if ("reason" in sent) return { output: text(unfinished(agent.name, args.chat, sent.reason, undefined) + note), isError: true };
+				return answer(args.chat, agent, named, sent.submission, note);
 			}
+			if (task === undefined) return { output: text("`task` says what to hand over to a new sub-chat. It can be left out only with `chat`, to wait for an answer that sub-chat still owes you."), isError: true };
 			const allowed = delegatesOf(host, api.conversationId);
 			const target = allowed.find((a) => a.name.toLowerCase() === args.agent.trim().toLowerCase() || a.id === args.agent.trim());
 			if (target === undefined) {
@@ -255,20 +307,29 @@ export function pi2Extension(host: Host): Extension {
 			// The helper works where its parent works now (its worktree, say), unless it has a project of its own elsewhere.
 			const here = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? null;
 			const change = { ...profile, cwd: await subChatFolder(here, target.cwd) };
-			const named = title ?? (args.worktree !== undefined ? `${target.name}: ${args.worktree.trim()}` : `${target.name}: ${args.task.trim().split("\n")[0]!.slice(0, 60)}`);
+			const named = title ?? (args.worktree !== undefined ? `${target.name}: ${args.worktree.trim()}` : `${target.name}: ${task.trim().split("\n")[0]!.slice(0, 60)}`);
 			const child = await api.commit(async (tx: Tx) => {
-				const existing = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
-				if (existing !== undefined) return existing.id;
-				const created = await tx.createConversation({ ownership: { kind: "task", taskId: api.taskId } });
+				// A call run again after a crash finds the sub-chat it made: one made before #295 was owned by its call.
+				const owned = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
+				if (owned !== undefined) return owned.id;
+				const library = await tx.doc(Library);
+				const made = Object.entries(library.conversations).find(([, meta]) => meta.madeBy === String(api.taskId));
+				if (made !== undefined) return Number(made[0]) as unknown as ConversationId;
+				// Not owned by this call, so that it carries on when a message from the person ends the call's wait (heed.ts):
+				// work a call owns holds the call, and so the whole answer, until it is done. Stopping the call stops it
+				// (`waitForChat`). It starts as a copy of this conversation's agent, as one owned by the call did.
+				const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
+				Object.assign(await tx.doc(AgentDoc, created.id), JSON.parse(JSON.stringify(await tx.doc(AgentDoc, api.conversationId))));
 				await configure(tx, created.id, change);
 				const now = Date.now();
-				(await tx.doc(Library)).conversations[String(created.id)] = {
+				library.conversations[String(created.id)] = {
 					title: named,
 					createdAt: now,
 					updatedAt: now,
 					access: target.access,
 					agentId: target.id,
 					parent,
+					madeBy: String(api.taskId),
 				};
 				return created.id;
 			}, context);
@@ -279,15 +340,8 @@ export function pi2Extension(host: Host): Extension {
 			// Lets the app open the subagent's transcript from the call's card.
 			await api.details({ conversationId: child as unknown as number, agentId: target.id, agentName: target.name }, context);
 			const handle = (await api.conversation(child, context))!;
-			const submission = await handle.submit({ type: "input", content: args.task, requestId: `delegate:${String(api.taskId)}` }, context);
-			const settled = await submission.wait(context);
-			if (settled.status !== "done" || settled.type !== "input") {
-				const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
-				const detail = "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
-				return { output: text(unfinished(target.name, child as unknown as number, reason, detail) + (await limits(child as unknown as number))), isError: true };
-			}
-			const kept = (await api.snapshot(Library, context))?.conversations[String(child)]?.title ?? named;
-			return { output: text((await host.answerText(child, settled.answer)) + (await footer(child as unknown as number, target.name, kept)) + (await limits(child as unknown as number))) };
+			const submission = await handle.submit({ type: "input", content: task, requestId: `delegate:${String(api.taskId)}` }, context);
+			return answer(child as unknown as number, target, named, submission.id);
 		},
 	});
 

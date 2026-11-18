@@ -865,7 +865,11 @@
 		const named = str(args.agent).trim();
 		const agentName = named || (isObject(details) ? str(details.agentName) : "") || "agent";
 		const continued = Number.isInteger(args.chat);
-		return { agentName, task: str(args.task), chat, continued, agentId: isObject(details) ? str(details.agentId) : "" };
+		// A message from the person ended the call's wait, and the sub-chat carried on (engine/src/heed.ts). Only a result says so.
+		const waitEnded = Boolean(result && isObject(result.details) && result.details.waitEnded === true);
+		// With `chat` and no task: the agent waited again for an answer that sub-chat still owed it.
+		const waitedAgain = continued && str(args.task).trim() === "";
+		return { agentName, task: str(args.task), chat, continued, agentId: isObject(details) ? str(details.agentId) : "", waitEnded, waitedAgain };
 	}
 
 	/** A running command shows how long it has gone without printing only after this long, so a busy one's row is still. */

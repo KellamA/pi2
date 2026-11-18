@@ -16,6 +16,7 @@ import { promptCache } from "./cache.ts";
 import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { documents } from "./documents.ts";
+import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
 import { limitWait } from "./limitwait.ts";
@@ -130,5 +131,6 @@ export const FEATURES: Feature[] = [
 	variables,
 	coauthor,
 	background,
+	heed,
 	order,
 ];

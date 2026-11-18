@@ -46,6 +46,7 @@ import { noticingRefusals } from "./limitwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
+import { messageSent, OWED_ANSWER_ENTRY, owedMarker, stopLetGo } from "./heed.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
@@ -198,26 +199,13 @@ const host: Host = {
 			(error) => log("could not keep the rule:", error instanceof Error ? error.message : error),
 		),
 	agentChange: (agent, options) => agentChange(agent, options),
-	continueChat: async (id, content, requestId, callerContext) => {
+	sendToChat: async (id, content, requestId) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
 		if (conv === undefined) return { reason: "the sub-chat no longer exists" };
 		await syncTools(conv).catch(() => {});
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
 		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
-		// The sub-chat was created by an earlier call, so this call does not own it: stop it by hand if the caller stops.
-		const stop = () => void conv.abort(context).catch(() => {});
-		callerContext.abortSignal?.addEventListener("abort", stop, { once: true });
-		try {
-			const settled = await submission.wait(callerContext);
-			if (settled.status !== "done" || settled.type !== "input") {
-				const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : "no answer";
-				return "detail" in settled && settled.detail !== undefined ? { reason, detail: String(settled.detail) } : { reason };
-			}
-			const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-			return { answer: textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content) };
-		} finally {
-			callerContext.abortSignal?.removeEventListener("abort", stop);
-		}
+		return { submission: submission.id };
 	},
 	conversations: () => library.conversations,
 	working: (id) => working.has(id),
@@ -542,6 +530,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
 	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
+	if (entry.kind === OWED_ANSWER_ENTRY) return { id, kind: "marker", text: owedMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -1212,6 +1201,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
+		if (params.mode === "steer") messageSent(conv.id as unknown as number);
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
 			// A message that is only attachments is titled after the first of them.
@@ -1220,7 +1211,10 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return { submissionId: submission.id };
 	},
 	abort: async (params) => {
-		await (await conversation(params.id)).abort(context);
+		const conv = await conversation(params.id);
+		// With the sub-chats a message from the person let go on: they are this run's work too (heed.ts).
+		stopLetGo(conv.id as unknown as number);
+		await conv.abort(context);
 		return {};
 	},
 	continue: async (params) => {

@@ -162,7 +162,7 @@ struct ChatView: View {
                 HStack(spacing: 6) {
                     ForEach(queued) { item in
                         HStack(spacing: 6) {
-                            Text(item.mode == "steer" ? "Steering" : "Queued").foregroundStyle(Theme.tx3)
+                            Text(queuedLabel(item)).foregroundStyle(Theme.tx3).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
                             Text(item.summary).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
                             Button("Remove", systemImage: "xmark") {
                                 engine.perform("withdraw", ["submissionId": item.id])
@@ -172,6 +172,7 @@ struct ChatView: View {
                             .foregroundStyle(Theme.tx3)
                             .help("Remove this message before it is sent to the model")
                         }
+                        .help(queuedHelp(item))
                         .font(.system(size: 12))
                         .padding(.horizontal, 9).padding(.vertical, 4)
                         .panel(radius: 8, fill: Theme.card, border: Theme.line2)
@@ -181,6 +182,18 @@ struct ChatView: View {
             }
             .padding(.top, 8)
         }
+    }
+
+    /// What a queued message is waiting for, on its chip: a steer waits for the calls that cannot be left (heed.ts).
+    private func queuedLabel(_ item: QueuedInput) -> String {
+        guard item.mode == "steer" else { return "Queued until the answer" }
+        return state?.messageWaits?.waitingFor.map { "Waiting \($0)" } ?? "Steering"
+    }
+
+    private func queuedHelp(_ item: QueuedInput) -> String {
+        guard item.mode == "steer" else { return "\(agentName) reads this once it has answered. Stop ends the run now." }
+        if let waiting = state?.messageWaits?.waitingFor { return "\(agentName) reads this \(waiting): those calls cannot be left half done. Stop ends the run now." }
+        return "\(agentName) reads this after its current step."
     }
 
     private var agentName: String { engine.agent(state?.agent.agentId)?.name ?? "the agent" }
@@ -196,9 +209,23 @@ struct ChatView: View {
         return model.name
     }
 
+    /// While the agent works: what happens to a message sent now, so the person knows before sending (heed.ts).
+    @ViewBuilder
+    private var arrival: some View {
+        if busy, let waits = state?.messageWaits {
+            Text(waits.sentence(agent: engine.agent(state?.agent.agentId)?.name ?? "The agent", steer: steer))
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.tx3)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("message-arrival")
+        }
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
             AttachmentStrip(attachments: attachments, blindModel: blindModel)
+            arrival
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13.5))
@@ -1016,7 +1043,7 @@ struct SteerQueuePicker: View {
         .fixedSize()
         .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Theme.line2))
         .clipShape(.rect(cornerRadius: 7))
-        .help("Steer: the message joins the current work after its next step. Queue: it starts a new run when this one answers.")
+        .help("Steer: the agent reads the message as soon as the calls it is making allow. A wait on a sub-chat, a background command or a question ends at once, and that work carries on. Queue: it starts a new run when this one answers.")
     }
 
     private func segment(_ title: String, on: Bool, action: @escaping () -> Void) -> some View {
