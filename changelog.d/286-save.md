@@ -1,0 +1,2 @@
+### Added
+- A code block in a conversation has Save… beside Copy, which saves it as a file named for its language (code.py, code.sh), and so do a tool's output and an edit's changes. An answer of 1,500 characters or more can be saved as a Markdown file, a picture opened larger can be saved, and a document an agent wrote shows Open and Save a Copy… under its step, so a document written in a chat, which has no folder of its own you would find, can be opened and kept.

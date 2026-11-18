@@ -839,6 +839,17 @@
 		return BACKGROUND_ID.test(id) ? id : "";
 	}
 
+	/**
+	 * The document a `write_document` call wrote, as `{ entry, name }`, for Open and Save a Copy on its line (#286); null
+	 * for any other call, or before it is written. The app finds the file from the call's result: the page names only
+	 * the entry.
+	 */
+	function documentWritten(call, status, result) {
+		if (!isObject(call) || call.name !== "write_document" || status !== "done" || !isObject(result) || !Number.isInteger(result.id)) return null;
+		const path = isObject(result.details) ? str(result.details.path) : "";
+		return path ? { entry: result.id, name: basename(path) } : null;
+	}
+
 	/** The same for the line that says a background command ended ("Background command bg-2 exited with code 1: …"). */
 	function markerCommand(item) {
 		const details = isObject(item) && isObject(item.details) ? item.details : null;
@@ -890,9 +901,7 @@
 		const continued = Number.isInteger(args.chat);
 		// A message from the person ended the call's wait, and the sub-chat carried on (engine/src/heed.ts). Only a result says so.
 		const waitEnded = Boolean(result && isObject(result.details) && result.details.waitEnded === true);
-		// With `chat` and no task: the agent waited again for an answer that sub-chat still owed it.
-		const waitedAgain = continued && str(args.task).trim() === "";
-		return { agentName, task: str(args.task), chat, continued, agentId: isObject(details) ? str(details.agentId) : "", waitEnded, waitedAgain };
+		return { agentName, task: str(args.task), chat, continued, agentId: isObject(details) ? str(details.agentId) : "", waitEnded };
 	}
 
 	/** A running command shows how long it has gone without printing only after this long, so a busy one's row is still. */
@@ -932,8 +941,47 @@
 		return (unit === 0 ? Math.round(value) : Math.round(value * 10) / 10) + " " + units[unit];
 	}
 
+	// MARK: - Saving as a file
+
+	/** File name endings for a code block's language, as a fence names it. Anything else is saved as text. */
+	const ENDINGS = {
+		js: "js", javascript: "js", jsx: "jsx", mjs: "mjs", ts: "ts", typescript: "ts", tsx: "tsx", json: "json",
+		py: "py", python: "py", rb: "rb", ruby: "rb", go: "go", rs: "rs", rust: "rs", swift: "swift", kotlin: "kt", kt: "kt",
+		java: "java", c: "c", h: "h", cpp: "cpp", "c++": "cpp", cs: "cs", csharp: "cs", php: "php", lua: "lua", r: "r",
+		sh: "sh", bash: "sh", zsh: "sh", shell: "sh", fish: "fish", ps1: "ps1", powershell: "ps1",
+		html: "html", css: "css", scss: "scss", xml: "xml", svg: "svg", yaml: "yaml", yml: "yml", toml: "toml", ini: "ini",
+		sql: "sql", md: "md", markdown: "md", csv: "csv", tsv: "tsv", txt: "txt", text: "txt", diff: "diff", patch: "diff",
+		dockerfile: "Dockerfile", makefile: "Makefile",
+	};
+
+	/**
+	 * What a block offers to be saved as: `code.py` for a Python block, the file's own name for a section labelled with a
+	 * path (`notes.md` for `docs/notes.md`), `output.txt` for anything else. Only a name, never a folder: the person
+	 * chooses where in the save panel, and the app checks the name again.
+	 */
+	function saveName(kind, hint) {
+		const word = str(hint).trim().toLowerCase();
+		if (kind === "code") {
+			const ending = Object.hasOwn(ENDINGS, word) ? ENDINGS[word] : undefined;
+			if (ending === "Dockerfile" || ending === "Makefile") return ending;
+			return "code." + (ending ?? "txt");
+		}
+		if (kind === "answer") return "answer.md";
+		const name = basename(str(hint).trim());
+		// A label that is a file's path or name keeps it; "Output" or "What it printed" is not one.
+		return /^[^\s/\\]+\.[A-Za-z0-9]{1,10}$/.test(name) && name.length <= 120 ? name : "output.txt";
+	}
+
+	/** Whether an answer is long enough to offer saving it as a file, as a code block can be. */
+	const LONG_ANSWER = 1500;
+	function longAnswer(text) {
+		return str(text).length >= LONG_ANSWER;
+	}
+
 	return {
 		readable,
+		saveName,
+		longAnswer,
 		basename,
 		argumentSummary,
 		callSummary,
@@ -947,6 +995,7 @@
 		ruleOffer,
 		backgroundCaption,
 		backgroundCommand,
+		documentWritten,
 		markerCommand,
 		failedRuns,
 		detailFor,

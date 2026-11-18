@@ -650,6 +650,12 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	color: var(--tx3);
 }
 
+.head-buttons {
+	display: flex;
+	flex: none;
+	gap: 2px;
+}
+
 .code-lang,
 .detail-label {
 	font-family: var(--mono);
@@ -1487,10 +1493,15 @@ pre.card-diff {
 	box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
 
-#lightbox button {
+#lightbox .lightbox-buttons {
 	position: absolute;
 	top: 12px;
 	right: 14px;
+	display: flex;
+	gap: 8px;
+}
+
+#lightbox button {
 	padding: 4px 10px;
 	border: 1px solid rgba(255, 255, 255, 0.25);
 	border-radius: 7px;

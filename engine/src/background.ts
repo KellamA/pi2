@@ -26,6 +26,7 @@ import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { scratchVariable } from "./scratch.ts";
+import { arrive, unwatch, watch, watched } from "./wakes.ts";
 import { agentVariables } from "./variables.ts";
 import { unlessMessaged } from "./heed.ts";
 import { forgetRun, killLater, killRemaining, type Listed, type LeftOver, leftOverLog, type NewRun, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
@@ -338,11 +339,28 @@ export const BACKGROUND_DESCRIPTION =
 
 export const BACKGROUND_PARAMETER = "Start the command and leave it running in the background, instead of waiting for it. Read its output later with the background tool.";
 
+export const WAKE_PARAMETER = "With background: when it ends, send you how it ended and the end of its output as a message, waking you if you are not answering then";
+
+/** How much of the end of its output a command's wake carries. */
+const WAKE_LINES = 40;
+const WAKE_CHARS = 4_000;
+
+/** What the agent is woken with when a command it asked to be woken for ends (wakes.ts). */
+function wakeText(command: Command): string {
+	const head = `Background command ${command.id} (\`${commandLine(command.command)}\`) ${standing(command)}.`;
+	if (command.child === undefined) return `${head} Its output was in the engine that stopped, and was not kept.`;
+	if (command.output === "") return `${head} It printed nothing.`;
+	const lines = command.output.replace(/\n$/, "").split("\n");
+	const end = lines.slice(-WAKE_LINES).join("\n").slice(-WAKE_CHARS);
+	const all = end.length === command.output.replace(/\n$/, "").length && command.total === command.output.length;
+	return `${head} ${all ? "What it printed" : "The end of what it printed"}:\n${end}${all ? "" : "\n(The background tool's read gives what you have not read, and `tail` more of the end.)"}`;
+}
+
 /**
  * Start `args.command` in the background for the calling conversation: what `bash` does when it is called with
  * `background: true` (commands.ts). The approval hook has already run by now, as for any `bash` call.
  */
-export async function startInBackground(args: { command: string; timeout?: number }, api: ToolExecutionApi, _context: Context): Promise<ToolExecutionResult> {
+export async function startInBackground(args: { command: string; timeout?: number; wake?: boolean }, api: ToolExecutionApi, _context: Context): Promise<ToolExecutionResult> {
 	if (engine === undefined || api.env === undefined) throw new Error("Background commands are not available here");
 	const host = engine;
 	if (args.timeout !== undefined && !(Number.isFinite(args.timeout) && args.timeout > 0 && args.timeout <= MAX_TIMEOUT_SECONDS)) {
@@ -352,6 +370,9 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 	const conversationId = api.conversationId as unknown as number;
 	const cwd = api.env.cwd;
 	if (!isFolder(cwd)) return fail(`The conversation's folder is not there, so the command was not started: ${cwd}`);
+	if (args.wake === true && host.library().conversations[String(conversationId)]?.parent !== undefined) {
+		return fail("`wake` is not for a sub-chat, so the command was not started: a sub-chat's answers go to the agent that handed it the work. Start it without `wake`, and wait for it with the background tool's read and `wait`.");
+	}
 	const startedAt = Date.now();
 	// The record comes first, so a command is never running without one.
 	let id = "";
@@ -365,6 +386,8 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		save((doc) => void delete doc.running[id])
 			.catch((error) => host.log("could not forget", logName(id, conversationId), error instanceof Error ? error.message : error))
 			.finally(() => forgetRun(run?.marker));
+	// Watched from before it starts, so that an end that comes while the engine is down still wakes the agent (wakes.ts).
+	if (args.wake === true) await watch({ key: wakeKey(id), conversationId, kind: "background", ref: id, label: `background command ${id} (\`${commandLine(args.command, 60)}\`)`, startedAt });
 
 	// As a command that is waited for is run: through bash, in the conversation's folder, with the engine's environment
 	// less pi²'s own settings (environment.ts) and with the conversation's scratch folder (scratch.ts), and no input. In
@@ -379,6 +402,7 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		child = spawn("/bin/bash", ["-c", args.command], { cwd, env: commandEnvironment({ ...variables, ...scratchVariable(conversationId), [RUN_VARIABLE]: run.marker }), detached: true, stdio: run.stdio });
 	} catch (error) {
 		await forget();
+		await unwatch(wakeKey(id));
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);
 	} finally {
 		run?.started();
@@ -499,9 +523,13 @@ function follow(host: Engine, command: Command, child: ChildProcess, marker: str
 		if (shuttingDown) return;
 		await forget();
 		// The transcript already shows a stop the agent asked for, in that call's row, and an end the call that started
-		// the command saw, in that one's. Any other end gets a line of its own, and so does what was stopped with it.
-		if (command.stopping === STOPPED_BY_AGENT || neverStarted !== undefined) return;
-		if (leftSomething || !(await answered)) await note(command, ended.how);
+		// the command saw, in that one's. Any other end gets a line of its own, and so does what was stopped with it. The
+		// agent asked to be woken is woken for those too: what it stopped itself, or was told of in the call, it knows.
+		if (command.stopping === STOPPED_BY_AGENT || neverStarted !== undefined) return void (await unwatch(wakeKey(id)));
+		const seen = await answered;
+		if (leftSomething || !seen) await note(command, ended.how);
+		if (seen) await unwatch(wakeKey(id));
+		else if (watched(wakeKey(id))) await arrive(wakeKey(id), ended.how, wakeText(command));
 	};
 	child.once("error", (error) => {
 		neverStarted = error.message;
@@ -565,6 +593,9 @@ function started(command: Command, timeout: number | undefined, neverStarted: st
 }
 
 const STOPPED_BY_AGENT = "was stopped by the agent";
+
+/** What wakes.ts knows a command's watch by. */
+const wakeKey = (id: string) => `bg:${id}`;
 
 /** The start of `text` that one answer can carry. */
 function fit(text: string): string {
@@ -812,6 +843,8 @@ export const background: Feature = (_host, running) => {
 				const command: Command = { ...known, output: "", total: 0, read: 0, ended: { at: Date.now(), how, failed: true }, settled: Promise.resolve(), waiters: new Set() };
 				commands.set(record.id, command);
 				await note(command, how);
+				// Asked to be woken, the agent is woken for it once, now.
+				await arrive(wakeKey(record.id), how, wakeText(command));
 			}
 			if (left.length > 0) await save((stored) => void (stored.running = {}));
 			prune();

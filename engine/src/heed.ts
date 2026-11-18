@@ -7,10 +7,8 @@
 // and says so in its result, and the round ends; what it waited for carries on. A call that is doing something (a
 // command in the foreground, an edit, a call to an MCP tool, a script) is left to finish, and the message comes after it.
 //
-// A sub-chat whose wait ended this way still owes its answer. The agent can wait for it again (`delegate` with `chat`
-// and no task), and if it does not, the answer is added to the agent's conversation when it comes, without starting an
-// answer of its own. Exactly one of the two happens: the sub-chat's `answerOwed` in the library is cleared by whichever
-// delivers the answer, in the commit that does.
+// A sub-chat whose wait ended this way carries on as one handed over with `wait: false` (wakes.ts): its answer comes to
+// the agent as a message when it is done, waking it if it is not answering, or `sub_chats` with `wait` waits for it.
 
 import { type Context, withCancel } from "@earendil-works/chord/context";
 import {
@@ -24,33 +22,21 @@ import {
 	type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import { commandLine } from "./background.ts";
-import type { Host } from "./extensions.ts";
-import { unfinished } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
-import { Library } from "./state.ts";
-
-/** The line in a conversation where a sub-chat's answer was added after the agent had stopped waiting for it. */
-export const OWED_ANSWER_ENTRY = "pi2.owed-answer";
 
 /**
  * Tools whose calls only wait, and so stop waiting when the person sends a message: `delegate` (for a sub-chat's answer),
- * `background` (a read with `wait`; its other actions take no time) and `ask_user` (for the person, who wrote instead).
- * Every other call is left to finish: a command in the foreground, an edit or a write, a call to an MCP tool, a code mode
- * script and the calls it makes, computer use and the browser, which are doing something that cannot be left half done.
+ * `sub_chats` (with `wait`; its other actions take no time), `background` (a read with `wait`; the same) and `ask_user`
+ * (for the person, who wrote instead). Every other call is left to finish: a command in the foreground, an edit or a
+ * write, a call to an MCP tool, a code mode script and the calls it makes, computer use and the browser, which are doing
+ * something that cannot be left half done.
  */
-export const GIVES_WAY = new Set(["delegate", "background", "ask_user"]);
+export const GIVES_WAY = new Set(["delegate", "sub_chats", "background", "ask_user"]);
 
-let host: Host | undefined;
 let engine: Engine | undefined;
 
 /** Calls waiting in each conversation, told when the person sends it a message. */
 const listeners = new Map<number, Set<() => void>>();
-/** How many calls are waiting for each submission of a sub-chat: while any is, its answer is theirs to give. */
-const waitedFor = new Map<number, number>();
-/** Owed answers being watched for, by submission. */
-const watching = new Set<number>();
-/** A submission's id as the library keeps it. */
-const idOf = (submission: SubmissionId) => submission as unknown as number;
 
 /** The person sent `conversationId` a message to steer it. Called once it is admitted. */
 export function messageSent(conversationId: number): void {
@@ -85,9 +71,12 @@ export async function unlessMessaged<T>(
 		// Listened for first, then looked for, so that a message sent in between is not missed.
 		if (await messageWaiting(api, id, context)) return { messaged: true };
 		const work = wait(waiting).then((value) => ({ value }));
-		// Cancelling it when the message wins rejects it; that is expected and nobody is waiting on it then.
-		work.catch(() => {});
-		return await Promise.race([work, message]);
+		const first = await Promise.race([work, message]);
+		if ("value" in first) return first;
+		// Cancelled, the wait rejects at once; one that got what it waited for in the same moment (taken from a list, say)
+		// gives it, so that nothing it took is lost.
+		cancel();
+		return (await work.catch(() => undefined)) ?? first;
 	} finally {
 		own.delete(heard);
 		if (own.size === 0) listeners.delete(id);
@@ -107,7 +96,8 @@ function stopChat(chat: number): void {
 
 /**
  * Wait for a sub-chat's answer to `submission`, as `delegate` does, unless the person sends a message first: then the
- * sub-chat carries on, its answer is owed, and this says it was let go. Stopping the call stops the sub-chat's run.
+ * sub-chat carries on, and the caller hands it over to be woken for (wakes.ts). Stopping the call stops the sub-chat's
+ * run: it belongs to no call (extensions.ts), so pi durable would not.
  */
 export async function waitForChat(api: ToolExecutionApi, chat: number, submission: SubmissionId, context: Context): Promise<{ settled: SettledSubmissionRecord } | { messaged: true }> {
 	const running = engine!;
@@ -115,112 +105,11 @@ export async function waitForChat(api: ToolExecutionApi, chat: number, submissio
 	if (handle === undefined) throw new Error(`The sub-chat's message ${submission} is not known`);
 	const stop = () => stopChat(chat);
 	context.abortSignal?.addEventListener("abort", stop, { once: true });
-	const id = idOf(submission);
-	waitedFor.set(id, (waitedFor.get(id) ?? 0) + 1);
-	// Whether the answer is owed once this call is over: so far, as the library says (a call that waits for it again).
-	let owed = (await owedBy(api, chat, context)) === submission;
 	try {
 		const outcome = await unlessMessaged(api, (waiting) => handle.wait(waiting), context);
-		await api.commit(async (tx) => {
-			const stored = (await tx.doc(Library)).conversations[String(chat)];
-			if (stored === undefined) return;
-			if ("messaged" in outcome) stored.answerOwed = id;
-			else if (stored.answerOwed === id) delete stored.answerOwed;
-		}, context);
-		owed = "messaged" in outcome;
 		return "messaged" in outcome ? outcome : { settled: outcome.value };
 	} finally {
 		context.abortSignal?.removeEventListener("abort", stop);
-		const left = (waitedFor.get(id) ?? 1) - 1;
-		if (left === 0) waitedFor.delete(id);
-		else waitedFor.set(id, left);
-		// Owed, and nobody waiting for it now: it is added to the parent when it comes, or now if it already has.
-		if (owed) watch(chat, id);
-	}
-}
-
-/** The answer a sub-chat owes its parent, if any: its submission. */
-export async function owedBy(read: DocumentReader, chat: number, context: Context): Promise<SubmissionId | undefined> {
-	return (await read.snapshot(Library, context))?.conversations[String(chat)]?.answerOwed as SubmissionId | undefined;
-}
-
-/** Add an owed answer to the parent once it comes, unless a call is waiting for it then. */
-function watch(chat: number, submission: number): void {
-	if (watching.has(submission)) return;
-	const running = engine!;
-	watching.add(submission);
-	void (async () => {
-		try {
-			const handle = await running.harness().submission(submission as unknown as SubmissionId, running.context());
-			if (handle === undefined) return;
-			const settled = await handle.wait(running.context());
-			watching.delete(submission);
-			if (waitedFor.has(submission)) return;
-			await deliver(chat, submission, settled);
-		} catch (error) {
-			running.log("could not deliver the answer of sub-chat", chat, error instanceof Error ? error.message : error);
-		} finally {
-			watching.delete(submission);
-		}
-	})();
-}
-
-/** What the agent is given when a sub-chat's answer comes after it stopped waiting for it. */
-async function owedWords(chat: number, settled: SettledSubmissionRecord): Promise<string> {
-	const meta = engine!.library().conversations[String(chat)];
-	const name = host!.agent(meta?.agentId)?.name ?? "The agent";
-	const title = meta?.title ?? "";
-	if (settled.status !== "done" || settled.type !== "input") {
-		const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
-		const detail = "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
-		return `[Sub-chat ${chat}, “${title}”, ended after you stopped waiting for it.] ${unfinished(name, chat, reason, detail)}`;
-	}
-	const answer = await host!.answerText(chat as unknown as ConversationId, settled.answer);
-	return `[Sub-chat ${chat}, “${title}”, with ${name}, answered after you stopped waiting for it:]\n\n${answer}\n\n(To continue it, call delegate again with chat: ${chat}.)`;
-}
-
-/** Add an owed answer to the parent's conversation, once: only if it is still owed, and clearing that in the same commit. */
-async function deliver(chat: number, submission: number, settled: SettledSubmissionRecord): Promise<void> {
-	const running = engine!;
-	// Whether it is still owed is decided in the commit: the engine's copy of the library can be a moment behind.
-	const meta = running.library().conversations[String(chat)];
-	if (meta?.parent === undefined) return;
-	const words = await owedWords(chat, settled);
-	const parent = await running.harness().conversation(meta.parent as unknown as ConversationId, running.context());
-	const answered = settled.status === "done";
-	await running.harness().commit(async (tx) => {
-		const library = await tx.doc(Library);
-		const stored = library.conversations[String(chat)];
-		if (stored?.answerOwed !== submission) return;
-		// Into the parent's context as the person's side of it, without starting an answer: placed at once when the parent
-		// is idle, and after its current round when it is working.
-		if (parent !== undefined && library.conversations[String(meta.parent)]?.deleted !== true) {
-			await parent.submit(tx, {
-				type: "write",
-				entry: { kind: OWED_ANSWER_ENTRY, data: { chat, title: stored.title, answered }, model: [{ role: "user", content: [{ type: "text", text: words }], timestamp: Date.now() }] },
-			});
-		}
-		delete stored.answerOwed;
-	}, running.context());
-}
-
-/** What the transcript shows where an owed answer was added. */
-export function owedMarker(data: unknown): string {
-	const entry = (data !== null && typeof data === "object" ? data : {}) as { chat?: unknown; title?: unknown; answered?: unknown };
-	const chat = typeof entry.chat === "number" ? ` ${entry.chat}` : "";
-	const title = typeof entry.title === "string" && entry.title.trim() !== "" ? ` (“${entry.title.trim()}”)` : "";
-	return entry.answered === false
-		? `Sub-chat${chat}${title} ended without an answer after the agent stopped waiting for it; the agent was told why`
-		: `Sub-chat${chat}${title} answered after the agent stopped waiting for it; the agent was given its answer`;
-}
-
-/**
- * The person stopped a conversation: its sub-chats whose waits a message ended are its work too, and the agent has no
- * way to stop them itself, so they are stopped with it. Their answers, that they did not finish, are added as owed.
- */
-export function stopLetGo(parent: number): void {
-	for (const [key, meta] of Object.entries(engine?.library().conversations ?? {})) {
-		if (meta.parent === parent && meta.answerOwed !== undefined) stopChat(Number(key));
 	}
 }
 
@@ -273,6 +162,7 @@ function holding(slot: Slot, args: Record<string, unknown>, approval: boolean): 
 function giving(slot: Slot, args: Record<string, unknown>): string {
 	if (slot.name === "ask_user") return "its question to you";
 	if (slot.name === "background") return `the wait for ${typeof args.id === "string" ? args.id : "a background command"}`;
+	if (slot.name === "sub_chats") return "the wait for its sub-chats";
 	const details = (slot.details ?? {}) as { conversationId?: unknown; agentName?: unknown };
 	const chat = typeof details.conversationId === "number" ? details.conversationId : typeof args.chat === "number" ? args.chat : undefined;
 	const who = typeof details.agentName === "string" && details.agentName !== "" ? `${details.agentName}'s sub-chat` : "a sub-chat";
@@ -304,18 +194,11 @@ export function messageWaits(view: ConversationView, conversationId: number, app
 }
 
 export const heed: Feature = (given, running) => {
-	host = given;
 	engine = running;
 	return {
 		state: (view) => {
 			const id = view.conversation.id as unknown as number;
 			return { messageWaits: messageWaits(view, id, given.inbox.list().filter((item) => item.kind === "approval")) };
-		},
-		// Answers owed when the last engine stopped are watched for again; the calls that waited were run again too.
-		start: async () => {
-			for (const [key, meta] of Object.entries(running.library().conversations)) {
-				if (meta.answerOwed !== undefined) watch(Number(key), meta.answerOwed);
-			}
 		},
 	};
 };

@@ -97,13 +97,11 @@ export type Meta = {
 	renamed?: boolean;
 	/** A subagent's conversation: kept out of the sidebar and reached through its parent. */
 	parent?: number;
-	/** For a sub-chat: the `delegate` call (its task id) that made it, so the call run again after a crash finds it (heed.ts). */
-	madeBy?: string;
 	/**
-	 * For a sub-chat: the submission whose answer its parent stopped waiting for when the person sent a message, and has
-	 * not had yet. Cleared by whichever delivers it: a call that waits for it again, or the answer added to the parent (heed.ts).
+	 * The `delegate` call that made a sub-chat it did not wait for (`wait: false`). Such a sub-chat belongs to no call, so
+	 * that the call can end while it works; this lets the call, run again after a crash, find it rather than make another.
 	 */
-	answerOwed?: number;
+	madeBy?: string;
 	/**
 	 * One of a chat's versions after the first (versions.ts), with the chat as its `parent`: shown in the chat's place when
 	 * current, and never on its own.

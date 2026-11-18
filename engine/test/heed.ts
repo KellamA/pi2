@@ -1,8 +1,8 @@
 // A message from the person while an agent waits (src/heed.ts, issue #295): a real engine on a throwaway data folder,
 // driven over its socket with the demo model. A message sent to steer ends a wait on a sub-chat at once, and the sub-chat
-// carries on and can be waited for again, or gives its answer later by itself, once; one sent during a command in the
-// foreground comes after the command; both in one answer; a background read and a question to the person give way too;
-// what the person is shown a message waits for; and Stop stops a sub-chat that was let go.
+// carries on and can be waited for again (sub_chats with wait, which gives way too), or wakes the agent with its answer
+// later, once; one sent during a command in the foreground comes after the command; both in one answer; a background
+// read and a question to the person give way too; and what the person is shown a message waits for.
 //
 // Nothing here is timed. Each command the agents run waits for a file the test makes (a gate), and says it has started by
 // making one of its own, so the test knows where every call stands however busy the Mac is.
@@ -103,27 +103,32 @@ try {
 	const letGo = await client.until("the message answered", () => (client.idle(lead) && client.items(lead, "assistant").at(-1)?.text?.includes("hello while you wait") ? client.items(lead, "tool")[0] : undefined));
 	assert.equal(letGo.details?.waitEnded, true, JSON.stringify(letGo));
 	assert.equal(letGo.isError, false);
-	assert.match(letGo.text, new RegExp(`stopped waiting for sub-chat ${chat} .*nothing was stopped.*chat: ${chat} and no task`, "s"));
+	assert.match(letGo.text, new RegExp(`stopped waiting for sub-chat ${chat} .*nothing was stopped.*sub_chats with action "wait"`, "s"));
 	assert.ok(client.working(chat), "the sub-chat is still working");
 	assert.ok(!existsSync(join(scratch, "gate-1")), "and its command is still waiting for its gate");
 	step("a message during a wait on a sub-chat reaches the agent at once, and the sub-chat carries on");
 
-	// Waited for again: its answer comes back to the call, and is not added to the conversation as well.
+	// Waited for again with sub_chats, as one started with `wait: false` is; that wait gives way to a message too.
+	const waitFor = `/tool sub_chats ${JSON.stringify({ action: "wait", chats: [chat] })}`;
+	const before = client.items(lead, "tool").length;
+	await client.call("submit", { id: lead, text: waitFor });
+	await client.until("the wait again", () => client.state(lead)?.messageWaits?.ends?.[0] === "the wait for its sub-chats");
+	await steer("one more thing");
+	await client.until("the message answered", () => client.idle(lead) && client.items(lead, "assistant").at(-1)?.text?.includes("one more thing"));
+	const gaveWay = client.items(lead, "tool")[before]!;
+	assert.equal(gaveWay.details?.waitEnded, true, JSON.stringify(gaveWay));
 	const answers = client.items(lead, "assistant").length;
-	await client.call("submit", { id: lead, text: `/tool delegate ${JSON.stringify({ agent: "", chat })}` });
+	await client.call("submit", { id: lead, text: waitFor });
 	await client.until("the wait again", () => client.state(lead)?.messageWaits?.ends?.length > 0);
 	openFirst();
-	const again = (await client.until("the answer waited for again", () => (client.idle(lead) && client.items(lead, "assistant").length >= answers + 2 ? client.items(lead, "tool")[1] : undefined))) as Event;
+	const again = (await client.until("the answer waited for again", () => (client.idle(lead) && client.items(lead, "assistant").length >= answers + 2 ? client.items(lead, "tool")[before + 1] : undefined))) as Event;
 	assert.equal(again.isError, false, again.text);
 	assert.match(again.text, /released-one/);
-	assert.deepEqual(client.items(lead, "marker"), [], "nothing was added to the conversation besides");
-	const owesNothing = await client.tool(lead, `/tool delegate ${JSON.stringify({ agent: "", chat })}`);
-	assert.equal(owesNothing.isError, true);
-	assert.match(owesNothing.text, /owes you no answer/);
-	assert.match((await client.tool(lead, `/tool delegate ${JSON.stringify({ agent: "Worker" })}`)).text, /`task` says what to hand over/);
-	step("a sub-chat let go is waited for again with chat and no task, and its answer is given once");
+	assert.deepEqual(client.items(lead, "marker"), [], "the agent was not woken for it as well");
+	assert.match((await client.tool(lead, waitFor)).text, /nothing to wait for/);
+	step("a sub-chat let go is waited for again with sub_chats, which gives way to a message too, and its answer is given once");
 
-	// ---- Not waited for again: its answer is added to the conversation when it comes, once
+	// ---- Not waited for again: its answer wakes the agent when it comes, once
 
 	const [second, openSecond, secondStarted] = gated("released-two");
 	await client.call("submit", { id: lead, text: `/delegate Worker: ${second}` });
@@ -133,13 +138,12 @@ try {
 	await steer("never mind it");
 	await client.until("the message answered", () => client.idle(lead) && client.items(lead, "assistant").at(-1)?.text?.includes("never mind it"));
 	openSecond();
-	const marker = await client.until("the late answer added", () => client.items(lead, "marker").find((item) => item.text.includes(`Sub-chat ${secondChat}`)));
-	assert.match(marker.text, /answered after the agent stopped waiting for it/);
-	await client.until("the sub-chat idle", () => !client.working(secondChat));
-	const owed = await client.tool(lead, `/tool delegate ${JSON.stringify({ agent: "", chat: secondChat })}`);
-	assert.match(owed.text, /owes you no answer/, "the answer was given once, by being added");
-	assert.equal(client.items(lead, "marker").filter((item) => item.text.includes(`Sub-chat ${secondChat}`)).length, 1);
-	step("a sub-chat's answer that nobody waits for is added to the conversation when it comes, once");
+	const woke = await client.until("the late answer", () => client.items(lead, "marker").find((item) => item.text.includes(`sub-chat ${secondChat} `)));
+	assert.match(woke.text, /^pi² woke the agent: .*answered/);
+	await client.until("the woken agent's answer", () => client.idle(lead) && client.items(lead).at(-1)?.kind === "assistant" && client.items(lead).indexOf(woke) < client.items(lead).length - 1);
+	assert.match((await client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "wait", chats: [secondChat] })}`)).text, /nothing to wait for/, "the answer was given once, by the wake");
+	assert.equal(client.items(lead, "marker").filter((item) => item.text.includes(`sub-chat ${secondChat} `)).length, 1);
+	step("a sub-chat's answer that nobody waits for wakes the agent when it comes, once");
 
 	// ---- A message during a command in the foreground arrives after the command
 
@@ -183,7 +187,8 @@ try {
 	const thirdChat = handed!.details.conversationId as number;
 	assert.ok(client.working(thirdChat));
 	openThird();
-	await client.until("its late answer added", () => client.items(lead, "marker").some((item) => item.text.includes(`Sub-chat ${thirdChat}`)));
+	const wokeAgain = await client.until("its late answer", () => client.items(lead, "marker").find((item) => item.text.includes(`sub-chat ${thirdChat} `)));
+	await client.until("the woken agent's answer", () => client.idle(lead) && client.items(lead).at(-1)?.kind === "assistant" && client.items(lead).indexOf(wokeAgain) < client.items(lead).length - 1);
 	step("with a command and a sub-chat in one answer, the message waits for the command only");
 
 	// ---- A background read with wait, and a question to the person, give way too
@@ -209,22 +214,6 @@ try {
 	assert.match(client.items(lead, "tool")[asked]!.text, /sent you a message instead of answering/);
 	assert.ok(!(client.events.inbox?.items ?? []).some((item: Event) => item.conversationId === lead), "the question is taken away");
 	step("a background read with wait, and a question to the person, stop waiting for a message");
-
-	// ---- Stop stops a sub-chat that was let go, and its end is added as owed
-
-	const [fourth, , fourthStarted] = gated("never");
-	await client.call("submit", { id: lead, text: `/delegate Worker: ${fourth}` });
-	await until("the fourth sub-chat's command to start", fourthStarted);
-	const fourthChat = client.newestSubChat(lead);
-	await client.until("its wait", () => client.state(lead)?.messageWaits?.ends?.length > 0);
-	await steer("go on without it");
-	await client.until("the message answered", () => client.idle(lead) && client.items(lead, "assistant").at(-1)?.text?.includes("go on without it"));
-	assert.ok(client.working(fourthChat));
-	await client.call("abort", { id: lead });
-	const stopped = await client.until("the stopped sub-chat's end added", () => client.items(lead, "marker").find((item) => item.text.includes(`Sub-chat ${fourthChat}`)));
-	assert.match(stopped.text, /ended without an answer/);
-	await client.until("the sub-chat stopped", () => !client.working(fourthChat));
-	step("Stop stops the sub-chats a message let go on, and the agent is told they did not finish");
 
 	console.log("PASS");
 	passed = true;

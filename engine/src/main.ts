@@ -47,7 +47,8 @@ import { noticingRefusals } from "./limitwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
-import { messageSent, OWED_ANSWER_ENTRY, owedMarker, stopLetGo } from "./heed.ts";
+import { messageSent } from "./heed.ts";
+import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
@@ -207,12 +208,12 @@ const host: Host = {
 	agentChange: (agent, options) => agentChange(agent, options),
 	sendToChat: async (id, content, requestId) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
-		if (conv === undefined) return { reason: "the sub-chat no longer exists" };
+		if (conv === undefined) return undefined;
 		await takeSwitch(conv.id);
 		await syncTools(conv).catch(() => {});
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
 		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
-		return { submission: submission.id };
+		return submission.id as unknown as number;
 	},
 	conversations: () => library.conversations,
 	working: (id) => working.has(id),
@@ -244,6 +245,7 @@ const engine: Engine = {
 		for (const client of clients) (client.subscriptions.get(id) ?? client.subscriptions.get(chatOf(id)))?.push();
 	},
 	activityChanged: () => broadcast(activityEvent()),
+	overBudget: () => (overBudget() ? `Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up.` : undefined),
 	providersChanged: () => void announceProviders(),
 };
 host.features = FEATURES.map((feature) => feature(host, engine));
@@ -431,7 +433,7 @@ async function syncTools(conv: Conversation): Promise<void> {
 /**
  * A message is about to be sent to conversation `id`: it takes its own agent's Allow everything switch as it is now
  * (state.ts, `takeAgentSwitch`). Every way a message reaches a conversation calls this first: the person's (`submit`,
- * `continue`), a schedule's (`deliver`) and an agent's continuing a sub-chat (`continueChat`); `delegate` sets a new
+ * `continue`), a schedule's (`deliver`) and an agent's continuing a sub-chat (`sendToChat`); `delegate` sets a new
  * sub-chat's from its own agent as it makes it.
  */
 async function takeSwitch(id: ConversationId): Promise<void> {
@@ -611,7 +613,12 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
 	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
-	if (entry.kind === OWED_ANSWER_ENTRY) return { id, kind: "marker", text: owedMarker(entry.data) };
+	// What woke the agent is a message to the model, and a line to the person; its Output opens a command's output.
+	if (entry.kind === WAKE_ENTRY) {
+		const details = wakeMarkerDetails(entry.data);
+		return { id, kind: "marker", text: wakeMarker(entry.data), ...(details === undefined ? {} : { details }) };
+	}
+	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -1426,6 +1433,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		for (const feature of host.features) feature.messageSent?.(params.id as number);
 		// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
 		if (params.mode === "steer") messageSent(conv.id as unknown as number);
 		await editMeta(conv.id, (meta) => {
@@ -1436,10 +1444,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return { submissionId: submission.id };
 	},
 	abort: async (params) => {
-		const conv = await conversation(params.id);
-		// With the sub-chats a message from the person let go on: they are this run's work too (heed.ts).
-		stopLetGo(conv.id as unknown as number);
-		await conv.abort(context);
+		await (await conversation(params.id)).abort(context);
+		for (const feature of host.features) feature.stopped?.(params.id as number);
 		return {};
 	},
 	continue: async (params) => {
@@ -1875,6 +1881,7 @@ async function refreshUsage(): Promise<void> {
 		overBudget: overBudget(),
 	};
 	broadcast(usageSummary);
+	for (const feature of host.features) feature.usageChanged?.();
 }
 let usageTimer: ReturnType<typeof setTimeout> | undefined;
 /** Usage changes when work ends; recount shortly after, once, however many tasks finished together. */
