@@ -584,7 +584,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string; details?: { background: { id: string } } }
+	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string } } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -616,10 +616,11 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
 	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
-	// What woke the agent is a message to the model, and a line to the person; its Output opens a command's output.
+	// Show the same model input behind the line, including wakes stored before the row could open (#318).
 	if (entry.kind === WAKE_ENTRY) {
-		const details = wakeMarkerDetails(entry.data);
-		return { id, kind: "marker", text: wakeMarker(entry.data), ...(details === undefined ? {} : { details }) };
+		const content = textOf((entry.model?.[0] as { content?: unknown } | undefined)?.content);
+		const details = { ...wakeMarkerDetails(entry.data), wake: { text: content } };
+		return { id, kind: "marker", text: wakeMarker(entry.data), details };
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;

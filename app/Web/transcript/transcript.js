@@ -346,6 +346,10 @@
 			} else if (item.kind === "setup") {
 				const spec = setupSpec(item, visible);
 				if (spec) specs.push(spec);
+			} else if (isObject(item.details) && isObject(item.details.wake) && typeof item.details.wake.text === "string") {
+				const call = { callId: "wake:" + item.id, name: "pi2_wake", arguments: { summary: str(item.text) } };
+				const fixed = { status: "done", result: { text: item.details.wake.text }, command: T.markerCommand(item) };
+				specs.push({ key: "i" + item.id, sig: "w" + rev(item), build: () => el("div", "tool wake"), update: (row) => fillTool(row, call, "", fixed) });
 			} else {
 				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(str(item.text), T.markerCommand(item)) });
 			}
@@ -995,7 +999,7 @@
 		const liveTool = fixed ? fixed.live : live.tools.get(call.callId);
 		const info = T.describe(call, status, result, liveTool, names);
 		const sections = T.detailFor(call, status, result, liveTool);
-		row.className = "tool " + status + (call.name === "pi2_setup" ? " setup" : "");
+		row.className = "tool " + status + (call.name === "pi2_setup" ? " setup" : call.name === "pi2_wake" ? " wake" : "");
 
 		// Where the output was scrolled to, so new output does not pull the reader away from what they are reading.
 		const oldOutput = row.querySelector(".output");
@@ -1047,7 +1051,7 @@
 			head.appendChild(el("span", "tool-status none", "No result"));
 		}
 		// A background command's Output, at the end of the line as a hand-off's Open is, after the chevron.
-		const command = fixed ? "" : T.backgroundCommand(call, result);
+		const command = fixed ? fixed.command || "" : T.backgroundCommand(call, result);
 		const outputLink = command ? outputButton(command) : null;
 		if (outputLink) head.appendChild(outputLink);
 		// A document that was written: Open and Save a Copy, at the end of its line, as a hand-off's Open is.
