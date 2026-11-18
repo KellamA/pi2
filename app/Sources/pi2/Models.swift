@@ -77,6 +77,10 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var chat: Bool? = nil
     /// A chat kept at the top of chat mode's sidebar.
     var pinned: Bool? = nil
+    /// An agent's conversation a chat was continued in (Continue with an Agent, ChatContinue.swift): that chat.
+    var continuedFrom: Int? = nil
+    /// A chat continued with an agent: the conversations it went on in, oldest first.
+    var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
     var allowEverything: Bool? = nil
 }
@@ -212,10 +216,13 @@ struct LimitWait: Codable, Equatable {
     /// The provider's name, as Settings shows it.
     let provider: String
 
-    /// "14:32", or with the day when it is not today.
+    /// "14:32" within the next 20 hours, which cannot be mistaken for another day's; "Thu 09:00" within the week; else the date.
     var untilText: String {
         let date = Date(timeIntervalSince1970: until / 1000)
-        return Calendar.current.isDateInToday(date) ? date.formatted(date: .omitted, time: .shortened) : date.formatted(date: .abbreviated, time: .shortened)
+        let ahead = date.timeIntervalSinceNow
+        if ahead < 20 * 3600 { return date.formatted(date: .omitted, time: .shortened) }
+        if ahead < 6 * 86400 { return date.formatted(.dateTime.weekday(.abbreviated).hour().minute()) }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 
     /// What the conversation says while it waits.
@@ -228,9 +235,27 @@ struct LimitWait: Codable, Equatable {
         return "\(what)\(refused), and named no time. The run asks again at \(untilText) and carries on by itself. Stop ends it."
     }
 
-    /// The short form, for a row in Activity.
+    /// The short form, for a row in Activity and the menu bar.
     var tag: String {
-        kind == "overloaded" ? "provider overloaded · until \(untilText)" : "rate limit · until \(untilText)"
+        kind == "overloaded" ? "\(provider) overloaded · until \(untilText)" : "waiting for \(provider)’s limit · until \(untilText)"
+    }
+
+    /// The shortest form, for a sidebar row, beside the conversation's title.
+    var shortTag: String { "until \(untilText)" }
+
+    /// What a parent conversation says of its sub-chats that wait (#343): one line per provider, kept up to date.
+    static func subChatsLine(_ waits: [LimitWait]) -> String? {
+        guard !waits.isEmpty else { return nil }
+        let groups = Dictionary(grouping: waits) { "\($0.provider)\u{0}\($0.kind)" }.values.sorted { $0.count > $1.count }
+        let parts = groups.map { group -> String in
+            let latest = group.max { $0.until < $1.until }!
+            let count = group.count == 1 ? "1 sub-chat waits" : "\(group.count) sub-chats wait"
+            if latest.kind == "overloaded" { return "\(count) for \(latest.provider), which is overloaded, until \(latest.untilText)" }
+            return group.allSatisfy(\.told)
+                ? "\(count) for \(latest.provider)’s limit until \(latest.untilText)"
+                : "\(count) for \(latest.provider)’s limit, asking again by \(latest.untilText)"
+        }
+        return parts.joined(separator: "; ") + ". They carry on by themselves; Stop on a sub-chat ends its wait."
     }
 }
 
@@ -726,6 +751,9 @@ struct ConversationState: Codable, Equatable {
     let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
     var chat: Bool? = nil
+    /// A chat's web switch (#287): whether its next message may search the web and read pages. Nil for any other
+    /// conversation, and from an engine older than the switch.
+    var web: Bool? = nil
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
     var messageWaits: MessageWaits? = nil

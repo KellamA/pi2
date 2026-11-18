@@ -809,8 +809,10 @@ export const localModels: Feature = (host, engine) => {
 				detached: true,
 				stdio: run.stdio,
 			});
-		} finally {
-			run.started();
+		} catch (error) {
+			forgetRun(run.marker);
+			closeSync(out);
+			throw error;
 		}
 		entry.child = child;
 		let failure: string | undefined;

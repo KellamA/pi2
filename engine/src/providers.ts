@@ -319,6 +319,27 @@ function demoLast(messages: readonly unknown[]): DemoMessage | undefined {
 	return (messages as readonly DemoMessage[]).findLast((message) => message.role === "user" || message.role === "toolResult");
 }
 
+/**
+ * "/work <steps> <tokens a second> <command>": the demo model works as an agent does, for the load script
+ * (scripts/load.mts): it writes a paragraph at that pace and runs the command, again and again, until it has run it
+ * `steps` times. Read from the person's latest message, so the answers between the commands keep to it; `done` is how
+ * many times the command has run since that message.
+ */
+function demoWork(messages: readonly unknown[]): { steps: number; pace: number; command: string; done: number } | undefined {
+	const all = messages as readonly DemoMessage[];
+	const asked = all.findLastIndex((message) => message.role === "user");
+	const match = /^\/work (\d+) (\d+) (.+)$/s.exec(demoPrompt(all[asked]));
+	if (match === null) return undefined;
+	const done = all.slice(asked + 1).filter((message) => message.role === "toolResult").length;
+	return { steps: Number(match[1]), pace: Math.max(1, Number(match[2])), command: match[3]!, done };
+}
+
+/** About a hundred tokens of what an agent writes between its commands. */
+const workParagraph = (step: number, steps: number) =>
+	`Step ${step} of ${steps}. The last command finished, so I read what it printed and compared it with what I expected. ` +
+	"Nothing there changes the plan: the next thing to check is the same command again, to see whether its output is stable " +
+	"from one run to the next, and whether anything else in the folder changed in the meantime. Running it now.";
+
 const isAttached = (block: DemoBlock) => block?.type === "text" && typeof block.text === "string" && isAttachmentBlock(block.text);
 
 /** What the person typed, apart from what they attached: attached texts are blocks of their own, after it. */
@@ -341,6 +362,14 @@ function demoProvider(): Provider {
 	const fast = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: Number.isFinite(speed) && speed > 0 ? speed : READABLE });
 	const step = (request: { messages: readonly unknown[] }) => {
 		const last = demoLast(request.messages);
+		// Asked to summarize a conversation for compaction: a long one can be compacted, and echoing the whole of it back
+		// at a readable pace would hold the run for many minutes.
+		if (demoPrompt(last).startsWith("<conversation>\n")) return fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.");
+		const work = demoWork(request.messages);
+		if (work !== undefined && (last?.role === "user" || last?.role === "toolResult")) {
+			if (work.done >= work.steps) return fauxAssistantMessage(`Done: I ran it ${work.done} time${work.done === 1 ? "" : "s"}.`);
+			return fauxAssistantMessage([fauxText(workParagraph(work.done + 1, work.steps)), fauxToolCall("bash", { command: work.command })], { stopReason: "toolUse" });
+		}
 		if (last?.role === "toolResult") {
 			// Says how many pictures it was sent, so it is visible that old screenshots are left out.
 			const pictures = (request.messages as readonly { content?: unknown }[]).reduce(
@@ -477,8 +506,23 @@ function demoProvider(): Provider {
 	};
 	slow.setResponses(Array.from({ length: 100_000 }, () => step));
 	fast.setResponses(Array.from({ length: 100_000 }, () => step));
-	const pace = (context: { messages: readonly unknown[] }, options?: object) =>
-		(options as { deferred?: unknown } | undefined)?.deferred === undefined && demoPrompt(demoLast(context.messages)).startsWith("/slow ") ? slow : fast;
+	// "/work" names its own pace, and gets a core of its own for it.
+	const paced = new Map<number, typeof fast>();
+	const atPace = (tokensPerSecond: number) => {
+		let core = paced.get(tokensPerSecond);
+		if (core === undefined) {
+			core = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond });
+			core.setResponses(Array.from({ length: 100_000 }, () => step));
+			paced.set(tokensPerSecond, core);
+		}
+		return core;
+	};
+	const pace = (context: { messages: readonly unknown[] }, options?: object) => {
+		if ((options as { deferred?: unknown } | undefined)?.deferred !== undefined) return fast;
+		const work = demoWork(context.messages);
+		if (work !== undefined) return atPace(work.pace);
+		return demoPrompt(demoLast(context.messages)).startsWith("/slow ") ? slow : fast;
+	};
 	// Tests give the demo a picture model on a stand-in server (PI2_DEMO_PICTURES, its address on 127.0.0.1), which
 	// speaks OpenRouter's picture API, so making pictures can be tried without a provider (pictures.ts). Priced, so
 	// Usage has a cost to count.

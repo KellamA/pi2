@@ -8,6 +8,8 @@ An agent answers when it is sent a message, and stops when it has answered. Two 
 - **A sub-chat started with `delegate` and `wait: false`.** The call returns at once with the sub-chat's number ("Sub-chat 12, “Fix login”, with Forge, is working on it. Its answer will come to you as a message when it is done…"), and the agent can answer the person, hand out more work or stop. When the sub-chat answers, or its run ends without an answer, the agent is woken with exactly what `delegate` would have answered: the sub-chat's answer, which sub-chat it was and how to continue it, and the line about the plan's limits when a window is nearly used up ([limits.md](limits.md#telling-an-agent-that-hands-out-work-and-the-person)). Continuing a sub-chat (`chat`) with `wait: false` works the same way. The waiting form stays the default: an agent that does not pass `wait: false` sees no change, until the person sends it a message to steer while it waits: that ends the wait, and the sub-chat carries on as one started with `wait: false` ([architecture.md](architecture.md#a-message-while-an-agent-waits)).
 - **A command started with `bash`, `background: true` and `wake: true`.** When the command ends, the agent is woken with how it ended ("exited with code 1 after 4 minutes") and the end of what it printed: the last 40 lines, 4,000 characters at most, or all of it when that is less. Reading it there does not change what counts as read for the `background` tool. An end the agent already knows of does not wake it: one it stopped itself, or one the call that started the command reported, because the command was over within its first second.
 
+For a command already running, including one moved to the background at its time limit, `background` with `action: "wake"` and its `id` asks for the same wake (#317). Asking twice watches it once. It refuses commands already over or belonging to another conversation, and does not turn back on a wake the person turned off.
+
 Only a conversation of its own is woken. A sub-chat's answers go to the agent that handed it the work, not to anyone reading its transcript, so a sub-chat cannot pass `wake: true` (the call is refused before anything is started), and it cannot hand out work.
 
 ## How it is woken
@@ -28,7 +30,7 @@ Background command bg-3 (`npm test`) exited with code 1 after 4 minutes. The end
 ```
 
 - **One at a time, together.** What ends while the agent is answering waits for that answer to end, and everything waiting then comes in one message, in the order it ended. A message from the person sent meanwhile is answered first, as it was queued first.
-- **The person sees it.** The conversation gets a line, "pi² woke the agent: sub-chat 12 “Fix login” answered", in place of the message the model reads; for a single command it has **Output**, as the command's own lines do. A conversation that was woken moves to the top of the sidebar, as one the person wrote in does.
+- **The person sees it.** The conversation gets a row, "pi² woke the agent: sub-chat 12 “Fix login” answered", in place of the message the model reads. Open its chevron to read exactly what the agent was given, including all results when several ended together. It starts closed and remembers whether you opened it. For a single command it also has **Output**, as the command's own lines do. A conversation that was woken moves to the top of the sidebar, as one the person wrote in does.
 - **Waiting for one instead.** An agent with several sub-chats working can wait for the next one to finish, whichever it is, with `sub_chats` and `action: "wait"` (or only some of them, with `chats`). It gets that sub-chat's answer as the call's result, together with any that finished and were not yet handed over, and is not woken for them as well. With nothing left to wait for, it says so at once. This is an action of `sub_chats` rather than of `delegate` because it is about sub-chats already working, which `sub_chats` lists and archives; `delegate` hands out work. `sub_chats`' list says of such a sub-chat that it is working "and its answer will come to you as a message".
 
 ## What the person sees and can do
@@ -63,5 +65,4 @@ When the agent is not woken for a while, the strip says why, and so does a line 
 
 ## Known limits
 
-- An agent cannot ask to be woken for a command that is already running, such as one moved to the background at its time limit; it reads it with `background` and `wait`.
-- A message from the person does not reach an agent that is waiting in a call (`delegate` that waits, `sub_chats` with `wait`, a `background` read with `wait`) until the call returns. #295 changes that.
+- A message from the person ends a call that only waits, but not a code mode script or the calls it makes ([architecture.md](architecture.md#a-message-while-an-agent-waits)).

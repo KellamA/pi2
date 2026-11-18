@@ -559,8 +559,9 @@ export const worktrees: Feature = (_host, engine) => {
 		let child: ChildProcess;
 		try {
 			child = spawn("/bin/bash", ["-c", command], { cwd: root, env: commandEnvironment({ ...variables, ...scratchVariable(id), [RUN_VARIABLE]: marker }), detached: true, stdio: given.stdio });
-		} finally {
-			given.started();
+		} catch (error) {
+			forgetRun(marker);
+			throw error;
 		}
 		// Its output goes to the apps with the conversation's state as it arrives, a few times a second at most. Not as
 		// transcript entries, which are kept for good: the one written when it ends holds the output's end.

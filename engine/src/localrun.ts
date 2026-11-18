@@ -386,7 +386,6 @@ function start(modelId: string): Server {
 			});
 		} finally {
 			closeSync(output);
-			run.started();
 		}
 		server.child = child;
 		// A program that cannot be run at all (not there, not executable) has an error and no exit.
