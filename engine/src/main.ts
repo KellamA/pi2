@@ -275,8 +275,8 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * The tools a conversation is given: file and shell tools by access level, asking the person, delegation, and what
  * its agent adds (scripts, MCP servers). A tool whose server is not connected right now is left out, and so is a tool
  * that could do nothing: the computer while no app is allowed, and in a sub-chat (`subChat`), handing work on and
- * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts):
- * a sub-chat follows its own agent's list.
+ * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts),
+ * where a sub-chat follows its own agent's list, and what a feature withholds for now (pictures with no picture model).
  */
 function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
@@ -289,16 +289,23 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
 	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
 	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
-	const leftOut = toolsLeftOut(agent);
+	const leftOut = new Set([...toolsLeftOut(agent), ...withheld()]);
 	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras]
 		.filter((name) => !leftOut.has(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }
 
+/** The tools that could do nothing right now, such as making pictures with no picture model: offered to no one. */
+function withheld(): string[] {
+	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
+}
+
 /** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
 function chatTools() {
+	const held = withheld();
 	return chatToolNames(chatSettings(settings.chat).web)
+		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }

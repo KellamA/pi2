@@ -296,7 +296,7 @@ struct AgentEditor: View {
                     .id(AgentSection.everything)
 
                 if !engine.builtInTools.isEmpty {
-                    BuiltInToolsSection(tools: engine.builtInTools, agent: agent, toolsOff: Binding(
+                    BuiltInToolsSection(tools: engine.builtInTools, agent: agent, pictures: engine.pictures, toolsOff: Binding(
                         get: { agent.toolsOff ?? [] },
                         set: { draft.wrappedValue.toolsOff = $0 }
                     ), toolsOn: Binding(
@@ -439,6 +439,8 @@ struct AgentEditor: View {
 struct BuiltInToolsSection: View {
     let tools: [BuiltInTool]
     let agent: AgentProfile
+    /// The picture models there are, for saying why making pictures is not offered when there are none.
+    let pictures: EngineClient.PictureModels?
     @Binding var toolsOff: [String]
     @Binding var toolsOn: [String]
 
@@ -475,6 +477,10 @@ struct BuiltInToolsSection: View {
         case "files" where agent.access == "none": "Not offered with tool access off."
         case "changes" where agent.access != "ask" && agent.access != "full": "Offered only with Ask first or Full access."
         case "browser" where agent.browser?.enabled != true: "Offered only while the browser is on."
+        case "pictures" where pictures?.models.isEmpty == true:
+            pictures?.makers.isEmpty == false
+                ? "None of your providers can make pictures, so it is not offered. \(ListFormatter.localizedString(byJoining: pictures?.makers ?? [])) can: add a key in Settings › Providers."
+                : "None of your providers can make pictures, so it is not offered."
         default: nil
         }
     }
