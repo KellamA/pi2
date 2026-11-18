@@ -164,3 +164,6 @@ jobs:
       - name: Check Return in the message field
         working-directory: app
         run: .build/debug/pi2-compose-check
+      - name: Check engine login item decisions
+        working-directory: app
+        run: .build/debug/pi2-login-item-check

@@ -1,3 +1,4 @@
+import LoginItemKit
 import SwiftUI
 
 /// What the main window is showing.

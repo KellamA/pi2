@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LoginItemKit
 import Network
 import Observation
 
@@ -114,7 +115,7 @@ final class EngineClient {
     /// Failed starts in a row before the window says the engine cannot be started. Each takes about three seconds, so a
     /// slow start is not mistaken for a failed one.
     private static let startsBeforeProblem = 3
-    /// Set while a backup is being restored, so the engine is not started underneath it.
+    /// Keeps reconnects from starting the engine during a restore, update, or planned restart.
     private var holdEngine = false
 
     init() {
@@ -418,8 +419,8 @@ final class EngineClient {
                     Task { _ = try? await self.call("computer.register") }
                     // And as the one whose browser agents use.
                     Task { _ = try? await self.call("browser.register") }
-                    // After an update the engine that answered may be the one from before.
-                    Task { await self.replaceEngineFromAnotherBuild() }
+                    // After an update either the running engine or its login item may still be out of date.
+                    Task { await self.reconcileEngine(on: connection) }
                     Task { await self.noteEngineFromAnotherCheckout() }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.requestOpen(id) }
@@ -865,38 +866,57 @@ final class EngineClient {
     /// Whether the engine was already replaced in this run of the app, so a mismatch a restart cannot fix never loops.
     private var replacedEngine = false
 
-    /// The engine outlives the app when agents are kept running or it starts at login, so after an update (or after
-    /// the app was moved) the engine that answers may be the one from before. Ask which build it is; if it is not this
-    /// app's, stop it cleanly and start this app's. Runs pick up where they stopped.
-    private func replaceEngineFromAnotherBuild() async {
-        guard Self.isSelfContained, !replacedEngine, let (node, main) = Self.enginePaths else { return }
-        // An engine from before this check does not know the method, which makes it just as much from another build.
-        let info = try? await call("engine.info")
-        if let info, info["build"]?.stringValue == Self.buildID, info["main"]?.stringValue == main { return }
-        replacedEngine = true
-        note("replacing an engine from build \(info?["build"]?.stringValue ?? "unknown") with \(Self.buildID ?? "unknown")")
+    /// A failed refresh must not restart the engine on every reconnect.
+    private var attemptedLoginItemRefresh = false
+
+    /// The engine can outlive the app, but even an engine of this build may have been started by an outdated login
+    /// item. Check both after connecting and share a single stop if both need changing. Runs pick up after the stop.
+    private func reconcileEngine(on connection: NWConnection) async {
+        guard Self.isSelfContained, self.connection === connection, !holdEngine,
+              let (node, main) = Self.enginePaths else { return }
+        var replaceEngine = false
+        if !replacedEngine {
+            // An engine from before this check does not know the method, which makes it just as much from another build.
+            let info = try? await call("engine.info")
+            guard self.connection === connection, !holdEngine else { return }
+            if info == nil || info?["build"]?.stringValue != Self.buildID || info?["main"]?.stringValue != main {
+                replaceEngine = true
+                replacedEngine = true
+                note("replacing an engine from build \(info?["build"]?.stringValue ?? "unknown") with \(Self.buildID ?? "unknown")")
+            }
+        }
+        func loginItemNeedsRefresh() -> Bool {
+            EngineLoginItem.needsRefresh(EngineLoginItem.current, node: node, main: main, home: home.path)
+        }
+        let refreshLoginItem = loginItemNeedsRefresh() && !attemptedLoginItemRefresh
+        guard replaceEngine || refreshLoginItem else { return }
+        if refreshLoginItem {
+            attemptedLoginItemRefresh = true
+            note("stopping the engine to refresh its login item (paths or ProcessType changed)")
+        }
         holdEngine = true
         defer {
             holdEngine = false
             lastLaunch = .distantPast
         }
         stopEngine()
-        // A clean stop waits for the engine to close its storage. Past that, a hard stop is safe: reopening recovers.
         for _ in 0..<150 where enginePID != nil { try? await Task.sleep(for: .milliseconds(100)) }
-        if let pid = enginePID {
+        // Preserve the hard stop fallback for an engine that has to be replaced, but don't force it for a plist change.
+        if replaceEngine, let pid = enginePID {
             kill(pid, SIGKILL)
             for _ in 0..<20 where enginePID != nil { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        // A login item for this data folder may still name the old copy of the app, or start the engine as a background
-        // job, as items made before #344 did; put it right. `install` replaces it, and refuses if it serves another
-        // data folder.
-        if let item = EngineLoginItem.current, item.serves(home: home.path),
-           item.arguments != [node, main] || item.processType != EngineLoginItem.processType {
-            do {
-                try EngineLoginItem.install(node: node, main: main, home: home.path)
-            } catch {
-                lastError = "Could not update the login item: \(error.localizedDescription)"
-            }
+        // Settings may have turned the item off or reinstalled it while we waited for the engine to stop.
+        guard refreshLoginItem, loginItemNeedsRefresh() else { return }
+        guard enginePID == nil else {
+            note("left the engine login item unchanged because the engine did not stop")
+            return
+        }
+        do {
+            try EngineLoginItem.install(node: node, main: main, home: home.path)
+        } catch {
+            note("could not update the engine login item: \(error.localizedDescription)")
+            lastError = "Could not update the login item: \(error.localizedDescription)"
         }
     }
 
