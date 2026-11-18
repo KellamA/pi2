@@ -10,9 +10,9 @@ Offered when the conversation's tool access is anything but **none**, unless the
 
 | Tool | Arguments | Answers with |
 | --- | --- | --- |
-| `list_files` | `path?` | The folder's entries: a `/` after folders, sizes for files. Folders first, then by name. |
-| `find_files` | `pattern`, `path?` | Files whose path matches a glob, newest first, with sizes. |
-| `search_files` | `query`, `path?`, `glob?`, `regex?`, `ignoreCase?` | Lines containing the text (or matching the regular expression), grouped by file, with line numbers. |
+| `list_files` | `path?`, `cursor?` | The folder's entries: a `/` after folders, sizes for files. Folders first, then by name. |
+| `find_files` | `pattern`, `path?`, `cursor?` | Files whose path matches a glob, each batch newest first, with sizes. |
+| `search_files` | `query`, `path?`, `glob?`, `regex?`, `ignoreCase?`, `cursor?` | Lines containing the text (or matching the regular expression), grouped by file, with line numbers. |
 
 **Globs** are `*` (anything within one name), `**` (across folders), `?` (one character) and `{a,b}` (either; they nest). A glob with no `/` in it, such as `*.ts`, matches names anywhere below the folder searched; one with a `/`, such as `src/**/test_*.py`, matches the path below it. Matching is case sensitive.
 
@@ -20,7 +20,9 @@ Offered when the conversation's tool access is anything but **none**, unless the
 
 **What they leave out.** `.git`, `.svn`, `.hg`, `node_modules`, `dist`, `build`, `out`, `target`, `.next`, `.build`, `DerivedData`, `Pods`, `__pycache__`, virtual environments, caches, `coverage` and a few more (the list is `SKIPPED` in the code), and `.DS_Store`. Naming one of them as `path` looks inside it. `search_files` also skips binary files (a NUL byte in the first 8,000 bytes) and files over 1 MB, and says how many.
 
-**Limits.** `list_files` shows 300 entries and says how many more there are. `find_files` shows 200. `search_files` shows 10 matches per file and 100 in all, with each line cut to about 240 characters around the match. A walk stops after 20,000 files or 10 seconds, and the answer says so, and that `path` can narrow it. The walk reads folders with async calls and so lets the engine serve other conversations in between, and it stops when the run is stopped. A regular expression is only tried against the first 2,000 characters of a line.
+**Limits and continuation.** `list_files` shows 300 entries; `find_files` collects up to 200 matches per batch and sorts that batch newest first (not globally across batches). `search_files` shows 10 matches per file and stops after finishing the file that reaches 100 in all (up to 109), with each line cut to about 240 characters around the match. A walk stops after 20,000 files or 30 seconds, finishing at least one file even on a very busy Mac. The walk reads folders with async calls and so lets the engine serve other conversations in between, and it stops when the run is stopped. A regular expression is only tried against the first 2,000 characters of a line.
+
+An incomplete result gives a `cursor`: pass it back with the same other arguments to continue without rereading completed files. The cursor names a place in a deterministic files-first, name-ordered walk (or the folders-first listing), not a count or a snapshot. Earlier subtrees are skipped. Deleting or inserting files does not shift that place, but new or changed files before it require a fresh call without a cursor. A cursor is not a permission to read a path; the folder is checked again on every call. At an exact batch boundary a final continuation may return no matches.
 
 ## The web: `web_fetch`, `web_search`
 
@@ -28,7 +30,7 @@ Offered when the conversation's agent has the **browser** switched on: the same 
 
 `web_fetch { url, offset? }` fetches a public page and answers with its title, final address and readable text. For HTML, scripts, styles, navigation, footers and markup are dropped and the text kept, with headings, lists and tables laid out, and links shown as the text followed by the address in brackets. JSON and plain text come back as they are. PDFs, pictures and other downloads are refused with a message. At most 2 MB is read from the network, about 20,000 characters are returned at a time (`offset` reads on), it gives up after 20 seconds, and it follows at most 5 redirects.
 
-`web_search { query }` answers with up to ten results (title, address, snippet). It fetches DuckDuckGo's script-free results page, the one the browser tool's `search` uses, and picks the results out of it. This is best effort: such a page can change or answer with a check that it is a person asking. When no results can be read, the tool says so and suggests the browser's own `search`.
+`web_search { query }` answers with up to ten results (title, address, snippet). It fetches DuckDuckGo's script-free results page, the one the browser tool's `search` uses, and picks the results out of it. This is best effort: such a page can change or answer with a check that it is a person asking. An explicit empty result suggests fewer words, removing quotes, or `gh search code` for source code; quoted code fragments can find nothing even when the same words without quotes find results. A check or an unreadable results page is reported separately and suggests the browser's own `search`. Queries are sent unchanged, with no automatic retry.
 
 ### Address rules
 

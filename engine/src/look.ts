@@ -45,13 +45,12 @@ const SKIPPED_FILES = new Set([".DS_Store"]);
 
 const LIST_CAP = 300;
 const FIND_CAP = 200;
-const FIND_COLLECT = 5000;
 const SEARCH_TOTAL = 100;
 const SEARCH_PER_FILE = 10;
 const LINE_CAP = 240;
 const SEARCH_FILE_BYTES = 1_000_000;
 const WALK_FILES = 20_000;
-const WALK_MS = 10_000;
+const WALK_MS = 30_000;
 
 export type WalkLimits = { files: number; ms: number };
 
@@ -138,7 +137,22 @@ export async function locate(root: string, path: string | undefined): Promise<{ 
 
 const relative = (root: string, full: string) => (full === root ? "." : full.slice(root.length + 1));
 
-export type Walked = { visited: number; stopped?: "files" | "time" | "cancelled" };
+// Keys sort files before subfolders at each level, just as the walk does. They name a place,
+// not an offset: inserting or deleting earlier files cannot shift the continuation.
+const cursorKey = (path: string) => path.split(sep).map((part, i, all) => `${i === all.length - 1 ? "0" : "1"}${part}`).join("/");
+const compareKeys = (a: string, b: string) => {
+	const left = a.split("/");
+	const right = b.split("/");
+	for (let i = 0; i < Math.min(left.length, right.length); i++) {
+		if (left[i] !== right[i]) return left[i]! < right[i]! ? -1 : 1;
+	}
+	return left.length - right.length;
+};
+const validCursor = (cursor: string | undefined) => cursor === undefined || cursor === "" || /^(?:[01][^/]+\/)*[01][^/]+$/.test(cursor);
+const cursorParameter = opt(str({ description: "Continuation from the previous result; keep other arguments unchanged" }));
+const continuation = (cursor: string) => `Continue with the same arguments and cursor: ${JSON.stringify(cursor)}. Files added or changed before this place need a fresh call without cursor.`;
+
+export type Walked = { visited: number; stopped?: "files" | "time" | "cancelled"; cursor?: string };
 
 /**
  * Visit the files below `start`, in name order, without following links and without entering the places in SKIPPED.
@@ -150,8 +164,10 @@ export async function walk(
 	context: Pick<Context, "abortSignal">,
 	visit: (full: string, below: string, inRoot: string) => Promise<boolean | undefined | void>,
 	limits: WalkLimits = { files: WALK_FILES, ms: WALK_MS },
+	cursor?: string,
 ): Promise<Walked> {
 	const began = Date.now();
+	let last = cursor ?? "";
 	const stack = [start];
 	let visited = 0;
 	while (stack.length > 0) {
@@ -166,17 +182,21 @@ export async function walk(
 		const folders: string[] = [];
 		for (const entry of entries) {
 			if (context.abortSignal?.aborted) return { visited, stopped: "cancelled" };
-			if (Date.now() - began > limits.ms) return { visited, stopped: "time" };
+			if (Date.now() - began > limits.ms && visited > 0) return { visited, stopped: "time", cursor: last };
 			if (entry.isSymbolicLink()) continue;
 			const full = dir + (dir.endsWith(sep) ? "" : sep) + entry.name;
 			if (entry.isDirectory()) {
-				if (!SKIPPED_SET.has(entry.name)) folders.push(full);
+				const prefix = cursorKey(relative(start, full) + sep).slice(0, -1);
+				if (!SKIPPED_SET.has(entry.name) && (cursor === undefined || compareKeys(prefix, cursor) > 0 || cursor.startsWith(prefix))) folders.push(full);
 				continue;
 			}
 			if (!entry.isFile() || SKIPPED_FILES.has(entry.name)) continue;
-			if (visited >= limits.files) return { visited, stopped: "files" };
+			const key = cursorKey(relative(start, full));
+			if (cursor !== undefined && compareKeys(key, cursor) <= 0) continue;
+			if (visited >= limits.files) return { visited, stopped: "files", cursor: last };
 			visited++;
-			if ((await visit(full, relative(start, full), relative(root, full))) === false) return { visited };
+			last = key;
+			if ((await visit(full, relative(start, full), relative(root, full))) === false) return { visited, cursor: last };
 			if (visited % 200 === 0) await tick();
 		}
 		for (let i = folders.length - 1; i >= 0; i--) stack.push(folders[i]!);
@@ -186,14 +206,15 @@ export async function walk(
 
 const stoppedBecause = (walked: Walked) =>
 	walked.stopped === "files"
-		? `Stopped after looking at ${walked.visited} files; the folder is too big to cover. Narrow it with \`path\`.`
+		? `Stopped after looking at ${walked.visited} files; the batch limit was reached.`
 		: walked.stopped === "time"
-			? `Stopped after ${WALK_MS / 1000} seconds with ${walked.visited} files looked at. Narrow it with \`path\`.`
+			? `Stopped at the time limit with ${walked.visited} files looked at.`
 			: walked.stopped === "cancelled"
 				? "Stopped."
 				: undefined;
 
-export async function listFiles(root: string, path: string | undefined): Promise<{ text: string; isError?: boolean }> {
+export async function listFiles(root: string, path: string | undefined, cursor?: string): Promise<{ text: string; isError?: boolean }> {
+	if (!validCursor(cursor)) return { text: "Invalid cursor; start again without it.", isError: true };
 	const there = await locate(root, path);
 	if ("refused" in there) return { text: there.refused, isError: true };
 	let entries: import("node:fs").Dirent[];
@@ -206,8 +227,11 @@ export async function listFiles(root: string, path: string | undefined): Promise
 	const left = entries.filter((entry) => (entry.isDirectory() && SKIPPED_SET.has(entry.name)) || SKIPPED_FILES.has(entry.name));
 	const shown = entries.filter((entry) => !left.includes(entry));
 	shown.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	const key = (entry: import("node:fs").Dirent) => `${entry.isDirectory() ? "0" : "1"}${entry.name}`;
+	const remaining = shown.filter((entry) => cursor === undefined || compareKeys(key(entry), cursor) > 0);
+	const batch = remaining.slice(0, LIST_CAP);
 	const lines = await Promise.all(
-		shown.slice(0, LIST_CAP).map(async (entry) => {
+		batch.map(async (entry) => {
 			if (entry.isSymbolicLink()) return `${entry.name}  (link, not followed)`;
 			if (entry.isDirectory()) return `${entry.name}/`;
 			const info = await lstat(resolve(there.real, entry.name)).catch(() => undefined);
@@ -216,41 +240,39 @@ export async function listFiles(root: string, path: string | undefined): Promise
 	);
 	const head = `${relative(root, there.real)}/ : ${shown.length} ${shown.length === 1 ? "entry" : "entries"}`;
 	const out = [head, ...lines];
-	if (shown.length > LIST_CAP) out.push(`… and ${shown.length - LIST_CAP} more not shown. Use find_files to narrow it down.`);
+	if (remaining.length > LIST_CAP) out.push(`… and ${remaining.length - LIST_CAP} more not shown. ${continuation(key(batch.at(-1)!))}`);
 	const names = [...new Set(left.map((entry) => entry.name))];
 	if (names.length > 0) out.push(`(Left out by default: ${names.join(", ")})`);
 	if (shown.length === 0) out.push("(empty)");
 	return { text: out.join("\n") };
 }
 
-export async function findFiles(root: string, pattern: string, path: string | undefined, context: Pick<Context, "abortSignal">, limits?: WalkLimits): Promise<{ text: string; isError?: boolean }> {
+export async function findFiles(root: string, pattern: string, path: string | undefined, context: Pick<Context, "abortSignal">, limits?: WalkLimits, cursor?: string): Promise<{ text: string; isError?: boolean }> {
+	if (!validCursor(cursor)) return { text: "Invalid cursor; start again without it.", isError: true };
 	if (pattern.trim() === "") return { text: "find_files needs `pattern`, a glob such as **/*.ts.", isError: true };
 	const there = await locate(root, path);
 	if ("refused" in there) return { text: there.refused, isError: true };
 	const matcher = globToRegExp(pattern);
 	const found: { path: string; size: number; mtime: number }[] = [];
-	let more = 0;
 	const walked = await walk(
 		there.real,
 		root,
 		context,
 		async (full, below, inRoot) => {
 			if (!matcher.test(below)) return;
-			if (found.length >= FIND_COLLECT) {
-				more++;
-				return;
-			}
 			const info = await stat(full).catch(() => undefined);
 			if (info !== undefined) found.push({ path: inRoot, size: info.size, mtime: info.mtimeMs });
+			if (found.length >= FIND_CAP) return false;
 		},
 		limits,
+		cursor,
 	);
 	found.sort((a, b) => b.mtime - a.mtime || (a.path < b.path ? -1 : 1));
-	const out = [`${found.length + more} ${found.length + more === 1 ? "file matches" : "files match"} ${pattern} (newest first)`];
-	for (const file of found.slice(0, FIND_CAP)) out.push(`${file.path}  ${size(file.size)}`);
-	if (found.length > FIND_CAP) out.push(`… and ${found.length + more - FIND_CAP} more not shown. Use a narrower pattern or \`path\`.`);
+	const out = [`${found.length} ${found.length === 1 ? "file matches" : "files match"} ${pattern} (newest first in this batch)`];
+	for (const file of found) out.push(`${file.path}  ${size(file.size)}`);
 	const cut = stoppedBecause(walked);
 	if (cut !== undefined) out.push(cut);
+	if (walked.cursor !== undefined) out.push(continuation(walked.cursor));
 	return { text: out.join("\n") };
 }
 
@@ -264,10 +286,11 @@ export function clip(line: string, at: number): string {
 
 export async function searchFiles(
 	root: string,
-	args: { query: string; path?: string; glob?: string; regex?: boolean; ignoreCase?: boolean },
+	args: { query: string; path?: string; glob?: string; regex?: boolean; ignoreCase?: boolean; cursor?: string },
 	context: Pick<Context, "abortSignal">,
 	limits?: WalkLimits,
 ): Promise<{ text: string; isError?: boolean }> {
+	if (!validCursor(args.cursor)) return { text: "Invalid cursor; start again without it.", isError: true };
 	if (args.query === "") return { text: "search_files needs `query`.", isError: true };
 	if (args.query.length > 500) return { text: "The query is too long.", isError: true };
 	const there = await locate(root, args.path);
@@ -322,17 +345,18 @@ export async function searchFiles(
 					group.extra++;
 					continue;
 				}
-				if (total >= SEARCH_TOTAL) {
-					capped = true;
-					break;
-				}
 				total++;
 				group.lines.push(`  ${i + 1}: ${clip(lines[i]!.replace(/\r$/, ""), at)}`);
 			}
 			if (group !== undefined && group.lines.length > 0) groups.push(group);
-			if (capped) return false;
+			// Finish the file so continuation never needs to read its contents again.
+			if (total >= SEARCH_TOTAL) {
+				capped = true;
+				return false;
+			}
 		},
 		limits,
+		args.cursor,
 	);
 	const out: string[] = [];
 	if (groups.length === 0) out.push(`No matches in ${searched} files searched.`);
@@ -341,7 +365,8 @@ export async function searchFiles(
 		out.push(group.path, ...group.lines);
 		if (group.extra > 0) out.push(`  … ${group.extra} more in this file`);
 	}
-	if (capped) out.push(`Stopped at ${SEARCH_TOTAL} matches; there may be more. Narrow it with \`path\` or \`glob\`, or a more exact query.`);
+	if (capped) out.push(`Stopped after ${total} matches; there may be more.`);
+	if (walked.cursor !== undefined) out.push(continuation(walked.cursor));
 	const cut = stoppedBecause(walked);
 	if (cut !== undefined) out.push(cut);
 	const skipped = [skippedBig > 0 ? `${skippedBig} over ${size(SEARCH_FILE_BYTES)}` : "", skippedBinary > 0 ? `${skippedBinary} binary` : ""].filter((x) => x !== "");
@@ -683,11 +708,20 @@ export async function webSearch(query: string, context: Pick<Context, "abortSign
 	if (query.trim() === "") return { text: "web_search needs `query`.", isError: true };
 	const page = await fetchPage(searchAddress(query), context);
 	if ("refused" in page) return { text: `${page.refused} ${SEARCH_FAILED}`, isError: true };
+	return describeSearch(page, query);
+}
+
+/** Keep an explicitly empty search distinct from a page the reader could not understand. */
+export function describeSearch(page: Fetched, query: string): { text: string; isError?: boolean } {
 	const html = decodeBody(page.body, page.type);
 	const results = parseSearchResults(html);
 	if (results.length === 0) {
+		const advice = "Try fewer words or remove quotes. For source code, try `gh search code`.";
+		// Match the page's marker, not words in the echoed query (which can itself contain "captcha").
+		const empty = /class\s*=\s*["'][^"']*\bno-results(?:__message)?\b[^"']*["']/i.test(html);
+		if (page.status === 200 && empty) return { text: `No results found for "${query.slice(0, 100)}". ${advice}`, isError: true };
 		const check = page.status !== 200 || /anomaly|captcha|unusual traffic|are you a human/i.test(html);
-		return { text: check ? `The search engine answered with a check instead of results (status ${page.status}). ${SEARCH_FAILED}` : `No results could be read for "${query.slice(0, 100)}". The search page may have changed, or nothing matched. ${SEARCH_FAILED}`, isError: true };
+		return { text: check ? `The search engine answered with a check instead of results (status ${page.status}). ${SEARCH_FAILED}` : `No results could be read for "${query.slice(0, 100)}". The search page may have changed. ${advice} ${SEARCH_FAILED}`, isError: true };
 	}
 	const out = [`Results for "${query.trim().slice(0, 100)}":`];
 	results.slice(0, 10).forEach((result, i) => {
@@ -704,34 +738,36 @@ export const look: Feature = (host) => {
 	const listTool = defineTool({
 		name: "list_files",
 		description:
-			"List what is in a folder: names, a / after folders, and file sizes. `path` is relative to the conversation's folder (default: the folder itself). Looks inside the folder only and changes nothing. Places like .git and node_modules are left out.",
-		parameters: obj({ path: opt(str({ description: "Folder to list, relative to the conversation's folder" })) }),
+			"List what is in a folder: names, a / after folders, and file sizes. `path` is relative to the conversation's folder (default: the folder itself). Looks inside the folder only and changes nothing. Places like .git and node_modules are left out. Pass back `cursor` to continue.",
+		parameters: obj({ path: opt(str({ description: "Folder to list, relative to the conversation's folder" })), cursor: cursorParameter }),
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const result = await listFiles(await rootOf(api, host.scratchFolder(), context), args.path);
+			const result = await listFiles(await rootOf(api, host.scratchFolder(), context), args.path, args.cursor);
 			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
 		},
 	});
 	const findTool = defineTool({
 		name: "find_files",
 		description:
-			"Find files whose path matches a glob, newest first. `*` is anything within a name, `**` crosses folders, `?` is one character, `{a,b}` is either. A glob with no / (such as *.ts) matches names anywhere below; otherwise it matches the path below `path`, as in src/**/test_*.py. Looks inside the conversation's folder only; .git, node_modules and build output are left out. Use it rather than `find` in the shell.",
+			"Find files whose path matches a glob, each batch newest first. Pass back `cursor` to continue. `*` is anything within a name, `**` crosses folders, `?` is one character, `{a,b}` is either. A glob with no / (such as *.ts) matches names anywhere below; otherwise it matches the path below `path`, as in src/**/test_*.py. Looks inside the conversation's folder only; .git, node_modules and build output are left out. Use it rather than `find` in the shell.",
 		parameters: obj({
 			pattern: str({ description: "Glob such as **/*.ts" }),
+			cursor: cursorParameter,
 			path: opt(str({ description: "Folder to look in, relative to the conversation's folder" })),
 		}),
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const result = await findFiles(await rootOf(api, host.scratchFolder(), context), args.pattern, args.path, context);
+			const result = await findFiles(await rootOf(api, host.scratchFolder(), context), args.pattern, args.path, context, undefined, args.cursor);
 			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
 		},
 	});
 	const searchTool = defineTool({
 		name: "search_files",
 		description:
-			"Search the text files below a folder for lines containing `query` (or matching it as a regular expression with `regex`). Answers with file, line number and line, grouped by file; long lists are cut and say so. `glob` limits which files (same form as find_files). Looks inside the conversation's folder only; binary files, .git, node_modules and build output are left out. Use it rather than `grep` in the shell.",
+			"Search the text files below a folder for lines containing `query` (or matching it as a regular expression with `regex`). Answers with file, line number and line, grouped by file; pass back `cursor` to continue a cut-short search. `glob` limits which files (same form as find_files). Looks inside the conversation's folder only; binary files, .git, node_modules and build output are left out. Use it rather than `grep` in the shell.",
 		parameters: obj({
 			query: str({ description: "Text to look for" }),
+			cursor: cursorParameter,
 			path: opt(str({ description: "Folder to search, relative to the conversation's folder" })),
 			glob: opt(str({ description: "Only files matching this glob, such as **/*.swift" })),
 			regex: opt(bool({ description: "Treat query as a regular expression" })),

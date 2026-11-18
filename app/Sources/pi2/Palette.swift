@@ -31,6 +31,10 @@ struct PaletteView: View {
         for (name, icon, selection) in places where matches("go to \(name)") {
             result.append(Entry(id: "go-\(name)", icon: icon, title: "Go to \(name)", detail: "View") { model.selection = selection })
         }
+        if matches("new chat") { result.append(Entry(id: "new-chat", icon: "square.and.pencil", title: "New Chat", detail: "Chat") { model.newChat() }) }
+        for (name, mode) in [("Agents", WindowMode.agents), ("Chat", WindowMode.chat)] where model.mode != mode && matches("switch to \(name)") {
+            result.append(Entry(id: "mode-\(name)", icon: mode == .chat ? "bubble.left.and.bubble.right" : "person.2", title: "Switch to \(name)", detail: "View") { model.mode = mode })
+        }
         if matches("new agent") { result.append(Entry(id: "new-agent", icon: "person.badge.plus", title: "New Agent", detail: "Action") { model.newAgent() }) }
         if matches("quick ask") { result.append(Entry(id: "quick-ask", icon: "bolt", title: "Quick Ask", detail: "Action") { QuickAsk.shared.show(model: model) }) }
         if matches("settings providers tools") { result.append(Entry(id: "settings", icon: "gearshape", title: "Settings", detail: "Action") { openSettings() }) }
@@ -40,7 +44,13 @@ struct PaletteView: View {
         for agent in engine.agents where !needle.isEmpty && matches("edit agent \(agent.name)") {
             result.append(Entry(id: "agent-\(agent.id)", icon: "person.crop.circle", title: "Edit agent: \(agent.name)", detail: "Agent") { model.selection = .agent(agent.id) })
         }
-        for conversation in engine.conversations where matches(conversation.title) {
+        // Chats and agents' conversations are found alike, and each says which it is.
+        for conversation in engine.conversations where conversation.isChat && matches(conversation.title) {
+            result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left.and.bubble.right", title: conversation.title.isEmpty ? "New chat" : conversation.title, detail: conversation.busy ? "Chat · answering" : "Chat") {
+                model.showChat(conversation.id)
+            })
+        }
+        for conversation in engine.conversations where !conversation.isChat && matches(conversation.title) {
             let agent = (engine.agent(conversation.agentId)?.name ?? "") + (conversation.parent == nil ? "" : " · sub-chat")
             result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: conversation.busy ? "\(agent) · working" : agent) {
                 model.selection = .conversation(conversation.id)
@@ -48,13 +58,14 @@ struct PaletteView: View {
         }
         // Archived conversations are found only by typing: they were put away so as not to be in the way.
         for conversation in engine.archived where !needle.isEmpty && matches(conversation.title) {
-            let agent = engine.agent(conversation.agentId)?.name ?? ""
+            let agent = conversation.isChat ? "Chat" : engine.agent(conversation.agentId)?.name ?? ""
             result.append(Entry(id: "a-\(conversation.id)", icon: "archivebox", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: agent.isEmpty ? "Archived" : "\(agent) · archived") {
                 model.selection = .conversation(conversation.id)
             })
         }
         for message in messages {
-            result.append(Entry(id: "m-\(message.entryId)", icon: "text.magnifyingglass", title: message.snippet, detail: "In “\(message.title.isEmpty ? "New conversation" : message.title)”\(message.archived == true ? " · archived" : "")") {
+            let chat = message.chat == true || engine.isChat(message.conversationId)
+            result.append(Entry(id: "m-\(message.entryId)", icon: "text.magnifyingglass", title: message.snippet, detail: "In “\(message.title.isEmpty ? (chat ? "New chat" : "New conversation") : message.title)”\(chat ? " · chat" : "")\(message.archived == true ? " · archived" : "")") {
                 model.selection = .conversation(message.conversationId)
             })
         }

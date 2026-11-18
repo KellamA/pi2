@@ -60,6 +60,7 @@ import { timeLines } from "./log.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
+import { useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents } from "./state.ts";
 
@@ -73,6 +74,8 @@ if (!process.argv.includes("--restore")) {
 const context = BACKGROUND_CONTEXT;
 const home = process.env.PI2_HOME ?? join(homedir(), "Library", "Application Support", "pi2");
 mkdirSync(home, { recursive: true });
+// The files of the runs of set-up and background commands, which tell what they started apart (processes.ts).
+useRunFolder(join(home, "runs"));
 /** Which build of the app this engine came with: the `BUILD` file a release build writes next to `src`. A development
  * engine has none. The app compares it with its own after an update and restarts an engine left over from before. */
 const engineMain = fileURLToPath(import.meta.url);

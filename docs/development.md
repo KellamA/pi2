@@ -30,6 +30,7 @@ A development build keeps apart from a pi² installed on the same Mac, so openin
 - Its data folder is `~/Library/Application Support/pi2-dev` and its Keychain service `dev.pi2.credentials.dev`, unless `PI2_HOME` and `PI2_KEYCHAIN_SERVICE` name others. Both are named after the bundle id: a copy whose bundle id is `dev.pi2.app.test-7` uses `pi2-test-7` and `dev.pi2.credentials.test-7` (`app/Sources/pi2/DevelopmentBuild.swift`).
 - It never uses the usual data folder, `~/Library/Application Support/pi2`, or the usual Keychain service, `dev.pi2.credentials`, even when `PI2_HOME` or `PI2_KEYCHAIN_SERVICE` names them; it uses its own instead and says so in its `app.log`. That can happen without anyone meaning it: a terminal where they are set passes them on, and so did every command an agent of pi² ran until #195, which inherited its engine's `PI2_HOME`; `open` passes them on to the app it opens. The engine now leaves every `PI2_` variable but `PI2_RUN` out of what it starts ([architecture.md](architecture.md#what-commands-can-find)). To try a development build on your own conversations, restore a backup of them (Settings › Storage) into the development build's data folder; you sign in again there, since the sign-ins stay with the installed copy.
 - It cannot turn the login item on or off: the switch in Settings › General shows as unavailable, as in any copy on a data folder of its own.
+- Its agents' commands have none of its macOS permissions. The app starts the engine as its own responsible process, as a release build does, and a development build's Node is the one on your `PATH`, outside the bundle, so macOS cannot trace it back to the app ([architecture.md](architecture.md#whose-macos-permissions-commands-have)). A command such as `screencapture` run by one of its agents fails even where the build has Screen Recording, and the first one may put a prompt naming `node` on the screen. Computer use is not affected: the app does that under its own permissions.
 - It never updates itself, and it never replaces the engine it finds on its data folder: that is only done by a release build, after an update. An engine started by another development build with the same bundle id, from another checkout, is noted in `app.log` and left running.
 
 To check a problem that only happens with optimisation (such as #134), build an **optimised development build**:
@@ -149,9 +150,24 @@ open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_
 
 On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: `scripts/test-copy start test-7`, then `scripts/test-copy stop test-7`. [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the rules and what the script does for each.
 
+To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. For a running `test-7`, these create a conversation on the scripted demo model (no provider or sign-in) and send it a message:
+
+```bash
+CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
+```
+
+`submit` returns when accepted, not when the model has finished answering. After the answer finishes, archive it (this stops any work still running):
+
+```bash
+scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
+```
+
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
 - `PI2_SHOW` chooses what the window opens on: `inbox`, `activity`, `usage`, `archive`, `branches`, `agent:<id>`, or a conversation's number or title, matched exactly against the sidebar first, then the Archive. This includes a sub-chat archived on its own; opening it does not restore it, and the conversation still shows its archived bar and Restore button. Use the number when titles are shared. An agent's page is taller than any window, so `agent:<id>#<section>` opens it with one of its sections at the top: `profile`, `model`, `instructions`, `files` (reference files), `memory`, `tools`, `builtins` (built-in tools), `rules` (commands it may run without asking), `variables` (variables for its commands), `extras` (extra tools), `computer`, `browser`, `schedule` or `delegates` (who it can hand work to). A name it does not know opens the page at the top. The last few sections cannot come to the top, since the page ends below them; the page scrolls to its end and they show there. The page settles for a second or two after it opens, so wait a few seconds before capturing it.
+
+  `chat` opens chat mode on an empty chat (the one already waiting, or a new one), and `chat:<number or title>` on that chat; a chat's number or title alone opens it in chat mode too, as a chat chosen anywhere does ([chat.md](chat.md#in-the-app)).
 
   `output:<id>` opens a background command's output window as well, such as `output:bg-1` ([background.md](background.md)), about a second after the app has connected to its engine; the main window opens as it would without `PI2_SHOW`. It is a window of its own, 760 points wide, named after the command.
 

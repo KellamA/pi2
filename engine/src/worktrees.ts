@@ -27,7 +27,7 @@ import { scratchVariable } from "./scratch.ts";
 import { agentVariables } from "./variables.ts";
 import type { AgentProfile } from "./state.ts";
 import { stopCommandsIn } from "./background.ts";
-import { type LeftOver, leftOverLog, newRunMarker, noteProcess, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
+import { forgetRun, type LeftOver, leftOverLog, newRun, noteProcess, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** A worktree pi² made for a conversation. */
 export type Worktree = {
@@ -531,12 +531,12 @@ export const worktrees: Feature = (_host, engine) => {
 	 * Run the agent's set-up command in a worktree just made for conversation `id`, without waiting for it. It runs as
 	 * the person typed it, through bash, with the engine's environment less pi²'s own settings (environment.ts), with the
 	 * agent's own variables (variables.ts) and the conversation's scratch folder (scratch.ts), in a process group of its
-	 * own so that stopping it stops whatever it started too. One more variable is added to that environment: a marker of this run, which what it starts inherits,
-	 * so that the next engine can know them if this one dies (`stopLeftOver`).
+	 * own so that stopping it stops whatever it started too. It is given what tells this run apart, which what it starts
+	 * inherits, so that the next engine can know them if this one dies (`stopLeftOver`): a marker in its environment, and
+	 * its run's file, open (`newRun`).
 	 */
 	async function startSetup(id: number, root: string, command: string): Promise<void> {
 		const run = `${id}-${Date.now()}`;
-		const marker = newRunMarker();
 		const started = Date.now();
 		// The variables the person gave the conversation's agent (variables.ts). Without them the command is not run.
 		let variables: Record<string, string>;
@@ -554,7 +554,14 @@ export const worktrees: Feature = (_host, engine) => {
 		let output = "";
 		let stopped: string | undefined;
 		let failedToStart: string | undefined;
-		const child = spawn("/bin/bash", ["-c", command], { cwd: root, env: commandEnvironment({ ...variables, ...scratchVariable(id), [RUN_VARIABLE]: marker }), detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		const given = newRun();
+		const marker = given.marker;
+		let child: ChildProcess;
+		try {
+			child = spawn("/bin/bash", ["-c", command], { cwd: root, env: commandEnvironment({ ...variables, ...scratchVariable(id), [RUN_VARIABLE]: marker }), detached: true, stdio: given.stdio });
+		} finally {
+			given.started();
+		}
 		// Its output goes to the apps with the conversation's state as it arrives, a few times a second at most. Not as
 		// transcript entries, which are kept for good: the one written when it ends holds the output's end.
 		let pushing: ReturnType<typeof setTimeout> | undefined;
@@ -612,6 +619,8 @@ export const worktrees: Feature = (_host, engine) => {
 			const setup: Setup = { run, command, status: reason === undefined ? "done" : "failed", ...(reason === undefined ? {} : { reason }), seconds: Math.round((Date.now() - started) / 1000), output: tail(output, SETUP_KEEP_CHARS) };
 			engine.log("set-up for conversation", id, reason === undefined ? "finished" : reason);
 			await recordSetup(id, setup).catch((error) => engine.log("could not record the set-up of conversation", id, error instanceof Error ? error.message : error));
+			// No longer on record as running, so no engine will look for its file.
+			forgetRun(marker);
 			await noteSetup(id, setup);
 			if (setups.get(id)?.child === child) {
 				setups.delete(id);
