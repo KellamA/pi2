@@ -161,7 +161,8 @@ To seed that copy without writing a socket client, use `scripts/test-copy call <
 
 ```bash
 scripts/test-copy start test-7 --show 'Late demo'
-CHAT=$(scripts/test-copy call test-7 conversation.create '{"title":"Late demo","model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Late demo\"}"
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 
