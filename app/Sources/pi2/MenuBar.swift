@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import ComposeKit
+import LoginItemKit
 import SwiftUI
 
 /// The menu bar popover: what needs the person, what is running, what is next, and a quick way to ask.
@@ -277,36 +278,12 @@ final class GlobalHotKey {
 
 // MARK: - Starting the engine at login
 
-/// A per-user launchd agent that starts the engine at login and restarts it if it crashes, so schedules and long
-/// runs keep going without the app open.
-enum EngineLoginItem {
+extension EngineLoginItem {
     static let label = "dev.pi2.engine"
     static var plistURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
     static var installed: Bool { FileManager.default.fileExists(atPath: plistURL.path) }
-
-    /// How launchd is told to treat the engine. It was `Background` until #344, which runs a job at the lowest
-    /// priority macOS has, with its disk use held back and on the efficiency cores alone, and every command it starts
-    /// the same: the engine the app waits on for everything it shows was the first to give way when the Mac was busy,
-    /// and agents' builds took several times as long. `Interactive` gives it what an app's own processes have, as an
-    /// engine the app starts itself has; agents' commands are started a step lower by the engine (priority.ts).
-    static let processType = "Interactive"
-
-    /// What the installed login item runs, and for which data folder.
-    struct Item {
-        let arguments: [String]
-        let home: String?
-        /// Its `ProcessType`, nil when it has none.
-        var processType: String? = nil
-
-        /// Whether it starts the engine for this data folder. A copy of pi² on a data folder of its own (a test copy,
-        /// say) must leave another folder's login item alone.
-        func serves(home other: String) -> Bool {
-            guard let home else { return false }
-            return URL(fileURLWithPath: home).standardizedFileURL.path == URL(fileURLWithPath: other).standardizedFileURL.path
-        }
-    }
 
     static var current: Item? {
         guard let data = try? Data(contentsOf: plistURL),
@@ -320,39 +297,6 @@ enum EngineLoginItem {
     static var installedItem: Item? {
         guard installed else { return nil }
         return current ?? Item(arguments: [], home: nil)
-    }
-
-    /// The data folder pi² uses when `PI2_HOME` does not name another. Only a copy on this folder may install the
-    /// login item when there is none, so its label stays the one item for the copy in real use.
-    static var defaultHome: String {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("pi2").path
-    }
-
-    /// Whether a copy of pi² on the data folder `home` may install, replace or remove the login item, given the item
-    /// installed now (nil if none). It may change only an item that serves its own data folder, and install one only
-    /// on the default data folder, so a test copy on a folder of its own never touches the item of the copy in use.
-    static func mayChange(_ item: Item?, home: String, defaultHome: String = EngineLoginItem.defaultHome) -> Bool {
-        (item ?? Item(arguments: [], home: defaultHome)).serves(home: home)
-    }
-
-    /// What the switch in Settings shows for a copy on the data folder `home`.
-    enum Switch: Equatable {
-        case on, off
-        /// The copy may not change the item; the text says why.
-        case unavailable(String)
-
-        var isUnavailable: Bool {
-            if case .unavailable = self { return true }
-            return false
-        }
-    }
-
-    static func switchState(_ item: Item?, home: String, defaultHome: String = EngineLoginItem.defaultHome) -> Switch {
-        if mayChange(item, home: home, defaultHome: defaultHome) { return item == nil ? .off : .on }
-        if Item(arguments: [], home: defaultHome).serves(home: home) {
-            return .unavailable("The login item starts the engine for another data folder, so pi² leaves it alone.")
-        }
-        return .unavailable("This copy of pi² has a data folder of its own. The login item belongs to the pi² that uses the usual data folder, so it cannot be changed here.")
     }
 
     struct Refused: LocalizedError {

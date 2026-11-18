@@ -1,3 +1,4 @@
+import LoginItemKit
 import SwiftUI
 
 /// The tabs of the Settings window, by the names a development build can open it on with `PI2_SHOW=settings:<name>`

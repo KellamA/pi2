@@ -17,9 +17,11 @@ let package = Package(
         .target(name: "PaneKit", path: "Sources/PaneKit"),
         // What Return does in a field that sends a message. Its own module so pi2-compose-check can check it.
         .target(name: "ComposeKit", path: "Sources/ComposeKit"),
+        // The login item decisions, without the app's launchd calls, so pi2-login-item-check can run them safely.
+        .target(name: "LoginItemKit", path: "Sources/LoginItemKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
             // inspector (docs/development.md). On in a debug build, and in an optimised development build, which
@@ -38,5 +40,6 @@ let package = Package(
         .executableTarget(name: "pi2-layout-check", dependencies: ["PaneKit"], path: "Sources/pi2-layout-check", swiftSettings: [.swiftLanguageMode(.v5)]),
         // Checks ComposeKit's Return key: the decision, then a real SwiftUI field in an off-screen window of its own.
         .executableTarget(name: "pi2-compose-check", dependencies: ["ComposeKit"], path: "Sources/pi2-compose-check"),
+        .executableTarget(name: "pi2-login-item-check", dependencies: ["LoginItemKit"], path: "Sources/pi2-login-item-check"),
     ]
 )
