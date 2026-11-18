@@ -133,15 +133,29 @@ final class TranscriptBridge {
 
     private func push() {
         guard ready, let view, let names else { return }
+        let started = PerfProbe.now()
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
         guard let message = feed.update(items: items, state: state, inbox: inbox, names: names, palette: palette, chat: chat),
               let json = TranscriptFeed.json(message) else { return }
-        send(json)
+        PerfProbe.event("page update", bytes: json.utf8.count, since: started)
+        guard message.reset == true, PerfProbe.active else { return send(json) }
+        // The whole conversation going to the page, as it does when one is opened: time it until the page has shown it.
+        let id = conversationID
+        PerfProbe.opening(id, "page \(message.items?.count ?? 0) entries (\(json.utf8.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to encode)")
+        send(json) { PerfProbe.opening(id, "drawn") }
     }
 
-    private func send(_ json: String) {
+    private func send(_ json: String, then done: (@MainActor () -> Void)? = nil) {
         // The JSON goes in as an argument and is parsed by the page, so nothing in it is ever run as script.
-        view?.callAsyncJavaScript("window.pi2.receive(message)", arguments: ["message": json], in: nil, in: .page, completionHandler: nil)
+        guard let done else {
+            view?.callAsyncJavaScript("window.pi2.receive(message)", arguments: ["message": json], in: nil, in: .page, completionHandler: nil)
+            return
+        }
+        // The page draws in its next animation frame: wait for that, and a turn after it, before calling it drawn.
+        let script = "window.pi2.receive(message); await new Promise((done) => requestAnimationFrame(() => setTimeout(done, 0)));"
+        view?.callAsyncJavaScript(script, arguments: ["message": json], in: nil, in: .page) { _ in
+            MainActor.assumeIsolated { done() }
+        }
     }
 
     private func perform(_ action: TranscriptAction) {

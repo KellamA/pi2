@@ -115,6 +115,7 @@ final class EngineClient {
         }
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         if let setAside { note(setAside) }
+        PerfProbe.start(home: home)
     }
 
     // MARK: - Requests
@@ -126,6 +127,7 @@ final class EngineClient {
         nextRequestID += 1
         var data = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
         data.append(0x0A)
+        PerfProbe.sent(id, method)
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
             connection.send(content: data, completion: .contentProcessed { _ in })
@@ -152,6 +154,7 @@ final class EngineClient {
     }
 
     func openConversation(_ id: Int) {
+        PerfProbe.opening(id, "asked")
         guard open[id] == nil else { return }
         open[id] = ConversationData()
         // Panes restored at launch appear before the app has connected. Connecting asks for every open conversation,
@@ -169,6 +172,7 @@ final class EngineClient {
         Task {
             do {
                 try await call("conversation.open", ["id": id])
+                PerfProbe.opening(id, "answered")
             } catch {
                 if hasLoadedLibrary, !conversations.contains(where: { $0.id == id }), !archived.contains(where: { $0.id == id }) {
                     open[id] = nil
@@ -201,7 +205,9 @@ final class EngineClient {
             // The request ID makes a resend after a lost reply harmless: the engine finds the same submission.
             var params: [String: Any] = ["id": id, "text": text, "mode": steer ? "steer" : "queue", "requestId": UUID().uuidString]
             if !attachments.isEmpty { params["attachments"] = attachments }
+            let asked = PerfProbe.now()
             try await call("submit", params)
+            PerfProbe.note("submit to \(id) accepted in \(Int(((PerfProbe.now() - asked) * 1000).rounded()))ms")
             return true
         } catch {
             lastError = error.localizedDescription
@@ -422,8 +428,13 @@ final class EngineClient {
     }
 
     private func handle(_ line: Data) {
+        let started = PerfProbe.now()
         let decoder = JSONDecoder()
         guard let envelope = try? decoder.decode(Envelope.self, from: line) else { return }
+        defer {
+            let kind = envelope.event ?? envelope.id.flatMap { PerfProbe.answered($0) }.map { "reply \($0)" } ?? "reply"
+            PerfProbe.event(kind, bytes: line.count, since: started)
+        }
         do {
             switch envelope.event {
             case "library":
@@ -471,10 +482,12 @@ final class EngineClient {
             case "conversation":
                 let event = try decoder.decode(ConversationEvent.self, from: line)
                 guard var data = open[event.id] else { return }
+                let first = data.state == nil
                 if event.reset { data.items = [] }
                 data.items.append(contentsOf: event.items)
                 data.state = event.state
                 open[event.id] = data
+                if first { PerfProbe.opening(event.id, "entries \(data.items.count) (\(line.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to read)") }
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":
