@@ -236,6 +236,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	chatSettings: () => chatSettings(settings.chat),
 	providers: () => providers,
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
@@ -293,10 +294,14 @@ function withheld(): string[] {
 	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
 }
 
-/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
+/**
+ * The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on, and what
+ * features add for chats (its memory while that is on, knowledge.ts).
+ */
 function chatTools() {
 	const held = withheld();
-	return chatToolNames(chatSettings(settings.chat).web)
+	const added = host.features.flatMap((feature) => feature.chatToolNames?.() ?? []);
+	return [...chatToolNames(chatSettings(settings.chat).web), ...added]
 		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
@@ -1365,7 +1370,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.defaultModel !== undefined) delete settings.lastChatModel;
 		saveSettings();
 		broadcast(chatEvent());
-		// The web switch changes what every chat is offered, from its next message (syncTools).
+		// The web and memory switches change what every chat is offered, from its next message (syncTools).
 		return after;
 	},
 	"conversation.configure": async (params, client) => {

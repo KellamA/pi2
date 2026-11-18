@@ -16,10 +16,11 @@ A chat is a conversation of pi²'s built-in chat assistant, not of one of the pe
 
 The assistant is defined in the engine, not in the list of agents: it cannot be edited, deleted, duplicated, scheduled or handed work (`delegate` only names agents), and the `agents` event never lists it.
 
-- **Its tools** are fixed: the entries of the [built-in tools](architecture.md#built-in-tools) whose keys `CHAT_TOOLS` names (`src/builtins.ts`): `web` (`web_search`, `web_fetch`) while chat mode's web setting is on, `documents` (`write_document`), and `pictures` and `code` as soon as the list has them (#286). Nothing else: no shell, no file tools, no computer use, no browser with sign-ins, no scheduling, no delegation, no `ask_user` or task list, no MCP servers. A tool's use shows in the transcript as in any conversation. A chat's tools are brought in line at its next message, as an agent's are, so turning the web off counts from there.
+- **Its tools** are fixed: the entries of the [built-in tools](architecture.md#built-in-tools) whose keys `CHAT_TOOLS` names (`src/builtins.ts`): `web` (`web_search`, `web_fetch`) while chat mode's web setting is on, `documents` (`write_document`), and `pictures` and `code` as soon as the list has them (#286); and while chat mode's memory is on, `remember`, `forget` and `agent_notes` ([Memory](#memory)), which a feature adds for chats with `chatToolNames`. Nothing else: no shell, no file tools, no computer use, no browser with sign-ins, no scheduling, no delegation, no `ask_user` or task list, no MCP servers. A tool's use shows in the transcript as in any conversation. A chat's tools are brought in line at its next message, as an agent's are, so turning the web off counts from there.
 - **No approvals.** Nothing it is offered changes anything on the Mac, and its record's tool access is `none`, under which nothing waits for approval, so a chat never puts anything in the Inbox.
 - **No folder.** A chat has none, and none can be chosen. Its documents go in a folder of its own in the data folder, `chats/<id>`, whatever path the model gives: `write_document` refuses one outside it. Its result's `details.path` is the document's full path, so the conversation can offer to open it. An archived chat keeps the folder; deleting the chat removes it, as it does a scratch folder. It is not in a backup, which copies the database and settings only.
-- **What it is told.** The `chat` section of the system prompt, in chats only: that it is pi²'s chat assistant, that it has no folder and changes nothing on the Mac (and an agent can do that), and, with the tools it has, when to read the web and where its documents go. The chat instructions in Settings are kept but not yet sent (#288).
+- **What it is told.** The `chat` section of the system prompt, in chats only: that it is pi²'s chat assistant, that it has no folder and changes nothing on the Mac (and an agent can do that), and, with the tools it has, when to read the web and where its documents go. The chat instructions from Settings, when there are any, are the `chat_instructions` section, read at every request, so a change counts from each chat's next message. No agent is given them.
+- **Memory** is below.
 - **Attachments** work as for any conversation ([attachments.md](attachments.md)).
 
 ## The model
@@ -32,12 +33,20 @@ Chat mode's settings are under `chat` in the engine's `settings.json`, with thes
 
 | Setting | Default | What it is |
 |---|---|---|
-| `instructions` | `""` | What the person wants every chat to know; 20,000 characters at most. Used from #288 |
+| `instructions` | `""` | What the person wants every chat to know; 20,000 characters at most. Sent to every chat as `chat_instructions` |
 | `defaultModel` | `null` | The model a new chat starts with (`{ provider, modelId }`), or null for the one used last |
 | `web` | `true` | Whether chats may read the web; #287 adds a switch for each chat |
-| `memory` | `true` | Whether chats remember lasting things across chats. Used from #288 |
+| `memory` | `true` | Whether chats remember lasting things across chats and read the agents' notes ([Memory](#memory)) |
 
-`chat.set` changes any of them, each checked (an unknown model is refused), and answers with all four. The engine sends `{ event: "chat", instructions, defaultModel, web, memory }` when an app connects and after every change.
+`chat.set` changes any of them, each checked (an unknown model is refused), and answers with all four. The engine sends `{ event: "chat", instructions, defaultModel, web, memory }` when an app connects and after every change. The web and memory switches change what every chat is offered from its next message.
+
+## Memory
+
+Chat mode remembers lasting things the person tells it, across chats, in notes of its own, and can read what the person's agents remember. It does not work the other way: an agent never sees chat mode's notes. [knowledge.md](knowledge.md#chat-modes-memory) has the whole of it; in short:
+
+- **Its own notes** are one set for every chat, kept apart from every agent's: `remember` and `forget` in a chat change only them (ids `c1`, `c2`…), and the chat's `memory` section lists them.
+- **The agents' notes** are not in a chat's prompt. The section has one line naming the agents that have memory on and a note, and the chat reads their notes with `agent_notes` when a question calls for it. It cannot change or remove them.
+- **Off** (`chat.memory` false), a chat has none of the three tools and no `memory` section: nothing is remembered and nothing read. The notes are kept.
 
 ## Everywhere else
 
@@ -46,7 +55,7 @@ Chat mode's settings are under `chat` in the engine's `settings.json`, with thes
 - **Usage:** a chat's spend counts towards the day's total and the budget, as any conversation's. It is not counted as an agent's: the `usage` event has `chats: { cost, tokens }` beside `agents`, and its rows of conversations have `chat`.
 - **Export:** a chat's Markdown names the assistant "Assistant"; its JSON has `chat: true` and `agent: null`.
 - **Versions:** Try Again and Edit make versions of a chat, each a hidden conversation of its own that the chat stands for everywhere: requests on the chat act on the version shown, and Activity, the Inbox, usage, search, archiving and deleting count a version as the chat. Only chats have them. See [architecture.md](architecture.md#a-chats-versions).
-- **Schedules, worktrees, command rules, memory, reference files, variables:** these belong to agents, so a chat has none of them.
+- **Schedules, worktrees, command rules, reference files, variables:** these belong to agents, so a chat has none of them. A chat's memory is chat mode's own ([Memory](#memory)).
 
 ## In the app
 
@@ -54,4 +63,5 @@ Chat mode's settings are under `chat` in the engine's `settings.json`, with thes
 - **The sidebar.** New Chat, a search, then the chats: Pinned first, then Today, Yesterday, Previous 7 Days and each month before, by when each was last used. The search keeps the chats whose title has what was typed, or whose messages do (the engine's `search`, after a pause in typing). A chat's context menu has Rename, Pin or Unpin, Archive and Delete. Archiving or deleting the chat on screen moves to the one below it, as in the agent view. The agent view's sidebar never lists chats (`EngineClient.rootConversations`).
 - **A chat** is `ChatView`, the view an agent's conversation has, told it is a chat: the same conversation page, message field (attachments by drop, paste or the paper clip; Return sends, Shift-Return starts a new line) and Stop, in one column as wide as the page's text, with no agent to name and no steering, so a message written during an answer waits for it. The toolbar has the same model menu as an agent's conversation, with thinking effort where the model has it. An empty chat shows the message field in the middle, with a few ways to begin that fill it in. New Chat (⌘N in chat mode) shows the empty chat already waiting, if there is one, before making another, and chat mode with no chat on screen makes one.
 - **The palette** finds chats and agents' conversations alike and marks chats as chats, and has New Chat and the switch.
-- **Not yet in the app:** the chat settings (#288), the web switch (#287) and Continue with an Agent (#289). An archived chat is listed in the Archive with the agents' conversations, and opens in chat mode.
+- **Settings › Chat** (`ChatSettings.swift`): the chat instructions, with Save; under New chats, the default model (or the model used last) and the web switch; under Memory, the switch, chat mode's own notes, editable in place, deleted and added by hand as an agent's are in its settings, each saying whether a chat wrote it or the person did; and under Agents' notes, each agent with memory on and a note, its notes read-only, with a lock and a footer saying they are changed in the agent's own settings and that no agent sees what chats remember. Every change but the instructions applies as it is made.
+- **Not yet in the app:** the web switch (#287) and Continue with an Agent (#289). An archived chat is listed in the Archive with the agents' conversations, and opens in chat mode.

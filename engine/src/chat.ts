@@ -18,13 +18,13 @@ import type { Meta, ModelRef } from "./state.ts";
 
 /** The settings of chat mode, under `chat` in the engine's settings.json. */
 export type ChatSettings = {
-	/** What the person wants every chat to know about them and how to answer (#288 puts it to use). */
+	/** What the person wants every chat to know about them and how to answer: the `chat_instructions` section. */
 	instructions: string;
 	/** The model a new chat starts with; null: the model used last in a chat. */
 	defaultModel: ModelRef | null;
 	/** Whether a chat may read the web (#287 adds a switch for each chat). */
 	web: boolean;
-	/** Whether chats remember lasting things across chats (#288). */
+	/** Whether chats remember lasting things across chats, and read the agents' notes (knowledge.ts). */
 	memory: boolean;
 };
 
@@ -95,6 +95,13 @@ export function describeChat(tools: readonly string[]): string {
 	return lines.join("\n");
 }
 
+/** The chat instructions from Settings, as the `chat_instructions` section of every chat's prompt; nothing when there are none. */
+export function describeChatInstructions(instructions: string): string | undefined {
+	const text = instructions.trim();
+	if (text === "") return undefined;
+	return `The person wrote these instructions in pi²'s Settings, for every chat: what they want you to know about them and how they want you to answer. Follow them, unless what they ask in this chat says otherwise.\n\n${text}`;
+}
+
 export const chat: Feature = (host, engine) => {
 	const sweep = () => {
 		try {
@@ -105,7 +112,11 @@ export const chat: Feature = (host, engine) => {
 		}
 	};
 	return {
-		sections: [section("chat", (input) => (isChat(host.meta(input.conversationId)) ? describeChat(input.agent.tools.map((tool) => tool.name)) : undefined))],
+		sections: [
+			section("chat", (input) => (isChat(host.meta(input.conversationId)) ? describeChat(input.agent.tools.map((tool) => tool.name)) : undefined)),
+			// Read at every request, so a change in Settings counts from the next message of every chat.
+			section("chat_instructions", (input) => (isChat(host.meta(input.conversationId)) ? describeChatInstructions(engine.chatSettings().instructions) : undefined)),
+		],
 		start: async () => sweep(),
 		putAwayChanged: sweep,
 	};

@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dueForArchive } from "../src/archive.ts";
 import { CHAT_TOOLS } from "../src/builtins.ts";
+import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-chat-"));
@@ -73,8 +74,11 @@ class Client extends EngineClient {
  * The chat's tools as the engine's list has them: those of `CHAT_TOOLS` it knows, the web's only with the web on, and not
  * making pictures, since this engine has no picture model (pictures.ts; tested in pictures.ts).
  */
-const expected = (builtIns: any[], web: boolean) =>
-	builtIns.filter((entry) => CHAT_TOOLS.includes(entry.key) && (web || entry.key !== "web") && entry.needs !== "pictures").flatMap((entry) => entry.tools as string[]);
+const expected = (builtIns: any[], web: boolean) => [
+	...builtIns.filter((entry) => CHAT_TOOLS.includes(entry.key) && (web || entry.key !== "web") && entry.needs !== "pictures").flatMap((entry) => entry.tools as string[]),
+	// Chat mode's memory, on by default (#288; tested in chatmemory.ts).
+	...CHAT_MEMORY_TOOLS,
+];
 
 engine = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
 const client = await Client.connect(engine, home);
@@ -116,11 +120,11 @@ try {
 	const seen = await client.offered(chat);
 	assert.deepEqual([...seen.tools].sort(), expected(builtIns, true).sort(), `only the assistant's tools: ${seen.tools.join(" ")}`);
 	for (const name of ["web_fetch", "web_search", "write_document"]) assert.ok(seen.tools.includes(name), `${name}: ${seen.tools.join(" ")}`);
-	for (const name of ["bash", "read", "write", "edit", "ask_user", "update_plan", "delegate", "browser", "computer", "list_files", "remember", "schedule_task"]) {
+	for (const name of ["bash", "read", "write", "edit", "ask_user", "update_plan", "delegate", "browser", "computer", "list_files", "schedule_task"]) {
 		assert.ok(!seen.tools.includes(name), `no ${name} in a chat: ${seen.tools.join(" ")}`);
 	}
 	assert.ok(seen.sections.includes("chat") && seen.sections.includes("look_web") && seen.sections.includes("documents"), seen.sections.join(" "));
-	for (const key of ["scratch", "agents", "project_instructions", "memory", "worktree", "computer_use", "browser"]) assert.ok(!seen.sections.includes(key), `no ${key} section: ${seen.sections.join(" ")}`);
+	for (const key of ["scratch", "agents", "project_instructions", "worktree", "computer_use", "browser"]) assert.ok(!seen.sections.includes(key), `no ${key} section: ${seen.sections.join(" ")}`);
 	const section = await client.answer(chat, "/system chat");
 	assert.match(section, /chat assistant of pi²/);
 	assert.match(section, /no folder/);
