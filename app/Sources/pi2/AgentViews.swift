@@ -39,7 +39,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, instructions, files, memory, tools, builtins, rules, variables, extras, computer, browser, schedule, delegates
+    case profile, model, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -160,6 +160,10 @@ struct AgentEditor: View {
                     }
                     Picker("Colour", selection: draft.color) {
                         ForEach(AgentColor.names, id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    if saved?.allowEverything == true {
+                        Label("Allow everything is on: this agent asks you about nothing. Turn it off below, under Allow everything.", systemImage: "exclamationmark.octagon.fill")
+                            .foregroundStyle(Theme.bad)
                     }
                 }
                 .id(AgentSection.profile)
@@ -288,8 +292,11 @@ struct AgentEditor: View {
                 }
                 .id(AgentSection.tools)
 
+                AllowEverythingSection(engine: engine, agentID: agentID)
+                    .id(AgentSection.everything)
+
                 if !engine.builtInTools.isEmpty {
-                    BuiltInToolsSection(tools: engine.builtInTools, agent: agent, toolsOff: Binding(
+                    BuiltInToolsSection(tools: engine.builtInTools, agent: agent, pictures: engine.pictures, toolsOff: Binding(
                         get: { agent.toolsOff ?? [] },
                         set: { draft.wrappedValue.toolsOff = $0 }
                     ), toolsOn: Binding(
@@ -335,7 +342,7 @@ struct AgentEditor: View {
                 ComputerUseSection(settings: Binding(
                     get: { agent.computer ?? ComputerSettings() },
                     set: { draft.wrappedValue.computer = $0 }
-                ))
+                ), allowsEverything: saved?.allowEverything == true)
                 .id(AgentSection.computer)
 
                 BrowserSection(settings: Binding(
@@ -432,6 +439,8 @@ struct AgentEditor: View {
 struct BuiltInToolsSection: View {
     let tools: [BuiltInTool]
     let agent: AgentProfile
+    /// The picture models there are, for saying why making pictures is not offered when there are none.
+    let pictures: EngineClient.PictureModels?
     @Binding var toolsOff: [String]
     @Binding var toolsOn: [String]
 
@@ -468,6 +477,10 @@ struct BuiltInToolsSection: View {
         case "files" where agent.access == "none": "Not offered with tool access off."
         case "changes" where agent.access != "ask" && agent.access != "full": "Offered only with Ask first or Full access."
         case "browser" where agent.browser?.enabled != true: "Offered only while the browser is on."
+        case "pictures" where pictures?.models.isEmpty == true:
+            pictures?.makers.isEmpty == false
+                ? "None of your providers can make pictures, so it is not offered. \(ListFormatter.localizedString(byJoining: pictures?.makers ?? [])) can: add a key in Settings › Providers."
+                : "None of your providers can make pictures, so it is not offered."
         default: nil
         }
     }

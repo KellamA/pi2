@@ -10,6 +10,8 @@ struct ComputerEvent: Decodable {
     let of: String?
     let app: String?
     let apps: [String]?
+    /// The agent allows everything: any app, browsers controllable.
+    let anyApp: Bool?
     let element: Int?
     let x: Double?
     let y: Double?
@@ -36,7 +38,7 @@ final class ComputerSession {
 
     func handle(_ event: ComputerEvent, engine: EngineClient) {
         let request = ComputerRequest(
-            action: event.action, of: event.of, app: event.app, apps: event.apps ?? [], element: event.element, x: event.x, y: event.y,
+            action: event.action, of: event.of, app: event.app, apps: event.apps ?? [], anyApp: event.anyApp ?? false, element: event.element, x: event.x, y: event.y,
             text: event.text, dy: event.dy, count: event.count, path: event.path, image: event.image ?? true, conversationId: event.conversationId,
             testCopies: event.testCopies ?? false
         )
@@ -178,6 +180,8 @@ private struct IndicatorPill: View {
 /// The part of an agent's settings that lets it use apps on this Mac.
 struct ComputerUseSection: View {
     @Binding var settings: ComputerSettings
+    /// The agent allows everything: any app, not only those listed, and browsers can be controlled.
+    var allowsEverything = false
     @State private var refused: String?
 
     var body: some View {
@@ -191,7 +195,7 @@ struct ComputerUseSection: View {
                             Text(ComputerController.name(of: bundleID))
                             Text(bundleID).font(.caption.monospaced()).foregroundStyle(.secondary)
                         }
-                        if ComputerPolicy.isViewOnly(bundleID) {
+                        if ComputerPolicy.isViewOnly(bundleID, anyApp: allowsEverything) {
                             Tag("look only").help("The agent can see this app's windows but not click or type in them.")
                         }
                         Spacer()
@@ -203,7 +207,9 @@ struct ComputerUseSection: View {
                 }
                 HStack {
                     Button("Add Apps…") { add() }
-                    if settings.apps.isEmpty, settings.testCopies != true {
+                    if allowsEverything {
+                        Text("Allow everything is on, so the agent may use any app, listed here or not.").foregroundStyle(Theme.bad)
+                    } else if settings.apps.isEmpty, settings.testCopies != true {
                         Text("Until you add an app, the agent is not given computer use at all.").foregroundStyle(.secondary)
                     }
                 }
@@ -237,13 +243,19 @@ struct ComputerUseSection: View {
 
     private var footer: String {
         guard settings.enabled else { return "Off: this agent cannot see or control any app." }
-        var text = "The agent works one app window at a time, in the background, and only in the apps listed. Whatever those windows show is sent to its model. "
-        text += settings.ask
-            ? "It asks before each click, keystroke or menu command; you can allow an app for the rest of a conversation. Looking is not asked about. "
-            : "It acts without asking. "
-        text += settings.testCopies == true
-            ? "Terminals, password managers and pi² itself cannot be added; browsers, System Settings and copies of pi² other than test copies can be looked at but not controlled."
-            : "Terminals, password managers and pi² itself cannot be added; browsers, System Settings and test copies of pi² can be looked at but not controlled."
+        var text: String
+        if allowsEverything {
+            let copies = settings.testCopies == true ? "copies of pi² other than test copies" : "copies of pi²"
+            text = "Allow everything is on: the agent works in any app, one window at a time, in the background, and acts without asking. Whatever those windows show is sent to its model. Browsers can be controlled, with the accounts you are signed in to there. Terminals, password managers and pi² itself still cannot be used, and System Settings and \(copies) can only be looked at."
+        } else {
+            text = "The agent works one app window at a time, in the background, and only in the apps listed. Whatever those windows show is sent to its model. "
+            text += settings.ask
+                ? "It asks before each click, keystroke or menu command; you can allow an app for the rest of a conversation. Looking is not asked about. "
+                : "It acts without asking. "
+            text += settings.testCopies == true
+                ? "Terminals, password managers and pi² itself cannot be added; browsers, System Settings and copies of pi² other than test copies can be looked at but not controlled."
+                : "Terminals, password managers and pi² itself cannot be added; browsers, System Settings and test copies of pi² can be looked at but not controlled."
+        }
         if !EngineClient.isSelfContained {
             text += " This is a development build: macOS ties these permissions to the exact build, so after rebuilding you may need to remove pi² from the list in System Settings and grant it again."
         }
