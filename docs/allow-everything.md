@@ -52,6 +52,8 @@ It is shown in red, as pi² marks anything risky:
 - every conversation of the agent has a red bar across its top, which says when the switch has changed and the conversation takes the change at its next message;
 - the agent's settings say so at the top, and under **Allow everything**; with computer use on, its section says that any app may be used.
 
+A call that would have asked for approval instead says **allowed by Allow everything** on its row once it has a result. The note stays with the call after a restart and in Markdown and JSON exports, even if you later turn the switch off. Calls that did not need approval, such as a read or a command already covered by a rule, do not get the note.
+
 ## What macOS needs
 
 For computer use in any app, pi² needs Accessibility, and Screen Recording if the agent should get pictures. They are granted to pi² in System Settings › Privacy & Security; the **Grant…** buttons under **Computer use** in the agent's settings open the right place ([computer-use.md](computer-use.md#turning-it-on)).
@@ -60,6 +62,6 @@ For computer use in any app, pi² needs Accessibility, and Screen Recording if t
 
 - The agent has `allowEverything: true` when it is on, set only by `agents.allowEverything { id, on }`. `agents.save` keeps what is stored and ignores what it is sent, and a new agent, a duplicate among them, never has it.
 - A conversation takes it from its own agent as each message is sent (`takeSwitch` in `main.ts`, `takeAgentSwitch` in `state.ts`): `submit`, `continue`, a schedule's `deliver`, and an agent continuing a sub-chat (`continueChat`); `delegate` sets a new sub-chat's from its own agent as it makes it. It is kept on the conversation's entry in the library (`Meta.allowEverything`), and the `library` event carries it for the app's warning.
-- `Inbox.ask` answers an approval `once` without showing it when the conversation has it, reading the stored library. Every approval goes through `Inbox.ask`, so a new kind of approval is covered with nothing more to do. `commandAsks` in `extensions.ts` follows the same flag.
+- `Inbox.ask` answers an approval `once` without showing it when the conversation has it, reading the stored library. Every approval goes through `Inbox.ask`, so a new kind of approval is covered with nothing more to do. It also records the decision in the tool task's durable memo; `afterTool` copies that to `details.allowedByEverything` for the transcript and exports. `commandAsks` in `extensions.ts` follows the same flag.
 - Computer use reads the conversation's flag too: `refusal` lets any app through but those `isNever` refuses, and `isViewOnlyFor(app, true)` keeps only System Settings and copies of pi² look-only. Requests to the app carry `anyApp: true`, and `ComputerPolicy` in ComputerKit lifts the browsers' look-only only then.
 - `engine/test/everything.ts` checks every kind of approval with the switch off (each asked, once, as before) and on (none asked, each done), and the limits above.

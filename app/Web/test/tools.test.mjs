@@ -350,6 +350,19 @@ test("a command one of the person's rules let through says which rule", () => {
 	assert.equal(line("bash", { command: "npm test" }), "Ran npm test", "without a rule the row is as before");
 });
 
+test("a call's saved Allow everything decision adds a quiet note", () => {
+	const result = { details: { allowedByEverything: true } };
+	const ran = T.describe(call("bash", { command: "echo hello" }), "done", result, null);
+	assert.deepEqual(ran.note, [{ text: "allowed by Allow everything" }]);
+	assert.equal(ran.title, "Ran echo hello (allowed by Allow everything)");
+	assert.equal(T.approvalNote(result), "allowed by Allow everything", "the hand-off row uses the same note");
+	assert.deepEqual(T.describe(call("edit", {}), "failed", result, null).note, ran.note, "a failed call can still have run unasked");
+	assert.deepEqual(T.describe(call("bash", {}), "running", null, result).note, [], "only the saved result carries the mark");
+	for (const details of [null, {}, { allowedByEverything: false }, { allowedByEverything: "true" }, { allowedBy: ["echo"] }]) {
+		assert.equal(T.approvalNote({ details }), "");
+	}
+});
+
 test("a worktree's set-up command reads as pi²'s, and says how it failed", () => {
 	assert.equal(line("pi2_setup", { command: "npm ci" }, "running"), "Running the set-up command npm ci…");
 	assert.equal(line("pi2_setup", { command: "npm ci" }, "done", { text: "added 3 packages", details: { status: "done" } }), "Ran the set-up command npm ci");
