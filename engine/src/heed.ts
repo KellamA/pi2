@@ -146,7 +146,7 @@ function holding(slot: Slot, args: Record<string, unknown>, approval: boolean): 
 			case "write_document":
 				return `writing ${quoted(args.path)}`;
 			case "codemode":
-				return "a script";
+				return "the script";
 			case "computer":
 				return "an action on the screen";
 			case "browser":
