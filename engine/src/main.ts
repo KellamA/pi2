@@ -293,19 +293,22 @@ function withheld(): string[] {
 	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
 }
 
-/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
-function chatTools() {
+/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on. */
+function chatTools(web: boolean) {
 	const held = withheld();
-	return chatToolNames(chatSettings(settings.chat).web)
+	return chatToolNames(web)
 		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }
 
 /** How a new chat is configured: no folder, no instructions of an agent's, the assistant's tools. */
-function chatChange(model: ModelRef): AgentChange {
-	return { model, thinkingLevel: null, instructions: null, tools: chatTools(), cwd: null, maxTurns: null };
+function chatChange(model: ModelRef, web: boolean): AgentChange {
+	return { model, thinkingLevel: null, instructions: null, tools: chatTools(web), cwd: null, maxTurns: null };
 }
+
+/** Whether chat `id` (or the chat it is a version of) may read the web: its own switch, which starts as chat mode's setting. */
+const chatWeb = (id: number): boolean => library.conversations[String(chatOf(id))]?.web !== false;
 
 /**
  * `wanted` in the order the conversation already has its tools (`current`, its AgentDoc's), with the new ones after them.
@@ -423,7 +426,7 @@ async function syncTools(conv: Conversation): Promise<void> {
 	// A conversation whose agent was deleted keeps the setup it has. A chat has the assistant's tools.
 	if (meta === undefined || (own === undefined && !isChat(meta))) return;
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools() : toolsFor(meta.access, own, isSubChat(meta)));
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta)));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -741,6 +744,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		title: meta?.title ?? "",
 		// A chat of the built-in assistant (chat.ts): the page shows chat mode's own controls only then.
 		chat: isChat(meta),
+		// A chat's web switch (#287): whether its next message may read the web. Null for any other conversation.
+		web: isChat(meta) ? chatWeb(id) : null,
 		archived: isArchived(meta) || (meta?.parent !== undefined && isArchived(library.conversations[String(meta.parent)])),
 		queued: (inbox.items ?? [])
 			.filter((item) => item.mode !== "write")
@@ -997,13 +1002,15 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
 		saveSettings();
 	}
 	const now = Date.now();
+	// The web starts as chat mode's setting says, and is the chat's own from then on.
+	const web = chatSettings(settings.chat).web;
 	const created = await harness.createConversation(
 		{
 			ownership: { kind: "ownerless" },
-			agent: chatChange(model),
+			agent: chatChange(model, web),
 			init: async (tx, id) => {
 				// No agent, and no tool access of an agent's: its tools are the assistant's own, none of which asks.
-				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true };
+				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true, ...(web ? {} : { web: false as const }) };
 			},
 		},
 		context,
@@ -1107,8 +1114,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
-						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps.
+						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps, and its web switch.
 						...(isChat(source) ? { chat: true as const } : {}),
+						...(isChat(source) && source?.web === false ? { web: false as const } : {}),
 					};
 				},
 			},
@@ -1365,7 +1373,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.defaultModel !== undefined) delete settings.lastChatModel;
 		saveSettings();
 		broadcast(chatEvent());
-		// The web switch changes what every chat is offered, from its next message (syncTools).
+		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287).
 		return after;
 	},
 	"conversation.configure": async (params, client) => {
@@ -1375,6 +1383,17 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// A chat has no folder and no tool access to choose: its tools are the assistant's (chat.ts).
 		if (chat && params.cwd !== undefined) throw new Error("A chat has no folder");
 		if (chat && params.access !== undefined) throw new Error("A chat's tools are fixed: it has no tool access to change");
+		if (params.web !== undefined) {
+			if (!chat) throw new Error("Only a chat has a web switch; an agent's tools are chosen in its settings");
+			if (typeof params.web !== "boolean") throw new Error("web must be true or false");
+			// Kept on the chat's record and counted from its next message, when its tools are brought in line (syncTools),
+			// so an answer being written keeps the tools it started with.
+			await editMeta(conv.id, (meta) => {
+				if (params.web === false) meta.web = false;
+				else delete meta.web;
+			});
+			for (const other of clients) other.subscriptions.get(id)?.push();
+		}
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);

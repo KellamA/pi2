@@ -170,6 +170,34 @@ try {
 	const sizes = (await client.answer(id, "/system sizes")).split("\n").slice(1);
 	assert.ok(sizes.every((line) => line.startsWith("(base)") || !/ 0$/.test(line)), `no empty section reaches the model:\n${sizes.join("\n")}`);
 	console.log(`# at the end:\n#   ${sizes.join("\n#   ")}`);
+
+	// A chat's web switch (#287), turned off and on in the middle of the chat: the web's section and tools go and come
+	// back, and the chat's own section says so, each on its own.
+	const { id: chat } = await client.call("conversation.create", { chat: true });
+	await client.call("conversation.open", { id: chat });
+	const chatHistory = async () => (await client.answer(chat, "/system history")).split("\n").slice(1);
+	await client.answer(chat, "Hello");
+	let chatSeen = await chatHistory();
+	assert.equal(chatSeen.length, 1, `a chat's first request sends the prompt once:\n${chatSeen.join("\n")}`);
+	assert.match(chatSeen[0]!, / \+tool:web_fetch/);
+	const chatChanged = async (what: string, keys: string[], tools: string[]) => {
+		const now = await chatHistory();
+		const added = now.slice(chatSeen.length);
+		chatSeen = now;
+		assert.ok(added.length > 0, `${what}: the prompt changed`);
+		for (const part of added.flatMap((line) => line.split(" ")).filter((part) => part !== "")) {
+			const name = part.replace(/^[-+]?(tool:)?/, "").replace(/=\d+$/, "");
+			assert.ok((part.includes("tool:") ? tools : keys).includes(name), `${what}: only ${[...keys, ...tools].join(", ")} change, but a system message has ${part}:\n${added.join("\n")}`);
+		}
+		console.log(`# ${what}: ${added.join(" | ")}`);
+		step(what);
+	};
+	await client.call("conversation.configure", { id: chat, web: false });
+	await client.answer(chat, "Again");
+	await chatChanged("a chat's web switched off takes away only the web and changes the chat section", ["look_web", "chat"], ["web_fetch", "web_search"]);
+	await client.call("conversation.configure", { id: chat, web: true });
+	await client.answer(chat, "Again");
+	await chatChanged("a chat's web switched on again sends only the web and the chat section", ["look_web", "chat"], ["web_fetch", "web_search"]);
 } finally {
 	client.close();
 	await stop(engine);

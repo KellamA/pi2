@@ -437,6 +437,50 @@ extension EngineClient {
     }
 }
 
+// MARK: - The web switch
+
+/// The chat's web switch, by its message field (#287): whether the assistant may search the web and read pages. A new
+/// chat starts as Settings › Chat says; the switch is the chat's own and counts from its next message.
+struct ChatWebSwitch: View {
+    let engine: EngineClient
+    let id: Int
+    let on: Bool
+
+    var body: some View {
+        Button {
+            engine.perform("conversation.configure", ["id": id, "web": !on])
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: on ? "globe" : "network.slash")
+                Text(on ? "Web" : "Web off")
+            }
+            .font(.system(size: 12))
+            .foregroundStyle(on ? Theme.acc : Theme.tx2)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(on ? Theme.acc.opacity(0.12) : Theme.card, in: .rect(cornerRadius: 7))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(engine.status != .connected)
+        .help(on ? "The assistant can search the web and read pages in this chat. Click to turn the web off for this chat, from your next message." : "The web is off for this chat: the assistant answers from what it knows. Click to let it search the web and read pages again, from your next message.")
+        .accessibilityLabel("Web")
+        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// Above a chat's message field while its web switch is off, so the person knows why an answer reads no pages.
+struct ChatWebOffNote: View {
+    var body: some View {
+        Label("The web is off for this chat. Answers come from what the model already knows.", systemImage: "network.slash")
+            .font(.system(size: 11.5))
+            .foregroundStyle(Theme.tx3)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("chat-web-off")
+    }
+}
+
 /// A way to begin an empty chat: what it puts in the message field.
 struct ChatStarter: Identifiable {
     let icon: String
