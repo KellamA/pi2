@@ -39,7 +39,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, instructions, files, memory, tools, builtins, rules, variables, extras, computer, browser, schedule, delegates
+    case profile, model, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -160,6 +160,10 @@ struct AgentEditor: View {
                     }
                     Picker("Colour", selection: draft.color) {
                         ForEach(AgentColor.names, id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    if saved?.allowEverything == true {
+                        Label("Allow everything is on: this agent asks you about nothing. Turn it off below, under Allow everything.", systemImage: "exclamationmark.octagon.fill")
+                            .foregroundStyle(Theme.bad)
                     }
                 }
                 .id(AgentSection.profile)
@@ -288,6 +292,9 @@ struct AgentEditor: View {
                 }
                 .id(AgentSection.tools)
 
+                AllowEverythingSection(engine: engine, agentID: agentID)
+                    .id(AgentSection.everything)
+
                 if !engine.builtInTools.isEmpty {
                     BuiltInToolsSection(tools: engine.builtInTools, agent: agent, toolsOff: Binding(
                         get: { agent.toolsOff ?? [] },
@@ -335,7 +342,7 @@ struct AgentEditor: View {
                 ComputerUseSection(settings: Binding(
                     get: { agent.computer ?? ComputerSettings() },
                     set: { draft.wrappedValue.computer = $0 }
-                ))
+                ), allowsEverything: saved?.allowEverything == true)
                 .id(AgentSection.computer)
 
                 BrowserSection(settings: Binding(
