@@ -12,6 +12,7 @@ struct ActivityView: View {
             VStack(alignment: .leading, spacing: 22) {
                 if let recovery = engine.recovery { recoveryBanner(recovery) }
                 running
+                if !engine.localRunning.isEmpty { LocalModelsActivity(model: model) }
                 if !engine.backgroundCommands.isEmpty { background }
                 scheduled
             }
@@ -41,7 +42,9 @@ struct ActivityView: View {
         let commands = engine.backgroundCommands.count
         let left = commands == 0 ? nil : "\(commands) background command\(commands == 1 ? "" : "s")"
         let working = engine.activity.isEmpty ? nil : "\(engine.activity.count) running"
-        let parts = [working, left].compactMap(\.self)
+        let models = engine.localRunning.count
+        let loaded = models == 0 ? nil : "\(models) model\(models == 1 ? "" : "s") on this Mac"
+        let parts = [working, loaded, left].compactMap(\.self)
         return parts.isEmpty ? "Nothing running" : parts.joined(separator: " · ")
     }
 

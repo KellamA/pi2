@@ -24,7 +24,7 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line. macOS limits a socket's path to 103 bytes, so when the data folder's path is too long for that (only possible with `PI2_HOME`), the app and the engine both reach the socket through a short link to the data folder in `/tmp/pi2-<uid>/` (`engine/src/socket.ts` and `app/Sources/pi2/EngineSocket.swift` work it out the same way).
 
 - The app sends requests: `{"id": 1, "method": "submit", "params": {…}}`. The engine answers `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`.
-- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`, `browser`.
+- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation`, `auth`, `computer`, `browser`, `local.running`.
 
 The app starts the engine if it is not running, and reconnects if it dies. A second engine on the same data folder exits at once.
 
@@ -78,6 +78,8 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/reading.ts` | `read` of several files, or several ranges of one, in one call. See [Reading files](#reading-files) |
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
+| `src/localrun.ts` | Running a model on this Mac: starting it when a conversation starts using it, sharing it, stopping it when none does, and its process. See [local-models-running.md](local-models-running.md) |
+| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of how the real engine is started and known to be ready |
 | `src/mcp.ts` | MCP servers and their tools. See [mcp.md](mcp.md) |
 | `src/backup.ts` | Backup and restore |
 | `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |

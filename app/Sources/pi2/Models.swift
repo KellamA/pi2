@@ -693,6 +693,9 @@ struct ConversationState: Codable, Equatable {
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
     let setup: LiveSetup?
+    /// Its model runs on this Mac: whether it is loading, loaded, stopped or could not start. Nil for any other model,
+    /// and from an engine older than this field.
+    let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
     var chat: Bool? = nil
     /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
