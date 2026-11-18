@@ -2,12 +2,13 @@
 // conversation, over its socket, on a throwaway data folder and throwaway repositories.
 
 import assert from "node:assert/strict";
-import { type ChildProcess, execFileSync, spawn, spawnSync, type StdioOptions } from "node:child_process";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import childProcess, { type ChildProcess, execFileSync, spawn, spawnSync, type StdioOptions } from "node:child_process";
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, useRunFolder } from "../src/processes.ts";
+import { forgetRun, type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, sweepRuns, useRunFolder } from "../src/processes.ts";
 import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
 import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
 
@@ -141,10 +142,21 @@ const SH_SLEEP = `/bin/sh -c '${LONG_SLEEP}; :'`;
 const PERL_SLEEP = `/usr/bin/perl -e 'sleep ${(2 * PATIENT_MS) / 1000}'`;
 const sleepers: number[] = [];
 const holders: number[] = [];
+// A dead engine made a file but never recorded a process. Beside it a different, live engine (this test) owns a run
+// whose command closed fd 19. Only the former may go, even though neither file is named in the new engine's records.
+useRunFolder(join(home, "runs"));
+const activeRun = newRun();
+const leakedMarker = newRunMarker();
+const leakedFile = join(home, "runs", leakedMarker);
+closeSync(openSync(leakedFile, constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL, 0o000));
 let engine = startEngine();
 try {
 	const client = await Client.connect(engine, home);
 	await client.until("agents", () => client.events.providers);
+	await until("startup removes an unheld run file with no record", () => !existsSync(leakedFile));
+	assert.ok(existsSync(join(home, "runs", activeRun.marker)), "another engine's live run with no record here is kept");
+	forgetRun(activeRun.marker);
+	step("startup sweeps an unrecorded dead run's file, never another engine's live run");
 
 	const { id: a } = await client.call("conversation.create");
 	await client.call("conversation.open", { id: a });
@@ -765,12 +777,7 @@ try {
 		const orphans = async (script: string, env: Record<string, string | undefined>, count = 1, run?: NewRun) => {
 			// With a run, started with its file open, as the engine starts a command (`newRun`).
 			const stdio = run === undefined ? ["ignore", "pipe", "ignore"] : (run.stdio as unknown[]).map((each, i) => (i === 2 ? "ignore" : each));
-			let first: ChildProcess;
-			try {
-				first = spawn("/bin/bash", ["-c", script], { detached: true, env: { ...process.env, ...env }, stdio: stdio as StdioOptions });
-			} finally {
-				run?.started();
-			}
+			const first = spawn("/bin/bash", ["-c", script], { detached: true, env: { ...process.env, ...env }, stdio: stdio as StdioOptions });
 			let out = "";
 			let over = false;
 			first.stdout!.on("data", (chunk) => (out += chunk));
@@ -836,6 +843,67 @@ try {
 		// are known by it: `sleep` (one ignoring SIGTERM, as `stubborn()` in test/background.ts does), `/bin/sh` and what it
 		// runs, and perl, all without the marker in their environment.
 		useRunFolder(join(home, "test-runs"));
+		{
+			const folder = join(home, "test-runs");
+			const live = newRun();
+			const file = (marker: string) => join(folder, marker);
+			const empty = () => {
+				const marker = newRunMarker();
+				closeSync(openSync(file(marker), constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL, 0o000));
+				return marker;
+			};
+			const stale = empty();
+			const changed = empty();
+			chmodSync(file(changed), 0o600);
+			const nonempty = newRunMarker();
+			writeFileSync(file(nonempty), "not a run file", { mode: 0o000 });
+			const link = newRunMarker();
+			symlinkSync(file(stale), file(link));
+			writeFileSync(join(folder, "not-a-marker"), "", { mode: 0o000 });
+			const directory = newRunMarker();
+			mkdirSync(file(directory));
+			// An unrecorded command left by a dead engine: no engine holds this file now, but a system program does.
+			const held = newRunMarker();
+			const fd = openSync(file(held), constants.O_RDONLY | constants.O_CREAT | constants.O_EXCL, 0o000);
+			const stdio = ["ignore", "ignore", "ignore", ...Array(16).fill("ignore"), fd] as StdioOptions;
+			const child = spawn("/bin/sleep", [String(2 * PATIENT_MS / 1000)], { detached: true, stdio });
+			closeSync(fd);
+			sleepers.push(child.pid!);
+			try {
+				await sweepRuns();
+				assert.equal(existsSync(file(stale)), false, "an empty unheld orphan is removed");
+				for (const marker of [live.marker, held, changed, nonempty, link, directory, "not-a-marker"]) {
+					// existsSync follows a symlink, whose target was just removed.
+					assert.ok(marker === link ? lstatSync(file(marker)).isSymbolicLink() : existsSync(file(marker)), `not removed: ${marker}`);
+				}
+				assert.ok(alive(child.pid!), "cleanup never signals an unrecorded holder");
+				await stop(child, "SIGKILL");
+				await sweepRuns();
+				assert.equal(existsSync(file(held)), false, "once its last holder ends, the file can go");
+			} finally {
+				await stop(child, "SIGKILL");
+				forgetRun(live.marker);
+			}
+			step("run-file cleanup keeps live runs, unrecorded holders and look-alike files, and never signals a process");
+
+			const uncertain = empty();
+			const original = childProcess.execFile;
+			try {
+				for (const [code, stdout, stderr] of [[2, "", ""], [1, "", "cannot inspect"], [0, "unreadable fields\n", ""], ["ENOENT", "", ""]] as const) {
+					(childProcess as { execFile: unknown }).execFile = (_file: string, _args: string[], _options: unknown, callback: (error: unknown, stdout: string, stderr: string) => void) => {
+						callback(code === 0 ? null : { code }, stdout, stderr);
+					};
+					syncBuiltinESMExports();
+					await sweepRuns();
+					assert.ok(existsSync(file(uncertain)), "a failed, diagnostic or unreadable lsof answer never removes a file");
+				}
+			} finally {
+				childProcess.execFile = original;
+				syncBuiltinESMExports();
+			}
+			forgetRun(uncertain);
+			step("run-file cleanup fails closed when lsof fails or its answer is uncertain");
+		}
 		const system = (run?: NewRun) => orphans(`trap '' TERM; ${LONG_SLEEP} & echo $!; trap - TERM; ${SH_SLEEP} & echo $!; ${PERL_SLEEP} & echo $!`, { [RUN_VARIABLE]: undefined }, 3, run);
 		const groupOf = (group: number) => [...execFileSync("/bin/ps", ["-A", "-o", "pid=,pgid="], { encoding: "utf8" }).matchAll(/^\s*(\d+)\s+(\d+)\s*$/gm)].filter((m) => Number(m[2]) === group).map((m) => Number(m[1]));
 		const given = newRun();
@@ -856,7 +924,6 @@ try {
 		const changed = newRun();
 		const gone = newRun();
 		const unheld = newRun();
-		unheld.started();
 		const fileLookAlikes: [string, { group: number; pids: number[] }, string][] = [
 			["another run's file", await system(newRun()), unheld.marker],
 			["a file replaced by another of the same name", await system(replaced), replaced.marker],
@@ -871,7 +938,6 @@ try {
 		// A `sleep` of its own group that has the run's file open, beside a group of the number on record that has nothing.
 		const elsewhere = newRun();
 		const apart = spawn("/bin/sleep", [String((2 * PATIENT_MS) / 1000)], { detached: true, stdio: elsewhere.stdio });
-		elsewhere.started();
 		apart.unref();
 		sleepers.push(apart.pid!);
 		fileLookAlikes.push(["nothing, beside a process of another group with the run's file", await system(), elsewhere.marker]);

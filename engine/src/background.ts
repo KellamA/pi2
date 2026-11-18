@@ -404,8 +404,6 @@ export async function startInBackground(args: { command: string; timeout?: numbe
 		await forget();
 		await unwatch(wakeKey(id));
 		return fail(`The command could not be started: ${error instanceof Error ? error.message : String(error)}`);
-	} finally {
-		run?.started();
 	}
 	const marker = run.marker;
 	const command: Command = { id, conversationId, command: args.command, cwd, startedAt, child, output: "", total: 0, read: 0, settled: Promise.resolve(), waiters: new Set() };
@@ -709,10 +707,11 @@ export const background: Feature = (_host, running) => {
 			"- list: each one's id, its command, whether it is running or how it ended, and how much of its output you have not read.\n" +
 			`- read: what \`id\` has printed since you last read it, standard output and errors together, and whether it is still running. With \`wait\`, when there is nothing new it waits up to that many seconds (${MAX_WAIT_SECONDS} at most) for more output or for the command to end; a longer pause costs more than reading again. With \`tail\`, it gives the last \`tail\` lines instead, read or not, and what counts as read stays as it was.\n` +
 			"- stop: stop `id` and everything it started, and give what it printed since you last read it.\n" +
+			"- wake: wake you when running `id` ends, with how it ended and the end of its output.\n" +
 			`Only the last ${KEEP_CHARS / 1024} KB a command printed is kept, and one read gives at most ${READ_CHARS.toLocaleString("en-US")} characters or ${READ_LINES.toLocaleString("en-US")} lines: read again for the rest.`,
 		parameters: obj({
-			action: str({ description: "list, read or stop" }),
-			id: opt(str({ description: 'For read and stop: the command\'s id, such as "bg-1"' })),
+			action: str({ description: "list, read, stop or wake" }),
+			id: opt(str({ description: 'For read, stop and wake: the command\'s id, such as "bg-1"' })),
 			wait: opt(num({ description: `For read: seconds to wait for new output when there is none, up to ${MAX_WAIT_SECONDS}` })),
 			tail: opt(int({ description: "For read: give the last this many lines, read or not, instead of what is new" })),
 		}),
@@ -730,10 +729,24 @@ export const background: Feature = (_host, running) => {
 				});
 				return { output: text(["Background commands of this conversation:", ...lines].join("\n")), details: { action, count: own.length, running: own.filter(isRunning).length } };
 			}
-			if (action !== "read" && action !== "stop") return fail(`Unknown action "${args.action}". Use list, read or stop.`);
+			if (action !== "read" && action !== "stop" && action !== "wake") return fail(`Unknown action "${args.action}". Use list, read, stop or wake.`);
 			const command = find(args.id, conversationId);
 			if (typeof command === "string") return fail(command);
 			const details = () => ({ action, id: command.id, command: command.command, status: isRunning(command) ? "running" : "ended" });
+
+			if (action === "wake") {
+				if (!isRunning(command)) return fail(`${command.id} is already over: it ${standing(command)}. Read its output instead.`);
+				const reason = await watch({ key: wakeKey(command.id), conversationId, kind: "background", ref: command.id, label: `background command ${command.id} (\`${commandLine(command.command, 60)}\`)`, startedAt: command.startedAt });
+				if (reason !== undefined) return fail(reason);
+				if (command.ended === undefined && !watched(wakeKey(command.id))) return fail(`Waking for ${command.id} was already turned off; it was not turned on again.`);
+				// It may have ended while the watch was committed, after follow's own look for a watch.
+				// arrive takes the watch once, whichever side gets there first.
+				if (command.ended !== undefined) {
+					if (command.stopping === STOPPED_BY_AGENT) await unwatch(wakeKey(command.id));
+					else await arrive(wakeKey(command.id), command.ended.how, wakeText(command));
+				}
+				return { output: text(`When ${command.id} ends, how it ended and the end of its output will come to you as a message, waking you if you are not answering then.`), details: details() };
+			}
 
 			if (action === "stop") {
 				const was = isRunning(command);

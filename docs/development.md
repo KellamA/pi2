@@ -157,10 +157,12 @@ open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_
 
 On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: `scripts/test-copy start test-7`, then `scripts/test-copy stop test-7`. [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the rules and what the script does for each.
 
-To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. For a running `test-7`, these create a conversation on the scripted demo model (no provider or sign-in) and send it a message:
+To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. These start a copy waiting to show a conversation, create it after launch on the scripted demo model (no provider or sign-in), and send it a message. `PI2_SHOW` opens it when it appears while nothing else is open; no restart or click is needed:
 
 ```bash
+scripts/test-copy start test-7 --show 'Late demo'
 CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Late demo\"}"
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 
@@ -169,6 +171,15 @@ scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test
 ```bash
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
+
+To change what an existing copy shows, reopen just its app, keeping its engine and conversations. The new app is recorded for `shot` and `stop`, uses the same clean environment and window placement as `start`, and keeps the previous `--show` unless replaced (and `--menu`):
+
+```bash
+scripts/test-copy reopen test-7 --show "$CHAT"
+scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
+```
+
+It refuses a copy this checkout did not start, a missing or changed bundle, an unrecorded engine or bundle process, a reused app pid, or a symlink for the copy, state, data or socket, before stopping anything. A failed relaunch leaves the engine and data for diagnosis and `stop`.
 
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
