@@ -667,6 +667,9 @@ struct ConversationState: Codable, Equatable {
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
     let setup: LiveSetup?
+    /// Its model runs on this Mac: whether it is loading, loaded, stopped or could not start. Nil for any other model,
+    /// and from an engine older than this field.
+    let local: LocalModelState?
 }
 
 /// A worktree set-up command still running: which run it is (its transcript entry's `details.run`) and the end of its output.

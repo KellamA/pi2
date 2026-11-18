@@ -40,6 +40,9 @@ final class Workspace {
     var isSplit: Bool { !root.isPane }
     var canSplit: Bool { panes.count < Self.maxPanes }
     var focusedConversation: Int? { root.find(focused)?.conversation }
+    /// The conversations open in the panes, whichever page the window shows: the engine is told, since a model on this
+    /// Mac stays loaded while a conversation using it is open (docs/local-models.md).
+    var shownConversations: Set<Int> { Set(panes.compactMap(\.conversation)) }
 
     func save() {
         if let data = SavedLayout(root: root, focused: focused).encoded() {

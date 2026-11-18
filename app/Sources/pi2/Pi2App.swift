@@ -395,6 +395,8 @@ struct RootView: View {
                 if let parent = engine.conversations.first(where: { $0.id == id })?.parent { model.collapsed.remove(parent) }
             }
         }
+        // Which conversations the panes show, for the engine: it keeps a model on this Mac loaded while one using it is open.
+        .onChange(of: model.workspace.shownConversations, initial: true) { _, shown in engine.setShown(shown) }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
             guard loaded else { return }
             // Panes kept from last time that show conversations since deleted are emptied.

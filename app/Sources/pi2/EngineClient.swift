@@ -51,6 +51,10 @@ final class EngineClient {
     private(set) var activity: [ActivityRun] = []
     /// Commands agents left running in the background, oldest first.
     private(set) var backgroundCommands: [BackgroundCommand] = []
+    /// Models running on this Mac (`local.running`).
+    private(set) var localRunning: [LocalServer] = []
+    /// The conversations the window shows in its panes, as the engine was last told (`conversations.shown`).
+    private var shown: Set<Int> = []
     private(set) var schedules: [Schedule] = []
     private(set) var recovery: RecoveryReport?
     private(set) var usage: UsageSummary?
@@ -167,6 +171,20 @@ final class EngineClient {
                 lastError = error.localizedDescription
             }
         }
+    }
+
+    /// Tells the engine which conversations the panes show, when that changes: a model on this Mac stays loaded while a
+    /// conversation using it is shown (docs/local-models.md).
+    func setShown(_ ids: Set<Int>) {
+        guard ids != shown else { return }
+        shown = ids
+        sendShown()
+    }
+
+    private func sendShown() {
+        guard status == .connected else { return }
+        let ids = shown.sorted()
+        Task { _ = try? await call("conversations.shown", ["ids": ids]) }
     }
 
     /// Sends a message. Returns false, after showing why, when the engine refused it.
@@ -299,6 +317,7 @@ final class EngineClient {
                     Task { await self.noteEngineFromAnotherCheckout() }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.requestOpen(id) }
+                    self.sendShown()
                 case .waiting(let error), .failed(let error):
                     if self.status == .connected { self.note("connection failed: \(error)") }
                     self.retry()
@@ -403,6 +422,8 @@ final class EngineClient {
                 activity = try decoder.decode(ActivityEvent.self, from: line).runs
             case "background":
                 backgroundCommands = try decoder.decode(BackgroundEvent.self, from: line).commands
+            case "local.running":
+                localRunning = try decoder.decode(LocalRunningEvent.self, from: line).running
             case "schedules":
                 schedules = try decoder.decode(SchedulesEvent.self, from: line).schedules
             case "recovery":
