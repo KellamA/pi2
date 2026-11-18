@@ -14,7 +14,7 @@ A model on this Mac starts when a conversation starts using it, and stops a minu
 
 A conversation **uses** the model while its model is that one and:
 
-- it is open in one of the window's panes (whichever page the window shows, and whether or not the window is open), or is chat mode's current chat; or
+- it is open in one of the agent view's panes (whichever page the window shows, and whether or not the window is open), or is chat mode's chat on screen (whichever side the window shows, since each keeps what it shows while the other is up); or
 - its agent is working: a run, a sub-chat's run, or a scheduled one, whether or not it is open.
 
 It stops counting when its pane is closed or shows another conversation, when it is archived or deleted, or when its model is changed. An idle open conversation keeps the model loaded: it is not started and stopped between messages.
@@ -41,10 +41,10 @@ If it stops unexpectedly while loaded, an answer it was giving fails, and pi² a
 
 ## The process
 
-pi²'s engine starts it, never the app, as it starts everything it leaves to run on its own ([background.md](background.md)): bound to 127.0.0.1 on a port pi² picks, with a key made for each run in its environment (never on its command line, which any process can read), leading a process group of its own, with the run's marker (`PI2_RUN`) in its environment. Its group, when its first process started, and the marker are kept in a session document, `pi2.local`.
+pi²'s engine starts it, never the app, as it starts everything it leaves to run on its own ([background.md](background.md)): bound to 127.0.0.1 on a port pi² picks, with a key made for each run in its environment (never on its command line, which any process can read), leading a process group of its own, with the run's marker (`PI2_RUN`) in its environment and its run's file open, as the engine's other runs have them. Its group, when its first process started, and the marker are kept in a session document, `pi2.local`.
 
 - A **clean stop** of the engine stops it: SIGTERM, a second and a half, then SIGKILL for whatever of its group is left, inside the five seconds the app gives the engine.
-- An engine that **died** (killed outright, or crashed) leaves it running for the moment. The next engine stops it as it stops a background command left that way (`stopLeftOver` in `engine/src/processes.ts`): the whole group while its first process is still the one noted, else only the processes carrying its marker. `engine.log` says what became of it.
+- An engine that **died** (killed outright, or crashed) leaves it running for the moment. The next engine stops it as it stops a background command left that way (`stopLeftOver` in `engine/src/processes.ts`): the whole group while its first process is still the one noted, else only the processes carrying its marker or holding its run's file. `engine.log` says what became of it.
 - A stop by hand, or for want of anyone using it, gives it five seconds to end before SIGKILL.
 
 Loading may take up to 20 minutes before pi² gives up on it and says so.

@@ -246,8 +246,8 @@ private struct RunRow: View {
             if indented { Image(systemName: "arrow.turn.down.right").foregroundStyle(Theme.tx3) }
             AgentAvatar(agent: engine.agent(run.agentId), size: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(run.title.isEmpty ? "New conversation" : run.title).lineLimit(1)
-                Text(engine.agent(run.agentId)?.name ?? "Agent").font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+                Text(run.title.isEmpty ? (run.chat == true ? "New chat" : "New conversation") : run.title).lineLimit(1)
+                Text(run.chat == true ? "Chat" : engine.agent(run.agentId)?.name ?? "Agent").font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
                 if let command = run.commands?.first {
                     CommandClockLine(command: command, more: (run.commands?.count ?? 1) - 1)
                 }

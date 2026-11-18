@@ -66,10 +66,24 @@ final class AppModel {
     let engine = EngineClient()
     /// The panes the conversation area is split into.
     let workspace = Workspace()
+    /// Chat mode's side of the window, and which side shows (ChatMode.swift).
+    let chats = ChatModeState()
     var selection: Selection? {
-        // A conversation chosen anywhere (the sidebar, the palette, a notification) goes to the pane that has it, or
-        // else the focused pane.
-        didSet { if case .conversation(let id) = selection, selection != oldValue { workspace.show(id) } }
+        didSet {
+            if chats.redirecting { return }
+            // A chat chosen anywhere opens in chat mode; this side keeps what it had.
+            if case .conversation(let id) = selection, engine.isChat(id) {
+                chats.redirecting = true
+                selection = oldValue
+                chats.redirecting = false
+                showChat(id)
+                return
+            }
+            // Anything else chosen (from the menu bar, the palette, a notification) is shown in the agent view.
+            if selection != nil, !chats.holdingMode { mode = .agents }
+            // A conversation chosen anywhere goes to the pane that has it, or else the focused pane.
+            if case .conversation(let id) = selection, selection != oldValue { workspace.show(id) }
+        }
     }
     var showingPalette = false
     /// Conversations whose sub-chats are folded away in the sidebar.
@@ -92,6 +106,12 @@ final class AppModel {
     }
     /// Brings back the main window after it was closed; set by the views that can open windows.
     var showMainWindow: () -> Void = {}
+
+    /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
+    /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models.md).
+    var shownConversations: Set<Int> {
+        workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
+    }
 
     var selectedConversationID: Int? {
         if case .conversation(let id) = selection { return id }
@@ -162,6 +182,7 @@ final class AppModel {
     /// since a worktree cannot be removed while its agent works.
     func confirmDelete(removingWorktree: Bool = false) {
         if let deleting {
+            moveOnFromChat(deleting.id)
             if selectedConversationID == deleting.id { selection = nextAfter(deleting.id) }
             let id = deleting.id
             if removingWorktree {
@@ -188,6 +209,7 @@ final class AppModel {
 
     /// Puts a conversation in the Archive. The window moves on to the next conversation, as it would in a mail app.
     func archive(_ conversation: ConversationSummary) {
+        moveOnFromChat(conversation.id)
         if selectedConversationID == conversation.id { selection = nextAfter(conversation.id) }
         engine.perform("conversation.archive", ["id": conversation.id])
     }
@@ -232,8 +254,14 @@ struct Pi2App: App {
                 CheckForUpdatesButton()
             }
             CommandGroup(replacing: .newItem) {
-                Button("New Conversation") { model.newConversation() }
-                    .keyboardShortcut("n")
+                // ⌘N starts whatever the window is showing: a chat in chat mode.
+                if model.mode == .chat {
+                    Button("New Chat") { model.newChat() }
+                        .keyboardShortcut("n")
+                } else {
+                    Button("New Conversation") { model.newConversation() }
+                        .keyboardShortcut("n")
+                }
                 Menu("New Conversation With") {
                     ForEach(model.engine.agents) { agent in
                         Button(agent.name) { model.newConversation(agentId: agent.id) }
@@ -247,6 +275,8 @@ struct Pi2App: App {
                 Button("Quick Ask (⌃⌥Space anywhere)") { QuickAsk.shared.show(model: model) }
             }
             CommandGroup(after: .sidebar) {
+                ModeCommands(model: model)
+                Divider()
                 Button("Show Inbox") { model.selection = .inbox }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
                 Button("Show Activity") { model.selection = .activity }
@@ -255,7 +285,9 @@ struct Pi2App: App {
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("Show Archive") { model.selection = .archive }
                 Divider()
+                // Panes are the agent view's; in chat mode they would change it out of sight.
                 PaneCommands(model: model)
+                    .disabled(model.mode == .chat)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -350,13 +382,22 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(model: model)
-                .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
+            Group {
+                if model.mode == .chat {
+                    ChatSidebar(model: model)
+                } else {
+                    SidebarView(model: model)
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) { ModeSwitch(model: model) }
+            .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
             // One branch for every way the conversation area shows, so moving between panes, or to an empty one, keeps
             // the panes' pages loaded.
             Group {
-                if showsWorkspace {
+                if model.mode == .chat {
+                    ChatModeDetail(model: model)
+                } else if showsWorkspace {
                     WorkspaceView(model: model)
                 } else {
                     switch model.selection {
@@ -395,26 +436,27 @@ struct RootView: View {
                 if let parent = engine.conversations.first(where: { $0.id == id })?.parent { model.collapsed.remove(parent) }
             }
         }
-        // Which conversations the panes show, for the engine: it keeps a model on this Mac loaded while one using it is open.
-        .onChange(of: model.workspace.shownConversations, initial: true) { _, shown in engine.setShown(shown) }
+        // Which conversations are on screen, for the engine: it keeps a model on this Mac loaded while one using it is.
+        .onChange(of: model.shownConversations, initial: true) { _, shown in engine.setShown(shown) }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
             guard loaded else { return }
             // Panes kept from last time that show conversations since deleted are emptied.
             model.workspace.forget { id in !engine.conversations.contains { $0.id == id } && !model.isArchived(id) }
             guard model.selection == nil else { return }
             #if PI2_DEVELOPMENT
+            if ChatLaunch.apply(ProcessInfo.processInfo.environment["PI2_SHOW"], to: model) { return }
             if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations, archived: engine.archived) {
                 model.selection = asked
                 return
             }
             #endif
-            // Split into panes last time: come back to the same panes.
+            // Split into panes last time: come back to the same panes. The window stays on the side it was last on.
             if model.workspace.isSplit {
-                model.selection = model.workspace.focusedConversation.map { .conversation($0) }
+                model.restoreSelection(model.workspace.focusedConversation.map { .conversation($0) })
                 return
             }
             // On launch, land on the most recent conversation.
-            if let first = engine.rootConversations.first { model.selection = .conversation(first.id) }
+            if let first = engine.rootConversations.first { model.restoreSelection(.conversation(first.id)) }
         }
         .onChange(of: engine.conversations) { _, list in
             // Panes showing a deleted conversation are emptied; the focused one moves on below.
@@ -424,11 +466,19 @@ struct RootView: View {
             // The conversation on screen was deleted: move to the next one. An archived one may stay on screen: it can
             // still be read.
             if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }), !model.isArchived(id) {
-                model.selection = list.first { $0.parent == nil }.map { .conversation($0.id) }
+                model.restoreSelection(engine.rootConversations.first.map { .conversation($0.id) })
             }
         }
+        .alert(engine.isChat(model.renaming?.id ?? 0) ? "Rename chat" : "Rename conversation", isPresented: Binding(get: { model.renaming != nil }, set: { if !$0 { model.renaming = nil } })) {
+            TextField("Title", text: $model.newTitle)
+            Button("Rename") {
+                if let renaming = model.renaming { engine.perform("conversation.rename", ["id": renaming.id, "title": model.newTitle]) }
+                model.renaming = nil
+            }
+            Button("Cancel", role: .cancel) { model.renaming = nil }
+        }
         .confirmationDialog(
-            "Delete “\(model.deleting.map { $0.title.isEmpty ? "New conversation" : $0.title } ?? "")”?",
+            "Delete “\(model.deleting.map { $0.title.isEmpty ? (engine.isChat($0.id) ? "New chat" : "New conversation") : $0.title } ?? "")”?",
             isPresented: Binding(get: { model.deleting != nil }, set: { if !$0 { model.deleting = nil } })
         ) {
             let worktree = model.deleting.flatMap { model.ownWorktree($0.id) }
@@ -442,7 +492,9 @@ struct RootView: View {
         } message: {
             let worktree = model.deleting.flatMap { model.ownWorktree($0.id) }
             let base = "Any work it is doing is stopped, and pi² will not show it again or bring it back. Its text stays in pi²’s data on this Mac. To put it away but keep it, archive it instead."
-            if let worktree {
+            if let deleting = model.deleting, engine.isChat(deleting.id) {
+                Text("pi² will not show this chat again or bring it back. Its text stays in pi²’s data on this Mac. To put it away but keep it, archive it instead.")
+            } else if let worktree {
                 let branch = worktree.branch.map { "Its branch \($0)" } ?? "Its commits"
                 Text(worktree.isDirty
                     ? "\(base)\n\nIts worktree of \(worktree.repo) has uncommitted changes, so it is kept. Branches lists it under Left Behind, where it can be removed later."
@@ -461,7 +513,6 @@ struct RootView: View {
 
 struct SidebarView: View {
     @Bindable var model: AppModel
-    @Environment(\.openWindow) private var openWindow
     private var engine: EngineClient { model.engine }
 
     var body: some View {
@@ -568,52 +619,13 @@ struct SidebarView: View {
             .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
             .background(Theme.side)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 7) {
-                Dot(color: statusColor)
-                // The status keeps its one line; in a narrow sidebar the day's spend gives way first.
-                Text(statusText).foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
-                Spacer(minLength: 4)
-                if let today = engine.usage?.today, today.cost > 0 {
-                    // The longer wording when there is room for it, the bare amount when there is not.
-                    ViewThatFits(in: .horizontal) {
-                        Text("\(today.costText) today")
-                        Text(today.costText)
-                    }
-                    .lineLimit(1)
-                    .foregroundStyle(Theme.tx3)
-                    .help("Spent today on models paid for by use")
-                }
-                Button("Browser", systemImage: "globe") { openWindow(id: "browser") }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Theme.tx3)
-                    .help("Open pi²’s browser: the pages your agents are on (⇧⌘B)")
-                SettingsLink { Image(systemName: "gearshape") }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(Theme.tx3)
-                    .help("Settings")
-            }
-            .font(.system(size: 12))
-            .accessibilityElement(children: .contain)
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Theme.side)
-            .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
-        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(engine: engine) }
         .toolbar {
             ToolbarItem {
                 Button("New Conversation", systemImage: "square.and.pencil") { model.newConversation() }
                     .disabled(engine.status != .connected)
                     .help("New conversation (⌘N)")
             }
-        }
-        .alert("Rename conversation", isPresented: Binding(get: { model.renaming != nil }, set: { if !$0 { model.renaming = nil } })) {
-            TextField("Title", text: $model.newTitle)
-            Button("Rename") {
-                if let renaming = model.renaming { engine.perform("conversation.rename", ["id": renaming.id, "title": model.newTitle]) }
-                model.renaming = nil
-            }
-            Button("Cancel", role: .cancel) { model.renaming = nil }
         }
     }
 
@@ -626,7 +638,6 @@ struct SidebarView: View {
         }
         .tag(tag)
     }
-
     private func conversationRow(_ conversation: ConversationSummary, subChats: Int) -> some View {
         HStack(spacing: 8) {
             if conversation.busy {
@@ -687,6 +698,45 @@ struct SidebarView: View {
             if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
             Button("Delete", role: .destructive) { model.delete(conversation) }
         }
+    }
+}
+
+/// The foot of the sidebar, on both sides of the window: whether the engine runs, today's spend, the browser, Settings.
+struct SidebarFooter: View {
+    let engine: EngineClient
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Dot(color: statusColor)
+            // The status keeps its one line; in a narrow sidebar the day's spend gives way first.
+            Text(statusText).foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
+            Spacer(minLength: 4)
+            if let today = engine.usage?.today, today.cost > 0 {
+                // The longer wording when there is room for it, the bare amount when there is not.
+                ViewThatFits(in: .horizontal) {
+                    Text("\(today.costText) today")
+                    Text(today.costText)
+                }
+                .lineLimit(1)
+                .foregroundStyle(Theme.tx3)
+                .help("Spent today on models paid for by use")
+            }
+            Button("Browser", systemImage: "globe") { openWindow(id: "browser") }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.tx3)
+                .help("Open pi²’s browser: the pages your agents are on (⇧⌘B)")
+            SettingsLink { Image(systemName: "gearshape") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.tx3)
+                .help("Settings")
+        }
+        .font(.system(size: 12))
+        .accessibilityElement(children: .contain)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.side)
+        .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
 
     private var statusText: String {
@@ -758,10 +808,12 @@ extension EngineClient {
 struct ConversationCommands: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
-    private var state: ConversationState? { model.selectedConversationID.flatMap { engine.open[$0]?.state } }
+    private var state: ConversationState? { model.activeConversationID.flatMap { engine.open[$0]?.state } }
 
     var body: some View {
-        let id = model.selectedConversationID
+        let id = model.activeConversationID
+        // A chat's assistant has no tools on this Mac and no folder.
+        let chat = id.map(engine.isChat) ?? false
         Picker("Tool Access", selection: Binding(
             get: { state?.agent.access ?? "none" },
             set: { value in if let id { engine.setAccess(value, for: id) } }
@@ -769,9 +821,9 @@ struct ConversationCommands: View {
             ForEach(AccessLevel.all, id: \.id) { Text($0.title).tag($0.id) }
         }
         .pickerStyle(.inline)
-        .disabled(id == nil)
+        .disabled(id == nil || chat)
         Button("Choose Folder…") { if let id { engine.chooseFolder(for: id) } }
-            .disabled(id == nil)
+            .disabled(id == nil || chat)
         Divider()
         Menu("Model") {
             ForEach(engine.modelGroups, id: \.provider) { group in
@@ -795,19 +847,19 @@ struct ConversationCommands: View {
         }
         .disabled(id == nil)
         Menu("Export") {
-            Button("As Markdown…") { if let conversation = model.selectedConversation { StorageActions.export(conversation, format: "markdown", engine: engine) } }
-            Button("As JSON…") { if let conversation = model.selectedConversation { StorageActions.export(conversation, format: "json", engine: engine) } }
+            Button("As Markdown…") { if let conversation = model.activeConversation { StorageActions.export(conversation, format: "markdown", engine: engine) } }
+            Button("As JSON…") { if let conversation = model.activeConversation { StorageActions.export(conversation, format: "json", engine: engine) } }
         }
-        .disabled(model.selectedConversation == nil)
+        .disabled(model.activeConversation == nil)
         Divider()
-        Button("Rename…") { if let conversation = model.selectedConversation { model.beginRename(conversation) } }
-            .disabled(model.selectedConversation == nil)
+        Button("Rename…") { if let conversation = model.activeConversation { model.beginRename(conversation) } }
+            .disabled(model.activeConversation == nil)
         // The same key as in Mail. A sub-chat is archived with the conversation it belongs to.
-        Button("Archive Conversation") { if let conversation = model.selectedConversation { model.archive(conversation) } }
+        Button("Archive Conversation") { if let conversation = model.activeConversation { model.archive(conversation) } }
             .keyboardShortcut("a", modifiers: [.command, .control])
-            .disabled(model.selectedConversation == nil || model.selectedConversation?.parent != nil)
-        Button("Delete Conversation") { if let conversation = model.selectedConversation { model.delete(conversation) } }
-            .disabled(model.selectedConversation == nil)
+            .disabled(model.activeConversation == nil || model.activeConversation?.parent != nil)
+        Button("Delete Conversation") { if let conversation = model.activeConversation { model.delete(conversation) } }
+            .disabled(model.activeConversation == nil)
         Divider()
         Button("Stop") { if let id { engine.perform("abort", ["id": id]) } }
             .keyboardShortcut(".")

@@ -26,7 +26,7 @@ import { isPutAway } from "./archive.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { type EngineRecipe, type LocalModel, type LocalSetup, localSetupReader, STRATA } from "./localengine.ts";
-import { killLater, killRemaining, type Listed, leftOverLog, newRunMarker, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
+import { forgetRun, killLater, killRemaining, type Listed, leftOverLog, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 import { LOCAL_PROVIDER, type LocalLease } from "./providers.ts";
 
 /** How long a model nobody uses stays loaded: switching between two conversations does not unload and load it again. */
@@ -67,6 +67,8 @@ type Server = {
 	key: string;
 	log: string;
 	child?: ChildProcess;
+	/** The run's marker, whose file goes once it is over (processes.ts). */
+	marker?: string;
 	/** Settles once it is ready to be asked, or fails with why it cannot be. */
 	ready: Promise<void>;
 	/** Fails `ready`, while it has not settled. */
@@ -295,7 +297,7 @@ function start(modelId: string): Server {
 		clearTimeout(server.timer);
 		live.delete(server);
 		if (servers.get(modelId) === server) servers.delete(modelId);
-		void save((doc) => void delete doc.running[modelId]);
+		void save((doc) => void delete doc.running[modelId]).then(() => forgetRun(server.marker));
 		markGone();
 		announce();
 		evaluateSoon();
@@ -308,17 +310,22 @@ function start(modelId: string): Server {
 		mkdirSync(folder, { recursive: true });
 		server.port = await freePort();
 		const { program, args, env } = recipe.command(setup.engine!, model, server.port, host.home);
-		const marker = newRunMarker();
+		// The run's marker in its environment, and its file open as the engine's other runs have it, which tell what it
+		// starts apart after a crash (processes.ts); what it prints goes to its log.
+		const run = newRun();
+		const marker = run.marker;
+		server.marker = marker;
 		const output = openSync(server.log, "w");
 		let child: ChildProcess;
 		try {
 			child = spawn(program, args, {
 				env: commandEnvironment({ ...env, [RUN_VARIABLE]: marker, ...(recipe.keyVariable === null ? {} : { [recipe.keyVariable]: server.key }) }),
 				detached: true,
-				stdio: ["ignore", output, output],
+				stdio: ["ignore", output, output, ...(run.stdio as unknown[]).slice(3)] as never,
 			});
 		} finally {
 			closeSync(output);
+			run.started();
 		}
 		server.child = child;
 		// A program that cannot be run at all (not there, not executable) has an error and no exit.
@@ -655,6 +662,9 @@ export const localRun: Feature = (_host, running) => {
 			await running
 				.harness()
 				.commit(async (tx) => void ((await tx.doc(LocalRuns)).running = {}), running.context())
+				.then(() => {
+					for (const server of all) forgetRun(server.marker);
+				})
 				.catch((error) => running.log("could not clear the record of the models on this Mac:", error instanceof Error ? error.message : error));
 		},
 		runsChanged: (now) => {

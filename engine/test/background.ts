@@ -742,18 +742,21 @@ try {
 		step("a background command left running by an engine killed outright is stopped by the next engine, with what it started, and marked; Activity's notice names it");
 	}
 
-	// ---- What a command started is known by the run's marker, once the command's own first process is gone
+	// ---- What a command started is known by the run's marker or its file, once the command's own first process is gone
 	{
-		// A program whose environment macOS lets another process read; `sleep` and the like it does not (docs/worktrees.md).
+		// node, a program whose environment macOS lets another process read, with the run's file closed: known by its
+		// environment alone. And `sleep`, whose environment macOS does not show (docs/worktrees.md), without the marker and
+		// ignoring SIGTERM, as `stubborn()`'s does: known by the run's file alone, and killed after the grace.
 		const holderFile = join(scratch, "holder.pid");
+		const sleeperFile = join(scratch, "sleeper.pid");
 		const leaderFile = join(scratch, "short-leader.pid");
-		const cmd = `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${holderFile}' & echo $$ > '${leaderFile}'; sleep 6`;
+		const cmd = `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${holderFile}' 19<&- & trap '' TERM; env -u PI2_RUN ${LONG} & echo $! > '${sleeperFile}'; trap - TERM; echo $$ > '${leaderFile}'; sleep 6`;
 		const { bg } = await client.start(z, cmd);
-		const [leader, holder] = [await pidIn(leaderFile), await pidIn(holderFile)];
+		const [leader, holder, sleeper] = [await pidIn(leaderFile), await pidIn(holderFile), await pidIn(sleeperFile)];
 		await stop(engine, "SIGKILL");
 		// With no engine running, the command's own process ends, and what it started is left in a group without a leader.
 		await until("the command's own process to end", () => !alive(leader));
-		assert.ok(alive(holder), "what it started is still running");
+		assert.ok(alive(holder) && alive(sleeper), "what it started is still running");
 		engine = boot();
 		client = await Client.attach(engine);
 		await client.call("conversation.open", { id: z });
@@ -761,17 +764,17 @@ try {
 			await client.until("said in the transcript", () => client.markers(z).find((text) => text.includes(`${bg} `))),
 			`Background command ${bg} was left running when pi²’s engine stopped, and was stopped when the engine started again: ${commandLine(cmd)}`,
 		);
-		await client.until("what it had started is stopped", () => !alive(holder));
-		step("what a background command started is stopped by the next engine by the run's marker, when the command's own process ended meanwhile");
+		await client.until("what it had started is stopped", () => !alive(holder) && !alive(sleeper));
+		step("what a background command started is stopped by the next engine by the run's marker or its file, when the command's own process ended meanwhile");
 	}
 
-	// ---- Only part of what it started carries the marker: that part is stopped, the rest left alone, and the line says both
+	// ---- Only part of what it started carries the marker or the run's file: that part is stopped, the rest left alone, and the line says both
 	{
 		const markedFile = join(scratch, "marked.pid");
 		const unmarkedFile = join(scratch, "unmarked.pid");
 		const leaderFile = join(scratch, "partly-leader.pid");
 		const holder = (file: string) => `'${process.execPath}' -e 'require("fs").writeFileSync(process.argv[1], String(process.pid)); ${LONG_WAIT}' '${file}'`;
-		const cmd = `${holder(markedFile)} & env -u PI2_RUN ${holder(unmarkedFile)} & echo $$ > '${leaderFile}'; sleep 6`;
+		const cmd = `${holder(markedFile)} & env -u PI2_RUN ${holder(unmarkedFile)} 19<&- & echo $$ > '${leaderFile}'; sleep 6`;
 		const { bg } = await client.start(z, cmd);
 		const [leader, marked, unmarked] = [await pidIn(leaderFile), await pidIn(markedFile), await pidIn(unmarkedFile)];
 		await stop(engine, "SIGKILL");
@@ -787,14 +790,14 @@ try {
 		);
 		await client.until("the part with the marker is stopped", () => !alive(marked));
 		await sleep(500);
-		assert.ok(alive(unmarked), "the part without the marker is not touched");
+		assert.ok(alive(unmarked), "the part without the marker or the file is not touched");
 		assert.deepEqual(
 			client.events.recovery?.recovery?.background.map((left: Event) => [left.id, left.outcome, left.group]),
 			[[bg, "partly", group]],
 			"Activity's notice says it was stopped in part",
 		);
 		process.kill(unmarked, "SIGKILL");
-		step("when only part of what a background command started carries the run's marker, that part is stopped, the rest is left alone, and its line says both");
+		step("when only part of what a background command started carries the run's marker or file, that part is stopped, the rest is left alone, and its line says both");
 	}
 	console.log("PASS");
 	passed = true;
