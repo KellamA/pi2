@@ -638,7 +638,8 @@
 			}
 		}
 		// A set-up that failed says how in its label.
-		const note = toolName === "pi2_setup" ? [] : ruleNote(details);
+		const approval = approvalNote(result);
+		const note = toolName === "pi2_setup" ? [] : approval ? [t(approval)] : ruleNote(details);
 		const exit = exitNote(toolName, status, args, details);
 		const title =
 			label.map((piece) => piece.text).join("") + (stats ? " " + stats : "") + (note.length > 0 ? " (" + note.map((piece) => piece.text).join("") + ")" : "") + (exit ? " " + String.fromCharCode(0xb7) + " " + exit : "");
@@ -656,10 +657,11 @@
 		return Number.isInteger(code) && code !== 0 ? "Exit code " + code : "";
 	}
 
-	/**
-	 * For a command that ran without asking because of the person's rules (the engine lists them in `details.allowedBy`):
-	 * which rules, so the row does not look as if nothing checked it. Empty otherwise.
-	 */
+	/** The saved approval decision, not the conversation's current switch or a live tool's details. */
+	function approvalNote(result) {
+		return isObject(result?.details) && result.details.allowedByEverything === true ? "allowed by Allow everything" : "";
+	}
+
 	/**
 	 * The rule an approval for a command offers to make (`pending.rule`), as `{ words, command, worktrees, place }`, or
 	 * null. `place` ends the button's label: "Here", or "in This Repository" for a rule that also holds in the
@@ -682,6 +684,7 @@
 		return "It is started and left running, with no time limit, until it ends, the agent or you stop it, this conversation is archived, or pi" + String.fromCharCode(0xb2) + " stops. Activity lists it while it runs, with a Stop button.";
 	}
 
+	/** Which of the person's rules let a command run without asking, or no note if none did. */
 	function ruleNote(details) {
 		const rules = isObject(details) && Array.isArray(details.allowedBy) ? details.allowedBy.filter((rule) => typeof rule === "string" && rule !== "") : [];
 		if (rules.length === 0) return [];
@@ -1010,6 +1013,7 @@
 		editDiff,
 		diffText,
 		describe,
+		approvalNote,
 		ruleOffer,
 		backgroundCaption,
 		backgroundCommand,

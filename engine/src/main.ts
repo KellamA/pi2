@@ -1434,7 +1434,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				if (item.text !== "") lines.push(item.text, "");
 				for (const call of item.toolCalls) {
 					const result = results.get(call.callId);
-					lines.push(`**Tool: ${call.name}**`, "", `${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
+					lines.push(`**Tool: ${call.name}**`, "");
+					if ((result?.details as { allowedByEverything?: unknown } | null)?.allowedByEverything === true) lines.push("*Allowed by Allow everything.*", "");
+					lines.push(`${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
 					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
 				}
 			}

@@ -173,6 +173,7 @@ try {
 		const asked = await run(off, text);
 		assert.deepEqual(asked.map((item) => [item.kind, item.tool]), [["approval", tool]], `off: ${tool} is asked about`);
 		assert.equal(last(off).isError, false, `off: ${tool} ran once allowed: ${last(off).text}`);
+		assert.equal(last(off).details?.allowedByEverything, undefined, `off: ${tool} was allowed by the person`);
 	}
 	assert.equal(readFileSync(join(repo, "file-1.txt"), "utf8"), "changed");
 	// Computer use keeps to the listed apps, and browsers stay look-only; nothing is asked about either.
@@ -205,6 +206,7 @@ try {
 		const asked = await run(on, text);
 		assert.deepEqual(asked, [], `on: ${tool} is not asked about`);
 		assert.equal(last(on).isError, false, `on: ${tool} ran: ${last(on).text}`);
+		assert.equal(last(on).details?.allowedByEverything, true, `on: ${tool} records why it ran unasked`);
 	}
 	assert.equal(client.meta(on).allowEverything, true);
 	assert.equal(readFileSync(join(repo, `file-${n}.txt`), "utf8"), "changed", "the file was written and changed");
@@ -215,7 +217,14 @@ try {
 	// The conversation that was off takes it at its next message.
 	assert.deepEqual(await run(off, "/bash echo now"), []);
 	assert.equal(client.meta(off).allowEverything, true);
-	step("on: no kind of approval is asked; each did its work; an older conversation takes it at its next message");
+	assert.deepEqual(await run(on, "/bash exit 127"), []);
+	assert.equal(last(on).isError, true);
+	assert.equal(last(on).details?.allowedByEverything, true, "a command that ran but failed still went unasked");
+	await client.call("rules.add", { agentId: bold, folder: repo, command: "echo covered" });
+	assert.deepEqual(await run(on, "/bash echo covered"), []);
+	assert.deepEqual(last(on).details?.allowedBy, ["echo covered"]);
+	assert.equal(last(on).details?.allowedByEverything, undefined, "a rule would have let it run anyway");
+	step("on: no kind of approval is asked; calls record the switch only when it took the place of an approval");
 
 	// ---- On: computer use may use any app but those that stay refused, and the app is told so.
 	const use = async (args: Record<string, unknown>) => {
@@ -228,6 +237,7 @@ try {
 	}
 	assert.equal(client.computerRequests.filter((r) => r.action === "list_apps").length, 0);
 	assert.ok(!(await use({ action: "list_apps" })).isError && client.computerRequests.at(-1).anyApp === true && JSON.stringify(client.computerRequests.at(-1).apps) === JSON.stringify([NOTES]));
+	assert.equal(last(on).details?.allowedByEverything, undefined, "looking never asks");
 	const refused: [string, Record<string, unknown>, RegExp][] = [
 		["pi² itself", { action: "screenshot", app: "dev.pi2.app" }, /cannot be used/],
 		["a copy of pi²", { action: "click", app: "dev.pi2.app.test", element: 1 }, /only be looked at/],
@@ -246,6 +256,7 @@ try {
 	// ---- On: a question is still a question, and a command at its limit is moved to the background without asking.
 	const question = await run(on, "/ask Which colour?");
 	assert.deepEqual(question.map((item) => item.kind), ["question"], "ask_user still asks");
+	assert.equal(last(on).details?.allowedByEverything, undefined, "a question is not an approval");
 	assert.deepEqual(await run(on, "/timeout 1 while true; do sleep 1; done"), []);
 	assert.match(last(on).text, /moved to the background/);
 	step("on: questions are still asked; a command at its limit is moved to the background, as one that would not ask");
@@ -330,6 +341,28 @@ try {
 	assert.equal(stopped.reason, "turn_limit");
 	assert.deepEqual(client.inbox.filter((item) => item.rootConversationId === short), []);
 	step("on: a used-up daily budget refuses new work, and the turn limit stops a run");
+
+	// The mark belongs to the call, not to the current switch. Check the reopened transcript and both exports.
+	await allow(bold, false);
+	const mark = client.tools(on).find((item) => item.name === "bash").callId;
+	client.close();
+	await stop(engine);
+	engine = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
+	const reopened = await Client.connect(engine, home);
+	try {
+		await reopened.call("conversation.open", { id: on });
+		const kept = await reopened.until("the marked result after restart", () => reopened.tools(on).find((item) => item.callId === mark));
+		assert.equal(kept.details?.allowedByEverything, true);
+		const json = JSON.parse((await reopened.call("conversation.export", { id: on, format: "json" })).text);
+		assert.equal(json.items.find((item: any) => item.kind === "tool" && item.callId === mark).details?.allowedByEverything, true);
+		const { text: markdown } = await reopened.call("conversation.export", { id: on, format: "markdown" });
+		assert.match(markdown, /\*\*Tool: bash\*\*\n\n\*Allowed by Allow everything\.\*/);
+		const { text: noMark } = await reopened.call("conversation.export", { id: carefulConv, format: "markdown" });
+		assert.doesNotMatch(noMark, /Allowed by Allow everything\./);
+	} finally {
+		reopened.close();
+	}
+	step("the mark stays with the call across a restart and in JSON and Markdown exports");
 } finally {
 	client.close();
 	await stop(engine);

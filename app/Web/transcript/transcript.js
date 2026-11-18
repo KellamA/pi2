@@ -992,6 +992,14 @@
 		return { key: "s" + item.id, sig: "s" + rev(item) + "/" + fixed.status + "/" + rev(output), build: () => el("div", "tool"), update: (row) => fillTool(row, call, "", fixed) };
 	}
 
+	function appendToolNote(head, pieces) {
+		if (pieces.length === 0) return;
+		const note = labelPieces(pieces);
+		note.className = "tool-label tool-note";
+		note.setAttribute("data-nocopy", "");
+		head.appendChild(note);
+	}
+
 	function fillTool(row, call, phase, fixed) {
 		const key = "t:" + call.callId;
 		const status = fixed ? fixed.status : statusOf(call, phase);
@@ -1015,13 +1023,7 @@
 			head.appendChild(document.createTextNode(" "));
 			head.appendChild(statsElement(info.stats));
 		}
-		if (info.note.length > 0) {
-			// Which of the person's rules let a command run without asking. Shown, not copied: it is about the run, not its text.
-			const note = labelPieces(info.note);
-			note.className = "tool-label tool-note";
-			note.setAttribute("data-nocopy", "");
-			head.appendChild(note);
-		}
+		appendToolNote(head, info.note);
 		// A command still running: how long it has run, and how long it has been quiet once that is a while (#196). The
 		// page ticks it; the engine sends only the times.
 		if (status === "running" && liveTool && typeof liveTool.startedAt === "number") {
@@ -1287,6 +1289,8 @@
 		const model = agent ? str(agent.model) : "";
 		if (model) label.appendChild(el("span", "muted", " " + char(0xb7) + " " + model));
 		head.appendChild(label);
+		const approval = T.approvalNote(result);
+		if (approval) appendToolNote(head, [{ text: approval }]);
 		if (status === "running" || status === "preparing") {
 			head.appendChild(document.createTextNode(" "));
 			const working = el("span", "tool-status working");

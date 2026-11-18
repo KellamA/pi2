@@ -41,7 +41,7 @@ import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isArchived, isPutAway } from "./archive.ts";
 import { noteSubChats, subChatsTool } from "./subchats.ts";
-import { type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
+import { ALLOWED_BY_EVERYTHING, type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
 import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
@@ -212,6 +212,7 @@ export function pi2Extension(host: Host): Extension {
 							question: args.question,
 							createdAt: Date.now(),
 						},
+						api,
 						waiting,
 					),
 				context,
@@ -704,6 +705,7 @@ export function pi2Extension(host: Host): Extension {
 				...(site === "" ? {} : { site }),
 				createdAt: Date.now(),
 			},
+			api,
 			context,
 		);
 		// Without a site to name there is nothing for "always" to cover, so it allows this once.
@@ -738,6 +740,7 @@ export function pi2Extension(host: Host): Extension {
 				question: `Make a git worktree on the branch ${args.worktree.trim()}, ${from === undefined ? "from the commit this conversation's folder is on" : `from ${from}`}, for a new sub-chat with ${target.name}.`,
 				createdAt: Date.now(),
 			},
+			api,
 			context,
 		);
 		if (decision === "always") await host.allowAlways(api.conversationId, "delegate");
@@ -865,6 +868,7 @@ export function pi2Extension(host: Host): Extension {
 							...(call.name === "bash" && (call.arguments as { background?: unknown }).background === true ? { background: true as const } : {}),
 							createdAt: Date.now(),
 						},
+						api,
 						context,
 					);
 					if (decision === "always") await host.allowAlways(api.conversationId, key);
@@ -872,15 +876,17 @@ export function pi2Extension(host: Host): Extension {
 					if (decision === "rule" && proposal !== undefined && meta?.agentId !== undefined) await host.addRule(meta.agentId, proposal.folder, proposal.words);
 					return decision === "deny" ? { block: DECLINED } : undefined;
 				},
-				afterTool: (_call, result, api) => {
+				afterTool: async (_call, result, api, context) => {
 					const rules = allowedByRule.get(String(api.taskId));
-					if (rules === undefined) return undefined;
 					allowedByRule.delete(String(api.taskId));
-					// Stopped by a later check, the command never ran, and no rule allowed anything.
+					// A call blocked by a later hook never ran.
 					if (result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return undefined;
-					const details = result.details !== null && typeof result.details === "object" && !Array.isArray(result.details) ? result.details : {};
-					// The transcript shows which rule let the command run without asking.
-					return { ...result, details: { ...details, allowedBy: rules } };
+					const byEverything = (await api.memo(ALLOWED_BY_EVERYTHING, context)) === true;
+					if (!byEverything && rules === undefined) return undefined;
+					const details = result.details !== null && typeof result.details === "object" && !Array.isArray(result.details) ? { ...result.details } : {};
+					if (byEverything) details.allowedByEverything = true;
+					else if (rules !== undefined) details.allowedBy = rules;
+					return { ...result, details };
 				},
 			}),
 		],
