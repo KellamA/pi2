@@ -969,6 +969,35 @@ struct SearchResult: Codable, Equatable, Identifiable {
     var id: Int { entryId }
 }
 
+/// The latest event of each kind that a feature in a file of its own reads, by kind ("limits", "memory"). Each kind is
+/// observed on its own, so a view that reads one is not drawn again when another comes, and a value is only set when it
+/// changed (#347).
+@MainActor
+final class ExtraEvents {
+    @MainActor
+    @Observable
+    final class Slot {
+        var value: JSONValue?
+    }
+
+    private var slots: [String: Slot] = [:]
+
+    private func slot(_ kind: String) -> Slot {
+        if let slot = slots[kind] { return slot }
+        let slot = Slot()
+        slots[kind] = slot
+        return slot
+    }
+
+    subscript(kind: String) -> JSONValue? {
+        get { slot(kind).value }
+        set {
+            let slot = slot(kind)
+            if slot.value != newValue { slot.value = newValue }
+        }
+    }
+}
+
 /// An open conversation as the engine last sent it: its entries and its live state. One object per conversation, so that
 /// an update to one conversation redraws only the views that show it, not every view that shows any (#347).
 @MainActor

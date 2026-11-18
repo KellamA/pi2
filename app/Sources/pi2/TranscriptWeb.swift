@@ -18,7 +18,9 @@ struct ConversationTranscript: View {
                 inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names, chat: chat
             )
             // The page stays hidden until it has drawn the conversation; meanwhile this shows through.
-            .background { ConversationLoading(chat: state?.chat == true) }
+            .background { ConversationLoading(chat: state?.chat == true || engine.isChat(conversationID)) }
+        } else if state == nil {
+            ConversationLoading(chat: engine.isChat(conversationID))
         } else {
             TranscriptView(engine: engine, conversationID: conversationID, items: items, state: state)
         }
@@ -114,7 +116,11 @@ final class TranscriptBridge {
         // Hidden until the page is ready, so opening a conversation never flashes an empty page.
         view.alphaValue = 0
         view.onAction = { [weak self] action in self?.perform(action) }
-        view.onReload = { [weak self] in self?.ready = false }
+        view.onReload = { [weak self] in
+            self?.ready = false
+            self?.hidden = true
+            self?.view?.alphaValue = 0
+        }
         view.onAppearanceChange = { [weak self] in self?.push() }
         self.view = view
         return view
@@ -130,7 +136,21 @@ final class TranscriptBridge {
         self.inbox = inbox
         self.names = names
         self.chat = chat
-        push()
+        if hidden {
+            push { [weak self] in self?.reveal() }
+        } else {
+            push()
+        }
+    }
+
+    /// Whether the page is still hidden: until it has loaded and drawn the conversation, which needs the conversation to
+    /// have come from the engine. The loading view behind it shows meanwhile.
+    private var hidden = true
+
+    private func reveal() {
+        guard hidden, state != nil else { return }
+        hidden = false
+        view?.alphaValue = 1
     }
 
     /// Sends the page what changed. `drawn` is called once the page has drawn it, or at once when nothing changed.
@@ -147,7 +167,7 @@ final class TranscriptBridge {
             return
         }
         PerfProbe.event("page update", bytes: json.utf8.count, since: started)
-        guard message.reset == true, PerfProbe.active else { return send(json, then: drawn) }
+        guard PerfProbe.active, state != nil, message.reset == true || hidden else { return send(json, then: drawn) }
         // The whole conversation going to the page, as it does when one is opened: time it until the page has shown it.
         let id = conversationID
         PerfProbe.opening(id, "page \(message.items?.count ?? 0) entries (\(json.utf8.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to encode)")
@@ -176,8 +196,8 @@ final class TranscriptBridge {
         case .ready:
             ready = true
             feed.restart()
-            // Shown once it has drawn what it was sent, so it never shows empty over the loading view.
-            push { [weak self] in self?.view?.alphaValue = 1 }
+            // Shown once it has drawn the conversation, so it never shows empty over the loading view.
+            push { [weak self] in self?.reveal() }
         case .copy(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)

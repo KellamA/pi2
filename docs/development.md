@@ -241,7 +241,7 @@ scripts/test-copy start test-7
 touch ~/Library/Application\ Support/pi2-test-7/perf.on
 ```
 
-Then make the load (#344 adds a script that starts conversations on the demo model, each streaming and running commands), work the copy, and read `perf.log`. What the probe cannot see, such as how much of the main thread's time SwiftUI spends laying out, `sample <app pid> 10` shows: a process of your own can be sampled without any permission. Never sample or signal the installed pi².
+Then make the load ([Measuring under load](#measuring-under-load), with `--keep`), work the copy, and read `perf.log`. What the probe cannot see, such as how much of the main thread's time SwiftUI spends laying out, `sample <app pid> 10` shows: a process of your own can be sampled without any permission. Never sample or signal the installed pi².
 
 ## CI
 

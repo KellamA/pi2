@@ -84,10 +84,9 @@ struct ChatView: View {
     /// The transcript, what is going on, and the message field. A chat keeps them in one column.
     @ViewBuilder
     private var conversation: some View {
-        if state == nil {
-            // Asked for and not come yet: say so, rather than show an empty pane that reads as broken.
-            ConversationLoading(chat: isChat)
-        } else if !isChat, let state, isEmpty {
+        // Until the conversation has come, the page loads beside the request, hidden, and says it is loading meanwhile
+        // (ConversationTranscript), rather than show an empty pane that reads as broken.
+        if !isChat, let state, isEmpty {
             AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions, projectInstructionFiles: state.projectInstructionFiles)
                 // In a short pane the introduction gives way, so the message field stays in view.
                 .frame(minHeight: 0)

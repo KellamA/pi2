@@ -85,7 +85,7 @@ final class EngineClient {
     /// as one answers. The window says so instead of "Starting engine…" for ever.
     private(set) var startProblem: EngineStartProblem?
     /// The latest event of each kind that a feature in a file of its own reads ("limits", "memory"), as sent.
-    private(set) var extras: [String: JSONValue] = [:]
+    let extras = ExtraEvents()
     /// Does what agents ask of other apps' windows; the app holds the macOS permissions for it.
     let computer = ComputerSession()
     /// Works pages in pi²'s own browser for agents; the app holds the web views.
@@ -242,13 +242,21 @@ final class EngineClient {
             ? "\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")" : text
         outgoing[id, default: []].append(OutgoingMessage(id: requestId, summary: summary))
         let asked = PerfProbe.now()
+        let shownBefore = open[id]?.items.count ?? 0
+        let deadline = ContinuousClock.now + .seconds(60)
         while true {
             do {
                 let result = try await call("submit", params)
                 PerfProbe.note("submit to \(id) accepted in \(Int(((PerfProbe.now() - asked) * 1000).rounded()))ms")
-                // Shown as taken until the conversation shows it (in `handle`), and for a few seconds at most.
-                if let index = outgoing[id]?.firstIndex(where: { $0.id == requestId }) {
-                    outgoing[id]?[index].submission = result["submissionId"]?.intValue ?? 0
+                // Shown as taken until the conversation shows it (in `handle`), and for a few seconds at most. The
+                // update that shows it can come before this answer.
+                let submission = result["submissionId"]?.intValue ?? 0
+                let items = open[id]?.items ?? []
+                let shown = items.count > shownBefore && items[shownBefore...].contains { $0.kind == "user" }
+                if shown || open[id]?.state?.queued.contains(where: { $0.id == submission }) == true {
+                    dropOutgoing(requestId, from: id)
+                } else if let index = outgoing[id]?.firstIndex(where: { $0.id == requestId }) {
+                    outgoing[id]?[index].submission = submission
                 }
                 Task {
                     try? await Task.sleep(for: .seconds(open[id] == nil ? 0 : 3))
@@ -256,7 +264,7 @@ final class EngineClient {
                 }
                 return true
             } catch let error as EngineError where error.unanswered {
-                if await connected(within: .seconds(60)) { continue }
+                if await connected(by: deadline) { continue }
                 dropOutgoing(requestId, from: id)
                 lastError = "The engine did not come back for a minute, so the message was put back in its field. It may have been sent before the engine stopped: check the conversation before sending it again."
                 return false
@@ -273,13 +281,12 @@ final class EngineClient {
         if outgoing[id]?.isEmpty == true { outgoing[id] = nil }
     }
 
-    /// Waits until the engine is connected, for at most `limit`. True once it is.
-    private func connected(within limit: Duration) async -> Bool {
-        let deadline = ContinuousClock.now + limit
-        while status != .connected {
+    /// Waits a moment, then until the engine is connected, up to `deadline`. True once it is.
+    private func connected(by deadline: ContinuousClock.Instant) async -> Bool {
+        repeat {
+            try? await Task.sleep(for: .milliseconds(200))
             guard ContinuousClock.now < deadline else { return false }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
+        } while status != .connected
         return true
     }
 
@@ -573,13 +580,11 @@ final class EngineClient {
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
             case "limits", "memory", "coauthor", "local":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
-                let value = try decoder.decode(JSONValue.self, from: line)
-                if extras[envelope.event ?? ""] != value { extras[envelope.event ?? ""] = value }
+                extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
             case "local.progress":
                 // One download's progress, kept in the `local` event it belongs to (LocalModelsSettings.swift).
-                if let download = try decoder.decode(JSONValue.self, from: line)["download"],
-                   let local = extras["local"]?.replacingDownload(download), local != extras["local"] {
-                    extras["local"] = local
+                if let download = try decoder.decode(JSONValue.self, from: line)["download"], let local = extras["local"] {
+                    extras["local"] = local.replacingDownload(download)
                 }
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }

@@ -179,12 +179,12 @@ enum PerfProbe {
         let total = kinds.values.reduce(0) { $0 + $1.seconds }
         text += String(format: "  events: %.0fms on the main thread in all (%.0f%%)\n", total * 1000, total / span * 100)
         for (kind, entry) in kinds.sorted(by: { $0.value.seconds > $1.value.seconds }) {
-            text += String(format: "  %-14@ %5.1f/s  avg %7d B  avg %6.2fms  worst %6.1fms  total %6.0fms\n",
-                           kind as NSString, Double(entry.count) / span, entry.bytes / max(1, entry.count),
+            text += String(format: "  %@ %5.1f/s  avg %7d B  avg %6.2fms  worst %6.1fms  total %6.0fms\n",
+                           kind.padding(toLength: 26, withPad: " ", startingAt: 0), Double(entry.count) / span, entry.bytes / max(1, entry.count),
                            entry.seconds / Double(entry.count) * 1000, entry.worst * 1000, entry.seconds * 1000)
         }
         for (method, times) in trips.sorted(by: { $0.key < $1.key }) {
-            text += String(format: "  request %-24@ %3d  avg %6.0fms  worst %6.0fms\n", method as NSString, times.count,
+            text += String(format: "  request %@ %3d  avg %6.0fms  worst %6.0fms\n", method.padding(toLength: 24, withPad: " ", startingAt: 0), times.count,
                            times.reduce(0, +) / Double(times.count) * 1000, (times.max() ?? 0) * 1000)
         }
         write(text.trimmingCharacters(in: .newlines))
