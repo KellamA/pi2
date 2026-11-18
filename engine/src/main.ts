@@ -60,6 +60,7 @@ import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
 import { timeLines } from "./log.ts";
+import { LagMonitor } from "./lag.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
@@ -94,6 +95,8 @@ const build = (() => {
 function log(...parts: unknown[]): void {
 	console.error("[pi2-engine]", ...parts);
 }
+/** How late the engine's thread runs (lag.ts). */
+const lag = new LagMonitor((line) => log(line));
 
 // Anything that would kill the process is written to the log first. The app restarts the engine, and reopening the
 // storage recovers whatever was running.
@@ -1101,6 +1104,8 @@ const text = (params: Params, key: string): string => {
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	/** How late the engine's thread ran since the last time this was asked (lag.ts): for the load script. */
+	"engine.lag": async () => lag.take(),
 	"conversation.create": async (params) => {
 		if (params.chat !== undefined && typeof params.chat !== "boolean") throw new Error("chat must be true or false");
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");

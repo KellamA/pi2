@@ -121,6 +121,7 @@ Once it has finished, put the conversation away (archiving stops any work still 
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
+**`socket <suffix>`** prints the path of that copy's engine socket, after the same checks `call` makes, for a program that keeps a connection open, such as the load script (`scripts/load.mts`, [development.md](docs/development.md#measuring-under-load)).
 **`reopen <suffix> [--show <what>]`** stops only the recorded app by its pid, leaves its engine and data running, and opens the same bundle again with `start`'s clean environment and window placement. It records the new app so `shot` and `stop` still work. Without `--show`, it keeps the previous selection; a supplied value replaces it. It also keeps `--menu`. A missing or changed bundle, an unrecorded engine or bundle process, a reused app pid and symlinks for the copy, state, data or socket are refused before stopping anything. If relaunch fails, the engine and data stay for diagnosis and `stop`.
 
 ```bash
