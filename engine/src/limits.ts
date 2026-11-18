@@ -23,7 +23,7 @@ import { join } from "node:path";
 import type { ModelAuth, Provider, ProviderResponse } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
 import type { Engine, Feature } from "./features.ts";
-import { duration } from "./limitwait.ts";
+import { duration, type EpisodeChange } from "./limitwait.ts";
 import { plainMoment } from "./selfschedule.ts";
 
 // ---- What the app is sent
@@ -66,9 +66,17 @@ export type ProviderLimits = {
 export const UNREADABLE = "Could not read the limits";
 
 /**
- * A window passed `NOTICE_PERCENT` while runs on its subscription were going: shown in the Inbox, once per window per
- * reset, until the person dismisses it or the window resets. Information, not a request: a run the provider refuses
- * waits for the reset and carries on by itself (limitwait.ts).
+ * A subscription's window in the Inbox, as one story told in up to three stages (`stage`):
+ *
+ * - `nearly`: it passed `NOTICE_PERCENT` while runs on it were going. Once per window per reset, until the person
+ *   dismisses it or the window resets.
+ * - `reached`: the provider refused runs for its limit and they wait (limitwait.ts's episode); `waiting` and `until`
+ *   say how many and until when, kept up to date. A notice for that window at `nearly` turns into this one.
+ * - `carried_on`: the provider answered one of them again, so the limit has reset and the runs carry on. It leaves
+ *   the Inbox `CARRIED_ON_KEPT_MS` after that, or when dismissed.
+ *
+ * Information, not a request: nothing needs doing. A provider that reports no windows (a key, an endpoint) has a
+ * notice with an empty `window` and `label` for the last two stages.
  */
 export type LimitNotice = {
 	id: string;
@@ -78,11 +86,25 @@ export type LimitNotice = {
 	plan: string | null;
 	window: string;
 	label: string;
-	usedPercent: number;
+	/** How much of the window was used when last noticed; null for a provider that reports no windows. */
+	usedPercent: number | null;
 	resetsAt: number | null;
-	/** When it was noticed. */
+	/** When it was first noticed. */
 	at: number;
-	/** The conversations with work going on that subscription then, sub-chats included; `more` counts those left out. */
+	/** Absent in a notice kept before stages: `nearly`. */
+	stage?: "nearly" | "reached" | "carried_on";
+	/** When it passed 90%, its limit was reached, and work carried on, as far as each happened. */
+	nearlyAt?: number;
+	reachedAt?: number;
+	carriedOnAt?: number;
+	/** While reached: how many runs wait, until when, and whether the provider named that time. */
+	waiting?: number;
+	until?: number;
+	told?: boolean;
+	/**
+	 * The conversations it is about, sub-chats included: those with work going on the subscription when it passed 90%,
+	 * those waiting once reached, those that waited once carried on. `more` counts those left out.
+	 */
 	runs: NoticeRun[];
 	more?: number;
 };
@@ -95,6 +117,36 @@ export const NEARLY_USED_UP = 80;
 export const NOTICE_PERCENT = 90;
 /** At most this many runs are named in a notice; the rest are counted. */
 const NOTICE_RUNS = 12;
+/** How long a notice that work carried on stays in the Inbox when nobody dismisses it. */
+const CARRIED_ON_KEPT_MS = 12 * 3_600_000;
+
+/**
+ * When a notice leaves the Inbox by itself; null for never. One that a limit is reached goes when work carries on or
+ * nothing waits (`episode`), and an hour after the time its runs wait until, should neither ever be told.
+ */
+function noticeEnds(notice: LimitNotice): number | null {
+	if (notice.stage === "carried_on") return (notice.carriedOnAt ?? notice.at) + CARRIED_ON_KEPT_MS;
+	if (notice.stage === "reached") return notice.until === undefined ? null : notice.until + 3_600_000;
+	return notice.resetsAt;
+}
+/** How far a window's reset may be from the time a provider named for asking again, and still be the window that refused. */
+const SAME_RESET_MS = 10 * 60_000;
+
+/**
+ * The window a refusal was for: the one whose reset is the time the provider named, or else the one most used, at 90%
+ * or more. Undefined when nothing says which.
+ */
+export function refusedWindow(windows: readonly LimitWindow[], until: number, told: boolean, now: number): LimitWindow | undefined {
+	const running = windows.filter((window) => window.resetsAt === null || window.resetsAt > now - SAME_RESET_MS);
+	if (told) {
+		const near = running
+			.filter((window) => window.resetsAt !== null && Math.abs(window.resetsAt - until) <= SAME_RESET_MS)
+			.sort((a, b) => Math.abs(a.resetsAt! - until) - Math.abs(b.resetsAt! - until));
+		if (near[0] !== undefined) return near[0];
+	}
+	const full = running.filter((window) => window.usedPercent >= NOTICE_PERCENT).sort((a, b) => b.usedPercent - a.usedPercent);
+	return full[0];
+}
 
 // ---- Reading values
 
@@ -766,6 +818,11 @@ class LimitsTracker {
 	 * that reset has passed, or a reading shows it below `NEARLY_USED_UP` (a reset nobody said the time of).
 	 */
 	#noticed = new Map<string, number | null>();
+	/**
+	 * By provider, the episode (by when it began) whose "limit reached" notice the person dismissed: not shown again while
+	 * it lasts. Carrying on is news of its own, and is.
+	 */
+	#quiet = new Map<string, number>();
 	/** The conversations with work going, as the engine last said. */
 	#working: ReadonlySet<number> = new Set();
 	/**
@@ -815,12 +872,104 @@ class LimitsTracker {
 	/** `limits.dismiss` `{ id }`: the person has read a notice. Its window is not noticed again before it resets. */
 	dismiss(params: Record<string, unknown>): Promise<unknown> {
 		const before = this.#notices.length;
+		const reached = this.#notices.find((notice) => notice.id === params.id && notice.stage === "reached");
+		if (reached?.reachedAt !== undefined) this.#quiet.set(reached.provider, reached.reachedAt);
 		this.#notices = this.#notices.filter((notice) => notice.id !== params.id);
 		if (this.#notices.length !== before) {
 			this.#saveSoon();
 			this.#broadcastNow();
 		}
 		return Promise.resolve({});
+	}
+
+	/**
+	 * A provider's limit was reached, work carried on, or nothing waits for it any more (limitwait.ts): the notice of its
+	 * window goes on to that stage, or one is made for it.
+	 */
+	episode(change: EpisodeChange): void {
+		const { phase, episode, at } = change;
+		const id = episode.provider;
+		if (phase === "reached" && this.#quiet.get(id) === episode.since) return;
+		if (phase !== "reached" && this.#quiet.delete(id)) this.#saveSoon();
+		const view = this.#signedIn.includes(id) ? this.#view(id) : undefined;
+		const open = this.#notices.filter((notice) => notice.provider === id && notice.stage !== "carried_on");
+		// The one this episode already turned to `reached`, else the one of the window that refused.
+		const window = refusedWindow(view?.windows ?? [], episode.until, episode.told, at);
+		let notice = open.find((each) => each.stage === "reached") ?? (window === undefined ? undefined : open.find((each) => each.window === window.id));
+		if (phase === "ended") {
+			// Nobody waits any more and nothing was answered: the runs were stopped. A notice that says they wait is no
+			// longer true, and goes.
+			if (notice?.stage !== "reached") return;
+			this.#notices = this.#notices.filter((each) => each !== notice);
+			this.#engine.log(`limits: nothing waits for ${episode.providerName}'s limit any more (the runs that waited were stopped); its notice is taken out of the Inbox`);
+			this.#saveSoon();
+			this.#broadcastNow();
+			return;
+		}
+		const ids = phase === "reached" ? episode.waiting : episode.runs;
+		const runs = this.#noticeRuns(ids);
+		if (notice === undefined) {
+			notice = {
+				id: `${id}:${window?.id ?? "limit"}:${at}`,
+				provider: id,
+				name: view?.name ?? episode.providerName,
+				plan: view?.plan ?? null,
+				window: window?.id ?? "",
+				label: window?.label ?? "",
+				usedPercent: window?.usedPercent ?? null,
+				resetsAt: window?.resetsAt ?? null,
+				at,
+				stage: phase,
+				runs: [],
+			};
+			this.#notices.push(notice);
+		}
+		if (notice.stage === undefined || notice.stage === "nearly") notice.nearlyAt ??= notice.at;
+		if (window !== undefined && notice.window === window.id) {
+			notice.usedPercent = window.usedPercent;
+			notice.resetsAt = window.resetsAt;
+			// The window is not noticed at 90% again before it resets: it was noticed for more than that.
+			this.#noticed.set(`${id}:${window.id}`, window.resetsAt);
+		}
+		notice.reachedAt ??= episode.since;
+		notice.runs = runs.slice(0, NOTICE_RUNS);
+		if (runs.length > NOTICE_RUNS) notice.more = runs.length - NOTICE_RUNS;
+		else delete notice.more;
+		const stage = phase === "reached" ? "reached" : "carried_on";
+		if (notice.stage !== stage || notice.waiting === undefined) {
+			const one = ids.length === 1;
+			const who = `${one ? "1 run" : `${ids.length} runs`} (conversation${one ? "" : "s"} ${ids.join(", ")})`;
+			const when = new Date(episode.until).toISOString().replace(/\.\d+Z$/, "Z");
+			this.#engine.log(
+				phase === "reached"
+					? `limits: ${episode.providerName}'s limit is reached${window === undefined ? "" : ` (${window.label.toLowerCase()})`}: ${who} wait${one ? "s" : ""} ${episode.told ? `until ${when}, the time it named` : `with no time named, asking again at ${when}`}; a notice is in the Inbox`
+					: `limits: ${episode.providerName} answered again after ${duration(at - episode.since)}: its limit has reset, and the ${who} that waited carr${one ? "ies" : "y"} on`,
+			);
+		}
+		if (phase === "reached") {
+			notice.stage = "reached";
+			notice.waiting = episode.waiting.length;
+			notice.until = episode.until;
+			notice.told = episode.told;
+		} else {
+			notice.stage = "carried_on";
+			notice.carriedOnAt = at;
+			notice.waiting = 0;
+		}
+		this.#saveSoon();
+		this.#broadcastNow();
+		this.#armExpiry(at);
+	}
+
+	/** What a notice says of each of these conversations. */
+	#noticeRuns(ids: readonly number[]): NoticeRun[] {
+		const conversations = this.#engine.library().conversations;
+		const agents = this.#engine.agents();
+		return ids.flatMap((id) => {
+			const meta = conversations[String(id)];
+			if (meta === undefined) return [];
+			return [{ conversationId: id, rootConversationId: meta.parent ?? id, title: meta.title, agentName: (meta.agentId === undefined ? undefined : agents[meta.agentId]?.name) ?? null, subChat: meta.parent !== undefined }];
+		});
 	}
 
 	/** Which conversations have work going changed. */
@@ -882,8 +1031,9 @@ class LimitsTracker {
 			this.#states.delete(id);
 			dropped = true;
 		}
-		// A subscription signed out takes its notices with it.
-		const notices = this.#notices.filter((notice) => ids.has(notice.provider));
+		// A subscription signed out takes its notices of windows nearly used up with it. One that its limit was reached is
+		// about runs, and ends with them (`episode`): it may be a key's or an endpoint's, which no sign-in names.
+		const notices = this.#notices.filter((notice) => ids.has(notice.provider) || (notice.stage ?? "nearly") !== "nearly");
 		if (notices.length !== this.#notices.length) {
 			this.#notices = notices;
 			dropped = true;
@@ -902,6 +1052,8 @@ class LimitsTracker {
 	#due(now: number): { id: string; window: LimitWindow }[] {
 		const due: { id: string; window: LimitWindow }[] = [];
 		for (const id of this.#signedIn) {
+			// Its limit is reached already, and the notice says so: 90% of another window is no news.
+			if (this.#notices.some((notice) => notice.provider === id && notice.stage === "reached")) continue;
 			for (const window of this.#states.get(id)?.reading?.windows ?? []) {
 				if (window.usedPercent < NOTICE_PERCENT || (window.resetsAt !== null && window.resetsAt <= now)) continue;
 				const noticed = this.#noticed.get(`${id}:${window.id}`);
@@ -954,6 +1106,8 @@ class LimitsTracker {
 					usedPercent: window.usedPercent,
 					resetsAt: window.resetsAt,
 					at: now,
+					stage: "nearly",
+					nearlyAt: now,
 					runs: on.slice(0, NOTICE_RUNS),
 					...(on.length > NOTICE_RUNS ? { more: on.length - NOTICE_RUNS } : {}),
 				});
@@ -976,7 +1130,10 @@ class LimitsTracker {
 			this.#noticed.delete(key);
 			changed = true;
 		}
-		const notices = this.#notices.filter((notice) => notice.resetsAt === null || notice.resetsAt > now);
+		const notices = this.#notices.filter((notice) => {
+			const ends = noticeEnds(notice);
+			return ends === null || ends > now;
+		});
 		if (notices.length !== this.#notices.length) {
 			this.#notices = notices;
 			changed = true;
@@ -987,7 +1144,7 @@ class LimitsTracker {
 	/** Look again when the first notice's window resets, so that it leaves the Inbox then. */
 	#armExpiry(now: number): void {
 		clearTimeout(this.#expiryTimer);
-		const next = Math.min(...this.#notices.map((notice) => notice.resetsAt ?? Number.POSITIVE_INFINITY));
+		const next = Math.min(...this.#notices.map((notice) => noticeEnds(notice) ?? Number.POSITIVE_INFINITY));
 		if (!Number.isFinite(next)) return;
 		// At most a day at a time: a timer cannot wait a week, and the clock may have been changed meanwhile.
 		this.#expiryTimer = setTimeout(() => this.#checkSoon(), Math.min(Math.max(0, next - now) + 1_000, 86_400_000));
@@ -1136,6 +1293,7 @@ class LimitsTracker {
 				const reading = storedReading(raw);
 				if (reading !== undefined) this.#state(id).reading = reading;
 			}
+			for (const [provider, since] of Object.entries(object(stored?.quiet) ?? {})) if (typeof since === "number") this.#quiet.set(provider, since);
 			for (const [key, resetsAt] of Object.entries(object(stored?.noticed) ?? {})) {
 				if (key.includes(":") && (resetsAt === null || typeof resetsAt === "number")) this.#noticed.set(key, resetsAt);
 			}
@@ -1155,7 +1313,7 @@ class LimitsTracker {
 			this.#saveTimer = undefined;
 			const readings = Object.fromEntries([...this.#states].filter(([, state]) => state.reading !== undefined).map(([id, state]) => [id, state.reading]));
 			try {
-				writeFileSync(this.#path, JSON.stringify({ version: 1, readings, noticed: Object.fromEntries(this.#noticed), notices: this.#notices }, null, "\t"));
+				writeFileSync(this.#path, JSON.stringify({ version: 1, readings, noticed: Object.fromEntries(this.#noticed), quiet: Object.fromEntries(this.#quiet), notices: this.#notices }, null, "\t"));
 			} catch (error) {
 				this.#engine.log("limits: could not save the last readings:", error instanceof Error ? error.message : String(error));
 			}
@@ -1170,6 +1328,7 @@ export const limits: Feature = (_host, engine) => {
 		handlers: { "limits.refresh": (params) => tracker.refresh(params), "limits.dismiss": (params) => tracker.dismiss(params) },
 		greeting: () => [tracker.event()],
 		planLimits: () => tracker.views(),
+		limitEpisode: (change) => tracker.episode(change),
 		runsChanged: (working) => tracker.runsChanged(working),
 		providersChanged: () => void tracker.providersChanged().catch((error) => engine.log("limits: after a sign-in change:", error instanceof Error ? error.name : "error")),
 	};

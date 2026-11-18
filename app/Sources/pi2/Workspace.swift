@@ -467,7 +467,10 @@ private struct PaneHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             if let id = pane.conversation {
-                if summary?.busy == true || engine.open[id]?.state?.busy == true {
+                if let wait = engine.limitWaits[id] {
+                    Image(systemName: "hourglass").font(.system(size: 11)).foregroundStyle(Theme.warn).frame(width: 14)
+                        .help(wait.sentence)
+                } else if summary?.busy == true || engine.open[id]?.state?.busy == true {
                     Spinner().frame(width: 14)
                 } else {
                     AgentAvatar(agent: engine.agent(summary?.agentId ?? engine.open[id]?.state?.agent.agentId), size: 14)
