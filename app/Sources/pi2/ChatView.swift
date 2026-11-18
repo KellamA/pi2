@@ -811,7 +811,7 @@ struct ToolCard: View {
     private var isRunning: Bool { result == nil && running }
     private var isError: Bool { result?.isError ?? false }
     private var output: String { Self.readable(result?.text ?? live?.output ?? "") }
-    private var allowedByEverything: Bool { result?.details?["allowedByEverything"]?.boolValue == true }
+    private var allowedByEverything: Bool { result?.details?["allowedByEverything"] == .bool(true) }
     /// The person's rules that let this command run without asking, as its result records them.
     private var allowedBy: [String] {
         (result?.details?["allowedBy"]?.arrayValue ?? []).compactMap { $0.stringValue }
