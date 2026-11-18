@@ -23,6 +23,7 @@ import {
 	type EntryId,
 	type EntryRecord,
 	Harness,
+	LiveDoc,
 	type SubmissionId,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
@@ -62,7 +63,7 @@ import { LagMonitor } from "./lag.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
-import { useRunFolder } from "./processes.ts";
+import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents, takeAgentSwitch } from "./state.ts";
@@ -296,19 +297,22 @@ function withheld(): string[] {
 	return host.features.flatMap((feature) => feature.withheld?.() ?? []);
 }
 
-/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while chat mode's web switch is on. */
-function chatTools() {
+/** The tools of a chat (chat.ts): the assistant's fixed set, with the web while the chat's web switch is on. */
+function chatTools(web: boolean) {
 	const held = withheld();
-	return chatToolNames(chatSettings(settings.chat).web)
+	return chatToolNames(web)
 		.filter((name) => !held.includes(name))
 		.map(tool)
 		.filter((t) => t !== undefined);
 }
 
 /** How a new chat is configured: no folder, no instructions of an agent's, the assistant's tools. */
-function chatChange(model: ModelRef): AgentChange {
-	return { model, thinkingLevel: null, instructions: null, tools: chatTools(), cwd: null, maxTurns: null };
+function chatChange(model: ModelRef, web: boolean): AgentChange {
+	return { model, thinkingLevel: null, instructions: null, tools: chatTools(web), cwd: null, maxTurns: null };
 }
+
+/** Whether chat `id` (or the chat it is a version of) may read the web: its own switch, which starts as chat mode's setting. */
+const chatWeb = (id: number): boolean => library.conversations[String(chatOf(id))]?.web !== false;
 
 /**
  * `wanted` in the order the conversation already has its tools (`current`, its AgentDoc's), with the new ones after them.
@@ -426,7 +430,7 @@ async function syncTools(conv: Conversation): Promise<void> {
 	// A conversation whose agent was deleted keeps the setup it has. A chat has the assistant's tools.
 	if (meta === undefined || (own === undefined && !isChat(meta))) return;
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools() : toolsFor(meta.access, own, isSubChat(meta)));
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta)));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -584,7 +588,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string; details?: { background: { id: string } } }
+	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string } } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -616,10 +620,11 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: backgroundMarker(entry.data), ...(details === undefined ? {} : { details }) };
 	}
 	if (entry.kind === SUBCHATS_ENTRY) return { id, kind: "marker", text: subChatsMarker(entry.data) };
-	// What woke the agent is a message to the model, and a line to the person; its Output opens a command's output.
+	// Show the same model input behind the line, including wakes stored before the row could open (#318).
 	if (entry.kind === WAKE_ENTRY) {
-		const details = wakeMarkerDetails(entry.data);
-		return { id, kind: "marker", text: wakeMarker(entry.data), ...(details === undefined ? {} : { details }) };
+		const content = textOf((entry.model?.[0] as { content?: unknown } | undefined)?.content);
+		const details = { ...wakeMarkerDetails(entry.data), wake: { text: content } };
+		return { id, kind: "marker", text: wakeMarker(entry.data), details };
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
@@ -744,6 +749,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		title: meta?.title ?? "",
 		// A chat of the built-in assistant (chat.ts): the page shows chat mode's own controls only then.
 		chat: isChat(meta),
+		// A chat's web switch (#287): whether its next message may read the web. Null for any other conversation.
+		web: isChat(meta) ? chatWeb(id) : null,
 		archived: isArchived(meta) || (meta?.parent !== undefined && isArchived(library.conversations[String(meta.parent)])),
 		queued: (inbox.items ?? [])
 			.filter((item) => item.mode !== "write")
@@ -1000,13 +1007,15 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
 		saveSettings();
 	}
 	const now = Date.now();
+	// The web starts as chat mode's setting says, and is the chat's own from then on.
+	const web = chatSettings(settings.chat).web;
 	const created = await harness.createConversation(
 		{
 			ownership: { kind: "ownerless" },
-			agent: chatChange(model),
+			agent: chatChange(model, web),
 			init: async (tx, id) => {
 				// No agent, and no tool access of an agent's: its tools are the assistant's own, none of which asks.
-				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true };
+				(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: "none", chat: true, ...(web ? {} : { web: false as const }) };
 			},
 		},
 		context,
@@ -1112,8 +1121,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
-						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps.
+						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps, and its web switch.
 						...(isChat(source) ? { chat: true as const } : {}),
+						...(isChat(source) && source?.web === false ? { web: false as const } : {}),
 					};
 				},
 			},
@@ -1370,7 +1380,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.defaultModel !== undefined) delete settings.lastChatModel;
 		saveSettings();
 		broadcast(chatEvent());
-		// The web switch changes what every chat is offered, from its next message (syncTools).
+		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287).
 		return after;
 	},
 	"conversation.configure": async (params, client) => {
@@ -1380,6 +1390,17 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// A chat has no folder and no tool access to choose: its tools are the assistant's (chat.ts).
 		if (chat && params.cwd !== undefined) throw new Error("A chat has no folder");
 		if (chat && params.access !== undefined) throw new Error("A chat's tools are fixed: it has no tool access to change");
+		if (params.web !== undefined) {
+			if (!chat) throw new Error("Only a chat has a web switch; an agent's tools are chosen in its settings");
+			if (typeof params.web !== "boolean") throw new Error("web must be true or false");
+			// Kept on the chat's record and counted from its next message, when its tools are brought in line (syncTools),
+			// so an answer being written keeps the tools it started with.
+			await editMeta(conv.id, (meta) => {
+				if (params.web === false) meta.web = false;
+				else delete meta.web;
+			});
+			for (const other of clients) other.subscriptions.get(id)?.push();
+		}
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
 			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
@@ -1459,6 +1480,17 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await takeSwitch(conv.id);
 		await conv.submit({ type: "continue" }, context);
 		return {};
+	},
+	/** Read one admitted message's durable outcome, not a previous run's idle state (test-copy send). */
+	"submission.get": async (params) => {
+		if (!Number.isSafeInteger(params.submissionId)) throw new Error("submissionId must be a number");
+		const conv = await conversation(params.id);
+		const submission = await harness.submission(params.submissionId as SubmissionId, context);
+		if (submission === undefined) throw new Error("No such submission");
+		const record = await submission.status(context);
+		if (record.conversationId !== conv.id) throw new Error("That submission belongs to another conversation");
+		const live = await harness.snapshot(LiveDoc, conv.id, context);
+		return { submission: record, busy: live?.run !== undefined };
 	},
 	withdraw: async (params) => {
 		const submission = await harness.submission(params.submissionId as SubmissionId, context);
@@ -1726,6 +1758,8 @@ agentsWatch.start(async (call) => {
 // transcript as it starts (a background command the last engine left, a set-up cut short) sets the last engine's
 // work going again at once, before `resume()`.
 for (const feature of host.features) await feature.start?.();
+// Recovery has dealt with recorded runs. Unrecorded files can go only once nothing holds them.
+void sweepRuns().catch((error) => log("run files could not be tidied:", error));
 const graphWatch = await harness.watchTaskGraph(context);
 type Graph = { tasks: Record<string, { conversationId?: unknown }> };
 /** The conversation `id` belongs to: itself, or the one whose sub-chat it is. */

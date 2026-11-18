@@ -726,6 +726,9 @@ struct ConversationState: Codable, Equatable {
     let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
     var chat: Bool? = nil
+    /// A chat's web switch (#287): whether its next message may search the web and read pages. Nil for any other
+    /// conversation, and from an engine older than the switch.
+    var web: Bool? = nil
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
     var messageWaits: MessageWaits? = nil

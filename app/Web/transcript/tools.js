@@ -423,10 +423,15 @@
 				const what = command ? [code(command)] : [t(id || "a background command")];
 				if (action === "read") label = [t(active ? "Reading the output of " : "Read the output of "), ...what, t(dots)];
 				else if (action === "stop") label = [t(active ? "Stopping " : "Stopped "), ...what, t(dots)];
+				else if (action === "wake") label = [t(active ? "Asking to wake when " : "Asked to wake when "), ...what, t(" ends" + dots)];
 				else label = [t(active ? "Listing background commands" + ELLIPSIS : "Listed background commands")];
 				if (command && id) stats = isObject(details) && str(details.id) ? str(details.id) : id;
 				break;
 			}
+			case "pi2_wake":
+				glyph = "sparkle";
+				label = [t(str(args.summary))];
+				break;
 			case "pi2_setup":
 				// The agent's set-up command, which pi² ran in a new worktree: not a call the agent made.
 				glyph = "terminal";
@@ -718,6 +723,10 @@
 			case "background":
 				// What the engine answered: how the command stands, then what it printed.
 				outputSection(str(args.action).trim().toLowerCase() === "list" ? "Background commands" : "Output");
+				break;
+			case "pi2_wake":
+				// Exact model input, not Markdown or harness notes to interpret.
+				sections.push({ kind: "text", label: "What the agent was given", text: str(result && result.text), failed: false });
 				break;
 			case "pi2_setup":
 				// A failed one says how first, on a line of its own. Its output keeps the ordinary colour: that line and the

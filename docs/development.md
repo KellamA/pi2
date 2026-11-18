@@ -62,7 +62,7 @@ This runs, side by side, every file in `engine/test` but three: `patience.ts`, w
 - `addedmodels.ts`: models added by hand to a built-in provider: what a new id is based on, adding, changing, keeping, giving way to the catalog and removing one, against stand-in providers; then a real engine whose added models are sent to a stand-in server on 127.0.0.1, which answers one and refuses the other, and what a conversation says when one is refused or removed.
 - `background.ts`: background commands. An engine starts, reads and stops commands, and is stopped and killed with commands running; nothing they started is left.
 - `cache.ts`: the prompt cache's lifetime. An engine against a stand-in Anthropic endpoint on 127.0.0.1: a conversation asks for the one-hour cache once it has handed out work and the others do not, a refusal of it is sent again with the short cache, and `engine.log` says what a request after a pause read; see [limits.md](limits.md#the-prompt-cache).
-- `chat.ts`: chat mode's engine: a chat made, listed, opened and told it is one; offered only the assistant's tools, asking nothing, writing documents in its own folder; its model, settings and web setting; pinned, searched, counted, exported, shown in Activity, forked, archived and deleted as a chat. See [chat.md](chat.md).
+- `chat.ts`: chat mode's engine: a chat made, listed, opened and told it is one; offered only the assistant's tools, asking nothing, writing documents in its own folder; its model, settings, and web switch (where a new chat's starts, each chat's own, its versions and forks following it); pinned, searched, counted, exported, shown in Activity, forked, archived and deleted as a chat. See [chat.md](chat.md).
 - `codemode.ts`: what a conversation is told about scripts, with a test MCP server of 40 tools. It prints the size of each section of the system prompt; see [codemode.md](codemode.md).
 - `credentials.ts`: the Keychain store.
 - `documents.ts`: the documents tool.
@@ -89,7 +89,7 @@ This runs, side by side, every file in `engine/test` but three: `patience.ts`, w
 - `reading.ts`: `read` of several files, or several parts of one, in one call, around the library's own tool.
 - `rules.ts`: the command rules. It also runs the commands its rules allow through `/bin/bash`, in a folder of its own.
 - `runcode.ts`: `run_code`'s sandbox: a program prints and returns, cannot reach files, the network (a server on 127.0.0.1 is never asked), the process or any tool, is stopped at its time limit with its worker thread, fails inside when it allocates too much, and has a long output shortened; see [code.md](code.md).
-- `sections.ts`: it switches on, one at a time, what brings a section or a tool into a conversation, then leaves the built-in tools out one at a time and brings them back, and checks with `/system history` that each change is sent alone, without the rest of the prompt; see [architecture.md](architecture.md#the-system-prompts-sections).
+- `sections.ts`: it switches on, one at a time, what brings a section or a tool into a conversation, then leaves the built-in tools out one at a time and brings them back, then turns a chat's web switch off and on, and checks with `/system history` that each change is sent alone, without the rest of the prompt; see [architecture.md](architecture.md#the-system-prompts-sections).
 - `shellpath.ts`: commands get the login shell's `PATH` and `SSH_AUTH_SOCK`, and nothing else from it (stand-in shells, the question itself in the real `bash` and `zsh`, and a real engine started with the bare `PATH`).
 - `socket.ts`: the engine's socket path, and a data folder whose path is too long for a socket, which the engine then reaches through a short link.
 - `testcopies.ts`: test copies of pi² for computer use (#146), with a stand-in for the app. Off, an unlisted copy is refused and a listed one is look-only, as before; on, the tool comes without an app, a copy is listed, looked at and acted on with the usual approvals, the app is told so it can check the copy itself, and pi² itself, the development build, other copies and terminals stay refused; a sub-chat follows its own agent's switch.
@@ -158,18 +158,37 @@ open -n "app/build/pi² dev.app" --env PI2_HOME=/tmp/pi2-try --env PI2_KEYCHAIN_
 
 On a Mac where pi² is in real use, and where other sessions may be testing too, try it in a copy with a bundle id of your own and clean up after it: `scripts/test-copy start test-7`, then `scripts/test-copy stop test-7`. [Testing safely](../CONTRIBUTING.md#testing-safely) in CONTRIBUTING.md has the rules and what the script does for each.
 
-To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. For a running `test-7`, these create a conversation on the scripted demo model (no provider or sign-in) and send it a message:
+To seed that copy without writing a socket client, use `scripts/test-copy call <suffix> <method> [<json params>]`. It connects only to the socket in the copy's own data folder, never an environment override, and refuses a copy this checkout did not start or an engine it did not record. Params default to `{}` and must be a JSON object. The output is the complete JSON response, with `result` or `error`; an engine error exits non-zero. These start a copy waiting to show a conversation, create it after launch on the scripted demo model (no provider or sign-in), and send it a message. `PI2_SHOW` opens it when it appears while nothing else is open; no restart or click is needed:
 
 ```bash
+scripts/test-copy start test-7 --show 'Late demo'
 CHAT=$(scripts/test-copy call test-7 conversation.create '{"model":{"provider":"demo","modelId":"demo-1"}}' | jq -er '.result.id')
+scripts/test-copy call test-7 conversation.rename "{\"id\":$CHAT,\"title\":\"Late demo\"}"
 scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test copy\"}"
 ```
 
-`submit` returns when accepted, not when the model has finished answering. After the answer finishes, archive it (this stops any work still running):
+`call … submit` returns when accepted, not when the model has finished answering. Use `send` to wait for the exact new submission to finish and the conversation to be idle, following committed conversation events (not sleeping or accepting an earlier idle state):
+
+```bash
+scripts/test-copy send test-7 "$CHAT" 'Hello again' --timeout 120
+```
+
+The JSON result has `status`, conversation/submission ids and the answer on success. Exit `0`: done; `1`: failed or connection/engine error; `2`: waiting on the person (approval/question items included); `124`: timeout. The hang guard defaults to 600 seconds, at most 600. No approval is answered and no work is stopped when waiting ends. Before acceptance a timeout may have no submission id; inspect before resending. Like `call`, it refuses an unowned copy, an unrecorded engine or a symlink for its data/socket; it also refuses invalid conversation numbers, empty text and invalid limits. The engine's read-only `submission.get { id, submissionId }` reports the durable record and whether that conversation is busy, and refuses a submission belonging to another conversation, including another chat version.
+
+After the answer finishes, archive it (this stops any work still running):
 
 ```bash
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
+
+To change what an existing copy shows, reopen just its app, keeping its engine and conversations. The new app is recorded for `shot` and `stop`, uses the same clean environment and window placement as `start`, and keeps the previous `--show` unless replaced (and `--menu`):
+
+```bash
+scripts/test-copy reopen test-7 --show "$CHAT"
+scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
+```
+
+It refuses a copy this checkout did not start, a missing or changed bundle, an unrecorded engine or bundle process, a reused app pid, or a symlink for the copy, state, data or socket, before stopping anything. A failed relaunch leaves the engine and data for diagnosis and `stop`.
 
 A development build (ordinary or optimised, not a release build) also reads a few variables that help when taking pictures of the app or checking it by script:
 
@@ -211,8 +230,8 @@ Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. F
 
 The engine's CI partition is in `engine/scripts/test-platform.ts`. `npm test` still runs the whole suite on a Mac. The partition discovers the same files automatically: only files verified unchanged on Linux are in its list; a new test stays on macOS until verified. Both halves together cover the whole suite. `credentialsplatform.ts` runs on both deliberately: on macOS it checks that the file store cannot be created, on Linux it checks persistence, permissions and read/modify/delete.
 
-- **Linux, unchanged:** `addedmodels`, `cache`, `codemode`, `earlystop`, `exec`, `latepath`, `limits`, `limitwait`, `log`, `look`, `mcppath`, `mcpreconnect`, `modellists`, `offered`, `reading`, `rules`, `sections`, `shellpath`, `socket`.
-- **macOS:** `credentials` directly tests Keychain items and their pieces; `environment` checks agents' variables in the Keychain and their absence from files/backups; `planwindows` seeds subscriptions directly in the Keychain; `documents` needs `textutil`; `engine` checks Keychain values, agents' variables and `textutil`; `background`, `localrun` and `worktrees` check recovery of what an engine started after it crashed, which needs macOS `ps -E` to prove a process's environment marker belongs to that run. Linux cannot prove that and correctly leaves the process alone, so those tests stay on macOS. `browser` still needs the separate app probe and is outside `npm test` as before.
+- **Linux, unchanged:** `addedmodels`, `cache`, `chat`, `codemode`, `earlystop`, `everything`, `exec`, `heed`, `latepath`, `limits`, `limitwait`, `localmodels`, `log`, `look`, `mcppath`, `mcpreconnect`, `modellists`, `offered`, `pictures`, `reading`, `rules`, `runcode`, `sections`, `shellpath`, `socket`, `testcopies`, `versions`, `wakes`. The document checks in `chat`, `everything` and `versions` use HTML, not `textutil`; `localmodels` recovers downloads, not processes; computer use and providers in these tests are stand-ins.
+- **macOS:** `credentials` directly tests Keychain items and their pieces; `environment` checks agents' variables in the Keychain and their absence from files/backups; `mcpvariables` checks MCP servers' variable values directly in the Keychain; `planwindows` seeds subscriptions directly in the Keychain; `documents` needs `textutil`; `engine` checks Keychain values, agents' variables and `textutil`; `background`, `localrun` and `worktrees` check recovery of what an engine started after it crashed, which needs macOS `ps -E` to prove a process's environment marker belongs to that run. Linux cannot prove that and correctly leaves the process alone, so those tests stay on macOS. `browser` still needs the separate app probe and is outside `npm test` as before.
 
 For tests on other systems **only**, the engine uses `test-credentials.json` inside its data folder in place of the Keychain credential store. These are plain-text fake credentials: use only a throwaway `PI2_HOME` and stand-in providers. This is not a supported way to run pi²; the app, agents' variables and process recovery still need macOS. Selection is by `process.platform`, never an environment variable or setting. On macOS the engine always uses Keychain, and even calling the test-store factory directly refuses to create a file. No sign-ins on a Mac can fall back to it if Keychain fails.
 
