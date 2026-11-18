@@ -25,8 +25,9 @@ struct ChatView: View {
     @State private var dropTargeted = false
     @FocusState private var composerFocused: Bool
 
-    private var data: ConversationData { engine.open[id] ?? ConversationData() }
-    private var state: ConversationState? { data.state }
+    private var data: OpenConversation? { engine.open[id] }
+    private var items: [Item] { data?.items ?? [] }
+    private var state: ConversationState? { data?.state }
     private var busy: Bool { state?.busy ?? false }
     private var summary: ConversationSummary? { engine.conversations.first { $0.id == id } }
     private var parent: ConversationSummary? { summary?.parent.flatMap { parent in engine.conversations.first { $0.id == parent } } }
@@ -35,7 +36,8 @@ struct ChatView: View {
     /// The room either side, less in a pane.
     private var inset: CGFloat { inSplitPane ? 12 : 28 }
     private var isChat: Bool { chat || engine.isChat(id) }
-    private var isEmpty: Bool { state != nil && data.items.isEmpty && !busy && state?.partial == nil }
+    /// Nothing in it yet, and nothing on its way: a message just sent counts, so its page shows it going.
+    private var isEmpty: Bool { state != nil && items.isEmpty && !busy && state?.partial == nil && engine.outgoing[id] == nil }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,13 +84,15 @@ struct ChatView: View {
     /// The transcript, what is going on, and the message field. A chat keeps them in one column.
     @ViewBuilder
     private var conversation: some View {
+        // Until the conversation has come, the page loads beside the request, hidden, and says it is loading meanwhile
+        // (ConversationTranscript), rather than show an empty pane that reads as broken.
         if !isChat, let state, isEmpty {
             AgentIntro(engine: engine, agent: state.agent, isSubChat: parent != nil, projectInstructions: state.projectInstructions, projectInstructionFiles: state.projectInstructionFiles)
                 // In a short pane the introduction gives way, so the message field stays in view.
                 .frame(minHeight: 0)
                 .clipped()
         } else {
-            ConversationTranscript(engine: engine, conversationID: id, items: data.items, state: state)
+            ConversationTranscript(engine: engine, conversationID: id, items: items, state: state)
         }
         VStack(spacing: 0) {
             // A subagent of this conversation is waiting on the person.
@@ -190,9 +194,29 @@ struct ChatView: View {
 
     @ViewBuilder
     private var queue: some View {
-        if let queued = state?.queued, !queued.isEmpty {
+        let queued = state?.queued ?? []
+        let outgoing = engine.outgoing[id] ?? []
+        if !queued.isEmpty || !outgoing.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    // Sent, and not shown by the conversation yet: the person sees at once that it was taken.
+                    ForEach(outgoing) { message in
+                        HStack(spacing: 6) {
+                            if message.submission == nil {
+                                ProgressView().controlSize(.mini)
+                                Text(engine.status == .connected ? "Sending" : "Sending when the engine is back").foregroundStyle(Theme.tx3)
+                            } else {
+                                Image(systemName: "checkmark").foregroundStyle(Theme.ok)
+                                Text("Sent").foregroundStyle(Theme.tx3)
+                            }
+                            Text(message.summary).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
+                        }
+                        .help(message.submission == nil ? "pi² is handing this message to its engine. It will not be lost or sent twice." : "The engine has this message.")
+                        .font(.system(size: 12))
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .panel(radius: 8, fill: Theme.card, border: Theme.line2)
+                        .accessibilityElement(children: .combine)
+                    }
                     ForEach(queued) { item in
                         HStack(spacing: 6) {
                             Text(queuedLabel(item)).foregroundStyle(Theme.tx3).lineLimit(1).frame(maxWidth: 260, alignment: .leading)
@@ -348,6 +372,30 @@ struct ChatView: View {
                 if draft.isEmpty { draft = text }
                 attachments.restore(carried)
             }
+        }
+    }
+}
+
+/// In a pane whose conversation has been asked for and has not come yet, or whose page is still being drawn. It shows
+/// after a moment, so a conversation that opens at once does not flash it.
+struct ConversationLoading: View {
+    var chat = false
+    @State private var shown = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(chat ? "Loading the chat…" : "Loading the conversation…")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.tx2)
+        }
+        .opacity(shown ? 1 : 0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.window)
+        .accessibilityElement(children: .combine)
+        .task {
+            try? await Task.sleep(for: .milliseconds(150))
+            withAnimation(.easeOut(duration: 0.15)) { shown = true }
         }
     }
 }

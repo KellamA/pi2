@@ -30,6 +30,20 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 
 If the engine ends before the app can reach it three starts in a row (Node or the engine's files missing, an error as it loads), the window says the engine could not be started, shows the end of `engine.log` and what to check, and offers to try again at once. The app keeps trying on its own, waiting twice as long after each further failure, up to a minute between starts, and the notice goes away as soon as an engine answers.
 
+### Keeping the app quick while agents work
+
+With twenty runs going, the engine sends the app dozens of events a second: `activity` whenever a run or one of its commands changes, and `conversation` two or three times a second for each open conversation that is working. Reading them is cheap (a tenth of a millisecond to half a millisecond each, measured in #347); what costs is what SwiftUI draws again for them. So (`EngineClient.swift`):
+
+- **A property is set only when its value changed.** A property of an observable object tells every view that reads it of each set, even to the same value, and the engine sends most events whole again for any change in them.
+- **Each open conversation is an object of its own** (`OpenConversation`). An update to one conversation redraws the views that show it, not the toolbar, the menus and every pane, which reading it from one dictionary of all of them did.
+- **A conversation no pane shows is closed after two minutes** (`conversation.close`), unless Quick Ask has it or a message to it is on its way. Until then going back to it is instant; after, it is asked for again.
+- **Views that change often are small views of their own**, such as the count of runs on Activity's row, so the sidebar is not drawn again with them.
+- **Spinners turn in Core Animation** (`Spinner` in `Theme.swift`), not with a SwiftUI animation, which laid the window out again every frame for each one: twenty in the sidebar kept the main thread about a third busy on their own.
+
+A message sent from the message field shows at once as a chip, "Sending", then "Sent" until the conversation shows it (`EngineClient.outgoing`). It goes with a request id, and when no answer comes because the connection to the engine went, it is sent again with the same id once the engine is back, which makes the engine find the submission it may already have taken rather than take it twice. A pane whose conversation has been asked for and has not come yet says it is loading, and its toolbar leaves out the model and tool menus until there is something to show in them.
+
+A development build measures this when asked: see [Measuring the app's speed](development.md#measuring-the-apps-speed).
+
 ## The engine
 
 | File | What it holds |

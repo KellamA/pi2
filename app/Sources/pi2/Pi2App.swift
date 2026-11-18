@@ -525,35 +525,10 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $model.selection) {
-            let notices = PlanLimits(engine.extras["limits"])?.notices.count ?? 0
-            navRow("Inbox", icon: engine.inbox.isEmpty && notices == 0 ? "tray" : "tray.full", tag: .inbox) {
-                if !engine.inbox.isEmpty {
-                    Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
-                } else if notices > 0 {
-                    // A notice of a plan's window waits on nobody, so it is counted without the colour of a request.
-                    Tag("\(notices)").accessibilityLabel(notices == 1 ? "1 notice" : "\(notices) notices")
-                }
-            }
+            InboxRow(engine: engine)
+                .tag(Selection.inbox)
             navRow("Activity", icon: "waveform.path.ecg", tag: .activity) {
-                if engine.recovery != nil {
-                    Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
-                        .help("The engine restarted after stopping unexpectedly")
-                        .accessibilityLabel("Engine restarted")
-                }
-                // A run waiting for a provider's limit is counted apart from those working (#343).
-                let waiting = engine.limitWaits.count
-                if engine.activity.count > waiting {
-                    // Beside the count at the limit, the word gives way so that the row's own title fits.
-                    let running = engine.activity.count - waiting
-                    Tag(waiting > 0 ? "\(running)" : "\(running) running", .acc).fixedSize()
-                        .help("\(running) running")
-                        .accessibilityLabel("\(running) running")
-                }
-                if waiting > 0 {
-                    Tag("\(waiting) at limit", .warn).fixedSize()
-                        .help("\(waiting) waiting for a provider’s limit; they carry on by themselves")
-                        .accessibilityLabel("\(waiting) waiting for a limit")
-                }
+                ActivityBadges(engine: engine)
             }
             navRow("Usage", icon: "chart.bar", tag: .usage) {
                 if engine.usage?.overBudget == true {
@@ -733,6 +708,56 @@ struct SidebarView: View {
             // A sub-chat is archived with the conversation it belongs to.
             if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
             Button("Delete", role: .destructive) { model.delete(conversation) }
+        }
+    }
+}
+
+/// The Inbox's row in the sidebar, with what waits there. A view of its own, so that a plan's limits, which can change
+/// with every answer from a subscription, draw only this row again.
+private struct InboxRow: View {
+    let engine: EngineClient
+
+    var body: some View {
+        let notices = PlanLimits(engine.extras["limits"])?.notices.count ?? 0
+        HStack(spacing: 8) {
+            Image(systemName: engine.inbox.isEmpty && notices == 0 ? "tray" : "tray.full").foregroundStyle(Theme.tx2).frame(width: 20)
+            Text("Inbox")
+            Spacer(minLength: 4)
+            if !engine.inbox.isEmpty {
+                Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
+            } else if notices > 0 {
+                // A notice of a plan's window waits on nobody, so it is counted without the colour of a request.
+                Tag("\(notices)").accessibilityLabel(notices == 1 ? "1 notice" : "\(notices) notices")
+            }
+        }
+    }
+}
+
+/// Activity's row in the sidebar: how many runs there are, and whether the engine restarted. A view of its own, since
+/// the engine says what is running several times a second while agents work, and only this needs drawing again for it,
+/// not the whole sidebar (#347).
+private struct ActivityBadges: View {
+    let engine: EngineClient
+
+    var body: some View {
+        if engine.recovery != nil {
+            Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
+                .help("The engine restarted after stopping unexpectedly")
+                .accessibilityLabel("Engine restarted")
+        }
+        // A run waiting for a provider's limit is counted apart from those working (#343).
+        let waiting = engine.limitWaits.count
+        if engine.runningCount > waiting {
+            // Beside the count at the limit, the word gives way so that the row's own title fits.
+            let running = engine.runningCount - waiting
+            Tag(waiting > 0 ? "\(running)" : "\(running) running", .acc).fixedSize()
+                .help("\(running) running")
+                .accessibilityLabel("\(running) running")
+        }
+        if waiting > 0 {
+            Tag("\(waiting) at limit", .warn).fixedSize()
+                .help("\(waiting) waiting for a provider’s limit; they carry on by themselves")
+                .accessibilityLabel("\(waiting) waiting for a limit")
         }
     }
 }
