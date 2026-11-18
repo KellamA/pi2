@@ -4,7 +4,8 @@
 import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { AgentDoc, defineDoc, defineTool, section } from "@earendil-works/pi-durable";
-import { obj, str } from "@earendil-works/pi-schema";
+import { obj, opt, str } from "@earendil-works/pi-schema";
+import { isChat } from "./chat.ts";
 import type { Feature } from "./features.ts";
 
 // ---- Project instructions
@@ -139,9 +140,25 @@ export type Note = {
 	call?: string;
 };
 export type AgentMemory = { enabled: boolean; notes: Note[]; next: number };
+/** Chat mode's own notes (#288): one set for every chat, apart from every agent's. Its switch is `chat.memory` in the settings. */
+export type ChatMemory = { notes: Note[]; next: number };
+type MemoryDoc = { agents: Record<string, AgentMemory>; chat?: ChatMemory };
 
-/** One session-scoped document, keyed by agent id. Notes of a deleted agent stay behind, unseen and harmless. */
-const Memory = defineDoc<{ agents: Record<string, AgentMemory> }>({
+/** Whose notes: chat mode's, or one agent's. */
+type Owner = { chat: true } | { chat: false; agentId: string };
+const CHAT: Owner = { chat: true };
+
+/** The tools of a chat while chat mode's memory is on: its own notes, and a look at the agents' that changes nothing. */
+export const CHAT_MEMORY_TOOLS = ["remember", "forget", "agent_notes"] as const;
+
+/** The most characters `agent_notes` gives at once: one agent's notes when it has as many as it may. */
+export const MAX_AGENT_NOTES_CHARS = MAX_NOTES * MAX_NOTE_CHARS;
+
+/**
+ * One session-scoped document: the agents' notes keyed by agent id, and chat mode's under `chat`. Notes of a deleted
+ * agent stay behind, unseen and harmless.
+ */
+const Memory = defineDoc<MemoryDoc>({
 	kind: "pi2.memory",
 	version: 1,
 	scope: "session",
@@ -162,36 +179,63 @@ const tidyLines = (value: string) =>
 
 export const knowledge: Feature = (host, engine) => {
 	let memory: Record<string, AgentMemory> = {};
+	let chatMemory: ChatMemory = { notes: [], next: 1 };
 
+	const shown = (notes: Note[]) => notes.map((n) => ({ id: n.id, text: n.text, createdAt: n.createdAt, conversation: n.conversation }));
 	const event = () => ({
 		event: "memory",
-		agents: Object.fromEntries(
-			Object.entries(memory).map(([id, m]) => [
-				id,
-				{ enabled: m.enabled, notes: m.notes.map((n) => ({ id: n.id, text: n.text, createdAt: n.createdAt, conversation: n.conversation })) },
-			]),
-		),
+		agents: Object.fromEntries(Object.entries(memory).map(([id, m]) => [id, { enabled: m.enabled, notes: shown(m.notes) }])),
+		// Chat mode's own; whether it is on is `memory` in the `chat` event.
+		chat: { notes: shown(chatMemory.notes) },
 	});
 
 	/** Change the document, then take a plain copy of it for the prompt and tell the apps. */
-	async function change<T>(edit: (agents: Record<string, AgentMemory>) => T, context = engine.context()): Promise<T> {
+	async function change<T>(edit: (doc: MemoryDoc) => T, context = engine.context()): Promise<T> {
 		const result = await engine.harness().commit(async (tx) => {
 			const doc = await tx.doc(Memory);
-			const value = edit(doc.agents);
-			return { value, agents: JSON.parse(JSON.stringify(doc.agents)) as Record<string, AgentMemory> };
+			const value = edit(doc);
+			return { value, doc: JSON.parse(JSON.stringify(doc)) as MemoryDoc };
 		}, context);
-		memory = result.agents;
+		memory = result.doc.agents;
+		chatMemory = result.doc.chat ?? { notes: [], next: 1 };
 		engine.broadcast(event());
 		return result.value;
 	}
 
-	const agentOf = (conversationId: unknown) => host.meta(conversationId as never)?.agentId;
 	const enabledFor = (agentId: string | undefined) => agentId !== undefined && memory[agentId]?.enabled === true;
 	const record = (agents: Record<string, AgentMemory>, id: string) => {
 		agents[id] ??= { enabled: false, notes: [], next: 1 };
 		// Read back: only the document's own copy of a new entry records changes.
 		return agents[id]!;
 	};
+	/** The notes of `owner` in the document, made if missing: chat mode's are kept apart from every agent's. */
+	const notebook = (doc: MemoryDoc, owner: Owner): ChatMemory => {
+		if (!owner.chat) return record(doc.agents, owner.agentId);
+		doc.chat ??= { notes: [], next: 1 };
+		return doc.chat;
+	};
+	/** Chat mode's notes are c1, c2… and an agent's m1, m2…, so neither can be taken for the other. */
+	const newId = (book: ChatMemory, owner: Owner) => `${owner.chat ? "c" : "m"}${book.next++}`;
+	const notesOf = (owner: Owner): Note[] => (owner.chat ? chatMemory.notes : (memory[owner.agentId]?.notes ?? []));
+
+	/**
+	 * Whose notes a conversation's remember and forget change, if memory is on for it: a chat's are chat mode's, never an
+	 * agent's, whatever it is asked; an agent's conversation's are its agent's. A chat's version counts as the chat.
+	 */
+	const ownerOf = (conversationId: unknown): Owner | undefined => {
+		const meta = host.meta(conversationId as never);
+		if (isChat(meta)) return engine.chatSettings().memory ? CHAT : undefined;
+		return enabledFor(meta?.agentId) ? { chat: false, agentId: meta!.agentId! } : undefined;
+	};
+	const memoryOff = (conversationId: unknown) =>
+		text(isChat(host.meta(conversationId as never)) ? "Memory is turned off for chats." : "Memory is turned off for this agent.");
+
+	/** The agents whose notes a chat may read: those that exist, have memory on and have a note, by name. */
+	const readableAgents = () =>
+		Object.entries(memory)
+			.filter(([id, m]) => m.enabled && m.notes.length > 0 && engine.agents()[id] !== undefined)
+			.map(([id, m]) => ({ id, name: engine.agents()[id]!.name, notes: m.notes }))
+			.sort((a, b) => a.name.localeCompare(b.name));
 
 	const remember = defineTool({
 		name: "remember",
@@ -201,19 +245,19 @@ export const knowledge: Feature = (host, engine) => {
 		parameters: obj({ note: str() }),
 		replay: "safe", // a call run again after a crash finds its note and does not add another
 		execute: async (args, api, context) => {
-			const agentId = agentOf(api.conversationId);
-			if (!enabledFor(agentId)) return { output: text("Memory is turned off for this agent."), isError: true };
+			const owner = ownerOf(api.conversationId);
+			if (owner === undefined) return { output: memoryOff(api.conversationId), isError: true };
 			const note = tidy(args.note);
 			if (note === "") return { output: text("There is nothing in that note. Write what is worth keeping."), isError: true };
 			if (note.length > MAX_NOTE_CHARS) return { output: text(`That note is ${note.length} characters; the most is ${MAX_NOTE_CHARS}. Say it more briefly.`), isError: true };
-			const result = await change((agents) => {
-				const mine = record(agents, agentId!);
+			const result = await change((doc) => {
+				const mine = notebook(doc, owner);
 				const earlier = mine.notes.find((n) => n.call === api.callId);
 				if (earlier !== undefined) return { saved: earlier.id };
 				const same = mine.notes.find((n) => n.text.toLowerCase() === note.toLowerCase());
 				if (same !== undefined) return { saved: same.id, already: true };
 				if (mine.notes.length >= MAX_NOTES) return { full: true };
-				const id = `m${mine.next++}`;
+				const id = newId(mine, owner);
 				mine.notes.push({ id, text: note, createdAt: Date.now(), conversation: api.conversationId as unknown as number, call: api.callId });
 				return { saved: id };
 			}, context);
@@ -228,27 +272,90 @@ export const knowledge: Feature = (host, engine) => {
 		parameters: obj({ id: str() }),
 		replay: "safe", // removing a note that is already gone changes nothing
 		execute: async (args, api, context) => {
-			const agentId = agentOf(api.conversationId);
-			if (!enabledFor(agentId)) return { output: text("Memory is turned off for this agent."), isError: true };
+			const owner = ownerOf(api.conversationId);
+			if (owner === undefined) return { output: memoryOff(api.conversationId), isError: true };
 			const id = args.id.trim();
-			const found = await change((agents) => {
-				const mine = record(agents, agentId!);
+			// Only the conversation's own notes: in a chat, an agent's note is never removed, whatever its id.
+			const found = await change((doc) => {
+				const mine = notebook(doc, owner);
 				const before = mine.notes.length;
 				mine.notes = mine.notes.filter((n) => n.id !== id);
 				return mine.notes.length < before;
 			}, context);
 			if (found) return { output: text(`Forgot ${id}.`) };
-			const ids = (memory[agentId!]?.notes ?? []).map((n) => n.id).join(", ");
+			const ids = notesOf(owner)
+				.map((n) => n.id)
+				.join(", ");
 			return { output: text(`There is no note ${id}. ${ids === "" ? "You have no notes." : `Your notes: ${ids}.`}`), isError: true };
 		},
 	});
 
-	const describeMemory = (agentId: string): string => {
-		const notes = memory[agentId]?.notes ?? [];
-		return [
+	/**
+	 * What a chat reads of the agents' notes (#288): never changes them, and only in a chat with memory on. Looked up when a
+	 * question calls for it rather than put in every chat's prompt, where they could come to 60 notes of 400 characters
+	 * for each agent, read again at every turn (docs/knowledge.md, chat mode's memory).
+	 */
+	const agentNotes = defineTool({
+		name: "agent_notes",
+		description:
+			"Read the notes the person's agents in pi² keep from their own conversations with the person: preferences, facts and decisions about their work. " +
+			"Read-only: they are the agents' notes, and you cannot change or remove them. Give an agent's name for its notes alone, or leave it out for every agent's; " +
+			"give words to search for to have only the notes that have one of them.",
+		parameters: obj({
+			agent: opt(str({ description: "The name of the agent whose notes to read; leave out for every agent's" })),
+			search: opt(str({ description: "Words to look for; only notes with at least one of them are given" })),
+		}),
+		replay: "safe", // reads only
+		execute: async (args, api) => {
+			if (!isChat(host.meta(api.conversationId as never))) return { output: text("agent_notes is for chats only."), isError: true };
+			if (!engine.chatSettings().memory) return { output: memoryOff(api.conversationId), isError: true };
+			const all = readableAgents();
+			if (all.length === 0) return { output: text("None of the person's agents has notes.") };
+			const asked = args.agent?.trim().toLowerCase() ?? "";
+			const chosen = asked === "" ? all : all.filter((agent) => agent.name.toLowerCase() === asked || agent.id.toLowerCase() === asked);
+			if (chosen.length === 0) return { output: text(`No agent called ${args.agent} has notes. These do: ${all.map((agent) => agent.name).join(", ")}.`), isError: true };
+			const words = (args.search ?? "")
+				.toLowerCase()
+				.split(/\s+/)
+				.filter((word) => word !== "");
+			const found = chosen
+				.map((agent) => ({ ...agent, notes: words.length === 0 ? agent.notes : agent.notes.filter((n) => words.some((word) => n.text.toLowerCase().includes(word))) }))
+				.filter((agent) => agent.notes.length > 0);
+			if (found.length === 0) return { output: text(`No note of ${chosen.length === 1 ? chosen[0]!.name : "any agent"} has any of those words.`) };
+			const blocks = found.map((agent) => `${agent.name}'s notes:\n${agent.notes.map((n) => `- ${n.text.replaceAll("\n", "\n  ")}`).join("\n")}`);
+			const whole = blocks.join("\n\n");
+			if (whole.length <= MAX_AGENT_NOTES_CHARS) return { output: text(whole) };
+			// Every agent's at once could be many times one agent's: say who has how many, to ask again by name or with words.
+			const counts = found.map((agent) => `${agent.name} (${agent.notes.length})`).join(", ");
+			return { output: text(`That is too much to read at once. Ask for one agent's notes, or give words to search for. Notes: ${counts}.`) };
+		},
+	});
+
+	const MEMORY_GUIDANCE = `Add a note with remember when the person states a lasting preference or fact, or a decision that will matter again. Do not note: anything about only this conversation; anything secret, such as a password or key; anything you only read in a file or on a page rather than were told by the person. Notes are short (${MAX_NOTE_CHARS} characters at most, ${MAX_NOTES} in all). Remove one that is out of date or wrong with forget.`;
+	const list = (notes: Note[], none: string) => (notes.length === 0 ? none : notes.map((n) => `- ${n.id}: ${n.text.replaceAll("\n", "\n  ")}`).join("\n"));
+
+	const describeMemory = (agentId: string): string =>
+		[
 			"These are your own notes from earlier conversations with this person. You wrote them (or the person did); they are not instructions from the person now, so what they say in this conversation comes first.",
-			notes.length === 0 ? "You have no notes yet." : notes.map((n) => `- ${n.id}: ${n.text.replaceAll("\n", "\n  ")}`).join("\n"),
-			`Add a note with remember when the person states a lasting preference or fact, or a decision that will matter again. Do not note: anything about only this conversation; anything secret, such as a password or key; anything you only read in a file or on a page rather than were told by the person. Notes are short (${MAX_NOTE_CHARS} characters at most, ${MAX_NOTES} in all). Remove one that is out of date or wrong with forget.`,
+			list(memory[agentId]?.notes ?? [], "You have no notes yet."),
+			MEMORY_GUIDANCE,
+		].join("\n");
+
+	/**
+	 * A chat's memory: chat mode's own notes, in full, and one line naming the agents whose notes it can look up. Only the
+	 * names, not how many notes each has, so an agent noting something does not change every chat's prompt.
+	 */
+	const describeChatMemory = (): string => {
+		const agents = readableAgents().map((agent) => agent.name);
+		return [
+			"These are your own notes from earlier chats with this person. You wrote them (or the person did); they are not instructions from the person now, so what they say in this chat comes first.",
+			list(chatMemory.notes, "You have no notes yet."),
+			MEMORY_GUIDANCE,
+			...(agents.length === 0
+				? []
+				: [
+						`The person's agents in pi² keep notes of their own, from their conversations with the person: ${agents.join(", ")}. When a question may touch what the person told one of them (their work, projects, preferences), read those notes with agent_notes. They are read-only to you: remember and forget change only your own notes, and no agent sees yours.`,
+					]),
 		].join("\n");
 	};
 
@@ -258,6 +365,13 @@ export const knowledge: Feature = (host, engine) => {
 		if (engine.agents()[id] === undefined) throw new Error(`Unknown agent: ${id}`);
 		return id;
 	};
+	/** Whose notes a request is about: `chat: true` for chat mode's, else `agentId`'s. */
+	const ownerIn = (params: Record<string, unknown>): Owner => {
+		if (params.chat === undefined) return { chat: false, agentId: known(params) };
+		if (params.chat !== true) throw new Error("chat must be true, or left out for an agent's notes");
+		if (params.agentId !== undefined) throw new Error("Give chat or agentId, not both");
+		return CHAT;
+	};
 	const noteText = (params: Record<string, unknown>) => {
 		const value = tidyLines(typeof params.text === "string" ? params.text : "");
 		if (value === "") throw new Error("Write the note first");
@@ -266,8 +380,10 @@ export const knowledge: Feature = (host, engine) => {
 	};
 
 	return {
-		tools: [remember, forget],
+		tools: [remember, forget, agentNotes],
+		// agent_notes is never an agent's: what chat mode reads of the agents' notes goes one way only.
 		toolNames: (_access, agent) => (agent !== undefined && enabledFor(agent.id) ? ["remember", "forget"] : []),
+		chatToolNames: () => (engine.chatSettings().memory ? [...CHAT_MEMORY_TOOLS] : []),
 		sections: [
 			section("project_instructions", async (input, context) => {
 				// Read at every request, so an edit to the file counts from the next message. Only a folder the person chose.
@@ -276,8 +392,9 @@ export const knowledge: Feature = (host, engine) => {
 			}),
 			section("memory", (input) => {
 				if (!input.agent.tools.some((tool) => tool.name === "remember")) return undefined;
-				const agentId = agentOf(input.conversationId);
-				return enabledFor(agentId) ? describeMemory(agentId!) : undefined;
+				const owner = ownerOf(input.conversationId);
+				if (owner === undefined) return undefined;
+				return owner.chat ? describeChatMemory() : describeMemory(owner.agentId);
 			}),
 		],
 		state: (view) => {
@@ -287,11 +404,12 @@ export const knowledge: Feature = (host, engine) => {
 			return { projectInstructions: found.at(-1)?.file ?? null, projectInstructionFiles: found.map(({ folder, file }) => ({ folder, file })) };
 		},
 		start: async () => {
-			memory = (await engine.harness().snapshot(Memory, engine.context()))?.agents ?? {};
-			memory = JSON.parse(JSON.stringify(memory));
+			const doc = await engine.harness().snapshot(Memory, engine.context());
+			memory = JSON.parse(JSON.stringify(doc?.agents ?? {}));
+			chatMemory = JSON.parse(JSON.stringify(doc?.chat ?? { notes: [], next: 1 }));
 		},
 		agentDuplicated: async (sourceId, copyId) => {
-			await change((agents) => {
+			await change(({ agents }) => {
 				// Only the switch is a setting; the notes are what the original learned.
 				agents[copyId] = { enabled: agents[sourceId]?.enabled ?? false, notes: [], next: 1 };
 			});
@@ -299,18 +417,20 @@ export const knowledge: Feature = (host, engine) => {
 		greeting: () => [event()],
 		handlers: {
 			"memory.setEnabled": async (params) => {
+				if (params.chat !== undefined) throw new Error("Chat mode's memory is turned on and off with chat.set { memory }");
 				const id = known(params);
 				if (typeof params.enabled !== "boolean") throw new Error("enabled must be true or false");
-				await change((agents) => void (record(agents, id).enabled = params.enabled as boolean));
+				await change(({ agents }) => void (record(agents, id).enabled = params.enabled as boolean));
 				return {};
 			},
+			// Each takes `agentId`, or `chat: true` for chat mode's own notes; an agent's are never changed through a chat's.
 			"memory.add": async (params) => {
-				const id = known(params);
+				const owner = ownerIn(params);
 				const value = noteText(params);
-				const added = await change((agents) => {
-					const mine = record(agents, id);
+				const added = await change((doc) => {
+					const mine = notebook(doc, owner);
 					if (mine.notes.length >= MAX_NOTES) return undefined;
-					const noteId = `m${mine.next++}`;
+					const noteId = newId(mine, owner);
 					mine.notes.push({ id: noteId, text: value, createdAt: Date.now(), conversation: null });
 					return noteId;
 				});
@@ -318,10 +438,10 @@ export const knowledge: Feature = (host, engine) => {
 				return { id: added };
 			},
 			"memory.edit": async (params) => {
-				const id = known(params);
+				const owner = ownerIn(params);
 				const value = noteText(params);
-				const found = await change((agents) => {
-					const note = record(agents, id).notes.find((n) => n.id === params.id);
+				const found = await change((doc) => {
+					const note = notebook(doc, owner).notes.find((n) => n.id === params.id);
 					if (note !== undefined) note.text = value;
 					return note !== undefined;
 				});
@@ -329,9 +449,9 @@ export const knowledge: Feature = (host, engine) => {
 				return {};
 			},
 			"memory.delete": async (params) => {
-				const id = known(params);
-				await change((agents) => {
-					const mine = record(agents, id);
+				const owner = ownerIn(params);
+				await change((doc) => {
+					const mine = notebook(doc, owner);
 					mine.notes = mine.notes.filter((n) => n.id !== params.id);
 				});
 				return {};

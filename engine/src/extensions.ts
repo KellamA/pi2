@@ -417,7 +417,7 @@ export function pi2Extension(host: Host): Extension {
 		}),
 		replay: "safe", // reading changes nothing
 		execute: async (args, api) => {
-			const result = readReference(filesOf(api.conversationId), args.path, args.offset, args.limit);
+			const result = await readReference(filesOf(api.conversationId), args.path, args.offset, args.limit);
 			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
 		},
 	});

@@ -32,6 +32,12 @@ struct PaletteView: View {
             result.append(Entry(id: "go-\(name)", icon: icon, title: "Go to \(name)", detail: "View") { model.selection = selection })
         }
         if matches("new chat") { result.append(Entry(id: "new-chat", icon: "square.and.pencil", title: "New Chat", detail: "Chat") { model.newChat() }) }
+        // The chat on screen, handed to an agent; its sheet waits for the palette to go first.
+        if model.mode == .chat, let chat = model.chats.selection, engine.canContinueWithAgent(chat), matches("continue with an agent") {
+            result.append(Entry(id: "continue-chat", icon: "arrowshape.turn.up.right", title: "Continue with an Agent…", detail: "Chat") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.continueWithAgent(chat) }
+            })
+        }
         for (name, mode) in [("Agents", WindowMode.agents), ("Chat", WindowMode.chat)] where model.mode != mode && matches("switch to \(name)") {
             result.append(Entry(id: "mode-\(name)", icon: mode == .chat ? "bubble.left.and.bubble.right" : "person.2", title: "Switch to \(name)", detail: "View") { model.mode = mode })
         }

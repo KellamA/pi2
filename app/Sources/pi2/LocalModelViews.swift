@@ -89,7 +89,16 @@ struct LocalModelStrip: View {
                         Image(systemName: state.status == "failed" ? "exclamationmark.triangle.fill" : "cpu")
                             .foregroundStyle(state.status == "failed" ? Theme.bad : Theme.tx2)
                     }
-                    Text(shown).foregroundStyle(Theme.tx).fixedSize(horizontal: false, vertical: true)
+                    if state.status == "starting", let since = state.since {
+                        // How long it has been loading, ticking: a first start takes minutes, and a clock shows it is not stuck.
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            let seconds = max(0, Int(context.date.timeIntervalSince1970 - since / 1000))
+                            Text(shown.replacingOccurrences(of: "{elapsed}", with: String(format: "%d:%02d", seconds / 60, seconds % 60)))
+                                .foregroundStyle(Theme.tx).fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        Text(shown.replacingOccurrences(of: " ({elapsed})", with: "")).foregroundStyle(Theme.tx).fixedSize(horizontal: false, vertical: true)
+                    }
                     Spacer()
                     if state.status == "failed", let log = state.log {
                         Button("Show Log") { LocalModels.showLog(log) }
@@ -120,7 +129,7 @@ struct LocalModelStrip: View {
         case "starting":
             let percent = state.progress.map { " (\(Int(($0 * 100).rounded()))%)" } ?? ""
             let stage = state.stage.map { ": \($0)" } ?? ""
-            return "Starting \(state.name) on this Mac\(percent)\(stage). A message sent now is answered once it has loaded."
+            return "Starting \(state.name) on this Mac ({elapsed})\(percent)\(stage). A message sent now is answered once it has loaded. The first start after setting it up can take about three minutes; later starts about 20 seconds."
         case "stopping": return "Stopping \(state.name)…"
         case "failed": return "\(state.name) could not run on this Mac: \(state.error ?? "it stopped unexpectedly"). Your next message tries again."
         case "stopped" where state.since != nil: return "\(state.name) is not loaded. Your next message starts it on this Mac."
@@ -154,7 +163,9 @@ private struct LocalServerRow: View {
 
     private var detail: String {
         var parts = [LocalModels.standing(server)]
-        if let memory = server.memory { parts.append("\(LocalModels.memory(memory)) in memory") }
+        // Resident memory, as `ps` counts it: the model's file, mapped and kept in memory for the GPU, is most of it. Activity
+        // Monitor's Memory column counts only what each process holds of its own (about 15 GB of the 60 for IQ3_S).
+        if let memory = server.memory { parts.append("\(LocalModels.memory(memory)) in memory, its file included") }
         if server.users.isEmpty {
             if server.stopsAt != nil { parts.append("no conversation is using it") }
         } else {

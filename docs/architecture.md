@@ -30,6 +30,20 @@ The app starts the engine if it is not running, and reconnects if it dies. A sec
 
 If the engine ends before the app can reach it three starts in a row (Node or the engine's files missing, an error as it loads), the window says the engine could not be started, shows the end of `engine.log` and what to check, and offers to try again at once. The app keeps trying on its own, waiting twice as long after each further failure, up to a minute between starts, and the notice goes away as soon as an engine answers.
 
+### Keeping the app quick while agents work
+
+With twenty runs going, the engine sends the app dozens of events a second: `activity` whenever a run or one of its commands changes, and `conversation` two or three times a second for each open conversation that is working. Reading them is cheap (a tenth of a millisecond to half a millisecond each, measured in #347); what costs is what SwiftUI draws again for them. So (`EngineClient.swift`):
+
+- **A property is set only when its value changed.** A property of an observable object tells every view that reads it of each set, even to the same value, and the engine sends most events whole again for any change in them.
+- **Each open conversation is an object of its own** (`OpenConversation`). An update to one conversation redraws the views that show it, not the toolbar, the menus and every pane, which reading it from one dictionary of all of them did.
+- **A conversation no pane shows is closed after two minutes** (`conversation.close`), unless Quick Ask has it or a message to it is on its way. Until then going back to it is instant; after, it is asked for again.
+- **Views that change often are small views of their own**, such as the count of runs on Activity's row, so the sidebar is not drawn again with them.
+- **Spinners turn in Core Animation** (`Spinner` in `Theme.swift`), not with a SwiftUI animation, which laid the window out again every frame for each one: twenty in the sidebar kept the main thread about a third busy on their own.
+
+A message sent from the message field shows at once as a chip, "Sending", then "Sent" until the conversation shows it (`EngineClient.outgoing`). It goes with a request id, and when no answer comes because the connection to the engine went, it is sent again with the same id once the engine is back, which makes the engine find the submission it may already have taken rather than take it twice. A pane whose conversation has been asked for and has not come yet says it is loading, and its toolbar leaves out the model and tool menus until there is something to show in them.
+
+A development build measures this when asked: see [Measuring the app's speed](development.md#measuring-the-apps-speed).
+
 ## The engine
 
 | File | What it holds |
@@ -42,7 +56,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
 | `src/modellists.ts` | Asking a built-in provider which models a key or sign-in can use; the store of catalogs the library refreshes itself (`model-catalogs.json`) |
-| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs, setting them up, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
+| `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs (or taking a pack's files from a folder of the person's), preparing them with Strata's setup, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
 | `src/localcatalog.ts` | What can be downloaded for models on this Mac: the pinned engine and the packs, with their checksums and memory figures |
 | `src/download.ts` | Downloading one large file that carries on where it stopped and is checked against a checksum known in advance |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
@@ -59,7 +73,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/runcode.ts` | `run_code`: a short program run in a sandbox with no tools, files or network. See [code.md](code.md) |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
-| `src/knowledge.ts` | A project's instructions file, and an agent's memory |
+| `src/knowledge.ts` | A project's instructions file, an agent's memory, and chat mode's |
 | `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
@@ -81,7 +95,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 | `src/background.ts` | Commands an agent leaves running in the background: starting, reading their output, stopping, and what happens to them when a conversation is put away or the engine stops. See [background.md](background.md) |
 | `src/processes.ts` | The processes of set-up and background commands: reading `ps`, the run's marker, and stopping only what is provably left over from an engine that died |
 | `src/localrun.ts` | Running a model on this Mac: starting it when a conversation starts using it, sharing it, stopping it when none does, and its process. See [local-models-running.md](local-models-running.md) |
-| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of how the real engine is started and known to be ready |
+| `src/localengine.ts` | What is set up on this Mac (`local-models.json`), and the one description of the real engine: how its server is started, with what run config, and known to be ready, and how its setup installs the engine and prepares a pack |
 | `src/mcp.ts` | MCP servers and their tools. See [mcp.md](mcp.md) |
 | `src/backup.ts` | Backup and restore |
 | `src/log.ts` | The time at the start of each line of `engine.log`. See [The logs](#the-logs) |
@@ -131,7 +145,7 @@ A sub-chat is given its agent's tools, as a conversation of that agent's would b
 
 A sub-chat whose run ends without an answer is kept as it stopped, and `delegate`'s result says why and how to carry on: "Scout did not finish the task: the model's provider answered with an error: “429 rate_limit_error: This request would exceed your account's rate limit. …” The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12." The provider's message is shortened to 300 characters, with keys, account and organisation identifiers, request ids and email addresses taken out (`src/providererror.ts`). A refusal for the provider's limit is waited for before it gets that far ([limits.md](limits.md#when-a-limit-is-reached)); when the run ends on one all the same, the result says that carrying on works once the limit has reset.
 
-When a window of the subscription a sub-chat ran on is 80% used or more, `delegate`'s result ends with a line saying so, and `sub_chats`' list ends with how every signed-in subscription's windows stand and which of the agents run on each, so an agent that hands out work can start fewer sub-chats on one nearly used up ([limits.md](limits.md#telling-an-agent-that-hands-out-work-and-the-person)).
+When a window of the subscription a sub-chat ran on is 80% used or more, `delegate`'s result ends with a line saying so, and `sub_chats`' list ends with how every signed-in subscription's windows stand and which of the agents run on each, so an agent that hands out work can start fewer sub-chats on one nearly used up ([limits.md](limits.md#telling-an-agent-that-hands-out-work-and-the-person)). A sub-chat that waits for a provider's limit says so in that list, with until when, and the person sees it waiting rather than working, in its row and in one line in the conversation that handed it the work ([limits.md](limits.md#when-a-limit-is-reached)).
 
 ### A message while an agent waits
 
@@ -146,6 +160,8 @@ The app sends a message to a working conversation either to steer it (the defaul
 | Everything else | Left to finish, and the message comes after it: a command in the foreground, `write`, `edit` and `write_document`, an MCP tool, a code mode script (and every call it makes, `delegate` included, since they are part of the script), computer use, the browser, and a call waiting for the person's approval, which they answer on its card. |
 
 A message sent queued keeps its meaning and is placed once the agent has answered.
+
+A run that is not in a round of tool calls but waiting to ask the model again (a retry's sleep, and so a wait for a provider's limit, which can last hours) has nothing to end: the request after the wait is the next step. A steer sent then does not end the wait, which would only meet the same refusal; it stays queued, where the person can take it back, and is placed as the wait ends, before that request is made, so the request carries it (a patch to pi durable's retry, `engine/scripts/patch-dependencies.ts`; #324). `messageWaits` has `retryAt` while the run sleeps, and the message field names the limit and its time ([limits.md](limits.md#when-a-limit-is-reached)).
 
 A sub-chat whose wait ended this way is watched for under the call's own key, as `wait: false` watches one, so its answer is given exactly once: to `sub_chats` with `wait`, or as the message that wakes the agent, with the limits and the hourly cap [wakes.md](wakes.md) describes. A wait that got what it waited for in the same moment as the message gives it rather than dropping it. Like a sub-chat started with `wait: false`, one a message let go on is not stopped by Stop: it is stopped on its own, in the sidebar.
 
@@ -204,6 +220,32 @@ What an engine responsible for itself has depends on where its Node is:
 So in a release build, an agent's command that captures the screen, such as `screencapture`, works if and only if pi² itself has Screen Recording (System Settings › Privacy & Security › Screen & System Audio Recording); in a development build or a copy, it never does. Without it the command fails (`screencapture` exits 1 with "could not create image from display" and writes no file), and the first time (seen in #47, in a copy), macOS puts a prompt naming the app on the person's screen and adds the app to the list, switched off; later tries fail with no prompt. Granting it to pi² for computer use's pictures grants it to every command an agent runs too, including one that runs without asking (Full access, or a rule), with none of computer use's limits on which apps it sees ([computer-use.md](computer-use.md#commands-an-agent-runs)). To check without a prompt, ask from the same shell: `swift -e 'import CoreGraphics; print(CGPreflightScreenCaptureAccess())'`.
 
 Seen on macOS 27.2: from an installed release's engine started by the login item (#95), `CGPreflightScreenCaptureAccess()` true and `AXIsProcessTrusted()` false, the log showing the subject `dev.pi2.app` for the first and the Node's path for the second, and a one-pixel `screencapture` working. A prompt in that case was not seen, since pi² had the permission; by the subject, it would name pi². From a throwaway copy's engine before #263, both false with the copy's bundle id as the subject of each; after it (#263), both false with the Node's path as the subject of each, and the engine its own responsible process. No capture was tried from a copy.
+
+### Staying quick while agents work
+
+The app waits on the engine for everything it shows, and the engine has one thread: whatever holds that thread holds every request behind it, opening a conversation or sending a message among them. With about twenty sub-chats at work the owner found pi² slow to open a conversation and to take a message (#344). `scripts/load.mts` reproduces that load ([development.md](development.md#measuring-under-load)); what it found, and what was done about each:
+
+- **The login item ran the engine as a background job.** Its launchd item had `ProcessType` `Background`: the lowest priority macOS has (4, against 31 for a program a person starts), disk access held back, and only the efficiency cores. Every command the engine started inherited the same, so agents' builds and tests took three to seven times as long as the same work started from a terminal (measured on an 18-core Mac, below), and on a busy Mac the engine was the first to give way. An engine the app starts itself never had this. The item is now `Interactive`, what an app's own processes have (`EngineLoginItem.processType`), and an item made before is put right the next time an updated app replaces the engine, when it rewrites the item anyway.
+- **Starting a process holds the thread that starts it** until the new process is under way: a millisecond or two on a quiet Mac, a median of 8 ms and up to half a second at a load of 140. The engine started a `security` process to read a sign-in from the Keychain for every model request, and for every provider each time usage was counted, and the branch tracker runs git for every listed folder every five seconds. A CPU profile under load had the thread inside `spawn` for about 40% of its time. Now the credential store keeps what it has read (the engine is the only writer of its Keychain service, so what it read stays true until it writes or deletes it itself, `src/credentials.ts`), and the programs the engine runs for itself to their end (git, `security`, `ps`, `lsof`, `textutil`) are started from a worker thread of their own (`src/offthread.ts`), which a test showed keeps the engine's thread within 10 ms where starting them itself cost it 100. `textutil`, for reading an agent's Word or RTF reference file, was run synchronously and could hold the thread for its whole run. Agents' own commands are still started from the engine's thread, as they stream their output.
+- **Activity was sent whole for every change to any run.** With 20 runs that was 55 events a second, 6.5 KB each, to every app. It is now sent at most four times a second, at once when none went in the last quarter of a second and otherwise at the end of it, with the state as it is then (`coalesced` in `main.ts`), and every event is made into text once however many apps are connected. The library and the Inbox, a few events a second at most, are still sent at once: what comes next often reads them, and an approval answered must leave the Inbox before it could be answered again.
+- **A message the engine had kept could come back as refused**, when something it does after keeping the message (noting the conversation's new time and title) failed: the app put the text back in the box, and sending it again sent it twice. Once a message is kept, `submit` now answers that it was.
+
+The engine writes a line to `engine.log` whenever its thread was held for a second or more (`src/lag.ts`), and answers `engine.lag` with how late its thread ran since it was last asked.
+
+#### Agents' commands at a lower priority
+
+The commands the engine starts for agents (shell commands, background commands and a worktree's set-up command) run under `nice -n 10`, and so does everything they start (`src/priority.ts`): when the Mac is busy, the processor goes to pi² and the person's other apps first. It changes nothing else: the same program, arguments, folder and environment, in the same process, as `nice` replaces itself with the command. A command can lower its own priority further but not raise it back. **Settings › Tools › Agents' commands** turns it off, for the commands started after.
+
+What was tried, with the load script and 20 runs each running a fixed piece of processor work again and again (one or four `seq | awk` at a time) on an 18-core Mac:
+
+| | One piece, Mac with room | 20 runs × 1, Mac with room | 20 runs × 4, Mac loaded (85 to 98) |
+|---|---|---|---|
+| As before (an engine the app started) | 0.29 s | 0.32 s | 3.25 s median, 4.58 s mean |
+| `nice -n 10` | 0.30 s | 0.33 s | 3.37 s median, 5.00 s mean |
+| `taskpolicy -c utility` | 0.30 s | 1.61 s | |
+| Background (the old login item) | 0.85 s | | |
+
+In the loaded case the two kinds ran side by side, half the runs each. `utility` costs five times as much with room to spare, as macOS keeps such work on the efficiency cores, and was not chosen; `nice` costs nothing with room and about a tenth when there is none. MCP servers are left at pi²'s own priority: they are programs the person chose, started once and shared by every conversation, mostly idle, and some put up windows of their own, which would answer the person late. So is a model running on this Mac, which the person waits on as on pi².
 
 ### How long a command may run
 
@@ -317,11 +359,12 @@ The sections, in the order they are declared:
 | `agents` | `extensions.ts` | the conversation can hand work to another agent (not in a sub-chat) | Comes and goes with the agent's settings and as agents are added or deleted |
 | `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady; changes in place when the agent's settings leave `update_plan` out or bring it back, keeping the second part |
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
-| `memory` | `knowledge.ts` | memory is on for the agent | Comes and goes with the agent's settings |
+| `memory` | `knowledge.ts` | memory is on for the agent, or for chats in a chat ([knowledge.md](knowledge.md#chat-modes-memory)) | Comes and goes with the agent's settings, or chat mode's; in a chat, changes in place as its notes change and as agents with notes come and go |
 | `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out; in a chat, its web switch on) | Comes and goes with the agent's settings, or a chat's web switch |
 | `pictures` | `pictures.ts` | the conversation would make pictures (a chat, or an agent that turned them on) but no provider of the person's has a picture model: it says so | Comes and goes as providers are signed in and out |
 | `documents` | `documents.ts` | `write_document` is offered (access Ask first or Full, and not left out; always in a chat) | Changes with the conversation's access level, and comes and goes with the agent's built-in tools |
 | `chat` | `chat.ts` | the conversation is a chat ([chat.md](chat.md)) | Steady; changes in place as the chat's web switch is turned off or on |
+| `chat_instructions` | `chat.ts` | the conversation is a chat and the chat instructions in Settings are not empty | Comes and goes, and changes in place, with those instructions |
 | `scheduling` | `selfschedule.ts` | the scheduling tools are offered: scheduling on, not in a sub-chat (#177) | Comes and goes with the agent's settings |
 | `worktree` | `worktrees.ts` | the conversation works in a worktree pi² made | Comes when it moves into one, goes when it leaves it or the worktree is removed |
 | `scratch` | `scratch.ts` | `bash` is offered: it names the conversation's [scratch folder](#a-scratch-folder) | Steady; changes only with the conversation's access level |

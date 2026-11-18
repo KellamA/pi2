@@ -126,18 +126,82 @@ struct Dot: View {
 /// A small spinning ring in the accent colour, for "working".
 struct Spinner: View {
     var size: CGFloat = 10
-    @State private var turning = false
 
     var body: some View {
-        Circle()
-            .trim(from: 0, to: 0.28)
-            .stroke(Theme.acc, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-            .background(Circle().stroke(Theme.acc.opacity(0.18), lineWidth: 2))
+        SpinnerLayer()
             .frame(width: size, height: size)
-            .rotationEffect(.degrees(turning ? 360 : 0))
-            .animation(.linear(duration: 0.9).repeatForever(autoreverses: false), value: turning)
-            .onAppear { turning = true }
+            .accessibilityElement()
             .accessibilityLabel("Working")
+    }
+}
+
+/// The spinner's ring, turned by Core Animation. A SwiftUI animation that repeats for ever lays the window out again on
+/// the main thread every frame, for every spinner on screen: with twenty conversations working, the sidebar's spinners
+/// alone kept the main thread a third busy (#347). A layer's animation runs outside the app, and costs it nothing.
+private struct SpinnerLayer: NSViewRepresentable {
+    func makeNSView(context: Context) -> SpinnerView { SpinnerView() }
+    func updateNSView(_ view: SpinnerView, context: Context) {}
+}
+
+private final class SpinnerView: NSView {
+    private let turning = CALayer()
+    private let track = CAShapeLayer()
+    private let arc = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        for ring in [track, arc] {
+            ring.fillColor = nil
+            ring.lineWidth = 2
+            turning.addSublayer(ring)
+        }
+        arc.lineCap = .round
+        arc.strokeEnd = 0.28
+        layer?.addSublayer(turning)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        turning.bounds = bounds
+        turning.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        let path = CGPath(ellipseIn: bounds, transform: nil)
+        track.path = path
+        arc.path = path
+        colour()
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        colour()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, turning.animation(forKey: "turn") == nil else { return }
+        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+        turn.fromValue = 0
+        // Clockwise on screen, as the SwiftUI spinner turned.
+        turn.toValue = -2 * Double.pi
+        turn.duration = 0.9
+        turn.repeatCount = .infinity
+        turn.isRemovedOnCompletion = false
+        turning.add(turn, forKey: "turn")
+    }
+
+    private func colour() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let accent = NSColor(Theme.acc)
+            arc.strokeColor = accent.cgColor
+            track.strokeColor = accent.withAlphaComponent(0.18).cgColor
+        }
     }
 }
 
