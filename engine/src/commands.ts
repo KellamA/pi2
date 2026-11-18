@@ -38,6 +38,7 @@ import { commandEnvironment } from "./environment.ts";
 import { commandAsks } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { countLines, KEEP_DAYS, type Kept, MAX_FILE_BYTES, OutputStore, type Recorder } from "./output.ts";
+import { forAgent } from "./priority.ts";
 import { lookOutFor, newRunMarker, RUN_VARIABLE } from "./processes.ts";
 import { runningCommands } from "./running.ts";
 import { scratchVariable } from "./scratch.ts";
@@ -280,8 +281,10 @@ async function run(store: OutputStore | undefined, limits: Limits, args: { comma
 	else context.abortSignal?.addEventListener("abort", forward, { once: true });
 	// For the person: how long it has run, and how long since it printed (running.ts). Ended in the `finally` below.
 	const clock = runningCommands.begin(conversationId, api.callId, args.command, started);
+	// Through bash, as pi durable would run a string, under the agents' lower priority (priority.ts).
+	const [program, argv] = forAgent("/bin/bash", ["-c", args.command]);
 	const execution = env.exec(
-		args.command,
+		[program, ...argv],
 		{
 			cwd: env.cwd,
 			// The engine's environment less pi²'s own settings, such as its data folder (issue #195), with the agent's own

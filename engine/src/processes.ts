@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto";
 import { subscribe } from "node:diagnostics_channel";
 import { type BigIntStats, closeSync, constants, mkdirSync, openSync, rmSync } from "node:fs";
 import { lstat, readdir, unlink } from "node:fs/promises";
+import { execFileOffThread } from "./offthread.ts";
 import { join } from "node:path";
 
 /**
@@ -142,6 +143,7 @@ export async function sweepRuns(): Promise<void> {
 	// One scan for the folder, not one per file: listing every process's files can be slow on a busy Mac. This runs
 	// outside startup's wait, with a longer deadline than a targeted ps/lsof query. Too many paths fails closed too.
 	const listed = await new Promise<string | undefined>((resolve) => {
+		// On the engine's thread, unlike the others here: it runs once, after start-up, and the tests stand in for it there.
 		execFile("/usr/sbin/lsof", ["-n", "-P", "-F", "pDi", "--", ...candidates.map(({ path }) => path)], { timeout: 120_000, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout, stderr) => {
 			// Exit 1 is the normal answer when none of the files is held. Diagnostics or any other failure are doubt.
 			resolve(stderr !== "" || (error !== null && (error as { code?: unknown }).code !== 1) ? undefined : stdout);
@@ -189,7 +191,7 @@ async function holding(pids: number[], marker: string): Promise<Set<number>> {
 	const file = await lstat(runFile(runFolder, marker), { bigint: true }).catch(() => undefined);
 	if (file === undefined || !file.isFile() || (file.mode & 0o7777n) !== 0n || file.uid !== BigInt(process.getuid?.() ?? -1)) return found;
 	const listed = await new Promise<string | undefined>((resolve) => {
-		execFile("/usr/sbin/lsof", ["-w", "-n", "-P", "-p", pids.join(","), "-F", "pDi"], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+		execFileOffThread("/usr/sbin/lsof", ["-w", "-n", "-P", "-p", pids.join(","), "-F", "pDi"], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
 			// lsof exits 1 when one of the processes asked about is not there: what it listed of the others still stands.
 			resolve(error && (error as { code?: unknown }).code !== 1 ? undefined : String(stdout));
 		});
@@ -230,7 +232,7 @@ export type Listed = { group: number; start: string };
 export function processes(pid?: number): Promise<Map<number, Listed>> {
 	return new Promise((resolve, reject) => {
 		const which = pid === undefined ? ["-A"] : ["-p", String(pid)];
-		execFile("/bin/ps", [...which, "-o", "pid=,pgid=,stat=,lstart="], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+		execFileOffThread("/bin/ps", [...which, "-o", "pid=,pgid=,stat=,lstart="], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
 			const found = new Map<number, Listed>();
 			for (const line of String(stdout).split("\n")) {
 				const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line);
@@ -267,7 +269,7 @@ export async function noteProcess(child: ChildProcess, marker: string): Promise<
 function commandLines(pids: number[], environment: boolean): Promise<Map<number, Listed & { command: string }>> {
 	return new Promise((resolve, reject) => {
 		const args = [...(environment ? ["-E"] : []), "-ww", "-p", pids.join(","), "-o", "pid=,pgid=,stat=,lstart=,command="];
-		execFile("/bin/ps", args, { timeout: PS_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+		execFileOffThread("/bin/ps", args, { timeout: PS_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
 			const found = new Map<number, Listed & { command: string }>();
 			for (const line of String(stdout).split("\n")) {
 				// The start time is five words ("Mon Nov 16 20:57:27 2026"); the command is everything after it.

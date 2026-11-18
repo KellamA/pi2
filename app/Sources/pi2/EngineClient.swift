@@ -496,7 +496,7 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor", "local", "chat":
+            case "limits", "memory", "coauthor", "priority", "local", "chat":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
                 if envelope.event == "limits" { Notifier.shared.limitNotices(PlanLimits(extras["limits"])?.notices ?? []) }
@@ -762,9 +762,11 @@ final class EngineClient {
             kill(pid, SIGKILL)
             for _ in 0..<20 where enginePID != nil { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        // A login item for this data folder may still name the old copy of the app; point it at this one. `install`
-        // replaces it, and refuses if it serves another data folder.
-        if let item = EngineLoginItem.current, item.serves(home: home.path), item.arguments != [node, main] {
+        // A login item for this data folder may still name the old copy of the app, or start the engine as a background
+        // job, as items made before #344 did; put it right. `install` replaces it, and refuses if it serves another
+        // data folder.
+        if let item = EngineLoginItem.current, item.serves(home: home.path),
+           item.arguments != [node, main] || item.processType != EngineLoginItem.processType {
             do {
                 try EngineLoginItem.install(node: node, main: main, home: home.path)
             } catch {

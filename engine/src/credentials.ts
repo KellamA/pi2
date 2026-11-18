@@ -13,12 +13,12 @@
 // items: the provider's own item holds a small manifest, and items named `<provider>:<n>` hold the pieces. ":" is
 // not allowed in a provider id, so a piece can never be mistaken for a provider.
 
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
+import { runOffThread } from "./offthread.ts";
 import { testCredentials } from "./testcredentials.ts";
 
 /** macOS always uses Keychain. Other platforms have a file stand-in for tests, not a supported pi² runtime. */
@@ -36,19 +36,11 @@ const MANIFEST = "pi2-parts-v1";
 
 type Manifest = { format: typeof MANIFEST; parts: number; sha256: string };
 
-function run(args: string[], stdin?: string): Promise<{ code: number; stdout: string; stderr: string }> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(SECURITY, args, { stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		child.stdout!.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-		child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-		child.on("error", reject);
-		child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
-		// `security` may exit before it reads its input; that shows in its exit code, not as a crash here.
-		child.stdin?.on("error", () => {});
-		child.stdin?.end(stdin);
-	});
+/** Runs `security`, off the engine's thread (offthread.ts). Rejects only when it could not be run at all. */
+async function run(args: string[], stdin?: string): Promise<{ code: number; stdout: string; stderr: string }> {
+	const { error, stdout, stderr } = await runOffThread(SECURITY, args, { maxBuffer: 16 * 1024 * 1024, ...(stdin === undefined ? {} : { input: stdin }) });
+	if (error !== null && typeof error.code !== "number" && error.killed !== true && error.signal == null) throw error;
+	return { code: error === null ? 0 : typeof error.code === "number" ? error.code : 1, stdout, stderr };
 }
 
 /** The Keychain service pi²'s secrets are kept under: the usual one, or the one PI2_KEYCHAIN_SERVICE names. */
@@ -200,6 +192,14 @@ export class KeychainObjects {
 export class KeychainCredentialStore implements CredentialStore {
 	readonly #items: KeychainObjects;
 	readonly #indexPath: string;
+	/**
+	 * What each provider's item held when it was last read or written, none included. Every model request and every
+	 * look at which providers are signed in reads a credential, and each read was a `security` process: hundreds a
+	 * minute with many runs going, each holding the engine's thread while it was started, which on a busy Mac took up
+	 * to half a second (#344). The engine is the only writer of its service, through `modify` and `delete` below, so
+	 * what it read stays true until it changes it itself. A read that failed is not kept.
+	 */
+	readonly #known = new Map<string, Promise<Credential | undefined>>();
 
 	constructor(home: string, service = keychainService()) {
 		this.#items = new KeychainObjects(service);
@@ -213,7 +213,17 @@ export class KeychainCredentialStore implements CredentialStore {
 	 */
 	async read(providerId: string): Promise<Credential | undefined> {
 		checkId(providerId);
-		return (await this.#items.read(providerId)) as Credential | undefined;
+		let known = this.#known.get(providerId);
+		if (known === undefined) {
+			known = this.#items.read(providerId) as Promise<Credential | undefined>;
+			this.#known.set(providerId, known);
+			known.catch(() => {
+				if (this.#known.get(providerId) === known) this.#known.delete(providerId);
+			});
+		}
+		// A copy, so that nothing a caller does to it changes what is kept.
+		const credential = await known;
+		return credential === undefined ? undefined : structuredClone(credential);
 	}
 
 	async list(): Promise<readonly CredentialInfo[]> {
@@ -227,7 +237,14 @@ export class KeychainCredentialStore implements CredentialStore {
 			const current = await this.read(providerId);
 			const updated = await fn(current);
 			if (updated === undefined) return current;
-			await this.#items.write(providerId, updated, "the credential");
+			try {
+				await this.#items.write(providerId, updated, "the credential");
+			} catch (error) {
+				// Whether any of it landed is not known: read it again next time.
+				this.#known.delete(providerId);
+				throw error;
+			}
+			this.#known.set(providerId, Promise.resolve(structuredClone(updated)));
 			this.#writeIndex({ ...this.#index(), [providerId]: updated.type });
 			return updated;
 		});
@@ -235,7 +252,12 @@ export class KeychainCredentialStore implements CredentialStore {
 
 	async delete(providerId: string): Promise<void> {
 		checkId(providerId);
-		await this.#items.delete(providerId);
+		this.#known.delete(providerId);
+		try {
+			await this.#items.delete(providerId);
+		} finally {
+			this.#known.delete(providerId);
+		}
 		const index = this.#index();
 		delete index[providerId];
 		this.#writeIndex(index);

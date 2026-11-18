@@ -250,7 +250,7 @@ const engine: Engine = {
 	stateChanged: (id) => {
 		for (const client of clients) (client.subscriptions.get(id) ?? client.subscriptions.get(chatOf(id)))?.push();
 	},
-	activityChanged: () => broadcast(activityEvent()),
+	activityChanged: () => announceActivity(),
 	overBudget: () => (overBudget() ? `Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up.` : undefined),
 	providersChanged: () => void announceProviders(),
 };
@@ -800,8 +800,35 @@ function send(client: Client, message: unknown): void {
 	if (!client.socket.destroyed) client.socket.write(`${JSON.stringify(message)}\n`);
 }
 function broadcast(message: unknown): void {
-	for (const client of clients) send(client, message);
+	if (clients.size === 0) return;
+	// Made into text once, however many apps are connected.
+	const line = `${JSON.stringify(message)}\n`;
+	for (const client of clients) if (!client.socket.destroyed) client.socket.write(line);
 }
+
+/**
+ * Sends the event `make` makes to every app at most once every `ms`: at once when none went in the last `ms`, else once
+ * at the end of it, made then, so the last state is always sent. Activity lists every run, and was sent again whole for
+ * each change to any of them: with 20 runs working, 55 events a second, 360 KB, each of which the app decoded and laid
+ * out (#344). The library and the Inbox, sent a few times a second at most, go at once: what is done next often reads
+ * them (an approval answered must leave the Inbox before it could be answered again).
+ */
+function coalesced(make: () => unknown, ms = 250): () => void {
+	let last = Number.NEGATIVE_INFINITY;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const now = () => {
+		timer = undefined;
+		last = performance.now();
+		broadcast(make());
+	};
+	return () => {
+		if (timer !== undefined) return;
+		const wait = last + ms - performance.now();
+		if (wait <= 0) now();
+		else timer = setTimeout(now, wait);
+	};
+}
+const announceActivity = coalesced(() => activityEvent());
 
 library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
 // Conversations deleted before there was an archive are marked the new way, once.
@@ -913,7 +940,7 @@ function inboxEvent() {
 }
 inbox.onChange = () => {
 	broadcast(inboxEvent());
-	broadcast(activityEvent());
+	announceActivity();
 };
 
 async function providersEvent() {
@@ -1537,14 +1564,20 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
-		for (const feature of host.features) feature.messageSent?.(params.id as number);
-		// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
-		if (params.mode === "steer") messageSent(conv.id as unknown as number);
+		// From here the message is kept, and the app is told so at once: nothing after this may make it look refused, or the
+		// person, given the text back, would send it again (#344).
+		try {
+			for (const feature of host.features) feature.messageSent?.(params.id as number);
+			// A message to steer ends the waits of calls that only wait, so that it reaches the agent now (heed.ts).
+			if (params.mode === "steer") messageSent(conv.id as unknown as number);
+		} catch (error) {
+			log("after a message to conversation", params.id, "was kept:", error instanceof Error ? error.message : error);
+		}
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
 			// A message that is only attachments is titled after the first of them.
 			if (meta.title === "") meta.title = (content.trim().split("\n")[0] || attachments[0]?.name || "").slice(0, 60);
-		});
+		}).catch((error) => log("could not note the message to conversation", params.id, error instanceof Error ? error.message : error));
 		return { submissionId: submission.id };
 	},
 	abort: async (params) => {
@@ -1905,14 +1938,14 @@ graphWatch.start(async (call) => {
 	for (const feature of host.features) feature.runsChanged?.(working);
 	const changed = before.size !== working.size || [...working].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
-	broadcast(activityEvent());
+	announceActivity();
 	scheduleUsageRefresh();
 });
 // A command starting or ending changes its row in the conversation, which the live document may already have shown
 // without its clock; its output reaches the conversation on its own, and only Activity needs telling of it.
 runningCommands.onChange = (id, why) => {
 	if (why !== "printed") engine.stateChanged(id);
-	broadcast(activityEvent());
+	announceActivity();
 };
 
 // ---- MCP servers: their tools are one extension, replaced whenever a server connects or drops
