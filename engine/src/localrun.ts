@@ -307,13 +307,13 @@ function start(modelId: string): Server {
 		if (server.stopping !== undefined) return finish();
 		mkdirSync(folder, { recursive: true });
 		server.port = await freePort();
-		const { program, args } = recipe.command(setup.engine!, model, server.port);
+		const { program, args, env } = recipe.command(setup.engine!, model, server.port, host.home);
 		const marker = newRunMarker();
 		const output = openSync(server.log, "w");
 		let child: ChildProcess;
 		try {
 			child = spawn(program, args, {
-				env: commandEnvironment({ [RUN_VARIABLE]: marker, ...(recipe.keyVariable === null ? {} : { [recipe.keyVariable]: server.key }) }),
+				env: commandEnvironment({ ...env, [RUN_VARIABLE]: marker, ...(recipe.keyVariable === null ? {} : { [recipe.keyVariable]: server.key }) }),
 				detached: true,
 				stdio: ["ignore", output, output],
 			});

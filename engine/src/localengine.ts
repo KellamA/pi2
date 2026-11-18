@@ -17,12 +17,20 @@ export type LocalModel = {
 	/** The model's file: the first of its pack's files, the others beside it. */
 	path: string;
 	contextSize: number;
+	/** Strata's run config for the model, which its installer writes once the model is prepared (#290); absent until then. */
+	config?: string;
 	/** Settings of the engine for this model. Keys pi² does not know are kept and ignored. */
 	options: { vision?: boolean; visionFile?: string | null; parallel?: number; tools?: boolean; [key: string]: unknown };
 };
 
+/**
+ * The engine as installed: `path` its executable, `folder` its whole package, and `control` Strata's control package,
+ * whose server starts the executable (#290). The last two are absent from what an earlier downloads piece wrote.
+ */
+export type LocalEngine = { version: string; path: string; folder?: string; control?: { version: string; folder: string } };
+
 /** What is on disk: the engine, if there is one, and the models set up for it. */
-export type LocalSetup = { engine: { version: string; path: string } | null; models: LocalModel[] };
+export type LocalSetup = { engine: LocalEngine | null; models: LocalModel[] };
 
 const EMPTY: LocalSetup = { engine: null, models: [] };
 
@@ -39,6 +47,7 @@ function readModel(raw: unknown): LocalModel | undefined {
 		pack: typeof entry.pack === "string" ? entry.pack : "",
 		path: entry.path,
 		contextSize,
+		...(typeof entry.config === "string" && entry.config !== "" ? { config: entry.config } : {}),
 		options,
 	};
 }
@@ -65,9 +74,18 @@ export function localSetupReader(home: string): () => LocalSetup {
 		seen = stamp;
 		try {
 			const raw = JSON.parse(readFileSync(path, "utf8")) as { engine?: unknown; models?: unknown };
-			const engine = raw.engine as { version?: unknown; path?: unknown } | null | undefined;
+			const engine = raw.engine as { version?: unknown; path?: unknown; folder?: unknown; control?: { version?: unknown; folder?: unknown } | null } | null | undefined;
+			const control = engine?.control;
 			setup = {
-				engine: engine !== null && typeof engine === "object" && typeof engine.path === "string" ? { version: String(engine.version ?? ""), path: engine.path } : null,
+				engine:
+					engine !== null && typeof engine === "object" && typeof engine.path === "string"
+						? {
+								version: String(engine.version ?? ""),
+								path: engine.path,
+								...(typeof engine.folder === "string" ? { folder: engine.folder } : {}),
+								...(control !== null && typeof control === "object" && typeof control.folder === "string" ? { control: { version: String(control.version ?? ""), folder: control.folder } } : {}),
+							}
+						: null,
 				models: (Array.isArray(raw.models) ? raw.models : []).map(readModel).filter((model): model is LocalModel => model !== undefined),
 			};
 		} catch {
@@ -82,10 +100,11 @@ export type EngineRecipe = {
 	/** The engine's name, as the person reads it. */
 	name: string;
 	/**
-	 * The program and its arguments that serve `model` on 127.0.0.1 at `port`, and only there. Nothing secret goes in the
-	 * arguments, which every process on the Mac can read: the key goes in `keyVariable`.
+	 * The program, its arguments and what it needs in its environment, to serve `model` on 127.0.0.1 at `port`, and only
+	 * there. `home` is pi²'s data folder. Nothing secret goes in the arguments, which every process on the Mac can read:
+	 * the key goes in `keyVariable`.
 	 */
-	command(engine: { path: string; version: string }, model: LocalModel, port: number): { program: string; args: string[] };
+	command(engine: LocalEngine, model: LocalModel, port: number, home: string): { program: string; args: string[]; env?: Record<string, string> };
 	/** The environment variable the engine reads the key every request must carry from; null when it takes none. */
 	keyVariable: string | null;
 	/** Where the OpenAI-compatible API is, under `http://127.0.0.1:<port>`: the base its `/chat/completions` is under. */
@@ -97,9 +116,22 @@ export type EngineRecipe = {
 };
 
 /**
- * Strata (https://github.com/Niko1221/Strata), as far as its documentation tells. Not yet checked against the version
- * the downloads piece pins, nor run by pi²: #290 tries it and #293 corrects what is wrong here. To check:
- * - the server's flags (`--model`, `--host`, `--port`, `--context`, `--parallel` and the picture reader's file);
+ * Where Strata keeps what it installs and finds (its engine component, its own settings), for every Strata command pi²
+ * runs, so that nothing goes to the person's own `~/.local` or `~/.strata` (#290). The downloads piece installs the engine
+ * component with the same ones.
+ */
+export function strataEnvironment(home: string): Record<string, string> {
+	const root = join(home, "local", "strata");
+	return { HOME: join(root, "home"), XDG_DATA_HOME: join(root, "data"), STRATA_HOME: join(root, "strata") };
+}
+
+/**
+ * Strata (https://github.com/Niko1221/Strata), as far as #290 found and its documentation tells; not yet run by pi².
+ * #293 corrects what is wrong here. Its HTTP server is the control package's Python `serve/server.py`, which starts the
+ * `strata` executable itself, with the run config Strata's installer writes for a prepared model (`config`). A model
+ * without one, or an engine without its control package, is started with the executable's own flags, as the stand-in
+ * the tests use is. To check:
+ * - the server's flags besides `--engine` and `--config` (address and port), and the executable's own;
  * - that it reads a key from the environment, and under which name (its setup takes `--api-key`, which would put it
  *   where every process can read it: rather none than that);
  * - that `/v1/models` answers 200 only once the model is loaded;
@@ -107,7 +139,14 @@ export type EngineRecipe = {
  */
 export const STRATA: EngineRecipe = {
 	name: "Strata",
-	command: (engine, model, port) => {
+	command: (engine, model, port, home) => {
+		if (engine.control !== undefined && model.config !== undefined) {
+			return {
+				program: join(engine.control.folder, "python", "bin", "python3"),
+				args: [join(engine.control.folder, "serve", "server.py"), "--engine", "strata", "--config", model.config, "--host", "127.0.0.1", "--port", String(port)],
+				env: strataEnvironment(home),
+			};
+		}
 		const options = model.options;
 		const vision = options.vision === true && typeof options.visionFile === "string" && options.visionFile !== "";
 		const parallel = typeof options.parallel === "number" && Number.isInteger(options.parallel) && options.parallel > 0 ? options.parallel : 1;

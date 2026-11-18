@@ -33,6 +33,19 @@ assert.equal(STRATA.progress("Loading tensors: 12.5 % done"), 0.125);
 assert.equal(STRATA.progress("served 40% of requests"), undefined, "a percentage that is not about loading says nothing");
 assert.equal(STRATA.progress("loading the vocabulary"), undefined);
 step("how far loading has got is read from what the engine prints");
+{
+	// A prepared model is served by Strata's control package, with its run config, and Strata's own folders in pi²'s.
+	const engine = { version: "0.1.60", path: "/e/strata", folder: "/e", control: { version: "0.1.61", folder: "/c" } };
+	const model = { id: "m", name: "M", pack: "IQ3_S", path: "/m/1.gguf", contextSize: 65_536, options: {} };
+	const served = STRATA.command(engine, { ...model, config: "/m/strata-m.json" }, 4321, "/data");
+	assert.equal(served.program, "/c/python/bin/python3");
+	assert.deepEqual(served.args.slice(0, 5), ["/c/serve/server.py", "--engine", "strata", "--config", "/m/strata-m.json"]);
+	assert.ok(served.args.includes("4321") && served.args.includes("127.0.0.1"));
+	assert.deepEqual(served.env, { HOME: "/data/local/strata/home", XDG_DATA_HOME: "/data/local/strata/data", STRATA_HOME: "/data/local/strata/strata" });
+	assert.equal(STRATA.command(engine, model, 4321, "/data").program, "/e/strata", "a model not yet prepared has no run config");
+	assert.ok(!JSON.stringify(served).includes("key"), "no key on the command line");
+}
+step("a prepared model is started through Strata's control package with its run config");
 
 // ---- The stand-in, as the engine set up on this Mac, and the models it serves
 
