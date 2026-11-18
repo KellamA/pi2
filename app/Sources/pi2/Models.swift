@@ -268,6 +268,8 @@ struct ComputerSettings: Codable, Equatable {
     var enabled = false
     var apps: [String] = []
     var ask = true
+    /// Whether the agent may also use throwaway test copies of pi² (#146). Optional: agents saved before it have none.
+    var testCopies: Bool?
 }
 
 /// Whether an agent may browse the web in pi²'s own browser, and whether it asks before acting on a page.
@@ -367,7 +369,10 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "codeMode": codeMode ?? false,
             "mcpServers": mcpServers ?? [],
             "files": (files ?? []).map { ["path": $0.path, "note": $0.note] },
-            "computer": ["enabled": computer?.enabled ?? false, "apps": computer?.apps ?? [], "ask": computer?.ask ?? true],
+            "computer": [
+                "enabled": computer?.enabled ?? false, "apps": computer?.apps ?? [], "ask": computer?.ask ?? true,
+                "testCopies": computer?.testCopies ?? false,
+            ],
             "browser": ["enabled": browser?.enabled ?? false, "ask": browser?.ask ?? true],
             "schedule": ["enabled": schedule?.enabled ?? false],
             "toolsOff": toolsOff ?? [],
@@ -397,7 +402,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
         agent.computer = ComputerSettings(
             enabled: computer?.enabled ?? false,
             apps: (computer?.apps ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && apps.insert($0).inserted },
-            ask: computer?.ask ?? true)
+            ask: computer?.ask ?? true,
+            testCopies: computer?.testCopies ?? false)
         agent.browser = browser ?? BrowserSettings()
         agent.schedule = schedule ?? ScheduleSettings()
         agent.toolsOff = toolsOff ?? []
@@ -808,6 +814,8 @@ struct McpServer: Codable, Equatable, Identifiable {
     let command: String?
     let args: [String]?
     let url: String?
+    /// A server run as a program: its own environment variables, by name. The values stay in the Keychain.
+    let variables: [AgentVariable]?
     let enabled: Bool
     let status: String
     let error: String?
