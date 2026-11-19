@@ -1269,6 +1269,6 @@ struct EngineError: LocalizedError {
     var unanswered = false
     /// What a refusal carries beside its message (docs/projects.md, 4.1): the new report of a plan that changed since the
     /// person looked, say. Nil for most refusals.
-    var data: JSONValue? = nil
+    var data: [String: JSONValue]? = nil
     var errorDescription: String? { message }
 }

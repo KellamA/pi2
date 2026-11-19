@@ -40,7 +40,7 @@ import {
 	requirePreview,
 	wireCarryOver,
 } from "./projects.ts";
-import { Refused } from "./refused.ts";
+import { RequestError } from "./requesterror.ts";
 import { type AgentProfile, Agents, Library, type Meta } from "./state.ts";
 import { copyAgentValues } from "./variables.ts";
 import { madeWorktrees } from "./worktrees.ts";
@@ -836,7 +836,7 @@ export const carryOver: Feature = (host, engine) => {
 		serially(async () => {
 			const { plan, report, documents } = await look();
 			if (report.plan === null) return report;
-			if (given !== report.plan) throw new Refused(PLAN_CHANGED, report);
+			if (given !== report.plan) throw new RequestError(PLAN_CHANGED, report as unknown as Record<string, unknown>);
 			let backup = documents.projects.carry.backup;
 			if (backup === null) {
 				// Before the first run that changes anything: the database and settings as they were (9.8, 3).

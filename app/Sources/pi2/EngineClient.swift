@@ -488,7 +488,7 @@ final class EngineClient {
         let id: Int?
         let error: String?
         /// Beside `error`, what a refusal carries for the app to act on (docs/projects.md, 4.1).
-        let data: JSONValue?
+        let data: [String: JSONValue]?
         let result: JSONValue?
     }
     private struct LibraryEvent: Decodable {

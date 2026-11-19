@@ -6,7 +6,10 @@ import { arr, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { isPutAway } from "./archive.ts";
 import { startedWords, titleOf } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
-import { addNews, admit, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
+import { addNews, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
+import { admit, limitError, limitRefusal, rememberReading } from "./projectlimits.ts";
+import { onLimitAssignment } from "./projectlimitstarts.ts";
+import { recordWorkChange } from "./changes.ts";
 import { handOffWords, reportRun, stageReportRun } from "./reports.ts";
 import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
@@ -41,11 +44,14 @@ export const Work = defineDoc<WorkDoc>({ kind: "pi2.work", version: 1, scope: "s
 
 // A tool that did its work but did not return before a crash reads its result again. The receipt lives only as long
 // as the tool task does; it is committed with the action, not memoized in a second commit after it.
-const WorkCall = defineDoc<{ call: string; item: WorkItem | null }>({ kind: "pi2.workCall", version: 1, scope: "task", initial: () => ({ call: "", item: null }), checkpointWhen: () => true });
+// `change` is the change an agent's write was recorded as (changes.ts), for the result's `details.change`.
+const WorkCall = defineDoc<{ call: string; item: WorkItem | null; refused?: string; note?: string; change?: number }>({ kind: "pi2.workCall", version: 1, scope: "task", initial: () => ({ call: "", item: null }), checkpointWhen: () => true });
 
-export type WorkOperation = { projectId: string; action: WorkAction; by: Who; before: WorkItem | null; after: WorkItem };
-/** #465 wires work's operations into record(op) in this transaction; until then nothing is recorded there. */
-export function recordWork(_tx: Tx, _operation: WorkOperation): void | Promise<void> {}
+export type WorkOperation = { projectId: string; action: WorkAction; by: Who; before: WorkItem | null; after: WorkItem; callId?: string };
+/** Record an agent's write in the record of changes (changes.ts), in this transaction: the change's id, or none for the person's. */
+export function recordWork(tx: Tx, operation: WorkOperation): Promise<number | undefined> {
+	return recordWorkChange(tx, operation);
+}
 
 /** #468 supplies the backend for an attached repository. Until then do not silently use the pi² list instead. */
 export function githubWorkBackend(_project: Project): WorkBackend | undefined {
@@ -196,15 +202,8 @@ export function workTransition(before: WorkItem | null, id: number, action: Work
 	return item;
 }
 
-export class WorkLimitError extends Error {
-	readonly limit: LimitReading;
-	constructor(limit: LimitReading) {
-		super(`Past the project's limit: ${limit.reason}`);
-		this.limit = limit;
-	}
-}
-
-type Runner = (tx: Tx, project: Project, item: WorkItem) => Promise<NonNullable<WorkItem["takenBy"]>>;
+type Launched = { holder: NonNullable<WorkItem["takenBy"]>; note?: string };
+type Runner = (tx: Tx, project: Project, item: WorkItem) => Promise<Launched | { limit: LimitReading }>;
 type Call = { api: ToolExecutionApi; context: Context };
 type Write = { call?: Call; launch?: Runner; confirmedSwitch?: SwitchName };
 
@@ -240,7 +239,10 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 		apply: async (project, action, id, by, args) => {
 			const commit = async (tx: Tx) => {
 				const receipt = call === undefined ? undefined : await tx.doc(WorkCall, call.api.taskId);
-				if (receipt?.call === call?.api.callId && receipt?.item != null) return retained(receipt.item);
+				if (receipt?.call === call?.api.callId && receipt !== undefined) {
+					if (receipt.refused !== undefined) return { refused: receipt.refused };
+					if (receipt.item !== null) return retained(receipt.item);
+				}
 				requirePreview();
 				const current = liveProject((await tx.doc(Projects)).projects[project.id], project.id, true);
 				if (current.repository !== null) throw new Error("The project's work list changed. Look at it again.");
@@ -264,20 +266,33 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 				if (before !== null) checkWorkTransition(current, before, action, by, (id) => agents[id]?.name ?? id);
 				const at = Date.now();
 				const assigned = action === "assign" && before !== null ? await launch?.(tx, current, before) : undefined;
-				const item = workTransition(before, key, action, by, args, at, assigned);
+				if (assigned !== undefined && "limit" in assigned) {
+					if (by.kind === "person") throw limitError(assigned.limit);
+					const refused = limitRefusal(assigned.limit, current.conversation !== null);
+					if (receipt !== undefined && call !== undefined) {
+						receipt.call = call.api.callId;
+						receipt.refused = refused;
+					}
+					return { refused };
+				}
+				const item = workTransition(before, key, action, by, args, at, assigned?.holder);
 				if (id === null) list.next += 1;
 				if (before === null || JSON.stringify(before) !== JSON.stringify(item)) {
-					await recordWork(tx, { projectId: project.id, action, by, before: before === null ? null : retained(before), after: item });
+					const change = await recordWork(tx, { projectId: project.id, action, by, before: before === null ? null : retained(before), after: item, ...(call === undefined ? {} : { callId: call.api.callId }) });
+					if (receipt !== undefined && change !== undefined) receipt.change = change;
 					await addNews(tx, project.id, { kind: "work", text: `Work #${item.id}: ${item.title.replace(/\s+/g, " ")} (${action}).`, ref: String(item.id), at });
 					list.items[String(key)] = item;
 				}
 				if (receipt !== undefined && call !== undefined) {
 					receipt.call = call.api.callId;
 					receipt.item = item;
+					if (assigned?.note !== undefined) receipt.note = assigned.note;
 				}
 				return item;
 			};
-			return call === undefined ? engine.harness().commit(commit, engine.context()) : call.api.commit(commit, call.context);
+			const result = await (call === undefined ? engine.harness().commit(commit, engine.context()) : call.api.commit(commit, call.context));
+			if ("refused" in result) throw new Error(result.refused);
+			return result;
 		},
 	};
 }
@@ -315,7 +330,7 @@ export const work: Feature = (host, engine) => {
 		return target;
 	};
 
-	const mutate = async (project: Project, by: Who, action: WorkAction, id: number | null, args: Record<string, unknown>, call?: Call): Promise<WorkItem> => {
+	const mutate = async (project: Project, by: Who, action: WorkAction, id: number | null, args: Record<string, unknown>, call?: Call, onStarted?: (note: string | undefined) => void): Promise<WorkItem> => {
 		const access = by.kind === "agent" ? host.meta(conversationId(by.conversationId))?.access : undefined;
 		actor(project, by, action, access);
 		const backend = backendFor(engine, project);
@@ -344,20 +359,29 @@ export const work: Feature = (host, engine) => {
 		const parentFolder = (await reader.snapshot(AgentDoc, conversationId(parent), context))?.cwd ?? null;
 		const agent = { ...await host.agentChange(target, { subChat: true }), cwd: await subChatFolder(parentFolder, target.cwd) };
 		const launch: Runner = async (tx, current, item) => {
+			const task = [`Work #${item.id}: ${item.title}`, item.text, extra].filter(Boolean).join("\n\n");
+			const start: Start = { by, agentId: target.id, agentName: target.name, kind: "assign", parent, chat: null, work: item.id, title: title ?? titleOf(item.title)!, task, options: {} };
+			const result = await launchAssignment(tx, current, start, target, agent, { confirm, callId: call?.api.callId });
+			if ("holder" in result) onStarted?.(result.note);
+			return result;
+		};
+		return backendFor(engine, project, { launch, call, confirmedSwitch }).apply(project, action, id, by, args);
+	};
+
+	async function launchAssignment(tx: Tx, current: Project, start: Start, target: AgentProfile, agent: Awaited<ReturnType<typeof host.agentChange>>, options: { confirm?: string; callId?: string; card?: LimitReading[] }): Promise<Launched | { limit: LimitReading }> {
+			const parent = start.parent!;
 			const library = (await tx.doc(Library)).conversations;
 			const parentMeta = library[String(parent)];
 			if (current.conversation !== parent || parentMeta?.projectId !== current.id || parentMeta.parent !== undefined || isPutAway(parentMeta)) throw new Error(NO_SUBMIT);
 			const saved = (await tx.doc(Agents)).agents[target.id];
 			if (saved?.projectId !== current.id || saved.removedAt !== undefined) throw new Error(`Unknown agent: ${target.id}`);
 			if (JSON.stringify(saved) !== JSON.stringify(target)) throw new Error(`${target.name}'s settings changed. Look at the agent and try again.`);
-			const task = [`Work #${item.id}: ${item.title}`, item.text, extra].filter(Boolean).join("\n\n");
-			const start: Start = { by, agentId: target.id, agentName: target.name, kind: "assign", parent, chat: null, work: item.id, title: title ?? null, task, options: {} };
-			// #464 takes over admit (which for now admits every start), including the limit card for an agent's refusal.
-			const admitted = admit(start, confirm);
-			if (!admitted.ok) throw new WorkLimitError(admitted.limit);
+			const admitted = await admit(start, options.confirm, { tx, model: agent.model, callId: options.callId, card: options.card });
+			if (!admitted.ok) return { limit: admitted.limit };
 			const budget = engine.overBudget();
 			if (budget !== undefined) throw new Error(`${budget} Raise it in Usage to carry on.`);
-			const named = title ?? titleOf(item.title)!;
+			const named = start.title!;
+			const task = start.task;
 			const now = Date.now();
 			const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
 			const id = child.id as unknown as number;
@@ -370,12 +394,31 @@ export const work: Feature = (host, engine) => {
 			const taskId = await tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId: child.id });
 			(await tx.doc(LiveDoc, child.id)).run = { taskId, inputs: [submission.id], first: entry.id, turns: 0 };
 			library[String(id)] = { title: named, parent, projectId: current.id, createdAt: now, updatedAt: now, access: target.access, agentId: target.id, subChatTask: submission.id as number, ...(saved.allowEverything ? { allowEverything: true as const } : {}) };
-			await stageReportRun(tx, current.id, { submissionId: submission.id as number, conversationId: id, agentId: target.id, title: named, work: item.id });
+			await stageReportRun(tx, current.id, { submissionId: submission.id as number, conversationId: id, agentId: target.id, title: named, work: start.work! });
 			(await tx.doc(Wakes)).watching[watchKey(id)] = { key: watchKey(id), conversationId: parent, kind: "subchat", ref: String(id), label: `sub-chat ${id} “${named}”`, startedAt: now, submissionId: submission.id as number, agent: target.name };
-			return { agentId: target.id, conversationId: id };
-		};
-		return backendFor(engine, project, { launch, call, confirmedSwitch }).apply(project, action, id, by, args);
-	};
+			return { holder: { agentId: target.id, conversationId: id }, note: admitted.note };
+	}
+
+	onLimitAssignment(async (tx, need) => {
+		const { start, projectId } = need;
+		const current = liveProject((await tx.doc(Projects)).projects[projectId], projectId, true);
+		if (current.repository !== null) throw new Error("The project's work list changed. Look at it again.");
+		const list = (await tx.doc(Work)).projects[projectId];
+		const key = String(start.work);
+		const item = list?.items[key];
+		if (item === undefined) throw unknownItem(start.work!);
+		checkWorkTransition(current, item, "assign", whoPerson, (id) => host.agent(id)?.name ?? id);
+		const target = (await tx.doc(Agents)).agents[start.agentId];
+		if (target?.projectId !== projectId || target.removedAt !== undefined) throw new Error(`Unknown agent: ${start.agentId}`);
+		const here = (await tx.doc(AgentDoc, conversationId(start.parent!))).cwd ?? null;
+		const agent = { ...await host.agentChange(target, { subChat: true }), cwd: await subChatFolder(here, target.cwd) };
+		const result = await launchAssignment(tx, current, start, target, agent, { card: rememberReading(need.confirmed ?? [], need.limit) });
+		if ("limit" in result) return result;
+		const assigned = workTransition(item, item.id, "assign", whoPerson, {}, Date.now(), result.holder);
+		await recordWork(tx, { projectId, action: "assign", by: whoPerson, before: retained(item), after: assigned });
+		list!.items[key] = assigned;
+		return { child: result.holder.conversationId, after: () => followAssignment(assigned) };
+	});
 
 	/** The watch was stored with the child. Attach its live waiter; recovery attaches it again if we stopped first. */
 	const followAssignment = async (item: WorkItem) => {
@@ -416,6 +459,7 @@ export const work: Feature = (host, engine) => {
 				const project = inProject(number);
 				const agentId = runsAs(meta, engine.agents());
 				const receipt = await api.snapshot(WorkCall, api.taskId, context);
+				if (receipt?.call === api.callId && receipt.refused !== undefined) throw new Error(receipt.refused);
 				let item = receipt?.call === api.callId ? receipt.item : null;
 				if (item === null) {
 					requirePreview();
@@ -426,12 +470,16 @@ export const work: Feature = (host, engine) => {
 					if (args.class !== undefined && args.class !== "local" && args.class !== "cloud") throw new Error("class must be local or cloud");
 					item = await mutate(project, { kind: "agent", agentId, conversationId: number }, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
 				}
-				if (action !== "assign") return { output: toolText(JSON.stringify(item)) };
+				// The change an agent's write was recorded as, for the conversation's line with Undo (docs/projects.md, 3.12).
+				const change = (await api.snapshot(WorkCall, api.taskId, context))?.change;
+				const recorded: { change?: number } = change === undefined ? {} : { change };
+				if (action !== "assign") return { output: toolText(JSON.stringify(item)), ...(change === undefined ? {} : { details: { change } }) };
 				const holder = item.takenBy!;
 				await followAssignment(item);
 				const name = host.agent(holder.agentId)?.name ?? holder.agentId;
 				const title = host.meta(conversationId(holder.conversationId))?.title ?? titleOf(args.title) ?? titleOf(item.title)!;
-				return { output: toolText(startedWords(holder.conversationId, name, title, handOffWords(number))), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name } };
+				const note = (await api.snapshot(WorkCall, api.taskId, context))?.note;
+				return { output: toolText([startedWords(holder.conversationId, name, title, handOffWords(number)), note].filter(Boolean).join("\n\n")), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name, ...recorded } };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { output: toolText(message), isError: true };
@@ -477,10 +525,11 @@ export const work: Feature = (host, engine) => {
 				requirePreview();
 				const action = actionOf(given);
 				if (action === "file") throw new Error("Use work.create to file work.");
-				const item = await mutate(getProject(projectId(project), true), whoPerson, action, numberId(id), { text, title, class: modelClass, agentId, task, as, confirmLimit });
+				let note: string | undefined;
+				const item = await mutate(getProject(projectId(project), true), whoPerson, action, numberId(id), { text, title, class: modelClass, agentId, task, as, confirmLimit }, undefined, (value) => { note = value; });
 				if (action !== "assign") return { item };
 				await followAssignment(item);
-				return { item, conversation: item.takenBy!.conversationId };
+				return { item, conversation: item.takenBy!.conversationId, ...(note === undefined ? {} : { note }) };
 			},
 		},
 	};

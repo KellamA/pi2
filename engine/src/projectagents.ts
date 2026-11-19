@@ -8,14 +8,15 @@
 //
 // What later issues fill in, and what it does until then:
 //
-// - `removeAgent(id)` is what `project_agents` `remove` does (#465, as its operation `agent.remove`). Nothing calls it
-//   until #465 lands; `agents.restore` and the operation `agent.restore` put an agent back.
+// - `removeAgent(id)`, and `removeAgentIn(tx, id)` in a commit, is what `project_agents` `remove` does (changes.ts, as
+//   its operation `agent.remove`); `agents.restore` and the operation `agent.restore` put an agent back.
 // - `delegate` calls `admit` (projects.ts) for every start in a project, and asks first through `requireSwitch` while
 //   `startAgents` is off (extensions.ts). `admit` admits every start until #464 fills it in.
-// - A copy made by an agent (#465) is made at the baseline of 7.2 and asks for the rest; `copyTemplate` here is the
-//   person's (and carrying over's, #458), which copies every setting as 3.3 says.
+// - A copy made by an agent (projecttools.ts, #465) is made at the baseline of 7.2 and asks for the rest; `copyTemplate`
+//   here is the person's (and carrying over's, #458), which copies every setting as 3.3 says.
 
 import { realpathSync } from "node:fs";
+import type { Tx } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature, FeatureParts } from "./features.ts";
 import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectOf, projectsOn, requirePreview } from "./projects.ts";
@@ -176,8 +177,18 @@ let wired: { host: Host; engine: Engine } | undefined;
  */
 export async function removeAgent(id: string): Promise<void> {
 	if (wired === undefined) throw new Error("The project agents feature is not running");
-	const { host, engine } = wired;
-	const agents = engine.agents();
+	const { engine } = wired;
+	await engine.harness().commit((tx) => removeAgentIn(tx, id), engine.context());
+}
+
+/**
+ * `removeAgent` in the caller's commit `tx`, with the same checks, the agent read from that commit: the operation
+ * `agent.remove` (changes.ts), whose callers check the project in the commit as well.
+ */
+export async function removeAgentIn(tx: Tx, id: string): Promise<void> {
+	if (wired === undefined) throw new Error("The project agents feature is not running");
+	const { host } = wired;
+	const agents = (await tx.doc(Agents)).agents;
 	const agent = agents[id];
 	if (agent?.projectId === undefined || agent.removedAt !== undefined) throw new Error(`Unknown agent: ${id}`);
 	const project = allProjects()[agent.projectId];
@@ -188,10 +199,7 @@ export async function removeAgent(id: string): Promise<void> {
 	if (working !== undefined) {
 		throw new Error(`${agent.name} is working on ${working[1].parent === undefined ? "conversation" : "sub-chat"} ${working[0]}. Wait for it, or ask the person to stop it.`);
 	}
-	await engine.harness().commit(async (tx) => {
-		const stored = (await tx.doc(Agents)).agents[id];
-		if (stored !== undefined && stored.removedAt === undefined) stored.removedAt = Date.now();
-	}, engine.context());
+	agent.removedAt = Date.now();
 }
 
 export const projectAgents: Feature = (host, engine) => {

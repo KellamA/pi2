@@ -36,7 +36,7 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/test-copy <command> [arguments]
 
-  start <suffix> [--show <what>] [--menu <label>] [--welcome] [--no-app-nap] [--env NAME=VALUE]
+  start <suffix> [--show <what>] [--hub <fold>] [--menu <label>] [--welcome] [--no-app-nap] [--env NAME=VALUE]
                                    Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
                                    data folder of its own, behind other windows, parked in a corner, without taking
                                    the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md),
@@ -46,21 +46,28 @@ Usage: scripts/test-copy <command> [arguments]
                                    does not cover the window; --welcome keeps it. --no-app-nap disables App Nap
                                    for this copy only, for speed measurements. Prints the data folder and process
                                    ids. --env may repeat, for these test variables only:
-                                   PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND.
-                                   Values are explicit (never inherited), kept for reopen, and not secrets.
-  reopen <suffix> [--show <what>]   Replace and launch the app from the latest development build in this checkout.
-                                   Keep its engine, data, environment and previous --show unless given another.
-  show <suffix> <conversation>     Show this conversation in the running copy's main window, and answer once its
-                                   page has drawn it, so a picture taken next shows it.
+                                   PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND,
+                                   PI2_GH. Values are explicit (never inherited), kept for reopen, and not secrets.
+  reopen <suffix> [--show <what>] [--hub <fold>]
+                                   Replace and launch the app from the latest development build in this checkout.
+                                   Keep its engine, data, environment and previous --show and --hub unless replaced.
+  show <suffix> <conversation>     Show this conversation in the running copy's main window, and wait for it to draw.
+  show <suffix> project:<name-or-id>[#<tab-or-agent>] [--hub <fold>]
+  show <suffix> dashboard          Hand a project or Dashboard selection to the running app, which records it.
+                                   --hub sets PI2_HUB at launch, or the fold for a live request:
+                                   both, conversation-folded or board-folded.
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
   answer <suffix> <conversation> allow|deny
                                    Answer one waiting approval (allow once); refuses if more than one is waiting.
+  answer <suffix> <need-id> '<json answer>'
+                                   Answer a Needs you item by id with its NeedAnswer object (docs/projects.md).
   choose <suffix> <path>... | cancel
                                    Answer the running copy's next Open or Save panel without showing it.
                                    Paths go in its data folder, the launcher's scratch folder or app/build.
   fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
+  fill <suffix> --project          Turn the preview on and make a demo project. Prints its id and its conversation ids.
   last-copy <suffix>               Print the last Copy action recorded in this copy's data folder as JSON.
   shot <suffix> <file.png> [--window <title>]
                                    Wait for and capture the copy's largest window (or the one with that title) into a file
@@ -171,7 +178,7 @@ from_bundle() {
 	return 0
 }
 
-APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" WELCOME=0 MENU=""
+APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" HUB="" WELCOME=0 MENU=""
 TEST_ENV=()
 # Only explicit demo switches may cross the clean launch boundary. Never accept an open-ended PI2_* prefix:
 # PI2_HOME and the Keychain service are owned by this script, and future switches may weaken isolation.
@@ -181,14 +188,21 @@ add_test_env() {
 	[[ $pair != *$'\n'* && $pair != *$'\r'* ]] || die "--env takes one line"
 	key=${pair%%=*}
 	case $key in
-		PI2_DEMO_PICTURES|PI2_DEMO_TEXT_MODEL|PI2_DEMO_COST|PI2_DEMO_TOKENS_PER_SECOND) ;;
-		*) die "--env does not allow $key; only PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST and PI2_DEMO_TOKENS_PER_SECOND" ;;
+		PI2_DEMO_PICTURES|PI2_DEMO_TEXT_MODEL|PI2_DEMO_COST|PI2_DEMO_TOKENS_PER_SECOND|PI2_GH) ;;
+		*) die "--env does not allow $key; only PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND and PI2_GH" ;;
 	esac
 	for old in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do
 		[[ ${old%%=*} != "$key" ]] || die "--env repeats $key; give each variable once"
 	done
 	TEST_ENV+=("$pair")
 }
+check_hub() {
+	case $1 in
+		both|conversation-folded|board-folded) ;;
+		*) die "--hub needs both, conversation-folded or board-folded" ;;
+	esac
+}
+
 # Where a copy started with --menu writes the context menu (ContextMenuPreview.fileName in the app).
 MENU_FILE=context-menu.txt
 
@@ -205,6 +219,7 @@ load_state() {
 			engine_start) ENGINE_START=$value ;;
 			engine_exe) ENGINE_EXE=$value ;;
 			show) SHOW=$value ;;
+			hub) [[ -z $value ]] || check_hub "$value"; HUB=$value ;;
 			menu) MENU=$value ;;
 			test_env) add_test_env "$value" ;;
 		esac
@@ -214,7 +229,7 @@ load_state() {
 }
 
 save_state() {
-	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" "menu=$MENU" \
+	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" "hub=$HUB" "menu=$MENU" \
 		"app_pid=$APP_PID" "app_start=$APP_START" "app_exe=$APP_EXE" \
 		"engine_pid=$ENGINE_PID" "engine_start=$ENGINE_START" "engine_exe=$ENGINE_EXE" >"$STATE.new"
 	local pair
@@ -411,6 +426,7 @@ launch_app() {
 		--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
 	[[ -n ${PI2_SCRATCH-} ]] && vars+=(--env "PI2_TEST_COPY_SCRATCH=$PI2_SCRATCH")
 	[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
+	[[ -n $HUB ]] && vars+=(--env "PI2_HUB=$HUB")
 	[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
 	local pair
 	for pair in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do vars+=(--env "$pair"); done
@@ -438,13 +454,14 @@ case $cmd in
 			case $1 in
 				--no-app-nap) no_app_nap=1; shift ;;
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
+				--hub) check_hub "${2-}"; HUB=$2; shift 2 ;;
 				--welcome) WELCOME=1; shift ;;
 				--env) [[ -n ${2-} ]] || die "--env needs NAME=VALUE"; add_test_env "$2"; shift 2 ;;
 				--menu) [[ -n ${2-} ]] || die "--menu needs the label of what to right-click, such as a conversation's title"; MENU=$2; shift 2 ;;
 				*) die "unknown option $1" ;;
 			esac
 		done
-		[[ $SHOW != *$'\n'* ]] || die "--show takes one line"
+		[[ $SHOW != *$'\n'* && $SHOW != *$'\r'* ]] || die "--show takes one line"
 		[[ $MENU != *$'\n'* ]] || die "--menu takes one line"
 
 		require_source
@@ -524,14 +541,15 @@ case $cmd in
 		;;
 	reopen)
 		names "${1-}"; shift
-		requested_show="" replace_show=0
+		requested_show="" replace_show=0 requested_hub=""
 		while (($#)); do
 			case $1 in
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; requested_show=$2; replace_show=1; shift 2 ;;
+				--hub) check_hub "${2-}"; requested_hub=$2; shift 2 ;;
 				*) die "unknown option $1" ;;
 			esac
 		done
-		[[ $requested_show != *$'\n'* ]] || die "--show takes one line"
+		[[ $requested_show != *$'\n'* && $requested_show != *$'\r'* ]] || die "--show takes one line"
 		require_copy
 		# An exited app can be reopened too, but never signal a pid that has since been reused.
 		[[ -z $(started_at "$APP_PID") ]] || is_recorded "$APP_PID" "$APP_START" "$APP_EXE" ||
@@ -547,6 +565,7 @@ case $cmd in
 		trap 'rm -rf -- "$staged"' EXIT
 		copy_bundle "$staged/$NAME.app"
 		((replace_show == 0)) || SHOW=$requested_show
+		[[ -z $requested_hub ]] || HUB=$requested_hub
 		stop_process app "$APP_PID" "$APP_START" "$APP_EXE" >/dev/null
 		[[ -z $(from_bundle) ]] || die "the app did not stop; nothing was reopened"
 		APP_PID="" APP_START=""
@@ -566,7 +585,11 @@ case $cmd in
 	show|size|choose)
 		names "${1-}"; shift
 		if [[ $cmd == show ]]; then
-			(($# == 1)) || die "use: scripts/test-copy show $SUFFIX <conversation>"
+			if [[ $# == 3 && ${2-} == --hub && ${1-} == project:* ]]; then
+				check_hub "$3"
+			else
+				(($# == 1)) || die "use: scripts/test-copy show $SUFFIX <conversation> | dashboard | project:<name-or-id>[#<tab-or-agent>] [--hub <fold>]"
+			fi
 		elif [[ $cmd == size ]]; then
 			{ [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; } ||
 				die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
@@ -583,9 +606,10 @@ case $cmd in
 	answer|fill)
 		names "${1-}"; shift
 		if [[ $cmd == answer ]]; then
-			[[ $# == 2 && ($2 == allow || $2 == deny) ]] || die "use: scripts/test-copy answer $SUFFIX <conversation> allow|deny"
+			[[ $# == 2 && ($2 == allow || $2 == deny || $2 =~ ^[[:space:]]*\{) ]] ||
+				die "use: scripts/test-copy answer $SUFFIX <conversation> allow|deny or <need-id> '<json answer>'"
 		else
-			(($# == 1)) || die "use: scripts/test-copy fill $SUFFIX <entries>"
+			(($# == 1)) || die "use: scripts/test-copy fill $SUFFIX <entries> | --project"
 		fi
 		require_copy
 		require_engine

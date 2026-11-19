@@ -6,7 +6,7 @@
 
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
+import type { ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Tx, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
@@ -33,7 +33,10 @@ import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
 import { projectAgents } from "./projectagents.ts";
+import { projectLimits } from "./projectlimits.ts";
+import { changes } from "./changes.ts";
 import { needs } from "./needs.ts";
+import { orchestrator, projectPrompt } from "./orchestrator.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
 import { reads } from "./reading.ts";
@@ -75,6 +78,8 @@ export type Engine = {
 	stateChanged(id: number): void;
 	/** Send Activity again to every app: for a change to what a feature's `activity` says. */
 	activityChanged(): void;
+	/** Send the library again to every app: for a change to what it says that is kept outside `pi2.library` (a project's). */
+	libraryChanged(): void;
 	/** Why no new work may start now, in words, when today's budget is used up; undefined otherwise. */
 	overBudget(): string | undefined;
 	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
@@ -98,6 +103,8 @@ export type AgentSaveOptions = {
 	project?: string;
 	/** Marks of a project agent to set, over what is stored. */
 	marks?: Pick<AgentProfile, "template" | "madeBy">;
+	/** Save in this commit rather than one of its own: a change an agent makes through a tool, recorded with it (changes.ts). */
+	tx?: Tx;
 };
 
 export type FeatureParts = {
@@ -115,8 +122,8 @@ export type FeatureParts = {
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
 	withheld?(): string[];
 	/**
-	 * Requests from the app, by method name. Throw an Error with a plain message to refuse, or a `Refused` (refused.ts) to
-	 * send data with the message.
+	 * Requests from the app, by method name. Throw an Error with a plain message to refuse, or a `RequestError` (requesterror.ts)
+	 * to send data with the message.
 	 */
 	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
@@ -215,7 +222,8 @@ export const FEATURES: Feature[] = [
 	limitWait,
 	compaction,
 	plan,
-	// The project section (#466) will go here, before the rules (6.1).
+	// The project section (#466), before the rules (6.1).
+	projectPrompt,
 	projectRulesPrompt,
 	knowledge,
 	look,
@@ -242,6 +250,11 @@ export const FEATURES: Feature[] = [
 	localModels,
 	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
 	projectAgents,
+	projectLimits,
+	// The record of changes, and the orchestrator's tools to change its project (#465): no greeting of its own either.
+	changes,
+	// One conversation with the orchestrator, and Start fresh (#466): no greeting of its own either.
+	orchestrator,
 	// Carrying over (#458): requests, and the `projects` event's `carryOver`, with no greeting of its own.
 	carryOver,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its

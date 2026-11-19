@@ -79,6 +79,9 @@ for command in show size choose answer fill; do
 	expect "'dev' is the suffix every development build has" "$command" dev
 done
 expect "use: scripts/test-copy show" show test-7
+expect "--hub needs both" show test-7 'project:Demo project#work' --hub folded
+expect "use: scripts/test-copy show" show test-7 8 --hub both
+expect "--hub needs both" reopen test-7 --hub
 expect "use: scripts/test-copy size" size test-7 820
 expect "use: scripts/test-copy size" size test-7 smallest 532
 expect "use: scripts/test-copy answer" answer test-7 8 always
@@ -141,14 +144,16 @@ expect "--env needs NAME=VALUE" start test-8 --env
 expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\nPI2_HOME=elsewhere'
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\r'
-for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
+for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_HUB PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
 	expect "--env does not allow" start test-8 --env "$key=value"
 done
 expect "--env repeats PI2_DEMO_COST" start test-8 --env PI2_DEMO_COST=1 --env PI2_DEMO_COST=2
-for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND; do
+for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_GH; do
 	expect "unknown option --bogus" start test-8 --env "$key=explicit value=with equals" --bogus
 done
 expect "unknown option --bogus" start test-8 --env PI2_DEMO_COST= --env PI2_DEMO_TEXT_MODEL=1 --bogus
+expect "--hub needs both" start test-8 --hub bogus
+expect "unknown option --bogus" start test-8 --show 'project:Demo project#notes' --hub conversation-folded --bogus
 expect "--menu needs the label" start test-8 --menu
 expect "--menu needs the label" start test-8 --menu ""
 expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
@@ -163,6 +168,8 @@ expect "no copy named test-7 was started from this checkout" size test-7 smalles
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" choose test-7 cancel
 expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
 expect "no copy named test-7 was started from this checkout" fill test-7 600
+expect "no copy named test-7 was started from this checkout" fill test-7 --project
+expect "no copy named test-7 was started from this checkout" answer test-7 n1 '{"kind":"question","text":"Friday"}'
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" last-copy test-7
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
@@ -437,6 +444,11 @@ for test in test-test-copy-send.mjs test-test-copy-drive.mjs; do
 	fi
 done
 HOME="$T/home" expect "refusing a symlink" reopen test-7
+
+if ! swiftc -D PI2_DEVELOPMENT "$sources/ProjectCopyView.swift" "$(dirname -- "$script")/test-test-copy-project.swift" -o "$T/check-project-view" ||
+	! PI2_SHOW='project:Demo project#now' PI2_HUB=conversation-folded "$T/check-project-view"; then
+	failures=$((failures + 1))
+fi
 
 if ((failures)); then
 	echo "$failures check(s) failed."

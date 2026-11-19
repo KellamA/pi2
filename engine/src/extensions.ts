@@ -6,6 +6,7 @@ import {
 	AgentDoc,
 	configure,
 	type ConversationId,
+	defineDoc,
 	defineExtension,
 	defineTool,
 	type DocumentReader,
@@ -41,7 +42,7 @@ import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isArchived, isPutAway } from "./archive.ts";
 import { noteSubChats, subChatsTool } from "./subchats.ts";
-import { ALLOWED_BY_EVERYTHING, type AgentProfile, type Inbox, type InboxItem, Library, type Meta, projectFrom } from "./state.ts";
+import { ALLOWED_BY_EVERYTHING, type AgentProfile, type Inbox, type InboxItem, Library, type Meta, type ModelRef } from "./state.ts";
 import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
@@ -49,7 +50,13 @@ import { nearlyUsedUp } from "./limits.ts";
 import { unlessMessaged } from "./heed.ts";
 import { handOffWords, reportRun, waitForRun } from "./reports.ts";
 import { watch } from "./wakes.ts";
-import { admit, projectOf, requireSwitch, type Start } from "./projects.ts";
+import { projectOf, projectsOn, requireSwitch, type Start } from "./projects.ts";
+import { admit, limitRefusal } from "./projectlimits.ts";
+import { createDelegateChild } from "./projectlimitstarts.ts";
+import { ownsSubChat } from "./orchestrator.ts";
+
+// A refused call run again after a crash must not start the hand-off a second time, even after its card was answered.
+const RefusedStart = defineDoc<{ reason: string | null }>({ kind: "pi2.refusedStart", version: 1, scope: "task", initial: () => ({ reason: null }), checkpointWhen: () => true });
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -96,7 +103,7 @@ export type Host = {
 	 * Send a message to a sub-chat that an earlier call created, without waiting for its answer (`waitForChat` in heed.ts
 	 * waits for it): its submission's id, or undefined when it is gone.
 	 */
-	sendToChat(conversationId: number, content: string, requestId: string): Promise<number | undefined>;
+	sendToChat(conversationId: number, content: string, requestId: string, prepare?: (tx: Tx, meta: Meta, model: ModelRef | null | undefined) => Promise<boolean>): Promise<number | undefined>;
 	/** Every conversation pi² keeps, by id: sub-chats, archived and deleted ones included. */
 	conversations(): Record<string, Meta>;
 	/** Whether a conversation has work running: a run, a tool call, a question or approval it waits on. */
@@ -280,18 +287,26 @@ export function pi2Extension(host: Host): Extension {
 			const parent = api.conversationId as unknown as number;
 			const footer = (id: number, name: string, title: string, note = "") => footerOf(api, id, name, title, note, context);
 			const usage = (id: number) => resultUsage(host, api, id, context);
-			/**
-			 * A start in a project, a new sub-chat or one continued, passes the one admission check at the moment it would
-			 * start (docs/projects.md, 8.3), with the preview on or off: what to tell the model when it may not, else undefined.
-			 * The switch `startAgents` was asked about before, in `approveStart`. Outside a project nothing is checked, as before.
-			 */
-			const admitted = (start: Pick<Start, "agentId" | "agentName" | "kind" | "chat" | "title" | "task" | "options">): string | undefined => {
-				if (projectOf(parent) === undefined) return undefined;
+			const inProject = projectOf(parent) !== undefined;
+			let limitNote: string | undefined;
+			const admitted = async (tx: Tx, model: ModelRef | null | undefined, start: Pick<Start, "agentId" | "agentName" | "kind" | "chat" | "title" | "task" | "options">): Promise<string | undefined> => {
+				if (!inProject) return undefined;
 				const by = host.agentOf(api.conversationId)?.id ?? host.meta(api.conversationId)?.agentId ?? "";
-				const answer = admit({ by: { kind: "agent", agentId: by, conversationId: parent }, parent, work: null, ...start });
-				// #464 fills `admit` in: past a limit it decides `passLimits` and puts the limit card, and says why it held the start back.
-				return answer.ok ? undefined : `Not started: ${answer.limit.reason}`;
+				const projectStart = { by: { kind: "agent" as const, agentId: by, conversationId: parent }, parent, work: null, ...start };
+				const result = await admit(projectStart, undefined, { tx, model, callId: api.callId });
+				if (result.ok) {
+					limitNote = result.note;
+					return undefined;
+				}
+				const reason = limitRefusal(result.limit, projectsOn() && projectOf(parent)?.conversation != null);
+				(await tx.doc(RefusedStart, api.taskId)).reason = reason;
+				return reason;
 			};
+			if (inProject) {
+				const earlier = (await api.snapshot(RefusedStart, api.taskId, context))?.reason;
+				if (earlier != null) return { output: text(earlier), isError: true };
+			}
+			const withLimit = <T extends { output: { type: "text"; text: string }[] }>(result: T): T => limitNote === undefined ? result : { ...result, output: [...result.output, ...text(limitNote)] };
 			/** For `wait: false`: watch the sub-chat's answer, to wake this agent with it, and answer at once. */
 			const handOff = async (child: number, submissionId: number, name: string, title: string, agentId: string) => {
 				// A run of a project's orchestrator has a report, kept before the watch (reports.ts).
@@ -338,11 +353,38 @@ export function pi2Extension(host: Host): Extension {
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
 				const agent = host.agentOf(args.chat as unknown as ConversationId);
-				if (meta === undefined || meta.parent !== parent || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
+				// Its own, or, for an orchestrator, one of its earlier conversations' (orchestrator.ts; docs/projects.md, 5.8).
+				if (meta === undefined || !ownsSubChat(parent, meta.parent) || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
 				}
-				const held = admitted({ agentId: agent.id, agentName: agent.name, kind: "continue", chat: args.chat, title: title ?? null, task: args.task, options: { ...(args.wait === undefined ? {} : { wait: args.wait }) } });
-				if (held !== undefined) return { output: text(held), isError: true };
+				if (inProject) {
+					const chat = args.chat;
+					const start = { agentId: agent.id, agentName: agent.name, kind: "continue" as const, chat, title: title ?? null, task: args.task, options: { ...(args.wait === undefined ? {} : { wait: args.wait }) } };
+					let held: string | undefined;
+					let restored = false;
+					let named = meta.title;
+					let note = "";
+					const key = `delegate:${String(api.taskId)}`;
+					const sent = await host.sendToChat(chat, args.task, key, async (tx, saved, model) => {
+						if (!ownsSubChat(parent, saved.parent) || saved.deleted === true) return false;
+						held = await admitted(tx, model, start);
+						if (held !== undefined) return false;
+						restored = isArchived(saved);
+						delete saved.archivedAt;
+						if (title !== undefined && title !== saved.title) {
+							if (saved.renamed === true) note = " The person renamed this sub-chat, so it keeps their name.";
+							else saved.title = title;
+						}
+						named = saved.title;
+						return true;
+					});
+					if (sent === undefined) return { output: text(held ?? `Sub-chat ${chat} could not be reached.`), isError: true };
+					if (restored) await noteSubChats(api, api.conversationId, { action: "restored", chats: [{ id: chat, title: meta.title }] }, `${key}:restored`, context);
+					await api.details({ conversationId: chat, agentId: agent.id, agentName: agent.name }, context);
+					if (args.wait !== false) return withLimit(await answer(chat, agent, named, sent, note));
+					const handed = await handOff(chat, sent, agent.name, named, agent.id);
+					return withLimit(note === "" || handed.isError === true ? handed : { output: text(`${startedWords(chat, agent.name, named, handOffWords(parent))}${note}`) });
+				}
 				// One this conversation archived (sub_chats) comes back to be continued; the line says so.
 				if (isArchived(meta)) {
 					await api.commit(async (tx) => void delete (await tx.doc(Library)).conversations[String(args.chat)]?.archivedAt, context);
@@ -392,30 +434,13 @@ export function pi2Extension(host: Host): Extension {
 				if (made !== undefined) return Number(made[0]) as unknown as ConversationId;
 				// A new sub-chat is a start, admitted at the moment it is made; one found again above was admitted then.
 				const options = { ...(args.worktree === undefined ? {} : { worktree: args.worktree }), ...(args.from === undefined ? {} : { from: args.from }), ...(args.wait === undefined ? {} : { wait: args.wait }) };
-				held = admitted({ agentId: target.id, agentName: target.name, kind: "new", chat: null, title: title ?? null, task: args.task, options });
+				held = await admitted(tx, change.model, { agentId: target.id, agentName: target.name, kind: "new", chat: null, title: title ?? null, task: args.task, options });
 				if (held !== undefined) return undefined;
 				// A sub-chat belongs to no call, waited for or not: work a call owns keeps the call, and so the whole answer, from
 				// ending until it is done, and a wait a message from the person ends must leave it running (heed.ts). A call that
 				// waits stops it when the call is stopped (`waitForChat`). It starts as a copy of this conversation's agent, as
 				// one owned by the call did.
-				const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
-				Object.assign(await tx.doc(AgentDoc, created.id), JSON.parse(JSON.stringify(await tx.doc(AgentDoc, api.conversationId))));
-				await configure(tx, created.id, change);
-				const now = Date.now();
-				library.conversations[String(created.id)] = {
-					title: named,
-					createdAt: now,
-					updatedAt: now,
-					access: target.access,
-					agentId: target.id,
-					parent,
-					madeBy: String(api.taskId),
-					// Its own agent's Allow everything, never its parent's (#294).
-					...(target.allowEverything === true ? { allowEverything: true as const } : {}),
-					// In its parent's project, if the parent is in one (projects.ts).
-					...projectFrom(library.conversations[String(parent)]),
-				};
-				return created.id;
+				return createDelegateChild(tx, { parent, target, change, title: named, key: String(api.taskId) });
 			}, context);
 			if (child === undefined) return { output: text(held ?? "Not started."), isError: true };
 			if (args.worktree !== undefined) {
@@ -428,7 +453,7 @@ export function pi2Extension(host: Host): Extension {
 				// Belonging to no call, it is reached as the person's messages reach a conversation.
 				const sent = await host.sendToChat(child as unknown as number, args.task, `delegate:${String(api.taskId)}`);
 				if (sent === undefined) return { output: text("The sub-chat could not be reached, so nothing was handed over."), isError: true };
-				return await handOff(child as unknown as number, sent, target.name, named, target.id);
+				return withLimit(await handOff(child as unknown as number, sent, target.name, named, target.id));
 			}
 			const handle = (await api.conversation(child, context))!;
 			const submission = await handle.submit({ type: "input", content: args.task, requestId: `delegate:${String(api.taskId)}` }, context);
@@ -436,7 +461,7 @@ export function pi2Extension(host: Host): Extension {
 				const meta = (await tx.doc(Library)).conversations[String(child)];
 				if (meta !== undefined) meta.subChatTask = Math.max(meta.subChatTask ?? 0, submission.id as number);
 			}, context);
-			return answer(child as unknown as number, target, named, submission.id as number);
+			return withLimit(await answer(child as unknown as number, target, named, submission.id as number));
 		},
 	});
 
@@ -790,7 +815,7 @@ export function pi2Extension(host: Host): Extension {
 		if (typeof args.chat === "number") {
 			const meta = host.meta(args.chat as unknown as ConversationId);
 			const agent = host.agentOf(args.chat as unknown as ConversationId);
-			if (meta?.parent === conversationId && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
+			if (meta !== undefined && ownsSubChat(conversationId, meta.parent) && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
 		} else if (typeof args.agent === "string") {
 			const target = byName(delegatesOf(host, api.conversationId), args.agent);
 			if (target !== undefined) what = `Start a new sub-chat with ${target.name}${title === undefined ? "" : `, “${title}”`}.`;

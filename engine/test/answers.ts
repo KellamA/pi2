@@ -154,6 +154,10 @@ try {
 		["inbox.decide", { id: approval.id, decision: "deny" }],
 		["inbox.answer", { id: approval.id, text: "yes" }],
 		["auth.answer", { promptId: "prompt-1", value: "a code" }],
+		["conversation.create", { agentId: "forge", confirmLimit: "a-reading" }],
+		["chat.continueWithAgent", { id: 1, agentId: "forge", confirmLimit: "a-reading" }],
+		["schedules.runNow", { id: "schedule", confirmLimit: "a-reading" }],
+		["work.act", { projectId: "project", id: 1, action: "assign", confirmLimit: "a-reading" }],
 		["agents.allowEverything", { id: "forge", on: true }],
 	] as const) {
 		const reply = await other.call(method, params);
