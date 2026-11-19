@@ -25,9 +25,12 @@ let package = Package(
         // What a file linked in a conversation is once its path is made whole, and what a click and its menu do (#451).
         // Its own module so pi2-file-link-check can check it.
         .target(name: "FileLinkKit", path: "Sources/FileLinkKit"),
+        // The conversation page's web view, and the page loaded ahead for the next pane (#441). Its own module so
+        // pi2-transcript-check can check them. PI2_DEVELOPMENT as for the app: the web inspector and drawing when hidden.
+        .target(name: "TranscriptKit", path: "Sources/TranscriptKit", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "WindowKit", "FileLinkKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "WindowKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
             // inspector (docs/development.md). On in a debug build, and in an optimised development build, which
@@ -52,5 +55,7 @@ let package = Package(
         .executableTarget(name: "pi2-login-item-check", dependencies: ["LoginItemKit"], path: "Sources/pi2-login-item-check"),
         // Checks FileLinkKit against files it makes in a temporary folder of its own. Shows nothing in Finder.
         .executableTarget(name: "pi2-file-link-check", dependencies: ["FileLinkKit"], path: "Sources/pi2-file-link-check"),
+        // Checks TranscriptKit: pages loaded ahead and handed over, in off-screen windows of its own (#441).
+        .executableTarget(name: "pi2-transcript-check", dependencies: ["TranscriptKit"], path: "Sources/pi2-transcript-check"),
     ]
 )

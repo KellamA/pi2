@@ -2,6 +2,7 @@ import AppKit
 import ComputerKit
 import FileLinkKit
 import SwiftUI
+import TranscriptKit
 import WebKit
 
 /// A conversation's transcript: one web page, so a selection can run across prose, code and tool steps and copy as
@@ -120,11 +121,15 @@ final class TranscriptBridge {
     }
 
     func makeView(folder: URL) -> TranscriptWebKitView {
-        let view = TranscriptWebKitView(folder: folder)
+        // The page loaded ahead, which has never shown a conversation (#441); it may have said it is ready already.
+        let view = TranscriptPage.spare?.take() ?? TranscriptWebKitView(folder: folder)
         view.underPageBackgroundColor = NSColor(Theme.window)
         // Hidden until the page is ready, so opening a conversation never flashes an empty page.
         view.alphaValue = 0
-        view.onAction = { [weak self] action in self?.perform(action) }
+        view.onMessage = { [weak self] body in
+            guard let action = TranscriptAction(message: body) else { return }
+            self?.perform(action)
+        }
         view.onReload = { [weak self] in
             self?.ready = false
             self?.hidden = true
@@ -132,6 +137,7 @@ final class TranscriptBridge {
         }
         view.onAppearanceChange = { [weak self] in self?.push() }
         self.view = view
+        if view.isReady { perform(.ready) }
         return view
     }
 
@@ -230,6 +236,7 @@ final class TranscriptBridge {
     private func perform(_ action: TranscriptAction) {
         switch action {
         case .ready:
+            PerfProbe.opening(conversationID, "page ready")
             ready = true
             feed.restart()
             olderOnTheWay = false

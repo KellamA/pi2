@@ -1,0 +1,175 @@
+import AppKit
+import WebKit
+
+/// The web view a conversation's transcript lives in (docs/transcript.md). It loads the page once and nothing after:
+/// every later navigation (a link, a reload, a script, a dropped file) is cancelled, it opens no windows, keeps nothing
+/// on disk, takes no drops, and its menu offers no way to navigate, open or download. Messages from the page itself
+/// arrive as they were posted, for the app to check (`TranscriptAction`).
+///
+/// Its own module so that pi2-transcript-check can load real pages in it, and hand them over as the app does (#441).
+public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate {
+    /// A message the page posted to the `pi2` handler, from this view's main frame and the transcript page itself.
+    public var onMessage: (Any) -> Void = { _ in }
+    /// The page was loaded again (its process ended); it has forgotten everything it was sent.
+    public var onReload: () -> Void = {}
+    /// The view's appearance changed, so the page needs the palette again.
+    public var onAppearanceChange: () -> Void = {}
+    /// Items for the menu WebKit is about to show, for the file the person right-clicked (#451). The page says what
+    /// each right-click was on before WebKit asks for its menu, so these are for this menu, and are used once.
+    public var fileMenuItems: (items: [(title: String, choose: () -> Void)], at: Date)?
+    /// Whether the page has loaded and said it is ready, since it was last loaded. A page loaded ahead (`SparePage`)
+    /// says so before anyone listens, so whoever takes it reads this instead of waiting for the message.
+    public private(set) var isReady = false
+
+    private let folder: URL
+    private var page: URL { folder.appendingPathComponent("index.html") }
+    /// Set only between asking for the page and WebKit asking whether it may load it.
+    private var expecting: URL?
+    private let messages = MessageHandler()
+
+    /// Makes the view and starts loading the page from `folder`, which holds `index.html` and its scripts.
+    public init(folder: URL) {
+        self.folder = folder
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        configuration.preferences.isElementFullscreenEnabled = false
+        configuration.preferences.isFraudulentWebsiteWarningEnabled = false
+        configuration.userContentController.add(messages, contentWorld: .page, name: "pi2")
+        super.init(frame: .zero, configuration: configuration)
+        messages.view = self
+        navigationDelegate = self
+        uiDelegate = self
+        allowsLinkPreview = false
+        allowsBackForwardNavigationGestures = false
+        allowsMagnification = false
+        #if PI2_DEVELOPMENT
+        isInspectable = true
+        if ProcessInfo.processInfo.environment["PI2_DRAW_WHEN_HIDDEN"] != nil { drawWhenHidden() }
+        #endif
+        load()
+    }
+
+    #if PI2_DEVELOPMENT
+    /// WebKit stops drawing a page nobody can see: one in a covered window, or behind a locked screen. For taking
+    /// pictures of the app in those conditions (docs/development.md), a development build can be told to keep drawing.
+    /// It uses a WebKit switch that is not public, so it is never compiled into a release build.
+    private func drawWhenHidden() {
+        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        guard responds(to: selector), let method = method(for: selector) else { return }
+        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
+        unsafeBitCast(method, to: Setter.self)(self, selector, false)
+    }
+    #endif
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func load() {
+        isReady = false
+        expecting = page
+        loadFileURL(page, allowingReadAccessTo: folder)
+    }
+
+    /// Stops listening to the page, for a view that is going away.
+    public func close() {
+        configuration.userContentController.removeAllScriptMessageHandlers()
+        messages.view = nil
+    }
+
+    fileprivate func received(_ message: WKScriptMessage) {
+        // Only the transcript page itself, in this view's main frame, is listened to.
+        guard message.webView === self, message.frameInfo.isMainFrame,
+              message.frameInfo.request.url?.isFileURL == true, message.frameInfo.request.url?.path == page.path else { return }
+        if (message.body as? [String: Any])?["type"] as? String == "ready" { isReady = true }
+        onMessage(message.body)
+    }
+
+    // MARK: Navigation
+
+    public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        if let expecting, navigationAction.targetFrame?.isMainFrame == true, navigationAction.request.url?.isFileURL == true,
+           navigationAction.request.url?.path == expecting.path {
+            self.expecting = nil
+            return .allow
+        }
+        return .cancel
+    }
+
+    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        load()
+        onReload()
+    }
+
+    public func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        nil
+    }
+
+    // MARK: Appearance, drops, menu
+
+    override public func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange()
+    }
+
+    /// Files and pictures dropped anywhere on the conversation are attached to the message being written, so the page
+    /// registers for no drags and a drop over it reaches the conversation.
+    override public func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {}
+
+    private static let unwantedMenuItems: Set<String> = [
+        "WKMenuItemIdentifierReload", "WKMenuItemIdentifierGoBack", "WKMenuItemIdentifierGoForward",
+        "WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow", "WKMenuItemIdentifierDownloadLinkedFile",
+        "WKMenuItemIdentifierOpenImageInNewWindow", "WKMenuItemIdentifierDownloadImage", "WKMenuItemIdentifierOpenFrameInNewWindow",
+        "WKMenuItemIdentifierOpenMediaInNewWindow", "WKMenuItemIdentifierDownloadMedia", "WKMenuItemIdentifierShowHideMediaControls",
+        "WKMenuItemIdentifierToggleFullScreen", "WKMenuItemIdentifierToggleEnhancedFullScreen", "WKMenuItemIdentifierInspectElement",
+        "WKMenuItemIdentifierPaste",
+    ]
+
+    override public func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        #if PI2_DEVELOPMENT
+        let unwanted = Self.unwantedMenuItems.subtracting(["WKMenuItemIdentifierInspectElement"])
+        #else
+        let unwanted = Self.unwantedMenuItems
+        #endif
+        for item in menu.items where unwanted.contains(item.identifier?.rawValue ?? "") { menu.removeItem(item) }
+        if let file = fileMenuItems, Date().timeIntervalSince(file.at) < 5, !file.items.isEmpty {
+            for (index, entry) in file.items.enumerated() {
+                menu.insertItem(ActionMenuItem(title: entry.title, choose: entry.choose), at: index)
+            }
+            menu.insertItem(.separator(), at: file.items.count)
+        }
+        fileMenuItems = nil
+        // No separator at either end or twice in a row once items have gone.
+        var previousWasSeparator = true
+        for item in menu.items {
+            if item.isSeparatorItem && previousWasSeparator { menu.removeItem(item) } else { previousWasSeparator = item.isSeparatorItem }
+        }
+        if let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
+    }
+}
+
+/// A menu item that does what it was given when chosen.
+private final class ActionMenuItem: NSMenuItem {
+    private let choose: () -> Void
+
+    init(title: String, choose: @escaping () -> Void) {
+        self.choose = choose
+        super.init(title: title, action: #selector(chosen), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func chosen() { choose() }
+}
+
+/// Hands the page's messages to the view without the view's own configuration keeping it alive.
+private final class MessageHandler: NSObject, WKScriptMessageHandler {
+    weak var view: TranscriptWebKitView?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        view?.received(message)
+    }
+}
