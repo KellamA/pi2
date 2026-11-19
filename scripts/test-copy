@@ -54,6 +54,9 @@ Usage: scripts/test-copy <command> [arguments]
   size <suffix> smallest           Resize the main window to its smallest size.
   answer <suffix> <conversation> allow|deny
                                    Answer one waiting approval (allow once); refuses if more than one is waiting.
+  choose <suffix> <path>... | cancel
+                                   Answer the running copy's next Open or Save panel without showing it.
+                                   Paths go in its data folder, the launcher's scratch folder or app/build.
   fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
   shot <suffix> <file.png> [--window <title>]
                                    Wait for and capture the copy's largest window (or the one with that title) into a file
@@ -402,6 +405,7 @@ launch_app() {
 	# reaches the copy; what it needs is named here. -g keeps it from taking the focus, -n makes a new instance.
 	vars=(--env "PI2_HOME=$DATA" --env "PI2_KEYCHAIN_SERVICE=$SERVICE" --env "PI2_TEST_COPY=$SUFFIX"
 		--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
+	[[ -n ${PI2_SCRATCH-} ]] && vars+=(--env "PI2_TEST_COPY_SCRATCH=$PI2_SCRATCH")
 	[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
 	[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
 	local pair
@@ -549,12 +553,15 @@ case $cmd in
 		launch_app
 		echo "Reopened $NAME from the latest development build (app pid $APP_PID); kept its data and engine (pid $ENGINE_PID)."
 		;;
-	show|size)
+	show|size|choose)
 		names "${1-}"; shift
 		if [[ $cmd == show ]]; then
 			(($# == 1)) || die "use: scripts/test-copy show $SUFFIX <conversation>"
-		elif ! { [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; }; then
-			die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		elif [[ $cmd == size ]]; then
+			{ [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; } ||
+				die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		else
+			(($# > 0)) || die "use: scripts/test-copy choose $SUFFIX <path>... | cancel"
 		fi
 		require_copy
 		is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || die "the copy $SUFFIX has no recorded app running"

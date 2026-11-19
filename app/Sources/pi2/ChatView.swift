@@ -1,5 +1,6 @@
 import ComposeKit
 import ComputerKit
+import BrowserKit
 import SwiftUI
 import WebKit
 
@@ -616,27 +617,21 @@ extension EngineClient {
         if let folder = Self.chooseFolder() { configure(id, ["cwd": folder]) }
     }
 
-    static func pickFolder() -> String? { chooseFolder() }
+    static func pickFolder(_ panel: String = "conversation-folder") -> String? { chooseFolder(panel) }
 
     /// Files and folders for an agent to keep at hand.
     static func pickReferenceFiles() -> [String] {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Add"
-        panel.message = "Choose files or folders this agent can always read."
-        return panel.runModal() == .OK ? panel.urls.map(\.path) : []
+        FilePanels.open("reference-files", selecting: .filesAndFolders, multiple: true) { panel in
+            panel.prompt = "Add"
+            panel.message = "Choose files or folders this agent can always read."
+        }?.map(\.path) ?? []
     }
 
-    private static func chooseFolder() -> String? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Use Folder"
-        panel.message = "Choose the folder this conversation's tools work in."
-        return panel.runModal() == .OK ? panel.url?.path : nil
+    private static func chooseFolder(_ name: String = "conversation-folder") -> String? {
+        FilePanels.open(name, selecting: .folders) { panel in
+            panel.prompt = "Use Folder"
+            panel.message = "Choose the folder this conversation's tools work in."
+        }?.first?.path
     }
 }
 

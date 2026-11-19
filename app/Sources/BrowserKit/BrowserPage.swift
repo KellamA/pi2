@@ -764,11 +764,8 @@ private final class PageDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
             completionHandler(nil)
             return
         }
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
-        panel.canChooseDirectories = parameters.allowsDirectories
-        panel.canChooseFiles = true
-        panel.beginSheetModal(for: window) { response in completionHandler(response == .OK ? panel.urls : nil) }
+        FilePanels.beginOpen("browser-upload", selecting: parameters.allowsDirectories ? .filesAndFolders : .files,
+                             multiple: parameters.allowsMultipleSelection, in: window, completion: completionHandler)
     }
 
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) {

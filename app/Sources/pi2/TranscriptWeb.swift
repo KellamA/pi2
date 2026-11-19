@@ -1,4 +1,5 @@
 import AppKit
+import BrowserKit
 import ComputerKit
 import FileLinkKit
 import SwiftUI
@@ -397,12 +398,12 @@ final class TranscriptBridge {
 
     /// Asks the person where to save a file, offering `name`, and writes it there. Says so if it cannot be written.
     private func saveFile(named name: String, write: @escaping (URL) throws -> Void) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = name
-        panel.canCreateDirectories = true
-        panel.isExtensionHidden = false
-        let finish: (NSApplication.ModalResponse) -> Void = { response in
-            guard response == .OK, let url = panel.url else { return }
+        FilePanels.beginSave("transcript-file", in: view?.window, configure: { panel in
+            panel.nameFieldStringValue = name
+            panel.canCreateDirectories = true
+            panel.isExtensionHidden = false
+        }) { url in
+            guard let url else { return }
             do {
                 try write(url)
             } catch {
@@ -412,7 +413,6 @@ final class TranscriptBridge {
                 alert.runModal()
             }
         }
-        if let window = view?.window { panel.beginSheetModal(for: window, completionHandler: finish) } else { finish(panel.runModal()) }
     }
 
     /// Fetches one of an entry's pictures from the engine and asks the person where to save it.

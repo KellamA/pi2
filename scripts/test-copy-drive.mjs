@@ -93,6 +93,15 @@ try {
 			summary = await windowCommand(target, { pid: Number(pid), command, ...size });
 			break;
 		}
+		case 'choose': {
+			const [pid, ...paths] = args;
+			if (!paths.length || paths.some(path => !path) || (paths[0] === 'cancel' && paths.length !== 1)) {
+				throw new Error('choose takes one or more paths, or cancel on its own');
+			}
+			const absolute = paths[0] === 'cancel' ? [] : paths.map(path => path.startsWith('/') ? path : `${process.cwd()}/${path}`);
+			summary = await windowCommand(target, { pid: Number(pid), command, paths: absolute });
+			break;
+		}
 		case 'answer': {
 			const id = integer(args[0], 'conversation');
 			const decision = args[1];

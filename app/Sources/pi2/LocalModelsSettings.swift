@@ -1,4 +1,5 @@
 import AppKit
+import BrowserKit
 import SwiftUI
 
 // Models on this Mac (#292 of #173), in Settings › Providers: getting the Strata engine and a model pack, with their
@@ -287,13 +288,11 @@ struct LocalModelsSection: View {
     }
 
     private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Keep Models Here"
-        panel.message = "Models are tens of gigabytes. Choose a folder on a disk with room for them; models already set up stay where they are."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.open("models-folder", selecting: .folders, configure: { panel in
+            panel.canCreateDirectories = true
+            panel.prompt = "Keep Models Here"
+            panel.message = "Models are tens of gigabytes. Choose a folder on a disk with room for them; models already set up stay where they are."
+        })?.first else { return }
         act("local.model.folder", ["path": url.path])
     }
 
@@ -514,13 +513,10 @@ private struct ModelPackSheet: View {
 
     /// The folder of the person's own copy of the pack's files.
     private func chooseFiles() -> String? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.prompt = "Use These Files"
-        panel.message = "Choose the folder that holds the model's files (the .gguf files), or a folder above it, such as Strata's own data folder. pi² checks each file's checksum before it uses it, and downloads only what is missing or does not match."
-        guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return url.path
+        FilePanels.open("local-model-files", selecting: .folders) { panel in
+            panel.prompt = "Use These Files"
+            panel.message = "Choose the folder that holds the model's files (the .gguf files), or a folder above it, such as Strata's own data folder. pi² checks each file's checksum before it uses it, and downloads only what is missing or does not match."
+        }?.first?.path
     }
 
     private func packRow(_ pack: LocalStatus.Pack) -> some View {
