@@ -366,7 +366,7 @@ export function pi2Extension(host: Host): Extension {
 					let note = "";
 					const key = `delegate:${String(api.taskId)}`;
 					const sent = await host.sendToChat(chat, args.task, key, async (tx, saved, model) => {
-						if (saved.parent !== parent || saved.deleted === true) return false;
+						if (!ownsSubChat(parent, saved.parent) || saved.deleted === true) return false;
 						held = await admitted(tx, model, start);
 						if (held !== undefined) return false;
 						restored = isArchived(saved);
