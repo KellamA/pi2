@@ -12,10 +12,10 @@ import { MAX_NOTES, Memory } from "../src/knowledge.ts";
 import { projectNotebook, type ProjectNote } from "../src/projectnotes.ts";
 import { PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
 import { Agents } from "../src/state.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-notes-"));
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.test-projectnotes-${process.pid}`, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000" };
+const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.test-projectnotes-${process.pid}`, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp() };
 const start = () => spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 let engine: ChildProcess | undefined;
 process.on("exit", () => {
