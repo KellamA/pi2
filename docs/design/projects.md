@@ -1,0 +1,102 @@
+# Projects: the design
+
+This is the design for epic [#450](https://github.com/KellamA/pi2/issues/450): pi² organised around projects, each with an orchestrator, in place of free-standing agents and their conversations. It records what the owner decided on 19 November 2026 and what is still open. Nothing here is built yet. The drawings are in [projects-drafts.html](projects-drafts.html): open it in a browser; the buttons along its top switch between the screens.
+
+**No issue is filed for this epic until the owner has agreed the build order at the end of this page.**
+
+## Why
+
+pi² was built around agents a person defines one by one, and the conversations had with each. The way pi² itself is built is different, and works better: one long-lived conversation per codebase with an agent that plans, hands the work to other agents, reviews what comes back, and reports. Today that way of working is assembled by hand from an agent's instructions, memory notes, scripts and habit. The app should be built around it.
+
+## Words
+
+- **Project**: a piece of work with a folder (often a git repository), an orchestrator, agents, rules, notes, a list of work, and settings.
+- **Orchestrator**: the project's main agent. The person talks to it; it hands work to the project's other agents.
+- **Agent**: as today (model, instructions, tools and the rest), but belonging to one project.
+- **Template**: an agent kept outside any project, to make agents from.
+- **Hub**: what opens when a project is clicked.
+- **Board**: the half of the hub that shows the project's state.
+- **Needs you**: everything waiting for the person, in one place.
+
+## The sidebar
+
+The sidebar lists projects, in place of conversations and agents. Each shows a badge: how many things need the person, or how many agents are working, or idle. The open project lists its orchestrator and the agents working now beneath it, as sub-chats are listed under a conversation today. Above the projects is the Dashboard; below them, the templates and the archive. The switch between this and chat mode stays.
+
+## The hub
+
+The hub is two panels side by side: the conversation with the orchestrator on the left, the board on the right (draft C).
+
+- **Each panel folds**, with a button and a key of its own, and a project remembers how it was left. Both shown: talking and seeing together. The conversation folded: the board takes the width, and a strip along the bottom keeps the orchestrator's last words and a field to answer. The board folded: the conversation takes the width, for a long plan or a review. In a narrow window the board folds by itself.
+- **The board's tabs are the project's navigation:** Now, Work, Agents, Rules, Notes, Branches, and its settings. (The drawings also show tabs in the bar above; those go.)
+- **Now** shows what needs the person, who is working (the agent, its model, how long, its last line), and what finished today.
+- **Clicking an agent** opens its conversation in place of the board, so the person can watch or talk to a worker and still talk to the orchestrator. A message sent straight to an agent is told to the orchestrator, so it does not act on a stale picture.
+- **The bar** shows the project, its folder and branch, the orchestrator's model, and how much of the plan's week is used.
+
+## The orchestrator
+
+- **One conversation per project, for good.** It is kept small by summaries. **Start fresh** begins a new one from the board, the rules and the notes; the old one stays readable.
+- **The project's state lives outside the conversation**: the board, the rules, the notes and the work list. A summary or a fresh start loses nothing, and the hub goes on working while the orchestrator waits on a provider's limit.
+- **It can do everything about the project that the person can do by hand**: make and change agents, change settings, add rules, file and close work. It has a tool for each. Every change it makes shows in the conversation as a line with Undo.
+- **Except widen its own reach.** A change that lets agents do more or spend more (merging or releasing without asking, a higher limit, Allow everything, dropping a rule) it can only ask for, as a card under Needs you that the person answers with one click. Otherwise text the agent merely reads, such as a web page or another agent's report, could talk it into raising its own limits.
+- **What it may do without asking is explicit**, per project, and shown on its page: start agents, file and close work, make and change agents, add rules the person dictates, merge, release, go past a limit.
+- **Reports and waking.** A report from an agent does not wake the orchestrator by default: it lands under Finished and waits. A small switch in the hub turns waking on for the project. The orchestrator can also ask to be woken itself: for one agent, for a batch when all of it has ended, or only when one fails.
+
+## Needs you
+
+One list for everything that waits for the person: an agent's request to run something, a question, a decision, a request for more reach, a proposed rule. Each is a card answered in place. It does not stop the agent that asked from doing other work, and it stays until answered, where a question asked in a message scrolls away. The same cards show in the hub, on the Dashboard, and behind the menu bar item.
+
+## The Dashboard
+
+The person ticks the projects to watch. Each gets a column: what needs the person, who is working, the orchestrator's last words, and a field to message it, with a button to the project's own hub. Cards are answered there. With every project ticked it does what the Inbox does today.
+
+## Agents and templates
+
+- Agents are made per project, with everything an agent has today as far as it makes sense for an agent in a project.
+- The orchestrator is an agent too, with the same page, plus its list of what it may do without asking.
+- A template is copied into a project when it is used, so changing the copy changes that project only. **Update from template** brings a copy up to date.
+- Making an agent by hand and asking the orchestrator for one end in the same place.
+
+## Rules and notes
+
+- **Rules** are a short list that is the person's. They are given to the model at every turn, word for word, in a section of their own outside the conversation, so no summary can change or drop them. Each rule binds the orchestrator alone or every agent in the project. The board shows them and what they cost in tokens at every request.
+- The person writes rules, or dictates one to the orchestrator. Unasked, an agent can only propose one, as a card to accept, edit or refuse. Dropping a rule is a change that widens reach, so an agent can only ask for it.
+- **Notes** are what an agent keeps for itself: facts about the project, as memory is today. They belong to the project, so a new orchestrator starts with them.
+- "Rules" today means commands an agent may run without asking (`docs/rules.md`). Those are to be called **allowed commands**.
+
+## Work
+
+A project has a list of work, in one of two modes, behind the same screen:
+
+- **Kept by pi²**: for a project with no repository, or one that does not use GitHub's issues.
+- **A GitHub repository attached to the project**: its issues and pull requests are the list. pi² shows them and changes them there. To begin with it uses the sign-in the Mac's `gh` already has.
+
+Every agent in the project knows the list through tools (take, note, finish, file, open a pull request), so no script or instruction has to teach it the tracker. A pull request shows its checks and what a reviewing agent found, and can be read, sent back or merged in the app. Whether the orchestrator may merge by itself is the project's setting.
+
+## Limits
+
+Limits on spending are the project's settings and are enforced by the app: past the limit, no new agent is started, whatever an agent remembers or forgets. Plans' limits are shared by all projects, and a model on this Mac answers one request at a time; the Dashboard is where that shows.
+
+## What stays, and what becomes of what there is
+
+- Chat mode stays as it is.
+- A project can be made from a folder in one step, with a default orchestrator, so a small task needs no setting up.
+- Today's agents become templates. Today's conversations are grouped into projects by their folder.
+- The present agents and conversations keep working until projects can replace them. While both exist, projects are a preview the person switches on.
+
+## Still open
+
+- Whether a rule can bind one named agent, besides "the orchestrator" and "every agent".
+- Whether a first, smaller version of rules (per agent, on the app as it is) is worth shipping before projects.
+- What a project with no folder at all looks like.
+
+## Build order (proposed, not agreed)
+
+Each step is split into issues that can be built side by side against a written contract. Old and new run side by side until the last step.
+
+1. **The contract.** The engine's documents for a project, its agents, rules, notes, work and settings; the requests and events; the agents' tools; how what exists is carried over. Written and agreed before anything is built.
+2. **Engine foundation**, with no change to what the person sees: projects and their agents, templates, the carrying-over, rules in the prompt, Needs you as one list, the waking choices, limits enforced.
+3. **The hub**: the sidebar of projects, the two panels and their folding, Now, an agent's conversation opened in place of the board.
+4. **Agents, Rules, Notes**, and the orchestrator's tools for changing them, with the change lines, Undo, and the cards for more reach.
+5. **Work**: the list kept by pi², then GitHub's issues and pull requests, with merging in the app and the agents' tools.
+6. **The Dashboard**, taking the Inbox's place.
+7. **Taking the old way out**: the agents and conversations screens removed, the docs rewritten, the preview switch gone.

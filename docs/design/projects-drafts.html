@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>pi² — project hub, three drafts</title>
+<style>
+
+:root{
+  --page:#0b0c0f; --win:#17181c; --side:#1d1e23; --panel:#1f2026; --card:#24262d; --card2:#2a2c34;
+  --line:#ffffff14; --line2:#ffffff24; --tx:#ececf1; --tx2:#a3a5b0; --tx3:#6e7080;
+  --acc:#8b93ff; --accbg:#8b93ff22; --ok:#4cc38a; --okbg:#4cc38a1f; --warn:#f0b24a; --warnbg:#f0b24a1f; --bad:#f2647a; --badbg:#f2647a1f;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--page);color:var(--tx);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;padding:28px 24px 60px;-webkit-font-smoothing:antialiased}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px}
+header{max-width:1240px;margin:0 auto 18px}
+h1{font-size:22px;font-weight:650;letter-spacing:-.02em}
+header p{color:var(--tx2);margin-top:4px;max-width:720px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-top:16px}
+nav button{font:inherit;color:var(--tx2);background:transparent;border:1px solid var(--line2);border-radius:999px;padding:6px 14px;cursor:pointer}
+nav button.on{background:var(--tx);color:#111;border-color:var(--tx);font-weight:600}
+.screen{display:none;max-width:1240px;margin:0 auto}
+.screen.on{display:block}
+.win{background:var(--win);border:1px solid var(--line2);border-radius:12px;overflow:hidden;box-shadow:0 30px 80px #000a;display:flex;flex-direction:column;height:720px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin-top:16px}
+.notes div{border:1px solid var(--line);border-radius:10px;padding:12px 14px;color:var(--tx2)}
+.notes b{display:block;color:var(--tx);margin-bottom:3px}
+/* window chrome */
+.bar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+.lights{display:flex;gap:8px;margin-right:6px}.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.body{flex:1;display:flex;min-height:0}
+.grow{flex:1;min-width:0}.row{display:flex;align-items:center;gap:8px}.col{display:flex;flex-direction:column}
+.sp{flex:1}
+.t2{color:var(--tx2)}.t3{color:var(--tx3)}.sm{font-size:11.5px}.b{font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);border-radius:8px;padding:4px 9px;color:var(--tx);background:var(--card);white-space:nowrap}
+.pill.ghost{background:transparent;color:var(--tx2)}
+.btn{display:inline-flex;align-items:center;gap:6px;border-radius:7px;padding:5px 11px;background:var(--card2);border:1px solid var(--line2);color:var(--tx);white-space:nowrap}
+.btn.pri{background:var(--acc);border-color:transparent;color:#10112a;font-weight:600}
+.btn.bad{color:var(--bad)}
+.tag{font-size:10.5px;border-radius:5px;padding:1px 6px;background:var(--card2);color:var(--tx2);white-space:nowrap}
+.tag.ok{background:var(--okbg);color:var(--ok)}.tag.warn{background:var(--warnbg);color:var(--warn)}.tag.acc{background:var(--accbg);color:var(--acc)}.tag.bad{background:var(--badbg);color:var(--bad)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--tx3);flex:none}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.acc{background:var(--acc)}
+.spin{width:10px;height:10px;border-radius:50%;border:2px solid var(--accbg);border-top-color:var(--acc);animation:s 1s linear infinite;flex:none}@keyframes s{to{transform:rotate(360deg)}}
+.av{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#111;flex:none}
+.a1{background:#b9a6ff}.a2{background:#ffb37a}.a3{background:#7fd8c4}.a4{background:#9fc5ff}
+/* sidebar */
+.side{width:248px;flex:none;background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:10px 8px;gap:2px;overflow:hidden}
+.search{border:1px solid var(--line);background:#0003;border-radius:8px;padding:6px 9px;color:var(--tx3);display:flex;margin-bottom:8px}
+.lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);padding:10px 8px 4px;display:flex}
+.it{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;color:var(--tx2);white-space:nowrap;overflow:hidden}
+.it.on{background:#ffffff12;color:var(--tx)}
+.it span.n{overflow:hidden;text-overflow:ellipsis}
+.foot{margin-top:auto;border-top:1px solid var(--line);padding:9px 8px 2px;color:var(--tx2)}
+/* chat */
+.chat{flex:1;min-width:0;display:flex;flex-direction:column}
+.scroll{flex:1;overflow:hidden;padding:20px 28px;display:flex;flex-direction:column;gap:14px}
+.u{align-self:flex-end;background:var(--card2);border-radius:14px 14px 4px 14px;padding:9px 13px;max-width:70%}
+.a{max-width:92%;color:var(--tx)}
+.tool{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+.tool .h{display:flex;align-items:center;gap:8px;padding:7px 11px}
+.tool pre{border-top:1px solid var(--line);padding:8px 11px;color:var(--tx2);white-space:pre-wrap}
+.gate{border:1px solid #f0b24a55;background:var(--warnbg);border-radius:10px;padding:11px 13px}
+.sub{border:1px solid var(--line);border-left:3px solid #7fd8c4;border-radius:10px;background:var(--panel);padding:9px 12px}
+.caret{display:inline-block;width:7px;height:14px;background:var(--acc);vertical-align:-2px;border-radius:1px;animation:b 1s steps(2) infinite}@keyframes b{50%{opacity:0}}
+.comp{margin:0 28px 18px;border:1px solid var(--line2);border-radius:14px;background:var(--panel);padding:10px 12px}
+.queue{margin:0 28px 8px;display:flex;gap:6px;flex-wrap:wrap}
+.insp{width:270px;flex:none;border-left:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.box{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--panel)}
+.box h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);font-weight:600;margin-bottom:7px}
+.meter{height:6px;border-radius:3px;background:#ffffff14;overflow:hidden;margin:6px 0}.meter i{display:block;height:100%;background:var(--acc);border-radius:3px}
+.tree div{display:flex;align-items:center;gap:7px;padding:2.5px 0;white-space:nowrap}
+.kv{display:flex;justify-content:space-between;padding:2px 0;color:var(--tx2)}.kv b{color:var(--tx);font-weight:500}
+/* forms */
+.pane{flex:1;min-width:0;padding:22px 26px;overflow:hidden;display:flex;flex-direction:column;gap:14px}
+.pane h2{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.field{display:flex;flex-direction:column;gap:5px}.field label{color:var(--tx2);font-size:11.5px}
+.in{border:1px solid var(--line2);background:#0003;border-radius:8px;padding:6px 10px;color:var(--tx);display:flex;align-items:center;gap:8px;min-height:30px}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}.seg span{padding:5px 11px;color:var(--tx2);border-right:1px solid var(--line)}.seg span:last-child{border:0}.seg span.on{background:var(--accbg);color:var(--acc);font-weight:600}
+.sw{width:30px;height:18px;border-radius:9px;background:#ffffff22;position:relative;flex:none}.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff}.sw.on{background:var(--ok)}.sw.on::after{left:14px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.list .r{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line)}.list .r:last-child{border:0}
+.list{border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{width:100%;border-collapse:collapse}th{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);text-align:left;font-weight:600;padding:7px 12px;border-bottom:1px solid var(--line)}td{padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}tr:last-child td{border:0}
+.barrow{display:grid;grid-template-columns:150px 1fr 60px;align-items:center;gap:10px;padding:5px 0}.barrow .tr{height:10px;border-radius:5px;background:#ffffff10}.barrow .tr i{display:block;height:100%;border-radius:5px;background:var(--acc)}.barrow span:last-child{text-align:right}
+/* desktop */
+.desk{height:720px;border-radius:12px;border:1px solid var(--line2);overflow:hidden;position:relative;background:radial-gradient(1200px 600px at 70% 0%,#3a3f8f 0%,#1b1c3a 45%,#0d0e1a 100%)}
+.menubar{height:26px;background:#0006;backdrop-filter:blur(10px);display:flex;align-items:center;gap:16px;padding:0 14px;font-size:12.5px}
+.pop{position:absolute;top:34px;right:120px;width:420px;background:#1c1d23f2;border:1px solid var(--line2);border-radius:14px;box-shadow:0 30px 70px #000b;padding:12px}
+.palette{position:absolute;left:48px;top:150px;width:560px;background:#1c1d23f2;border:1px solid var(--line2);border-radius:14px;box-shadow:0 30px 70px #000b;overflow:hidden}
+.note-toast{position:absolute;top:40px;right:14px;width:320px;background:#26272ef2;border:1px solid var(--line2);border-radius:14px;padding:11px 13px;display:none}
+
+/* additions for the project hub drafts */
+.win{height:780px}
+.seg2{display:flex;background:#0003;border:1px solid var(--line);border-radius:8px;padding:2px;margin-bottom:8px}
+.seg2 span{flex:1;text-align:center;padding:4px 0;border-radius:6px;color:var(--tx2)}
+.seg2 span.on{background:var(--card2);color:var(--tx);font-weight:600}
+.subit{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 30px;border-radius:7px;color:var(--tx2);white-space:nowrap;overflow:hidden;font-size:12px}
+.subit .n{overflow:hidden;text-overflow:ellipsis}
+.subit.on{background:#ffffff12;color:var(--tx)}
+.hubbar{height:54px;flex:none;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--line)}
+.av.big{width:30px;height:30px;border-radius:9px;font-size:15px}
+.seg span.on{background:var(--card2);color:var(--tx);font-weight:600}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.cols{flex:1;min-height:0;display:flex}
+.rail{width:330px;flex:none;border-left:1px solid var(--line);padding:14px;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.board{flex:1;min-width:0;border-left:1px solid var(--line);padding:14px 16px;display:flex;flex-direction:column;gap:12px;overflow:hidden;background:#0000001a}
+.h4{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);font-weight:600;display:flex;align-items:center;gap:6px}
+.need{border:1px solid #f0b24a55;background:var(--warnbg);border-radius:10px;padding:9px 11px;display:flex;flex-direction:column;gap:7px}
+.need .q{color:var(--tx)}
+.wk{display:flex;align-items:center;gap:9px;padding:7px 10px;border-bottom:1px solid var(--line)}
+.wk:last-child{border:0}
+.wk .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wk .last{color:var(--tx3);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acard{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.acard .last{color:var(--tx3);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash{flex:1;min-height:0;padding:16px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.g3{display:grid;grid-template-columns:1.25fr 1fr 1fr;gap:12px}
+.dock{margin:0 20px 16px;border:1px solid var(--line2);border-radius:14px;background:var(--panel);padding:10px 12px;display:flex;align-items:center;gap:10px}
+.said{border-left:2px solid var(--acc);padding:2px 0 2px 10px;color:var(--tx2)}
+.col2{flex:1.05;min-width:0;display:flex;flex-direction:column}
+.cap{max-width:1240px;margin:0 auto 10px;color:var(--tx2)}
+.cap b{color:var(--tx)}
+.ptop{height:34px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px 0 22px;border-bottom:1px solid var(--line);color:var(--tx2);font-size:11.5px}
+.fold{border:1px solid var(--line2);border-radius:6px;padding:1px 7px;color:var(--tx2);font-size:11px;white-space:nowrap}
+.chg{border-left-color:var(--acc)}
+.pr{display:flex;align-items:center;gap:8px;margin:5px 0 0 16px;padding:5px 9px;border:1px solid var(--line);border-radius:8px;background:#0002;font-size:11.5px;color:var(--tx2)}
+.wi{padding:8px 10px;border-bottom:1px solid var(--line)}.wi:last-child{border:0}
+.colm{flex:1;min-width:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);display:flex;flex-direction:column;gap:10px;padding:12px;overflow:hidden}
+.mini{border:1px solid var(--line2);border-radius:10px;padding:7px 10px;color:var(--tx3);display:flex;align-items:center;gap:8px}
+.may{display:flex;flex-wrap:wrap;gap:5px}
+</style></head>
+<body>
+<header>
+  <h1>Projects — drafts</h1>
+  <p>What you see after clicking a project in the sidebar. Same project, same moment, three ways to weigh the conversation with the orchestrator against the state of the work. The example is pi² itself, mid-run.</p>
+  <nav>
+    <button data-s="a">A · Conversation with a rail</button>
+    <button data-s="b">B · Dashboard</button>
+    <button data-s="c">C · Conversation and board, side by side</button>
+    <button data-s="d">Rules · a tab of the board in C</button>
+    <span class="t3" style="align-self:center;padding:0 6px">Round 2, on C:</span>
+    <button data-s="e">1 · Hub, both panels</button>
+    <button data-s="f">2 · Conversation folded</button>
+    <button data-s="g">3 · Work, with GitHub</button>
+    <button data-s="h">4 · Agents</button>
+    <button data-s="i">5 · Dashboard, several projects</button>
+  </nav>
+</header>
+<section class="screen" id="a"></section>
+<section class="screen" id="b"></section>
+<section class="screen" id="c"></section>
+<section class="screen" id="d"></section>
+<section class="screen" id="e"></section><section class="screen" id="f"></section><section class="screen" id="g"></section><section class="screen" id="h"></section><section class="screen" id="i"></section>
+<script>
+const lights = `<div class="lights"><i></i><i></i><i></i></div>`;
+const side = `
+<div class="side">
+  <div class="seg2"><span class="on">Projects</span><span>Chat</span></div>
+  <div class="search">Search projects and work<span class="sp"></span>⌘K</div>
+  <div class="lbl">Projects<span class="sp"></span>＋</div>
+  <div class="it on"><span class="av a1">π</span><span class="n b">pi²</span><span class="sp"></span><span class="tag warn">3 need you</span></div>
+  <div class="subit on"><span class="dot acc"></span><span class="n">Orchestrator</span></div>
+  <div class="subit"><span class="spin"></span><span class="n">#435 Cards hide the field</span></div>
+  <div class="subit"><span class="spin"></span><span class="n">#446 Sidebar cost</span></div>
+  <div class="subit"><span class="spin"></span><span class="n">#378 Usage recount</span></div>
+  <div class="subit"><span class="dot warn"></span><span class="n">#442 Load script</span></div>
+  <div class="subit t3"><span class="n">14 finished today…</span></div>
+  <div class="it"><span class="av a2">W</span><span class="n">Website</span><span class="sp"></span><span class="tag acc">1 working</span></div>
+  <div class="it"><span class="av a3">R</span><span class="n">Reading notes</span><span class="sp"></span><span class="tag">idle</span></div>
+  <div class="it"><span class="av a4">T</span><span class="n">Taxes 2026</span><span class="sp"></span><span class="tag">idle</span></div>
+  <div class="lbl">Shared</div>
+  <div class="it"><span class="n">Agent templates</span><span class="sp"></span><span class="t3 sm">5</span></div>
+  <div class="it"><span class="n">Archive</span></div>
+  <div class="foot row"><span>Usage</span><span class="sp"></span><span>Settings</span></div>
+</div>`;
+const hubbar = (on) => `
+<div class="hubbar">
+  <span class="av a1 big">π</span>
+  <div class="col"><span class="b" style="font-size:15px;line-height:1.2">pi²</span><span class="t3 mono" style="font-size:10.5px">~/Developer/Apps/pi2 · main</span></div>
+  <span class="pill">Orchestrator · Opus ▾</span>
+  <span class="sp"></span>
+  <div class="seg">${["Hub","Agents","Work","Branches","Settings"].map(n=>`<span class="${n===on?"on":""}">${n}</span>`).join("")}</div>
+  <span class="sp"></span>
+  <span class="t2 sm">Week</span><div class="meter" style="width:64px;margin:0"><i style="width:53%"></i></div><span class="sm">53%</span>
+</div>`;
+const needs = [
+  ["Decision", "Release 0.8.3 once the board is clear?", "Orchestrator", ["Release","Not yet"]],
+  ["Question", "#339, a setting for the picture model: do you want it built?", "Orchestrator", ["Build it","Park it"]],
+  ["Approval", "<span class='mono'>git push --force-with-lease</span> on its own branch", "Worker · Codex, #378", ["Allow","Deny"]],
+];
+const need = ([kind,q,who,btns], compact) => `
+<div class="need"><div class="row"><span class="tag warn">${kind}</span><span class="t3 sm">${who}</span></div>
+<div class="q">${q}</div><div class="row"><span class="btn pri">${btns[0]}</span><span class="btn">${btns[1]}</span>${compact?"":`<span class="sp"></span><span class="t3 sm">Answer in the conversation instead</span>`}</div></div>`;
+const work = [
+  ["#435 Approval cards can hide the message field","Worker","Opus","a1","12 min","building the app for the test copy…","spin"],
+  ["#446 Sidebar cost with many sub-chats","Worker","Opus","a1","9 min","measuring: 80 sub-chats, 4 working","spin"],
+  ["#378 Usage recounts everything on every change","Worker · Codex","GPT","a2","6 min","engine tests, 31 of 44 files","spin"],
+  ["#442 Load script's large conversation","Worker · Qwen","This Mac","a3","3 min","waiting for its turn on the model","dot warn"],
+];
+const wk = ([t,who,model,av,time,last,ind]) => `
+<div class="wk"><span class="${ind}"></span><div class="grow" style="min-width:0"><div class="n">${t}</div><div class="last">${who} · ${last}</div></div><span class="tag">${model}</span><span class="t3 sm" style="width:42px;text-align:right">${time}</span></div>`;
+const acard = ([t,who,model,av,time,last,ind]) => `
+<div class="acard"><div class="row"><span class="${ind}"></span><span class="b n" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t}</span></div>
+<div class="row sm t2"><span class="av ${av}" style="width:16px;height:16px;border-radius:5px;font-size:9px">${who[0]}</span>${who}<span class="tag">${model}</span><span class="sp"></span>${time}</div>
+<div class="last">${last}</div></div>`;
+const done = [
+  ["#440 Older entries load as you scroll up","merged · PR #447","ok"],
+  ["#443 Drive a test copy without clicking","merged · PR #445","ok"],
+  ["#436 Scene body no longer redraws every window","merged · PR #444","ok"],
+  ["0.8.2 released","build 704 · you installed it","acc"],
+  ["#400 The background crash","safeguard merged · not proven","warn"],
+];
+const dn = ([t,how,c]) => `<div class="wk"><span class="dot ${c}"></span><div class="grow n" style="min-width:0">${t}</div><span class="t3 sm">${how}</span></div>`;
+const chat = (wide) => `
+<div class="chat">
+  <div class="scroll" style="padding:18px ${wide?28:22}px">
+    <div class="u">Can we plan out finishing the remaining tickets?</div>
+    <div class="a">Yes. Ten are open. I'd do eight of them in two waves, park two unless you want them, and add one ticket first to click through what 0.8.2 shipped unclicked.</div>
+    <div class="sub"><div class="row"><span class="b">Plan</span><span class="t3 sm">8 tickets · 2 waves · about 2 hours</span><span class="sp"></span><span class="t3 sm">Open in Work ›</span></div></div>
+    <div class="u">go</div>
+    <div class="a">Wave 1 is running: four agents are at work and three things need you. I've put those under Needs you rather than asking here, so they stay put until you answer.</div>
+    <div class="a t2">I'll say here when the board is clear.<span class="caret" style="margin-left:4px"></span></div>
+  </div>
+  <div class="comp"><div class="t3">Message the orchestrator…</div><div class="row" style="margin-top:8px"><span class="pill ghost">＋</span><span class="pill ghost">Opus · high</span><span class="sp"></span><span class="btn pri">Send</span></div></div>
+</div>`;
+const budget = `
+<div class="box"><h4>Budget</h4>
+<div class="kv"><span>Anthropic · this week</span><b>53%</b></div><div class="meter"><i style="width:53%"></i></div>
+<div class="kv"><span>Codex · 5 hours</span><b>40%</b></div><div class="meter"><i style="width:40%;background:var(--ok)"></i></div>
+<div class="kv"><span>This Mac · Qwen</span><b>loaded, 1 at a time</b></div></div>`;
+const plan = `
+<div class="box"><h4>Work</h4>
+<div class="kv"><span>In progress</span><b>4</b></div><div class="kv"><span>Up next (wave 2)</span><b>2</b></div><div class="kv"><span>Parked</span><b>2</b></div><div class="kv"><span>Finished today</span><b>14</b></div>
+<div class="t3 sm" style="margin-top:6px">Open Work ›</div></div>`;
+const notes = (list) => `<div class="notes">${list.map(([b,t])=>`<div><b>${b}</b>${t}</div>`).join("")}</div>`;
+
+document.getElementById("a").innerHTML = `
+<div class="win"><div class="body">${side}<div class="main">${hubbar("Hub")}
+<div class="cols">${chat(true)}
+<div class="rail">
+  <div class="h4"><span class="dot warn"></span>Needs you · 3</div>${needs.map(n=>need(n,true)).join("")}
+  <div class="h4"><span class="spin"></span>Working now · 4</div><div class="list">${work.map(wk).join("")}</div>
+  <div class="h4">Finished today · 14</div><div class="list">${done.slice(0,2).map(dn).join("")}</div>
+</div></div></div></div></div>
+${notes([
+ ["The idea","The hub is the conversation with the orchestrator, as you use me today. A rail beside it holds what needs you, who is working, and what landed."],
+ ["Good","Nothing new to learn. The conversation keeps its full width for long answers and tables. The rail fixes today's two worst habits: status repeated in every message, and questions that scroll away."],
+ ["Weak","The rail is narrow: four agents fit, twelve do not. The plan and the finished work get a line each. A project with no run going looks like an ordinary chat."],
+ ["Best when","You mostly talk and glance. A small window."]])}`;
+
+document.getElementById("b").innerHTML = `
+<div class="win"><div class="body">${side}<div class="main">${hubbar("Hub")}
+<div class="dash">
+  <div class="h4"><span class="dot warn"></span>Needs you · 3</div>
+  <div class="g3">${needs.map(n=>need(n,true)).join("")}</div>
+  <div class="h4"><span class="spin"></span>Working now · 4<span class="sp"></span><span class="t3" style="text-transform:none;letter-spacing:0">Click one to open its conversation</span></div>
+  <div class="g2">${work.map(acard).join("")}</div>
+  <div class="g3" style="flex:1;min-height:0">
+    <div class="col" style="gap:8px;min-height:0"><div class="h4">Finished today · 14</div><div class="list">${done.map(dn).join("")}</div></div>
+    ${plan}${budget}
+  </div>
+</div>
+<div class="dock"><span class="dot acc"></span><div class="grow"><div class="said sm">“Wave 1 is running: four agents are at work and three things need you.” <span class="t3">· 2 min ago</span></div><div class="t3" style="margin-top:6px">Tell the orchestrator what you want…</div></div><span class="btn">Open conversation ↗</span><span class="btn pri">Send</span></div>
+</div></div></div>
+${notes([
+ ["The idea","The hub is a status page. The orchestrator is one line at the bottom: its last message and a field to answer. The full conversation opens on demand."],
+ ["Good","The whole project at a glance: every agent as a card with its last line, the day's results, the plan, the budget. Scales to many agents. Reads well when you come back after hours away."],
+ ["Weak","It demotes the one thing you said should be the main way to work. My answers are often long (plans, tables, reviews) and do not fit a dock, so you would open the conversation constantly. An idle project is a page of empty boxes."],
+ ["Best when","You mostly watch, and steer rarely."]])}`;
+
+document.getElementById("c").innerHTML = `
+<div class="win"><div class="body">${side}<div class="main">${hubbar("Hub")}
+<div class="cols"><div class="col2">${chat(false)}</div>
+<div class="board">
+  <div class="row"><div class="seg"><span class="on">Now</span><span>Work</span><span>Agents</span><span>Notes</span></div><span class="sp"></span><span class="pill ghost sm">Hide ⇥</span></div>
+  <div class="h4"><span class="dot warn"></span>Needs you · 3</div>
+  ${needs.slice(0,2).map(n=>need(n,true)).join("")}
+  <div class="need" style="flex-direction:row;align-items:center"><span class="tag warn">Approval</span><span class="grow sm">Worker · Codex: <span class="mono">git push --force-with-lease</span></span><span class="btn pri">Allow</span><span class="btn">Deny</span></div>
+  <div class="h4"><span class="spin"></span>Working now · 4</div><div class="list">${work.map(wk).join("")}</div>
+  <div class="h4">Finished today · 14<span class="sp"></span><span class="t3" style="text-transform:none;letter-spacing:0">All ›</span></div><div class="list">${done.slice(0,4).map(dn).join("")}</div>
+</div></div></div></div></div>
+${notes([
+ ["The idea","Two halves of equal weight. Left: the conversation with the orchestrator. Right: the project's board, with Now, Work, Agents and Notes. The board hides with one key, which gives you draft A's full-width conversation."],
+ ["Good","Talking and seeing are both always there, which is how a run actually goes. Clicking an agent opens its conversation in place of the board, so you can watch a worker and still talk to me. The board's tabs give the plan and the agents a real home."],
+ ["Weak","Needs a wide window: under about 1,100 points the board must fold to a rail. More on screen at once than either other draft."],
+ ["Best when","A run is going. This is the one I would build."]])}`;
+
+const rules = [
+  ["Ask me before every release.", "Orchestrator", "17 Nov"],
+  ["Stop starting Anthropic work when the week passes 90%.", "Orchestrator", "17 Nov"],
+  ["Look over every ticket a worker files before it becomes work.", "Orchestrator", "18 Nov"],
+  ["Only the orchestrator classifies issues.", "Every agent", "18 Nov"],
+  ["Never touch the installed pi². Test in throwaway copies only.", "Every agent", "12 Nov"],
+  ["Give a worker only the reading its ticket needs.", "Orchestrator", "18 Nov"],
+  ["No bug reports to other projects under my account.", "Every agent", "16 Nov"],
+];
+const rule = ([t,who,when],i) => `<div class="wk"><span class="t3 mono" style="width:14px">${i+1}</span><div class="grow n" style="min-width:0;white-space:normal">${t}</div><span class="tag ${who==="Every agent"?"acc":""}">${who}</span><span class="t3 sm" style="width:44px;text-align:right">${when}</span></div>`;
+document.getElementById("d").innerHTML = `
+<div class="win"><div class="body">${side}<div class="main">${hubbar("Hub")}
+<div class="cols"><div class="col2">${chat(false)}</div>
+<div class="board">
+  <div class="row"><div class="seg"><span>Now</span><span>Work</span><span>Agents</span><span class="on">Rules</span><span>Notes</span></div><span class="sp"></span><span class="pill ghost sm">Hide ⇥</span></div>
+  <div class="t2">What every agent in this project is told at every turn, word for word. Rules are never summarised and never dropped, however long a conversation gets.</div>
+  <div class="need"><div class="row"><span class="tag warn">Proposed rule</span><span class="t3 sm">Orchestrator · from what you said just now</span></div>
+  <div class="q">“Speed first: run in parallel everything that can be.”</div><div class="row"><span class="btn pri">Add rule</span><span class="btn">Edit…</span><span class="btn">Not a rule</span></div></div>
+  <div class="h4">Rules · 7<span class="sp"></span><span class="t3" style="text-transform:none;letter-spacing:0">＋ Add a rule</span></div>
+  <div class="list">${rules.map(rule).join("")}</div>
+  <div class="row t3 sm"><span>About 140 tokens, sent with every request</span><span class="sp"></span><span>Drag to reorder · click to edit</span></div>
+</div></div></div></div></div>
+${notes([
+ ["The idea","A project has a short list of rules that is yours. It sits in front of every agent at every turn, outside the conversation, so summarising cannot touch it."],
+ ["Who writes them","You do. An agent can only propose one, as a card you accept, edit or refuse, when you say something that sounds like a standing rule. No agent changes or removes a rule."],
+ ["Who they bind","Each rule is for the orchestrator alone or for every agent in the project, so a worker is not told how to hand out work it will never hand out."],
+ ["Apart from","Notes: facts an agent keeps for itself (today's memory). Instructions: what an agent is. AGENTS.md: the repository's rules for any tool. And today's “rules” for commands allowed without asking, which would need another name."]])}`;
+
+// ---- round 2 ----
+const dashItem = (on) => `<div class="it ${on?"on":""}"><span class="n ${on?"b":""}">Dashboard</span><span class="sp"></span><span class="tag warn">4 need you</span></div>`;
+const side2 = (dash) => { let s = side.replace('<div class="lbl">Projects', dashItem(dash) + '<div class="lbl">Projects').replace('<span class="tag warn">3 need you</span>', '<span class="tag warn">2</span>'); if (dash) s = s.replace('<div class="it on"><span class="av a1">', '<div class="it"><span class="av a1">').replace('<div class="subit on">', '<div class="subit">'); return s; };
+const tabs = (on) => `<div class="seg">${["Now","Work","Agents","Rules","Notes"].map(n=>`<span class="${n===on?"on":""}">${n}</span>`).join("")}</div>`;
+const chat2 = (inner) => `<div class="chat"><div class="ptop"><span class="dot acc"></span><span class="b" style="color:var(--tx)">Orchestrator</span><span>Opus · high</span><span class="sp"></span><span>41k of 200k · summarised 2 h ago</span><span class="fold">⇤ Fold ⌘[</span></div>
+<div class="scroll" style="padding:16px 22px">${inner}</div>
+<div class="comp"><div class="t3">Message the orchestrator…</div><div class="row" style="margin-top:8px"><span class="pill ghost">＋</span><span class="sp"></span><span class="btn pri">Send</span></div></div></div>`;
+const chg = (what, undo=true) => `<div class="sub chg"><div class="row"><span class="tag acc">Changed</span><span class="grow">${what}</span>${undo?`<span class="t3 sm">Undo</span>`:""}</div></div>`;
+const talkE = `
+<div class="u">Add a reviewer that reads every diff before it merges. And from now on you can merge without asking me.</div>
+<div class="a">Done, and one thing is waiting for your yes.</div>
+${chg("Made the agent <b>Reviewer</b> from the template <b>Careful reviewer</b>")}
+${chg("Added rule 8: “Reviewer reads every diff before it merges.”")}
+<div class="a">Merging without asking widens what I may do, so I can't switch that on myself. It's under Needs you: one click.</div>`;
+const talkShort = `
+<div class="u">What's left on the board?</div>
+<div class="a">Thirteen open. Four are being worked on, two pull requests are ready, seven are waiting. The list on the right is the same thing, live.</div>`;
+const perm = `<div class="need"><div class="row"><span class="tag warn">Permission</span><span class="t3 sm">Orchestrator · you asked for this in the conversation</span></div><div class="q">Let the orchestrator merge pull requests without asking.</div><div class="row"><span class="btn pri">Allow</span><span class="btn">Keep asking</span></div></div>`;
+const wakeRow = `<div class="h4"><span class="spin"></span>Working now · 4<span class="sp"></span><span class="t2" style="text-transform:none;letter-spacing:0;font-weight:400">Reports wake the orchestrator</span><span class="sw"></span></div>`;
+const wk2 = (w, i) => wk(w).replace('<span class="tag">', (i===0||i===2 ? '<span class="tag acc" title="The orchestrator asked to be woken for this one">wakes it</span>' : '') + '<span class="tag">');
+
+document.getElementById("e").innerHTML = `
+<div class="win"><div class="body">${side2(false)}<div class="main">${hubbar("Hub")}
+<div class="cols"><div class="col2">${chat2(talkE)}</div>
+<div class="board">
+  <div class="row">${tabs("Now")}<span class="sp"></span><span class="fold">Fold ⇥ ⌘]</span></div>
+  <div class="h4"><span class="dot warn"></span>Needs you · 2</div>
+  ${perm}${need(needs[0], true)}
+  ${wakeRow}<div class="list">${work.map(wk2).join("")}</div>
+  <div class="h4">Finished today · 14<span class="sp"></span><span class="t3" style="text-transform:none;letter-spacing:0">2 not yet read by the orchestrator · All ›</span></div><div class="list">${done.slice(0,2).map(dn).join("")}</div>
+</div></div></div></div></div>
+${notes([
+ ["Folding","Each panel has its own fold button and key (⌘[ and ⌘]). A project remembers how you left it. The strip above the conversation shows how full the orchestrator's context is."],
+ ["The orchestrator changes things itself","Asked in the conversation, it makes an agent, adds a rule or changes a setting, and shows each change as a line with Undo. Everything it can change, you can change by hand in the tabs."],
+ ["Except widening its own reach","What lets agents do more or spend more (merging or releasing without asking, a higher limit, Allow everything, dropping a rule) it can only ask for. You answer with one click."],
+ ["Reports and waking","Off for the project by default: reports land under Finished and wait. The switch is one click, and the orchestrator can ask to be woken for particular agents (“wakes it”), for a whole batch at once, or only when one fails."]])}`;
+
+document.getElementById("f").innerHTML = `
+<div class="win"><div class="body">${side2(false)}<div class="main">${hubbar("Hub")}
+<div class="dash" style="padding:14px 18px">
+  <div class="row"><span class="fold">⇥ Show the conversation ⌘[</span>${tabs("Now")}<span class="sp"></span></div>
+  <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:16px;flex:1;min-height:0">
+    <div class="col" style="gap:10px;min-width:0"><div class="h4"><span class="dot warn"></span>Needs you · 2</div>${perm}${need(needs[0], true)}
+      <div class="h4">Finished today · 14</div><div class="list">${done.map(dn).join("")}</div></div>
+    <div class="col" style="gap:10px;min-width:0">${wakeRow}<div class="list">${work.map(wk2).join("")}</div>
+      <div class="g2">${plan}${budget}</div></div>
+  </div>
+</div>
+<div class="dock"><span class="dot acc"></span><div class="grow"><div class="said sm">“Merging without asking widens what I may do, so I can't switch that on myself. It's under Needs you.” <span class="t3">· just now</span></div><div class="t3" style="margin-top:6px">Message the orchestrator…</div></div><span class="btn pri">Send</span></div>
+</div></div></div>
+${notes([
+ ["The idea","The conversation folded away. The board takes the width, and a strip keeps the orchestrator's last words and a field, so you can answer without unfolding."],
+ ["When","Coming back after hours away, or when you are only watching a run."],
+ ["The third state","Fold the board instead and the conversation takes the whole width, for a long plan or a review."]])}`;
+
+const wi = (state, t, who, extra) => `<div class="wi"><div class="row"><span class="${state}"></span><span class="grow" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t}</span>${who}</div>${extra||""}</div>`;
+document.getElementById("g").innerHTML = `
+<div class="win"><div class="body">${side2(false)}<div class="main">${hubbar("Hub")}
+<div class="cols"><div class="col2">${chat2(talkShort)}</div>
+<div class="board">
+  <div class="row">${tabs("Work")}<span class="sp"></span><span class="fold">Fold ⇥ ⌘]</span></div>
+  <div class="row"><span class="pill">GitHub · KellamA/pi2 ▾</span><div class="seg"><span class="on">Open · 13</span><span>Done</span></div><span class="sp"></span><span class="btn">＋ New</span></div>
+  <div class="h4">Ready for you or the orchestrator · 2</div>
+  <div class="list">
+   ${wi("dot ok","#378 Usage recounts everything on every change",`<span class="tag">Worker · Codex</span>`,`<div class="pr"><span class="tag ok">6 of 6 checks</span><span>PR #456 · +212 −40 · read by Reviewer: no findings</span><span class="sp"></span><span class="btn">Diff</span><span class="btn pri">Merge</span></div>`)}
+   ${wi("dot ok","#442 Load script's large conversation",`<span class="tag">Worker · Qwen</span>`,`<div class="pr"><span class="tag warn">1 finding</span><span>PR #457 · +38 −9 · Reviewer: “count is off by one”</span><span class="sp"></span><span class="btn">Diff</span><span class="btn">Send back</span></div>`)}
+  </div>
+  <div class="h4">In progress · 2</div>
+  <div class="list">
+   ${wi("spin","#435 Approval cards can hide the message field",`<span class="tag">Worker · Opus</span>`,`<div class="pr"><span class="tag">3 of 6 checks…</span><span>PR #458 · opened 4 min ago</span></div>`)}
+   ${wi("spin","#446 Sidebar cost with many sub-chats",`<span class="tag">Worker · Opus</span>`)}
+  </div>
+  <div class="h4">Waiting · 9</div>
+  <div class="list">
+   ${wi("dot","#367 A disclosure group can't be opened in a test copy",`<span class="tag acc">cloud</span><span class="t3 sm">Assign ▾</span>`)}
+   ${wi("dot","#441 Keep a transcript page loaded ahead",`<span class="tag acc">cloud</span><span class="t3 sm">Assign ▾</span>`)}
+   ${wi("dot","#453 Open a context menu in a test copy",`<span class="tag acc">cloud</span><span class="t3 sm">Assign ▾</span>`)}
+  </div>
+  <div class="t3 sm">Issues and pull requests live on GitHub; pi² shows and changes them there. A project with no repository keeps the same list in pi² itself.</div>
+</div></div></div></div></div>
+${notes([
+ ["Two modes, one list","A project's work is either kept in pi² or is a GitHub repository's issues and pull requests. The tab looks the same either way; only where it is stored differs. Attaching a repository switches the mode."],
+ ["Every agent knows it","Agents get tools for the list (take, note, finish, file, open a pull request), so nobody writes scripts or instructions to teach them the tracker."],
+ ["Merge here","A pull request shows its checks and what the reviewing agent found. Merge, Send back and Diff are buttons. Whether the orchestrator may press Merge itself is the project's setting."],
+ ["Open question","Signing in. Using the GitHub sign-in the Mac already has (the gh tool) needs nothing new; pi² signing in by itself is more work and more to keep safe."]])}`;
+
+const ag = (av, l, name, model, line, tags) => `<div class="wi"><div class="row"><span class="av ${av}">${l}</span><div class="grow" style="min-width:0"><div class="row"><span class="b">${name}</span><span class="tag">${model}</span>${tags||""}</div><div class="t3 sm" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${line}</div></div><span class="t3 sm">Edit</span></div></div>`;
+document.getElementById("h").innerHTML = `
+<div class="win"><div class="body">${side2(false)}<div class="main">${hubbar("Hub")}
+<div class="cols"><div class="col2">${chat2(talkE)}</div>
+<div class="board">
+  <div class="row">${tabs("Agents")}<span class="sp"></span><span class="fold">Fold ⇥ ⌘]</span></div>
+  <div class="h4">Orchestrator</div>
+  <div class="box"><div class="row"><span class="av a1">O</span><span class="b">Orchestrator</span><span class="pill">Opus · high ▾</span><span class="sp"></span><span class="t3 sm">Instructions · Tools · Edit</span></div>
+   <div class="t3 sm" style="margin:8px 0 5px">May, without asking</div>
+   <div class="may"><span class="tag ok">start agents</span><span class="tag ok">file and close issues</span><span class="tag ok">make and change agents</span><span class="tag ok">add rules you dictate</span><span class="tag warn">merge: asks</span><span class="tag warn">release: asks</span><span class="tag warn">past 90% of the week: asks</span></div></div>
+  <div class="h4">Agents in this project · 4<span class="sp"></span><span class="t3" style="text-transform:none;letter-spacing:0">＋ New · From a template ▾</span></div>
+  <div class="list">
+   ${ag("a1","W","Worker","Opus","Takes one issue to a merged pull request · from the template Builder · 5 runs today")}
+   ${ag("a2","C","Worker · Codex","GPT","Small, well-described work · from the template Quick fixer · 7 runs today")}
+   ${ag("a3","Q","Worker · Qwen","This Mac","Step-by-step tickets only; opens a pull request and stops · 4 runs today")}
+   ${ag("a4","R","Reviewer","Opus","Reads every diff before it merges · from the template Careful reviewer",`<span class="tag acc">made by the orchestrator · just now</span>`)}
+  </div>
+  <div class="h4">Templates · 5<span class="sp"></span><span class="t3" style="text-transform:none;letter-spacing:0">Shared by all projects · Manage ›</span></div>
+  <div class="may"><span class="pill">Builder</span><span class="pill">Quick fixer</span><span class="pill">Careful reviewer</span><span class="pill">Researcher</span><span class="pill">Writer</span></div>
+  <div class="t3 sm">An agent made from a template is a copy: changing it changes this project only. “Update from template” brings a copy up to date.</div>
+</div></div></div></div></div>
+${notes([
+ ["The orchestrator is an agent too","Same page as any agent, plus one thing: what it may do without asking. That list is the project's autonomy, in one place."],
+ ["Agents belong to the project","Everything an agent has today (model, instructions, tools, folder, variables, limits) is here, per project. Making one by hand and asking the orchestrator for one end in the same place."],
+ ["Templates are copied","Use one and the project gets its own copy, so a project can bend an agent to itself without touching the others."]])}`;
+
+const colm = (av, l, name, tag, body, last) => `<div class="colm"><div class="row"><span class="av ${av}">${l}</span><span class="b" style="font-size:14px">${name}</span>${tag}<span class="sp"></span><span class="fold">Open ›</span></div>${body}<div class="sp"></div><div class="said sm">${last}</div><div class="mini"><span class="grow">Message ${name}'s orchestrator…</span><span class="btn pri" style="padding:2px 9px">Send</span></div></div>`;
+document.getElementById("i").innerHTML = `
+<div class="win"><div class="body">${side2(true)}<div class="main">
+<div class="hubbar"><span class="b" style="font-size:15px">Dashboard</span><span class="pill">✓ pi²</span><span class="pill">✓ Website</span><span class="pill">✓ Reading notes</span><span class="pill ghost">Taxes 2026</span><span class="sp"></span><span class="tag warn">4 need you in 2 projects</span><span class="t2 sm">Week</span><div class="meter" style="width:64px;margin:0"><i style="width:53%"></i></div><span class="sm">53%</span></div>
+<div style="flex:1;min-height:0;display:flex;gap:12px;padding:14px 16px">
+ ${colm("a1","π","pi²",`<span class="tag acc">4 working</span>`,`<div class="h4"><span class="dot warn"></span>Needs you · 2</div>${perm.replace("you asked for this in the conversation","you asked for this")}${need(needs[0],true)}<div class="h4"><span class="spin"></span>Working now · 4</div><div class="list">${work.slice(0,3).map(wk).join("")}</div>`,"“It's under Needs you: one click.” · just now")}
+ ${colm("a2","W","Website",`<span class="tag acc">1 working</span>`,`<div class="h4"><span class="dot warn"></span>Needs you · 2</div>${need(["Question","Two headline options for the pricing page. Which one?","Orchestrator",["“Pay for what you use”","“Simple pricing”"]],true)}${need(["Approval","<span class='mono'>npm publish</span>","Builder",["Allow","Deny"]],true)}<div class="h4"><span class="spin"></span>Working now · 1</div><div class="list">${wk(["Pricing page, mobile layout","Builder","Opus","a1","21 min","checking the layout at 390 points","spin"])}</div>`,"“The desktop layout is merged. Mobile is in progress.” · 6 min ago")}
+ ${colm("a3","R","Reading notes",`<span class="tag">idle</span>`,`<div class="h4">Needs you · 0</div><div class="t3">Nothing is waiting.</div><div class="h4">Finished this week · 3</div><div class="list">${dn(["Summary of the three papers on caching","Tuesday","ok"])}${dn(["Reading list for December","Monday","ok"])}</div>`,"“The summary is in Notes. Say when you want the next batch.” · Tuesday")}
+</div></div></div></div>
+${notes([
+ ["The idea","Pick the projects to watch; each gets a column: what needs you, who is working, the orchestrator's last words, and a field to answer it. Open › goes to the project's own hub."],
+ ["Interact, not only look","Approvals, decisions and questions are answered here. A message goes to that project's orchestrator without leaving the page."],
+ ["Scale","Three or four columns fit a wide window; more scroll sideways. The same list with every project ticked replaces today's Inbox."]])}`;
+
+const show = (s) => { document.querySelectorAll(".screen").forEach(e => e.classList.toggle("on", e.id === s)); document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.s === s)); };
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => { location.hash = b.dataset.s; show(b.dataset.s); });
+show((location.hash || "#c").slice(1));
+</script>
+</body></html>
