@@ -2,15 +2,14 @@ import AppKit
 
 /// One transcript page loaded ahead and idle, for the next pane that opens (#441).
 ///
-/// A new pane's page took about 100 ms to load (a web content process, `index.html` and its scripts) and, once in the
-/// window, some 60 ms more before WebKit drew its first frame, whatever the conversation. `take()` hands over the page
-/// loaded ahead, ready or still loading, and loads another a moment later, so that loading it does not compete with
-/// the pane that just opened. Only a page that has never been handed over is ever handed over: a pane's page goes with
+/// A new pane's page took 100 to 160 ms to load (a web content process, `index.html` and its scripts), whatever the
+/// conversation, and was the largest step of opening one. `take()` hands over the page loaded ahead, ready or still
+/// loading, and loads another a moment later, so that loading it does not compete with the pane that just opened. Only a page that has never been handed over is ever handed over: a pane's page goes with
 /// its pane, so none holds anything of a conversation.
 ///
 /// While it waits, the page sits in the window, in a `SparePageHost` behind the conversations, unseen and out of reach
-/// of clicks, keys and VoiceOver: a page in no window has to be shown before WebKit draws it, which took most of the
-/// time saved. Without a host it waits in no window and still saves the loading.
+/// of clicks, keys and VoiceOver: a page kept in no window took WebKit 50 to 180 ms to draw once put in one, which was
+/// most of the time saved. Without a host in a window it waits in no window, and still saves the loading.
 ///
 /// One page, not a pool: each costs a web content process's memory while it waits. A page whose process ends while it
 /// waits is let go, and another is loaded in its place. Nothing is loaded ahead until the first page is taken.
@@ -41,7 +40,8 @@ public final class SparePage {
             page.onReload = {}
             page.isWaiting = false
             // Left in the host until its pane is in the window (`TranscriptPane`): moved from one view to another in
-            // the same window, it never leaves the window, and WebKit has it ready to draw.
+            // the same window, it never leaves the window, and WebKit has it ready to draw. Meanwhile it is still behind
+            // what the window shows, and the host still keeps clicks and VoiceOver from it.
             page.alphaValue = 1
             taken = page
         } else {
@@ -139,7 +139,6 @@ public final class SparePageHost: NSView {
     public init(spare: SparePage?) {
         self.spare = spare
         super.init(frame: .zero)
-        setAccessibilityElement(false)
     }
 
     @available(*, unavailable)

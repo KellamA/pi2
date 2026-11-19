@@ -1,10 +1,13 @@
 // Checks the conversation page loaded ahead for the next pane (#441, TranscriptKit's SparePage): that the page handed
 // over is the one loaded ahead and has never shown a conversation, that it shows the conversation it is sent next and
 // nothing of another, that a page taken while still loading says it is ready once it is, that no page is handed over
-// twice, and that a page loaded ahead whose process ends is let go and another loaded in its place.
+// twice, and that a page loaded ahead whose process ends is let go and another loaded in its place. Also where a page
+// waits: in the window, unseen, out of reach of clicks, focus and VoiceOver, and that it moves into its pane without
+// ever leaving the window (WebKit is slow to draw a page put back in one); or in no window, when none keeps a place.
 //
 // The real page is loaded from the repository (`Web/transcript`; run it from `app/`, or pass `--page <folder>`), in
-// web views of this program's own; the pages handed over go into a window that never comes on screen, as a pane's do.
+// web views of this program's own, in a window that never comes on screen, holding a place for the page loaded ahead
+// and panes for the pages handed over, as the app's window does.
 // To end a page's process it asks WebKit for the process's id, through a call that is not public
 // (`_webProcessIdentifier`), and ends it by that id: a process its own web view started, never another's.
 //

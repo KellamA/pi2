@@ -175,3 +175,8 @@ jobs:
       - name: Check file links
         working-directory: app
         run: .build/debug/pi2-file-link-check
+      # The conversation page loaded ahead for the next pane (#441): handed over clean, shows what it is sent, replaced
+      # when its process ends, and moved into its pane without leaving the window. Off-screen windows of its own.
+      - name: Check the conversation page loaded ahead
+        working-directory: app
+        run: .build/debug/pi2-transcript-check
