@@ -16,6 +16,24 @@ type Patch = { why: string; file: string; find: string; replace: string };
 const PATCHES: Patch[] = [
 	...COMPACTION_PATCHES,
 	{
+		why: "tool declarations cannot depend on the conversation (#431)",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/harness.js",
+		find: `        return resolveAgent(state, registry, resolveSettings(this.#hostSettings()), (error, extension) => this.#report(error, { kind: "extension_error", conversationId: id, extension }, context));`,
+		replace: `        const agent = resolveAgent(state, registry, resolveSettings(this.#hostSettings()), (error, extension) => this.#report(error, { kind: "extension_error", conversationId: id, extension }, context));
+        // Patched by pi2: the host can choose declarations for this conversation after resolving names and wraps.
+        return this.#options.conversationAgent === undefined ? agent : this.#options.conversationAgent(agent, id, this, context);`,
+	},
+	{
+		why: "type the conversation agent option",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts",
+		find: `    readonly registry: RegistryReader<Tool>;
+    /** Run settings,`,
+		replace: `    readonly registry: RegistryReader<Tool>;
+    /** Patched by pi2: choose tool declarations for a conversation, after its agent has been resolved. */
+    readonly conversationAgent?: (agent: Agent<Tool>, id: ConversationId, read: DocumentReader, context: Context) => Agent<Tool> | Promise<Agent<Tool>>;
+    /** Run settings,`,
+	},
+	{
 		// Commands moved to the background at their time limit must inherit the run's file from their very start (#300).
 		// Keep exec's own stdin/stdout/stderr, output handling and cancellation; append only caller-owned descriptors 3+.
 		why: "foreground commands cannot inherit their run's file",

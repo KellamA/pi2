@@ -490,6 +490,11 @@ function demoProvider(): Provider {
 				const parts = [["(base)", content.length], ...[...sections].map(([key, value]) => [key, value.length]), [`(tools: ${offered.size})`, JSON.stringify([...offered.values()]).length]];
 				return fauxAssistantMessage(`SIZES\n${parts.map(([key, size]) => `${key} ${size}`).join("\n")}`);
 			}
+			if (asked.startsWith("tools ")) {
+				// Show the declarations themselves, not just the names, so tests can check what the model can see.
+				const names = asked.slice(6).split(/\s+/);
+				return fauxAssistantMessage(JSON.stringify(names.flatMap((name) => offered.get(name) ?? [])));
+			}
 			if (asked !== "") {
 				// "/system <section> ...": those sections as they are, and every tool offered, by name.
 				const named = asked.split(/\s+/).map((key) => `<<${key}>>\n${sections.get(key) ?? "(none)"}`);

@@ -28,7 +28,7 @@
 // running, with no time limit of its own (background.ts).
 
 import { type Context, withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
-import { type ToolExecutionApi, type ToolExecutionResult, wrapTool } from "@earendil-works/pi-durable";
+import { type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration, wrapTool } from "@earendil-works/pi-durable";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { bool, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { constants } from "node:os";
@@ -82,7 +82,7 @@ const MAX_TIMEOUT_SECONDS = 2_147_483_647 / 1000;
  * `cd` to the folder they were already in, and cut a third of their outputs with `head` or `tail` (#162). Finding and
  * searching files is pointed to from `find_files` and `search_files` themselves, which an agent may not be offered (#221).
  */
-export function describe(limits: Limits): string {
+export function describe(limits: Limits, subChat = false): string {
 	return (
 		"Run a bash command; returns its stdout and stderr together. " +
 		"Every command starts in the conversation's folder, so there is no need to `cd` to it (a `cd` does not carry over to the next command). " +
@@ -93,11 +93,12 @@ export function describe(limits: Limits): string {
 		"One not finished by then is moved to the background, and the result gives its id for the background tool; it is stopped instead where that would need the person's approval, or when it starts with `sleep`. " +
 		`For one you know may take longer (a full test suite, a build), use \`background: true\` from the start, which has no time limit. ` +
 		"Standard input is closed, so a command that asks a question fails instead of waiting for an answer: give answers as options or through a pipe. " +
-		BACKGROUND_DESCRIPTION
+		BACKGROUND_DESCRIPTION +
+		(subChat ? " Read its output with the background tool's `read` action and use `wait` to wait for more output or for the command to end." : "")
 	);
 }
 
-function parameters(limits: Limits) {
+function parameters(limits: Limits, subChat = false) {
 	return obj(
 		{
 			command: str({ description: "Bash command to execute" }),
@@ -107,10 +108,15 @@ function parameters(limits: Limits) {
 				}),
 			),
 			background: opt(bool({ description: BACKGROUND_PARAMETER })),
-			wake: opt(bool({ description: WAKE_PARAMETER })),
+			...(subChat ? {} : { wake: opt(bool({ description: WAKE_PARAMETER })) }),
 		},
 		{ open: true },
 	);
+}
+
+/** Leave `wake` out of the declaration, not out of the arguments checked by `startInBackground`. */
+export function bashForSubChat<T extends ToolRegistration>(tool: T): T {
+	return { ...tool, description: describe(LIMITS, true), parameters: parameters(LIMITS, true) };
 }
 
 /** How long a command ran and how it printed, for what the result says about the time it took. */

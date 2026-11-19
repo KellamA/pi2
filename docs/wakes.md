@@ -10,7 +10,7 @@ An agent answers when it is sent a message, and stops when it has answered. Two 
 
 For a command already running, including one moved to the background at its time limit, `background` with `action: "wake"` and its `id` asks for the same wake (#317). Asking twice watches it once. It refuses commands already over or belonging to another conversation, and does not turn back on a wake the person turned off.
 
-Only a conversation of its own is woken. A sub-chat's answers go to the agent that handed it the work, not to anyone reading its transcript, so a sub-chat cannot pass `wake: true` (the call is refused before anything is started), and it cannot hand out work.
+Only a conversation of its own is woken. A sub-chat's answers go to the agent that handed it the work, not to anyone reading its transcript. It is offered neither the `wake` parameter on `bash` nor the `wake` action on `background`. Those requests are still refused if made, and `bash` with `background: true` and `wake: true` does not start the command. A sub-chat can start a command in the background and use `background` with `read` and `wait` instead. It cannot hand out work.
 
 ## How it is woken
 

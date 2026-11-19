@@ -34,7 +34,8 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
-import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
+import { BACKGROUND_ENTRY, backgroundForSubChat, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
+import { bashForSubChat } from "./commands.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validateToolsOn } from "./builtins.ts";
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
@@ -365,6 +366,14 @@ const harness = await Harness.open(
 		// conversation that hands out work asks for the long prompt cache (src/cache.ts).
 		models: noticingRefusals(retryThinking(providers, promptCacheLifetimes(providers.models), engine.providersChanged)),
 		registry,
+		conversationAgent: async (agent, id, read, context) => {
+			// A sub-chat is one from its first request. Read committed metadata even during crash recovery, before the
+			// library watch has caught up; choosing by anything transient would resend tool definitions mid-conversation.
+			if (!isSubChat((await read.snapshot(Library, context))?.conversations[String(id)])) return agent;
+			const forSubChat = (tool: (typeof agent.tools)[number]) =>
+				tool.name === "bash" ? bashForSubChat(tool) : tool.name === "background" ? backgroundForSubChat(tool) : tool;
+			return { ...agent, tools: agent.tools.map(forSubChat), callable: agent.callable.map(forSubChat) };
+		},
 		// A local engine stop or a provider limit uses pi-durable's stored retry sleep (see patch-dependencies.ts).
 		// The features are read at every use, so they are made by then.
 		settings: {
@@ -443,7 +452,9 @@ function chatOf(id: number | ConversationId): number {
 	return chatIdOf(library.conversations, id as number);
 }
 /** A sub-chat, handed work by another conversation; not a chat's version. */
-const isSubChat = (meta: Meta | undefined) => meta?.parent !== undefined && meta.version !== true;
+function isSubChat(meta: Meta | undefined): boolean {
+	return meta?.parent !== undefined && meta.version !== true;
+}
 
 /**
  * Bring a conversation's tools in line with what its agent may do now. A conversation's tools are fixed when it is
