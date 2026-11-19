@@ -400,7 +400,9 @@
 		above = false;
 		reconcile(main, specs);
 		const by = H.shift(kept, rectOf);
-		if (by !== 0) scroller.scrollTop += by;
+		// Rounded, as the page scrolls by whole pixels: rows are fractions of one high, and cutting them off each time
+		// would move the row a little further with every part.
+		if (by !== 0) scroller.scrollTop = Math.round(scroller.scrollTop + by);
 		observePictures(main);
 		rendered = true;
 		if (pinned) scrollToBottom();
