@@ -715,7 +715,18 @@ try {
 		await client.until("sharer moved", () => client.branch(sharer)?.repo === "movedTo" && client.branch(sharer));
 		assert.ok(asked(whichRepo, kept) > repoWas, "the next look asked again about the folder the conversation left");
 		assert.ok(asked(whichRepo, movedTo) > 0, "and about the folder it moved into");
-		step("the tracker keeps a folder's repository and a repository's default branch for a minute, and a conversation moving folders reads them again");
+		// A folder in no repository is not kept: that answer is also what a git that failed or timed out gives, so the
+		// next look asks again, and a repository made in such a folder shows within a few seconds.
+		const nowhere = join(scratch, "nowhere");
+		mkdirSync(nowhere, { recursive: true });
+		const { id: wanderer } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: wanderer, cwd: nowhere });
+		await client.call("branches.refresh");
+		const nowhereWas = asked(whichRepo, nowhere);
+		assert.ok(nowhereWas > 0, "the look asked git which repository this folder is in");
+		await client.call("branches.refresh");
+		assert.ok(asked(whichRepo, nowhere) > nowhereWas, "a folder in no repository is asked about again at every look");
+		step("the tracker keeps a folder's repository and a repository's default branch for a minute, and a conversation moving folders reads them again; a folder in no repository is asked again at every look");
 	}
 
 	// A set-up still running when the engine stops is stopped with it, and said to be cut off when it starts again.

@@ -314,10 +314,13 @@ async function kept<T>(where: Map<string, { at: number; value: T }>, key: string
 	const was = where.get(key);
 	if (was !== undefined && Date.now() - was.at < GIT_TTL_MS) return was.value;
 	const value = await ask();
-	const at = Date.now();
-	where.set(key, { at, value });
-	// An answer older than the limit is never read again, so this drops it here rather than letting the maps grow.
-	for (const [other, entry] of where) if (at - entry.at >= GIT_TTL_MS) where.delete(other);
+	// Only an answer is kept. "In no repository" and "no default branch" are also what a git that failed or timed out looks like, so those are asked again at the next look.
+	if (value !== undefined && value !== null) {
+		const at = Date.now();
+		where.set(key, { at, value });
+		// An answer older than the limit is never read again, so this drops it here rather than letting the maps grow.
+		for (const [other, entry] of where) if (at - entry.at >= GIT_TTL_MS) where.delete(other);
+	}
 	return value;
 }
 
