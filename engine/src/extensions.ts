@@ -46,7 +46,8 @@ import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { nearlyUsedUp } from "./limits.ts";
-import { unlessMessaged, waitForChat } from "./heed.ts";
+import { unlessMessaged } from "./heed.ts";
+import { handOffWords, reportRun, waitForRun } from "./reports.ts";
 import { watch } from "./wakes.ts";
 import { admit, projectOf, requireSwitch, type Start } from "./projects.ts";
 
@@ -173,9 +174,12 @@ export async function subChatResult(host: Host, read: DocumentReader, child: num
 	return { text: (await host.answerText(child as unknown as ConversationId, settled.answer)) + (await footerOf(read, child, name, title, "", context)) + (await resultUsage(host, read, child, context)), failed: false };
 }
 
-/** What `delegate` answers at once when it does not wait, and what becomes of the answer. */
-const startedWords = (id: number, name: string, title: string) =>
-	`Sub-chat ${id}, “${title}”, with ${name}, is working on it. Its answer will come to you as a message when it is done, waking you if you are not answering then; sub_chats with action "wait" waits for it here instead. To continue it later, call delegate again with chat: ${id}.`;
+/** What becomes of a sub-chat's answer that `delegate` does not wait for. */
+const COMES_AS_MESSAGE = 'Its answer will come to you as a message when it is done, waking you if you are not answering then; sub_chats with action "wait" waits for it here instead.';
+
+/** What `delegate` answers at once when it does not wait, and what becomes of the answer (`how`, in a project: reports.ts). */
+const startedWords = (id: number, name: string, title: string, how = COMES_AS_MESSAGE) =>
+	`Sub-chat ${id}, “${title}”, with ${name}, is working on it. ${how} To continue it later, call delegate again with chat: ${id}.`;
 
 /** The agent `name` names among `agents`: by its name, ignoring case, or by its id. */
 function byName(agents: AgentProfile[], name: string): AgentProfile | undefined {
@@ -289,30 +293,33 @@ export function pi2Extension(host: Host): Extension {
 				return answer.ok ? undefined : `Not started: ${answer.limit.reason}`;
 			};
 			/** For `wait: false`: watch the sub-chat's answer, to wake this agent with it, and answer at once. */
-			const handOff = async (child: number, submissionId: number, name: string, title: string) => {
+			const handOff = async (child: number, submissionId: number, name: string, title: string, agentId: string) => {
+				// A run of a project's orchestrator has a report, kept before the watch (reports.ts).
+				await reportRun(parent, { submissionId, conversationId: child, agentId, title });
 				const refused = await watch({ key: `delegate:${String(api.taskId)}`, conversationId: parent, kind: "subchat", ref: String(child), label: `sub-chat ${child} “${title}”`, startedAt: Date.now(), submissionId, agent: name });
 				if (refused !== undefined) return { output: text(refused), isError: true };
-				return { output: text(startedWords(child, name, title)) };
+				return { output: text(startedWords(child, name, title, handOffWords(parent))) };
 			};
 			/**
 			 * Wait for a sub-chat's answer to `submission` and give it, unless the person sends a message first (heed.ts): then
 			 * the sub-chat carries on as one handed over with `wait: false`, its answer coming later as a message.
 			 */
 			const answer = async (chat: number, agent: AgentProfile, title: string, submission: number, note = "") => {
-				const outcome = await waitForChat(api, chat, submission as unknown as SubmissionId, context);
+				// Its report, in a project, is taken by this wait (reports.ts); `taken` is false if it was given another way first.
+				const outcome = await waitForRun(api, parent, { submissionId: submission, conversationId: chat, agentId: agent.id, title }, context);
 				if ("messaged" in outcome) {
-					const handed = await handOff(chat, submission, agent.name, title);
+					const handed = await handOff(chat, submission, agent.name, title, agent.id);
 					if (handed.isError === true) return handed;
 					return {
 						output: text(
 							`The person sent you a message, so you stopped waiting for sub-chat ${chat} (“${title}”, with ${agent.name}); their message follows. ` +
-								"The sub-chat is still working on the task: nothing was stopped. Its answer will come to you as a message when it is done, waking you if you are not answering then; " +
-								`sub_chats with action "wait" waits for it here instead. To continue it later, call delegate again with chat: ${chat}.` +
+								`The sub-chat is still working on the task: nothing was stopped. ${handOffWords(parent) ?? COMES_AS_MESSAGE} To continue it later, call delegate again with chat: ${chat}.` +
 								note,
 						),
 						details: { conversationId: chat, agentId: agent.id, agentName: agent.name, waitEnded: true },
 					};
 				}
+				if (!outcome.taken) return { output: text(`The report of sub-chat ${chat}'s run was already given to you, so it is not given again here. To continue it, call delegate again with chat: ${chat}.`) };
 				const settled = outcome.settled;
 				if (settled.status !== "done" || settled.type !== "input") {
 					const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
@@ -358,8 +365,8 @@ export function pi2Extension(host: Host): Extension {
 				const sent = await host.sendToChat(args.chat, args.task, `delegate:${String(api.taskId)}`);
 				if (sent === undefined) return { output: text(`Sub-chat ${args.chat} could not be reached.`), isError: true };
 				if (args.wait === false) {
-					const handed = await handOff(args.chat, sent, agent.name, named);
-					return note === "" || handed.isError === true ? handed : { output: text(`${startedWords(args.chat, agent.name, named)}${note}`) };
+					const handed = await handOff(args.chat, sent, agent.name, named, agent.id);
+					return note === "" || handed.isError === true ? handed : { output: text(`${startedWords(args.chat, agent.name, named, handOffWords(parent))}${note}`) };
 				}
 				return answer(args.chat, agent, named, sent, note);
 			}
@@ -421,7 +428,7 @@ export function pi2Extension(host: Host): Extension {
 				// Belonging to no call, it is reached as the person's messages reach a conversation.
 				const sent = await host.sendToChat(child as unknown as number, args.task, `delegate:${String(api.taskId)}`);
 				if (sent === undefined) return { output: text("The sub-chat could not be reached, so nothing was handed over."), isError: true };
-				return await handOff(child as unknown as number, sent, target.name, named);
+				return await handOff(child as unknown as number, sent, target.name, named, target.id);
 			}
 			const handle = (await api.conversation(child, context))!;
 			const submission = await handle.submit({ type: "input", content: args.task, requestId: `delegate:${String(api.taskId)}` }, context);

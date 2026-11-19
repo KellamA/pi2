@@ -28,6 +28,7 @@ import {
 	ruleTokens,
 	type Start,
 } from "../src/projects.ts";
+import { reports } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
 import { until } from "./patience.ts";
 
@@ -48,6 +49,7 @@ step("the projects feature is last of today's features in FEATURES, where the ot
 // The rules' greeting follows projects (4.4), independently of their section's place (6.1).
 assert.equal(FEATURES[FEATURES.indexOf(projects) + 1], projectRules);
 assert.ok(FEATURES.indexOf(projectRulesPrompt) < FEATURES.indexOf(projects));
+assert.ok(FEATURES.indexOf(projectRules) < FEATURES.indexOf(reports));
 step("the rules feature follows projects in the greetings; its prompt has a separate place");
 
 const project = (id: string, extra: Partial<Project> = {}): Project => ({
