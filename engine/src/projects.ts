@@ -130,7 +130,7 @@ export type ProjectRow = Project & {
 	folderMissing: boolean;
 	/** About how many tokens the rules add to each request: an orchestrator's, and every other agent's (6.2). */
 	ruleTokens: { orchestrator: number; agents: number };
-	/** The last line of the orchestrator's last finished answer, at most 200 characters, and when. Null until #466. */
+	/** The last line of the orchestrator's last finished answer, at most 200 characters, and when (orchestrator.ts). */
 	lastWords: { text: string; at: number } | null;
 };
 

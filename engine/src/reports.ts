@@ -18,7 +18,6 @@
 // What later issues fill in:
 // - `pastLimit(projectId)`: whether the project is past one of its limits, so that no report wakes the orchestrator
 //   (8.3). #464 fills it in; false until then.
-// - The catch-up delivering the news a report adds (#466). Until then the orchestrator reads reports with `reports`.
 // - `reports` `wake` as a change with a line and Undo (5.6, 5.9): #465's record of changes. Until then it is made with
 //   no line and no Undo.
 // - `work` `assign` (#467) starts runs with a report too, through `reportRun` with `work`.

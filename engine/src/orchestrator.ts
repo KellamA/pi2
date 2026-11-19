@@ -21,7 +21,8 @@
 // conversations; `library`'s `orchestrator`, the conversation state's `project`, `activity`'s `lastLine` and
 // `projects`' `lastWords`.
 //
-// What a later issue fills in: `wireWorkState` (#467), the state block's work line. Until then it says "Work: none.".
+// What a later issue fills in: the state block's work for a project with a GitHub repository attached (#468, through
+// `wireWorkState`). Until then it reads the list kept by pi² (work.ts), which such a project does not use.
 // Outside a project, and with the preview off, nothing here adds anything to what a conversation is told.
 
 import { type ConversationId, defineDoc, type EntryRecord, InboxDoc, LiveDoc, type Tx } from "@earendil-works/pi-durable";
@@ -48,6 +49,7 @@ import {
 import { type Report, Reports } from "./reports.ts";
 import { type AgentProfile, Agents, Library, type Meta } from "./state.ts";
 import { reloadWakes, wakeUp, Wakes } from "./wakes.ts";
+import { Work, type WorkState } from "./work.ts";
 
 // ---- Entries
 
@@ -90,7 +92,7 @@ export type StateSnapshot = {
 	needs: { id: string; kind: string; line: string; conversation: number }[];
 	/** Reports not delivered: sub-chat, agent, title, outcome, when. */
 	reports: { chat: number; agent: string; title: string; outcome: string; at: number }[];
-	/** Open work: counts by state, and every item in progress, waiting or blocked with who holds it. Empty until #467. */
+	/** Open work: counts by state, and every item in progress, waiting or blocked with who holds it. */
 	work: { counts: Record<string, number>; held: { id: number; title: string; state: string; agent: string | null }[] };
 	/** News with `keep` not yet given. */
 	messages: string[];
@@ -98,12 +100,27 @@ export type StateSnapshot = {
 
 // ---- What a later issue fills in
 
-type WorkState = (tx: Tx, projectId: string) => Promise<StateSnapshot["work"]>;
-let workState: WorkState = async () => ({ counts: {}, held: [] });
+/** The states of open work, in the order the state block says them. */
+const OPEN: readonly WorkState[] = ["open", "in_progress", "waiting", "blocked"];
 
-/** #467 supplies the state block's work: counts by state, and what is held. Until then the block says "Work: none.". */
-export function wireWorkState(read: WorkState): void {
-	workState = read;
+/** The work list kept by pi² (work.ts), as the state block says it: nothing when it has no open work. */
+async function localWork(tx: Tx, project: Project): Promise<StateSnapshot["work"]> {
+	const items = Object.values((await tx.doc(Work)).projects[project.id]?.items ?? {}).filter((item) => OPEN.includes(item.state));
+	if (items.length === 0) return { counts: {}, held: [] };
+	const counts = Object.fromEntries(OPEN.map((state) => [state, items.filter((item) => item.state === state).length]));
+	const held = items
+		.filter((item) => item.state !== "open")
+		.sort((a, b) => OPEN.indexOf(a.state) - OPEN.indexOf(b.state) || a.id - b.id)
+		.map((item) => ({ id: item.id, title: item.title, state: item.state, agent: item.takenBy === null ? null : agentName(item.takenBy.agentId) }));
+	return { counts, held };
+}
+
+type WorkReader = (tx: Tx, project: Project) => Promise<StateSnapshot["work"]>;
+let workState: WorkReader = localWork;
+
+/** #468 supplies the work of a project with a repository attached; `read` is given every project, and may hand back to the list kept by pi². */
+export function wireWorkState(read: (tx: Tx, project: Project, local: WorkReader) => Promise<StateSnapshot["work"]>): void {
+	workState = (tx, project) => read(tx, project, localWork);
 }
 
 // ---- Words
@@ -256,7 +273,7 @@ async function snapshotOf(tx: Tx, project: Project, news: readonly News[], now: 
 		.filter((report) => report.ended !== null && report.delivered === null)
 		.sort((a, b) => a.ended!.at - b.ended!.at || a.submissionId - b.submissionId)
 		.map((report) => ({ chat: report.conversationId, agent: agentName(report.agentId), title: report.title, outcome: outcomeWords(report.ended!.outcome), at: report.ended!.at }));
-	return { at: now, working, needs, reports, work: await workState(tx, project.id), messages: news.filter((each) => each.keep === true).map((each) => each.text) };
+	return { at: now, working, needs, reports, work: await workState(tx, project), messages: news.filter((each) => each.keep === true).map((each) => each.text) };
 }
 
 const userMessage = (text: string, now: number) => ({ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: now });

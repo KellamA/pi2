@@ -232,6 +232,12 @@ try {
 	await socket.until("the second assignment wakes the orchestrator with waking on", () => socket.conversations.get(parent)?.items.some((item: any) => item.kind === "marker" && item.details?.wake?.text?.includes(`Sub-chat ${byPerson.conversation} “Filed with approval” answered:`)) && !socket.conversations.get(parent)?.state.busy);
 	step("assign refuses without a claim or child, races a take, and starts a durable sub-chat for agent and person");
 
+	// The orchestrator is told of both assignments at its next turn (#466), in a catch-up in front of the wake.
+	const told = (socket.conversations.get(parent)?.items ?? [])
+		.filter((item: any) => item.kind === "marker" && typeof item.text === "string" && item.text.startsWith("pi² told the orchestrator what changed"))
+		.flatMap((item: any) => String(item.details?.wake?.text ?? "").split("\n"))
+		.filter((line: string) => /\(assign\)\.$/.test(line));
+	assert.equal(told.length, 2, "both assignments told to the orchestrator");
 	const beforeRestart = await list();
 	await socket.call("projects.setPreview", { on: false });
 	assert.equal(await socket.offered(worker), false);
@@ -240,7 +246,7 @@ try {
 	await offline(async (harness) => {
 		const stored = await harness.snapshot(Projects, context);
 		const news = stored?.news[projectId] ?? [];
-		assert.equal(news.filter((item) => item.kind === "work" && /\(assign\)/.test(item.text)).length, 2);
+		assert.equal(news.filter((item) => item.kind === "work" && /\(assign\)/.test(item.text)).length, 0, "and the news told is cleared");
 		const item = beforeRestart[0]!;
 		// #465 owns record(op): for now the unconnected operation does not even ask for another document.
 		await recordWork(new Proxy({}, { get: () => { throw new Error("recordWork used the transaction before #465"); } }) as never, { projectId, by: { kind: "person" }, action: "file", before: null, after: item });

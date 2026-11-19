@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CATCH_UP_ROOM, catchUp, NEWS_KEPT, type StateSnapshot, stateText } from "../src/orchestrator.ts";
 import type { News } from "../src/projects.ts";
-import { EngineClient, exited, running, stop } from "./patience.ts";
+import { EngineClient, exited, running, standInApp, stop } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -95,7 +95,7 @@ const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-orch-work-")));
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-orchestrator-${process.pid}`;
 // A summary gate that is never closed: the demo model answers `/compaction-history` briefly, and summarises at once.
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_LOGIN_SHELL: "off", PI2_DEMO_COMPACTION_GATE: join(home, "summary") };
+const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_LOGIN_SHELL: "off", PI2_DEMO_COMPACTION_GATE: join(home, "summary"), PI2_APP_BUNDLE: standInApp() };
 const engineLog = join(home, "engine.log");
 const work = join(scratch, "work");
 const folder = join(scratch, "project");
@@ -231,7 +231,8 @@ try {
 	assert.match(sections, /Limits: no new agent starts while a plan window it would run on is 90% used or more\. Past a limit/);
 	assert.match(sections, /A report from an agent does not wake you; it waits until you read it with reports\. Choose otherwise for particular hand-offs with reports\./);
 	assert.match(sections, /Put a decision that is the person's to them with needs_you/);
-	assert.doesNotMatch(sections, /work tool|project_agents/, "nothing about tools it is not offered");
+	assert.match(sections, /\nIts work list is kept by pi²\. Keep it with the work tool, not with scripts or gh of your own\.\n/);
+	assert.doesNotMatch(sections, /project_agents/, "nothing about tools it is not offered");
 	assert.ok(sections.includes(rule) && sections.includes(note));
 	step("a new project's orchestrator: its first context is the state block and its message; the project section, the rules and the notes are in its prompt");
 
@@ -333,6 +334,7 @@ try {
 	const asked = await c.tools(oc, `/tool needs_you ${JSON.stringify({ action: "ask", question: "Ship it on Friday?", choices: ["Yes", "No"] })}`);
 	const need = /Put to the person as (n\d+)\./.exec(asked[0]!.text)![1]!;
 	await c.answer(part, "Before the fresh start.");
+	await c.call("work.create", { projectId, title: "Write the release notes" });
 	const words = c.project(projectId)!.lastWords;
 	assert.equal(typeof words?.text, "string");
 	assert.equal(typeof words?.at, "number");
@@ -358,6 +360,7 @@ try {
 	assert.deepEqual(fresh, [...freshBlock.split("\n"), "/context"], "nothing of the old conversation: the state block and the message");
 	assert.match(freshBlock, new RegExp(`Working now: sub-chat ${gatedChat} “Gated” \\(Worker, since \\d\\d:\\d\\d\\)\\.`));
 	assert.match(freshBlock, new RegExp(`Under Needs you: ${need} decision “Ship it on Friday\\?”\\.`));
+	assert.match(freshBlock, /\nWork: 1 open, 0 in progress, 0 waiting, 0 blocked\.\n/);
 	assert.match(freshBlock, new RegExp(`\\nReports not read: (sub-chat \\d+ “Part \\d+” \\(Worker\\) answered at \\d\\d:\\d\\d; ){9}sub-chat \\d+ “Part \\d+” \\(Worker\\) answered at \\d\\d:\\d\\d\\.\\n`), "told of, not read");
 	assert.match(freshBlock, new RegExp(`\\nThe person wrote to Worker in sub-chat ${part}: “Before the fresh start\\.”$`), "a message not yet given is in it");
 	const freshSections = await c.answer(nc, "/system project project_rules memory");
