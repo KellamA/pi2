@@ -15,7 +15,10 @@
 // - and says, without failing, whether SwiftUI's own arrow in a grouped Form still answers to nothing, which is why
 //   `pressableDisclosure` exists;
 // - that the element whose context menu the tool opens (`Reaching.menuTarget`) is a text with `.contextMenu` itself,
-//   the row's text for a list row whose content has one, as the sidebar's rows do, and nothing for a button without one.
+//   the row's text for a list row whose content has one, as the sidebar's rows do, and nothing for a button without one;
+// - what to do with a missing or stale AX window, a parked window, and a window a menu bar item opens;
+// - the size and direction of the wheel event (as AppKit decodes it, without posting it), and how actual movement
+//   is reported.
 //
 //   cd app && swift build --product pi2-computer-check && .build/debug/pi2-computer-check
 //
@@ -25,6 +28,7 @@
 
 import AppKit
 import ComputerKit
+import CoreGraphics
 import SwiftUI
 
 setlinebuf(stdout)
@@ -236,6 +240,30 @@ func pressingOpensAndCloses(_ stage: Stage, _ state: Disclosure, label: String) 
     check("once more", state.changes == 2, "it changed \(state.changes) times")
 }
 
+@MainActor
+final class StandInStatusItem: NSAccessibilityElement {
+    let panel = Stage(Button("Review request") {})
+    private(set) var pressed = false
+
+    override func accessibilityPerformPress() -> Bool {
+        pressed = true
+        return true
+    }
+}
+
+@MainActor
+final class TallDocument: NSView {
+    override var isFlipped: Bool { true }
+}
+
+@MainActor
+func scrollView(documentHeight: CGFloat) -> NSScrollView {
+    let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 360, height: 200))
+    scroll.drawsBackground = false
+    scroll.documentView = TallDocument(frame: CGRect(x: 0, y: 0, width: 360, height: documentHeight))
+    return scroll
+}
+
 let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
@@ -298,6 +326,87 @@ Task { @MainActor in
             check("the button is there", false)
         }
         stage.window.close()
+    }
+
+    await group("missing or stale AX windows do not hide the parked main window") {
+        let main = Stage(Text("Main")), settings = Stage(Text("Settings")), stale = Stage(Text("Closed"))
+        defer { main.window.close(); settings.window.close(); stale.window.close() }
+        let frame: (NSWindow) -> CGRect? = { $0 === stale.window ? nil : $0.frame }
+        let minimized: (NSWindow) -> Bool = { _ in false }
+        check("a focused Settings window takes precedence over main", WindowChoice.first(in: [settings.window, main.window], minimized: minimized, frame: frame)?.0 === settings.window)
+        check("skip a stale focused window and use the next usable one", WindowChoice.first(in: [stale.window, main.window], minimized: minimized, frame: frame)?.0 === main.window)
+        check("skip a minimized window", WindowChoice.first(in: [settings.window, main.window], minimized: { $0 === settings.window }, frame: frame)?.0 === main.window)
+        check("no usable AX window", WindowChoice.first(in: [stale.window], minimized: minimized, frame: frame) == nil)
+        let pid: pid_t = 42
+        let mainBounds = CGRect(x: 1400, y: 1000, width: 900, height: 550)
+        let windows = [
+            ServerWindow(id: 1, pid: pid, layer: -1, frame: mainBounds),
+            ServerWindow(id: 2, pid: pid, layer: -1, frame: CGRect(x: 0, y: 0, width: 660, height: 320)),
+            ServerWindow(id: 3, pid: pid, layer: 25, frame: CGRect(x: 0, y: 0, width: 1000, height: 1000)),
+            ServerWindow(id: 4, pid: pid + 1, layer: -1, frame: CGRect(x: 0, y: 0, width: 1000, height: 1000)),
+            ServerWindow(id: 5, pid: pid, layer: 0, frame: CGRect(x: 0, y: 0, width: 99, height: 1000)),
+        ]
+        check("use the largest eligible window for this PID, even offscreen and at layer -1", ServerWindow.parkedCopy(in: windows, pid: pid)?.id == 1)
+        check("use the parked window ID for input without needing an image", ServerWindow.matching(mainBounds, in: windows, pid: pid)?.id == 1)
+        check("never pair controls with another window's image or ID", ServerWindow.matching(mainBounds.offsetBy(dx: 200, dy: 0), in: windows, pid: pid) == nil)
+    }
+
+    await group("a menu bar item is named by its count and its new window takes precedence") {
+        let item = StandInStatusItem()
+        item.setAccessibilityLabel("2 requests waiting")
+        let main = Stage(Text("Main"))
+        defer { main.window.close(); item.panel.window.close() }
+        check("show the accessible label when it carries the count", StatusItems.label(title: "pi²", description: Local(object: item).label, help: nil) == "2 requests waiting")
+        check("use the title when the description is empty", StatusItems.label(title: "pi²", description: " ", help: nil) == "pi²")
+        check("use AXPress rather than a screen click", StatusItems.action(in: ["AXPress", "AXShowMenu"]) == "AXPress" && Local(object: item).press())
+        check("use AXShowMenu when it is the only advertised action", StatusItems.action(in: ["AXShowMenu"]) == "AXShowMenu")
+        let before = [main.window]
+        let after = item.pressed ? before + [item.panel.window] : before
+        let order = WindowChoice.order(after, beforePress: before, preferred: nil)
+        check("the popup wins even if main is listed first", order.first === item.panel.window)
+        check("read the popup as a normal window", await item.panel.until { $0.contains { $0.label == "Review request" } })
+        check("keep the popup through a subsequent look", WindowChoice.order(after, beforePress: nil, preferred: item.panel.window).first === item.panel.window)
+        check("return to main after the popup closes", WindowChoice.order(before, beforePress: nil, preferred: item.panel.window).first === main.window)
+        let panel = ServerWindow(id: 2, pid: 42, layer: 8, frame: CGRect(x: 50, y: 0, width: 360, height: 300), onScreen: true)
+        let icon = ServerWindow(id: 3, pid: 42, layer: 25, frame: CGRect(x: 50, y: 0, width: 110, height: 24), onScreen: true)
+        check("a newly shown popup can be found by ID instead of AX", ServerWindow.statusPopup(in: [icon, panel], pid: 42, before: [1], preferred: nil)?.id == 2)
+        check("a hidden popup is not reused", ServerWindow.statusPopup(in: [ServerWindow(id: 2, pid: 42, layer: 8, frame: item.panel.window.frame)], pid: 42, before: nil, preferred: 2) == nil)
+    }
+
+    await group("a precise scroll-wheel page uses the viewport, and its reply uses observed movement") {
+        let short = scrollView(documentHeight: 900), long = scrollView(documentHeight: 90_000)
+        let point = CGPoint(x: 100, y: 100)
+        let shortPage = Scrolling.distance(pages: 1, viewport: short.contentView.bounds)
+        let longPage = Scrolling.distance(pages: 1, viewport: long.contentView.bounds)
+        check("the same height requests the same wheel distance whatever the document length", shortPage == 200 && longPage == shortPage)
+        check("up reverses the delta and multi-page requests are bounded", Scrolling.distance(pages: Int.min, viewport: long.contentView.bounds) == -2000)
+        if let event = Input.scrollEvent(at: point, points: longPage) {
+            check("the event is a precise wheel at the destination", event.type == .scrollWheel && event.location == point && event.getIntegerValueField(.scrollWheelEventIsContinuous) == 1)
+            let wheel = NSEvent(cgEvent: event)
+            check("AppKit reads one precise vertical page and no horizontal movement", wheel?.hasPreciseScrollingDeltas == true
+                  && wheel?.scrollingDeltaY == -CGFloat(longPage) && wheel?.scrollingDeltaX == 0)
+            let up = Input.scrollEvent(at: point, points: -longPage).flatMap(NSEvent.init(cgEvent:))
+            check("AppKit reads the opposite delta for an upward page", up?.scrollingDeltaY == CGFloat(longPage))
+        } else {
+            check("synthesized a wheel event without posting it", false)
+        }
+        let move = Input.moveEvent(at: point, windowID: 17)
+        let fields: [CGEventField] = [.mouseEventWindowUnderMousePointer, .mouseEventWindowUnderMousePointerThatCanHandleThisEvent]
+        check("the companion mouse move carries the destination window ID", move?.location == point && fields.allSatisfy { move?.getIntegerValueField($0) == 17 })
+        // Simulate a view that clips a 200-point page at its end after only 85. Unordered NSScrollViews on a
+        // headless runner may not process scrollWheel(with:) like a visible view, so don't rely on event delivery.
+        let clip = short.contentView
+        let limit = 900 - clip.bounds.height
+        let start = limit - 85
+        clip.scroll(to: CGPoint(x: 0, y: start))
+        let before = clip.bounds.minY
+        clip.scroll(to: CGPoint(x: 0, y: min(limit, start + CGFloat(shortPage))))
+        let moved = clip.bounds.minY - before
+        let anchors = [CGRect(x: 20, y: 20, width: 100, height: 18), CGRect(x: 20, y: 85, width: 100, height: 18)]
+        check("report the measured partial page, not the request", moved == 85 && Scrolling.movement(before: anchors, after: anchors.map { $0.offsetBy(dx: 0, dy: -moved) }, oldValue: nil, newValue: nil) == .points(85), "clip view moved \(moved)")
+        check("report a scrollbar-only change as a fraction", Scrolling.movement(before: anchors, after: [nil, nil], oldValue: 0.5, newValue: 0.625) == .fraction(0.125))
+        check("distinguish no measured movement from no measurement", Scrolling.movement(before: anchors, after: anchors, oldValue: 1, newValue: 1) == .still
+              && Scrolling.movement(before: anchors, after: [nil, nil], oldValue: nil, newValue: nil) == .unknown)
     }
 
     print(failures == 0 ? "all checks passed" : "\(failures) checks failed")

@@ -16,6 +16,9 @@ public actor ComputerController {
         /// Picture pixels per screen point; 1 when no picture was taken.
         let scale: CGFloat
         let windowID: CGWindowID?
+        let window: AXUIElement?
+        let statusWindow: AXUIElement?
+        let statusWindowID: CGWindowID?
         let controls: [Control]
     }
 
@@ -129,11 +132,12 @@ public actor ComputerController {
             // Running with nothing to see: bring a minimized window back, or ask the app for a new one.
             if Self.accessibilityGranted {
                 let app = AXUIElementCreateApplication(running.processIdentifier)
-                let windows = AX.children(app, kAXWindowsAttribute)
+                let windows = Self.windowCandidates(of: app)
                 if let first = Self.minimizedWindow(in: windows) {
                     AX.set(first, kAXMinimizedAttribute, kCFBooleanFalse)
                     did = "Brought \(name)'s window back."
-                } else if windows.isEmpty {
+                } else if windows.isEmpty, !Self.hasParkedWindow(running, bundleID: bundleID),
+                          StatusItems.read(of: app, pid: running.processIdentifier).isEmpty {
                     await Self.launch(bundleID)
                     did = "Asked \(name) for a window."
                 }
@@ -145,8 +149,11 @@ public actor ComputerController {
             // Give it a moment to put up a window.
             for _ in 0..<24 {
                 try? await Task.sleep(for: .milliseconds(250))
-                if let running = Self.running(bundleID), running.isFinishedLaunching,
-                   !Self.accessibilityGranted || !AX.children(AXUIElementCreateApplication(running.processIdentifier), kAXWindowsAttribute).isEmpty { break }
+                if let running = Self.running(bundleID), running.isFinishedLaunching {
+                    if !Self.accessibilityGranted || Self.hasParkedWindow(running, bundleID: bundleID) { break }
+                    let app = AXUIElementCreateApplication(running.processIdentifier)
+                    if !Self.windowCandidates(of: app).isEmpty || !StatusItems.read(of: app, pid: running.processIdentifier).isEmpty { break }
+                }
             }
         }
         guard Self.accessibilityGranted, let running = Self.running(bundleID) else {
@@ -181,13 +188,42 @@ public actor ComputerController {
         return first
     }
 
-    private static func frontWindow(of app: AXUIElement) -> (window: AXUIElement?, minimized: Bool) {
-        let usable: (AXUIElement) -> Bool = { AX.role($0) == "AXWindow" && !isMinimized($0) }
-        if let focused = AX.element(app, kAXFocusedWindowAttribute), usable(focused) { return (focused, false) }
-        if let main = AX.element(app, kAXMainWindowAttribute), usable(main) { return (main, false) }
-        let windows = AX.children(app, kAXWindowsAttribute)
-        if let first = windows.first(where: usable) { return (first, false) }
-        return (nil, minimizedWindow(in: windows) != nil)
+    private static func isWindow(_ element: AXUIElement) -> Bool {
+        ["AXWindow", "AXPopover", "AXDialog", "AXSheet"].contains(AX.role(element))
+    }
+
+    private static func enclosingWindow(of element: AXUIElement) -> AXUIElement? {
+        var current: AXUIElement? = element
+        for _ in 0..<30 {
+            guard let candidate = current else { break }
+            if isWindow(candidate) { return candidate }
+            if let window = AX.element(candidate, kAXWindowAttribute) { return window }
+            current = AX.parent(candidate)
+        }
+        return nil
+    }
+
+    private static func windowCandidates(of app: AXUIElement, includeStatusWindows: Bool = false) -> [AXUIElement] {
+        let declared = [AX.element(app, kAXFocusedWindowAttribute),
+                        AX.element(app, kAXFocusedUIElementAttribute).flatMap(enclosingWindow),
+                        AX.element(app, kAXMainWindowAttribute)].compactMap { $0 }
+        var candidates = declared + AX.children(app, kAXWindowsAttribute) + AX.children(app).filter(isWindow)
+        if includeStatusWindows, let extras = AX.element(app, kAXExtrasMenuBarAttribute) {
+            candidates += AX.children(extras).prefix(40).flatMap { AX.children($0).filter(isWindow) }
+        }
+        var unique: [AXUIElement] = []
+        for candidate in candidates where !unique.contains(candidate) { unique.append(candidate) }
+        return unique
+    }
+
+    private static func isParkedCopy(_ running: NSRunningApplication, bundleID: String) -> Bool {
+        running.bundleURL.map { TestCopy.isThrowaway(bundleURL: $0, bundleID: bundleID) } ?? false
+    }
+
+    private static func hasParkedWindow(_ running: NSRunningApplication, bundleID: String) -> Bool {
+        guard isParkedCopy(running, bundleID: bundleID) else { return false }
+        let pid = running.processIdentifier
+        return ServerWindow.parkedCopy(in: ServerWindow.all(of: pid), pid: pid) != nil
     }
 
     /// The menus open in the app now, such as a context menu: macOS lists one among the app's own children while it is
@@ -215,82 +251,98 @@ public actor ComputerController {
         return []
     }
 
-    /// The window server's number for the window at `frame`. Needs no permission, and clicks carry it.
-    private static func windowID(pid: pid_t, frame: CGRect) -> CGWindowID? {
-        guard let list = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        var best: (id: CGWindowID, distance: CGFloat)?
-        for info in list {
-            guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid, (info[kCGWindowLayer as String] as? Int) == 0,
-                  let bounds = info[kCGWindowBounds as String] as? [String: CGFloat], let id = info[kCGWindowNumber as String] as? CGWindowID else { continue }
-            let rect = CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0, width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0)
-            let distance = abs(rect.minX - frame.minX) + abs(rect.minY - frame.minY) + abs(rect.width - frame.width) + abs(rect.height - frame.height)
-            if distance < (best?.distance ?? 12) { best = (id, distance) }
-        }
-        return best?.id
-    }
-
     /// Read the front window and answer with it. `did` is what just happened, said first.
-    private func look(_ request: ComputerRequest, running: NSRunningApplication, bundleID: String, did: String?, summary: String) async -> ComputerReply {
+    private func look(_ request: ComputerRequest, running: NSRunningApplication, bundleID: String, did: String?, summary: String,
+                      beforeStatusPress: (windows: [AXUIElement], visibleIDs: Set<CGWindowID>)? = nil) async -> ComputerReply {
         let name = running.localizedName ?? Self.name(of: bundleID)
         let pid = running.processIdentifier
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 2)
         let prefix = did.map { $0 + "\n\n" } ?? ""
-        let front = Self.frontWindow(of: app)
-        guard let window = front.window, let frame = AX.frame(window), frame.width > 1 else {
-            views[key(request, bundleID)] = nil
-            let why = front.minimized ? "\(name)'s window is minimized. Use open_app to bring it back." : "\(name) has no open window. Use open_app, or its menu, to open one."
-            return ComputerReply(ok: did != nil, text: prefix + why, summary: summary)
+        let previous = view(request, bundleID, running: running)
+        let candidates = Self.windowCandidates(of: app, includeStatusWindows: beforeStatusPress != nil || previous?.statusWindow != nil || previous?.statusWindowID != nil)
+        let ordered = WindowChoice.order(candidates, beforePress: beforeStatusPress?.windows, preferred: previous?.statusWindow)
+        let minimized = Self.minimizedWindow(in: candidates) != nil
+        let parkedCopy = Self.isParkedCopy(running, bundleID: bundleID)
+        let server = ServerWindow.all(of: pid)
+        let parked = parkedCopy && !minimized ? ServerWindow.parkedCopy(in: server, pid: pid) : nil
+        let menus = Self.openMenus(of: app)
+        let popup = menus.isEmpty ? ServerWindow.statusPopup(in: server, pid: pid, before: beforeStatusPress?.visibleIDs, preferred: previous?.statusWindowID) : nil
+        let accessible = WindowChoice.first(in: ordered, minimized: Self.isMinimized) { candidate in
+            guard let frame = AX.frame(candidate) else { return nil }
+            // A stale AXFocusedWindow can still have a frame after Settings closes. In a parked copy,
+            // prefer evidence from the window server over an AX frame that does not belong to a current window.
+            if parked != nil, !["AXPopover", "AXDialog", "AXSheet"].contains(AX.role(candidate)),
+               ServerWindow.matching(frame, in: server, pid: pid) == nil { return nil }
+            return frame
         }
+        let newAXWindow = accessible.map { current in
+            beforeStatusPress.map { !$0.windows.contains(current.0) } ?? (current.0 == previous?.statusWindow)
+        } ?? false
+        let fallback = !newAXWindow && popup != nil ? popup : accessible == nil ? parked : nil
+        let frame = fallback?.frame ?? accessible?.1 ?? .zero
+        let matched = fallback ?? accessible.flatMap { ServerWindow.matching($0.1, in: server, pid: pid) }
+        // AX can omit a parked window or popup from the application's list but still answer a hit at its position.
+        var window = fallback == nil ? accessible?.0 : nil
+        if window == nil, let fallback {
+            let centre = CGPoint(x: frame.midX, y: frame.midY)
+            if let recovered = AX.hitTest(app, centre).flatMap(Self.enclosingWindow), let rect = AX.frame(recovered),
+               ServerWindow.matching(rect, in: server, pid: pid)?.id == fallback.id { window = recovered }
+        }
+        let statusWindow = newAXWindow ? window : nil
+        let statusWindowID = newAXWindow ? matched?.id : popup?.id
         var reader = WindowReader(windowFrame: frame)
         // An open menu is read first, so its items come first and are never the ones cut off.
-        let menus = Self.openMenus(of: app)
         for menu in menus { reader.read(menu) }
         let menuItems = reader.controls.count
-        reader.read(window)
+        if let window { reader.read(window) }
+        reader.controls += StatusItems.read(of: app, pid: pid)
 
-        let windowID = Self.windowID(pid: pid, frame: frame)
         var shot: WindowCapture.Shot?
-        var noPicture: String?
-        if !request.image {
-            noPicture = nil // the model cannot see pictures; the list and the text are its view
-        } else if !WindowCapture.permitted {
-            noPicture = "No picture: pi² has no Screen Recording permission (the person can grant it in this agent's settings). The list below still works."
+        var lines: [String] = []
+        if frame.isEmpty {
+            lines.append(minimized ? "\(name)'s window is minimized. Use open_app to bring it back." : "\(name) has no open window.")
         } else {
-            let parkedTestCopy = running.bundleURL.map { TestCopy.isThrowaway(bundleURL: $0, bundleID: bundleID) } ?? false
-            if let target = await WindowCapture.window(pid: pid, frame: frame, parkedTestCopy: parkedTestCopy) {
-                shot = await WindowCapture.capture(target, frame: frame)
-                if shot == nil { noPicture = "No picture: the window could not be captured this time. The list below still works." }
-            } else {
-                noPicture = "No picture: the window could not be found for capture. The list below still works."
+            let title = (window.flatMap { AX.string(AX.value($0, kAXTitleAttribute)) } ?? matched?.title).map { " — window “\($0.clipped(80))”" } ?? ""
+            if request.image, WindowCapture.permitted {
+                if let target = await WindowCapture.window(pid: pid, frame: frame, id: matched?.id) {
+                    shot = await WindowCapture.capture(target, frame: frame)
+                }
             }
+            if let shot {
+                lines.append("\(name)\(title), \(Int((frame.width * shot.scale).rounded()))×\(Int((frame.height * shot.scale).rounded())) pixels.")
+            } else {
+                lines.append("\(name)\(title).")
+                if request.image {
+                    lines.append(WindowCapture.permitted ? "No picture: the window could not be captured this time."
+                                 : "No picture: pi² has no Screen Recording permission (the person can grant it in this agent's settings).")
+                }
+            }
+            if window == nil { lines.append("The window is open, but the app did not expose it through Accessibility.") }
         }
         let scale = shot?.scale ?? 1
-        views[key(request, bundleID)] = View(pid: pid, app: app, frame: frame, scale: scale, windowID: shot?.windowID ?? windowID, controls: reader.controls)
-
-        let title = AX.string(AX.value(window, kAXTitleAttribute)).map { " — window “\($0.clipped(80))”" } ?? ""
-        var lines: [String] = []
-        if shot != nil {
-            lines.append("\(name)\(title), \(Int((frame.width * scale).rounded()))×\(Int((frame.height * scale).rounded())) pixels.")
-        } else {
-            lines.append("\(name)\(title).")
-            if let noPicture { lines.append(noPicture) }
-        }
+        views[key(request, bundleID)] = View(pid: pid, app: app, frame: frame, scale: scale, windowID: shot?.windowID ?? matched?.id,
+                                             window: window, statusWindow: statusWindow, statusWindowID: statusWindowID, controls: reader.controls)
         if !menus.isEmpty {
             lines.append(menuItems == 0
                 ? "A menu is open, but its items could not be read. Press escape to close it."
                 : "A menu is open: its items are [1] to [\(menuItems)] below, and the picture does not show it. Click one to choose it, or press escape to close the menu.")
         }
         if reader.controls.isEmpty {
-            lines.append("No controls could be read from this window. Use x and y in the picture, or the menu.")
+            lines.append(frame.isEmpty ? "Use open_app, or its menu, to open a window."
+                         : shot == nil ? "No controls could be read from this window." : "No controls could be read from this window. Use x and y in the picture, or the menu.")
         } else {
             lines.append("Controls (these numbers are for this view only):")
             for (index, control) in reader.controls.enumerated() {
                 var line = "[\(index + 1)] \(control.kind)"
                 if let label = control.label { line += " “\(label.clipped(70))”" }
                 if let value = control.value, value != control.label { line += ", value “\(value.clipped(80))”" }
-                let x = Int(((control.frame.midX - frame.minX) * scale).rounded()), y = Int(((control.frame.midY - frame.minY) * scale).rounded())
-                line += " (\(x),\(y))"
+                if control.statusItem {
+                    line += " (in the macOS menu bar, not in the picture)"
+                } else if !frame.isEmpty {
+                    let x = Int(((control.frame.midX - frame.minX) * scale).rounded()), y = Int(((control.frame.midY - frame.minY) * scale).rounded())
+                    line += " (\(x),\(y))"
+                }
                 if control.focused { line += " focused" }
                 if control.selected { line += " selected" }
                 if !control.enabled { line += " disabled" }
@@ -304,7 +356,7 @@ public actor ComputerController {
             let text = reader.text.filter { seen.insert($0).inserted }.joined(separator: "\n")
             if !text.isEmpty { lines.append("Text in the window:\n" + (text.count > 3000 ? String(text.prefix(3000)) + "…" : text)) }
         }
-        return ComputerReply(ok: true, text: prefix + lines.joined(separator: "\n"), summary: summary, jpeg: shot?.jpeg)
+        return ComputerReply(ok: did != nil || !frame.isEmpty || !reader.controls.isEmpty, text: prefix + lines.joined(separator: "\n"), summary: summary, jpeg: shot?.jpeg)
     }
 
     // MARK: - Acting
@@ -322,7 +374,7 @@ public actor ComputerController {
         }
         let control = view.controls[number - 1]
         // The window may have changed since the look; a control that is gone no longer answers.
-        guard AX.value(control.element, kAXRoleAttribute) != nil else {
+        guard control.statusItem || AX.value(control.element, kAXRoleAttribute) != nil else {
             return .failure(.failure("Control \(number) is no longer there; the window has changed. Take a screenshot to see it as it is now."))
         }
         return .success(control)
@@ -330,6 +382,7 @@ public actor ComputerController {
 
     private func screenPoint(_ request: ComputerRequest, in view: View) -> Result<CGPoint, ComputerReply> {
         guard let x = request.x, let y = request.y else { return .failure(.failure("Give `element`, or both `x` and `y`.")) }
+        guard !view.frame.isEmpty else { return .failure(.failure("There is no window for that point. Use a numbered menu bar item if one is listed.")) }
         let point = CGPoint(x: view.frame.minX + x / view.scale, y: view.frame.minY + y / view.scale)
         guard view.frame.contains(point) else {
             let width = Int((view.frame.width * view.scale).rounded()), height = Int((view.frame.height * view.scale).rounded())
@@ -395,6 +448,10 @@ public actor ComputerController {
             switch self.control(number, in: view) {
             case .success(let found): control = found
             case .failure(let reply): return reply
+            }
+            if control.statusItem {
+                guard count == 1 else { return .failure("Use a single click on a menu bar item.") }
+                return await clickStatusItem(control, request: request, view: view, running: running, bundleID: bundleID)
             }
             guard control.enabled else { return .failure("Control \(number), \(control.phrase), is disabled, so clicking it would do nothing.") }
             what = control.label.map { "“\($0.clipped(40))”" } ?? control.kind
@@ -466,6 +523,25 @@ public actor ComputerController {
         return await look(request, running: running, bundleID: bundleID, did: did, summary: "\(count == 2 ? "Double-clicked" : "Clicked") \(what) in \(name)")
     }
 
+    private func clickStatusItem(_ control: Control, request: ComputerRequest, view: View, running: NSRunningApplication, bundleID: String) async -> ComputerReply {
+        guard let item = StatusItems.read(of: view.app, pid: view.pid).first(where: { $0.element == control.element && $0.label == control.label }) else {
+            return .failure("That menu bar item changed. Take a screenshot to see the current items.")
+        }
+        guard item.enabled else { return .failure("\(item.phrase) is disabled.") }
+        let before = (windows: Self.windowCandidates(of: view.app, includeStatusWindows: true),
+                      visibleIDs: Set(ServerWindow.all(of: view.pid).filter(\.onScreen).map(\.id)))
+        let action = StatusItems.action(in: AX.actions(item.element))
+        AXUIElementSetMessagingTimeout(item.element, 1)
+        guard AX.perform(item.element, action) else { return .failure("\(item.phrase) did not answer a click through Accessibility.") }
+        // The panel can open without becoming AXMainWindow. Give it time to appear among the app's windows.
+        for _ in 0..<6 {
+            try? await Task.sleep(for: .milliseconds(150))
+            let newWindows = Self.windowCandidates(of: view.app, includeStatusWindows: true).filter { !before.windows.contains($0) }
+            if WindowChoice.first(in: newWindows, minimized: Self.isMinimized, frame: AX.frame) != nil || !Self.openMenus(of: view.app).isEmpty { break }
+        }
+        return await look(request, running: running, bundleID: bundleID, did: "Clicked \(item.phrase).", summary: "Clicked a menu bar item in \(running.localizedName ?? bundleID)", beforeStatusPress: before)
+    }
+
     /// Opens the context menu of a listed control, or of what is at a point: through accessibility (`AXShowMenu`), which
     /// works with the app in the background, and with a secondary click where nothing near answers to that, or nothing
     /// opened. The menu's items are then listed first, as controls, by `look`.
@@ -482,6 +558,7 @@ public actor ComputerController {
             case .success(let found): control = found
             case .failure(let reply): return reply
             }
+            guard !control.statusItem else { return .failure("Use click, not context_menu, to open a menu bar item.") }
             element = control.element
             point = CGPoint(x: control.frame.midX, y: control.frame.midY)
             phrase = control.phrase
@@ -578,44 +655,18 @@ public actor ComputerController {
         return await look(request, running: running, bundleID: bundleID, did: "Pressed \(combo.display).", summary: "Pressed \(combo.display) in \(name)")
     }
 
-    /// The scrolling area an element sits in.
-    private static func scrollArea(containing element: AXUIElement) -> AXUIElement? {
-        var current: AXUIElement? = element
-        for _ in 0..<12 {
-            guard let candidate = current else { return nil }
-            if AX.role(candidate) == "AXScrollArea" { return candidate }
-            current = AX.parent(candidate)
-        }
-        return nil
-    }
-
-    /// The largest scrolling area in a window: what "scroll the window" means.
-    private static func mainScrollArea(in window: AXUIElement) -> AXUIElement? {
-        var queue = [window]
-        var best: (AXUIElement, CGFloat)?
-        var visited = 0
-        while !queue.isEmpty, visited < 1200 {
-            let element = queue.removeFirst()
-            visited += 1
-            if AX.role(element) == "AXScrollArea", let frame = AX.frame(element) {
-                let area = frame.width * frame.height
-                if area > (best?.1 ?? 0) { best = (element, area) }
-                continue // areas nested inside are smaller
-            }
-            queue += AX.children(element)
-        }
-        return best?.0
-    }
-
     private func scroll(_ request: ComputerRequest, running: NSRunningApplication, bundleID: String) async -> ComputerReply {
-        guard let pages = request.dy, pages != 0 else { return .failure("scroll needs `dy`: pages to scroll, positive for down.") }
+        let pages = Scrolling.pages(request.dy ?? 0)
+        guard pages != 0 else { return .failure("scroll needs `dy`: pages to scroll, positive for down.") }
         guard let view = view(request, bundleID, running: running) else { return .failure(Self.lookFirst) }
+        guard !view.frame.isEmpty else { return .failure("There is no open window to scroll.") }
         var area: AXUIElement?
-        var point = CGPoint(x: view.frame.midX, y: view.frame.midY)
+        var point: CGPoint?
         if let number = request.element {
             switch control(number, in: view) {
             case .success(let found):
-                area = Self.scrollArea(containing: found.element)
+                guard !found.statusItem else { return .failure("A menu bar item is not a scrolling view.") }
+                area = Scrolling.area(containing: found.element)
                 point = CGPoint(x: found.frame.midX, y: found.frame.midY)
             case .failure(let reply): return reply
             }
@@ -623,34 +674,42 @@ public actor ComputerController {
             switch screenPoint(request, in: view) {
             case .success(let found):
                 point = found
-                area = AX.hitTest(view.app, found).flatMap(Self.scrollArea(containing:))
+                // Hit testing can fail when a parked window's centre is offscreen.
+                area = AX.hitTest(view.app, found).flatMap(Scrolling.area(containing:))
             case .failure(let reply): return reply
             }
-        } else if let window = Self.frontWindow(of: view.app).window {
-            area = Self.mainScrollArea(in: window)
-            if let frame = area.flatMap(AX.frame) { point = CGPoint(x: frame.midX, y: frame.midY) }
         }
-        let steps = min(abs(pages), 10)
-        var moved = false
-        if let area, let bar = AX.element(area, kAXVerticalScrollBarAttribute) {
-            // The scroll bar's own page buttons do exactly what a person's click there does, front or back.
-            let wanted = pages > 0 ? "AXIncrementPage" : "AXDecrementPage"
-            if let button = AX.children(bar).first(where: { (AX.value($0, kAXSubroleAttribute) as? String) == wanted }) {
-                for _ in 0..<steps {
-                    moved = AX.perform(button, kAXPressAction) || moved
-                    try? await Task.sleep(for: .milliseconds(70))
-                }
+        if area == nil, let window = view.window { area = Scrolling.area(in: window, frame: view.frame, at: point) }
+        let bounds = area.flatMap(AX.frame)?.intersection(view.frame)
+        let viewport = bounds.flatMap { $0.isEmpty ? nil : $0 } ?? view.frame
+        let destination = point.flatMap { viewport.contains($0) ? $0 : nil } ?? CGPoint(x: viewport.midX, y: viewport.midY)
+        let position = Scrolling.Position(area: area, viewport: viewport)
+        // Send one precise wheel event per page; each delta is a viewport, not a fraction of the document.
+        let distance = Scrolling.distance(pages: pages > 0 ? 1 : -1, viewport: viewport)
+        for _ in 0..<abs(pages) {
+            guard Input.scroll(pid: view.pid, at: destination, windowID: view.windowID, points: distance) else {
+                return .failure("Could not send a scroll-wheel event to the window.")
             }
-            if !moved, let value = AX.value(bar, kAXValueAttribute) as? NSNumber, AX.settable(bar, kAXValueAttribute) {
-                let next = max(0, min(1, value.doubleValue + (pages > 0 ? 0.15 : -0.15) * Double(steps)))
-                moved = AX.set(bar, kAXValueAttribute, NSNumber(value: next))
-            }
+            if abs(pages) > 1 { try? await Task.sleep(for: .milliseconds(50)) }
         }
-        if !moved { Input.scroll(pid: view.pid, at: point, lines: (pages > 0 ? 12 : -12) * steps) }
-        try? await Task.sleep(for: .milliseconds(350))
+        try? await Task.sleep(for: .milliseconds(450))
+        var movement = position.movement()
+        var fallback = ""
+        // Don't scroll twice when movement simply can't be measured. Only try the app's native page control when
+        // the scrollbar confirms it didn't move and isn't already at the requested end.
+        if movement == .still, let button = position.pageButton(pages: pages) {
+            for _ in 0..<abs(pages) {
+                guard AX.perform(button, kAXPressAction) else { break }
+                try? await Task.sleep(for: .milliseconds(70))
+            }
+            try? await Task.sleep(for: .milliseconds(350))
+            fallback = " Also tried the app's page control."
+            movement = position.movement()
+        }
         let direction = pages > 0 ? "down" : "up"
         let name = running.localizedName ?? bundleID
-        return await look(request, running: running, bundleID: bundleID, did: "Scrolled \(direction) \(steps) page\(steps == 1 ? "" : "s").", summary: "Scrolled \(direction) in \(name)")
+        let did = "Sent a scroll of \(abs(pages)) page\(abs(pages) == 1 ? "" : "s") \(direction).\(fallback) \(movement.report)"
+        return await look(request, running: running, bundleID: bundleID, did: did, summary: "Scroll \(direction) in \(name): \(movement.report)")
     }
 
     private static func menuTitle(_ title: String) -> String {
@@ -727,7 +786,7 @@ public actor ComputerController {
         case "key":
             return "Press \(Input.parse(request.text ?? "")?.display ?? (request.text ?? "a key")) in \(name)"
         case "scroll":
-            let pages = abs(request.dy ?? 1)
+            let pages = abs(Scrolling.pages(request.dy ?? 1))
             return "Scroll \((request.dy ?? 1) < 0 ? "up" : "down") \(pages) page\(pages == 1 ? "" : "s") in \(name)"
         case "menu":
             return "Choose \(Self.menuParts(request.path ?? "").joined(separator: " > ")) from \(name)’s menu"

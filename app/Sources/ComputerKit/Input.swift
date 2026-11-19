@@ -3,11 +3,11 @@ import Foundation
 
 /// Mouse and keyboard events delivered to one app, not to whatever is in front: the person's pointer does not move and
 /// their own typing goes where they are working.
-enum Input {
+package enum Input {
     private static let source = CGEventSource(stateID: .combinedSessionState)
-    /// Undocumented but long-standing event fields: the window a mouse event is for. Events posted straight to an app
-    /// skip the window server, which normally fills these in, and some apps drop a click that has no window.
-    private static let windowFields = [CGEventField(rawValue: 91), CGEventField(rawValue: 92)].compactMap { $0 }
+    /// Events posted straight to an app skip the window server, which normally fills these in. Some apps drop a
+    /// click that has no window.
+    private static let windowFields: [CGEventField] = [.mouseEventWindowUnderMousePointer, .mouseEventWindowUnderMousePointerThatCanHandleThisEvent]
 
     static func click(pid: pid_t, at point: CGPoint, windowID: CGWindowID?, count: Int) {
         let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
@@ -43,10 +43,26 @@ enum Input {
         for field in windowFields { event.setIntegerValueField(field, value: Int64(windowID)) }
     }
 
-    static func scroll(pid: pid_t, at point: CGPoint, lines: Int) {
-        let event = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 1, wheel1: Int32(-lines), wheel2: 0, wheel3: 0)
+    package static func scrollEvent(at point: CGPoint, points: Int32) -> CGEvent? {
+        let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1,
+                            wheel1: Int32(clamping: -Int64(points)), wheel2: 0, wheel3: 0)
         event?.location = point
-        event?.postToPid(pid)
+        return event
+    }
+
+    package static func moveEvent(at point: CGPoint, windowID: CGWindowID?) -> CGEvent? {
+        let event = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
+        stamp(event, windowID)
+        return event
+    }
+
+    static func scroll(pid: pid_t, at point: CGPoint, windowID: CGWindowID?, points: Int32) -> Bool {
+        guard points != 0, let event = scrollEvent(at: point, points: points) else { return false }
+        // The window fields are only stored on mouse events, not wheels. Tell this app where the pointer would
+        // be before sending it the wheel at the same position. Neither event goes to other apps.
+        moveEvent(at: point, windowID: windowID)?.postToPid(pid)
+        event.postToPid(pid)
+        return true
     }
 
     /// Type text as key events carrying the characters themselves, so the keyboard layout does not matter.
