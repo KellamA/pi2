@@ -21,12 +21,14 @@ import { closeSync, mkdirSync, openSync, readSync, rmSync, statSync } from "node
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId, defineDoc } from "@earendil-works/pi-durable";
 import { isPutAway } from "./archive.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { execFileOffThread } from "./offthread.ts";
 import { type EngineRecipe, fileName, type LocalModel, type LocalSetup, localSetupReader, STRATA } from "./localengine.ts";
+import { refusalOf } from "./limitwait.ts";
 import { localChanged } from "./localmodels.ts";
 import { forgetRun, killLater, killRemaining, type Listed, leftOverLog, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 import { LOCAL_PROVIDER, type LocalLease } from "./providers.ts";
@@ -45,6 +47,31 @@ const SHUTDOWN_GRACE_MS = 1_500;
 const POLL_MS = 250;
 /** How often the memory of a running server is looked at again. */
 const MEMORY_MS = 10_000;
+
+export const LOCAL_RETRY_ENTRY = "pi2.localRetry";
+const LOCAL_RETRY_NOTICE = "The model on this Mac stopped and was started again. Carrying on.";
+const RETRY_DELAYS = [2_000, 10_000, 30_000];
+// Only tests shorten or hold the durable sleep; its normal backoff does not depend on the model's settings.
+const retryDelay = (ms: number): number => {
+	const testDelay = Number(process.env.PI2_LOCAL_RUN_RETRY_MS);
+	return Number.isFinite(testDelay) && testDelay >= 0 ? testDelay : ms;
+};
+const ENGINE_STOPPED = /\bthe engine stopped unexpectedly \(exit code -?\d+\); the next request restarts it\b/i;
+const CONNECTION_DROPPED = /^(?:connection (?:error|refused|lost)|fetch failed|terminated|stream ended without finish_reason|socket hang up|other side closed|ECONN(?:RESET|REFUSED))\b/i;
+
+/** Strata's server may still be running after its engine stops; asking it again starts the engine. */
+export function retryLocalEngine(message: AssistantMessage | undefined, count: number, home: string) {
+	if (message?.provider !== LOCAL_PROVIDER || message.stopReason !== "error") return undefined;
+	const error = message.errorMessage ?? "";
+	if (!ENGINE_STOPPED.test(error) && (refusalOf(message) !== undefined || !CONNECTION_DROPPED.test(error))) return undefined;
+	const delay = RETRY_DELAYS[count];
+	if (delay !== undefined) {
+		return { waitMs: retryDelay(delay), spent: 0, localRetries: count + 1, notice: { kind: LOCAL_RETRY_ENTRY, data: { text: LOCAL_RETRY_NOTICE } } };
+	}
+	const log = join(home, "local", "logs", `${fileName(message.model)}.log`);
+	message.errorMessage = `${error}\n\nWhat Strata printed is in its log, ${tilde(log)}.`;
+	return { waitMs: false as const, spent: 0 };
+}
 
 /** A server as the session document records it, for the engine that starts after this one should this one die. */
 type Left = { model: string; startedAt: number; process?: RunProcess };

@@ -114,6 +114,9 @@ class Client extends EngineClient {
 	state(id: number): any {
 		return this.conversations.get(id)?.state;
 	}
+	retries(id: number): Event[] {
+		return this.conversations.get(id)?.items.filter((item: Event) => item.kind === "marker" && item.text === "The model on this Mac stopped and was started again. Carrying on.") ?? [];
+	}
 	answers(id: number): Event[] {
 		return this.conversations.get(id)?.items.filter((item: Event) => item.kind === "assistant") ?? [];
 	}
@@ -161,7 +164,7 @@ const started = new Set<number>();
 const note = (pid: number) => (started.add(pid), pid);
 
 let passed = false;
-let engine: ChildProcess = boot({ PI2_LOCAL_GRACE_SECONDS: "3600" });
+let engine: ChildProcess = boot({ PI2_LOCAL_GRACE_SECONDS: "3600", PI2_LOCAL_RUN_RETRY_MS: "0" });
 try {
 	let client = await Client.attach(engine);
 
@@ -253,16 +256,64 @@ try {
 	assert.notEqual(alphaPid2, alphaPid);
 	step("Stop by hand stops it; the conversations using it are not broken, and the next message starts it again");
 
-	// ---- A crash
-	const answered = client.answers(b).length;
-	await client.call("submit", { id: b, text: "/crash now" });
-	await until("the stand-in crashed", () => !alive(alphaPid2));
-	await client.until("the run is over", () => client.state(b).busy === false && (client.answers(b).length > answered || client.state(b).failure !== null));
-	assert.match(logged(), /alpha stopped unexpectedly: Strata exited with code 3/);
-	const after = await client.ask(b, "after the crash");
-	assert.match(after.text, /^You said: after the crash/, "the next message starts it again after a crash");
-	note(client.server("alpha").pid);
-	step("a model that crashes is noted, and the next message starts it again");
+	// ---- Strata's server stays up but answers with its engine's exit code.
+	const single = await client.conversation("alpha");
+	const once = join(files, "once");
+	assert.match((await client.ask(single, `/engine-stop ${once} 1`)).text, /^You said: \/engine-stop/);
+	assert.equal(client.retries(single).length, 1);
+	assert.equal(client.answers(single).length, 1, "no interrupted answer alongside the notice");
+	const prompts = JSON.parse(readFileSync(once, "utf8"));
+	assert.equal(prompts.length, 2);
+	assert.deepEqual(prompts[0], prompts[1], "neither the error nor the notice goes to the model");
+	assert.equal(client.server("alpha").pid, alphaPid2, "Strata's HTTP server restarts its own engine");
+	step("the engine-exit error is tried again, with one display-only notice");
+
+	const sharedA = await client.conversation("alpha");
+	const sharedB = await client.conversation("alpha");
+	const fileA = join(files, "shared-a");
+	const fileB = join(files, "shared-b");
+	const both = join(files, "shared-fail");
+	const answerA = client.ask(sharedA, `/engine-stop ${fileA} 1 ${both}`);
+	const answerB = client.ask(sharedB, `/engine-stop ${fileB} 1 ${both}`);
+	await until("both requests reached the same server", () => existsSync(fileA) && existsSync(fileB));
+	writeFileSync(both, "");
+	for (const [id, answer] of [[sharedA, await answerA], [sharedB, await answerB]] as const) {
+		assert.match(answer.text, /^You said: \/engine-stop/);
+		assert.equal(client.retries(id).length, 1);
+	}
+	step("both conversations on one model carry on after a shared engine stop");
+
+	const repeated = join(files, "repeated");
+	const terminal = await client.ask(single, `/engine-stop ${repeated} 4`);
+	assert.match(terminal.error, /the engine stopped unexpectedly \(exit code -6\); the next request restarts it/);
+	assert.match(terminal.error, /What Strata printed is in its log, .*alpha\.log\./);
+	assert.equal(client.state(single).failure.reason, "model_error");
+	assert.equal(JSON.parse(readFileSync(repeated, "utf8")).length, 4, "the initial stop plus three failed recovery attempts");
+	assert.equal(client.retries(single).length, 4, "three new notices, in addition to the first run's one");
+	step("three failed tries end the run with the original reason and the model's log");
+
+	const resetting = await client.conversation("alpha");
+	const reset = join(files, "reset");
+	assert.match((await client.ask(resetting, `/engine-stop ${reset} 3 tool`)).text, /^You said: \/engine-stop/);
+	assert.equal(client.retries(resetting).length, 6, "a successful tool-call response resets the count in the same run");
+	assert.equal(JSON.parse(readFileSync(`${reset}.after-tool`, "utf8")).length, 4);
+	step("a successful request resets the budget before the next request in the same run");
+
+	// ---- A dropped connection (no HTTP error response). Keep the process alive so the zero-delay retry does not
+	// race the process exit notification. Test the process exit separately below.
+	const after = await client.ask(b, "/drop now");
+	assert.equal(after.text, "You said: /drop now", "the same run is answered after a dropped connection");
+	assert.equal(client.retries(b).length, 1);
+	assert.equal(client.server("alpha").pid, alphaPid2);
+	step("a dropped connection in the middle of an answer also carries on");
+
+	// ---- A server that exits unexpectedly while idle is started by the next request.
+	process.kill(alphaPid2, "SIGKILL");
+	await client.until("the server exit is reported", () => client.server("alpha") === undefined && client.state(b).local.status === "failed");
+	assert.match(logged(), /alpha stopped unexpectedly: Strata was ended by SIGKILL/);
+	assert.equal((await client.ask(b, "after the server exited")).text, "You said: after the server exited");
+	assert.notEqual(note(client.server("alpha").pid), alphaPid2);
+	step("an unexpected server exit is noted, and the next message starts it again");
 
 	// ---- A model that cannot start says why
 	const d = await client.conversation("broken");
@@ -296,7 +347,7 @@ try {
 	assert.notEqual(Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(betaChild)], { encoding: "utf8" }).trim()), betaPid, "what it started is in a group of its own, as Strata's engine is");
 	await stop(engine, "SIGKILL");
 	assert.ok(alive(betaPid) && alive(betaChild), "an engine killed outright leaves it running for the moment");
-	engine = boot({ PI2_LOCAL_GRACE_SECONDS: "0" });
+	engine = boot({ PI2_LOCAL_GRACE_SECONDS: "0", PI2_LOCAL_RUN_RETRY_MS: "1000000000" });
 	client = await Client.attach(engine);
 	await until("the next engine stops it, what it started too, though it ignores SIGTERM", () => !alive(betaPid) && !alive(betaChild));
 	assert.match(logged(), /beta on this Mac, left by the last engine, was stopped/);
@@ -339,6 +390,18 @@ try {
 	await client.call("conversation.archive", { id: a });
 	await client.until("stopped once archived", () => client.server("alpha") === undefined && !alive(pid));
 	step("a conversation stops counting when its model is changed or it is archived, and switching to the model starts it");
+
+	// ---- Stop during a durable retry sleep. Its deadline is longer than the test's hang guard.
+	const stopping = await client.conversation("alpha");
+	const paused = join(files, "paused");
+	await client.call("submit", { id: stopping, text: `/engine-stop ${paused} 1` });
+	await client.until("the run is sleeping before the retry", () => client.state(stopping).retry?.at > Date.now());
+	await client.call("abort", { id: stopping });
+	await client.until("Stop ended the run", () => client.state(stopping).busy === false);
+	assert.equal(client.state(stopping).retry, null);
+	assert.equal(client.retries(stopping).length, 0, "no notice for a retry that did not happen");
+	assert.equal(JSON.parse(readFileSync(paused, "utf8")).length, 1, "no second request");
+	step("Stop ends a retry pause without asking the model again");
 
 	// ---- A clean stop of the engine stops it within its deadline
 	await client.show(e);
