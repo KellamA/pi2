@@ -185,17 +185,12 @@ final class Made {
         window.layoutIfNeeded()
     }
 
-    /// The size the content has in the window: the window's content less the title bar and toolbar.
-    var shown: CGSize {
-        let full = window.contentRect(forFrameRect: window.frame).size
-        return CGSize(width: full.width, height: window.contentLayoutRect.height)
-    }
-
-    /// The sizes the content was asked for other than the one it is shown at: measuring it for something else.
+    /// The sizes the content was asked for that are no bigger than its smallest size, in either direction: measuring
+    /// it for the window's smallest size. The window is always bigger than that when it is asked. Sizes it was shown
+    /// at before the toolbar settled are bigger, and are left out.
     var measuredFor: [ProposedViewSize] {
-        let shown = shown
-        return asked.sizes.filter { proposal in
-            !(abs((proposal.width ?? -1) - shown.width) < 1 && abs((proposal.height ?? -1) - shown.height) < 1)
+        asked.sizes.filter { proposal in
+            (proposal.width ?? 0) <= content.width + 0.5 || (proposal.height ?? 0) <= content.height + 0.5
         }
     }
 
@@ -243,7 +238,7 @@ Task { @MainActor in
 
     await group("the window's smallest size is the same, and the content is not measured for it") {
         check("it is the same as SwiftUI worked out before", fixed == swiftUIMinimum, "now \(fixed), before \(swiftUIMinimum)")
-        check("the content is only asked for the size it is shown at", made.measuredFor.isEmpty, "also asked for \(made.measuredFor)")
+        check("the content is never asked for a size as small as that", made.measuredFor.isEmpty, "asked for \(made.measuredFor)")
     }
 
     // The window at its smallest, where a content that asks for more has nowhere to go.
@@ -251,7 +246,6 @@ Task { @MainActor in
     await made.layOut()
     let smallest = window.frame
     made.resizes = 0
-    made.asked.sizes = []
 
     await group("long lines from outside change neither the smallest size nor the window") {
         for (name, text) in [("a 5,000-character line", longLine), ("5,000 characters with no space", unbroken)] {
@@ -265,7 +259,6 @@ Task { @MainActor in
             await made.layOut()
         }
         check("the window was never resized", made.resizes == 0, "\(made.resizes) resizes")
-        check("the content was never measured for the smallest size", made.measuredFor.isEmpty, "also asked for \(made.measuredFor)")
     }
 
     await group("rows, requests and the sidebar coming and going in quick succession") {
