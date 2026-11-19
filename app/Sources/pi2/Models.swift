@@ -1264,6 +1264,7 @@ struct SignInFlow: Equatable {
 
 struct EngineError: LocalizedError {
     let message: String
+    var data: [String: JSONValue]? = nil
     /// No answer came: the engine was not connected, or the connection went before it answered. A request that is safe to
     /// send again (a message with its request id) can be sent again once the engine is back.
     var unanswered = false
