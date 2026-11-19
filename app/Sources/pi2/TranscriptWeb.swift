@@ -65,6 +65,12 @@ struct ConversationTranscript: View {
     }
 }
 
+/// Where the page loaded ahead for the next conversation waits, behind what the window shows (#441, `SparePage`).
+struct SparePageSpot: NSViewRepresentable {
+    func makeNSView(context: Context) -> SparePageHost { SparePageHost(spare: TranscriptPage.spare) }
+    func updateNSView(_ view: SparePageHost, context: Context) {}
+}
+
 struct TranscriptWebView: NSViewRepresentable {
     let folder: URL
     let engine: EngineClient
@@ -81,18 +87,20 @@ struct TranscriptWebView: NSViewRepresentable {
         TranscriptBridge(engine: engine, conversationID: conversationID)
     }
 
-    func makeNSView(context: Context) -> TranscriptWebKitView {
-        context.coordinator.makeView(folder: folder)
+    func makeNSView(context: Context) -> TranscriptPane {
+        TranscriptPane(page: context.coordinator.makeView(folder: folder))
     }
 
-    func updateNSView(_ view: TranscriptWebKitView, context: Context) {
+    func updateNSView(_ view: TranscriptPane, context: Context) {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
         context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, older: older, state: state, inbox: inbox, names: names, chat: chat)
     }
 
-    static func dismantleNSView(_ view: TranscriptWebKitView, coordinator: TranscriptBridge) {
-        view.close()
+    static func dismantleNSView(_ view: TranscriptPane, coordinator: TranscriptBridge) {
+        view.page.close()
+        // A page taken from the one loaded ahead and never shown is still where it waited.
+        view.page.removeFromSuperview()
     }
 }
 

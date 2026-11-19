@@ -462,6 +462,9 @@ struct RootView: View {
                     }
                 }
             }
+            // The page loaded ahead for the next conversation waits here, in the window but unseen, whatever shows, so
+            // that WebKit has it ready to draw (#441).
+            .background { SparePageSpot() }
             // An engine that keeps failing to start is said so above whatever is showing, until one starts.
             .safeAreaInset(edge: .top, spacing: 0) { EngineTroubleBanner(engine: engine) }
             // Requests stacked above the message field cannot make the split view taller than the window (#400).

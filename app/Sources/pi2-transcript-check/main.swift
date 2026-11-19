@@ -81,15 +81,30 @@ func send(_ view: WKWebView, _ json: String) async {
     _ = try? await view.callAsyncJavaScript("window.pi2.receive(message)", arguments: ["message": json], in: nil, contentWorld: .page)
 }
 
-/// A window that never comes on screen, for the pages handed over, as a pane holds one.
+/// A window that never comes on screen, holding the place where a page waits (`SparePageHost`) and the panes the pages
+/// handed over go into, as the app's window does.
 @MainActor
-final class Pane {
+final class Window {
     let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 700, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 500))
 
-    init(_ page: TranscriptWebKitView) {
+    init() {
         window.isReleasedWhenClosed = false
-        page.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
-        window.contentView = page
+        window.contentView = root
+    }
+
+    /// Puts a view in the window, filling it.
+    func add(_ view: NSView) {
+        view.frame = root.bounds
+        root.addSubview(view)
+    }
+
+    /// A pane showing the page, as the app makes one for a conversation.
+    @discardableResult
+    func pane(_ page: TranscriptWebKitView) -> TranscriptPane {
+        let pane = TranscriptPane(page: page)
+        add(pane)
+        return pane
     }
 }
 
@@ -97,7 +112,9 @@ final class Pane {
 func run(folder: URL) async {
     let spare = SparePage(folder: folder, delay: .milliseconds(50))
     var handed: [TranscriptWebKitView] = []
-    var panes: [Pane] = []
+    let window = Window()
+    let host = SparePageHost(spare: spare)
+    window.add(host)
 
     await group("before any page is taken, none is loaded ahead; the first is new, and one is loaded ahead after it") {
         check("nothing is loaded ahead before the first pane", spare.page == nil)
@@ -107,14 +124,18 @@ func run(folder: URL) async {
         guard await until("a page is loaded ahead after a moment", { spare.page != nil }) else { return }
         check("it is another view", spare.page !== first)
         guard await until("the first page says it is ready", { first.isReady }) else { return }
-        panes.append(Pane(first))
+        window.pane(first)
     }
 
     await group("the page loaded ahead says it is ready with nobody listening, and holds nothing") {
         guard let ahead = spare.page, await until("it says it is ready", { ahead.isReady }) else { return }
         let text = await shown(ahead)
         check("it shows nothing", text == "", "shows \(text.debugDescription)")
-        check("it is in no window", ahead.window == nil)
+        check("it waits where the window keeps it", ahead.superview === host && ahead.window === window.window)
+        check("unseen", ahead.alphaValue == 0)
+        check("taking no focus", !ahead.acceptsFirstResponder && !ahead.canBecomeKeyView)
+        check("no clicks", host.hitTest(NSPoint(x: 10, y: 10)) == nil)
+        check("and out of VoiceOver's view", host.accessibilityChildren()?.isEmpty == true)
     }
 
     await group("a pane gets the page loaded ahead, and it shows the conversation it is sent") {
@@ -124,7 +145,12 @@ func run(folder: URL) async {
         check("it is ready already", page.isReady)
         check("nothing is loaded ahead at once after", spare.page == nil)
         handed.append(page)
-        panes.append(Pane(page))
+        let pane = TranscriptPane(page: page)
+        check("it stays where it waited until its pane is in the window", page.superview === host)
+        window.add(pane)
+        check("then it is in its pane", page.superview === pane && page.frame == pane.bounds, "in \(String(describing: page.superview)), \(page.frame)")
+        check("having never left the window", page.window === window.window && page.timesOutOfWindow == 0, "out \(page.timesOutOfWindow) times")
+        check("and takes focus again", page.acceptsFirstResponder)
         await send(page, conversation(7, "conversation seven"))
         guard await until("it shows conversation seven", { await shown(page).contains("A message to conversation seven") }) else { return }
         check("and its answer", await shown(page).contains("An answer from conversation seven"))
@@ -138,7 +164,7 @@ func run(folder: URL) async {
         check("it is the page loaded ahead", page === ahead)
         check("it is not a page handed over before", !handed.contains { $0 === page })
         handed.append(page)
-        panes.append(Pane(page))
+        window.pane(page)
         await send(page, conversation(8, "conversation eight"))
         guard await until("it shows conversation eight", { await shown(page).contains("A message to conversation eight") }) else { return }
         let text = await shown(page)
@@ -159,7 +185,7 @@ func run(folder: URL) async {
         }
         check("it is not ready yet", !page.isReady)
         handed.append(page)
-        panes.append(Pane(page))
+        window.pane(page)
         guard await until("it says it is ready", { readies == 1 }) else { return }
         check("and is", page.isReady)
         await send(page, conversation(9, "conversation nine"))
@@ -180,7 +206,7 @@ func run(folder: URL) async {
         let page = spare.take()
         check("the pane gets the new one", page === next)
         handed.append(page)
-        panes.append(Pane(page))
+        window.pane(page)
     }
 
     await group("no page is handed over twice, and one at most is loaded ahead") {
@@ -206,7 +232,23 @@ func run(folder: URL) async {
             if let kb = Int(rss) { print("info  the page loaded ahead: its process holds \(kb / 1024) MB resident") }
         }
     }
-    for pane in panes { pane.window.close() }
+    await group("a page waits in no window while no place in a window is kept for it, and comes into its pane at once") {
+        guard await until("a page is loaded ahead", { spare.page?.isReady == true }), let ahead = spare.page else { return }
+        host.removeFromSuperview()
+        check("it is in no window", ahead.window == nil)
+        let page = spare.take()
+        let pane = TranscriptPane(page: page)
+        check("its pane takes it at once", page === ahead && page.superview === pane)
+        window.add(pane)
+        handed.append(page)
+        guard await until("another is loaded ahead", { spare.page != nil }), let next = spare.page else { return }
+        check("which waits in no window", next.window == nil)
+        let another = SparePageHost(spare: spare)
+        window.add(another)
+        check("until a place is kept for it again", next.superview === another && next.window === window.window)
+    }
+
+    window.window.close()
     for page in handed { page.close() }
 }
 

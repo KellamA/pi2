@@ -20,6 +20,11 @@ public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDe
     /// Whether the page has loaded and said it is ready, since it was last loaded. A page loaded ahead (`SparePage`)
     /// says so before anyone listens, so whoever takes it reads this instead of waiting for the message.
     public private(set) var isReady = false
+    /// Whether the page is waiting to be handed over (`SparePage`): it then takes no focus.
+    var isWaiting = false
+    /// How many times the view has been taken out of a window. A page loaded ahead goes from where it waited to its pane
+    /// without leaving the window (`TranscriptPane`); pi2-transcript-check counts on this to see that it does.
+    public private(set) var timesOutOfWindow = 0
 
     private let folder: URL
     private var page: URL { folder.appendingPathComponent("index.html") }
@@ -106,6 +111,14 @@ public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDe
     }
 
     // MARK: Appearance, drops, menu
+
+    override public func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { timesOutOfWindow += 1 }
+    }
+
+    override public var acceptsFirstResponder: Bool { !isWaiting && super.acceptsFirstResponder }
+    override public var canBecomeKeyView: Bool { !isWaiting && super.canBecomeKeyView }
 
     override public func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
