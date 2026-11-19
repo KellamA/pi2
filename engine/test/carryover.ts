@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLAN_CHANGED } from "../src/carryover.ts";
 import { KeychainObjects } from "../src/credentials.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -26,6 +26,8 @@ process.env.GIT_CONFIG_NOSYSTEM = "1";
 Object.assign(process.env, { GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" });
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
+// Allow everything is turned on only from the app (#504): a stand-in takes this test's connections for it.
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-carry-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-carry-work-")));
