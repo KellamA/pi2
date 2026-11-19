@@ -1,4 +1,5 @@
 import AppKit
+import BrowserKit
 import ImageIO
 import PDFKit
 import SwiftUI
@@ -464,13 +465,10 @@ final class ComposerAttachments {
 
     /// The paperclip: pick files to attach.
     func chooseFiles() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Attach"
-        panel.message = "Choose pictures or files to send with your message."
-        if panel.runModal() == .OK { add(files: panel.urls) }
+        if let urls = FilePanels.open("attachments", selecting: .files, multiple: true, configure: { panel in
+            panel.prompt = "Attach"
+            panel.message = "Choose pictures or files to send with your message."
+        }) { add(files: urls) }
     }
 
     /// Files or pictures dropped on the conversation.

@@ -92,6 +92,9 @@ final class AppModel {
     var collapsed: Set<Int> = []
 
     init() {
+        #if PI2_DEVELOPMENT
+        TestCopyPanels.install(engine: engine)
+        #endif
         engine.onNavigate = { [weak self] id in self?.selection = .conversation(id) }
         engine.onOpenBeside = { [weak self] id, beside in self?.openBeside(id, beside: beside) }
     }

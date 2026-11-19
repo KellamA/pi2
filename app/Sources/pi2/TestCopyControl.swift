@@ -4,7 +4,7 @@ import SwiftUI
 /// Like PI2_SHOW and the file-driven performance probe, this is part of development builds only.
 /// The launch switch isn't enough: require the bundle and data folder that scripts/test-copy makes.
 @MainActor
-private struct TestCopyControl: NSViewRepresentable {
+struct TestCopyControl: NSViewRepresentable {
     let model: AppModel
     let folder: URL
 
@@ -13,7 +13,9 @@ private struct TestCopyControl: NSViewRepresentable {
     }
 
     /// The data folder of the test copy this app is, or nil when it is not one that scripts/test-copy made.
-    static func home(engine: EngineClient) -> URL? {
+    static func home(engine: EngineClient) -> URL? { location(engine: engine)?.home }
+
+    static func location(engine: EngineClient) -> (home: URL, checkout: URL)? {
         let bundle = Bundle.main
         guard DevelopmentBuild.isDevelopment,
               let suffix = ProcessInfo.processInfo.environment["PI2_TEST_COPY"], suffix != "dev",
@@ -26,7 +28,7 @@ private struct TestCopyControl: NSViewRepresentable {
         guard bundle.bundleURL.standardizedFileURL.path == expected.standardizedFileURL.path,
               engine.dataFolder.standardizedFileURL.path == own.home.standardizedFileURL.path,
               !DevelopmentBuild.isSameFolder(own.home.path, as: DevelopmentBuild.usualHome) else { return nil }
-        return own.home
+        return (own.home, checkout)
     }
 
     func makeNSView(context: Context) -> Control { Control(model: model, folder: folder) }
@@ -41,6 +43,7 @@ private struct TestCopyControl: NSViewRepresentable {
             let width: Int?
             let height: Int?
             let smallest: Bool?
+            let paths: [String]?
         }
 
         let model: AppModel
@@ -95,6 +98,9 @@ private struct TestCopyControl: NSViewRepresentable {
 
         private func apply(_ request: Request, to window: NSWindow) -> [String: String] {
             switch request.command {
+            case "choose":
+                guard let paths = request.paths else { return ["error": "missing panel answer"] }
+                return TestCopyPanels.choose(paths)
             case "show":
                 guard let id = request.id, model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
                     return ["error": "no conversation #\(request.id ?? 0) in the copy's library"]

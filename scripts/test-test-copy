@@ -73,7 +73,7 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
-for command in show size answer fill; do
+for command in show size choose answer fill; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -83,6 +83,7 @@ expect "use: scripts/test-copy size" size test-7 820
 expect "use: scripts/test-copy size" size test-7 smallest 532
 expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
+expect "use: scripts/test-copy choose" choose test-7
 for suffix in dev ../pi2 Test-7 test-7-with-a-suffix-much-too-long-for-a-socket; do
 	case $suffix in
 		dev) want="'dev' is the suffix every development build has" ;;
@@ -151,6 +152,7 @@ PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" send 
 expect "no copy named test-7 was started from this checkout" reopen test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
 expect "no copy named test-7 was started from this checkout" size test-7 smallest
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" choose test-7 cancel
 expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
 expect "no copy named test-7 was started from this checkout" fill test-7 600
 expect "no copy named test-7 was started from this checkout" stop test-7
@@ -202,6 +204,17 @@ if [[ -n $plain ]]; then
 	failures=$((failures + 1))
 else
 	echo "ok: every context menu in the app is made with .contextMenu(previewAs:)"
+fi
+
+# Every native file panel must come through the one wrapper (including panels used by WebKit).
+direct=$(grep -rn --include='*.swift' -E 'NS(Open|Save)Panel[[:space:]]*\(|\.(fileImporter|fileExporter)[[:space:]]*(\{|\()' "$sources/.." |
+	grep -v '/BrowserKit/FilePanels\.swift:' || true)
+if [[ -n $direct ]]; then
+	echo "FAIL: Open or Save panel bypasses FilePanels:"
+	echo "$direct"
+	failures=$((failures + 1))
+else
+	echo "ok: Open and Save panels go through FilePanels"
 fi
 
 out=$("$copy" status 2>&1)
@@ -298,6 +311,7 @@ HOME="$T/home" expect "has no recorded engine running" answer test-7 8 allow
 HOME="$T/home" expect "has no recorded engine running" fill test-7 600
 HOME="$T/home" expect "has no recorded app running" show test-7 8
 HOME="$T/home" expect "has no recorded app running" size test-7 smallest
+HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
 /usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$dev/Contents/Info.plist"
@@ -339,6 +353,7 @@ HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
 HOME="$T/home" expect "refusing a symlink" reopen test-7
 HOME="$T/home" expect "refusing a symlink" show test-7 8
 HOME="$T/home" expect "refusing a symlink" size test-7 820 532
+HOME="$T/home" expect "refusing a symlink" choose test-7 cancel
 HOME="$T/home" expect "refusing a symlink" answer test-7 8 allow
 HOME="$T/home" expect "refusing a symlink" fill test-7 600
 rm "$data/engine.sock"

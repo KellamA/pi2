@@ -12,7 +12,7 @@ let package = Package(
         // Seeing and working other apps' windows. Its own module so the app and the developer probe share one copy.
         .target(name: "ComputerKit", path: "Sources/ComputerKit", swiftSettings: [.swiftLanguageMode(.v5)]),
         // pi²'s own browser: loading pages, reading them and acting in them. Its own module for the same reason.
-        .target(name: "BrowserKit", path: "Sources/BrowserKit", swiftSettings: [.swiftLanguageMode(.v5)]),
+        .target(name: "BrowserKit", path: "Sources/BrowserKit", swiftSettings: [.swiftLanguageMode(.v5), .define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
         // How the conversation area is divided into panes. Its own module so pi2-layout-check can check it.
         .target(name: "PaneKit", path: "Sources/PaneKit"),
         // What Return does in a field that sends a message. Its own module so pi2-compose-check can check it.

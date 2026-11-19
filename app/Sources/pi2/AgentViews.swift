@@ -282,7 +282,7 @@ struct AgentEditor: View {
                         HStack {
                             Text(agent.cwd ?? "pi²’s scratch folder, unless chosen per conversation").foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                             Button("Choose…") {
-                                if let folder = EngineClient.pickFolder() { draft.wrappedValue.cwd = folder }
+                                if let folder = EngineClient.pickFolder("agent-folder") { draft.wrappedValue.cwd = folder }
                             }
                             if agent.cwd != nil { Button("Clear") { draft.wrappedValue.cwd = nil; draft.wrappedValue.worktree = false } }
                         }
@@ -556,7 +556,7 @@ struct CommandRulesSection: View {
                     .accessibilityLabel("Words a command starts with, for a new rule")
                     .onSubmit { add() }
                 Button(newFolder.map { "in \(engine.folderName($0))" } ?? "Choose Folder…") {
-                    if let picked = EngineClient.pickFolder() { chosenFolder = picked }
+                    if let picked = EngineClient.pickFolder("rule-folder") { chosenFolder = picked }
                 }
                 .lineLimit(1)
                 .help(newFolder.map { "The rule is for \($0). Click to choose another folder." } ?? "Choose the folder the rule is for")

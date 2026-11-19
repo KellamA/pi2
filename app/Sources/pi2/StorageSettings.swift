@@ -1,4 +1,5 @@
 import AppKit
+import BrowserKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -6,11 +7,11 @@ import UniformTypeIdentifiers
 @MainActor
 enum StorageActions {
     static func export(_ conversation: ConversationSummary, format: String, engine: EngineClient) {
-        let panel = NSSavePanel()
-        let name = conversation.title.isEmpty ? "Conversation" : conversation.title
-        panel.nameFieldStringValue = String(name.prefix(60)).replacingOccurrences(of: "/", with: "-") + (format == "json" ? ".json" : ".md")
-        panel.allowedContentTypes = [format == "json" ? .json : (UTType(filenameExtension: "md") ?? .plainText)]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FilePanels.save("conversation-export", configure: { panel in
+            let name = conversation.title.isEmpty ? "Conversation" : conversation.title
+            panel.nameFieldStringValue = String(name.prefix(60)).replacingOccurrences(of: "/", with: "-") + (format == "json" ? ".json" : ".md")
+            panel.allowedContentTypes = [format == "json" ? .json : (UTType(filenameExtension: "md") ?? .plainText)]
+        }) else { return }
         Task {
             do {
                 let result = try await engine.call("conversation.export", ["id": conversation.id, "format": format])
@@ -21,14 +22,12 @@ enum StorageActions {
         }
     }
 
-    static func chooseFolder(prompt: String, message: String) -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = prompt
-        panel.message = message
-        return panel.runModal() == .OK ? panel.url : nil
+    static func chooseFolder(_ name: String, prompt: String, message: String) -> URL? {
+        FilePanels.open(name, selecting: .folders) { panel in
+            panel.canCreateDirectories = true
+            panel.prompt = prompt
+            panel.message = message
+        }?.first
     }
 }
 
@@ -55,7 +54,7 @@ struct StorageSettings: View {
             Section {
                 Button(working ? "Working…" : "Back Up Now…") { backUp() }.disabled(working)
                 Button("Restore From Backup…") {
-                    restoreFrom = StorageActions.chooseFolder(prompt: "Restore", message: "Choose a pi2-backup folder to restore.")
+                    restoreFrom = StorageActions.chooseFolder("restore-backup", prompt: "Restore", message: "Choose a pi2-backup folder to restore.")
                 }
                 .disabled(working)
                 if let message {
@@ -79,7 +78,7 @@ struct StorageSettings: View {
     }
 
     private func backUp() {
-        guard let folder = StorageActions.chooseFolder(prompt: "Back Up Here", message: "Choose where to put the backup folder.") else { return }
+        guard let folder = StorageActions.chooseFolder("create-backup", prompt: "Back Up Here", message: "Choose where to put the backup folder.") else { return }
         working = true
         Task {
             defer { working = false }

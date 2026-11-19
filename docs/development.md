@@ -250,6 +250,9 @@ In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation 
 
 `answer test-7 <conversation-id> allow|deny` answers exactly one waiting approval in that conversation (use the sub-chat's own id). `allow` means Allow Once, with no rule saved. `fill test-7 600` prints the id of a new demo conversation with 600 synthetic entries, including long tool outputs, without running the model or commands.
 
+Before clicking a button that opens an Open or Save panel, run `scripts/test-copy choose test-7 <path>…` (or `cancel`). A successful command replaces any pending answer; the next panel uses it once, without showing. Reopening clears it, and an unarmed panel always cancels.
+Use paths in the copy’s data folder, this checkout’s `app/build`, or the conversation’s `PI2_SCRATCH` from launch. Symlinks and `..` are refused. Open needs existing items; Save can name a new file in an existing folder. Read `file-panels.jsonl` in the copy’s data folder for the panel name, selected paths or cancellation reason.
+
 After rebuilding, `scripts/test-copy reopen test-7 --show "$CHAT"` installs the latest development app from this checkout, keeping the copy's engine and data. Without `--show`, it keeps the previous launch selection (not the last `show` command); it also keeps `--menu` and the demo environment. A failed relaunch leaves the data for retry or `stop`. Rebuild and start a fresh copy to pick up engine changes, including `fill` if the engine predates it.
 
 `start --env NAME=VALUE` gives a copy an explicit demo switch without inheriting the caller's environment. For example (no provider needed):
