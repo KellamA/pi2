@@ -1,5 +1,6 @@
 import AppKit
 import ComputerKit
+import FileLinkKit
 import SwiftUI
 import WebKit
 
@@ -58,7 +59,7 @@ struct ConversationTranscript: View {
         }
         return TranscriptFeed.Names(
             conversationId: conversationID, agentName: engine.agent(state?.agent.agentId)?.name ?? "",
-            mcp: mcp, agents: agents, apps: apps
+            mcp: mcp, agents: agents, apps: apps, folder: state?.agent.cwd?.hasPrefix("/") == true
         )
     }
 }
@@ -300,7 +301,81 @@ final class TranscriptBridge {
                 if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
                 try FileManager.default.copyItem(at: file, to: url)
             }
+        case .showFile(let target):
+            guard let path = filePath(target) else { return }
+            showFile(path)
+        case .fileMenu(let target, let code):
+            view?.fileMenuItems = nil
+            guard let target, let path = filePath(target) else { return }
+            fileMenu(path, code: code)
         }
+    }
+
+    // MARK: Files on this Mac (#451)
+
+    /// The absolute path a file link names: relative ones in this conversation's folder.
+    private func filePath(_ target: String) -> String? {
+        FileLink.path(of: target, folder: state?.agent.cwd, home: NSHomeDirectory())
+    }
+
+    /// Shows the file in Finder, selected in its folder, or opens the folder; or says in the page that it is not there.
+    /// The path is made whole first. In a test copy, writes down what it would have shown instead.
+    private func showFile(_ path: String) {
+        let resolution = FileLink.resolve(path)
+        switch FileLink.show(resolution, home: NSHomeDirectory()) {
+        case .reveal(let whole):
+            if record("show", whole) { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: whole)])
+        case .openFolder(let whole):
+            if record("showFolder", whole) { return }
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: whole)
+        case .notice(let text):
+            _ = record("notice", resolution.path, ["notice": text])
+            sendNotice(text)
+        }
+    }
+
+    /// Gives the view the items for the menu it is about to show. Each looks at the file again when chosen, since it may
+    /// have changed while the menu was open.
+    private func fileMenu(_ path: String, code: Bool) {
+        let items = FileLink.menu(FileLink.resolve(path), code: code)
+        _ = record("menu", path, ["items": items.map(\.rawValue)], act: false)
+        guard !items.isEmpty else { return }
+        view?.fileMenuItems = (items.map { item in (item.rawValue, { [weak self] in self?.choose(item, path) }) }, Date())
+    }
+
+    private func choose(_ item: FileLink.MenuItem, _ path: String) {
+        switch item {
+        case .showInFinder:
+            showFile(path)
+        case .open:
+            let resolution = FileLink.resolve(path)
+            guard case .found(let whole, let kind) = resolution else {
+                if let text = FileLink.notice(resolution, home: NSHomeDirectory()) { sendNotice(text) }
+                return
+            }
+            guard FileLink.mayOpen(whole, kind: kind), !record("open", whole) else { return }
+            NSWorkspace.shared.open(URL(fileURLWithPath: whole))
+        case .copyPath:
+            let whole = FileLink.resolve(path).path
+            if record("copyPath", whole) { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(whole, forType: .string)
+        }
+    }
+
+    /// In a test copy, writes down what a file link did or would have done, and says whether that stands in for doing
+    /// it: a test copy never puts a Finder window or another app on the person's screen, nor changes their pasteboard.
+    private func record(_ action: String, _ path: String, _ more: [String: Any] = [:], act: Bool = true) -> Bool {
+        guard let file = TestCopyRecord.fileLinks(engine: engine) else { return false }
+        TestCopyRecord.append(more.merging(["action": action, "path": path, "conversation": conversationID]) { $1 }, to: file)
+        return act
+    }
+
+    /// A short line at the foot of the page.
+    private func sendNotice(_ text: String) {
+        guard let json = try? JSONSerialization.data(withJSONObject: ["notice": text]), let message = String(data: json, encoding: .utf8) else { return }
+        send(message)
     }
 
     /// The document a `write_document` call of this conversation wrote, as its result names it, if it is still there.

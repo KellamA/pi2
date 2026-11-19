@@ -36,6 +36,8 @@ struct TranscriptFeed {
         var agents: [Agent]
         /// Bundle ID to app name, for the apps computer-use calls in this transcript name.
         var apps: [String: String]
+        /// Whether the conversation has a folder, in which a relative link in an answer names a file (#451).
+        var folder = false
     }
 
     /// A model Try Again can use, as the model selector lists it.

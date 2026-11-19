@@ -51,7 +51,7 @@
 	let live = { busy: false, partial: null, tools: new Map(), retrying: false, setup: null };
 	let liveRevision = 0;
 	let inbox = new Map();
-	let names = { conversationId: 0, agentName: "", mcp: {}, agents: [], apps: {} };
+	let names = { conversationId: 0, agentName: "", mcp: {}, agents: [], apps: {}, folder: false };
 	let namesRevision = 0;
 	/** Rows the person opened or closed, by key; rows they never touched follow their default. */
 	const opened = new Map();
@@ -179,6 +179,7 @@
 				mcp: isObject(n.mcp) ? n.mcp : {},
 				agents: Array.isArray(n.agents) ? n.agents.filter(isObject) : [],
 				apps: isObject(n.apps) ? n.apps : {},
+				folder: n.folder === true,
 			};
 			namesRevision = ++revision;
 		}
@@ -189,6 +190,7 @@
 		}
 		if (isObject(message.palette)) applyPalette(message.palette);
 		if (isObject(message.image)) receivePicture(message.image);
+		if (typeof message.notice === "string") showNotice(message.notice);
 
 		if (follow) pinned = true;
 		schedule();
@@ -865,9 +867,9 @@
 		if (text !== "") {
 			parts.push({
 				key: "text",
-				sig: "t" + rev(item),
+				sig: "t" + rev(item) + markdownTag(),
 				build: () => el("div", "md" + (interrupted ? " dim" : "")),
-				update: (box) => MD.patch(document, box, text),
+				update: (box) => MD.patch(document, box, text, markdownOptions()),
 			});
 		}
 		if (str(item.error) !== "") parts.push({ key: "error", sig: item.error, build: () => el("div", "error-text", item.error) });
@@ -1000,6 +1002,13 @@
 		if (event.key === "Escape") closeMenu();
 	});
 
+	/**
+	 * How the conversation's own Markdown is drawn: a relative link names a file only when the conversation has a folder
+	 * to find it in (#451). A hand-off's answer leaves these out, as its sub-chat may work in another folder.
+	 */
+	const markdownOptions = () => ({ folder: names.folder });
+	const markdownTag = () => (names.folder ? "/f" : "");
+
 	function noteRow(tone, text, glyphName) {
 		const note = el("div", "note " + tone);
 		if (glyphName) note.appendChild(glyph(glyphName));
@@ -1017,12 +1026,12 @@
 		if (partial.text !== "") {
 			parts.push({
 				key: "text",
-				sig: "t" + liveRevision,
+				sig: "t" + liveRevision + markdownTag(),
 				build: () => el("div", "md"),
 				update: (box) => {
 					const caret = box.querySelector(".caret");
 					if (caret) caret.remove();
-					MD.patch(document, box, partial.text);
+					MD.patch(document, box, partial.text, markdownOptions());
 					if (partial.toolCalls.length === 0) placeCaret(box);
 				},
 			});
@@ -1072,7 +1081,7 @@
 	function thinkingSpec(key, text, streaming, version) {
 		return {
 			key: "thinking",
-			sig: key + "/" + version + "/" + (streaming ? 1 : 0),
+			sig: key + "/" + version + "/" + (streaming ? 1 : 0) + markdownTag(),
 			build: () => {
 				const row = el("div", "thinking");
 				const head = el("div", "row-head thinking-head");
@@ -1100,7 +1109,7 @@
 					row.classList.toggle("open", value);
 					body.hidden = !value;
 					toggle.setAttribute("aria-expanded", String(value));
-					if (value) MD.patch(document, body, text);
+					if (value) MD.patch(document, body, text, markdownOptions());
 				};
 				apply(open);
 				head.onclick = (event) => {
@@ -1881,6 +1890,13 @@
 
 	document.addEventListener("click", (event) => {
 		const target = event.target instanceof Element ? event.target : null;
+		// A file on this Mac: the app makes the path whole and shows it in Finder, or says it is gone (#451).
+		const file = target && MD.fileUnder(target);
+		if (file && !file.code) {
+			event.preventDefault();
+			post({ type: "showFile", path: file.path });
+			return;
+		}
 		const link = target && target.closest("a[href]");
 		if (link) {
 			event.preventDefault();
@@ -1908,8 +1924,40 @@
 	});
 	// Middle clicks and the like on a link do nothing here; the app opens links only through the click above.
 	document.addEventListener("auxclick", (event) => {
-		if (event.target instanceof Element && event.target.closest("a[href]")) event.preventDefault();
+		if (event.target instanceof Element && event.target.closest("a[href], a[data-file]")) event.preventDefault();
 	});
+
+	// A file link has no address, so Return on it is the page's to handle, as a click.
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Enter" || !(event.target instanceof Element) || !event.target.matches("a[data-file]")) return;
+		const file = MD.fileUnder(event.target);
+		if (!file) return;
+		event.preventDefault();
+		post({ type: "showFile", path: file.path });
+	});
+
+	// The app adds Show in Finder, Open and Copy Path to the menu WebKit is about to show, for the file under the pointer:
+	// a file link, or a path written as code. Every right-click says what it was on, so a menu over anything else never
+	// takes the items meant for an earlier one.
+	document.addEventListener("contextmenu", (event) => {
+		const file = event.target instanceof Node ? MD.fileUnder(event.target) : null;
+		post(file ? { type: "fileMenu", path: file.path, code: file.code } : { type: "fileMenu" });
+	});
+
+	// MARK: - Notices
+
+	const notice = document.getElementById("notice");
+	let noticeTimer = 0;
+
+	/** A short line from the app at the foot of the page, such as a file that is no longer there; it goes by itself. */
+	function showNotice(text) {
+		if (!notice) return;
+		clearTimeout(noticeTimer);
+		notice.textContent = text.slice(0, 600);
+		notice.hidden = text.trim() === "";
+		if (!notice.hidden) noticeTimer = setTimeout(() => (notice.hidden = true), 6000);
+	}
+	if (notice) notice.addEventListener("click", () => showNotice(""));
 	document.addEventListener("dragstart", (event) => {
 		if (event.target instanceof Element && event.target.closest("img")) event.preventDefault();
 	});

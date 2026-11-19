@@ -578,6 +578,13 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	text-decoration: underline;
 }
 
+/* A file on this Mac (#451): shown in Finder on a click. */
+.md a.file-link:focus-visible {
+	outline: 2px solid var(--acc);
+	outline-offset: 1px;
+	border-radius: 3px;
+}
+
 .md a.image-link::before {
 	content: "Picture: ";
 	color: var(--tx3);
@@ -1647,6 +1654,35 @@ pre.card-diff {
 
 #jump:hover {
 	background: var(--card2);
+}
+
+/* MARK: - Notices */
+
+#notice {
+	position: fixed;
+	left: 50%;
+	bottom: 14px;
+	transform: translateX(-50%);
+	max-width: min(560px, calc(100% - 40px));
+	padding: 6px 13px;
+	border: 1px solid var(--line2);
+	border-radius: 10px;
+	background: var(--panel);
+	color: var(--tx);
+	font-size: 12px;
+	line-height: 1.4;
+	overflow-wrap: anywhere;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+	cursor: default;
+}
+
+#notice[hidden] {
+	display: none;
+}
+
+/* Above Jump to latest while that shows. */
+#jump:not([hidden]) ~ #notice {
+	bottom: 50px;
 }
 
 @media (prefers-reduced-motion: reduce) {

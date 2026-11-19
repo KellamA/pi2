@@ -2516,6 +2516,7 @@ try {
 	{
 		// order (engine/src/order.ts): the calls of one answer run in order when one of them changes files (#145, #129)
 		const { order, ORDER_NOTE } = await import("../src/order.ts");
+		const { FILE_LINK_NOTE } = await import("../src/plan.ts");
 		const wraps = new Map((order(undefined as never, undefined as never).wraps ?? []).flatMap((wrap) => ("tool" in wrap ? [[wrap.tool, wrap.wrap] as const] : [])));
 		const wrapped = (name: string) => wraps.get(name)?.({ name, description: "Its own words." } as never) as { executionMode?: string; description: string } | undefined;
 		for (const name of ["bash", "write", "edit", "write_document", "codemode", "sub_chats"]) assert.deepEqual(wrapped(name), { name, description: "Its own words.", executionMode: "sequential" });
@@ -2562,7 +2563,7 @@ try {
 		await client.call("submit", { id: o, text: "/system task_list" });
 		await client.until("the prompt's task_list section", () => !client.conversations.get(o)!.state.busy && answers() > before);
 		const prompt = client.conversations.get(o)!.items.findLast((item) => item.kind === "assistant")!.text;
-		assert.ok(prompt.includes(`<<task_list>>\n<task_list>\nUse update_plan`) && prompt.includes(`\n${ORDER_NOTE}\n</task_list>`), prompt);
+		assert.ok(prompt.includes(`<<task_list>>\n<task_list>\nUse update_plan`) && prompt.includes(`\n${ORDER_NOTE}\n${FILE_LINK_NOTE}\n</task_list>`), prompt);
 
 		// A background command started after a call that writes, or changes, the script it runs.
 		const ranInBackground = async (result: Item) => {

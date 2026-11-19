@@ -22,9 +22,12 @@ let package = Package(
         // A window's smallest size, fixed rather than worked out from its content (#400), and the watch on the app's
         // scene body (#436). Its own module so pi2-window-check can check them.
         .target(name: "WindowKit", path: "Sources/WindowKit"),
+        // What a file linked in a conversation is once its path is made whole, and what a click and its menu do (#451).
+        // Its own module so pi2-file-link-check can check it.
+        .target(name: "FileLinkKit", path: "Sources/FileLinkKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "WindowKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "WindowKit", "FileLinkKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
             // inspector (docs/development.md). On in a debug build, and in an optimised development build, which
@@ -47,5 +50,7 @@ let package = Package(
         // windows of its own.
         .executableTarget(name: "pi2-window-check", dependencies: ["WindowKit"], path: "Sources/pi2-window-check"),
         .executableTarget(name: "pi2-login-item-check", dependencies: ["LoginItemKit"], path: "Sources/pi2-login-item-check"),
+        // Checks FileLinkKit against files it makes in a temporary folder of its own. Shows nothing in Finder.
+        .executableTarget(name: "pi2-file-link-check", dependencies: ["FileLinkKit"], path: "Sources/pi2-file-link-check"),
     ]
 )

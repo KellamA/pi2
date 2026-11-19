@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { dueForArchive } from "../src/archive.ts";
 import { CHAT_TOOLS } from "../src/builtins.ts";
 import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
+import { FILE_LINK_NOTE } from "../src/plan.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-chat-"));
@@ -128,6 +129,8 @@ try {
 	const section = await client.answer(chat, "/system chat");
 	assert.match(section, /chat assistant of pi²/);
 	assert.match(section, /no folder/);
+	// How to link a file it wrote, as an agent is told (#451).
+	assert.ok(seen.sections.includes("task_list") && (await client.answer(chat, "/system task_list")).includes(FILE_LINK_NOTE), "a chat is told how to link a file");
 	const agentSeen = await client.offered(plain);
 	assert.ok(!agentSeen.sections.includes("chat"), "an agent's conversation has no chat section");
 	step("a chat is offered the web and documents, and nothing that works the Mac");

@@ -171,3 +171,7 @@ jobs:
       - name: Check engine login item decisions
         working-directory: app
         run: .build/debug/pi2-login-item-check
+      # What a click on a link to a file in a conversation does (#451), in a temporary folder: shows nothing in Finder.
+      - name: Check file links
+        working-directory: app
+        run: .build/debug/pi2-file-link-check

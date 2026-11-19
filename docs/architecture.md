@@ -39,6 +39,8 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/pi2-compose-check   checks ComposeKit, with a real text field in a window of its own; not part of the app
           Sources/WindowKit     a window's smallest size, worked out without measuring its content, and a watch for a size that does not settle
           Sources/pi2-window-check    checks WindowKit, in windows of its own that never come on screen; not part of the app
+          Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
+          Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
 ```
@@ -402,7 +404,7 @@ The sections, in the order they are declared:
 | `browser` | `extensions.ts` | the `browser` tool is offered (the browser on) | Comes and goes with the agent's settings |
 | `reference_files` | `extensions.ts` | the agent has reference files | Comes and goes with the agent's settings |
 | `agents` | `extensions.ts` | the conversation can hand work to another agent (not in a sub-chat) | Comes and goes with the agent's settings and as agents are added or deleted |
-| `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, and how the calls of one answer run | Steady; changes in place when the agent's settings leave `update_plan` out or bring it back, keeping the second part |
+| `task_list` | `plan.ts` | the conversation has any tools: `update_plan`, how the calls of one answer run, and how to link a file for the person to look at (#451) | Steady; changes in place when the agent's settings leave `update_plan` out or bring it back, keeping the other two parts |
 | `project_instructions` | `knowledge.ts` | the conversation's folder has an instructions file (`CLAUDE.md`, `AGENTS.md`) | Comes and goes as the folder changes (moving into a worktree, the person choosing another) and as the file comes and goes; changes in place as it is edited |
 | `memory` | `knowledge.ts` | memory is on for the agent, or for chats in a chat ([knowledge.md](knowledge.md#chat-modes-memory)) | Comes and goes with the agent's settings, or chat mode's; in a chat, changes in place as its notes change and as agents with notes come and go |
 | `look_web` | `look.ts` | `web_fetch` is offered (the browser on, and reading the web not left out; in a chat, its web switch on) | Comes and goes with the agent's settings, or a chat's web switch |
