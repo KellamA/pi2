@@ -7,7 +7,7 @@ import { isPutAway } from "./archive.ts";
 import { startedWords, titleOf } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { addNews, admit, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
-import { Agents, type Access, type AgentProfile, Library, type Meta } from "./state.ts";
+import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
 import { subChatFolder } from "./worktrees.ts";
 
@@ -207,11 +207,6 @@ type Runner = (tx: Tx, project: Project, item: WorkItem) => Promise<NonNullable<
 type Call = { api: ToolExecutionApi; context: Context };
 type Write = { call?: Call; launch?: Runner; confirmedSwitch?: SwitchName };
 
-/** #457 owns runsAs. Until it lands, the caller is the conversation's agentId. */
-function workerOf(meta: Meta | undefined): string | undefined {
-	return meta?.agentId;
-}
-
 function offersWork(project: Project | undefined, id?: number): boolean {
 	return project !== undefined && project.archivedAt === undefined && project.deletedAt === undefined && (id === undefined || !project.earlier.includes(id));
 }
@@ -249,7 +244,8 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 				const current = liveProject((await tx.doc(Projects)).projects[project.id], project.id, true);
 				if (current.repository !== null) throw new Error("The project's work list changed. Look at it again.");
 				const meta = by.kind === "agent" ? (await tx.doc(Library)).conversations[String(by.conversationId)] : undefined;
-				if (by.kind === "agent" && (meta?.projectId !== current.id || isPutAway(meta) || workerOf(meta) !== by.agentId || current.earlier.includes(by.conversationId))) {
+				const agents = (await tx.doc(Agents)).agents;
+				if (by.kind === "agent" && (meta?.projectId !== current.id || isPutAway(meta) || runsAs(meta, agents) !== by.agentId || current.earlier.includes(by.conversationId))) {
 					throw new Error("Use work from a current conversation in this project.");
 				}
 				actor(current, by, action, meta?.access);
@@ -257,7 +253,6 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 				if (by.kind === "agent" && gate !== undefined && !current.settings.withoutAsking[gate] && confirmedSwitch !== gate) {
 					throw new Error("The project's permission changed. Ask the person before trying again.");
 				}
-				const agents = (await tx.doc(Agents)).agents;
 				if (by.kind === "agent" && (agents[by.agentId] === undefined || agents[by.agentId]?.removedAt !== undefined)) throw new Error(`Unknown agent: ${by.agentId}`);
 				const doc = await tx.doc(Work);
 				if (doc.projects[project.id] === undefined) doc.projects[project.id] = { items: {}, next: 1 };
@@ -412,7 +407,7 @@ export const work: Feature = (host, engine) => {
 				const number = api.conversationId as unknown as number;
 				const meta = host.meta(api.conversationId);
 				const project = inProject(number);
-				const agentId = workerOf(meta);
+				const agentId = runsAs(meta, engine.agents());
 				const receipt = await api.snapshot(WorkCall, api.taskId, context);
 				let item = receipt?.call === api.callId ? receipt.item : null;
 				if (item === null) {

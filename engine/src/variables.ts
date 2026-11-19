@@ -21,7 +21,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { KeychainObjects } from "./credentials.ts";
 import type { Engine, Feature } from "./features.ts";
-import { type AgentProfile, type AgentVariable, Agents } from "./state.ts";
+import { type AgentProfile, type AgentVariable, Agents, agentOf as conversationAgent, type Meta } from "./state.ts";
 
 /** At most this many variables an agent, or an MCP server. */
 export const MAX_VARIABLES = 50;
@@ -124,7 +124,7 @@ export class VariableValues {
 	}
 }
 
-let running: { values(agent: AgentProfile): Promise<Record<string, string>>; meta(id: number): { agentId?: string } | undefined; agents(): Record<string, AgentProfile> } | undefined;
+let running: { values(agent: AgentProfile): Promise<Record<string, string>>; meta(id: number): Meta | undefined; agents(): Record<string, AgentProfile> } | undefined;
 
 /**
  * What a command of conversation `id` adds to its environment: the variables of the conversation's own agent that have
@@ -133,7 +133,7 @@ let running: { values(agent: AgentProfile): Promise<Record<string, string>>; met
  */
 export async function agentVariables(id: number): Promise<Record<string, string>> {
 	if (running === undefined) return {};
-	const agent = running.agents()[running.meta(id)?.agentId ?? ""];
+	const agent = conversationAgent(running.meta(id), running.agents());
 	if (agent === undefined || !(agent.variables ?? []).some((variable) => variable.set)) return {};
 	try {
 		return await running.values(agent);

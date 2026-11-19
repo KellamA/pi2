@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Host } from "../src/extensions.ts";
 import { type Engine, FEATURES } from "../src/features.ts";
+import { addRule, projectRules, type ProjectRulesDoc, projectRulesPrompt } from "../src/projectrules.ts";
 import {
 	addNews,
 	admit,
@@ -22,6 +23,7 @@ import {
 	projectOf,
 	projects,
 	projectsOn,
+	Projects,
 	requireSwitch,
 	ruleTokens,
 	type Start,
@@ -34,9 +36,22 @@ function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
 
-// Its place in FEATURES: before the greetings that build on it (4.4).
-assert.ok(FEATURES.includes(projects) && FEATURES.indexOf(work) > FEATURES.indexOf(projects));
-step("the projects greeting comes before the work greeting");
+// Its place in FEATURES: last of today's features, with the places after it for the others (4.4), which each later
+// issue fills with its own feature: only the epic's features come after it.
+const epic = ["projects", "projectRules", "needs", "reports", "work", "github"];
+assert.ok(FEATURES.includes(projects));
+assert.deepEqual(
+	FEATURES.slice(FEATURES.indexOf(projects)).map((feature) => feature.name).filter((name) => !epic.includes(name)),
+	[],
+);
+step("the projects feature is last of today's features in FEATURES, where the others' places follow it");
+
+// The rules' greeting follows projects (4.4), independently of their section's place (6.1).
+assert.equal(FEATURES[FEATURES.indexOf(projects) + 1], projectRules);
+assert.ok(FEATURES.indexOf(projectRulesPrompt) < FEATURES.indexOf(projects));
+step("the rules feature follows projects in the greetings; its prompt has a separate place");
+assert.ok(FEATURES.indexOf(work) > FEATURES.indexOf(projectRules));
+step("the work greeting follows the project and rule greetings");
 
 const project = (id: string, extra: Partial<Project> = {}): Project => ({
 	id,
@@ -122,7 +137,7 @@ assert.deepEqual(await onPreviewOn("any plan"), { plan: null, projects: [], left
 assert.equal(carryOverState(), null);
 assert.deepEqual(ruleTokens("p1"), { orchestrator: 0, agents: 0 });
 assert.equal(lastWords("p1"), null);
-step("until #458 onPreviewOn carries nothing over and carryOver is null; ruleTokens zeros until #459; lastWords null until #466");
+step("until #458 onPreviewOn carries nothing over and carryOver is null; ruleTokens zeros without rules; lastWords null until #466");
 
 const start: Start = { by: { kind: "agent", agentId: "a", conversationId: 1 }, agentId: "b", agentName: "B", kind: "new", parent: 1, chat: null, work: null, title: null, task: "Do it", options: {} };
 assert.deepEqual(admit(start), { ok: true });
@@ -174,3 +189,17 @@ assert.equal(doc.nextNews, 4);
 await assert.rejects(addNews(tx, "p9", { kind: "work", text: "x", ref: "1" }), { message: "Unknown project: p9" });
 assert.equal(doc.nextNews, 4);
 step("addNews stores news by project, oldest first, each with an id of its own; #466 delivers it");
+
+// #465 will supply attribution and call addRule in its own commit. There is no proposal handler yet.
+const rulesDoc: ProjectRulesDoc = { projects: {} };
+const rulesTx = { doc: async (token: unknown) => token === Projects ? doc : rulesDoc } as never;
+const addedBy = { kind: "proposal", agentId: "a", conversationId: 1, need: "n1" } as const;
+const add = (id: string) => addRule(rulesTx, id, { text: " Keep this. ", binds: "everyone", addedBy });
+await assert.rejects(add("p1"), { message: PREVIEW_OFF });
+assert.deepEqual(rulesDoc, { projects: {} });
+await handlers["projects.setPreview"]!({ on: true });
+const rule = await add("p1");
+assert.deepEqual(rule, { id: "r1", text: "Keep this.", binds: "everyone", addedBy, createdAt: rule.createdAt, updatedAt: rule.createdAt });
+assert.deepEqual(rulesDoc.projects.p1, { rules: [rule], next: 2 });
+assert.equal(projectRules(host, engine).handlers?.["projects.rules.propose"], undefined);
+step("addRule appends in the caller's transaction and retains attribution; #465 owns proposal handling");
