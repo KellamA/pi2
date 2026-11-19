@@ -7,17 +7,15 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type ProviderLimits } from "../src/limits.ts";
 import { GONE } from "../src/needs.ts";
-import { type LimitReading, PREVIEW_OFF } from "../src/projects.ts";
+import { defaultProjectSettings, type LimitReading, PREVIEW_OFF } from "../src/projects.ts";
 import { conversationSpend } from "../src/projectspend.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-pl-"));
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 const feature = pathToFileURL(join(import.meta.dirname, "..", "src", "features.ts")).href;
 const reading = join(home, "stand-in.json");
-const bundle = join(home, "Stand-in.app");
-mkdirSync(join(bundle, "Contents", "MacOS"), { recursive: true });
-writeFileSync(join(bundle, "Contents", "MacOS", "pi2-peer"), `#!/bin/sh\necho '{"app":true,"why":"test stand-in"}'\n`, { mode: 0o700 });
+const bundle = standInApp();
 const setup = `import { readFileSync } from 'node:fs';
 import { FEATURES } from ${JSON.stringify(feature)};
 const index = FEATURES.findIndex(f => f.name === 'limits');
@@ -92,6 +90,7 @@ try {
 	const { id: project, conversation: root } = await c.call("projects.create", { folder: repo });
 	const row = (await c.call("projects.list")).projects.find((row: any) => row.id === project);
 	assert.deepEqual(row.settings.limits, { planShare: 90, dailySpend: null });
+	assert.deepEqual(defaultProjectSettings("carried").limits, { planShare: null, dailySpend: null });
 	await c.call("conversation.open", { id: root });
 	await c.call("conversation.configure", { id: root, model: demo });
 	const worker = cid(await c.call("projects.addAgent", { projectId: project, agent: { name: "Worker", model: demo, access: "ask" } }));
