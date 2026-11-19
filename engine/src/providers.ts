@@ -1,7 +1,9 @@
 // Model access: every built-in pi-ai provider, the user's own endpoints, and a scripted demo model.
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as pause } from "node:timers/promises";
 import {
 	type AnyModel,
 	type Api,
@@ -348,6 +350,22 @@ function demoPrompt(last: DemoMessage | undefined): string {
 	return (typeof last?.content === "string" ? last.content : textOf(blocks.filter((block) => !isAttached(block)))).trim();
 }
 
+/** Tests hold the demo summary at an explicitly opened gate, not for a fixed time. */
+async function demoSummary(gate: string, prompt: string, signal?: AbortSignal) {
+	const readGate = () => readFile(gate, "utf8").catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "ENOENT") throw error;
+		return undefined;
+	});
+	const outcome = await readGate();
+	if (outcome !== undefined) {
+		await writeFile(`${gate}.started`, prompt);
+		while ((await readGate()) !== undefined) await pause(50, undefined, { signal });
+	}
+	return outcome === "fail"
+		? fauxAssistantMessage("", { stopReason: "error", errorMessage: "The demo summarizer refused the request." })
+		: fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.");
+}
+
 /** A scripted stand-in model so the app works before any provider is connected. `/bash` and `/read` make it call tools. */
 function demoProvider(): Provider {
 	// Tests add a second demo model that cannot see images, to check what such a model is given.
@@ -360,11 +378,14 @@ function demoProvider(): Provider {
 	const speed = Number(process.env.PI2_DEMO_TOKENS_PER_SECOND);
 	const slow = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: READABLE });
 	const fast = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: Number.isFinite(speed) && speed > 0 ? speed : READABLE });
-	const step = (request: { messages: readonly unknown[] }) => {
+	const gate = process.env.PI2_DEMO_COMPACTION_GATE;
+	const step = (request: { messages: readonly unknown[] }, options?: { signal?: AbortSignal }) => {
 		const last = demoLast(request.messages);
-		// Asked to summarize a conversation for compaction: a long one can be compacted, and echoing the whole of it back
-		// at a readable pace would hold the run for many minutes.
-		if (demoPrompt(last).startsWith("<conversation>\n")) return fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.");
+		// A long conversation can be compacted; don't echo the whole source back.
+		const summaryPrompt = demoPrompt(last);
+		if (summaryPrompt.startsWith("<conversation>\n")) return gate === undefined
+			? fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.")
+			: demoSummary(gate, summaryPrompt, options?.signal);
 		const work = demoWork(request.messages);
 		if (work !== undefined && (last?.role === "user" || last?.role === "toolResult")) {
 			if (work.done >= work.steps) return fauxAssistantMessage(`Done: I ran it ${work.done} time${work.done === 1 ? "" : "s"}.`);
@@ -385,6 +406,7 @@ function demoProvider(): Provider {
 		// what a woken agent does, by what a command prints or a sub-chat answers.
 		const woken = typed.startsWith("[pi² woke you") ? typed.split("\n").find((line) => line.startsWith("/"))?.trim() : undefined;
 		const prompt = woken ?? (typed.startsWith("/slow ") ? typed.slice(6).trim() : typed);
+		if (gate !== undefined && prompt.startsWith("/compaction-history ")) return fauxAssistantMessage("History recorded.");
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}
@@ -485,13 +507,14 @@ function demoProvider(): Provider {
 		if (prompt.startsWith("/read ")) {
 			return fauxAssistantMessage([fauxText("Reading that file."), fauxToolCall("read", { path: prompt.slice(6).trim() })], { stopReason: "toolUse" });
 		}
-		if (prompt === "/context") {
+		if (prompt === "/context" || (gate !== undefined && prompt === "/compaction-context")) {
 			// What the person said in the conversation as the model was sent it, one message a line, and how many answers
 			// came between: so a test can see which version of a chat a request saw (versions.ts).
 			const said = (request.messages as readonly DemoMessage[]).flatMap((message) =>
 				message.role === "user" ? [demoPrompt(message)] : message.role === "assistant" ? ["(answer)"] : [],
 			);
-			return fauxAssistantMessage(`CONTEXT\n${said.join("\n")}`);
+			const shown = prompt === "/compaction-context" ? said.filter((line) => !line.startsWith("/compaction-history ")) : said;
+			return fauxAssistantMessage(`CONTEXT\n${shown.join("\n")}`);
 		}
 		// Says what came with the message, so it is visible that attachments reach the model.
 		const pictures = blocks.filter((block) => block?.type === "image").length;

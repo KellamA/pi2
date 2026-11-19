@@ -79,6 +79,13 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 		offByDefault: true,
 	},
 	{
+		key: "compact",
+		tools: ["compact"],
+		title: "Summarize its own conversation",
+		detail: "Asks pi² to summarize earlier messages after its current step, with a note about what to keep.",
+		offByDefault: true,
+	},
+	{
 		key: "code",
 		tools: ["run_code"],
 		title: "Work things out with code",

@@ -40,6 +40,7 @@ import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validate
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
 import { chatHandover, handoverAttachments } from "./handover.ts";
 import { codemodeExtension } from "./codemode.ts";
+import { compactionCheckpoint, type CompactionMarker, compactionMarker, earlyCompaction, RETENTION_INSTRUCTIONS, validateCompactionTokens } from "./compaction.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
@@ -219,8 +220,12 @@ const host: Host = {
 		await takeSwitch(conv.id);
 		await syncTools(conv).catch(() => {});
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
-		await editMeta(conv.id, (meta) => void (meta.updatedAt = Date.now()));
-		return submission.id as unknown as number;
+		await editMeta(conv.id, (meta) => {
+			meta.updatedAt = Date.now();
+			// The same call may replay after restart; keep the newest handoff.
+			meta.subChatTask = Math.max(meta.subChatTask ?? 0, submission.id as number);
+		});
+		return submission.id as number;
 	},
 	conversations: () => library.conversations,
 	working: (id) => working.has(id),
@@ -362,6 +367,15 @@ const harness = await Harness.open(
 		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
 		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
 		settings: {
+			compaction: {
+				early: (id: ConversationId, window: number, policy: import("@earendil-works/pi-durable").CompactionPolicy) => {
+					const meta = library.conversations[String(id)];
+					if (meta === undefined || isChat(meta)) return undefined;
+					return earlyCompaction(agents[meta.agentId ?? ""]?.compactionTokens ?? settings.defaultCompactionTokens, window, policy);
+				},
+				instructions: RETENTION_INSTRUCTIONS,
+				checkpoint: compactionCheckpoint,
+			} as import("@earendil-works/pi-durable").CompactionSettings,
 			retry: {
 				host: (message: never, attempt: number, id: unknown) => {
 					const feature = host.features.find((candidate) => candidate.retry !== undefined);
@@ -386,6 +400,7 @@ const settings: {
 	deviceId?: string;
 	hiddenModels?: Record<string, string[]>;
 	autoArchiveDays?: number | null;
+	defaultCompactionTokens?: number | null;
 	/** Chat mode's settings (chat.ts); read through `chatSettings`, which gives the defaults for what is missing. */
 	chat?: ChatSettings;
 	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
@@ -398,6 +413,7 @@ const settings: {
 	}
 })();
 const saveSettings = () => writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"));
+const compactionSettingsEvent = () => ({ event: "compactionSettings", defaultCompactionTokens: settings.defaultCompactionTokens ?? null });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
 function deviceId(): string {
@@ -508,6 +524,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
 		toolsOn: input.toolsOn === undefined ? (previous?.toolsOn ?? []) : validateToolsOn(input.toolsOn),
+		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens),
 		createdAt: previous?.createdAt ?? Date.now(),
 	};
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
@@ -597,7 +614,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string } } }
+	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string }; compaction?: CompactionMarker } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -621,7 +638,7 @@ function detailsOf(entry: EntryRecord): unknown {
 function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
-	if (entry.kind === "pi.compaction") return { id, kind: "marker", text: "Earlier messages were summarized" };
+	if (entry.kind === "pi.compaction") return { id, kind: "marker", ...compactionMarker(entry) };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
 	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
@@ -663,6 +680,7 @@ type LiveDocShape = {
 	runFailure?: { reason: string; detail?: string };
 	compactions?: unknown[];
 	compactionFailure?: { error?: string };
+	lastRequestInputTokens?: number;
 };
 
 type UsageJson = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number; cost?: { total?: number } };
@@ -707,9 +725,10 @@ function contextOf(view: ConversationView, model: ModelRef | undefined) {
 		if (entry.kind === "pi.reset") break;
 		const usage = (entry.model?.[0] as { role?: string; usage?: UsageJson } | undefined)?.usage;
 		if (usage === undefined) continue;
-		return { used: (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0), window: window ?? null };
+		const input = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+		return { used: input + (usage.output ?? 0), window: window ?? null, input };
 	}
-	return { used: 0, window: window ?? null };
+	return { used: 0, window: window ?? null, input: null };
 }
 
 /**
@@ -737,6 +756,7 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 	const agent = (view.docs["pi.agent"] ?? {}) as { model?: ModelRef; thinkingLevel?: string; cwd?: string };
 	const inbox = (view.docs["pi.inbox"] ?? {}) as { items?: { id: number; mode: string; content?: unknown; entry?: { kind?: unknown; data?: unknown } }[] };
 	const partial = live.generation?.message;
+	const { input, ...contextSize } = contextOf(view, agent.model);
 	const id = view.conversation.id as unknown as number;
 	/** A command running in the foreground: when it started and last printed, for the clock on its row (running.ts). */
 	const clock = (callId: string) => {
@@ -751,7 +771,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		tools: (live.tools ?? []).map((slot) => ({ callId: slot.callId, name: slot.name, status: slot.status, output: slot.output ?? "", details: slot.details ?? null, ...clock(slot.callId) })),
 		failure: live.runFailure === undefined ? null : { reason: live.runFailure.reason, detail: failureDetail(live.runFailure, agent.model) },
 		usage: usageTotals(view.docs["pi.usage"] as UsageDocShape | undefined),
-		context: contextOf(view, agent.model),
+		context: contextSize,
+		lastRequestInputTokens: live.lastRequestInputTokens ?? input,
 		compacting: (live.compactions ?? []).length > 0,
 		compactionError: live.compactionFailure?.error ?? null,
 		// An archived conversation, or a sub-chat of one, is not in the list the app is sent; its title and standing
@@ -1479,6 +1500,14 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await editMeta(conv.id, (meta) => void (meta.deleted = true));
 		return {};
 	},
+	"settings.getCompaction": async () => ({ defaultCompactionTokens: settings.defaultCompactionTokens ?? null }),
+	"settings.setCompaction": async (params) => {
+		settings.defaultCompactionTokens = validateCompactionTokens(params.defaultCompactionTokens);
+		saveSettings();
+		const event = compactionSettingsEvent();
+		broadcast(event);
+		return { defaultCompactionTokens: event.defaultCompactionTokens };
+	},
 	"settings.setAutoArchive": async (params) => {
 		settings.autoArchiveDays = validateAutoArchive(params.days);
 		saveSettings();
@@ -2191,6 +2220,7 @@ const server = createServer((socket) => {
 	send(client, usageSummary);
 	send(client, mcpEvent());
 	send(client, chatEvent());
+	send(client, compactionSettingsEvent());
 	for (const feature of host.features) for (const event of feature.greeting?.() ?? []) send(client, event);
 	void providersEvent().then((event) => send(client, event));
 	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line

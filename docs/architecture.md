@@ -153,6 +153,7 @@ Every conversation with tools used to be offered the same few tools whatever its
 | Read the web | `web_fetch`, `web_search` | the browser is on |
 | Make pictures (off by default) | `make_picture` | one of the person's providers has a picture model |
 | Work things out with code (off by default) | `run_code` | always |
+| Summarize its own conversation (off by default) | `compact` | an agent’s conversation ([compaction.md](compaction.md)) |
 
 - **Only tools no other switch governs.** The shell and the file tools, and `background`, which works the shell's background commands, follow the access level. Computer use, the browser, scheduling, code mode, memory, reference files and handing work on keep their own switches and are not listed twice. Reading the web still needs the browser on: the list can take it away, never give it to an agent without the browser.
 - **On by default, but for a few.** The agent keeps the keys of the ones left out, `toolsOff` (`src/builtins.ts`), so an agent saved before the list, or a tool added to it later, is offered as before. A tool added for some agents only, such as those of the chat assistant (#286), is marked `offByDefault` instead, and the agent keeps the keys of those it is given, `toolsOn`: no existing agent is offered it, or pays for it in its prompt, until the person turns it on. `agents.save` refuses a key it does not know, and one in the wrong list; `agents.duplicate` copies both lists, as it copies every saved setting.

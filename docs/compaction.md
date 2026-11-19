@@ -1,0 +1,26 @@
+# Summarizing earlier messages
+
+A model reads the active conversation again on every request, even when parts come from its prompt cache. A summary replaces an older part of that context, not the transcript you can still read. It trades away detail and usually writes the prompt cache again once, but later requests can read less.
+
+## When it happens
+
+- **At a size you choose.** A saved agent can have an earlier size in tokens or inherit the default for all agents. Unset in both places, pi² uses the model’s normal window thresholds. A size that does not bring the normal threshold forward changes nothing. The limit is an estimate for the next request, not a hard cap: there must be older messages to cut without splitting a tool call and its results. A small target also keeps a smaller recent tail verbatim. The chat-mode assistant does not use the agent default.
+- **When you ask.** Choose **Summarise Earlier Messages** after the conversation finishes answering. You can retry if it is already summarizing or there is a model error.
+- **When an agent asks.** Enable **Summarize its own conversation** in the agent’s built-in tools. `compact { note }` runs at the end of the current round of tools, before the next model step. It is off by default. The note says what must be kept, and the conversation marks the summary as requested by the agent. More than one request in a round shares a summary, with the notes in call order. A script cannot call it as a nested tool.
+
+## What stays
+
+The summarizer is told to keep the person's unfinished requests and constraints, what they asked the agent to remember, what the agent said must be kept, decisions, progress, blockers and next steps. This part is a model's account of the conversation and can lose detail. Earlier messages are still readable if you need to check them.
+
+After the model writes, pi² adds what it knows itself: open sub-chats and their tasks and standing, running background commands and whether their ends are watched, pending wakes and any hold, the current task list, and the agent’s explicit compaction notes verbatim. This is taken from the engine’s records in the same commit as the summary marker, not copied by the model. The explicit notes carry forward through later summaries in the active context.
+
+A message sent during a summary is kept in the conversation’s queue; a wake stays in the wake queue. The summary finishes before either is delivered, and normal steering and wake ordering still applies. If a summary fails, pi² reports the error and does not move the context head or write a summary marker. A failure at the model’s hard context limit can still prevent the run from answering; the transcript and queued input remain available under the normal failed-run rules.
+
+## Engine contract
+
+- **Default:** `defaultCompactionTokens` in `settings.json`. `settings.getCompaction {}` reads it; `settings.setCompaction { defaultCompactionTokens }` writes it. Both return `{ defaultCompactionTokens }`. `compactionSettings` events carry that field on connect and on change.
+- **Per agent:** `compactionTokens` in the saved agent profile (`pi2.agents`). Read it on the agent in the `agents` event and write it with `agents.save { agent: { id, name, compactionTokens } }`. In either setting use a positive safe integer or `null`. A missing field reads as unset; `null` clears it. The engine resolves the effective threshold against the current model, including model changes. To enable the separate tool, include `compact` in `toolsOn` when saving the agent. The `agents` event advertises the built-in key and its default.
+- **Marker:** A transcript item with `kind: "marker"`, a display `text`, and `details.compaction: { trigger, note }`. `trigger` is `"size"`, `"person"`, `"agent"` or `"automatic"` (the model-window safeguard, including old automatic markers). `note` is a string or `null`.
+- **Size:** Conversation state has `lastRequestInputTokens`, the input, cache-read and cache-write tokens of the last ordinary model request with usage. It excludes output and the separate summary request, and is `null` when no usage is known. It is not a prediction of how large the next request will be. `context.used` remains the existing context indicator.
+
+Pi durable still selects the cut, runs the summarizer, accounts for its usage, and owns the durable runs and queues. `engine/scripts/patch-compaction.ts` supplies the earlier per-model reserve and tail settings without changing the ordinary answer reserve or summary budget, adds safe boundaries for the tool and for standalone summaries, and attaches the state snapshot at placement. The normal near-window thresholds are unchanged, but a summary started there no longer races the next request.

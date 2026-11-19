@@ -53,6 +53,8 @@ export type AgentProfile = {
 	toolsOff?: string[];
 	/** Keys of the built-in tools off by default that it is offered (builtins.ts). Absent or empty: none of them. */
 	toolsOn?: string[];
+	/** Early summarizing in tokens; null or absent follows the default for all agents. */
+	compactionTokens?: number | null;
 	/**
 	 * Shell commands it may run without asking under "ask first", folder by folder (see rules.ts). Changed only through
 	 * `rules.add`, `rules.remove` and an approval's "rule" answer, never by saving the agent.
@@ -102,6 +104,8 @@ export type Meta = {
 	 * that the call can end while it works; this lets the call, run again after a crash, find it rather than make another.
 	 */
 	madeBy?: string;
+	/** The latest task handed to this sub-chat, as a durable input submission. */
+	subChatTask?: number;
 	/**
 	 * One of a chat's versions after the first (versions.ts), with the chat as its `parent`: shown in the chat's place when
 	 * current, and never on its own.

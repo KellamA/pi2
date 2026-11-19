@@ -9,10 +9,12 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { COMPACTION_PATCHES } from "./patch-compaction.ts";
 
 type Patch = { why: string; file: string; find: string; replace: string };
 
 const PATCHES: Patch[] = [
+	...COMPACTION_PATCHES,
 	{
 		// Commands moved to the background at their time limit must inherit the run's file from their very start (#300).
 		// Keep exec's own stdin/stdout/stderr, output handling and cancellation; append only caller-owned descriptors 3+.

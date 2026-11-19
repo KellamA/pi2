@@ -74,7 +74,7 @@ export const BACKGROUND_ENTRY = "pi2.background";
 /** A running command as the session document records it, for the engine that starts after this one. */
 type Left = { id: string; conversationId: number; command: string; cwd: string; startedAt: number; process?: RunProcess };
 
-const Background = defineDoc<{ next: number; running: Record<string, Left> }>({
+export const Background = defineDoc<{ next: number; running: Record<string, Left> }>({
 	kind: "pi2.background",
 	version: 1,
 	scope: "session",

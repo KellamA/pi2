@@ -379,7 +379,11 @@ export function pi2Extension(host: Host): Extension {
 			}
 			const handle = (await api.conversation(child, context))!;
 			const submission = await handle.submit({ type: "input", content: args.task, requestId: `delegate:${String(api.taskId)}` }, context);
-			return answer(child as unknown as number, target, named, submission.id as unknown as number);
+			await api.commit(async (tx) => {
+				const meta = (await tx.doc(Library)).conversations[String(child)];
+				if (meta !== undefined) meta.subChatTask = Math.max(meta.subChatTask ?? 0, submission.id as number);
+			}, context);
+			return answer(child as unknown as number, target, named, submission.id as number);
 		},
 	});
 

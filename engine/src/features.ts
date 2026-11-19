@@ -17,6 +17,7 @@ import { promptCache } from "./cache.ts";
 import { chat } from "./chat.ts";
 import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
+import { compaction } from "./compaction.ts";
 import { documents } from "./documents.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
@@ -162,6 +163,7 @@ export type Feature = (host: Host, engine: Engine) => FeatureParts;
 // need a place of its own, put it beside the feature most like it rather than at the end, where the next one would go too.
 export const FEATURES: Feature[] = [
 	limitWait,
+	compaction,
 	plan,
 	knowledge,
 	look,
