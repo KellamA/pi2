@@ -170,6 +170,60 @@ check "take on a closed issue: labelled in progress" logged "--add-label in\\ pr
 check "take on a closed issue: reopened" logged "gh issue reopen 12"
 check "take on a closed issue: labelled before reopening" before "--add-label in\\ progress" "gh issue reopen 12"
 
+# A long text can come from a file with --body-file, and is then treated exactly
+# as a text given in the command.
+printf 'The body from a file.\nIts second line, and a path: %s/private.\n' "$HOME" >"$T/body.txt"
+run start-file start "A long body" --body-file "$T/body.txt"
+report 0 "$status" "start with --body-file: exit status"
+check "start with --body-file: the title is sent" logged "gh issue create --title A\\ long\\ body"
+check "start with --body-file: the file's text is one argument" logged "gh issue create --title A\\ long\\ body --body \$'The body from a file."
+check "start with --body-file: its first line is sent" logged "The body from a file."
+check "start with --body-file: its second line is sent" logged "Its second line"
+check "start with --body-file: a path from the file is sent as ~" logged "~/private."
+check "start with --body-file: the home folder is left out" not_logged "$HOME"
+check "start with --body-file: says which issue" said "[pi2-issue] opened #"
+
+run note-file note 33 --body-file "$T/body.txt"
+report 0 "$status" "note with --body-file: exit status"
+check "note with --body-file: the file's text is one argument" logged "gh issue comment 33 --body \$'The body from a file."
+check "note with --body-file: its second line is sent" logged "Its second line"
+check "note with --body-file: a path from the file is sent as ~" logged "~/private."
+check "note with --body-file: the home folder is left out" not_logged "$HOME"
+check "note with --body-file: says so" said "Noted on #33."
+
+canned done-file 36 <<<"$open"
+printf 'Tested in a copy.\nNothing else to say.\n' >"$T/summary.txt"
+run done-file done 36 --body-file "$T/summary.txt"
+report 0 "$status" "done with --body-file: exit status"
+check "done with --body-file: the summary is posted" logged "gh issue comment 36 --body \$'**Done.** Tested in a copy."
+check "done with --body-file: its second line is sent" logged "Nothing else to say."
+check "done with --body-file: closed as completed" logged "gh issue close 36 --reason completed"
+check "done with --body-file: the hook sees it closed" hook_sees_closed 36
+
+# A file that is not there is refused, naming it, and nothing is asked of GitHub.
+run note-missing note 34 --body-file "$T/no-such-file.txt"
+check "note with a missing file: exit status not 0" test "$status" -ne 0
+check "note with a missing file: names the file" said "no-such-file.txt"
+check "note with a missing file: no gh call" test ! -s "$GH_LOG"
+run start-missing start "A title" --body-file "$T/no-such-file.txt"
+check "start with a missing file: exit status not 0" test "$status" -ne 0
+check "start with a missing file: names the file" said "no-such-file.txt"
+check "start with a missing file: no gh call" test ! -s "$GH_LOG"
+
+# A text and a file together are refused too.
+run start-no-name start "A title" --body-file
+check "start with --body-file and no name: exit status not 0" test "$status" -ne 0
+check "start with --body-file and no name: says so" said "needs a file name"
+check "start with --body-file and no name: no gh call" test ! -s "$GH_LOG"
+run note-both note 35 "typed in the command" --body-file "$T/body.txt"
+check "note with a text and --body-file: exit status not 0" test "$status" -ne 0
+check "note with a text and --body-file: says to give one" said "not both"
+check "note with a text and --body-file: no gh call" test ! -s "$GH_LOG"
+run start-both start "A title" -b "typed in the command" --body-file "$T/body.txt"
+check "start with a text and --body-file: exit status not 0" test "$status" -ne 0
+check "start with a text and --body-file: says to give one" said "not both"
+check "start with a text and --body-file: no gh call" test ! -s "$GH_LOG"
+
 # audit, on a board with one of each kind of problem and some issues that are fine.
 ago() { jq -nr --argjson s "$1" 'now - $s | floor | todate'; }
 hour=$(ago 3600) twodays=$(ago 172800)
