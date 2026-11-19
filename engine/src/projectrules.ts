@@ -96,8 +96,8 @@ export const projectRulesPrompt: Feature = (host) => ({
 		render: ({ conversationId }) => {
 			const project = inProject(Number(conversationId));
 			if (project === undefined) return undefined;
-			// #457 replaces the agent lookup with runsAs; until then every conversation runs as its agentId.
-			return section(project.id, host.meta(conversationId)?.agentId === project.orchestratorId);
+			// The agent it runs as (state.ts, `runsAs`): its agentId, but for a conversation carried over.
+			return section(project.id, host.agentOf(conversationId)?.id === project.orchestratorId);
 		},
 	}],
 });

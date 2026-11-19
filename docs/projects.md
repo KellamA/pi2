@@ -5,7 +5,7 @@ This is the contract for the projects epic, [#450](https://github.com/KellamA/pi
 
 The design it builds is [design/projects.md](design/projects.md), with its drawings in [design/projects-drafts.html](design/projects-drafts.html). This page does not repeat why; it says exactly what. Where the design left something open, this page decides it, and [section 13](#13-decisions-this-contract-made) lists each decision with its reason. What only the owner can decide is in [section 14](#14-questions-for-the-owner), each with the answer this page is written for. Nothing in the epic starts until the owner has agreed this page (#455).
 
-#456 has built the project itself, its requests and the preview switch, with the places the later issues fill in ([12.1](#121-who-owns-what-several-issues-share) says where); nothing else is built yet. When a piece is built, its issue updates the part of this page it built if the build had to differ, in the same pull request, so the page stays true for the issues after it. Once #483 has taken the old way out, this page becomes the guide to projects for a person and a developer.
+#456 has built the project itself, its requests and the preview switch, with the places the later issues fill in ([12.1](#121-who-owns-what-several-issues-share) says where); #457 the agents of a project, templates and `runsAs`. When a piece is built, its issue updates the part of this page it built if the build had to differ, in the same pull request, so the page stays true for the issues after it. Once #483 has taken the old way out, this page becomes the guide to projects for a person and a developer.
 
 **How to read it.** Read [section 1](#1-words) and [section 2](#2-the-preview-switch) whatever your issue, then [12.1](#121-who-owns-what-several-issues-share) and the sections your issue's row in [12.2](#122-each-issue) names. Types are written as TypeScript, as `engine/src/state.ts` writes them. Times are milliseconds since 1970, as everywhere in the engine. "The person" is whoever uses pi²; "an agent" is a model working in a conversation.
 
@@ -225,12 +225,14 @@ The engine decides which agent a conversation runs as with one function, `runsAs
 
 ```ts
 /** The agent whose settings conversation `meta` uses at its next message. */
-function runsAs(meta: Meta): string | undefined {
-	const copy = meta.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];
-	if (projectsOn() && copy !== undefined && copy.removedAt === undefined) return meta.projectAgentId;
-	return meta.agentId;
+function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): string | undefined {
+	const copy = meta?.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];
+	if (projectsOn() && copy !== undefined && copy.removedAt === undefined) return meta!.projectAgentId;
+	return meta?.agentId;
 }
 ```
+
+The agents are an argument, since the engine keeps no one map of them that every caller reads (main.ts, a feature's `engine.agents()` and a commit's `tx.doc(Agents)` each have their own). Beside it, `agentOf(meta, agents)` gives the agent itself, or none for a chat, an agent deleted or one removed through a tool; most lookups use it.
 
 A conversation whose copy has been removed or deleted runs as its `agentId`; one whose `agentId` was deleted too keeps the setup it has, as a conversation whose agent was deleted does today. A conversation whose own `agentId` names a removed project agent keeps the setup it has in the same way.
 
@@ -1650,20 +1652,30 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `onPreviewOn(plan)`, `carryOverState()`, `ruleTokens(projectId)`, `lastWords(projectId)` are the bodies #458, #458, #459 and #466 replace; `emptyReport()` is the report of a run with nothing to do.
 - `Projects` is the document's token, for a feature that changes it in a commit of its own; the `projects` event follows any commit that changes it, by anyone, and is sent only when what it holds changed.
 - A project's orchestrator and its conversation are made in the one commit that makes the project. The default orchestrator's memory switch is set through a feature hook, `agentMade(agentId, { memory })`; a template copied as orchestrator goes through `agentDuplicated`, as `agents.duplicate` does.
-- `agents.save` keeps `projectId`, `role`, `template`, `madeBy`, `updatedAt` and `removedAt` as stored, and checks a name against the templates, or against the agents of the same project. It does not set `updatedAt` yet: #457 does, with Update from template. `agents.delete` refuses an orchestrator.
+- `agents.save` keeps `projectId`, `role`, `template`, `madeBy`, `updatedAt` and `removedAt` as stored, and checks a name against the templates, or against the agents of the same project. `agents.delete` refuses an orchestrator.
 - A conversation takes `projectId` as it is made: from its agent (`conversation.create`, a schedule's run, Continue with an Agent), from its parent (a sub-chat) or from the conversation it forks.
 - The engine's settings reach a feature through `engine.setting(key)` and `engine.saveSetting(key, value)` (`features.ts`), since the engine writes `settings.json` whole.
+
+**As #457 built them.** `runsAs` and `agentOf` are in `state.ts` ([3.4](#34-which-agent-a-conversation-runs-as-runsas)); the rest is in `engine/src/projectagents.ts`, which says at its top what later issues fill in. What the table does not say:
+
+- Every lookup of a conversation's agent goes through `runsAs` or `agentOf`; a feature with the Host asks `host.agentOf(conversation)`, and whom a conversation may hand work to is `host.delegatesOf(conversation)` (`delegateTargets` in `projectagents.ts`, as [3.3](#33-agents-and-templates-pi2agents) and [5.1](#51-who-is-offered-what) say). Usage's spend by agent stays by `agentId`. `projectAgentId` is on `Meta` as a type, for #458 to set; a fork copies it.
+- A feature saves an agent through `engine.saveAgent(input, { copiedRules?, project?, marks? })`, with `agents.save`'s checks: `project` makes a new agent in that project, in its folder, and `marks` sets `template` or `madeBy`. Copying a template is `projects.addAgent { template }`; #458's carrying over and #465's `make` copy through the same path.
+- `agents.save` stamps `updatedAt` while the preview is on, and once any project exists whatever the preview; never while the preview has never been on.
+- `agents.duplicate` of a project agent keeps it in the project, without `role` or `template`. "Keep at least one agent" counts agents of no project. `conversation.create` refuses an agent removed through a tool.
+- `agents.updateFromTemplate`'s `setting` names are `AgentProfile`'s, from `TEMPLATE_SETTINGS`, and `memory` for the memory switch; values are compared as `agents.save` stores them. `apply: false` is allowed in an archived project.
+- `removeAgent(id)` (#465's `agent.remove`) sets `removedAt`, refusing the orchestrator, an agent working now ("Forge is working on sub-chat 14. Wait for it, or ask the person to stop it.") and an archived project's agent. Nothing calls it before #465; `agents.restore` puts an agent back.
+- `delegate`, in a conversation of a project, with the preview on or off: the approval hook asks through `requireSwitch` ("Start a new sub-chat with Forge, “Fix login”.", "Continue sub-chat 14, “Fix login”, with Forge.") while `startAgents` is off, and the tool calls `admit` as it makes or continues the sub-chat, answering "Not started: <reason>" when it is refused. Until #464, `admit` admits every start; #464 decides `passLimits` and puts the card inside it. Once #463 lands, `delegate` calls `settle`.
 
 **As #459 built them.** The rules live in `engine/src/projectrules.ts`.
 
 - `addRule(tx, projectId, { text, binds, addedBy })` validates and appends in the caller's transaction, returning the `ProjectRule`. Until #465 supplies the tool and acceptance handler (on #462's cards), only the person's `projects.rules.add` calls it, attributing the rule to the person. #465 supplies agent or proposal attribution and checks reach before calling it; the helper does not ask or make a card.
-- `projectRulesPrompt` sits after `plan` in `FEATURES`. #466's `project` section goes between them; until then there is no `project` section. Until #457 supplies `runsAs`, the rules prompt compares the conversation's stored `agentId` to the project's `orchestratorId`.
+- `projectRulesPrompt` sits after `plan` in `FEATURES`. #466's `project` section goes between them; until then there is no `project` section. The rules prompt compares the agent the conversation runs as (`runsAs`, #457) to the project's `orchestratorId`.
 - `projectRules` sits after `projects` in `FEATURES` for the greeting. It reads committed rules, including writes by `addRule` in another feature's transaction, and wires `ruleTokens` through `wireRuleTokens` in `projects.ts`. Estimates count the tagged section actually sent. The prompt keeps board order, repeating a heading if a binding recurs later in the order.
 
 **As #461 built them.** Notes extend the existing `knowledge` feature in place in `FEATURES`, so the `memory` greeting and section keep their places. Project-only note storage and tool operations live in `engine/src/projectnotes.ts`.
 
 - `Memory` and `MemoryDoc` (`knowledge.ts`) and `projectNotebook(doc, projectId)` (`projectnotes.ts`) are for #458 to write carried notes in its own commit. Until then nothing is copied from an agent's notes. `knowledge` sends the `memory` event for a commit to that document by any feature, including carrying over or Undo.
-- `memoryAgentId(conversation)` in `knowledge.ts` reads `agentId` until #457 routes it through `runsAs`. A sub-chat runs with the notebook of its own agent, not the parent's; a template in a project-marked conversation is not given the project's notes.
+- `memoryAgentId(conversation)` in `knowledge.ts` is the agent the conversation runs as (`runsAs`, #457). A sub-chat runs with the notebook of its own agent, not the parent's; a template in a project-marked conversation is not given the project's notes.
 - `recordNoteChange(tx, projectId, { by, op, inverse, summary })` in `projectnotes.ts` is for #465. The tools already form `note.add` and `note.remove` and their inverses in the note's transaction. Until #465 wires the record this hook returns `undefined`: notes are changed, but there is no `details.change`, line or Undo. The request and tool paths share the project's lifecycle checks and note add/remove helpers; #465 will apply and check the inverse there.
 
 **As #462 built them.** Needs you is `engine/src/needs.ts`, which says at its top what the later issues fill in. What the table does not say:
@@ -1672,7 +1684,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `putNeed(tx, need)` puts a need in the commit `tx` that makes what it is about, and answers the stored item; the same `callId` again gets the one already put. The project must exist and not be deleted. `withdrawNeed(tx, id)` takes one off without an answer and answers it, or undefined. `needsIn(tx)` is the document in a commit; `storedNeeds()` a copy of what is stored.
 - `onAnswer(kind, handler)` registers what an answer to a stored kind does: `handler(tx, need, answer)` runs inside the commit that takes the item. Throwing refuses the answer and stores nothing; `{ keep: true }` puts the item back as the handler left it (the limit card that stays with a new reading); `{ after }` runs once the commit is made. **Until #465 and #464 register `reach`, `rule` and `limit`**, an answer to one of those is refused ("pi² cannot act on an answer to … yet") and the item stays; nothing puts one before they land.
 - `ReachChange.op` is `unknown` until #465 gives it its type, `Op`. The `pi2.needs` token is a plain JSON object's for that reason.
-- An item's `agentId` is its conversation's `agentId` until #457 (`agentOf` in `needs.ts`, which becomes `runsAs`).
+- An item's `agentId` is the agent its conversation runs as (`agentOf` in `needs.ts`, through `runsAs`, #457).
 - Questions and decisions wake the conversation that asked through `arriveIn(tx, conversationId, item)` and `arrivedIn(conversationId)` in `wakes.ts`, the wake kind `answer`, keyed `answer:<id>`: stored in the commit that takes the answer, so it is given once, after a restart too.
 - The `needs` event is `{ event: "needs", items: [] }` with the preview off; with it on, the Inbox's items and the stored ones, oldest first. Two feature hooks send it again: `inboxChanged` whenever `main.ts` sends the `inbox` event, and `previewChanged(on)`, which `projects.setPreview` calls. The menu bar item's count and notifications (#481) count its items.
 - `needs_you` is offered by agent, since a feature's `toolNames` is not told the conversation: to a project agent of a project neither archived nor deleted, with the preview on, outside a sub-chat, whatever its access. The tool checks the conversation itself as well.

@@ -11,6 +11,7 @@ import type { Host } from "./extensions.ts";
 import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
 import type { Access, AgentProfile, Meta, ModelRef } from "./state.ts";
+import type { CommandRule } from "./rules.ts";
 
 import { background } from "./background.ts";
 import { promptCache } from "./cache.ts";
@@ -30,6 +31,7 @@ import { order } from "./order.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
+import { projectAgents } from "./projectagents.ts";
 import { needs } from "./needs.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
@@ -78,6 +80,21 @@ export type Engine = {
 	setting(key: "projects"): unknown;
 	/** Change a key of settings.json and save the file. The engine keeps the file, so a feature never writes it itself. */
 	saveSetting(key: "projects", value: unknown): void;
+	/**
+	 * Save an agent with `agents.save`'s checks and defaults (main.ts, `saveAgent`), and what only the engine sets: for a
+	 * new agent, the project it is made in; the marks of docs/projects.md, 3.3 it is given; the allowed commands a copy takes.
+	 */
+	saveAgent(input: Partial<AgentProfile>, options?: AgentSaveOptions): Promise<{ id: string }>;
+};
+
+/** What `Engine.saveAgent` sets that `agents.save` never takes from the app (projectagents.ts). */
+export type AgentSaveOptions = {
+	/** A copy: the allowed commands it takes from what it copies. A name already taken then gets " 2", " 3"… */
+	copiedRules?: CommandRule[];
+	/** For a new agent: the project it is made in, whose folder it works in. */
+	project?: string;
+	/** Marks of a project agent to set, over what is stored. */
+	marks?: Pick<AgentProfile, "template" | "madeBy">;
 };
 
 export type FeatureParts = {
@@ -212,6 +229,8 @@ export const FEATURES: Feature[] = [
 	localRun,
 	order,
 	localModels,
+	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
+	projectAgents,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
 	// feature on its own line, in place of the comment that names it.
 	projects,

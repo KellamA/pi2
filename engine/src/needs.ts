@@ -16,7 +16,6 @@
 // - `rule` (#465, adding through #459's `addRule`): a proposed rule, accepted or not. The same until then.
 // - `limit` (#464): a start refused for a limit, started anyway or left. The same until then.
 // - `ReachChange.op` is typed `unknown` until #465 gives it its type, `Op` (3.12).
-// - A conversation's agent is its `agentId` until #457 makes every lookup go through `runsAs` (`agentOf` below).
 //
 // Questions and decisions are this file's own: the answer is given to the conversation that asked as a wake of the kind
 // `answer` (wakes.ts).
@@ -27,7 +26,7 @@ import { arr, bool, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { allProjects, inProject, type LimitReading, Projects, projectsOn, requirePreview, type Start, type SwitchName } from "./projects.ts";
-import type { InboxItem, Meta } from "./state.ts";
+import { type AgentProfile, type InboxItem, type Meta, runsAs } from "./state.ts";
 import { chatIdOf } from "./versions.ts";
 import { arrivedIn, arriveIn } from "./wakes.ts";
 
@@ -377,8 +376,8 @@ onAnswer("decision", (tx, need, answer) => wakeWith(tx, need, "choice" in answer
 
 // ---- The list, as sent
 
-/** The agent a conversation runs as. #457 makes this `runsAs`; until then, its `agentId`. */
-const agentOf = (meta: Meta | undefined): string | null => meta?.agentId ?? null;
+/** The agent a conversation runs as (state.ts, `runsAs`): its `agentId`, but for a conversation carried over. */
+const agentOf = (meta: Meta | undefined, agents: Record<string, AgentProfile>): string | null => runsAs(meta, agents) ?? null;
 
 /** Every item waiting, of every project and of none, oldest first; nothing with the preview off (3.9). */
 export function needItems(): NeedItem[] {
@@ -388,7 +387,7 @@ export function needItems(): NeedItem[] {
 	const base = (id: string, conversation: number, projectId: string | null | undefined, blocking: boolean, createdAt: number): WireBase => {
 		const meta = conversations[String(conversation)];
 		const root = meta?.parent ?? conversation;
-		const agentId = agentOf(meta);
+		const agentId = agentOf(meta, agents);
 		return {
 			id,
 			projectId: projectId ?? meta?.projectId ?? null,
