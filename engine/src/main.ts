@@ -50,6 +50,7 @@ import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
+import { subChatUsage } from "./subchatusage.ts";
 import { messageSent } from "./heed.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
@@ -230,6 +231,7 @@ const host: Host = {
 		const entry = await conv?.commit((tx) => tx.entry(AssistantEntry, entryId as EntryId), context);
 		return textOf((entry?.model?.[0] as { content?: unknown } | undefined)?.content);
 	},
+	subChatUsage: (id, ctx) => subChatUsage(harness, id, ctx),
 	features: [],
 };
 // Features in files of their own (see features.ts). They are made here, before the harness opens, so what they

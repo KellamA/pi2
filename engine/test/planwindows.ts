@@ -137,6 +137,9 @@ const copilot = createTlsServer({ key: readFileSync(join(home, "key.pem")), cert
 			response.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: copilotModel, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
 		chunk({ role: "assistant", content: `Copilot stand-in answer ${++answered}.` }, null);
 		chunk({}, "stop");
+		const prompt = answered === 1 ? 48_000 : 28_000;
+		const usage = { prompt_tokens: prompt, prompt_tokens_details: { cached_tokens: prompt - 10_000, cache_write_tokens: 2_000 }, completion_tokens: 500, total_tokens: prompt + 500 };
+		response.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: copilotModel, choices: [], usage })}\n\n`);
 		response.end("data: [DONE]\n\n");
 	});
 });
@@ -224,15 +227,19 @@ try {
 	assert.equal(handed.isError, false, handed.text);
 	assert.ok(handed.text.startsWith("Copilot stand-in answer 1."), handed.text);
 	assert.doesNotMatch(handed.text, /Plan limits/);
+	assert.match(handed.text, /\n\nUsed: 1 request(?: over [^;]+)?; read 10K tokens new and 38K from the cache, wrote 500; largest prompt 48K\.$/);
 	const sub = handed.details.conversationId as number;
 	premium = { used: 85, resets: monthReset };
 	handed = await client.tool(lead, `/continue ${sub}: again`);
 	assert.match(handed.text, /\n\nPlan limits: the GitHub Copilot subscription, which this sub-chat runs on, has premium requests 85% used, resets on \w+day \d+ \w+( \d{4})? at \d\d:\d\d \(in 9 days\)\. A run the provider refuses for its limit waits for the reset and carries on by itself\.$/);
+	const subUsage = /Used: 2 requests(?: over [^;]+)?; read 20K tokens new and 56K from the cache, wrote 1K; largest prompt 48K\./;
+	assert.match(handed.text, subUsage, "the continuation adds to usage without lowering the largest prompt");
 	assert.deepEqual(client.notices, [], "85% is no notice");
 	step("delegate: no line below 80%; at 85% one naming the subscription, the window, the share used and the reset");
 
 	// sub_chats' list ends with every subscription's windows and who runs on each.
 	const listed = await client.tool(lead, '/tool sub_chats {"action":"list"}');
+	assert.match(listed.text, subUsage);
 	assert.ok(listed.text.includes("\n\nPlan limits, as last read. A run the provider refuses for its limit waits for the reset and carries on by itself.\n"), listed.text);
 	assert.match(listed.text, /\n- Anthropic subscription, which none of your agents runs on: 5-hour window 93% used, resets (at|on) .*; this week 41% used, resets on .*\. Read .* ago\.\n/);
 	assert.match(listed.text, /\n- GitHub Copilot subscription, which Scout runs on: premium requests 85% used, resets on .* \(in 9 days\)\. Read .* ago, from the answer to a request\.$/);

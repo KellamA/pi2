@@ -145,6 +145,7 @@ try {
 		const answer = client.items(a, "assistant").at(-1)!.text as string;
 		assert.match(answer, /\[pi² woke you: this ended while you were not answering\.\]/, "the woken answer answers the sub-chat's result");
 		assert.match(answer, /first-done/, "with the sub-chat's answer in it");
+		assert.match(answer, /Used: 2 requests\b[^\n]*largest prompt \S+\./, "and the usage of the sub-chat alone");
 		assert.ok(answer.includes(client.items(a, "marker").find((item) => item.text === line)!.details.wake.text), "a sub-chat wake opens to the message the demo model answered");
 		assert.match(answer, new RegExp(`chat: ${sub}`), "and how to carry it on");
 		assert.deepEqual(client.watched(a), [], "nothing left to wake it for");
@@ -188,6 +189,7 @@ try {
 		const next = await waiting;
 		assert.match(next.text, new RegExp(`^Sub-chat ${five} “Five” answered:`), next.text);
 		assert.match(next.text, /fifth-done/);
+		assert.match(next.text, /\n\nUsed: 2 requests\b[^\n]*largest prompt \S+\./);
 		assert.doesNotMatch(next.text, /fourth-done/);
 		const later = client.tool(a, `/tool sub_chats ${JSON.stringify({ action: "wait", chats: [four] })}`);
 		g4.open();
@@ -429,6 +431,10 @@ try {
 		await client.until("transcript", () => client.items(k, "assistant").length > 0);
 		assert.equal(client.wakes(k).length, woken, "and only once");
 		assert.deepEqual(client.items(k, "marker").filter((item) => item.details?.wake).map((item) => item.details.wake.text), contents, "saved wakes retain their model input after a restart");
+		const usage = contents.join("\n").match(/^Used: .+$/m)?.[0];
+		assert.ok(usage?.includes("largest prompt"));
+		const listed = await client.tool(k, '/tool sub_chats {"action":"list"}');
+		assert.ok(listed.text.split("\n").includes(`  ${usage}`), "the same usage can be read from storage after a restart");
 		step("a wake survives the engine stopping: a command that ended with it wakes the agent once, and a sub-chat is followed again");
 	}
 

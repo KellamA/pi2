@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 import { newestOnly } from "../src/providers.ts";
+import { usageWords } from "../src/subchatusage.ts";
 import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
@@ -377,6 +378,12 @@ try {
 	step("an agent asks a question and gets the answer");
 
 	// ---- Delegation
+	const unused = { requests: 0, ms: 0, fresh: 0, cached: 0, output: 0, largest: 0 };
+	assert.equal(usageWords(unused), "");
+	assert.equal(usageWords({ ...unused, requests: 1 }), "Used: 1 request.");
+	assert.equal(usageWords({ ...unused, cached: 950 }), "Used: read 950 tokens from the cache.");
+	assert.equal(usageWords({ requests: 212, ms: 38 * 60_000, fresh: 1_400_000, cached: 21_600_000, output: 96_100, largest: 148_200 }),
+		"Used: 212 requests over 38 min; read 1.4M tokens new and 21.6M from the cache, wrote 96.1K; largest prompt 148K.");
 	const { id: m } = await client.call("conversation.create", { agentId: "atlas" });
 	await client.call("conversation.open", { id: m });
 	await client.call("submit", { id: m, text: "/delegate Scout: say hi to the team" });
@@ -387,6 +394,7 @@ try {
 	const handoff = toolResults(m)[0]!;
 	assert.equal(handoff.isError, false, handoff.text);
 	assert.ok(handoff.text.includes('You said: "say hi to the team"'), "the subagent's answer comes back");
+	assert.match(handoff.text, /\n\nUsed: 1 request(?: over [^;]+)?; read \S+ tokens new, wrote \S+; largest prompt \S+\.$/);
 	const childId = handoff.details?.conversationId as number;
 	assert.equal(typeof childId, "number", "the call's details name the subagent's conversation");
 	assert.equal(client.library.find((x) => x.id === childId)?.parent, m, "the sub-chat is listed under the conversation that started it");
@@ -406,6 +414,7 @@ try {
 	});
 	assert.equal(toolResults(m)[1]!.isError, false, toolResults(m)[1]!.text);
 	assert.ok(toolResults(m)[1]!.text.includes('You said: "and now say bye"'));
+	assert.match(toolResults(m)[1]!.text, /\n\nUsed: 2 requests\b/);
 	assert.equal(subChats(), 1, "no second sub-chat was opened");
 	await client.until("sub-chat has both exchanges", () => client.conversations.get(childId)!.items.filter((i) => i.kind === "user").length === 2);
 	await client.call("submit", { id: m, text: "/continue 999999: nothing there" });
@@ -442,8 +451,8 @@ try {
 
 		const listed = await subChats({ action: "list" });
 		assert.equal(listed.isError, false, listed.text);
-		assert.match(listed.text, new RegExp(`- ${scout}: Scout, “Scout: look around”\\. Idle`));
-		assert.match(listed.text, new RegExp(`- ${forge}: Forge, .*Idle.*${left.id} \`sleep 3600\``));
+		assert.match(listed.text, new RegExp(`- ${scout}: Scout, “Scout: look around”\\. Idle[^\\n]*\\n  Used: 1 request\\b`));
+		assert.match(listed.text, new RegExp(`- ${forge}: Forge, .*Idle.*${left.id} \`sleep 3600\`[^\\n]*\\n  Used: 3 requests\\b`));
 
 		// Not one that is working, or waiting on the person.
 		await client.call("submit", { id: forge, text: "/bash echo waits-for-you" });
@@ -484,6 +493,7 @@ try {
 		const afterwards = await subChats({ action: "list" });
 		assert.match(afterwards.text, /Every sub-chat of this conversation is archived/);
 		assert.match(afterwards.text, new RegExp(`Archived: ${scout} .*${forge} `));
+		assert.match(afterwards.text, new RegExp(`\\n  ${scout}: Used: 1 request\\b`));
 
 		// Continuing an archived sub-chat restores it.
 		const again = await ask(`/continue ${scout}: one more thing`);

@@ -79,6 +79,7 @@ export type Host = {
 	/** How a conversation of `agent` is configured; a sub-chat goes without handing work on and scheduling. */
 	agentChange(agent: AgentProfile, options: { subChat: boolean }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
+	subChatUsage(conversationId: number, context: Context): Promise<string>;
 	/**
 	 * Send a message to a sub-chat that an earlier call created, without waiting for its answer (`waitForChat` in heed.ts
 	 * waits for it): its submission's id, or undefined when it is gone.
@@ -130,12 +131,13 @@ async function footerOf(read: DocumentReader, id: number, name: string, title: s
 	return `\n\n(Sub-chat ${id}, “${title}”, with ${name}${where}.${note} To continue it, call delegate again with chat: ${id}.)`;
 }
 
-/** How the plan's windows stand, when the subscription the sub-chat ran on is nearly used up; else nothing. */
-async function limitsOf(host: Host, read: DocumentReader, id: number, context: Context): Promise<string> {
+/** What the sub-chat used, then how its subscription's windows stand if they are nearly used up. */
+async function resultUsage(host: Host, read: DocumentReader, id: number, context: Context): Promise<string> {
+	const usage = await host.subChatUsage(id, context);
 	const provider = (await read.snapshot(AgentDoc, id as unknown as ConversationId, context))?.model?.provider;
 	const views = host.features.find((feature) => feature.planLimits !== undefined)?.planLimits?.() ?? [];
 	const line = nearlyUsedUp(views.find((view) => view.id === provider), Date.now());
-	return line === undefined ? "" : `\n\n${line}`;
+	return [usage, line].filter(Boolean).map((each) => `\n\n${each}`).join("");
 }
 
 /**
@@ -146,10 +148,10 @@ export async function subChatResult(host: Host, read: DocumentReader, child: num
 	if (settled === undefined || settled.status !== "done" || settled.type !== "input") {
 		const reason = settled === undefined ? "its message could not be found" : "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
 		const detail = settled !== undefined && "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
-		return { text: unfinished(name, child, reason, detail) + (await limitsOf(host, read, child, context)), failed: true };
+		return { text: unfinished(name, child, reason, detail) + (await resultUsage(host, read, child, context)), failed: true };
 	}
 	const title = host.meta(child as unknown as ConversationId)?.title ?? "";
-	return { text: (await host.answerText(child as unknown as ConversationId, settled.answer)) + (await footerOf(read, child, name, title, "", context)) + (await limitsOf(host, read, child, context)), failed: false };
+	return { text: (await host.answerText(child as unknown as ConversationId, settled.answer)) + (await footerOf(read, child, name, title, "", context)) + (await resultUsage(host, read, child, context)), failed: false };
 }
 
 /** What `delegate` answers at once when it does not wait, and what becomes of the answer. */
@@ -249,7 +251,7 @@ export function pi2Extension(host: Host): Extension {
 		execute: async (args, api, context) => {
 			const parent = api.conversationId as unknown as number;
 			const footer = (id: number, name: string, title: string, note = "") => footerOf(api, id, name, title, note, context);
-			const limits = (id: number) => limitsOf(host, api, id, context);
+			const usage = (id: number) => resultUsage(host, api, id, context);
 			/** For `wait: false`: watch the sub-chat's answer, to wake this agent with it, and answer at once. */
 			const handOff = async (child: number, submissionId: number, name: string, title: string) => {
 				const refused = await watch({ key: `delegate:${String(api.taskId)}`, conversationId: parent, kind: "subchat", ref: String(child), label: `sub-chat ${child} “${title}”`, startedAt: Date.now(), submissionId, agent: name });
@@ -279,10 +281,10 @@ export function pi2Extension(host: Host): Extension {
 				if (settled.status !== "done" || settled.type !== "input") {
 					const reason = "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
 					const detail = "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
-					return { output: text(unfinished(agent.name, chat, reason, detail) + note + (await limits(chat))), isError: true };
+					return { output: text(unfinished(agent.name, chat, reason, detail) + note + (await usage(chat))), isError: true };
 				}
 				const kept = (await api.snapshot(Library, context))?.conversations[String(chat)]?.title ?? title;
-				return { output: text((await host.answerText(chat as unknown as ConversationId, settled.answer)) + (await footer(chat, agent.name, kept, note)) + (await limits(chat))) };
+				return { output: text((await host.answerText(chat as unknown as ConversationId, settled.answer)) + (await footer(chat, agent.name, kept, note)) + (await usage(chat))) };
 			};
 			const title = titleOf(args.title);
 			if (args.from !== undefined && args.worktree === undefined) return { output: text("`from` says where a sub-chat's worktree starts; pass it with `worktree`."), isError: true };

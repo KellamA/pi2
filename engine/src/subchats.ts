@@ -216,9 +216,15 @@ export function subChatsTool(host: Host) {
 					const running = commands.length === 0 ? "no background commands running" : `background commands running: ${commands.map((command) => `${command.id} \`${command.command}\``).join(", ")}`;
 					const under = meta.parent === caller ? "" : ` (a sub-chat of ${meta.parent})`;
 					lines.push(`- ${id}${under}: ${agentOf(id)}, “${meta.title}”. ${state[0]!.toUpperCase()}${state.slice(1)}; last used ${elapsed(Date.now() - meta.updatedAt)} ago. It ${where}. ${running[0]!.toUpperCase()}${running.slice(1)}.`);
+					const usage = await host.subChatUsage(id, context);
+					if (usage !== "") lines.push(`  ${usage}`);
 				}
 				const head = listed.length === 0 ? "Every sub-chat of this conversation is archived." : "Sub-chats of this conversation:";
 				const tail = archived.length === 0 ? [] : [`Archived: ${archived.map((id) => `${id} (“${titleOf(id)}”)`).join(", ")}. Continuing one with delegate restores it.`];
+				for (const id of archived) {
+					const usage = await host.subChatUsage(id, context);
+					if (usage !== "") tail.push(`  ${id}: ${usage}`);
+				}
 				return { output: text([head, ...lines, ...tail, ...limits].join("\n")), details: { action, count: listed.length, archived: archived.length } };
 			}
 
