@@ -32,6 +32,7 @@ import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
 import { projects } from "./projects.ts";
 import { reads } from "./reading.ts";
+import { reports } from "./reports.ts";
 import { runCode } from "./runcode.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
@@ -206,7 +207,7 @@ export const FEATURES: Feature[] = [
 	projects,
 	// projectRules (#459)
 	// needs (#462)
-	// reports (#463)
+	reports,
 	// work (#467)
 	// github (#468)
 ];

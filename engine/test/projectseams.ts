@@ -26,6 +26,8 @@ import {
 	ruleTokens,
 	type Start,
 } from "../src/projects.ts";
+import { localModels } from "../src/localmodels.ts";
+import { reports } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
 import { until } from "./patience.ts";
 
@@ -33,9 +35,10 @@ function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
 
-// Its place in FEATURES: last of today's features, with the places after it for the others (4.4).
-assert.equal(FEATURES.at(-1), projects);
-step("the projects feature is last in FEATURES, where the others' places follow it");
+// Its place in FEATURES: after today's features, with the projects' others after it (4.4). #463's reports is one.
+assert.ok(FEATURES.indexOf(localModels) < FEATURES.indexOf(projects));
+assert.ok(FEATURES.indexOf(projects) < FEATURES.indexOf(reports));
+step("the projects feature comes after today's features in FEATURES, and the others' places follow it");
 
 const project = (id: string, extra: Partial<Project> = {}): Project => ({
 	id,

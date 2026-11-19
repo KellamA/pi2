@@ -56,7 +56,7 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line. macOS limits a socket's path to 103 bytes, so when the data folder's path is too long for that (only possible with `PI2_HOME`), the app and the engine both reach the socket through a short link to the data folder in `/tmp/pi2-<uid>/` (`engine/src/socket.ts` and `app/Sources/pi2/EngineSocket.swift` work it out the same way).
 
 - The app sends requests: `{"id": 1, "method": "submit", "params": {…}}`. The engine answers `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`.
-- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `projects` ([projects.md](projects.md#43-events)), `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation` (and `conversation.older`, the older entries of one opened newest first, and those before the engine's window of 300 when the app asks with the `conversation.older` request; [transcript.md](transcript.md#a-long-conversation-newest-first)), `auth`, `computer`, `browser`, `local.running`.
+- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `projects` and `reports` ([projects.md](projects.md#43-events)), `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation` (and `conversation.older`, the older entries of one opened newest first, and those before the engine's window of 300 when the app asks with the `conversation.older` request; [transcript.md](transcript.md#a-long-conversation-newest-first)), `auth`, `computer`, `browser`, `local.running`.
 
 The app starts the engine if it is not running, and reconnects if it dies. A second engine on the same data folder exits at once.
 
@@ -110,6 +110,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/runcode.ts` | `run_code`: a short program run in a sandbox with no tools, files or network. See [code.md](code.md) |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/projects.ts` | Projects (#450): the `pi2.projects` document, the preview switch (`projectsOn`), which project a conversation is in (`inProject`), the project requests and the `projects` event, `requireSwitch`, `addNews`, and the places the later issues of the epic fill in. See [projects.md](projects.md) |
+| `src/reports.ts` | Projects (#463): the reports of a project orchestrator's sub-chats' runs (`pi2.reports`), `settle`, which decides whether each wakes the orchestrator, waits or is read, the `reports` tool and request, and the `reports` event. See [wakes.md](wakes.md#in-a-project) and [projects.md](projects.md#310-reports-and-waking-pi2reports-pi2wakes) |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, an agent's memory, and chat mode's |
 | `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
