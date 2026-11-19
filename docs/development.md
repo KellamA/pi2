@@ -10,7 +10,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Building the app or working on pi² from pi² | [Requirements](#requirements), [Build and run](#build-and-run), [Working on pi² with pi²](#working-on-pi-with-pi) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks) or [Conversation page](#conversation-page-tests) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks) or [Conversation page](#conversation-page-tests) |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | Repository scripts, checks and merging | [CI](#ci) |
@@ -193,6 +193,16 @@ What Return does in a field that sends a message (`app/Sources/ComposeKit`: Retu
 cd app && swift build --product pi2-compose-check && .build/debug/pi2-compose-check
 ```
 
+### File link checks
+
+What a click on a link to a file in a conversation does, and the link's menu (`app/Sources/FileLinkKit`, #451), is checked by a program of its own, in a temporary folder it makes and removes. It checks which path each kind of target names (absolute, `~/`, `file:`, relative to the conversation's folder) and which it refuses (another host, another scheme); that a path is made whole, through symbolic links, `..` and the link `/var` is, and that a loop of links, a file where a folder should be and a missing file are said to be gone; that it stops at a volume it must not look into, also through a link, and that `/home`, which the automounter has on most Macs, is never looked up; that a click shows a file or an application in its folder and opens a folder; what the notice says; and the menu's items, with Open for a document and a document package and never for a folder, an application, a script, a file anyone may run that is not a document, or a disk image. It shows nothing in Finder and opens nothing. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-file-link-check && .build/debug/pi2-file-link-check
+```
+
+In a throwaway copy, a click on a file link, and the menu's Show in Finder, Open and Copy Path, write what they would have done to `file-links.jsonl` in the copy's data folder, one JSON object a line (`action`: `show`, `showFolder`, `notice`, `open`, `copyPath`, or `menu` with its `items`; `path`, made whole; `conversation`), and do nothing else, so a test never puts Finder or another app on the screen or changes the pasteboard. The notice still shows in the page.
+
 ### Conversation page tests
 
 The conversation page (`app/Web/transcript`) has tests that run in Node with a small stand-in for the DOM: its Markdown, its tool summaries and what a selection copies, including text written to break out of the page, and how older entries go above those on screen without moving them.
@@ -345,6 +355,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Sources/PaneKit` is the tree of panes behind the conversation area and the ready-made layouts; the app's `Workspace.swift` keeps it and draws it.
 - `app/Sources/ComposeKit` is what Return does in the fields that send a message (`sendsOnReturn`, used in place of `onSubmit`).
 - `app/Sources/WindowKit` is how the app's windows get their smallest size (`windowMinimum`), and the watch that names a view whose size does not settle (`SizeWatch`).
+- `app/Sources/FileLinkKit` is what a file linked in a conversation is once its path is made whole, and what a click and the link's menu do with it ([transcript.md](transcript.md#files-on-this-mac)).
 
 ## Conventions
 

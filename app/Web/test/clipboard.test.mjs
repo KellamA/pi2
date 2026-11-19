@@ -11,6 +11,13 @@ test("prose keeps its shape", () => {
 	assert.equal(text, "Title\n\nA bold link (https://x.com) and code.\n\n- one\n- two\n  1. nested\n  2. again\n\n> quoted\n> lines\n\n---\n\nEnd");
 });
 
+test("a file link copies with its path, as a web link with its address (#451)", () => {
+	assert.equal(C.plainText(answer("Wrote [the report](</tmp/Q3 report.pdf>) and [](/tmp/x.md).")), "Wrote the report (/tmp/Q3 report.pdf) and x.md (/tmp/x.md).");
+	const fragment = md.render(document, "[r](/tmp/r.pdf)");
+	C.cleanForHTML(fragment, document);
+	assert.equal(html(fragment), "<p><a>r</a></p>", "no path is kept as an attribute in rich text");
+});
+
 test("code copies exactly, without its header", () => {
 	const source = "```py\ndef f():\n\treturn  1\n\n\n# end\n```";
 	assert.equal(C.plainText(answer(source)), "def f():\n\treturn  1\n\n\n# end");

@@ -73,6 +73,11 @@ enum TranscriptAction: Equatable {
     /// Open, or save a copy of, the document a `write_document` call wrote: named by the call's entry, never by a path.
     case openDocument(entry: Int)
     case saveDocument(entry: Int)
+    /// A click on a link to a file on this Mac (#451): the target as the answer wrote it, which the app makes whole.
+    case showFile(String)
+    /// A right-click: on a file link or a path written as code (`code`), whose items go at the top of the menu WebKit
+    /// is about to show; or, with no path, on anything else.
+    case fileMenu(path: String?, code: Bool)
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
@@ -144,6 +149,16 @@ enum TranscriptAction: Equatable {
         case "openDocument", "saveDocument":
             guard let entry = Self.integer(body["entry"]) else { return nil }
             self = type == "openDocument" ? .openDocument(entry: entry) : .saveDocument(entry: entry)
+        case "showFile":
+            guard let path = Self.fileTarget(body["path"]) else { return nil }
+            self = .showFile(path)
+        case "fileMenu":
+            if body["path"] == nil {
+                self = .fileMenu(path: nil, code: false)
+            } else {
+                guard let path = Self.fileTarget(body["path"]) else { return nil }
+                self = .fileMenu(path: path, code: body["code"] as? Bool == true)
+            }
         default:
             return nil
         }
@@ -162,6 +177,14 @@ enum TranscriptAction: Equatable {
         default:
             return nil
         }
+    }
+
+    /// A file link's target as the page sends it: text of a reasonable length with nothing unprintable. Which file it
+    /// names, if any, is `FileLink.path`'s to say.
+    static func fileTarget(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty, text.utf16.count <= 4096,
+              text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        return text
     }
 
     /// A name the page offers for a file, which the save panel shows and the person can change: one name, no folder,
@@ -207,6 +230,9 @@ final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate 
     var onReload: () -> Void = {}
     /// The view's appearance changed, so the page needs the palette again.
     var onAppearanceChange: () -> Void = {}
+    /// Items for the menu WebKit is about to show, for the file the person right-clicked (#451). The page says what
+    /// each right-click was on before WebKit asks for its menu, so these are for this menu, and are used once.
+    var fileMenuItems: (items: [(title: String, choose: () -> Void)], at: Date)?
 
     private let folder: URL
     private var page: URL { folder.appendingPathComponent("index.html") }
@@ -318,6 +344,13 @@ final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate 
         let unwanted = Self.unwantedMenuItems
         #endif
         for item in menu.items where unwanted.contains(item.identifier?.rawValue ?? "") { menu.removeItem(item) }
+        if let file = fileMenuItems, Date().timeIntervalSince(file.at) < 5, !file.items.isEmpty {
+            for (index, entry) in file.items.enumerated() {
+                menu.insertItem(ActionMenuItem(title: entry.title, choose: entry.choose), at: index)
+            }
+            menu.insertItem(.separator(), at: file.items.count)
+        }
+        fileMenuItems = nil
         // No separator at either end or twice in a row once items have gone.
         var previousWasSeparator = true
         for item in menu.items {
@@ -325,6 +358,22 @@ final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate 
         }
         if let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
     }
+}
+
+/// A menu item that does what it was given when chosen.
+private final class ActionMenuItem: NSMenuItem {
+    private let choose: () -> Void
+
+    init(title: String, choose: @escaping () -> Void) {
+        self.choose = choose
+        super.init(title: title, action: #selector(chosen), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func chosen() { choose() }
 }
 
 /// Hands the page's messages to the view without the view's own configuration keeping it alive.

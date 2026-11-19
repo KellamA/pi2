@@ -9,6 +9,11 @@ private struct TestCopyControl: NSViewRepresentable {
     let folder: URL
 
     static func folder(for model: AppModel) -> URL? {
+        home(engine: model.engine)?.appendingPathComponent("test-copy-control", isDirectory: true)
+    }
+
+    /// The data folder of the test copy this app is, or nil when it is not one that scripts/test-copy made.
+    static func home(engine: EngineClient) -> URL? {
         let bundle = Bundle.main
         guard DevelopmentBuild.isDevelopment,
               let suffix = ProcessInfo.processInfo.environment["PI2_TEST_COPY"], suffix != "dev",
@@ -19,9 +24,9 @@ private struct TestCopyControl: NSViewRepresentable {
         let expected = checkout.appendingPathComponent("app/build/test-copies/\(suffix)/pi² \(suffix).app")
         let own = DevelopmentBuild.defaults(bundleID: bundle.bundleIdentifier, applicationSupport: DevelopmentBuild.usualHome.deletingLastPathComponent())
         guard bundle.bundleURL.standardizedFileURL.path == expected.standardizedFileURL.path,
-              model.engine.dataFolder.standardizedFileURL.path == own.home.standardizedFileURL.path,
+              engine.dataFolder.standardizedFileURL.path == own.home.standardizedFileURL.path,
               !DevelopmentBuild.isSameFolder(own.home.path, as: DevelopmentBuild.usualHome) else { return nil }
-        return own.home.appendingPathComponent("test-copy-control", isDirectory: true)
+        return own.home
     }
 
     func makeNSView(context: Context) -> Control { Control(model: model, folder: folder) }
@@ -121,6 +126,33 @@ private struct TestCopyControl: NSViewRepresentable {
     }
 }
 #endif
+
+/// What a test copy does in place of what would reach beyond it: it writes it down, for a test to read.
+@MainActor
+enum TestCopyRecord {
+    /// Where a test copy writes what a file link would have shown, opened or copied (#451), one JSON object a line:
+    /// `file-links.jsonl` in its data folder. Nil in any other copy of pi², which does it.
+    static func fileLinks(engine: EngineClient) -> URL? {
+        #if PI2_DEVELOPMENT
+        TestCopyControl.home(engine: engine)?.appendingPathComponent("file-links.jsonl")
+        #else
+        nil
+        #endif
+    }
+
+    /// Adds one line to `file`.
+    static func append(_ entry: [String: Any], to file: URL) {
+        guard var line = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys, .withoutEscapingSlashes]) else { return }
+        line.append(UInt8(ascii: "\n"))
+        if let handle = try? FileHandle(forWritingTo: file) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: line)
+        } else {
+            try? line.write(to: file, options: .atomic)
+        }
+    }
+}
 
 extension View {
     func testCopyControl(model: AppModel) -> some View {

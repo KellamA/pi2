@@ -7,7 +7,7 @@ const render = (source) => html(md.render(document, source));
 
 /** Every element and attribute the renderer may make; anything else came from the input. */
 const TAGS = new Set(["p", "h1", "h2", "h3", "h4", "h5", "h6", "em", "strong", "del", "code", "pre", "a", "br", "hr", "ul", "ol", "li", "input", "span", "blockquote", "div", "table", "thead", "tbody", "tr", "th", "td", "button"]);
-const ATTRIBUTES = new Set(["class", "href", "title", "start", "type", "disabled", "checked", "aria-label", "data-nocopy", "data-action"]);
+const ATTRIBUTES = new Set(["class", "href", "title", "start", "type", "disabled", "checked", "aria-label", "data-nocopy", "data-action", "data-file", "role", "tabindex"]);
 
 function audit(node, found = { tags: new Set(), attributes: new Set(), hrefs: [] }) {
 	for (const child of node.childNodes) {
@@ -225,6 +225,84 @@ test("links go only to http, https and mailto", () => {
 	assert.match(render("[innocent](https://evil.example)"), /title="https:\/\/evil.example"/);
 	// Attribute values are escaped.
 	assert.match(render('<https://x.com/"onmouseover=alert(1)>'), /href="https:\/\/x.com\/&quot;onmouseover=alert\(1\)"/);
+});
+
+// MARK: Files on this Mac (#451)
+
+const fileLink = (path, words, className = "file-link") =>
+	`<a class="${className}" data-file="${path}" title="${path}" role="link" tabindex="0">${words}</a>`;
+
+test("a link to a file on this Mac is a link with no address, which the app follows", () => {
+	assert.equal(render("[the report](/Users/me/report.pdf)"), `<p>${fileLink("/Users/me/report.pdf", "the report")}</p>`);
+	assert.equal(render("[notes](~/Documents/notes.md)"), `<p>${fileLink("~/Documents/notes.md", "notes")}</p>`);
+	assert.equal(render("[home](~)"), `<p>${fileLink("~", "home")}</p>`);
+	assert.equal(render("[x](file:///tmp/a%20b.txt)"), `<p>${fileLink("file:///tmp/a%20b.txt", "x")}</p>`);
+	assert.equal(render("[x](file://localhost/tmp/a.txt)"), `<p>${fileLink("file://localhost/tmp/a.txt", "x")}</p>`);
+	// Spaces, in angle brackets as CommonMark has them.
+	assert.equal(render("[Q3](</Users/me/Q3 report.pdf>)"), `<p>${fileLink("/Users/me/Q3 report.pdf", "Q3")}</p>`);
+	// The link's own words, formatting and all; with none, or as an autolink, the file's name.
+	assert.equal(render("[**draft** two](/tmp/d.md)"), `<p>${fileLink("/tmp/d.md", "<strong>draft</strong> two")}</p>`);
+	assert.equal(render("[](/tmp/out/chart.png)"), `<p>${fileLink("/tmp/out/chart.png", "chart.png")}</p>`);
+	assert.equal(render("<file:///tmp/My%20Folder/>"), `<p>${fileLink("file:///tmp/My%20Folder/", "My Folder")}</p>`);
+	// A picture on this Mac is never loaded either: it becomes a link to the file.
+	assert.equal(render("![chart](/tmp/chart.png)"), `<p>${fileLink("/tmp/chart.png", "chart", "file-link image-link")}</p>`);
+	// Web links stay as they were.
+	assert.equal(render("[a](https://x.com)"), '<p><a href="https://x.com" title="https://x.com">a</a></p>');
+});
+
+test("a relative link names a file only in a conversation that has a folder", () => {
+	assert.equal(render("[readme](docs/README.md)"), "<p>readme</p>");
+	const withFolder = (source) => html(md.render(document, source, { folder: true }));
+	assert.equal(withFolder("[readme](docs/README.md)"), `<p>${fileLink("docs/README.md", "readme")}</p>`);
+	assert.equal(withFolder("[up](../x.txt)"), `<p>${fileLink("../x.txt", "up")}</p>`);
+	assert.equal(withFolder("[a](#heading) [b](?q=1) [c](~someone/x)"), "<p>a b c</p>");
+	// patch draws a block again once the conversation has a folder.
+	const box = document.createElement("div");
+	md.patch(document, box, "[readme](docs/README.md)");
+	assert.equal(box.innerHTML, "<p>readme</p>");
+	md.patch(document, box, "[readme](docs/README.md)", { folder: true });
+	assert.equal(box.innerHTML, `<p>${fileLink("docs/README.md", "readme")}</p>`);
+});
+
+test("only file targets on this Mac: no other scheme, host or network path", () => {
+	for (const target of [
+		"file://server/share/x.pdf", "file:////server/x", "FILE://host/x", "smb://server/share", "afp://server/x", "nfs://server/x",
+		"//server/share/x", "x-apple.systempreferences:x", "javascript:alert(1)", "vnc://host", "C:\\Users\\x", "",
+	]) {
+		assert.equal(md.fileTarget(target, { folder: true }), null, target);
+		assert.ok(!render(`[x](<${target}>)`).includes("data-file"), target);
+	}
+	assert.equal(md.fileTarget("/tmp/a\u0000b"), null, "control characters");
+	assert.equal(md.fileTarget("relative/x", {}), null);
+	assert.equal(md.fileTarget("  /tmp/x  "), "/tmp/x");
+	assert.equal(md.fileTarget("/" + "a".repeat(5000)), null, "too long");
+	// What the page draws is only ever text and these attributes: no address, no markup from the path.
+	const found = assertSafe('[x](</tmp/"><img src=x onerror=1>.txt>) ![y](</tmp/"onmouseover=1>)');
+	assert.deepEqual(found.hrefs, []);
+	assert.match(render('[x](</tmp/"q".txt>)'), /data-file="\/tmp\/&quot;q&quot;.txt"/);
+});
+
+test("a path written as code is marked for the menu, by its text alone", () => {
+	assert.equal(render("See `~/Documents/report.pdf`."), '<p>See <code data-file="~/Documents/report.pdf">~/Documents/report.pdf</code>.</p>');
+	assert.equal(render("`/usr/local/bin`"), '<p><code data-file="/usr/local/bin">/usr/local/bin</code></p>');
+	for (const code of ["npm test", "src/app.ts", "//comment", "/", "~", "~user/x", "http://x.com/a"]) {
+		assert.equal(render("`" + code + "`"), `<p><code>${code}</code></p>`, code);
+	}
+	// Inside a link, code is the link's words, not a file of its own.
+	assert.equal(render("[`/tmp/x`](https://x.com)"), '<p><a href="https://x.com" title="https://x.com"><code>/tmp/x</code></a></p>');
+	// A fenced block is not a span.
+	assert.ok(!render("```\n/tmp/x\n```").includes("data-file"));
+});
+
+test("what a click or a right-click is about", () => {
+	const tree = md.render(document, "A [**report**](/tmp/r.pdf), `~/notes.md`, [web](https://x.com) and `npm test`.");
+	const p = tree.firstChild;
+	const [link, , code, , web, , plain] = p.childNodes.filter((node) => node.nodeType === 1 || node.nodeType === 3).slice(1);
+	assert.deepEqual(md.fileUnder(link.firstChild.firstChild), { path: "/tmp/r.pdf", code: false }, "the words inside a file link");
+	assert.deepEqual(md.fileUnder(code.firstChild), { path: "~/notes.md", code: true });
+	assert.equal(md.fileUnder(web), null);
+	assert.equal(md.fileUnder(plain), null);
+	assert.equal(md.fileUnder(p), null);
 });
 
 test("broken and half-arrived Markdown never throws and stays readable", () => {

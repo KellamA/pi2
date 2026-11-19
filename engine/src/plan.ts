@@ -61,6 +61,15 @@ const GUIDE = [
 	"Each call replaces the whole list, so send it again when the plan changes. Keep items to short phrases. Do not use it for a single quick answer.",
 ].join(" ");
 
+/**
+ * What an agent is told about linking files (#451): the page draws a Markdown link to a path on this Mac as a link that
+ * shows the file in Finder. Said here, in a section every conversation with tools has, chats included, and that stays
+ * the same from one request to the next; one sentence, since a model told more links every path it mentions.
+ */
+export const FILE_LINK_NOTE =
+	"When you name a file or folder you made or changed for the person to look at (not every path you mention), link it in Markdown to its full path, " +
+	"in angle brackets if it has spaces, as in [Q3 report.pdf](<~/Documents/Q3 report.pdf>): clicking it shows it in Finder.";
+
 export const plan: Feature = (_host, engine) => {
 	read = async (id) => {
 		const doc = await engine.harness().snapshot(PlanDoc, id, engine.context());
@@ -93,11 +102,13 @@ export const plan: Feature = (_host, engine) => {
 		tools: [updatePlan],
 		toolNames: () => ["update_plan"],
 		// How to work through steps: with the list, and with the calls of one answer (order.ts), which is said here because
-		// this section is in every conversation that has tools. Without update_plan it still says the second.
+		// this section is in every conversation that has tools; and, for the same reason, how to link a file. Without
+		// update_plan it still says the other two.
 		sections: [
 			section("task_list", (input) => {
 				if (input.agent.tools.length === 0) return undefined;
-				return input.agent.tools.some((tool) => tool.name === "update_plan") ? `${GUIDE}\n${ORDER_NOTE}` : ORDER_NOTE;
+				const always = `${ORDER_NOTE}\n${FILE_LINK_NOTE}`;
+				return input.agent.tools.some((tool) => tool.name === "update_plan") ? `${GUIDE}\n${always}` : always;
 			}),
 		],
 		state: (view) => ({ plan: known.get(view.conversation.id as unknown as number) ?? null }),

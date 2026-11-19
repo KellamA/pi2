@@ -556,7 +556,7 @@
 				const uri = /^<([a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^\s<>\u0000-\u001f]*)>/.exec(rest);
 				if (uri) {
 					flush();
-					nodes.push({ type: "link", href: uri[1], title: null, children: [{ type: "text", text: uri[1] }] });
+					nodes.push({ type: "link", href: uri[1], title: null, auto: true, children: [{ type: "text", text: uri[1] }] });
 					i += uri[0].length;
 					continue;
 				}
@@ -800,6 +800,72 @@
 		return null;
 	}
 
+	/**
+	 * A link's target, as written, when it names a file or folder on this Mac (#451), or null: an absolute path, one
+	 * starting with `~/`, a `file:` address with no host but this Mac's, or, when the conversation has a folder
+	 * (`options.folder`), a path relative to it. Nothing here looks at the disk: the app makes the path whole and checks
+	 * it only when the person clicks. Never a web address, which `safeURL` takes first, nor any other scheme.
+	 */
+	function fileTarget(raw, options) {
+		if (typeof raw !== "string") return null;
+		const target = raw.trim();
+		if (target.length === 0 || target.length > 4096 || /[\u0000-\u001f\u007f]/.test(target)) return null;
+		if (/^file:/i.test(target)) return /^file:\/\/(?:localhost)?\/(?!\/)/i.test(target) ? target : null;
+		if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//")) return null;
+		if (target === "~" || target.startsWith("~/") || target.startsWith("/")) return target;
+		// A fragment, a query, or another person's home folder (~name) is not a path pi² follows.
+		if (/^[#?~]/.test(target)) return null;
+		return options && options.folder === true ? target : null;
+	}
+
+	/** A code span's text when it reads as an absolute path or one starting with `~/`, by its text alone; else null. */
+	function codePath(text) {
+		if (typeof text !== "string" || text.length < 2 || text.length > 1024) return null;
+		if (!(text.startsWith("~/") || (text.startsWith("/") && !text.startsWith("//")))) return null;
+		return /[\u0000-\u001f\u007f]/.test(text) ? null : text;
+	}
+
+	/**
+	 * The file a click or a right-click on `node` is about, as the page drew it: `{ path, code }`, `code` true for a path
+	 * written as code, which has the menu but is no link; or null for anything else.
+	 */
+	function fileUnder(node) {
+		for (let el = node; el; el = el.parentNode) {
+			if (el.nodeType !== 1 || !el.hasAttribute("data-file")) continue;
+			const raw = el.getAttribute("data-file");
+			const code = el.localName === "code";
+			// The link was drawn only where its target may be followed, so a relative one here had a folder.
+			const path = code ? codePath(raw) : el.localName === "a" ? fileTarget(raw, { folder: true }) : null;
+			return path === null ? null : { path, code };
+		}
+		return null;
+	}
+
+	/** The last part of a file target, for a link that has no words of its own. */
+	function fileName(target) {
+		let path = target;
+		if (/^file:/i.test(path)) {
+			path = path.replace(/^file:\/\/(?:localhost)?/i, "");
+			try {
+				path = decodeURIComponent(path);
+			} catch {
+				// Left as written.
+			}
+		}
+		const parts = path.split("/").filter((part) => part !== "");
+		return parts.length > 0 ? parts[parts.length - 1] : target;
+	}
+
+	/** A link to a file: no address, so WebKit treats it as no link of its own; the page hands a click to the app. */
+	function fileLink(doc, target, className) {
+		const a = element(doc, "a", className);
+		a.setAttribute("data-file", target);
+		a.setAttribute("title", target);
+		a.setAttribute("role", "link");
+		a.setAttribute("tabindex", "0");
+		return a;
+	}
+
 	// MARK: - Rendering
 
 	function element(doc, tag, className) {
@@ -808,7 +874,13 @@
 		return el;
 	}
 
-	function renderInline(doc, nodes, parent, inLink = false) {
+	/**
+	 * Renders inline nodes into `parent`. `options.folder`: whether the conversation has a folder, against which a
+	 * relative link names a file.
+	 */
+	function renderInline(doc, nodes, parent, options = {}) {
+		const inLink = options.inLink === true;
+		const inside = inLink ? options : { ...options, inLink: true };
 		for (const node of nodes) {
 			switch (node.type) {
 				case "text":
@@ -816,6 +888,9 @@
 					break;
 				case "code": {
 					const code = element(doc, "code");
+					// A path written as code gets the menu a file link has, once the app has found it there (#451).
+					const path = inLink ? null : codePath(node.text);
+					if (path !== null) code.setAttribute("data-file", path);
 					code.appendChild(doc.createTextNode(node.text));
 					parent.appendChild(code);
 					break;
@@ -824,7 +899,7 @@
 				case "strong":
 				case "del": {
 					const el = element(doc, node.type);
-					renderInline(doc, node.children, el, inLink);
+					renderInline(doc, node.children, el, options);
 					parent.appendChild(el);
 					break;
 				}
@@ -835,21 +910,38 @@
 					break;
 				case "link": {
 					const url = inLink ? null : safeURL(node.href);
+					const file = inLink || url !== null ? null : fileTarget(node.href, options);
+					if (file !== null) {
+						const a = fileLink(doc, file, "file-link");
+						// An autolink (<file:///…>) or empty words show the file's name rather than the whole address.
+						if (node.auto || inlineText(node.children).trim() === "") a.appendChild(doc.createTextNode(fileName(file)));
+						else renderInline(doc, node.children, a, inside);
+						parent.appendChild(a);
+						break;
+					}
 					if (url === null) {
-						renderInline(doc, node.children, parent, inLink);
+						renderInline(doc, node.children, parent, options);
 						break;
 					}
 					const a = element(doc, "a");
 					a.setAttribute("href", url);
 					a.setAttribute("title", url);
-					renderInline(doc, node.children, a, true);
+					renderInline(doc, node.children, a, inside);
 					parent.appendChild(a);
 					break;
 				}
 				case "image": {
-					// Pictures are never fetched: the page makes no requests. A web picture becomes a link to it.
+					// Pictures are never fetched: the page makes no requests. A web picture becomes a link to it, and a
+					// picture on this Mac a link to the file.
 					const alt = inlineText(node.children);
 					const url = inLink ? null : safeURL(node.href);
+					const file = inLink || url !== null ? null : fileTarget(node.href, options);
+					if (file !== null) {
+						const a = fileLink(doc, file, "file-link image-link");
+						a.appendChild(doc.createTextNode(alt || fileName(file)));
+						parent.appendChild(a);
+						break;
+					}
 					if (url === null || /^mailto:/i.test(url)) {
 						if (alt) parent.appendChild(doc.createTextNode(alt));
 						break;
@@ -895,23 +987,23 @@
 		return box;
 	}
 
-	function renderBlock(doc, block) {
+	function renderBlock(doc, block, options = {}) {
 		switch (block.type) {
 			case "paragraph": {
 				const p = element(doc, "p");
-				renderInline(doc, parseInline(block.text), p);
+				renderInline(doc, parseInline(block.text), p, options);
 				return p;
 			}
 			case "heading": {
 				const h = element(doc, "h" + block.level);
-				renderInline(doc, parseInline(block.text), h);
+				renderInline(doc, parseInline(block.text), h, options);
 				return h;
 			}
 			case "code":
 				return renderCode(doc, block);
 			case "quote": {
 				const quote = element(doc, "blockquote");
-				for (const child of block.children) quote.appendChild(renderBlock(doc, child));
+				for (const child of block.children) quote.appendChild(renderBlock(doc, child, options));
 				return quote;
 			}
 			case "list": {
@@ -931,10 +1023,10 @@
 					for (const child of item.children) {
 						if (!block.loose && child.type === "paragraph") {
 							const span = element(doc, "span", "li-text");
-							renderInline(doc, parseInline(child.text), span);
+							renderInline(doc, parseInline(child.text), span, options);
 							li.appendChild(span);
 						} else {
-							li.appendChild(renderBlock(doc, child));
+							li.appendChild(renderBlock(doc, child, options));
 						}
 					}
 					list.appendChild(li);
@@ -948,7 +1040,7 @@
 				const headRow = element(doc, "tr");
 				block.head.forEach((cell, column) => {
 					const th = element(doc, "th", block.align[column] ? "align-" + block.align[column] : "");
-					renderInline(doc, parseInline(cell), th);
+					renderInline(doc, parseInline(cell), th, options);
 					headRow.appendChild(th);
 				});
 				head.appendChild(headRow);
@@ -959,7 +1051,7 @@
 						const tr = element(doc, "tr");
 						row.forEach((cell, column) => {
 							const td = element(doc, "td", block.align[column] ? "align-" + block.align[column] : "");
-							renderInline(doc, parseInline(cell), td);
+							renderInline(doc, parseInline(cell), td, options);
 							tr.appendChild(td);
 						});
 						body.appendChild(tr);
@@ -976,9 +1068,9 @@
 	}
 
 	/** Renders Markdown into a fragment of new elements. */
-	function render(doc, source) {
+	function render(doc, source, options = {}) {
 		const fragment = doc.createDocumentFragment();
-		for (const block of parse(source)) fragment.appendChild(renderBlock(doc, block));
+		for (const block of parse(source)) fragment.appendChild(renderBlock(doc, block, options));
 		return fragment;
 	}
 
@@ -986,15 +1078,17 @@
 	 * Brings `container`'s children in line with `source`, replacing only the blocks that changed. A streaming answer
 	 * re-renders its last paragraph many times a second; the ones above it, and any text selected in them, stay put.
 	 */
-	function patch(doc, container, source) {
+	function patch(doc, container, source, options = {}) {
 		const blocks = parse(source);
+		// The same block draws otherwise once the conversation has a folder, which relative file links need.
+		const tag = options.folder === true ? "f" : "";
 		const existing = [];
 		for (let child = container.firstChild; child; child = child.nextSibling) existing.push(child);
 		blocks.forEach((block, index) => {
-			const key = JSON.stringify(block);
+			const key = tag + JSON.stringify(block);
 			const old = existing[index];
 			if (old && old.__mdKey === key) return;
-			const el = renderBlock(doc, block);
+			const el = renderBlock(doc, block, options);
 			el.__mdKey = key;
 			if (old) container.replaceChild(el, old);
 			else container.appendChild(el);
@@ -1003,5 +1097,5 @@
 		return blocks.length;
 	}
 
-	return { parse, parseInline, inlineText, render, renderInline, renderBlock, patch, safeURL };
+	return { parse, parseInline, inlineText, render, renderInline, renderBlock, patch, safeURL, fileTarget, codePath, fileUnder };
 });

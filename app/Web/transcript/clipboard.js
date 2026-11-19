@@ -125,7 +125,8 @@
 			case "a": {
 				const text = sub(node, context);
 				writer.text(text);
-				const href = node.getAttribute("href") || "";
+				// A file link (#451) has no address; its path goes after its words as a web link's address does.
+				const href = node.getAttribute("href") || node.getAttribute("data-file") || "";
 				const shown = text.trim();
 				if (href && shown !== href && !(href.startsWith("mailto:") && shown === href.slice(7)) && shown !== href.replace(/^https?:\/\//, "")) {
 					writer.text(` (${href})`);

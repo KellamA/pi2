@@ -192,8 +192,8 @@ try {
 	// Without the task list, the sentence about calls sent together still comes, in the same section.
 	await agentOf({ ...builder, id: builderId, toolsOff: ["files", "documents", "ask", "plan", "web"] });
 	const noPlan = await client.answer(built, "/system task_list");
-	assert.ok(!noPlan.includes("update_plan") && noPlan.includes("belong together in one answer") && !noPlan.includes("Use update_plan"), noPlan);
-	step("without the task list, the calls of one answer are still explained");
+	assert.ok(!noPlan.includes("update_plan") && noPlan.includes("belong together in one answer") && noPlan.includes("shows it in Finder") && !noPlan.includes("Use update_plan"), noPlan);
+	step("without the task list, the calls of one answer and how to link a file are still explained");
 
 	// The web tools come with the browser, and the list can leave them out while the browser stays.
 	await agentOf({ ...builder, id: builderId, browser: { enabled: true }, toolsOff: [] });
