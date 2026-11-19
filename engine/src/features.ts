@@ -52,6 +52,9 @@ export type Engine = {
 	library(): { conversations: Record<string, Meta> };
 	/** Chat mode's settings as they are now (chat.ts). */
 	chatSettings(): ChatSettings;
+	/** The person's choice for Make pictures, across chats and agents. Null lets pi² choose. */
+	pictureModel(): ModelRef | null;
+	setPictureModel(model: ModelRef | null): void;
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */

@@ -53,6 +53,7 @@ import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
+import { pictureUsageModel } from "./pictures.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { subChatUsage } from "./subchatusage.ts";
@@ -254,6 +255,11 @@ const engine: Engine = {
 	agents: () => agents,
 	library: () => library,
 	chatSettings: () => chatSettings(settings.chat),
+	pictureModel: () => settings.pictureModel ?? null,
+	setPictureModel: (model) => {
+		settings.pictureModel = model;
+		saveSettings();
+	},
 	providers: () => providers,
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
@@ -417,6 +423,7 @@ const settings: {
 	defaultCompactionTokens?: number | null;
 	/** Chat mode's settings (chat.ts); read through `chatSettings`, which gives the defaults for what is missing. */
 	chat?: ChatSettings;
+	pictureModel?: ModelRef | null;
 	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
 	lastChatModel?: ModelRef;
 } = (() => {
@@ -2176,24 +2183,51 @@ function refreshUsage(): Promise<void> {
 	return refresh;
 }
 
+type UsageCounters = { input: number; output: number; totalTokens: number; cost: { total: number } };
+const emptyUsage = (): UsageCounters => ({ input: 0, output: 0, totalTokens: 0, cost: { total: 0 } });
+function addUsageCounters(sum: UsageCounters, value: UsageJson): void {
+	sum.input += value.input ?? 0;
+	sum.output += value.output ?? 0;
+	sum.totalTokens += value.totalTokens ?? 0;
+	sum.cost.total += value.cost?.total ?? 0;
+}
+
 function sessionUsage(): UsageDocShape {
 	// As in Harness.usage(), add each model/tool in durable conversation ID order, including conversations not in
 	// the library. Keep raw costs here: rounding after per-conversation pricing can change the session total.
-	type Counters = { input: number; output: number; totalTokens: number; cost: { total: number } };
-	const models: Record<string, Counters> = Object.create(null);
-	const tools: Record<string, Counters> = Object.create(null);
+	const models: Record<string, UsageCounters> = Object.create(null);
+	const tools: Record<string, UsageCounters> = Object.create(null);
 	for (const [, { doc }] of [...usageById].sort(([a], [b]) => Number(a) - Number(b))) {
 		for (const [source, target] of [[doc.models, models], [doc.tools, tools]] as const) {
 			for (const [key, value] of Object.entries(source ?? {})) {
-				const sum = (target[key] ??= { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } });
-				sum.input += value.input ?? 0;
-				sum.output += value.output ?? 0;
-				sum.totalTokens += value.totalTokens ?? 0;
-				sum.cost.total += value.cost?.total ?? 0;
+				addUsageCounters(target[key] ??= emptyUsage(), value);
 			}
 		}
 	}
 	return { models, tools };
+}
+
+/** Project picture rows from the tool ledger, without adding a second copy of the spend to model totals. */
+function pictureRows(tools: UsageDocShape["tools"]) {
+	const rows = new Map<string, { usage: UsageCounters; unpriced: boolean }>();
+	for (const [bucket, usage] of Object.entries(tools ?? {})) {
+		const model = pictureUsageModel(bucket);
+		if (model === undefined) continue;
+		const row = rows.get(model.key) ?? { usage: emptyUsage(), unpriced: false };
+		addUsageCounters(row.usage, usage);
+		row.unpriced ||= model.unpriced;
+		rows.set(model.key, row);
+	}
+	return [...rows].map(([key, { usage, unpriced }]) => {
+		const slash = key.indexOf("/");
+		const provider = key.slice(0, slash);
+		const model = providers.models.getModelOfType("image", provider, key.slice(slash + 1));
+		const providerName = providers.models.getProvider(provider)?.name ?? provider;
+		return {
+			key, input: usage.input, output: usage.output, tokens: usage.totalTokens, cost: usage.cost.total, unpriced,
+			pictureName: model === undefined ? key : `${providerName} · ${model.name}`,
+		};
+	});
 }
 
 let session: UsageDocShape = {};
@@ -2266,9 +2300,10 @@ async function updateUsage(): Promise<void> {
 	}
 	usageSummary = {
 		event: "usage",
-		models: Object.entries(session.models ?? {})
-			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) }))
-			.sort((x, y) => y.tokens - x.tokens),
+		models: [
+			...Object.entries(session.models ?? {}).map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) })),
+			...pictureRows(session.tools),
+		].sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		chats,
 		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),
