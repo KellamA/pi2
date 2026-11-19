@@ -25,6 +25,7 @@ import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
 import type { Engine, Feature } from "./features.ts";
 import { duration, type EpisodeChange } from "./limitwait.ts";
 import { plainMoment } from "./selfschedule.ts";
+import { agentOf } from "./state.ts";
 
 // ---- What the app is sent
 
@@ -968,7 +969,7 @@ class LimitsTracker {
 		return ids.flatMap((id) => {
 			const meta = conversations[String(id)];
 			if (meta === undefined) return [];
-			return [{ conversationId: id, rootConversationId: meta.parent ?? id, title: meta.title, agentName: (meta.agentId === undefined ? undefined : agents[meta.agentId]?.name) ?? null, subChat: meta.parent !== undefined }];
+			return [{ conversationId: id, rootConversationId: meta.parent ?? id, title: meta.title, agentName: agentOf(meta, agents)?.name ?? null, subChat: meta.parent !== undefined }];
 		});
 	}
 
@@ -1173,7 +1174,7 @@ class LimitsTracker {
 				conversationId: id,
 				rootConversationId: meta.parent ?? id,
 				title: meta.title,
-				agentName: (meta.agentId === undefined ? undefined : agents[meta.agentId]?.name) ?? null,
+				agentName: agentOf(meta, agents)?.name ?? null,
 				subChat: meta.parent !== undefined,
 			});
 			byProvider.set(provider, runs);

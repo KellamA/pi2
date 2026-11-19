@@ -7,6 +7,7 @@ import { AgentDoc, defineDoc, defineTool, section } from "@earendil-works/pi-dur
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { isChat } from "./chat.ts";
 import type { Feature } from "./features.ts";
+import { runsAs } from "./state.ts";
 
 // ---- Project instructions
 
@@ -225,7 +226,9 @@ export const knowledge: Feature = (host, engine) => {
 	const ownerOf = (conversationId: unknown): Owner | undefined => {
 		const meta = host.meta(conversationId as never);
 		if (isChat(meta)) return engine.chatSettings().memory ? CHAT : undefined;
-		return enabledFor(meta?.agentId) ? { chat: false, agentId: meta!.agentId! } : undefined;
+		// The notes of the agent it runs as (docs/projects.md, 3.4): its `agentId`, but for a conversation carried over.
+		const agentId = runsAs(meta, engine.agents());
+		return enabledFor(agentId) ? { chat: false, agentId: agentId! } : undefined;
 	};
 	const memoryOff = (conversationId: unknown) =>
 		text(isChat(host.meta(conversationId as never)) ? "Memory is turned off for chats." : "Memory is turned off for this agent.");

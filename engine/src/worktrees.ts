@@ -28,7 +28,7 @@ import type { MadeWorktree } from "./rules.ts";
 import { forAgent } from "./priority.ts";
 import { scratchVariable } from "./scratch.ts";
 import { agentVariables } from "./variables.ts";
-import type { AgentProfile } from "./state.ts";
+import { type AgentProfile, agentOf } from "./state.ts";
 import { stopCommandsIn } from "./background.ts";
 import { forgetRun, type LeftOver, leftOverLog, newRun, noteProcess, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
@@ -846,7 +846,7 @@ export const worktrees: Feature = (_host, engine) => {
 		await setFolder(id, target);
 		engine.log("worktree made for conversation", id, "on", branch);
 		// The agent's set-up command, written for the agent's own repository, so run only in a worktree of that one.
-		const agent = engine.agents()[meta?.agentId ?? ""];
+		const agent = agentOf(meta, engine.agents());
 		const command = agent?.setup?.trim() ?? "";
 		const theirs = command === "" || agent?.cwd == null ? undefined : await repoOf(agent.cwd);
 		if (theirs !== undefined && realish(theirs.commonDir) === realish(repo.commonDir)) {
