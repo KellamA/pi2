@@ -30,6 +30,10 @@ Usage: scripts/issue <command> [arguments]
   audit [--since DATE]                     List what is wrong on the board; exits 1 if anything
                                            is (changes nothing). DATE limits the check for a
                                            missing Done summary to issues closed since then.
+
+A text can be given as --body-file FILE instead, for a long one that should not
+pass through the shell: in place of -b for start and idea, and in place of the
+text for note, wait, block, done and drop. Give a text or a file, not both.
 EOF
 }
 
@@ -71,18 +75,53 @@ AUDIT_SINCE=2026-11-17T04:00:00Z
 
 need_number() { [[ ${1-} =~ ^[0-9]+$ ]] || die "expected an issue number, got '${1-}'"; }
 
+# A long text goes in a file given with --body-file rather than in the command,
+# since a body with backticks in a shell argument or here-document can be run as
+# commands. Both ways put the text in $text. A file that is not there, or cannot
+# be read, is an error naming it, before anything is asked of GitHub.
+read_body_file() {
+	local f=$1
+	[[ -f $f && -r $f ]] || die "cannot read the body file $f"
+	text=$(<"$f")
+}
+
+# The text that follows an issue number: given directly, or with --body-file.
+read_text() {
+	local file=""
+	text=""
+	while (($#)); do
+		case $1 in
+			--body-file)
+				[[ -z $file ]] || die "one --body-file at most"
+				file=${2-}; shift 2 || die "--body-file needs a file name"
+				;;
+			*)
+				[[ -z $text ]] || die "expected one text"
+				text=$1; shift ;;
+		esac
+	done
+	[[ -z $text || -z $file ]] || die "give the text or --body-file, not both"
+	[[ -z $file ]] || read_body_file "$file"
+}
+
 create() {
 	local status=$1; shift
 	local title=${1-}; shift || true
 	[[ -n $title ]] || die "a title is required"
-	local body="" labels=(agent "$status")
+	local body="" body_file="" labels=(agent "$status")
 	while (($#)); do
 		case $1 in
 			-b|--body) body=$2; shift 2 ;;
+			--body-file) body_file=${2-}; shift 2 || die "--body-file needs a file name" ;;
 			-l|--label) labels+=("$2"); shift 2 ;;
 			*) die "unknown option $1" ;;
 		esac
 	done
+	[[ -z $body || -z $body_file ]] || die "give -b or --body-file, not both"
+	if [[ -n $body_file ]]; then
+		read_body_file "$body_file"
+		body=$text
+	fi
 	local footer
 	if [[ $status == "backlog" ]]; then
 		footer="_Filed by an agent session on branch \`$(branch)\`._"
@@ -124,25 +163,25 @@ case $cmd in
 		echo "[pi2-issue] working on #$1 $(gh issue view "$1" --json url -q .url)"
 		;;
 	note)
-		need_number "${1-}"; [[ -n ${2-} ]] || die "note text is required"
-		gh issue comment "$1" --body "$(clean "$2")" >/dev/null
+		need_number "${1-}"; read_text "${@:2}"; [[ -n $text ]] || die "note text is required"
+		gh issue comment "$1" --body "$(clean "$text")" >/dev/null
 		echo "Noted on #$1."
 		;;
 	wait|block)
-		need_number "${1-}"; [[ -n ${2-} ]] || die "say what it is waiting on"
+		need_number "${1-}"; read_text "${@:2}"; [[ -n $text ]] || die "say what it is waiting on"
 		if [[ $cmd == wait ]]; then label=waiting; title=Waiting; else label=blocked; title=Blocked; fi
 		set_status "$1" "$label"
-		gh issue comment "$1" --body "$(clean "**$title:** $2")" >/dev/null
+		gh issue comment "$1" --body "$(clean "**$title:** $text")" >/dev/null
 		echo "[pi2-issue] paused #$1 ($label)"
 		;;
 	done|drop)
-		need_number "${1-}"; [[ -n ${2-} ]] || die "a summary is required"
+		need_number "${1-}"; read_text "${@:2}"; [[ -n $text ]] || die "a summary is required"
 		sha=$(git rev-parse --short HEAD 2>/dev/null || true)
 		if [[ $cmd == done ]]; then
-			msg="**Done.** $2"$'\n\n'"Branch \`$(branch)\`${sha:+, at $sha}."
+			msg="**Done.** $text"$'\n\n'"Branch \`$(branch)\`${sha:+, at $sha}."
 			reason=completed api_reason=completed gh_reason=COMPLETED
 		else
-			msg="**Not going ahead.** $2"
+			msg="**Not going ahead.** $text"
 			reason="not planned" api_reason=not_planned gh_reason=NOT_PLANNED
 		fi
 		# The issue is usually closed already, by a pull request with "Fixes #N",
