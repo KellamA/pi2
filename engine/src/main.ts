@@ -60,6 +60,7 @@ import { subChatUsage } from "./subchatusage.ts";
 import { messageSent } from "./heed.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
+import { claim } from "./needs.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
@@ -1005,8 +1006,13 @@ function inboxEvent() {
 	});
 	return { event: "inbox", items };
 }
-inbox.onChange = () => {
+/** Send the Inbox again, and tell the features that show it (Needs you, needs.ts). */
+function announceInbox() {
 	broadcast(inboxEvent());
+	for (const feature of host.features) feature.inboxChanged?.();
+}
+inbox.onChange = () => {
+	announceInbox();
 	announceActivity();
 };
 
@@ -1909,17 +1915,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		broadcast(recoveryEvent());
 		return {};
 	},
+	// Answered through `claim` (needs.ts), as every answer to what waits for the person is, by whichever route.
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
 		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
-		const id = text(params, "id");
-		const item = inbox.get(id);
-		if (item === undefined) throw new Error("That request is no longer waiting");
-		// "rule" carries no words: the rule is the one the engine offered with the request.
-		if (decision === "rule" && item.rule === undefined) throw new Error("That request did not offer an allowed command");
-		// A project's switch that is off asks to allow one action at a time (projects.ts, `requireSwitch`).
-		if (item.projectSwitch !== undefined && decision !== "once" && decision !== "deny") throw new Error("This can only be allowed once, or denied: the project's settings ask each time");
-		if (!inbox.answer(id, decision)) throw new Error("That request is no longer waiting");
+		await claim(text(params, "id"), { kind: "approval", decision: decision as "once" | "always" | "rule" | "deny" });
 		return {};
 	},
 	/** A rule typed in an agent's settings: `command` is its words, such as "npm test". */
@@ -1939,7 +1939,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"inbox.answer": async (params) => {
 		const answer = text(params, "text");
 		if (answer.trim() === "") throw new Error("The answer is empty");
-		if (!inbox.answer(text(params, "id"), answer)) throw new Error("That question is no longer waiting");
+		await claim(text(params, "id"), { kind: "question", text: answer });
 		return {};
 	},
 
@@ -2066,7 +2066,7 @@ libraryWatch.start(async (call) => {
 	library = call.value;
 	if (usageRowsChanged(before, library.conversations)) scheduleUsageRefresh();
 	broadcast(libraryEvent());
-	broadcast(inboxEvent()); // titles shown in the inbox come from here
+	announceInbox(); // titles shown in the inbox come from here
 	const now = putAway();
 	if (now !== wasPutAway) {
 		wasPutAway = now;
@@ -2098,7 +2098,7 @@ agentsWatch.start(async (call) => {
 	if (call.kind !== "value") return;
 	agents = call.value.agents;
 	broadcast(agentsEvent());
-	broadcast(inboxEvent());
+	announceInbox();
 });
 // Features start once the conversations and agents are loaded, before any schedule is armed: what one writes into a
 // transcript as it starts (a background command the last engine left, a set-up cut short) sets the last engine's

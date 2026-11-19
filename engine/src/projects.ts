@@ -591,6 +591,8 @@ export const projects: Feature = (host, engine) => {
 				engine.saveSetting("projects", { preview: on });
 				engine.log(`projects preview ${on ? "on" : "off"}`);
 				announce();
+				// What other features send that depends on it, such as Needs you's list (#462), is sent again.
+				for (const feature of host.features) feature.previewChanged?.(on);
 				return { preview, carryOver };
 			},
 			/**
