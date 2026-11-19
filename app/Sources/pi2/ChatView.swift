@@ -820,6 +820,7 @@ struct ThinkingView: View {
                 Text(streaming ? "Thinking…" : "Thought").foregroundStyle(Theme.tx2)
             }
             .font(.system(size: 12.5))
+            .pressableDisclosure($expanded)
         }
     }
 }

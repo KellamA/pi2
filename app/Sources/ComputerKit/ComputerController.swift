@@ -66,6 +66,7 @@ public actor ComputerController {
         case "key": return await key(request, running: running, bundleID: bundleID)
         case "scroll": return await scroll(request, running: running, bundleID: bundleID)
         case "menu": return await menu(request, running: running, bundleID: bundleID)
+        case "context_menu": return await contextMenu(request, running: running, bundleID: bundleID)
         default: return .failure("Unknown action “\(request.action)”.")
         }
     }
@@ -189,6 +190,31 @@ public actor ComputerController {
         return (nil, minimizedWindow(in: windows) != nil)
     }
 
+    /// The menus open in the app now, such as a context menu: macOS lists one among the app's own children while it is
+    /// open, and keeps the focus in it. Not the menu bar, and not a pop-up button's menu, which is read with its window.
+    static func openMenus(of app: AXUIElement) -> [AXUIElement] {
+        let menus = AX.children(app).filter { AX.role($0) == "AXMenu" }
+        if !menus.isEmpty { return menus }
+        var current = AX.element(app, kAXFocusedUIElementAttribute)
+        for _ in 0..<4 {
+            guard let element = current else { break }
+            let role = AX.role(element)
+            if role == "AXMenuBar" || role == "AXWindow" || role == "AXApplication" { break }
+            if role == "AXMenu" {
+                // A menu of the menu bar's is the `menu` action's, not one this lists.
+                var outer = AX.parent(element)
+                for _ in 0..<6 {
+                    guard let parent = outer else { break }
+                    if AX.role(parent) == "AXMenuBar" { return [] }
+                    outer = AX.parent(parent)
+                }
+                return [element]
+            }
+            current = AX.parent(element)
+        }
+        return []
+    }
+
     /// The window server's number for the window at `frame`. Needs no permission, and clicks carry it.
     private static func windowID(pid: pid_t, frame: CGRect) -> CGWindowID? {
         guard let list = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
@@ -217,6 +243,10 @@ public actor ComputerController {
             return ComputerReply(ok: did != nil, text: prefix + why, summary: summary)
         }
         var reader = WindowReader(windowFrame: frame)
+        // An open menu is read first, so its items come first and are never the ones cut off.
+        let menus = Self.openMenus(of: app)
+        for menu in menus { reader.read(menu) }
+        let menuItems = reader.controls.count
         reader.read(window)
 
         let windowID = Self.windowID(pid: pid, frame: frame)
@@ -245,6 +275,11 @@ public actor ComputerController {
         } else {
             lines.append("\(name)\(title).")
             if let noPicture { lines.append(noPicture) }
+        }
+        if !menus.isEmpty {
+            lines.append(menuItems == 0
+                ? "A menu is open, but its items could not be read. Press escape to close it."
+                : "A menu is open: its items are [1] to [\(menuItems)] below, and the picture does not show it. Click one to choose it, or press escape to close the menu.")
         }
         if reader.controls.isEmpty {
             lines.append("No controls could be read from this window. Use x and y in the picture, or the menu.")
@@ -372,11 +407,21 @@ public actor ComputerController {
             } else if control.isText {
                 if !AX.set(control.element, kAXFocusedAttribute, kCFBooleanTrue) { Input.click(pid: view.pid, at: centre, windowID: view.windowID, count: 1) }
                 did = "Put the cursor in \(control.phrase)."
-            } else if AX.actions(control.element).contains(kAXPressAction), AX.perform(control.element, kAXPressAction) {
+            } else if Reaching.pressable(AXNode(control.element)), AX.perform(control.element, kAXPressAction) {
                 did = "Clicked \(control.phrase)."
             } else {
+                // It answers to no press, so it gets a real click, which an app in the background may ignore: say so
+                // when nothing changed, as for a click at a point.
+                let before = signature(request, bundleID)
                 Input.click(pid: view.pid, at: centre, windowID: view.windowID, count: 1)
                 did = "Clicked \(control.phrase)."
+                try? await Task.sleep(for: .milliseconds(450))
+                var reply = await look(request, running: running, bundleID: bundleID, did: did, summary: "Clicked \(what) in \(name)")
+                if reply.ok, signature(request, bundleID) == before {
+                    let note = " It answers to no accessibility press, so it was sent a click, and nothing in the window appears to have changed: this app may ignore clicks while it is in the background. Try the menu, or keys."
+                    reply.text = did + note + reply.text.dropFirst(did.count)
+                }
+                return reply
             }
         } else {
             let point: CGPoint
@@ -421,6 +466,64 @@ public actor ComputerController {
         return await look(request, running: running, bundleID: bundleID, did: did, summary: "\(count == 2 ? "Double-clicked" : "Clicked") \(what) in \(name)")
     }
 
+    /// Opens the context menu of a listed control, or of what is at a point: through accessibility (`AXShowMenu`), which
+    /// works with the app in the background, and with a secondary click where nothing near answers to that, or nothing
+    /// opened. The menu's items are then listed first, as controls, by `look`.
+    private func contextMenu(_ request: ComputerRequest, running: NSRunningApplication, bundleID: String) async -> ComputerReply {
+        guard let view = view(request, bundleID, running: running) else { return .failure(Self.lookFirst) }
+        let name = running.localizedName ?? bundleID
+        let element: AXUIElement?
+        let point: CGPoint
+        let phrase: String
+        let what: String
+        if let number = request.element {
+            let control: Control
+            switch self.control(number, in: view) {
+            case .success(let found): control = found
+            case .failure(let reply): return reply
+            }
+            element = control.element
+            point = CGPoint(x: control.frame.midX, y: control.frame.midY)
+            phrase = control.phrase
+            what = control.label.map { "“\($0.clipped(40))”" } ?? control.kind
+        } else {
+            switch screenPoint(request, in: view) {
+            case .success(let found): point = found
+            case .failure(let reply): return reply
+            }
+            element = AX.hitTest(view.app, point)
+            phrase = "what is at (\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
+            what = "(\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
+        }
+        let summary = "Opened the menu of \(what) in \(name)"
+        if !Self.openMenus(of: view.app).isEmpty {
+            return await look(request, running: running, bundleID: bundleID, did: "A menu is already open; choose from it, or press escape to close it first.", summary: summary)
+        }
+        var opened = false
+        if let target = element.flatMap({ Reaching.menuTarget(of: AXNode($0))?.element }) {
+            // An app shows the menu inside its answer and answers only once the menu has closed, so do not wait for it.
+            AXUIElementSetMessagingTimeout(target, 1)
+            if AX.perform(target, Reaching.showMenu) { opened = await menuOpens(view.app) }
+        }
+        if !opened {
+            Input.rightClick(pid: view.pid, at: point, windowID: view.windowID)
+            opened = await menuOpens(view.app)
+        }
+        let did = opened
+            ? "Opened the context menu of \(phrase)."
+            : "Asked for the context menu of \(phrase), and no menu opened: it may have none, or this app may show it only while it is in front."
+        return await look(request, running: running, bundleID: bundleID, did: did, summary: summary)
+    }
+
+    /// Whether a menu opens in the app within a second and a half.
+    private func menuOpens(_ app: AXUIElement) async -> Bool {
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(150))
+            if !Self.openMenus(of: app).isEmpty { return true }
+        }
+        return false
+    }
+
     private func type(_ request: ComputerRequest, running: NSRunningApplication, bundleID: String) async -> ComputerReply {
         guard let text = request.text, !text.isEmpty else { return .failure("type needs `text`.") }
         let name = running.localizedName ?? bundleID
@@ -463,9 +566,15 @@ public actor ComputerController {
         guard let text = request.text, let combo = Input.parse(text) else {
             return .failure("“\(request.text ?? "")” is not a key pi² knows. Examples: return, tab, escape, delete, up, cmd+s, shift+cmd+z. To enter text, use type.")
         }
+        let name = running.localizedName ?? bundleID
+        // Escape with a menu open closes the menu, through accessibility, which reaches it in the background.
+        if combo.key == Input.escape, combo.flags.isEmpty, let menu = Self.openMenus(of: AXUIElementCreateApplication(running.processIdentifier)).first,
+           AX.perform(menu, kAXCancelAction) {
+            try? await Task.sleep(for: .milliseconds(300))
+            return await look(request, running: running, bundleID: bundleID, did: "Pressed \(combo.display): closed the menu.", summary: "Closed a menu in \(name)")
+        }
         Input.press(pid: running.processIdentifier, combo)
         try? await Task.sleep(for: .milliseconds(450))
-        let name = running.localizedName ?? bundleID
         return await look(request, running: running, bundleID: bundleID, did: "Pressed \(combo.display).", summary: "Pressed \(combo.display) in \(name)")
     }
 
@@ -622,6 +731,16 @@ public actor ComputerController {
             return "Scroll \((request.dy ?? 1) < 0 ? "up" : "down") \(pages) page\(pages == 1 ? "" : "s") in \(name)"
         case "menu":
             return "Choose \(Self.menuParts(request.path ?? "").joined(separator: " > ")) from \(name)’s menu"
+        case "context_menu":
+            if let listed { return "Open the context menu of \(listed.phrase) in \(name)" }
+            if let view, let x = request.x, let y = request.y {
+                let point = CGPoint(x: view.frame.minX + x / view.scale, y: view.frame.minY + y / view.scale)
+                if let found = AX.hitTest(view.app, point).map(Self.identify(element:)), let label = found.label {
+                    return "Open the context menu of “\(label.clipped(60))”\(found.kind.isEmpty ? "" : " (\(found.kind))") in \(name)"
+                }
+                return "Open the context menu at (\(Int(x)), \(Int(y))) in \(name)’s window"
+            }
+            return "Open a context menu in \(name)"
         default:
             return "Use \(name)"
         }

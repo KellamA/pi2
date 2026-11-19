@@ -41,6 +41,7 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/pi2-window-check    checks WindowKit, in windows of its own that never come on screen; not part of the app
           Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
           Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
+          Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
 ```

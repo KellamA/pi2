@@ -49,7 +49,8 @@ Usage: scripts/test-copy <command> [arguments]
                                    Values are explicit (never inherited), kept for reopen, and not secrets.
   reopen <suffix> [--show <what>]   Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show unless given another.
-  show <suffix> <conversation>     Show this conversation in the running copy's main window.
+  show <suffix> <conversation>     Show this conversation in the running copy's main window, and answer once its
+                                   page has drawn it, so a picture taken next shows it.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
   answer <suffix> <conversation> allow|deny

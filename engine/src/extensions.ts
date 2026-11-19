@@ -462,7 +462,9 @@ export function pi2Extension(host: Host): Extension {
 		}
 		if (isNever(args.app)) return `${args.app} cannot be used by an agent.`;
 		if (!LOOKING.has(action) && action !== "open_app" && lookOnly(settings, args.app, any)) return `${args.app} can only be looked at, not controlled.`;
-		if (action === "click" && args.element === undefined && (args.x === undefined || args.y === undefined)) return "click needs `element`, or both `x` and `y`.";
+		if ((action === "click" || action === "context_menu") && args.element === undefined && (args.x === undefined || args.y === undefined)) {
+			return `${action} needs \`element\`, or both \`x\` and \`y\`.`;
+		}
 		if ((action === "type" || action === "key") && (args.text === undefined || args.text === "")) return `${action} needs \`text\`.`;
 		if (action === "scroll" && (args.dy === undefined || args.dy === 0)) return "scroll needs `dy`: pages to scroll, positive for down.";
 		if (action === "menu" && (args.path === undefined || args.path.trim() === "")) return 'menu needs `path`, such as "File > Save".';
@@ -498,6 +500,7 @@ export function pi2Extension(host: Host): Extension {
 			"- open_app: start `app`, or bring its window back if it has none.\n" +
 			"- screenshot: see `app`'s front window. Returns a numbered list of its controls and, if you can see images, a picture.\n" +
 			"- click: a control by its `element` number from the latest screenshot of that app, or the point `x`,`y` in that screenshot's pixels. `count`: 2 for a double-click.\n" +
+			"- context_menu: open the context menu of `element`, or of what is at `x`,`y`, as a right-click does. Its items are then listed first among the controls: click one to choose it, or key escape to close the menu.\n" +
 			"- type: `text` into `element`, or where the cursor is. It is inserted at the cursor; it does not replace what is there.\n" +
 			'- key: press `text`, a key or combination: "return", "tab", "escape", "delete", "up", "cmd+s", "shift+cmd+z".\n' +
 			"- scroll: `dy` pages, positive for down, in `element` or at `x`,`y`, or the window's main scrolling area.\n" +

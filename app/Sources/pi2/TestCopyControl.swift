@@ -49,6 +49,11 @@ struct TestCopyControl: NSViewRepresentable {
         let model: AppModel
         let folder: URL
         private var timer: Timer?
+        /// `show` requests answered once the page has drawn the conversation, or after `limit`: the request's folder,
+        /// the conversation, and how many drawings the page had made when it was asked.
+        private var waiting: [(dir: URL, id: Int, after: Int, until: Date)] = []
+        /// Within test-copy's own thirty seconds, so it hears why rather than that nothing answered.
+        private static let limit: TimeInterval = 20
 
         init(model: AppModel, folder: URL) {
             self.model = model
@@ -83,20 +88,34 @@ struct TestCopyControl: NSViewRepresentable {
             guard let window, window.isVisible, model.engine.hasLoadedLibrary,
                   isDirectory(folder.deletingLastPathComponent()), isDirectory(folder),
                   let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return }
+            waiting = waiting.filter { wait in
+                if (TranscriptDrawn.drawings[wait.id] ?? 0) > wait.after {
+                    answer(wait.dir, ["result": "Showing conversation #\(wait.id), drawn"])
+                } else if Date() >= wait.until {
+                    answer(wait.dir, ["result": "Showing conversation #\(wait.id), though its page had not drawn it after \(Int(Self.limit)) seconds"])
+                } else {
+                    return isDirectory(wait.dir)
+                }
+                return false
+            }
             for name in names.sorted() where name.hasPrefix("request-") {
                 let dir = folder.appendingPathComponent(name, isDirectory: true)
-                guard isDirectory(dir) else { continue }
+                guard isDirectory(dir), !waiting.contains(where: { $0.dir == dir }) else { continue }
                 let response = dir.appendingPathComponent("response.json")
                 let request = dir.appendingPathComponent("request.json")
                 guard !FileManager.default.fileExists(atPath: response.path),
                       let data = try? Data(contentsOf: request),
                       let asked = try? JSONDecoder().decode(Request.self, from: data), asked.pid == getpid() else { continue }
-                let result = apply(asked, to: window)
-                if let json = try? JSONEncoder().encode(result) { try? json.write(to: response, options: .atomic) }
+                if let result = apply(asked, to: window, dir: dir) { answer(dir, result) }
             }
         }
 
-        private func apply(_ request: Request, to window: NSWindow) -> [String: String] {
+        private func answer(_ dir: URL, _ result: [String: String]) {
+            if let json = try? JSONEncoder().encode(result) { try? json.write(to: dir.appendingPathComponent("response.json"), options: .atomic) }
+        }
+
+        /// The answer to a request, or nil when it is to wait.
+        private func apply(_ request: Request, to window: NSWindow, dir: URL) -> [String: String]? {
             switch request.command {
             case "choose":
                 guard let paths = request.paths else { return ["error": "missing panel answer"] }
@@ -105,8 +124,13 @@ struct TestCopyControl: NSViewRepresentable {
                 guard let id = request.id, model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
                     return ["error": "no conversation #\(request.id ?? 0) in the copy's library"]
                 }
+                // Answered once the page has drawn it, so a picture or a look straight after shows what is there (#453).
+                if model.selection == .conversation(id), TranscriptDrawn.drawings[id] != nil {
+                    return ["result": "Showing conversation #\(id), drawn"]
+                }
+                waiting.append((dir, id, TranscriptDrawn.drawings[id] ?? 0, Date().addingTimeInterval(Self.limit)))
                 model.selection = .conversation(id)
-                return ["result": "Showing conversation #\(id)"]
+                return nil
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size
@@ -129,6 +153,21 @@ struct TestCopyControl: NSViewRepresentable {
                 return ["error": "unknown test-copy window command"]
             }
         }
+    }
+}
+#endif
+
+#if PI2_DEVELOPMENT
+/// How many times the transcript page has drawn each conversation from the start, once it was shown or the page loaded
+/// again: for a test copy's `show`, which answers once the page has drawn the one it asked for.
+@MainActor
+enum TranscriptDrawn {
+    private static var count = 0
+    private(set) static var drawings: [Int: Int] = [:]
+
+    static func note(_ conversation: Int) {
+        count += 1
+        drawings[conversation] = count
     }
 }
 #endif

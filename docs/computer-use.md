@@ -21,7 +21,9 @@ The engine decides what is allowed and asks for approval. The app does the seein
 - **Every action answers with the window as it is afterwards**, so the agent checks each step before the next.
 - **Only the two newest pictures are sent to the model.** The conversation keeps them all; expand a computer step to see what the agent saw.
 
-The actions are: list the apps it may use, open an app, look at a window, click, type, press a key, scroll, and choose a menu command.
+The actions are: list the apps it may use, open an app, look at a window, click, open a control's context menu, type, press a key, scroll, and choose a menu command.
+
+- **Context menus.** The agent opens the menu a right-click would show on a listed control, or at a point. pi² asks for it through accessibility (`AXShowMenu`), which works with the app in the background, on the control or, failing that, on the nearest thing inside it or around it that has one (a list row's menu is on its text); where nothing answers, or nothing opens, it sends that app a secondary click. While a menu is open, its items are listed first among the controls, so the agent chooses one by its number, or presses escape, which closes the menu through accessibility. The picture does not show the menu, which macOS draws in a window of its own.
 
 ## Asking first
 
@@ -65,14 +67,16 @@ Computer use is not the only way an agent can see the screen. A shell command it
 ## Limits
 
 - The pi² app the agent runs in must be open, even when the app it wants to use is already running. If pi² is closed, only the person can reopen it to restore computer use; retrying or reopening a test copy will not help.
-- A click at a bare point, not on a listed control, is ignored by some apps while they are in the background. Such clicks go through accessibility where they can, and the agent is told when a click changed nothing.
+- A click at a bare point, not on a listed control, is ignored by some apps while they are in the background. Such clicks go through accessibility where they can, and the agent is told when a click changed nothing. So is a listed control that answers to no accessibility press and gets a real click instead.
+- SwiftUI's disclosure group in a grouped form answers to no accessibility action, so in another app only a click opens it, which an app in the background may ignore. pi²'s own disclosure groups put `pressableDisclosure` on their label, which makes the arrow answer to a press (#367); a new one should too.
+- Some apps show a context menu only while they are in front. The agent is told when none opened.
 - Apps with little accessibility support may not be workable.
 - Whatever the chosen windows show is sent to the agent's model.
 - macOS ties the permissions to the exact build. After rebuilding a development build, remove pi² from the Accessibility and Screen Recording lists and grant it again.
 
 ## For developers
 
-The code that touches the screen is its own module, `app/Sources/ComputerKit`. It has no automated test. Try it by hand against one app with the probe, which is built separately and is not part of the app:
+The code that touches the screen is its own module, `app/Sources/ComputerKit`. How it reaches SwiftUI controls (a press, the element whose context menu it opens) is checked by `pi2-computer-check` against stand-in views it reads in-process, needing no permission ([development.md](development.md#computer-use-checks)); the rest has no automated test. Try it by hand against one app with the probe, which is built separately and is not part of the app:
 
 ```bash
 cd app && swift build --product pi2-probe
