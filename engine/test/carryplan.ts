@@ -6,10 +6,10 @@
 // grouping reads them (without running git). carryover.ts (the test) runs a plan through a real engine.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { type CarrySnapshot, fingerprint, groupingKey, planCarryOver, reportOf } from "../src/carryover.ts";
+import { basename, dirname, join } from "node:path";
+import { type CarrySnapshot, fingerprint, groupingKey, Grouping, planCarryOver, reportOf } from "../src/carryover.ts";
 import type { MemoryDoc } from "../src/knowledge.ts";
 import { defaultProjectSettings, type Project, type ProjectsDoc } from "../src/projects.ts";
 import type { AgentProfile, Meta } from "../src/state.ts";
@@ -52,7 +52,40 @@ assert.equal(groupingKey(other, worktrees), other);
 assert.equal(groupingKey(plain, worktrees), plain, "no repository: the folder itself");
 assert.equal(groupingKey(gone, worktrees), repo, "a folder that has gone, in a repository that has not");
 assert.equal(groupingKey(goneElsewhere, worktrees), goneElsewhere, "a folder that has gone, by its path as stored");
-step("grouping keys: a repository, its subfolders, linked worktrees and pi²'s worktrees are one; a submodule is its own");
+// A folder that has gone, under a symbolic link to pi²'s worktree: found inside what the link leads to (9.2).
+const dataLink = join(work, "data-link");
+symlinkSync(join(work, "data"), dataLink);
+assert.equal(groupingKey(join(dataLink, "worktrees", "repo-7", "fix-login", "gone-since"), worktrees), repo);
+assert.equal(groupingKey(join(dataLink, "worktrees", "repo-7", "fix-login"), worktrees), repo);
+// The case the disk has (macOS's own real path), so one repository stored with two casings is one key.
+const otherCase = join(dirname(repo), basename(repo).toUpperCase());
+if (process.platform === "darwin" && existsSync(otherCase)) assert.equal(groupingKey(join(otherCase, "engine"), worktrees), repo);
+// The walk upwards stops at the home folder: a repository there (dotfiles) does not hold every folder under it.
+const home = join(work, "home");
+mkdirSync(join(home, ".git"), { recursive: true });
+mkdirSync(join(home, "Documents", "letters"), { recursive: true });
+assert.equal(groupingKey(join(home, "Documents", "letters"), worktrees, home), join(home, "Documents", "letters"));
+assert.equal(groupingKey(home, worktrees, home), home, "the home folder itself is its own repository");
+assert.equal(groupingKey(join(home, "Documents", "letters"), worktrees, work), home, "without the stop, the repository above");
+// A worktree whose repository has gone, and a bare repository's worktree: keyed as before, with a line for the report.
+const orphanWorktree = join(work, "orphan-worktree");
+mkdirSync(orphanWorktree);
+writeFileSync(join(orphanWorktree, ".git"), `gitdir: ${join(work, "vanished", ".git", "worktrees", "orphan")}\n`);
+const bare = join(work, "bare.git");
+mkdirSync(join(bare, "worktrees", "feature"), { recursive: true });
+writeFileSync(join(bare, "HEAD"), "ref: refs/heads/main\n");
+const bareWorktree = join(work, "bare-feature");
+mkdirSync(bareWorktree);
+writeFileSync(join(bareWorktree, ".git"), `gitdir: ${join(bare, "worktrees", "feature")}\n`);
+const grouping = new Grouping([...worktrees, { path: join(work, "made-of-gone"), repo: join(work, "gone-repo") }]);
+assert.deepEqual(grouping.keyed(orphanWorktree), { key: join(work, "vanished"), notice: `The repository ${join(work, "vanished")}, which ${orphanWorktree} is a worktree of, has gone: this project's folder is missing.` });
+assert.match(grouping.keyed(bareWorktree).notice!, /is a worktree of the bare repository .*bare\.git: each of its worktrees is a project of its own\.$/);
+assert.equal(grouping.keyed(bareWorktree).key, bareWorktree);
+assert.match(grouping.keyed(join(work, "made-of-gone", "x")).notice!, /which pi² made a worktree of, has gone/);
+assert.equal(grouping.keyed(repo).notice, undefined);
+assert.equal(grouping.inRepository(engineDir), true);
+assert.equal(grouping.inRepository(plain), false);
+step("grouping keys: a repository, its subfolders, linked worktrees and pi²'s worktrees are one; a submodule is its own; the home folder stops the walk; a repository gone and a bare one are said");
 
 // ---- Agents: a starter set, one sharing a folder, one deleted since (only its conversations and notes remain)
 
@@ -220,7 +253,7 @@ for (const entry of report.projects) {
 const deletedCount = Object.keys(conversations)
 	.map(Number)
 	.filter((id) => meta(id).chat !== true && meta(id).version !== true && (meta(id).deleted === true || meta(rootOf(id)).deleted === true)).length;
-assert.deepEqual(report.leftOut, { chats: 1, deleted: deletedCount, notesLeft: 2 });
+assert.deepEqual(report.leftOut, { chats: 1, deleted: deletedCount, notesLeft: 1 });
 assert.equal(report.already, 0);
 assert.ok(carried.length > 300, `${carried.length} conversations carried`);
 step(`the report: one project per key, every conversation counted once, ${report.leftOut.deleted} deleted and the chats left out`);
@@ -270,7 +303,8 @@ assert.equal(tied.projects.find((entry) => entry.key === other)!.orchestrator!.c
 step("the orchestrator's tie-break: most recently updated, then the lowest conversation id");
 
 // Notes: m1, written in the repository, goes there only; m2, the person's, to every project with a copy of Atlas; m3,
-// whose conversation was deleted, likewise; the deleted agent's and the agent with no copy anywhere's are left.
+// whose conversation was deleted, likewise. The deleted agent's is left; the note of an agent with no copy anywhere waits
+// for one, recorded nowhere.
 const notes = new Map(plan.projects.map((entry) => [entry.key, entry.notes]));
 const withAtlas = plan.projects.filter((entry) => entry.copies.some((copy) => copy.template === "atlas")).map((entry) => entry.key);
 assert.ok(withAtlas.length > 3);
@@ -278,11 +312,9 @@ for (const key of withAtlas) {
 	const here = notes.get(key)!.map((note) => note.note);
 	assert.deepEqual(here, key === repo ? ["m1", "m2", "m3"] : ["m2", "m3"], key);
 }
-assert.deepEqual(plan.left.sort(), ["ghost m1", "lonely m1"]);
-// Each note is recorded once, by the last project it goes to.
-const records = plan.projects.flatMap((entry) => entry.notes.filter((note) => note.record).map((note) => `${note.agent} ${note.note}`));
-assert.deepEqual(records.sort(), ["atlas m1", "atlas m2", "atlas m3"]);
-step("notes go to the projects with a copy of their agent, for the copy alone, each recorded once; the rest are left");
+assert.deepEqual(plan.left, ["ghost m1"]);
+assert.ok(!plan.projects.some((entry) => entry.notes.some((note) => note.agent === "lonely")));
+step("notes go to each project with a copy of their agent, for the copy alone; a deleted agent's are left");
 
 // ---- One plan: the same documents give the same plan, whatever order they were stored in
 
@@ -313,11 +345,14 @@ for (const [index, entry] of plan.projects.entries()) {
 		after.projects.carry.copies[`${id} ${copy.template}`] = copyId;
 	}
 	for (const one of entry.conversations) after.conversations[String(one.id)]!.projectId = id;
-	for (const note of entry.notes) if (note.record) after.projects.carry.notes[`${note.agent} ${note.note}`] = { projectId: id, noteId: "n1" };
+	// Each project's commit records the notes it took, for that project (9.7).
+	for (const note of entry.notes) after.projects.carry.notes[`${id} ${note.agent} ${note.note}`] = { projectId: id, noteId: "n1" };
 }
 for (const dealt of plan.left) after.projects.carry.notes[dealt] = "left";
 const again = planCarryOver(after);
 assert.equal(fingerprint(again), null, JSON.stringify(again.projects.slice(0, 2)));
+/** The documents after that run, with nothing left to do, for the checks below. */
+const settled = structuredClone(after);
 assert.equal(reportOf(again, after.projects.carry, after.agents).already, tops.filter((id) => meta(id).deleted !== true).length + 5);
 // A conversation made since, with the preview off, goes into its folder's project as a first run would put it, and a
 // copy the person deleted since is not made again: its conversations run as their own agent.
@@ -337,3 +372,153 @@ const alone = planCarryOver(after, since);
 assert.equal(alone.projects.length, 1);
 assert.deepEqual(alone.projects[0]!.conversations.map((one) => one.id), [since]);
 step("a second run with nothing new has an empty plan; what is new since goes where a first run would put it");
+
+// ---- Lookup's tie-breaks, and two keys reaching one project (9.4)
+
+{
+	const docs = structuredClone(settled);
+	const noneId = docs.projects.carry.folders.none!;
+	// A project the person made by hand with no folder, more recently changed than the one carrying over made: never taken
+	// for "no folder", which keeps going where the record sends it.
+	docs.projects.projects["p-loose"] = project("p-loose", null, { name: "Loose ends", createdAt: 0, updatedAt: 9e9 });
+	const loose = make({ agentId: "forge" }, null);
+	docs.conversations[String(loose)] = conversations[String(loose)]!;
+	docs.folders[String(loose)] = null;
+	const one = planCarryOver(docs);
+	assert.deepEqual(one.projects.map((entry) => [entry.existing, entry.adopted]), [[noneId, false]]);
+	// Even with the record gone, a hand-made project with no folder is not adopted for "no folder"; the oldest carried one is.
+	delete docs.projects.carry.folders.none;
+	assert.deepEqual(planCarryOver(docs).projects.map((entry) => [entry.existing, entry.adopted, entry.recordKeys]), [[noneId, true, ["none"]]]);
+	step("no folder: the project recorded is kept, and one the person made by hand is never adopted for it");
+}
+{
+	const docs = structuredClone(settled);
+	const repoId = docs.projects.carry.folders[repo]!;
+	// Two projects whose folders key to the repository: the person's for a subfolder, newer, and one for the checkout itself.
+	docs.projects.projects["p-sub"] = project("p-sub", engineDir, { name: "Engine", createdAt: 0, updatedAt: 9e9 });
+	const fresh = make({ agentId: "scout" }, linked);
+	docs.conversations[String(fresh)] = conversations[String(fresh)]!;
+	docs.folders[String(fresh)] = linked;
+	const ofRepo = () => planCarryOver(docs).projects.find((entry) => entry.key === repo)!.existing;
+	assert.equal(ofRepo(), repoId, "the one recorded is kept");
+	delete docs.projects.carry.folders[repo];
+	// Unrecorded: the one whose folder is the key itself, though the other is older.
+	assert.equal(ofRepo(), repoId);
+	delete docs.projects.projects[repoId];
+	assert.equal(ofRepo(), "p-sub", "else the oldest");
+	step("among projects sharing a key: the one recorded, then the folder that is the key, then the oldest");
+}
+{
+	// The repository's project moved to another folder: the record still sends the repository's conversations to it, and a
+	// conversation in its new folder finds it by that folder. Both keys are recorded, so neither is adopted again.
+	const docs = structuredClone(settled);
+	const repoId = docs.projects.carry.folders[repo]!;
+	// Its new folder sorts after the repository, so the entry is made first for the key the record found.
+	const moved = join(work, "zz-moved");
+	mkdirSync(moved);
+	docs.projects.projects[repoId]!.folder = moved;
+	const inRepo = make({ agentId: "scout" }, repo);
+	const inMoved = make({ agentId: "scout" }, moved);
+	for (const [id, folder] of [[inRepo, repo], [inMoved, moved]] as const) {
+		docs.conversations[String(id)] = conversations[String(id)]!;
+		docs.folders[String(id)] = folder;
+	}
+	const both = planCarryOver(docs);
+	assert.equal(both.projects.length, 1);
+	assert.deepEqual(both.projects[0]!.recordKeys, [moved]);
+	assert.equal(both.projects[0]!.adopted, true);
+	for (const key of both.projects[0]!.recordKeys) docs.projects.carry.folders[key] = repoId;
+	for (const id of [inRepo, inMoved]) docs.conversations[String(id)]!.projectId = repoId;
+	const later = make({ agentId: "scout" }, moved);
+	docs.conversations[String(later)] = conversations[String(later)]!;
+	docs.folders[String(later)] = moved;
+	assert.equal(planCarryOver(docs).projects[0]!.adopted, false, "recorded, not adopted again");
+	step("a project reached by two keys records each, and is not adopted again");
+}
+
+// ---- Notes, recorded per project: a project that gets a copy later gets them then (9.7)
+
+{
+	const docs = structuredClone(settled);
+	const fresh = join(work, "fresh");
+	mkdirSync(fresh, { recursive: true });
+	// Atlas used in a new folder after the first run: its new copy there gets the person's note and the one written in a
+	// conversation since deleted, not the one written in the repository, which has its own copy.
+	const atlasLater = make({ agentId: "atlas" }, fresh);
+	docs.conversations[String(atlasLater)] = conversations[String(atlasLater)]!;
+	docs.folders[String(atlasLater)] = fresh;
+	// Lonely, with no copy anywhere until now, used in the plain folder: its note goes there.
+	const lonelyLater = make({ agentId: "lonely" }, plain);
+	docs.conversations[String(lonelyLater)] = conversations[String(lonelyLater)]!;
+	docs.folders[String(lonelyLater)] = plain;
+	const later = planCarryOver(docs);
+	const at = (key: string) => later.projects.find((entry) => entry.key === key)!;
+	assert.deepEqual(at(fresh).notes.map((note) => note.note), ["m2", "m3"]);
+	assert.deepEqual(at(plain).notes.map((note) => `${note.agent} ${note.note}`), ["lonely m1"]);
+	assert.deepEqual(later.left, []);
+	// The person writes a note for Atlas, and a Builder conversation is made in the repository: the repository's project is
+	// in the plan for Builder alone, and still gets the note for its copy of Atlas, as does every other project with one.
+	docs.memory.agents.atlas!.notes.push({ id: "m4", text: "Ask before deleting branches.", createdAt: 20, conversation: null });
+	const builderLater = make({ agentId: "builder" }, repo);
+	docs.conversations[String(builderLater)] = conversations[String(builderLater)]!;
+	docs.folders[String(builderLater)] = repo;
+	const withNote = planCarryOver(docs);
+	const atlasProjects = Object.entries(docs.projects.carry.copies).filter(([pair, copy]) => pair.endsWith(" atlas") && docs.agents[copy] !== undefined).map(([pair]) => pair.split(" ")[0]);
+	const gotIt = withNote.projects.filter((entry) => entry.notes.some((note) => note.note === "m4")).map((entry) => entry.existing ?? entry.key);
+	assert.deepEqual(gotIt.sort(), [...atlasProjects, fresh].sort());
+	const repoEntry = withNote.projects.find((entry) => entry.key === repo)!;
+	assert.deepEqual(repoEntry.copies.map((copy) => copy.template), ["builder"]);
+	assert.deepEqual(repoEntry.notes.map((note) => note.note), ["m4"]);
+	assert.equal(repoEntry.notes[0]!.copy, docs.projects.carry.copies[`${repoEntry.existing} atlas`]);
+	// A note recorded for one project is not copied there again, while another project still gets it.
+	const firstId = atlasProjects[0]!;
+	docs.projects.carry.notes[`${firstId} atlas m4`] = { projectId: firstId, noteId: "n9" };
+	assert.ok(!planCarryOver(docs).projects.some((entry) => entry.existing === firstId && entry.notes.some((note) => note.note === "m4")));
+	step("a note goes to each project with a copy, recorded per project: a copy made later, a template's first copy, and a project in the plan for another agent all get it");
+}
+
+// ---- Copies: a worktree where there is no repository, and one conversation with its sub-chats (9.5, 9.9)
+
+{
+	const docs = structuredClone(settled);
+	docs.agents.builder!.worktree = true;
+	const fresh = join(work, "plain-again");
+	mkdirSync(fresh);
+	const inPlain = make({ agentId: "builder" }, fresh);
+	const inRepoAgain = make({ agentId: "builder" }, repo);
+	const child = make({ agentId: "scout", parent: inPlain });
+	for (const id of [inPlain, inRepoAgain, child]) docs.conversations[String(id)] = conversations[String(id)]!;
+	docs.folders[String(inPlain)] = fresh;
+	docs.folders[String(inRepoAgain)] = repo;
+	const plain2 = planCarryOver(docs);
+	assert.equal(plain2.projects.find((entry) => entry.key === fresh)!.copies.find((copy) => copy.template === "builder")!.worktreeOff, true);
+	assert.equal(reportOf(plain2, docs.projects.carry, docs.agents).projects.find((entry) => entry.key === fresh)!.copies.find((copy) => copy.template === "builder")!.worktreeOff, true);
+	// Its copy in the repository exists already (deleted by the person there: nothing made); a new one would keep worktrees.
+	const repoId = docs.projects.carry.folders[repo]!;
+	delete docs.projects.carry.copies[`${repoId} builder`];
+	for (const [id, agent] of Object.entries(docs.agents)) if (agent.projectId === repoId && agent.template?.id === "builder") delete docs.agents[id];
+	assert.equal(planCarryOver(docs).projects.find((entry) => entry.key === repo)!.copies.find((copy) => copy.template === "builder")!.worktreeOff, false);
+	// The plan for one conversation takes its sub-chats with it.
+	assert.deepEqual(planCarryOver(docs, inPlain).projects[0]!.conversations.map((one) => [one.id, one.subChat]), [[inPlain, false], [child, true]]);
+	// An archived conversation left in no project goes into its folder's archived project without restoring it.
+	const archivedId = docs.projects.carry.folders[archivedPlace]!;
+	const leftArchived = make({ agentId: "scout", archivedAt: 30 }, archivedPlace);
+	const leftLive = make({ agentId: "scout" }, archivedPlace);
+	for (const id of [leftArchived, leftLive]) {
+		docs.conversations[String(id)] = conversations[String(id)]!;
+		docs.folders[String(id)] = archivedPlace;
+	}
+	docs.projects.projects[archivedId]!.archivedAt = 9;
+	assert.equal(planCarryOver(docs, leftArchived).projects[0]!.restore, false);
+	assert.equal(planCarryOver(docs, leftLive).projects[0]!.restore, true);
+	step("a copy that would make worktrees where there is no repository does not, and says so; one conversation takes its sub-chats; only a live one restores");
+}
+
+// ---- Copies are made in carrying over's own commits, without the features' agentDuplicated hooks (features.ts)
+
+const sources = new URL("../src/", import.meta.url);
+const hooked = readdirSync(sources)
+	.filter((name) => name.endsWith(".ts") && /^\s*agentDuplicated:/m.test(readFileSync(new URL(name, sources), "utf8")))
+	.sort();
+assert.deepEqual(hooked, ["knowledge.ts", "variables.ts"], "a new agentDuplicated hook: carryover.ts's applyProject must do its part too");
+step("only memory's and variables' agentDuplicated hooks exist, whose part carrying over does itself");

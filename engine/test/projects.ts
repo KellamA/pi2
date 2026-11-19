@@ -411,20 +411,37 @@ try {
 	assert.equal(after.full, before.full);
 	// Nothing was sent again: one system message, the first.
 	assert.equal(after.history, before.history);
-	// A conversation made with the preview on is in a project from the start (#458, docs/projects.md 9.9): one with no
-	// folder goes into a project with none. carryover.ts checks what else carrying it over does.
+	// A conversation made with the preview on goes into its folder's project as it is made (#458, docs/projects.md 9.9):
+	// one with no folder into the one carrying over makes for no folder, never one the person made with none.
 	await client.call("projects.setPreview", { on: true });
 	const later = (await client.call("conversation.create", { agentId: "forge" })).id as number;
-	const laterRow = await client.until("its row", () => client.listed(later));
-	assert.ok([none.id, none2.id].includes(laterRow.projectId), String(laterRow.projectId));
+	const laterRow = await client.until("its row", () => client.listed(later)?.projectId !== null && client.listed(later));
+	const laterProject = await client.until("its project", () => client.row(laterRow.projectId));
+	assert.equal(laterProject.folder, null);
+	assert.notEqual(laterProject.carriedAt, undefined);
+	assert.ok(![none.id, none2.id].includes(laterProject.id));
+	// It runs as the copy of Forge there. Told something else, the copy would show in what the conversation is told; its
+	// project deleted, it is in no project (3.6), and is told exactly what it is with the preview off.
+	const laterCopy = client.agent(laterRow.runsAs);
+	assert.equal(laterCopy.template.id, "forge");
+	await client.call("agents.save", { agent: { ...laterCopy, instructions: "Not what Forge is told." } });
+	await client.until("the copy changed", () => client.agent(laterCopy.id).instructions === "Not what Forge is told.");
+	await client.call("projects.delete", { id: laterProject.id });
+	await client.until("deleted", () => client.row(laterProject.id).deletedAt !== undefined);
+	await client.call("conversation.open", { id: later });
+	const laterOn = await client.told(later);
+	assert.doesNotMatch(laterOn.full, /Not what Forge is told/);
 	await client.call("projects.setPreview", { on: false });
+	const laterOff = await client.told(later);
+	assert.equal(laterOff.full, laterOn.full);
+	assert.equal(laterOff.history, laterOn.history);
 	step("a conversation in no project is told the same prompt and tools, byte for byte, never on, on and off again");
 
 	// ---- After the preview was on and off: the same events, with what was made in them, and preview false
 
 	const listed = await client.call("projects.list");
 	assert.equal(listed.preview, false);
-	assert.equal(listed.projects.length, 7);
+	assert.equal(listed.projects.length, 8);
 	assert.deepEqual({ event: "projects", ...listed }, client.events.projects);
 	await refused(client.call("projects.create", { folder: delta }), PREVIEW_OFF);
 	step("turned off again: the projects are listed with preview false, and new requests are refused");
@@ -454,7 +471,7 @@ try {
 	client = await Client.connect(engine, home);
 	await client.until("projects after the second restart", () => client.events.projects);
 	assert.equal(client.events.projects.preview, false);
-	assert.equal(client.events.projects.projects.length, 7);
+	assert.equal(client.events.projects.projects.length, 8);
 	step("an engine stopped and started again keeps the projects, their agents and conversations, and the switch");
 } finally {
 	second?.close();

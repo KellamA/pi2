@@ -171,11 +171,17 @@ export type FeatureParts = {
 	/** The person started a conversation from `agent` (not a chat, sub-chat, fork or scheduled run). */
 	created?(id: number, agent: AgentProfile): Promise<void>;
 	/**
-	 * A top-level conversation of an agent was made, by the person (`conversation.create`), a schedule's run or Continue
-	 * with an Agent: told before its first message, and before `created`. Carrying over puts it in a project (carryover.ts).
+	 * A top-level conversation of an agent was made, by the person (`conversation.create`, `conversation.fork`), a
+	 * schedule's run or Continue with an Agent: told before its first message, and before `created`. Carrying over puts it
+	 * in a project (carryover.ts).
 	 */
 	made?(id: number): Promise<void>;
-	/** An agent was duplicated: copy person-set feature settings, never its history. */
+	/**
+	 * An agent was duplicated: copy person-set feature settings, never its history. Carrying over (carryover.ts,
+	 * `applyProject`) copies templates into projects inside its own commits and does not call this: it does there what
+	 * knowledge.ts's and variables.ts's hooks do (the memory switch, the variables' names). A feature that adds this hook
+	 * must add its part there too; carryplan.ts fails until it does.
+	 */
 	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
 	/**
 	 * The engine made an agent itself from settings of its own, not from another agent (a project's default orchestrator,

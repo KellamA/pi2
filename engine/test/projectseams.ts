@@ -74,7 +74,7 @@ const stored: ProjectsDoc = {
 	projects: {
 		p1: project("p1", { settings }),
 		p2: project("p2", { archivedAt: 2 }),
-		p3: project("p3", { deletedAt: 3 }),
+		p3: project("p3", { deletedAt: 3, settings }),
 	},
 	carry: { ranAt: null, backup: null, folders: {}, copies: {}, notes: {}, secrets: [] },
 	news: {},
@@ -111,7 +111,8 @@ assert.equal(inProject(3), undefined, "deleted");
 assert.equal(inProject(4), undefined, "in no project");
 assert.equal(inProject(99), undefined, "unknown");
 assert.equal(projectOf(2)?.id, "p2");
-assert.equal(projectOf(3)?.id, "p3");
+// A conversation whose project was deleted is in none, for what holds with the preview off too (#458).
+assert.equal(projectOf(3), undefined, "deleted");
 step("projectsOn, inProject and projectOf with the preview on");
 
 assert.deepEqual(await handlers["projects.setPreview"]!({ on: false }), { preview: false, carryOver: null });
@@ -153,6 +154,7 @@ const api = { memo: async () => undefined } as never;
 const ask = (conversationId: number, id: string, name: Parameters<typeof requireSwitch>[1]) =>
 	requireSwitch({ conversationId, id, callId: `call-${id}`, tool: "delegate", arguments: { agent: "B" }, api, context: BACKGROUND_CONTEXT }, name, `Start B on “${id}”.`);
 assert.deepEqual(await ask(4, "t1", "startAgents"), { ok: true }, "in no project, nothing is asked");
+assert.deepEqual(await ask(3, "t0", "startAgents"), { ok: true }, "nor in a deleted project's, which is in none (#458)");
 assert.deepEqual(await ask(1, "t2", "fileWork"), { ok: true }, "a switch that is on asks nothing");
 assert.equal(inbox.list().length, 0);
 const answered = async (conversationId: number, id: string, answer: string) => {

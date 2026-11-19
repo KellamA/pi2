@@ -287,10 +287,10 @@ try {
 	await client.answer(own, "/delegate Scout 2: not named");
 	assert.match(client.result(own, "delegate").text, /^Unknown agent "Scout 2"\. Available: Researcher\.$/);
 	assert.match(await client.answer(own, "/delegate Researcher: from Atlas's copy"), /You said: "from Atlas's copy"/);
-	// Atlas's conversation, in no project (carrying over put it in one, deleted since), still hands work to Scout: before
-	// the preview to the template, with it on to the copy of Scout it was carried over with, which it runs as (#458).
+	// The template Atlas, outside any project, still hands work to the templates it names. Its conversation was carried
+	// over into a project deleted since, which leaves it in none (#458, 3.6): not to the copy of Scout made there.
 	assert.match(await client.answer(atlas, "/delegate Scout: with the preview on"), /You said: "with the preview on"/);
-	const fromTemplate = client.events.library.conversations.filter((row: any) => row.parent === atlas).map((row: any) => client.agent(row.agentId)?.template?.id ?? row.agentId);
+	const fromTemplate = client.events.library.conversations.filter((row: any) => row.parent === atlas).map((row: any) => row.agentId);
 	assert.deepEqual([...new Set(fromTemplate)], ["scout"]);
 	step("delegate names only the project's agents: all of them from the orchestrator's conversation, its delegates from another");
 

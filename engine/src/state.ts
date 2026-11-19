@@ -5,7 +5,7 @@ import type { ComputerSettings } from "./computer.ts";
 import type { ReferenceFile } from "./reference.ts";
 import type { ScheduleSettings } from "./selfschedule.ts";
 import type { CommandRule } from "./rules.ts";
-import { projectsOn, type SwitchName } from "./projects.ts";
+import { projectDeleted, projectsOn, type SwitchName } from "./projects.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type HookApi } from "@earendil-works/pi-durable";
 
@@ -163,12 +163,13 @@ export type Meta = {
 
 /**
  * The agent whose settings conversation `meta` uses at its next message (docs/projects.md, 3.4): its project's copy of
- * its agent, for a conversation carried over, while the preview is on and the copy is neither removed nor deleted; else
- * its `agentId`, as before projects. Every lookup of a conversation's agent goes through this, or through `agentOf`.
+ * its agent, for a conversation carried over, while the preview is on, the copy is neither removed nor deleted and the
+ * project was not deleted; else its `agentId`, as before projects. A conversation whose project was deleted is in no
+ * project (3.6). Every lookup of a conversation's agent goes through this, or through `agentOf`.
  */
 export function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): string | undefined {
 	const copy = meta?.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];
-	if (projectsOn() && copy !== undefined && copy.removedAt === undefined) return meta!.projectAgentId;
+	if (projectsOn() && copy !== undefined && copy.removedAt === undefined && !projectDeleted(meta!.projectId) && !projectDeleted(copy.projectId)) return meta!.projectAgentId;
 	return meta?.agentId;
 }
 

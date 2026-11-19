@@ -35,6 +35,7 @@ import {
 	type News,
 	type Project,
 	PROJECT_ARCHIVED,
+	projectDeleted,
 	projectOf,
 	Projects,
 	type ProjectsDoc,
@@ -711,13 +712,17 @@ export const orchestrator: Feature = (given, engine) => {
 			workingNow.clear();
 			for (const id of working) workingNow.add(id);
 		},
-		// The conversation state's `project` (4.3), only for a conversation of a project: any other's state is as before.
+		// The conversation state's `project` (4.3), only for a conversation of a project: any other's state is as before. A
+		// deleted project's conversations are in none (3.6, #458).
 		state: (view, meta) => {
-			if (meta?.projectId === undefined) return {};
+			if (meta?.projectId === undefined || projectDeleted(meta.projectId)) return {};
 			return { project: { id: meta.projectId, orchestrator: orchestratorRole(view.conversation.id as unknown as number) } };
 		},
 		// Activity's `lastLine` (4.3), only for a conversation of a project.
-		activity: (id) => (host?.conversations()[String(id)]?.projectId === undefined ? {} : { lastLine: lastLines.get(id) ?? null }),
+		activity: (id) => {
+			const projectId = host?.conversations()[String(id)]?.projectId;
+			return projectId === undefined || projectDeleted(projectId) ? {} : { lastLine: lastLines.get(id) ?? null };
+		},
 		handlers: {
 			/** `{ id }`: a fresh conversation with the orchestrator, beginning with the state block (6.5). */
 			"projects.startFresh": async (params) => {
