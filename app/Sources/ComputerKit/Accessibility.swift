@@ -105,6 +105,7 @@ struct Control {
     let enabled: Bool
     let focused: Bool
     let selected: Bool
+    var statusItem = false
 
     var isSecure: Bool { subrole == "AXSecureTextField" }
     var isText: Bool { role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" }
