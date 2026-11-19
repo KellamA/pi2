@@ -972,8 +972,9 @@ struct ToolCard: View {
                         Text("allowed by Allow everything").font(.system(size: 11)).foregroundStyle(Theme.tx3)
                     } else if !allowedBy.isEmpty {
                         // So a command that was not asked about does not look as if nothing checked it.
-                        Text("allowed by your rule").font(.system(size: 11)).foregroundStyle(Theme.tx3)
-                            .help("Ran without asking: your rule for “\(allowedBy.joined(separator: "”, “"))” covers it")
+                        Text(allowedBy.count == 1 ? "matched an allowed command" : "matched allowed commands")
+                            .font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                            .help("Ran without asking: matched “\(allowedBy.joined(separator: "”, “"))”")
                     }
                     if isRunning {
                         Spinner()

@@ -215,7 +215,7 @@ const host: Host = {
 	addRule: (agentId, folder, words) =>
 		addCommandRule(agentId, folder, words).then(
 			() => {},
-			(error) => log("could not keep the rule:", error instanceof Error ? error.message : error),
+			(error) => log("could not save the allowed command:", error instanceof Error ? error.message : error),
 		),
 	agentChange: (agent, options) => agentChange(agent, options),
 	sendToChat: async (id, content, requestId) => {
@@ -607,7 +607,7 @@ async function removeCommandRule(agentId: string, folder: string, words: string[
 		if (agent === undefined) throw new Error(`Unknown agent: ${agentId}`);
 		const rules: CommandRule[] = JSON.parse(JSON.stringify(agent.commandRules ?? []));
 		const kept = rules.filter((rule) => !(sameFolder(rule.folder, folder) && sameWords(rule.words, words)));
-		if (kept.length === rules.length) throw new Error("That rule is already gone");
+		if (kept.length === rules.length) throw new Error("That allowed command is already gone");
 		agent.commandRules = kept;
 	}, context);
 }
@@ -1879,7 +1879,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const item = inbox.get(id);
 		if (item === undefined) throw new Error("That request is no longer waiting");
 		// "rule" carries no words: the rule is the one the engine offered with the request.
-		if (decision === "rule" && item.rule === undefined) throw new Error("No rule can be made from that request");
+		if (decision === "rule" && item.rule === undefined) throw new Error("That request did not offer an allowed command");
 		if (!inbox.answer(id, decision)) throw new Error("That request is no longer waiting");
 		return {};
 	},
