@@ -123,4 +123,6 @@ The icon's colour says how the branch stands, the most pressing first:
 
 Conversations working in the same folder share one look at it each time, and so do all that work in one worktree pi² made, sub-chats included.
 
+At every look git is asked again which branch a folder is on and how it stands. For ordinary folders, the tracker keeps answers about which repository a folder is in and what the repository's default branch is for a minute: a branch you change shows within a few seconds, and a default branch changed is taken up within the next minute. Only an answer is kept: a folder that is in no repository is asked about again at every look, so a repository made there shows within a few seconds, and a git that failed once is not taken for "no repository" for a minute. Moving a conversation to another folder asks again at once. A worktree pi² made is asked about afresh at every look, since removing it depends on the answer.
+
 Looking never changes the repository: git is run without taking its index lock, so it cannot get in the way of an agent's own git commands, and nothing is fetched, so "behind" is as of the last fetch.

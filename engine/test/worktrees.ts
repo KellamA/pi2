@@ -111,6 +111,8 @@ class Client extends EngineClient {
 }
 
 const project = repo("project");
+// Count each engine git call without bypassing the interrupted-worktree cases below.
+const gitCalls = join(scratch, "git-calls.tsv");
 const gitBin = join(scratch, "bin");
 mkdirSync(gitBin);
 const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
@@ -119,6 +121,7 @@ const moveMarker = join(scratch, "moved");
 const endMove = join(scratch, "end-move");
 writeFileSync(join(gitBin, "git"), `#!/bin/sh
 set -eu
+printf '%s\\t%s\\n' "$(/bin/pwd)" "$*" >> ${quoted(gitCalls)}
 real=${quoted(realGit)}
 if [ "\${1-}" = worktree ] && [ "\${2-}" = add ]; then
   case "\${6-}" in
@@ -671,6 +674,64 @@ try {
 	await client.until("back in the agent's folder", () => client.branch(d)?.managed === false);
 	assert.ok(!run(project, "worktree", "list").includes(`pi2/builder-${d}`), "git forgot the deleted worktree");
 	step("a worktree deleted by hand shows as missing; removing it lets git forget it");
+
+	{
+		// In ordinary folders, a look can reuse the repository and its default branch for a minute (#377). What the
+		// branch is and how it stands is read at every look, and moving folders makes the tracker ask again at once.
+		const kept = repo("kept");
+		const movedTo = repo("movedTo");
+		/** How often git was asked `what` with that folder as its working folder. */
+		const asked = (what: RegExp, folder: string) =>
+			readFileSync(gitCalls, "utf8")
+				.split("\n")
+				.filter((line) => {
+					const [cwd, args = ""] = line.split("\t");
+					return cwd === folder && what.test(args);
+				}).length;
+		const whichRepo = /--show-toplevel/;
+		const itsDefault = /refs\/remotes\/origin\/HEAD/;
+		const itsStatus = /^status /;
+		const { id: keeper } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: keeper, cwd: kept });
+		await client.until("keeper tracked", () => client.branch(keeper)?.branch === "main" && client.branch(keeper));
+		assert.ok(asked(whichRepo, kept) > 0 && asked(itsDefault, kept) > 0, "the first look asked git which repository this folder is in, and what that repository's default branch is");
+		// A second conversation works in another folder of the same repository, so that repository is looked at twice.
+		const { id: sharer } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: sharer, cwd: join(kept, "sub") });
+		await client.until("sharer tracked", () => client.branch(sharer)?.branch === "main" && client.branch(sharer));
+		let statusWas = asked(itsStatus, kept);
+		await client.call("branches.refresh");
+		await client.until("looked at again", () => asked(itsStatus, kept) > statusWas);
+		const repoWas = asked(whichRepo, kept);
+		const defaultWas = asked(itsDefault, kept);
+		statusWas = asked(itsStatus, kept);
+		await client.call("branches.refresh");
+		await client.until("looked at once more", () => asked(itsStatus, kept) > statusWas);
+		assert.deepEqual([asked(whichRepo, kept), asked(itsDefault, kept)], [repoWas, defaultWas], "the look again read the branch and how it stands, but did not ask again which repository it is in or what its default branch is");
+		// A conversation moving folders drops what was kept, so the folder it left (still tracked by the other
+		// conversation) and the one it entered are both read afresh.
+		await client.call("conversation.configure", { id: sharer, cwd: movedTo });
+		await client.until("sharer moved", () => client.branch(sharer)?.repo === "movedTo" && client.branch(sharer));
+		assert.ok(asked(whichRepo, kept) > repoWas, "the next look asked again about the folder the conversation left");
+		assert.ok(asked(whichRepo, movedTo) > 0, "and about the folder it moved into");
+		// A folder in no repository is not kept: that answer is also what a git that failed or timed out gives, so the
+		// next look asks again, and a repository made in such a folder shows within a few seconds.
+		const nowhere = join(scratch, "nowhere");
+		mkdirSync(nowhere, { recursive: true });
+		const { id: wanderer } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: wanderer, cwd: nowhere });
+		await client.call("branches.refresh");
+		const nowhereWas = asked(whichRepo, nowhere);
+		assert.ok(nowhereWas > 0, "the look asked git which repository this folder is in");
+		await client.call("branches.refresh");
+		assert.ok(asked(whichRepo, nowhere) > nowhereWas, "a folder in no repository is asked about again at every look");
+		const ownFolder = realpathSync(client.branch(c).root);
+		await client.call("branches.refresh");
+		const ownWas = asked(whichRepo, ownFolder);
+		await client.call("branches.refresh");
+		assert.ok(asked(whichRepo, ownFolder) > ownWas, "a worktree pi² made is asked which repository it is in at every look");
+		step("the tracker reuses answers for ordinary folders until they move, and asks again at every look about folders in no repository and worktrees pi² made");
+	}
 
 	// A set-up still running when the engine stops is stopped with it, and said to be cut off when it starts again.
 	rmSync(pidFile, { force: true });

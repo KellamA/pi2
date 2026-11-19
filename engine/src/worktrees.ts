@@ -186,6 +186,8 @@ export type LeftBehind = {
 const POLL_MS = 5_000;
 /** How long a conversation's folder is remembered before it is read again; changes made through the app count at once. */
 const FOLDER_TTL_MS = 30_000;
+/** A worktree pi² made is asked about afresh at every look, since removing it depends on the answer. */
+const GIT_TTL_MS = 60_000;
 const GIT_TIMEOUT_MS = 10_000;
 // Mutations can touch thousands of files. Keep a hang guard, not the tracker's short polling deadline.
 const WORKTREE_TIMEOUT_MS = 15 * 60_000;
@@ -300,6 +302,34 @@ async function defaultBranch(root: string): Promise<string | null> {
 	return null;
 }
 
+/**
+ * Which repository a folder is in, and what a repository's default branch is, kept between looks: neither changes
+ * often, and the tracker looks at every folder in the sidebar every few seconds.
+ */
+let repos = new Map<string, { at: number; value: Repo | undefined }>();
+let defaults = new Map<string, { at: number; value: string | null }>();
+
+/** What `ask` answers for `key`, kept for `GIT_TTL_MS`, so a look does not start the git process that answers it again and again. */
+async function kept<T>(where: Map<string, { at: number; value: T }>, key: string, ask: () => Promise<T>): Promise<T> {
+	const was = where.get(key);
+	if (was !== undefined && Date.now() - was.at < GIT_TTL_MS) return was.value;
+	const value = await ask();
+	// Only an answer is kept. "In no repository" and "no default branch" are also what a git that failed or timed out looks like, so those are asked again at the next look.
+	if (value !== undefined && value !== null) {
+		const at = Date.now();
+		where.set(key, { at, value });
+		// An answer older than the limit is never read again, so this drops it here rather than letting the maps grow.
+		for (const [other, entry] of where) if (at - entry.at >= GIT_TTL_MS) where.delete(other);
+	}
+	return value;
+}
+
+/** A conversation moved folders or a removal began or ended. Replace the maps so an in-flight answer cannot refill them. */
+function forgetKept(): void {
+	repos = new Map();
+	defaults = new Map();
+}
+
 /** Reads `git status --porcelain=v2 --branch`. */
 export function parseStatus(out: string) {
 	let oid: string | null = null;
@@ -382,7 +412,7 @@ export async function inspect(folder: string, own?: Worktree): Promise<BranchInf
 
 async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval = false): Promise<BranchInfo | undefined> {
 	if (own !== undefined && !isFolder(own.path)) return unreadableWorktree(own, own.removal === undefined && !existsSync(own.path) ? "missing" : "unavailable");
-	const repo = await repoOf(own?.path ?? folder);
+	const repo = own === undefined && !checkingRemoval ? await kept(repos, folder, () => repoOf(folder)) : await repoOf(own?.path ?? folder);
 	if (repo === undefined || (own !== undefined && (!repo.worktree || realish(own.path) !== realish(repo.root)))) return own === undefined ? undefined : unreadableWorktree(own, "unavailable");
 	const out = await git(statusArgs, repo.root, checkingRemoval ? WORKTREE_TIMEOUT_MS : GIT_TIMEOUT_MS).catch((error: Error) => {
 		if (checkingRemoval) throw new Error(`git could not read the worktree's status: ${error.message}. Check git status and retry`);
@@ -393,7 +423,7 @@ async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval =
 	const operation = operationIn(repo.gitDir);
 	const managed = own !== undefined && realish(own.path) === realish(repo.root);
 	// Measured against the branch the worktree was made from, else the default branch, unless this is that branch.
-	let base = managed && own.base !== null ? own.base : await defaultBranch(repo.root);
+	let base = managed && own.base !== null ? own.base : await (checkingRemoval ? defaultBranch(repo.root) : kept(defaults, repo.root, () => defaultBranch(repo.root)));
 	if (base !== null && status.head !== null && (base === status.head || base === `origin/${status.head}`)) base = null;
 	let unmerged: number | null = null;
 	let merged = false;
@@ -591,6 +621,7 @@ export const worktrees: Feature = (_host, engine) => {
 		const conv = await engine.harness().conversation(id as unknown as ConversationId, engine.context());
 		if (conv === undefined) throw new Error(`Unknown conversation: ${id}`);
 		await conv.configure({ cwd }, engine.context());
+		forgetKept();
 		folders.set(id, { cwd, at: Date.now() });
 	}
 
@@ -832,6 +863,7 @@ export const worktrees: Feature = (_host, engine) => {
 		changing.add(id);
 		removingPaths.add(own.path);
 		removalGeneration++;
+		forgetKept();
 		try {
 			const common = isFolder(own.repo) ? await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], own.repo).then((out) => out.trim()) : undefined;
 			return await inRepo(common ?? own.repo, () => removeInRepo(id, options, common));
@@ -839,6 +871,7 @@ export const worktrees: Feature = (_host, engine) => {
 			changing.delete(id);
 			removingPaths.delete(own.path);
 			removalGeneration++;
+			forgetKept();
 			void refresh();
 		}
 	}
@@ -1094,6 +1127,7 @@ export const worktrees: Feature = (_host, engine) => {
 			return { setup: running === undefined ? null : { run: running.run, output: tail(running.output(), SETUP_KEEP_CHARS) } };
 		},
 		folderChanged: (id) => {
+			forgetKept();
 			folders.delete(id);
 			void refresh();
 		},
