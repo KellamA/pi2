@@ -59,6 +59,8 @@ When a run ends and nothing waits for it, what happens is chosen for that run wi
 
 A report that woke nobody waits, unread: `reports` lists and reads it, `sub_chats` with `wait` takes it, and it is a line of news for the orchestrator's next turn (#466). A wake that carries reports is held, delayed and bounded exactly as any wake below: the budget, the turn limit, the hourly cap, the person's Stop. A report waiting in a wake not yet given goes to a read or a wait that comes first instead, and the wake then goes without it. **Don't Wake** on a run means it wakes nobody; its report stays to be read. Past one of the project's limits, no report wakes the orchestrator (#464).
 
+A report that woke nobody is told to the orchestrator at the start of its next turn, in a catch-up in front of whatever starts it, the person's message or a wake (`engine/src/orchestrator.ts`, [projects.md](projects.md#64-the-catch-up-and-the-state-block)). When the person starts the orchestrator's conversation afresh (**Start fresh**), what the old conversation was waiting for moves to the new one in the same commit: the watches of its sub-chats and of its background commands (whose wake says they were started in the earlier conversation), what had arrived and was not handed over, and its wakes of the last hour, so the hourly cap still holds; the person's Stop and a hold for the budget do not move. An answer to a question it put under Needs you goes to the new conversation too.
+
 With the preview off, or in an archived or deleted project, every run wakes as the rest of this page says, and outside a project nothing of this applies.
 
 ## The bounds

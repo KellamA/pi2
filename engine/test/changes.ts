@@ -298,10 +298,11 @@ try {
 	assert.equal(client.project(projectId).settings.withoutAsking.merge, false);
 	assert.match(await answer(wide.details.need, { kind: "reach", allow: false }), /The person refused: Change the project .*\. Do not ask for it again unless they bring it up\.$/);
 	assert.equal(client.project(projectId).settings.withoutAsking.merge, false);
-	// Making another agent the orchestrator has no Undo, and is not built yet (#466): refused, saying so.
-	const other = await ps({ action: "set_orchestrator", agent: "Reviewer" });
-	assert.equal(other.isError, true);
-	assert.match(other.text, /^pi² cannot make another agent the orchestrator yet/);
+	// Making another agent the orchestrator is always a request (allowed at the end, below).
+	const other = await ps({ action: "set_orchestrator", agent: "Reviewer", why: "Reviewer knows the code" });
+	assert.match(other.text, /^Make Reviewer the project's orchestrator in place of Orchestrator: it starts a fresh conversation with Reviewer, and cannot be undone: this is the person's to decide, so it was put to them as n\d+\./);
+	assert.match(await answer(other.details.need, { kind: "reach", allow: false }), /The person refused: Make Reviewer the project's orchestrator/);
+	assert.equal(client.project(projectId).orchestratorId, orchestratorId);
 	step("project_settings: rename, a switch off and a limit lowered, each undone; what widens is one request; the agent's widening undo is asked for");
 
 	// Rules: added at once, with Undo; binding everyone at once; any other edit, and removal, asked for.
@@ -463,9 +464,26 @@ try {
 	await refused(client.call("changes.undo", { id: 99_999 }), "Unknown change: 99999");
 	step("the tools are the orchestrator's conversation's alone; changes.list pages newest first");
 
+	// ---- Another agent made the orchestrator: allowed, a fresh conversation with it, and no Undo
+
+	const reviewerId = client.agentNamed(projectId, "Reviewer")!.id as string;
+	const handover = await ps({ action: "set_orchestrator", agent: "Reviewer" });
+	assert.equal(client.project(projectId).orchestratorId, orchestratorId, "nothing changes until it is allowed");
+	await client.call("needs.answer", { id: handover.details.need, answer: { kind: "reach", allow: true } });
+	const fresh = (await client.until("a fresh conversation", () => client.project(projectId).orchestratorId === reviewerId && client.project(projectId).conversation !== O && client.project(projectId).conversation)) as number;
+	await client.call("conversation.open", { id: fresh });
+	const handedOver = await client.until("the fresh conversation told", () => client.idle(fresh) && client.wakes(fresh)[0]);
+	assert.match(handedOver.details.wake.text, /The person allowed: Make Reviewer the project's orchestrator in place of Orchestrator: .*This is the fresh conversation\. \(change \d+\)$/);
+	const handoverChange = changeIn(handedOver.details.wake.text);
+	const noUndo = "it started a fresh conversation; going back is another change of orchestrator";
+	assert.deepEqual(await client.until("its line, with no Undo", () => client.line(O, handoverChange)), { id: handoverChange, summary: handover.text.split(": this is")[0], undone: false, canUndo: false, noUndo });
+	await refused(client.call("changes.undo", { id: handoverChange }), `This cannot be undone: ${noUndo}.`);
+	assert.ok((await client.offered(fresh)).includes("project_agents"), "the tools go with the role");
+	step("making another agent the orchestrator is a request; allowed, it starts a fresh conversation with it, and has no Undo");
+
 	// ---- Archived: nothing can be undone; the preview off: the tools are gone, and a conversation in no project is as it was
 
-	await client.until("the orchestrator idle", () => client.idle(O));
+	await client.until("the orchestrators idle", () => client.idle(O) && client.idle(fresh));
 	await client.call("projects.archive", { id: projectId });
 	await client.until("no Undo while archived", () => client.lines(O).every((line) => line.canUndo === false));
 	await client.call("projects.unarchive", { id: projectId });

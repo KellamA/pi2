@@ -554,7 +554,7 @@ function settingsTool(host: Host, engine: Engine) {
 			}
 			if (!["change", "set_orchestrator", "undo"].includes(action)) return refuse(`Unknown action: ${args.action}. Use show, change, set_orchestrator or undo.`);
 			if (!mayChange(call)) return refuse(NO_ACCESS);
-			if (action === "set_orchestrator" && !canSetOrchestrator()) return refuse("pi² cannot make another agent the orchestrator yet: that comes with Start fresh. Tell the person, if it matters.");
+			if (action === "set_orchestrator" && !canSetOrchestrator()) return refuse("pi² cannot make another agent the orchestrator yet. Tell the person, if it matters.");
 			const why = args.why?.trim() || null;
 			return once(api, context, async (tx) => {
 				const stored = await projectIn(tx, project.id);

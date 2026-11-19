@@ -16,7 +16,6 @@
 // there has no report, or its report wakes as wakes.md says.
 //
 // What later issues fill in:
-// - The catch-up delivering the news a report adds (#466). Until then the orchestrator reads reports with `reports`.
 // - `reports` `wake` is a change with a line and Undo (5.6, 5.9) in #465's record of changes (changes.ts), which
 //   applies its Undo through `setWakeChoicesIn`.
 // - `work` `assign` (#467) starts runs with a report too, through `reportRun` with `work`.
@@ -29,6 +28,7 @@ import { type Host, subChatResult } from "./extensions.ts";
 import { reportPastLimit } from "./projectlimits.ts";
 import type { Engine, Feature } from "./features.ts";
 import { waitForChat } from "./heed.ts";
+import { ownsSubChat } from "./orchestrator.ts";
 import { allProjects, inProject, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview } from "./projects.ts";
 import { type Arrived, commitWakes, heard, reloadWakes, reportArrival, resultText, wakeUp, type Watch, watchedRuns, Wakes } from "./wakes.ts";
 import { type ChangeBy, inverseOf, type Op, record } from "./changes.ts";
@@ -114,6 +114,13 @@ function locate(doc: ReportsDoc, submissionId: number): { projectId: string; rep
 		if (report !== undefined) return { projectId, report };
 	}
 	return undefined;
+}
+
+/** The report of the latest run of sub-chat `conversationId`, as last stored, if it has one: for `sub_chats`' list. */
+export function latestReport(conversationId: number): Report | undefined {
+	let latest: Report | undefined;
+	for (const list of Object.values(mirror.projects)) for (const report of list) if (report.conversationId === conversationId && (latest === undefined || report.submissionId > latest.submissionId)) latest = report;
+	return latest;
 }
 
 /** The report of run `submissionId`, as last stored, if it has one. */
@@ -421,6 +428,9 @@ async function ended(submissionId: number, settled?: SettledSubmissionRecord | "
 	}
 	const parent = host?.conversations()[String(report.conversationId)]?.parent;
 	if (parent !== undefined) heard(parent);
+	// A sub-chat of an earlier conversation with the orchestrator: a `sub_chats` wait in the current one looks again too.
+	const current = parent === undefined ? null : (orchestratorOf(parent)?.conversation ?? null);
+	if (current !== null && current !== parent) heard(current);
 	if (decided.to !== undefined) wakeUp(decided.to);
 }
 
@@ -441,7 +451,8 @@ export async function unreadReports(conversationId: number, chats: number[] | un
 	for (const list of Object.values(mirror.projects)) {
 		for (const report of list) {
 			if (report.ended === null || report.delivered !== null || waited.has(report.submissionId)) continue;
-			if (conversations[String(report.conversationId)]?.parent !== conversationId) continue;
+			// Its own sub-chats, and an orchestrator's those of its earlier conversations (orchestrator.ts, 5.8).
+			if (!ownsSubChat(conversationId, conversations[String(report.conversationId)]?.parent)) continue;
 			if (chats !== undefined && chats.length > 0 && !chats.includes(report.conversationId)) continue;
 			found.push(await arrival(report));
 		}

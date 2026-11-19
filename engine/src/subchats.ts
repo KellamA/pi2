@@ -19,6 +19,8 @@ import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
 import { nextSubChats, watchedSubChats } from "./wakes.ts";
 import { unlessMessaged } from "./heed.ts";
+import { earlierOf } from "./orchestrator.ts";
+import { latestReport, orchestratorOf } from "./reports.ts";
 import { type BranchInfo, inspect, removeWorktree, whyKeepWorktree, type Worktree, worktreeOf } from "./worktrees.ts";
 
 /** A line in the calling conversation's transcript: which sub-chats were archived, or restored to be continued. */
@@ -181,7 +183,17 @@ export function subChatsTool(host: Host) {
 		execute: async (args, api, context): Promise<ToolExecutionResult> => {
 			const caller = api.conversationId as unknown as number;
 			const all = host.conversations();
-			const mine = subChatsOf(all, caller);
+			// An orchestrator's are those of its earlier conversations too, still working or not archived (docs/projects.md, 5.8).
+			const earlier = earlierOf(caller);
+			const fromEarlier = earlier.flatMap((root) => subChatsOf(all, root).filter((id) => !isArchived(all[String(id)]) && !isArchived(all[String(all[String(id)]?.parent)])));
+			const mine = [...subChatsOf(all, caller), ...fromEarlier];
+			/** For an orchestrator: whether a sub-chat's last report was given to it (reports.ts). */
+			const reported = (id: number) => {
+				if (orchestratorOf(caller) === undefined) return "";
+				const report = latestReport(id);
+				if (report === undefined || report.ended === null) return "";
+				return report.delivered === null ? " Its last report has not been read yet." : " Its last report was given to you.";
+			};
 			const parentWorktree = await worktreeOf(api, caller, context);
 			const titleOf = (id: number) => all[String(id)]?.title ?? "";
 			const agentOf = (id: number) => host.agentOf(id as unknown as ConversationId)?.name ?? "an agent that was deleted";
@@ -201,8 +213,8 @@ export function subChatsTool(host: Host) {
 					const where = whereWords(await whereOf(api, id, parentWorktree, context));
 					const commands = runningCommandsOf(id);
 					const running = commands.length === 0 ? "no background commands running" : `background commands running: ${commands.map((command) => `${command.id} \`${command.command}\``).join(", ")}`;
-					const under = meta.parent === caller ? "" : ` (a sub-chat of ${meta.parent})`;
-					lines.push(`- ${id}${under}: ${agentOf(id)}, “${meta.title}”. ${state[0]!.toUpperCase()}${state.slice(1)}; last used ${elapsed(Date.now() - meta.updatedAt)} ago. It ${where}. ${running[0]!.toUpperCase()}${running.slice(1)}.`);
+					const under = meta.parent === caller ? "" : earlier.includes(meta.parent!) ? ` (from your earlier conversation ${meta.parent})` : ` (a sub-chat of ${meta.parent})`;
+					lines.push(`- ${id}${under}: ${agentOf(id)}, “${meta.title}”. ${state[0]!.toUpperCase()}${state.slice(1)}; last used ${elapsed(Date.now() - meta.updatedAt)} ago. It ${where}. ${running[0]!.toUpperCase()}${running.slice(1)}.${reported(id)}`);
 					const usage = await host.subChatUsage(id, context);
 					if (usage !== "") lines.push(`  ${usage}`);
 				}

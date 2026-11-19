@@ -4,6 +4,7 @@ import { obj, str } from "@earendil-works/pi-schema";
 import { USER_ENTRY_KIND } from "./attachments.ts";
 import { Background, commandLine } from "./background.ts";
 import type { Feature } from "./features.ts";
+import { summaryState } from "./orchestrator.ts";
 import { PlanDoc } from "./plan.ts";
 import { agentOf, Agents, Library } from "./state.ts";
 import { Wakes } from "./wakes.ts";
@@ -87,8 +88,10 @@ export async function compactionCheckpoint(tx: Tx, id: ConversationId, reason: s
 	const previous = marker?.kind === "pi.compaction" ? (marker.data as { keptNotes?: string[] } | undefined)?.keptNotes ?? [] : [];
 	const keptNotes = [...new Set([...previous, ...(reason === "agent" && note !== undefined ? [note] : [])])];
 	if (keptNotes.length > 0) lines.push("Notes from the agent on what must be kept (verbatim):", ...keptNotes);
+	// A project's orchestrator gets the project as it stands too, last (docs/projects.md, 6.4); nothing anywhere else.
+	const project = await summaryState(tx, id as unknown as number);
 	return {
-		text: lines.length === 0 ? "" : `\n\nCurrent state recorded by pi² (use this over the summary where they differ):\n${lines.join("\n")}`,
+		text: (lines.length === 0 ? "" : `\n\nCurrent state recorded by pi² (use this over the summary where they differ):\n${lines.join("\n")}`) + (project === undefined ? "" : `\n\n${project}`),
 		data: keptNotes.length === 0 ? {} : { keptNotes },
 	};
 }

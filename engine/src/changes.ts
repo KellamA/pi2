@@ -14,13 +14,15 @@
 //
 // - `work.local` and `work.github` (#467, #468) and `wake.choice` (#463) register what they do with `defineOp`. Until
 //   then nothing records one, and an Undo or a request of one is refused.
-// - `orchestrator.set` is applied by #466 (`projects.setOrchestrator`, a fresh conversation in one commit), which wires
-//   it with `wireOrchestratorSet`. Until then `project_settings` `set_orchestrator` is refused.
+// - `orchestrator.set` is made by #466's `projects.setOrchestrator`, which makes the roles and the fresh conversation in a
+//   commit of its own: allowing it is checked in the commit that takes the answer, and made once that is stored.
 
 import { defineDoc, type JsonObject, type Tx } from "@earendil-works/pi-durable";
+import type { Host } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { Memory } from "./knowledge.ts";
 import { type AnswerOutcome, needsIn, onAnswer, putNeed, type ReachChange, type StoredNeed } from "./needs.ts";
+import { answerGoesTo } from "./orchestrator.ts";
 import { removeAgentIn } from "./projectagents.ts";
 import { type ProjectNote, putBackProjectNote, removeProjectNote } from "./projectnotes.ts";
 import { addRule, editRule, moveRule, type ProjectRule, putBackRule, removeRule, rulesIn } from "./projectrules.ts";
@@ -161,8 +163,9 @@ export async function applyOp(tx: Tx, projectId: string, op: Op): Promise<void> 
 	await rules.apply(tx, projectId, op);
 }
 
-/** The engine, for `saveAgent`. Set as the engine makes the feature. */
+/** The engine, for `saveAgent`; the host, for the features and the conversations. Set as the engine makes the feature. */
 let running: Engine | undefined;
+let hosted: Host | undefined;
 
 const PROFILE_FIELDS = new Set(["name", "description", "color", "instructions", "model", "thinkingLevel", "maxTurns", "compactionTokens", "codeMode", "access", "toolsOff", "toolsOn", "computer", "browser", "mcpServers", "files", "schedule", "worktree", "setup", "delegates"]);
 
@@ -412,27 +415,26 @@ defineOp("wake.choice", {
 	widens: () => false,
 });
 
-/** Making another agent the orchestrator, with its fresh conversation in the same commit: #466's to supply. */
-let setOrchestrator: ((tx: Tx, projectId: string, agentId: string) => Promise<void>) | undefined;
+/**
+ * The person's `projects.setOrchestrator` (orchestrator.ts, #466): the roles and the fresh conversation in one commit of
+ * its own (6.5), so not inside another's. Undefined while no feature answers it.
+ */
+const setOrchestrator = (): ((params: Record<string, unknown>) => Promise<unknown>) | undefined =>
+	hosted?.features.find((feature) => feature.handlers?.["projects.setOrchestrator"] !== undefined)?.handlers?.["projects.setOrchestrator"];
 
-/** #466 supplies what `orchestrator.set` does: `projects.setOrchestrator`'s change, in the commit `tx`. */
-export function wireOrchestratorSet(apply: (tx: Tx, projectId: string, agentId: string) => Promise<void>): void {
-	setOrchestrator = apply;
-}
-
-/** Whether pi² can make another agent the orchestrator yet (#466). */
-export const canSetOrchestrator = () => setOrchestrator !== undefined;
+/** Whether pi² can make another agent the orchestrator. */
+export const canSetOrchestrator = () => setOrchestrator() !== undefined;
 
 defineOp("orchestrator.set", {
 	check: async (tx, projectId, op) => {
-		if (setOrchestrator === undefined) return "pi² cannot make another agent the orchestrator yet.";
+		if (!canSetOrchestrator()) return "pi² cannot make another agent the orchestrator yet.";
 		const project = (await tx.doc(Projects)).projects[projectId]!;
 		const agent = (await tx.doc(Agents)).agents[op.to];
 		return project.orchestratorId === op.from && agent?.projectId === projectId && agent.removedAt === undefined ? undefined : ASKED_CHANGED;
 	},
-	apply: async (tx, projectId, op) => {
-		if (setOrchestrator === undefined) throw new Error("pi² cannot make another agent the orchestrator yet.");
-		await setOrchestrator(tx, projectId, op.to);
+	// Made by `projects.setOrchestrator` in a commit of its own, once the answer is stored (`answerReach`).
+	apply: async () => {
+		throw new Error("Making another agent the orchestrator starts a fresh conversation, in a commit of its own.");
 	},
 	inverse: () => null,
 	widens: () => true,
@@ -559,10 +561,15 @@ const named = (what: string, summary: string) => {
 	return `${what} “${line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line}”`;
 };
 
-/** Tell the conversation that asked, in the commit that takes the answer; it is woken once that is stored. */
+/**
+ * Tell the conversation that asked, in the commit that takes the answer; it is woken once that is stored. Asked in an
+ * earlier conversation with the orchestrator, the answer goes to its current one (orchestrator.ts, 6.5), as a question's.
+ */
 async function tell(tx: Tx, need: StoredNeed, label: string, ended: string, text: string): Promise<AnswerOutcome> {
-	await arriveIn(tx, need.conversationId, { key: `answer:${need.id}`, kind: "answer", ref: need.id, label, ended, text });
-	return { after: () => arrivedIn(need.conversationId) };
+	const { to, earlier } = await answerGoesTo(tx, need.conversationId);
+	const said = earlier ? `${text}\n\n(You asked this in your earlier conversation, ${need.conversationId}.)` : text;
+	await arriveIn(tx, to, { key: `answer:${need.id}`, kind: "answer", ref: need.id, label, ended, text: said });
+	return { after: () => arrivedIn(to) };
 }
 
 /** The agent conversation `conversationId` runs as, by id, as stored in the commit `tx`. */
@@ -593,8 +600,9 @@ async function answerReach(tx: Tx, need: Extract<StoredNeed, { kind: "reach" }>,
 			},
 		};
 	}
-	await applyOp(tx, need.projectId, change.op);
 	const agentId = await agentIdOf(tx, need.conversationId);
+	if (change.op.kind === "orchestrator.set") return allowOrchestrator(tx, need, change.op, agentId);
+	await applyOp(tx, need.projectId, change.op);
 	const made = await record(tx, need.projectId, { by: { kind: "allowed", need: need.id, agentId, conversationId: need.conversationId }, op: change.op, inverse: inverseOf(change.op), summary: change.summary });
 	if (change.undoes !== undefined) {
 		const undone = await changeIn(tx, change.undoes);
@@ -605,6 +613,34 @@ async function answerReach(tx: Tx, need: Extract<StoredNeed, { kind: "reach" }>,
 		after: async () => {
 			await afterChanges();
 			await told.after?.();
+		},
+	};
+}
+
+/** Why the orchestrator's conversation cannot be put away for a fresh one now (6.5), or undefined: as Start fresh checks. */
+export const ORCHESTRATOR_BUSY = "The orchestrator is answering or waiting for you. Let it finish, or stop it, first.";
+
+/**
+ * Allowing another agent to be made the orchestrator (5.3, 6.5). Start fresh makes the roles and the fresh conversation
+ * in a commit of its own, so this commit, which takes the answer, only checks: the request stays while the orchestrator
+ * is busy. Once it is stored, `projects.setOrchestrator` makes the change, and then it is recorded, with no Undo, and the
+ * fresh conversation is told. Should that fail, as when the orchestrator started answering meanwhile, nothing is changed
+ * and the person is told why; the request is gone, and they can make the change themselves.
+ */
+async function allowOrchestrator(tx: Tx, need: Extract<StoredNeed, { kind: "reach" }>, op: Extract<Op, { kind: "orchestrator.set" }>, agentId: string): Promise<AnswerOutcome> {
+	const summary = (need.change as Reach).summary;
+	const current = (await tx.doc(Projects)).projects[need.projectId]?.conversation ?? null;
+	if (current !== null && (hosted?.working(current) === true || hosted?.inbox.list().some((item) => item.conversationId === current))) throw new Error(ORCHESTRATOR_BUSY);
+	return {
+		after: async () => {
+			const engine = running!;
+			const made = (await setOrchestrator()!({ id: need.projectId, agentId: op.to })) as { conversation: number };
+			const fresh = made.conversation;
+			await engine.harness().commit(async (later) => {
+				const change = await record(later, need.projectId, { by: { kind: "allowed", need: need.id, agentId, conversationId: need.conversationId }, op, inverse: null, summary });
+				await arriveIn(later, fresh, { key: `answer:${need.id}`, kind: "answer", ref: need.id, label: named("the request", summary), ended: "was allowed", text: `The person allowed: ${summary}. This is the fresh conversation. (change ${change.id})` });
+			}, engine.context());
+			await arrivedIn(fresh);
 		},
 	};
 }
@@ -658,6 +694,7 @@ export function changesOf(projectId: string): Change[] {
 
 export const changes: Feature = (host, engine) => {
 	running = engine;
+	hosted = host;
 	onAnswer("reach", (tx, need, answer) => answerReach(tx, need, answer.allow));
 	onAnswer("rule", (tx, need, answer) => answerRule(tx, need, answer));
 	/** What each conversation's state last carried, so only a conversation whose lines changed is sent again. */
