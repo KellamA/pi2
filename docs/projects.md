@@ -635,7 +635,8 @@ type Change = {
 	at: number;
 	by:
 		| { kind: "agent"; agentId: string; conversationId: number; callId: string }
-		| { kind: "allowed"; need: string; agentId: string; conversationId: number }; // a reach request the person allowed
+		| { kind: "allowed"; need: string; agentId: string; conversationId: number } // a reach request the person allowed
+		| { kind: "person" }; // the person's Undo (changes.undo)
 	op: Op;
 	/** One line, as the conversation shows it: "Made the agent Reviewer (Claude Sonnet 4.6, Ask first)". */
 	summary: string;
@@ -651,7 +652,7 @@ type Op =
 	| { kind: "agent.remove"; id: string }                                          // sets removedAt; inverse: agent.restore
 	| { kind: "agent.restore"; id: string }                                         // clears removedAt; inverse: agent.remove
 	| { kind: "project.change"; fields: Field[] }                                   // settings, name; inverse: swapped
-	| { kind: "rule.add"; rule: ProjectRule }                                       // inverse: rule.remove
+	| { kind: "rule.add"; rule: ProjectRule; at?: number }                          // at: its place; inverse: rule.remove
 	| { kind: "rule.remove"; rule: ProjectRule; at: number }                        // inverse: rule.add at the same place
 	| { kind: "rule.edit"; id: string; before: { text: string; binds: string }; after: { text: string; binds: string } }
 	| { kind: "rule.move"; id: string; from: number; to: number }                   // inverse: move back
@@ -668,7 +669,7 @@ type Field = { name: string; before: unknown; after: unknown };
 - **One validator for each.** Each operation is applied by the same function that applies the person's own request for it (`agents.save`'s checks for `agent.change`, `projects.set`'s for `project.change`, and so on), so an operation cannot do what the person's request could not.
 - **Undo** applies the inverse, after two checks: the target still exists and is still what the operation left it (each `Field`'s `after` still holds; the rule, note or agent is still there, or still removed; the work item is still in the state it was put in), and the inverse is still allowed (the project is not archived or deleted; an agent's undo is checked against [section 7](#7-reach-what-an-agent-can-only-ask-for): undoing the addition of a rule removes a rule, so an agent's undo of it becomes a request; the person's never does). If a check fails, nothing is done: "This was changed again since, so it was not undone. Change it by hand." An Undo is itself a change, recorded with its own inverse.
 - **Removing an agent through a tool** sets `removedAt`; nothing is deleted, its variables' values stay in the Keychain, and `agent.restore` puts it back whole. Deleting for good, which also removes its values from the Keychain and its name from others' `delegates`, as `agents.delete` does today, is the person's alone.
-- **In the conversation.** The tool call's result carries `details.change: id`, and the conversation's state has `projectChanges: [{ id, summary, undone, canUndo }]` for the changes made in it (the last 100), so the page draws each line, with Undo where `canUndo`, and as undone once it is. A change with no inverse is drawn without Undo, saying why ("on GitHub; it cannot be undone here"). An export writes each as its summary, with "(undone)" when it was.
+- **In the conversation.** The tool call's result carries `details.change: id`, and the conversation's state has `projectChanges: [{ id, summary, undone, canUndo, noUndo }]` for the changes made in it (the last 100), so the page draws each line, with Undo where `canUndo`, and as undone once it is. A change with no inverse is drawn without Undo, saying why: `noUndo` is that reason ("on GitHub; it cannot be undone here"), null for a change that has an inverse. `canUndo` is false once the change is undone, and while its project is archived or deleted. A conversation in no project has no `projectChanges`. An export writes each as its summary, with "(undone)" when it was.
 - Kept: the last 500 per project.
 
 ## 4. Requests and events
@@ -1285,6 +1286,8 @@ Lowering any of these (access lowered, a switch turned off, a limit lowered, an 
    	fields: { name: string; before: unknown; after: unknown }[];
    	/** The change of section 3.12 it would be, once allowed. */
    	op: Op;
+   	/** An agent's Undo of this change that had to be asked for: allowing it marks that change undone. */
+   	undoes?: number;
    };
    ```
 
@@ -1685,7 +1688,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 **As #459 built them.** The rules live in `engine/src/projectrules.ts`.
 
-- `addRule(tx, projectId, { text, binds, addedBy })` validates and appends in the caller's transaction, returning the `ProjectRule`. Until #465 supplies the tool and acceptance handler (on #462's cards), only the person's `projects.rules.add` calls it, attributing the rule to the person. #465 supplies agent or proposal attribution and checks reach before calling it; the helper does not ask or make a card.
+- `addRule(tx, projectId, { text, binds, addedBy })` validates and appends in the caller's transaction, returning the `ProjectRule`. The person's `projects.rules.add` calls it, attributing the rule to the person; #465's `project_rules` `add` (with `addRules` on) and the handler of an accepted proposal (on #462's cards) call it with agent or proposal attribution, after their own checks. The helper does not ask or make a card.
 - `projectRulesPrompt` sits after `plan` in `FEATURES`. #466's `project` section goes between them; until then there is no `project` section. The rules prompt compares the agent the conversation runs as (`runsAs`, #457) to the project's `orchestratorId`.
 - `projectRules` sits after `projects` in `FEATURES` for the greeting. It reads committed rules, including writes by `addRule` in another feature's transaction, and wires `ruleTokens` through `wireRuleTokens` in `projects.ts`. Estimates count the tagged section actually sent. The prompt keeps board order, repeating a heading if a binding recurs later in the order.
 
@@ -1693,14 +1696,14 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 - `Memory` and `MemoryDoc` (`knowledge.ts`) and `projectNotebook(doc, projectId)` (`projectnotes.ts`) are for #458 to write carried notes in its own commit. Until then nothing is copied from an agent's notes. `knowledge` sends the `memory` event for a commit to that document by any feature, including carrying over or Undo.
 - `memoryAgentId(conversation)` in `knowledge.ts` is the agent the conversation runs as (`runsAs`, #457). A sub-chat runs with the notebook of its own agent, not the parent's; a template in a project-marked conversation is not given the project's notes.
-- `recordNoteChange(tx, projectId, { by, op, inverse, summary })` in `projectnotes.ts` is for #465. The tools already form `note.add` and `note.remove` and their inverses in the note's transaction. Until #465 wires the record this hook returns `undefined`: notes are changed, but there is no `details.change`, line or Undo. The request and tool paths share the project's lifecycle checks and note add/remove helpers; #465 will apply and check the inverse there.
+- `recordNoteChange(tx, projectId, { by, op, inverse, summary })` in `projectnotes.ts` is for #465. The tools already form `note.add` and `note.remove` and their inverses in the note's transaction. #465 has wired it to `record` (see below): each note added or removed through a tool has `details.change`, a line and Undo. The request and tool paths share the project's lifecycle checks and note add/remove helpers.
 
 **As #462 built them.** Needs you is `engine/src/needs.ts`, which says at its top what the later issues fill in. What the table does not say:
 
 - `claim(id, answer)` takes the answer as well as the id: it checks the answer against the item and takes the item in one step, so a refused answer leaves it waiting. An Inbox item is taken with `Inbox.take` (`state.ts`), which answers the waiting call; a stored one in one commit. `main.ts`'s `inbox.decide` and `inbox.answer` call it, and so does `needs.answer`. A second answer by any route gets "This is no longer waiting: it was answered or withdrawn." in place of the old "That request is no longer waiting". An approval is checked as `inbox.decide` checked it, so that today's approvals work as before: `rule` only where a rule was offered, only `once` or `deny` with `projectSwitch`, and `always` taken where its `answers` leave it out (a schedule, a browser action with no site), which the tool counts as once, as it always has.
 - `putNeed(tx, need)` puts a need in the commit `tx` that makes what it is about, and answers the stored item; the same `callId` again gets the one already put. The project must exist and not be deleted. `withdrawNeed(tx, id)` takes one off without an answer and answers it, or undefined. `needsIn(tx)` is the document in a commit; `storedNeeds()` a copy of what is stored.
-- `onAnswer(kind, handler)` registers what an answer to a stored kind does: `handler(tx, need, answer)` runs inside the commit that takes the item. Throwing refuses the answer and stores nothing; `{ keep: true }` puts the item back as the handler left it (the limit card that stays with a new reading); `{ after }` runs once the commit is made. **Until #465 registers `reach` and `rule`**, an answer to one of those is refused ("pi² cannot act on an answer to … yet") and the item stays; nothing puts one before they land.
-- `ReachChange.op` is `unknown` until #465 gives it its type, `Op`. The `pi2.needs` token is a plain JSON object's for that reason.
+- `onAnswer(kind, handler)` registers what an answer to a stored kind does: `handler(tx, need, answer)` runs inside the commit that takes the item. Throwing refuses the answer and stores nothing; `{ keep: true }` puts the item back as the handler left it (the limit card that stays with a new reading); `{ after }` runs once the commit is made. #465 registers `reach` and `rule` (changes.ts) and #464 `limit`; an answer to a kind with no handler is refused ("pi² cannot act on an answer to … yet") and the item stays.
+- `ReachChange.op` is `unknown`, as what is stored; changes.ts (#465) reads it as its `Op`. The `pi2.needs` token is a plain JSON object's for that reason.
 - An item's `agentId` is the agent its conversation runs as (`agentOf` in `needs.ts`, through `runsAs`, #457).
 - Questions and decisions wake the conversation that asked through `arriveIn(tx, conversationId, item)` and `arrivedIn(conversationId)` in `wakes.ts`, the wake kind `answer`, keyed `answer:<id>`: stored in the commit that takes the answer, so it is given once, after a restart too.
 - The `needs` event is `{ event: "needs", items: [] }` with the preview off; with it on, the Inbox's items and the stored ones, oldest first. Two feature hooks send it again: `inboxChanged` whenever `main.ts` sends the `inbox` event, and `previewChanged(on)`, which `projects.setPreview` calls. The menu bar item's count and notifications (#481) count its items.
@@ -1725,6 +1728,20 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `projectlimitstarts.ts` registers the `limit` answer. `claim` keeps the card with its new reading if the confirmed reading no longer covers the start. A continued or new delegate hand-off uses the retained options and a durable `pi2.allowedStarts` receipt, replaying the same request id after a restart. The old tool call is no longer waiting: its result comes through the report/watch. `onLimitAssignment` lets the active work backend claim and submit a held assignment in the answer's transaction. Limit answers add news, not a wake of their own.
 - `projectspend.ts` keeps per-conversation deltas in the existing Usage ledger. Admission sees committed counters, not just the coalesced Usage event; `usage.projects` groups today's amounts by library `projectId`, including archived and deleted conversations of a live project. The old ledger only has a global amount, so the first run after upgrading cannot recover its already-counted per-project shares; it uses the existing totals as its baseline.
 - Conversation creation, Continue with an Agent, scheduled starts, and assignments check limits at their creation boundary. The person's messages and retries in existing conversations are unchanged; #458 must also pass the effective project for starts newly brought into a project by its folder. #467's local assignment is wired; #468 must use the same admission seam for GitHub assignment before claiming it.
+
+**As #465 built them.** The record and its operations are `engine/src/changes.ts`; what widens reach, `engine/src/reach.ts`; the three tools, `engine/src/projecttools.ts`. What the table does not say:
+
+- `record(tx, projectId, { by, op, inverse, summary })` records a change in the commit that makes it, and answers it with its `id`. A change the orchestrator did not make in its own conversation is news for it (`addNews`, kind `change`, ref `change:<id>`), but for one the person allowed, whose conversation is told itself.
+- Each kind of operation has its check, how it is applied, its inverse, and whether an agent applying it widens reach, registered with `defineOp(kind, rules)`. `agent.*`, `project.change`, `rule.*`, `note.*` and `orchestrator.set` are registered there. **#467 and #468 register `work.local` and `work.github`, and #463 `wake.choice`**, and record them with `record` from their tools; until then no change of those kinds is recorded, and an Undo or a request of one is refused ("pi² cannot make this change yet.").
+- `checkOp(tx, projectId, op)` says why an operation cannot be applied now (the project gone or archived; the target not what it expects, `CHANGED_SINCE`), `applyOp` applies it, and `undoIn(tx, id, by, who)` undoes a change. `changes.undo` is the person's, recorded with `by: { kind: "person" }`.
+- Each operation is applied by the person's own validator, in the caller's commit: `engine.saveAgent` takes one (`tx` in its options); `removeAgentIn(tx, id)` is `removeAgent` in a commit; `applyProjectChange(tx, id, { name?, folder?, settings? })` is what `projects.rename` and `projects.set` do; `editRule`, `moveRule`, `removeRule` and `putBackRule` (projectrules.ts) are what `projects.rules.*` do; `putBackProjectNote` puts a removed note back with its id.
+- `orchestrator.set` is applied by the function #466 gives `wireOrchestratorSet(apply)`, which makes the change and the fresh conversation in the commit it is given. **Until #466, `project_settings` `set_orchestrator` is refused** ("pi² cannot make another agent the orchestrator yet"), so nothing puts one.
+- `askReach(tx, { projectId, conversationId, callId, change, why })` puts a reach request, or answers the one waiting for the same change; `reachOf(op, summary, undoes?)` gives a request's target and fields from its operation. The handlers of `reach` and `rule` are registered as the engine makes the feature, so a test of needs.ts alone still sees them unregistered. The answer goes to the conversation that asked as a wake of kind `answer`, as a question's does. Allowing a request whose target has changed takes it off the list, tells that conversation, and answers the person with `ASKED_CHANGED`.
+- `ReachChange.op` stays typed `unknown` in needs.ts, as what is stored; changes.ts reads it as an `Op` (`Reach`) and checks it again when it is allowed.
+- The tools are offered by agent, as `needs_you` is: to a project's orchestrator agent outside a sub-chat, with the preview on, in a project neither archived nor deleted. Each refuses any conversation but the project's current one with its orchestrator, and a change without Ask first or Full access.
+- `repository` in `project_settings` `change` is refused until #468 ("pi² cannot attach a repository to a project yet"), which makes it a reach request, as 7.1 says. `show` gives the limits as set; how they stand now (today's spending, the plan windows) is #464's to add.
+- A copy of a template made by an agent is made at the baseline, and asks for the template's memory switch, allowed commands, delegates and the rest that widen in its one request. It is not given the variables' names, which are the person's.
+- `remember` and `forget` in a project answer with `details.change` and give the conversation a line with Undo; their text is as before.
 
 ### 12.2 Each issue
 

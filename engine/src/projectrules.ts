@@ -52,8 +52,9 @@ async function checkProject(tx: Tx, projectId: string): Promise<void> {
 }
 
 /**
- * Append a rule in the caller's commit. #465 calls this only after its tool's switch or the person's acceptance;
- * until then the socket's person request is the only caller and supplies its own `addedBy` (never the request's).
+ * Append a rule in the caller's commit. The person's request supplies its own `addedBy` (never the request's);
+ * `project_rules` `add` calls it with the `addRules` switch on, and the handler of a proposal once the person accepts it
+ * (changes.ts).
  */
 export async function addRule(tx: Tx, projectId: string, given: { text: unknown; binds: unknown; addedBy: ProjectRule["addedBy"] }): Promise<ProjectRule> {
 	requirePreview();
