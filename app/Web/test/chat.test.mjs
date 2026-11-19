@@ -65,6 +65,25 @@ test("a version control sits under the first message or answer after its point",
 	assert.equal(Ch.versionRows([], [{ after: null, index: 0, count: 2 }]).size, 0);
 });
 
+test("a point older than the page's first entry waits while older entries are to come (#440)", () => {
+	// The page starts at entry 40, and older entries are still to come.
+	const visible = [
+		{ id: 40, kind: "assistant" },
+		{ id: 42, kind: "user" },
+		{ id: 44, kind: "assistant" },
+	];
+	const points = [
+		{ after: null, index: 1, count: 2 },
+		{ after: 12, index: 0, count: 2 },
+		{ after: 42, index: 1, count: 3 },
+	];
+	// Without the bound, the first two would land under the first row the page has, which is not where they part.
+	assert.deepEqual([...Ch.versionRows(visible, points).keys()], [40, 44]);
+	assert.deepEqual([...Ch.versionRows(visible, points, 40)], [[44, { after: 42, index: 1, count: 3 }]]);
+	// A point at or after the first entry the page has is placed as before.
+	assert.deepEqual([...Ch.versionRows(visible, [{ after: 40, index: 0, count: 2 }], 40)], [[42, { after: 40, index: 0, count: 2 }]]);
+});
+
 test("sources are the pages a turn read, once each", () => {
 	const turn = [
 		{ toolCalls: [{ callId: "a", name: "web_search" }, { callId: "b", name: "web_fetch" }] },

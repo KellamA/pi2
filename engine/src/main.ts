@@ -51,7 +51,7 @@ import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
-import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, partStart } from "./opening.ts";
+import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { subChatUsage } from "./subchatusage.ts";
@@ -823,7 +823,7 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 // ---- Clients
 
 /** `follow` watches the version a chat shows now, if that changed (versions.ts). */
-type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void> };
+type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void>; older: () => Promise<{ more: boolean }> };
 /** `shown`: the conversations this app has on screen, in its panes or as chat mode's chat (`conversations.shown`). */
 type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number> };
 const clients = new Set<Client>();
@@ -1036,13 +1036,21 @@ const chatEvent = () => ({ event: "chat", ...chatSettings(settings.chat) });
  * With `newestFirst` (#380, opening.ts), each list sent from the start goes in parts: the newest entries first, with
  * how many are still to come, then the older ones in `conversation.older` events, newest first, one a turn so the
  * engine's thread is never held for long. Entries committed meanwhile go as usual, and a new start drops what of the
- * old list was still to come.
+ * old list was still to come. Each list sent from the start says whether the conversation has entries before it
+ * (`more`), and those come a part at a time when the app asks (`older`, #440).
  */
 async function subscribe(client: Client, id: number, newestFirst = false): Promise<void> {
 	if (client.subscriptions.has(id)) return;
 	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
 	let view: ConversationView | undefined;
+	/** The conversation `view` is of: the chat's version shown, whose own history the older entries are read from. */
+	let source: Conversation | undefined;
 	let lastSent: unknown;
+	/** The newest entry older than any the app was sent, to read older entries from; undefined when there is none. */
+	let below: EntryRecord["id"] | undefined;
+	/** Counts the lists sent from the start, so a part read for one is not sent after the next. */
+	let lists = 0;
+	let reading: Promise<unknown> | undefined;
 	/** The entries of the list sent last that the app has still to be sent, oldest first, and their JSON. */
 	let older: Item[] = [];
 	let olderJSON = new ItemJSON<Item>();
@@ -1073,6 +1081,10 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 		if (view.entries.length > 0) lastSent = view.entries.at(-1)!.id;
 		const items = fresh.map(toItem).filter((item) => item !== undefined);
 		const state = stateOf(view, library.conversations[String(id)]);
+		if (reset) {
+			below = view.before;
+			lists++;
+		}
 		if (!(reset && newestFirst)) {
 			send(client, { event: "conversation", id, reset, items, state });
 			return;
@@ -1080,8 +1092,43 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 		olderJSON = new ItemJSON<Item>();
 		const start = partStart(items, olderJSON.size, FIRST_BYTES, FIRST_COUNT);
 		older = items.slice(0, start);
-		if (!client.socket.destroyed) client.socket.write(`${olderJSON.line({ event: "conversation", id, reset, state, earlier: older.length }, items.slice(start))}\n`);
+		const more = below !== undefined;
+		if (!client.socket.destroyed) client.socket.write(`${olderJSON.line({ event: "conversation", id, reset, state, earlier: older.length, more }, items.slice(start))}\n`);
 		sendOlder();
+	};
+	/**
+	 * Sends the app the part of entries just before the oldest it was sent, as `conversation.older`, and says whether any
+	 * are older still. Nothing while the list's own parts are still going, or while a part is being read already.
+	 */
+	const readOlder = async (): Promise<{ more: boolean }> => {
+		if (older.length > 0 || sending !== undefined) return { more: true };
+		if (reading !== undefined) {
+			await reading.catch(() => {});
+			return { more: below !== undefined };
+		}
+		const from = below;
+		const conv = source;
+		if (from === undefined || conv === undefined) return { more: false };
+		const list = lists;
+		const json = new ItemJSON<Item>();
+		const read = olderPart(
+			(cursor) => conv.entries({ maxEntryId: from, order: "descending" }, 100, cursor as never, context),
+			toItem,
+			json.size,
+			OLDER_BYTES,
+		);
+		reading = read;
+		try {
+			const part = await read;
+			// Started over meanwhile, or closed: the new list says what is older than it.
+			if (list !== lists || client.subscriptions.get(id) !== subscription) return { more: below !== undefined };
+			below = part.next;
+			const more = below !== undefined;
+			if (!client.socket.destroyed) client.socket.write(`${json.line({ event: "conversation.older", id, earlier: 0, more }, part.items)}\n`);
+			return { more };
+		} finally {
+			reading = undefined;
+		}
 	};
 	let following = Promise.resolve();
 	const attach = async () => {
@@ -1093,6 +1140,7 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 		const previous = watch;
 		watch = next;
 		view = next.value;
+		source = conv;
 		lastSent = undefined;
 		push();
 		next.start(async (call) => {
@@ -1104,7 +1152,7 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 	};
 	// One at a time, so two quick changes of version never leave two watches.
 	const follow = () => (following = following.then(attach).catch((error) => log("could not follow conversation", id, error instanceof Error ? error.message : "")));
-	const subscription: Subscription = { push, stop: async () => watch?.stop(), follow };
+	const subscription: Subscription = { push, stop: async () => watch?.stop(), follow, older: readOlder };
 	client.subscriptions.set(id, subscription);
 	try {
 		await attach();
@@ -1267,6 +1315,16 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.newestFirst !== undefined && typeof params.newestFirst !== "boolean") throw new Error("newestFirst must be true or false");
 		await subscribe(client, params.id as number, params.newestFirst === true);
 		return {};
+	},
+	/**
+	 * `{ id }`: send the app, as a `conversation.older` event, the part of the conversation just before the oldest entry
+	 * it was sent since it opened it, and answer `{ more }`, whether there are older entries still (#440). The app asks
+	 * when the person scrolls up to the top of what it has.
+	 */
+	"conversation.older": async (params, client) => {
+		const subscription = client.subscriptions.get(params.id as number);
+		if (subscription === undefined) throw new Error("That conversation is not open");
+		return subscription.older();
 	},
 	"conversation.close": async (params, client) => {
 		const subscription = client.subscriptions.get(params.id as number);

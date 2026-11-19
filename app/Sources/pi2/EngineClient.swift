@@ -200,6 +200,24 @@ final class EngineClient {
         }
     }
 
+    /// Asks the engine for the part of a conversation just before the entries the app has (#440), which comes as a
+    /// `conversation.older` event before the answer. One request a conversation at a time, and only when there is
+    /// more and nothing else is on its way. An engine from before #440 does not know the request, and anything else
+    /// that goes wrong leaves the conversation as it is: either way, nothing older is offered again until it starts over.
+    func loadOlder(_ id: Int) {
+        guard let data = open[id], data.more, data.earlier == 0, !data.loadingOlder, status == .connected else { return }
+        data.loadingOlder = true
+        Task {
+            defer { data.loadingOlder = false }
+            do {
+                let result = try await call("conversation.older", ["id": id])
+                if result["more"] == .bool(false) { data.noMore() }
+            } catch {
+                data.noMore()
+            }
+        }
+    }
+
     /// Tells the engine which conversations the panes show, when that changes: a model on this Mac stays loaded while a
     /// conversation using it is shown (docs/local-models-running.md).
     func setShown(_ ids: Set<Int>) {
@@ -515,12 +533,16 @@ final class EngineClient {
         let state: ConversationState
         /// With a list sent from the start, how many older entries are still to come; absent from an older engine.
         let earlier: Int?
+        /// With a list sent from the start, whether the conversation has entries older than it, to ask for (#440).
+        let more: Bool?
     }
-    /// Entries that go before those the app has, oldest first, and how many are still to come after them.
+    /// Entries that go before those the app has, oldest first, how many are still to come after them, and whether
+    /// there are older ones to ask for.
     private struct OlderEvent: Decodable {
         let id: Int
         let items: [Item]
         let earlier: Int
+        let more: Bool?
     }
     private struct AuthEventMessage: Decodable {
         let loginId: String
@@ -605,7 +627,7 @@ final class EngineClient {
                 let event = try decoder.decode(ConversationEvent.self, from: line)
                 guard let data = open[event.id] else { return }
                 let first = data.state == nil
-                data.apply(reset: event.reset, items: event.items, state: event.state, earlier: event.earlier)
+                data.apply(reset: event.reset, items: event.items, state: event.state, earlier: event.earlier, more: event.more)
                 // A message the engine has taken goes from the field once the conversation shows it: in the queue, or as
                 // a message of the person's in the transcript.
                 if outgoing[event.id]?.contains(where: { $0.submission != nil }) == true {
@@ -621,7 +643,7 @@ final class EngineClient {
             case "conversation.older":
                 let event = try decoder.decode(OlderEvent.self, from: line)
                 guard let data = open[event.id] else { return }
-                data.prepend(event.items, earlier: event.earlier)
+                data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))

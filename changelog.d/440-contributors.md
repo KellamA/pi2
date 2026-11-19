@@ -1,0 +1,2 @@
+### For contributors
+- The engine takes a `conversation.older { id }` request: it sends the part of the conversation just before the oldest entry it sent that connection, as a `conversation.older` event with `more`, and every list sent from the start with `newestFirst` says `more` too. The page asks with `{type: "older"}` when the reader nears the top (docs/transcript.md, "Older than the engine's window").
