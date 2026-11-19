@@ -14,7 +14,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 import { AGENT_IN_FOLDER, TEMPLATE_DELETED } from "../src/projectagents.ts";
 import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
 
@@ -131,7 +131,7 @@ try {
 
 	// ---- The preview on: a project, and copies of templates in it
 
-	await client.call("projects.setPreview", { on: true });
+	await previewOnLeavingOut(client);
 	await client.until("preview on", () => client.events.projects.preview === true);
 	const made = await client.call("projects.create", { folder: alpha });
 	const project = await client.until("the project", () => client.project(made.id));
@@ -287,9 +287,10 @@ try {
 	await client.answer(own, "/delegate Scout 2: not named");
 	assert.match(client.result(own, "delegate").text, /^Unknown agent "Scout 2"\. Available: Researcher\.$/);
 	assert.match(await client.answer(own, "/delegate Researcher: from Atlas's copy"), /You said: "from Atlas's copy"/);
-	// The template Atlas, outside any project, still hands work to the templates it names.
+	// Atlas's conversation, in no project (carrying over put it in one, deleted since), still hands work to Scout: before
+	// the preview to the template, with it on to the copy of Scout it was carried over with, which it runs as (#458).
 	assert.match(await client.answer(atlas, "/delegate Scout: with the preview on"), /You said: "with the preview on"/);
-	const fromTemplate = client.events.library.conversations.filter((row: any) => row.parent === atlas).map((row: any) => row.agentId);
+	const fromTemplate = client.events.library.conversations.filter((row: any) => row.parent === atlas).map((row: any) => client.agent(row.agentId)?.template?.id ?? row.agentId);
 	assert.deepEqual([...new Set(fromTemplate)], ["scout"]);
 	step("delegate names only the project's agents: all of them from the orchestrator's conversation, its delegates from another");
 

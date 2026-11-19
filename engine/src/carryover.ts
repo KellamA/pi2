@@ -282,7 +282,7 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 			recordFolder,
 			folder: project.folder,
 			archived: project.archivedAt !== undefined,
-			restore: only !== undefined && project.archivedAt !== undefined,
+			restore: false,
 			orchestrator: null,
 			copies: [],
 			conversations: [],
@@ -324,6 +324,8 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 			};
 			entries.set(`key:${key}`, entry);
 		}
+		// A conversation made later in the folder of an archived project restores it, since the person set it going (3.6).
+		if (only !== undefined && entry.existing !== null && entry.archived) entry.restore = true;
 		for (const id of tops) add(entry, id, false);
 		for (const id of subs) add(entry, id, true);
 	}
@@ -586,7 +588,7 @@ async function applyProject(tx: Tx, entry: PlannedProject, made: Made): Promise<
 
 	// The copies (9.5, 3.3): found ones as they are; made ones from the template as it is now.
 	const copyOf: Record<string, string> = {};
-	const madeNow: { copy: AgentProfile; template: AgentProfile }[] = [];
+	const madeNow: string[] = [];
 	for (const planned of entry.copies) {
 		const pair = `${project.id} ${planned.template}`;
 		const recorded = doc.carry.copies[pair];
@@ -599,7 +601,8 @@ async function applyProject(tx: Tx, entry: PlannedProject, made: Made): Promise<
 		}
 		const template = agents[planned.template];
 		if (template === undefined || template.projectId !== undefined) throw new Error(CHANGED_DURING);
-		const copy: AgentProfile = structuredClone(template);
+		// Documents in a commit are not plain objects: copied through JSON, as every commit here copies them.
+		const copy: AgentProfile = JSON.parse(JSON.stringify(template));
 		delete copy.allowEverything;
 		delete copy.madeBy;
 		delete copy.removedAt;
@@ -611,7 +614,7 @@ async function applyProject(tx: Tx, entry: PlannedProject, made: Made): Promise<
 		copy.template = { id: template.id, copiedAt: now, templateUpdatedAt: template.updatedAt ?? template.createdAt };
 		copy.createdAt = now;
 		copy.updatedAt = now;
-		copy.commandRules = structuredClone(template.commandRules ?? []);
+		copy.commandRules = copy.commandRules ?? [];
 		// The names alone: a value is in the Keychain only once the step after this commit has copied it.
 		if (template.variables !== undefined) copy.variables = template.variables.map((variable) => ({ name: variable.name, set: false }));
 		if (template.allowEverything === true) copy.allowEverything = true;
@@ -623,10 +626,15 @@ async function applyProject(tx: Tx, entry: PlannedProject, made: Made): Promise<
 		const names = (template.variables ?? []).filter((variable) => variable.set).map((variable) => variable.name);
 		if (names.length > 0) doc.carry.secrets.push({ copyId: copy.id, templateId: template.id, names, tries: 0, lastError: null });
 		copyOf[planned.template] = copy.id;
-		madeNow.push({ copy, template });
+		madeNow.push(copy.id);
 	}
-	// Each copy made hands work to the project's copies of the templates its template named (3.3).
-	for (const { copy, template } of madeNow) copy.delegates = template.delegates.map((id) => copyOf[id]).filter((id): id is string => id !== undefined && id !== copy.id);
+	// Each copy made hands work to the project's copies of the templates its template named (3.3). Changed in the
+	// document itself: what was put in it is not the object it was given.
+	for (const id of madeNow) {
+		const copy = agents[id]!;
+		const named = agents[copy.template!.id]?.delegates ?? [];
+		copy.delegates = named.map((other) => copyOf[other]).filter((other): other is string => other !== undefined && other !== id);
+	}
 
 	// The orchestrator of a project made (9.6).
 	if (entry.existing === null && entry.orchestrator !== null) {

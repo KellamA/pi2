@@ -13,7 +13,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 import { ORCHESTRATOR_INSTRUCTIONS, PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-proj-"));
@@ -139,16 +139,19 @@ try {
 
 	// ---- The preview on
 
-	const turnedOn = await client.call("projects.setPreview", { on: true });
-	assert.deepEqual(turnedOn, {
-		preview: true,
-		// Until #458, turning on carries nothing over: the empty report.
-		carryOver: { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, notesLeft: 0 }, already: 0, ranAt: null, backup: null, secretsPending: [] },
-	});
+	// Turning on carries `plain` over into a project with no folder (#458, carryover.ts); deleting that project leaves
+	// it in no project for what it is told, which is what this test checks it for below.
+	const turnedOn = await previewOnLeavingOut(client);
+	assert.equal(turnedOn.preview, true);
+	assert.deepEqual(
+		turnedOn.carryOver.projects.map((entry: any) => [entry.name, entry.conversations]),
+		[["No folder", 1]],
+	);
 	await client.until("preview on", () => client.events.projects.preview === true);
+	const carried = await client.until("the carried project deleted", () => client.projects.find((row: any) => row.carriedAt !== undefined && row.deletedAt !== undefined));
 	assert.deepEqual(settingsFile().projects, { preview: true });
 	await refused(client.call("projects.setPreview", { on: "yes" }), "on must be true or false");
-	step("setPreview on answers the empty report, and is kept in settings.json");
+	step("setPreview on carries over what there is, answers its report, and is kept in settings.json");
 
 	// projects.create: from a folder, in one step, with its orchestrator and an empty conversation with it.
 	const made = await client.call("projects.create", { folder: alpha });
@@ -171,7 +174,7 @@ try {
 	assert.equal(a.lastWords, null);
 	assert.equal(a.archivedAt, undefined);
 	assert.equal(a.deletedAt, undefined);
-	assert.equal(client.events.projects.carryOver, null);
+	assert.equal(typeof (client.events.projects as any).carryOver.ranAt, "number");
 	const orchestrator = await client.until("the orchestrator", () => client.agent(a.orchestratorId));
 	assert.equal(orchestrator.projectId, made.id);
 	assert.equal(orchestrator.role, "orchestrator");
@@ -188,7 +191,7 @@ try {
 	const orchestratorRow = await client.until("its conversation", () => client.listed(made.conversation));
 	assert.equal(orchestratorRow.projectId, made.id);
 	assert.equal(orchestratorRow.agentId, a.orchestratorId);
-	assert.equal(client.listed(plain).projectId, null);
+	assert.equal(client.listed(plain).projectId, carried.id);
 	step("projects.create makes the project, its default orchestrator and an empty conversation in one step");
 
 	await refused(client.call("projects.create", { folder: alpha }), "There is already a project for this folder: alpha");
@@ -202,7 +205,8 @@ try {
 	const none = await client.call("projects.create", { folder: null });
 	const none2 = await client.call("projects.create", { folder: null, name: "  Loose ends  " });
 	const copied = await client.call("projects.create", { folder: beta, template: "forge" });
-	await client.until("four more projects", () => client.projects.length === 5);
+	// Beside the one carrying over made, deleted.
+	await client.until("four more projects", () => client.projects.length === 6);
 	assert.equal(client.row(second2.id).name, "alpha 2");
 	assert.equal(client.row(none.id).name, "No folder");
 	assert.equal(client.row(none.id).folder, null);
@@ -407,22 +411,20 @@ try {
 	assert.equal(after.full, before.full);
 	// Nothing was sent again: one system message, the first.
 	assert.equal(after.history, before.history);
-	// A conversation made with the preview on, in no project, is told the same with it off.
+	// A conversation made with the preview on is in a project from the start (#458, docs/projects.md 9.9): one with no
+	// folder goes into a project with none. carryover.ts checks what else carrying it over does.
 	await client.call("projects.setPreview", { on: true });
 	const later = (await client.call("conversation.create", { agentId: "forge" })).id as number;
-	await client.call("conversation.open", { id: later });
-	const laterOn = await client.told(later);
+	const laterRow = await client.until("its row", () => client.listed(later));
+	assert.ok([none.id, none2.id].includes(laterRow.projectId), String(laterRow.projectId));
 	await client.call("projects.setPreview", { on: false });
-	const laterOff = await client.told(later);
-	assert.equal(laterOff.full, laterOn.full);
-	assert.equal(laterOff.history, laterOn.history);
 	step("a conversation in no project is told the same prompt and tools, byte for byte, never on, on and off again");
 
 	// ---- After the preview was on and off: the same events, with what was made in them, and preview false
 
 	const listed = await client.call("projects.list");
 	assert.equal(listed.preview, false);
-	assert.equal(listed.projects.length, 6);
+	assert.equal(listed.projects.length, 7);
 	assert.deepEqual({ event: "projects", ...listed }, client.events.projects);
 	await refused(client.call("projects.create", { folder: delta }), PREVIEW_OFF);
 	step("turned off again: the projects are listed with preview false, and new requests are refused");
@@ -452,7 +454,7 @@ try {
 	client = await Client.connect(engine, home);
 	await client.until("projects after the second restart", () => client.events.projects);
 	assert.equal(client.events.projects.preview, false);
-	assert.equal(client.events.projects.projects.length, 6);
+	assert.equal(client.events.projects.projects.length, 7);
 	step("an engine stopped and started again keeps the projects, their agents and conversations, and the switch");
 } finally {
 	second?.close();
