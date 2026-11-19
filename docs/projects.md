@@ -1654,6 +1654,12 @@ Each piece below has one owner, which builds it, with what the others need of it
 - A conversation takes `projectId` as it is made: from its agent (`conversation.create`, a schedule's run, Continue with an Agent), from its parent (a sub-chat) or from the conversation it forks.
 - The engine's settings reach a feature through `engine.setting(key)` and `engine.saveSetting(key, value)` (`features.ts`), since the engine writes `settings.json` whole.
 
+**As #459 built them.** The rules live in `engine/src/projectrules.ts`.
+
+- `addRule(tx, projectId, { text, binds, addedBy })` validates and appends in the caller's transaction, returning the `ProjectRule`. Until #465 supplies the tool and acceptance handler (on #462's cards), only the person's `projects.rules.add` calls it, attributing the rule to the person. #465 supplies agent or proposal attribution and checks reach before calling it; the helper does not ask or make a card.
+- `projectRulesPrompt` sits after `plan` in `FEATURES`. #466's `project` section goes between them; until then there is no `project` section. Until #457 supplies `runsAs`, the rules prompt compares the conversation's stored `agentId` to the project's `orchestratorId`.
+- `projectRules` sits after `projects` in `FEATURES` for the greeting. It reads committed rules, including writes by `addRule` in another feature's transaction, and wires `ruleTokens` through `wireRuleTokens` in `projects.ts`. Estimates count the tagged section actually sent. The prompt keeps board order, repeating a heading if a binding recurs later in the order.
+
 ### 12.2 Each issue
 
 What each issue builds of this contract, and whether the contract changes its scope. The issues' texts are not edited by this page: once the owner has agreed it, the agent that hands out the work edits those marked changed, saying how, as the epic's roadmap says, before handing any of them out. An issue builds the engine side of what it names unless it is an app issue (#470 on).
