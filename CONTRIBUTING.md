@@ -84,9 +84,11 @@ scripts/test-copy shot test-7 app/build/test-copies/test-7/inbox.png
 scripts/test-copy stop test-7
 ```
 
-**`start <suffix> [--show <what>] [--menu <label>] [--welcome] [--env NAME=VALUE]`** copies the bundle to `app/build/test-copies/<suffix>/pi² <suffix>.app` with `ditto` (which keeps the symbolic links inside Sparkle's framework), gives it the bundle id `dev.pi2.app.<suffix>` and the name `pi² <suffix>` (which tells it apart in the Dock and the menu bar), and signs it again ad hoc, since editing `Info.plist` breaks the signature. The bundle id gives it the data folder `~/Library/Application Support/pi2-<suffix>` and the Keychain service `dev.pi2.credentials.<suffix>`.
+**`start <suffix> [--show <what>] [--menu <label>] [--welcome] [--no-app-nap] [--env NAME=VALUE]`** copies the bundle to `app/build/test-copies/<suffix>/pi² <suffix>.app` with `ditto` (which keeps the symbolic links inside Sparkle's framework), gives it the bundle id `dev.pi2.app.<suffix>` and the name `pi² <suffix>` (which tells it apart in the Dock and the menu bar), and signs it again ad hoc, since editing `Info.plist` breaks the signature. The bundle id gives it the data folder `~/Library/Application Support/pi2-<suffix>` and the Keychain service `dev.pi2.credentials.<suffix>`.
 
 It launches the copy with `open -n -g`, so it does not take the focus, and with a clean environment that names that data folder and Keychain service explicitly. A shell can have `PI2_HOME` naming the usual data folder (a terminal where it is set, or a command an agent of a pi² from before #195 runs, inherited from its engine), and `open` would pass it on; nothing the shell has reaches the copy. The copy's windows open behind every other window and parked in the bottom-right corner of the screen (`PI2_WINDOW_BEHIND=1`, `PI2_WINDOW_ORIGIN=10000,10000`), and keep drawing while covered (`PI2_DRAW_WHEN_HIDDEN=1`); `--show` sets `PI2_SHOW`, what the window opens on (see [docs/development.md](docs/development.md)).
+
+`--no-app-nap` disables App Nap in the copy's own preferences before launch, for speed measurements. `reopen` keeps the preference and `stop` removes it with the rest of the copy's preferences.
 
 `--env NAME=VALUE` passes an explicit test value, not a variable inherited from the caller. It may repeat for different names. The allowlist is exactly `PI2_DEMO_PICTURES`, `PI2_DEMO_TEXT_MODEL`, `PI2_DEMO_COST` and `PI2_DEMO_TOKENS_PER_SECOND`; every other name (including `PI2_HOME` and `PI2_KEYCHAIN_SERVICE`), duplicate names, missing `=` and multiline values are refused before anything starts. Values may contain spaces and `=` when quoted. They are not secrets: they are stored in the copy's state file, revalidated and reused by `reopen` (an already-running engine keeps its environment). Adding a new test switch requires a reviewed change to this list, not an open-ended `PI2_` prefix.
 
@@ -131,6 +133,7 @@ Once it has finished, put the conversation away (archiving stops any work still 
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
+**`conversations <suffix>`** lists the copy's Library and Archive, one tab-separated id, title and agent id per line, after the same checks `call` makes.
 **`socket <suffix>`** prints the path of that copy's engine socket, after the same checks `call` makes, for a program that keeps a connection open, such as the load script (`scripts/load.mts`, [development.md](docs/development.md#measuring-under-load)).
 **`show <suffix> <conversation-id>`** selects a conversation in the running copy, and answers once the conversation page has drawn it, so a picture taken next shows it; **`size <suffix> <width> <height>`** sets the main window's size in points, including its title bar, or use **`size <suffix> smallest`**. **`answer <suffix> <conversation-id> allow|deny`** answers one waiting approval (allow once); **`fill <suffix> <entries>`** creates a demo conversation with synthetic command outputs, without running commands or the model.
 

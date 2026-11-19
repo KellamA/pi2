@@ -124,12 +124,14 @@ struct TestCopyControl: NSViewRepresentable {
                 guard let id = request.id, model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
                     return ["error": "no conversation #\(request.id ?? 0) in the copy's library"]
                 }
-                // Answered once the page has drawn it, so a picture or a look straight after shows what is there (#453).
-                if model.selection == .conversation(id), TranscriptDrawn.drawings[id] != nil {
-                    return ["result": "Showing conversation #\(id), drawn"]
-                }
-                waiting.append((dir, id, TranscriptDrawn.drawings[id] ?? 0, Date().addingTimeInterval(Self.limit)))
+                // Moving focus to another visible pane does not redraw its transcript. A pane kept in the layout
+                // behind Inbox or Chat, on the other hand, needs to draw again when it comes back on screen.
+                let alreadyShown = model.mode == .chat ? model.chats.selection == id
+                    : model.showsWorkspace && model.workspace.panes.contains { $0.conversation == id }
+                let before = TranscriptDrawn.drawings[id]
                 model.selection = .conversation(id)
+                if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
+                waiting.append((dir, id, before ?? 0, Date().addingTimeInterval(Self.limit)))
                 return nil
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }

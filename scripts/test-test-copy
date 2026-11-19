@@ -101,6 +101,10 @@ expect "a suffix is required" socket
 expect "is not a suffix" socket ../pi2
 expect "'dev' is the suffix every development build has" socket dev
 expect "use: scripts/test-copy socket" socket test-7 extra
+expect "a suffix is required" conversations
+expect "is not a suffix" conversations ../pi2
+expect "'dev' is the suffix every development build has" conversations dev
+expect "use: scripts/test-copy conversations" conversations test-7 extra
 
 expect "there is no development build" start test-7
 
@@ -131,6 +135,7 @@ expect "unknown option --bogus" start test-8 --bogus
 expect "--show needs what to open on" start test-8 --show
 # --welcome is an option of start's, taking no value: the option after it is still read, and refused.
 expect "unknown option --bogus" start test-8 --welcome --bogus
+expect "unknown option --bogus" start test-8 --no-app-nap --bogus
 expect "unknown option --bogus" start test-8 --show inbox --welcome --bogus
 expect "--env needs NAME=VALUE" start test-8 --env
 expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
@@ -166,6 +171,7 @@ expect "no copy named test-7 was started from this checkout" call test-7 engine.
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" call test-7 engine.info
 expect "no copy named test-7 was started from this checkout" socket test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" socket test-7
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" conversations test-7
 expect "say where to put the picture" shot test-7
 expect "give a file name ending in .png" shot test-7 "$root/picture.jpg"
 expect "refusing to write" shot test-7 "$T/outside.png"
@@ -325,12 +331,46 @@ HOME="$T/home" expect "not this checkout's" reopen test-7
 printf '%s\n' '#!/bin/bash' 'exit 1' >"$T/bin/ditto"
 chmod +x "$T/bin/ditto"
 HOME="$T/home" PATH="$T/bin:$PATH" expect "could not copy the latest development build" reopen test-7
+
+# Let start claim a suffix in a stand-in home, but fail at ditto before there can be a bundle to launch.
+# The only preferences touched should be the claimed domain, and only with the flag (apart from cleanup).
+mkdir -p "$T/home/Library/Application Support"
+cat >"$T/bin/defaults" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >>"$DEFAULTS_LOG"
+[[ $1 != write || $FAIL_DEFAULTS != yes ]]
+SH
+printf '%s\n' '#!/bin/bash' 'exit 1' >"$T/bin/security"
+cp "$T/bin/security" "$T/bin/lsappinfo"
+chmod +x "$T/bin/defaults" "$T/bin/security" "$T/bin/lsappinfo"
+nap_start() {
+	local fail=$1 want=$2 calls=$3; shift 3
+	local out status
+	out=$(HOME="$T/home" PATH="$T/bin:$PATH" DEFAULTS_LOG="$T/defaults.log" FAIL_DEFAULTS="$fail" \
+		"$copy" start test-8 "$@" 2>&1)
+	status=$?
+	if ((status != 0)) && [[ $out == *"$want"* && $(<"$T/defaults.log") == "$calls" &&
+		! -e "$T/home/Library/Application Support/pi2-test-8" && ! -e "$root/app/build/test-copies/test-8" ]]; then
+		echo "ok: test-copy start $* ($want) wrote only the expected defaults and cleaned up"
+	else
+		echo "FAIL: test-copy start $* (exit $status): $out"
+		failures=$((failures + 1))
+	fi
+	rm -f "$T/defaults.log"
+}
+delete='delete dev.pi2.app.test-8'
+write_and_delete=$'write dev.pi2.app.test-8 NSAppSleepDisabled -bool true\n'"$delete"
+nap_start no 'could not copy the latest development build' "$delete"
+nap_start no 'could not copy the latest development build' "$write_and_delete" --no-app-nap
+nap_start yes 'could not disable App Nap' "$write_and_delete" --no-app-nap
+
 printf '%s\n' "app_pid=$$" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"app_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
 
-# call requires a live, recorded engine too; an app alone is not enough, nor is a reused pid.
+# A live, recorded engine is required; an app alone is not enough, nor is a reused pid.
 HOME="$T/home" expect "has no recorded engine running" call test-7 engine.info
 HOME="$T/home" expect "has no recorded engine running" socket test-7
+HOME="$T/home" expect "has no recorded engine running" conversations test-7
 printf '%s\n' "engine_pid=$$" "engine_start=not this process" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
 HOME="$T/home" expect "has no recorded engine running" call test-7 engine.info
@@ -353,6 +393,7 @@ mkdir -p "$data"
 ln -s "$T/elsewhere.sock" "$data/engine.sock"
 HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
+HOME="$T/home" expect "refusing a symlink" conversations test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
 HOME="$T/home" expect "refusing a symlink" reopen test-7
 HOME="$T/home" expect "refusing a symlink" show test-7 8

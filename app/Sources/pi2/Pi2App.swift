@@ -112,6 +112,16 @@ final class AppModel {
     /// Brings back the main window after it was closed; set by the views that can open windows.
     var showMainWindow: () -> Void = {}
 
+    /// Whether the detail shows agent conversations, including a split whose focused pane is empty.
+    var showsWorkspace: Bool {
+        guard mode == .agents else { return false }
+        switch selection {
+        case .conversation: return true
+        case nil: return workspace.isSplit
+        default: return false
+        }
+    }
+
     /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
     /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
@@ -417,15 +427,6 @@ struct RootView: View {
     @Bindable var model: AppModel
     private var engine: EngineClient { model.engine }
 
-    /// Whether the detail shows conversations: one is selected, or the focused pane of several is empty.
-    private var showsWorkspace: Bool {
-        switch model.selection {
-        case .conversation: true
-        case nil: model.workspace.isSplit
-        default: false
-        }
-    }
-
     var body: some View {
         NavigationSplitView {
             Group {
@@ -443,7 +444,7 @@ struct RootView: View {
             Group {
                 if model.mode == .chat {
                     ChatModeDetail(model: model)
-                } else if showsWorkspace {
+                } else if model.showsWorkspace {
                     WorkspaceView(model: model)
                 } else {
                     switch model.selection {

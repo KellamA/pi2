@@ -36,21 +36,23 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/test-copy <command> [arguments]
 
-  start <suffix> [--show <what>] [--menu <label>] [--welcome] [--env NAME=VALUE]
+  start <suffix> [--show <what>] [--menu <label>] [--welcome] [--no-app-nap] [--env NAME=VALUE]
                                    Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
                                    data folder of its own, behind other windows, parked in a corner, without taking
                                    the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md),
                                    such as palette:<query> for the command palette. --menu prints the items of the
                                    context menu of the element with that label, such as a conversation's title
                                    (PI2_MENU). The first-run welcome is marked done in the copy's data folder, so it
-                                   does not cover the window; --welcome keeps it. Prints the data folder and the
-                                   app's and engine's process ids. --env may repeat, for these test variables only:
+                                   does not cover the window; --welcome keeps it. --no-app-nap disables App Nap
+                                   for this copy only, for speed measurements. Prints the data folder and process
+                                   ids. --env may repeat, for these test variables only:
                                    PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND.
                                    Values are explicit (never inherited), kept for reopen, and not secrets.
   reopen <suffix> [--show <what>]   Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show unless given another.
   show <suffix> <conversation>     Show this conversation in the running copy's main window, and answer once its
                                    page has drawn it, so a picture taken next shows it.
+  conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
   answer <suffix> <conversation> allow|deny
@@ -431,8 +433,10 @@ cmd=${1-}; shift || true
 case $cmd in
 	start)
 		names "${1-}"; shift
+		no_app_nap=0
 		while (($#)); do
 			case $1 in
+				--no-app-nap) no_app_nap=1; shift ;;
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
 				--welcome) WELCOME=1; shift ;;
 				--env) [[ -n ${2-} ]] || die "--env needs NAME=VALUE"; add_test_env "$2"; shift 2 ;;
@@ -460,6 +464,10 @@ case $cmd in
 		# keep it, mark it done as finishing it would (settings.finishOnboarding), in the copy's own settings, which its
 		# engine reads as it starts. Nothing in the app changes, so a release build behaves as before.
 		((WELCOME)) || printf '{\n\t"onboarded": true\n}\n' >"$DATA/settings.json"
+		# Write before launch so macOS starts the copy with App Nap disabled. Reopen keeps this preference domain.
+		if ((no_app_nap)); then
+			defaults write "$ID" NSAppSleepDisabled -bool true || die "could not disable App Nap for $ID"
+		fi
 		copy_bundle "$APP"
 
 		launch_app
@@ -639,6 +647,12 @@ case $cmd in
 			fi
 			sleep 0.5
 		done
+		;;
+	conversations)
+		names "${1-}"; shift
+		(($# == 0)) || die "use: scripts/test-copy conversations $SUFFIX"
+		require_engine
+		node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$DATA/engine.sock" "$SUFFIX"
 		;;
 	socket)
 		names "${1-}"; shift
