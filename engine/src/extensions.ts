@@ -49,6 +49,7 @@ import { nearlyUsedUp } from "./limits.ts";
 import { unlessMessaged } from "./heed.ts";
 import { handOffWords, reportRun, waitForRun } from "./reports.ts";
 import { watch } from "./wakes.ts";
+import { admit, projectOf, requireSwitch, type Start } from "./projects.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -74,6 +75,16 @@ export type Host = {
 	changesThings(tool: string): boolean;
 	meta(conversationId: ConversationId): Meta | undefined;
 	agent(id: string | undefined): AgentProfile | undefined;
+	/**
+	 * The agent a conversation runs as now (state.ts, `agentOf`; docs/projects.md, 3.4): every lookup of a conversation's
+	 * agent goes through it. None for a chat, or for an agent deleted or removed.
+	 */
+	agentOf(conversationId: ConversationId): AgentProfile | undefined;
+	/**
+	 * The agents a conversation may hand work to, in order: those its agent's `delegates` name, as before projects, and in
+	 * a project with the preview on those of docs/projects.md, 3.3 (projectagents.ts, `delegateTargets`).
+	 */
+	delegatesOf(conversationId: ConversationId): AgentProfile[];
 	allowAlways(conversationId: ConversationId, tool: string): Promise<void>;
 	/** Keep a rule the person chose in an approval, after the same checks as one added by hand. Never throws. */
 	addRule(agentId: string, folder: string, words: string[]): Promise<void>;
@@ -170,10 +181,15 @@ const COMES_AS_MESSAGE = 'Its answer will come to you as a message when it is do
 const startedWords = (id: number, name: string, title: string, how = COMES_AS_MESSAGE) =>
 	`Sub-chat ${id}, “${title}”, with ${name}, is working on it. ${how} To continue it later, call delegate again with chat: ${id}.`;
 
-/** The agents a conversation may delegate to, from its own agent's list. */
+/** The agent `name` names among `agents`: by its name, ignoring case, or by its id. */
+function byName(agents: AgentProfile[], name: string): AgentProfile | undefined {
+	const wanted = name.trim();
+	return agents.find((a) => a.name.toLowerCase() === wanted.toLowerCase() || a.id === wanted);
+}
+
+/** The agents a conversation may delegate to: its own agent's list, or in a project those of 3.3 (projectagents.ts). */
 function delegatesOf(host: Host, conversationId: ConversationId): AgentProfile[] {
-	const own = host.agent(host.meta(conversationId)?.agentId);
-	return (own?.delegates ?? []).map((id) => host.agent(id)).filter((a): a is AgentProfile => a !== undefined);
+	return host.delegatesOf(conversationId);
 }
 
 /**
@@ -181,7 +197,7 @@ function delegatesOf(host: Host, conversationId: ConversationId): AgentProfile[]
  * and worktrees they were judged against. Undefined when there is no agent or no command to judge.
  */
 async function judgeShell(host: Host, conversationId: ConversationId, command: unknown, read: DocumentReader, context: Context) {
-	const agent = host.agent(host.meta(conversationId)?.agentId);
+	const agent = host.agentOf(conversationId);
 	if (agent === undefined || typeof command !== "string") return undefined;
 	const folder = resolve((await read.snapshot(AgentDoc, conversationId, context))?.cwd ?? host.scratchFolder());
 	const made = await madeWorktrees(read, context);
@@ -264,6 +280,18 @@ export function pi2Extension(host: Host): Extension {
 			const parent = api.conversationId as unknown as number;
 			const footer = (id: number, name: string, title: string, note = "") => footerOf(api, id, name, title, note, context);
 			const usage = (id: number) => resultUsage(host, api, id, context);
+			/**
+			 * A start in a project, a new sub-chat or one continued, passes the one admission check at the moment it would
+			 * start (docs/projects.md, 8.3), with the preview on or off: what to tell the model when it may not, else undefined.
+			 * The switch `startAgents` was asked about before, in `approveStart`. Outside a project nothing is checked, as before.
+			 */
+			const admitted = (start: Pick<Start, "agentId" | "agentName" | "kind" | "chat" | "title" | "task" | "options">): string | undefined => {
+				if (projectOf(parent) === undefined) return undefined;
+				const by = host.agentOf(api.conversationId)?.id ?? host.meta(api.conversationId)?.agentId ?? "";
+				const answer = admit({ by: { kind: "agent", agentId: by, conversationId: parent }, parent, work: null, ...start });
+				// #464 fills `admit` in: past a limit it decides `passLimits` and puts the limit card, and says why it held the start back.
+				return answer.ok ? undefined : `Not started: ${answer.limit.reason}`;
+			};
 			/** For `wait: false`: watch the sub-chat's answer, to wake this agent with it, and answer at once. */
 			const handOff = async (child: number, submissionId: number, name: string, title: string, agentId: string) => {
 				// A run of a project's orchestrator has a report, kept before the watch (reports.ts).
@@ -309,10 +337,12 @@ export function pi2Extension(host: Host): Extension {
 			if (args.worktree !== undefined && args.worktree.trim() === "") return { output: text("`worktree` needs a branch name, such as \"fix-login-timeout\"."), isError: true };
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
-				const agent = host.agent(meta?.agentId);
+				const agent = host.agentOf(args.chat as unknown as ConversationId);
 				if (meta === undefined || meta.parent !== parent || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
 				}
+				const held = admitted({ agentId: agent.id, agentName: agent.name, kind: "continue", chat: args.chat, title: title ?? null, task: args.task, options: { ...(args.wait === undefined ? {} : { wait: args.wait }) } });
+				if (held !== undefined) return { output: text(held), isError: true };
 				// One this conversation archived (sub_chats) comes back to be continued; the line says so.
 				if (isArchived(meta)) {
 					await api.commit(async (tx) => void delete (await tx.doc(Library)).conversations[String(args.chat)]?.archivedAt, context);
@@ -341,7 +371,7 @@ export function pi2Extension(host: Host): Extension {
 				return answer(args.chat, agent, named, sent, note);
 			}
 			const allowed = delegatesOf(host, api.conversationId);
-			const target = allowed.find((a) => a.name.toLowerCase() === args.agent.trim().toLowerCase() || a.id === args.agent.trim());
+			const target = byName(allowed, args.agent);
 			if (target === undefined) {
 				const names = allowed.map((a) => a.name).join(", ");
 				return { output: text(names === "" ? "This conversation has no agents to delegate to." : `Unknown agent "${args.agent}". Available: ${names}.`), isError: true };
@@ -352,6 +382,7 @@ export function pi2Extension(host: Host): Extension {
 			const change = { ...profile, cwd: await subChatFolder(here, target.cwd) };
 			const named = title ?? (args.worktree !== undefined ? `${target.name}: ${args.worktree.trim()}` : `${target.name}: ${args.task.trim().split("\n")[0]!.slice(0, 60)}`);
 			const waits = args.wait !== false;
+			let held: string | undefined;
 			const child = await api.commit(async (tx: Tx) => {
 				// A call run again after a crash finds the sub-chat it made: one made before #295 was owned by its call.
 				const owned = (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0];
@@ -359,6 +390,10 @@ export function pi2Extension(host: Host): Extension {
 				const library = await tx.doc(Library);
 				const made = Object.entries(library.conversations).find(([, meta]) => meta.madeBy === String(api.taskId));
 				if (made !== undefined) return Number(made[0]) as unknown as ConversationId;
+				// A new sub-chat is a start, admitted at the moment it is made; one found again above was admitted then.
+				const options = { ...(args.worktree === undefined ? {} : { worktree: args.worktree }), ...(args.from === undefined ? {} : { from: args.from }), ...(args.wait === undefined ? {} : { wait: args.wait }) };
+				held = admitted({ agentId: target.id, agentName: target.name, kind: "new", chat: null, title: title ?? null, task: args.task, options });
+				if (held !== undefined) return undefined;
 				// A sub-chat belongs to no call, waited for or not: work a call owns keeps the call, and so the whole answer, from
 				// ending until it is done, and a wait a message from the person ends must leave it running (heed.ts). A call that
 				// waits stops it when the call is stopped (`waitForChat`). It starts as a copy of this conversation's agent, as
@@ -382,6 +417,7 @@ export function pi2Extension(host: Host): Extension {
 				};
 				return created.id;
 			}, context);
+			if (child === undefined) return { output: text(held ?? "Not started."), isError: true };
 			if (args.worktree !== undefined) {
 				const failed = await giveWorktree(api, child as unknown as number, args.worktree, args.from, context);
 				if (failed !== undefined) return { output: text(`No worktree could be made for the sub-chat, so nothing was handed over: ${failed}`), isError: true };
@@ -428,7 +464,7 @@ export function pi2Extension(host: Host): Extension {
 	}
 
 	/** The reference files of the agent a conversation belongs to, as they are listed now. */
-	const filesOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.files ?? [];
+	const filesOf = (conversationId: ConversationId) => host.agentOf(conversationId)?.files ?? [];
 
 	const readReferenceTool = defineTool({
 		name: "read_reference",
@@ -447,10 +483,10 @@ export function pi2Extension(host: Host): Extension {
 	});
 
 	/** The computer-use settings of the agent a conversation belongs to. */
-	const computerOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.computer;
+	const computerOf = (conversationId: ConversationId) => host.agentOf(conversationId)?.computer;
 	/** Whether a conversation may use any app, not only its agent's list: it allows everything (#294), as of its latest message. */
 	const anyApp = (conversationId: ConversationId) => host.meta(conversationId)?.allowEverything === true;
-	const agentNameOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.name ?? "An agent";
+	const agentNameOf = (conversationId: ConversationId) => host.agentOf(conversationId)?.name ?? "An agent";
 	/** Told to the app with every request of an agent that may use test copies, which it checks for itself before acting. */
 	const testCopiesOf = (conversationId: ConversationId) => (computerOf(conversationId)?.testCopies === true ? { testCopies: true } : {});
 
@@ -558,7 +594,7 @@ export function pi2Extension(host: Host): Extension {
 	});
 
 	/** The browser settings of the agent a conversation belongs to. */
-	const browserOf = (conversationId: ConversationId) => host.agent(host.meta(conversationId)?.agentId)?.browser;
+	const browserOf = (conversationId: ConversationId) => host.agentOf(conversationId)?.browser;
 
 	type BrowserArgs = { action: string; url?: string; query?: string; element?: number; text?: string; submit?: boolean; option?: string; dy?: number; path?: string; offset?: number };
 
@@ -740,6 +776,31 @@ export function pi2Extension(host: Host): Extension {
 	};
 
 	/**
+	 * Every start by an agent in a project, a new sub-chat or one continued, asks the person first while the project's
+	 * switch `startAgents` is off (docs/projects.md, 8.1 and 8.3), with the preview on or off (section 2), whatever the
+	 * agent's access or Allow everything (`requireSwitch`). Outside a project, or with the switch on, nothing is asked. A
+	 * call that cannot start anything is not worth a question; the tool explains why itself.
+	 */
+	const approveStart = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> => {
+		const conversationId = api.conversationId as unknown as number;
+		if (projectOf(conversationId) === undefined) return undefined;
+		const args = call.arguments as { agent?: unknown; chat?: unknown; title?: unknown };
+		const title = typeof args.title === "string" ? titleOf(args.title) : undefined;
+		let what: string | undefined;
+		if (typeof args.chat === "number") {
+			const meta = host.meta(args.chat as unknown as ConversationId);
+			const agent = host.agentOf(args.chat as unknown as ConversationId);
+			if (meta?.parent === conversationId && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
+		} else if (typeof args.agent === "string") {
+			const target = byName(delegatesOf(host, api.conversationId), args.agent);
+			if (target !== undefined) what = `Start a new sub-chat with ${target.name}${title === undefined ? "" : `, “${title}”`}.`;
+		}
+		if (what === undefined) return undefined;
+		const answer = await requireSwitch({ conversationId, id: String(api.taskId), callId: call.id, tool: call.name, arguments: call.arguments, api, context }, "startAgents", what);
+		return answer.ok ? undefined : { block: answer.reason };
+	};
+
+	/**
 	 * A worktree for a new sub-chat makes a branch in the repository and runs the other agent's set-up command. That is
 	 * done without asking only where the person has already let it happen: the calling conversation has full access (it
 	 * could run `git worktree add` itself), or the agent handed the work has its conversations given worktrees anyway.
@@ -842,7 +903,7 @@ export function pi2Extension(host: Host): Extension {
 				beforeTool: async (call, api, context) => {
 					await awaitWithContext(host.ready, context);
 					if (call.name === "browser") return approveBrowser(call, api, context);
-					if (call.name === "delegate") return approveWorktree(call, api, context);
+					if (call.name === "delegate") return (await approveStart(call, api, context)) ?? approveWorktree(call, api, context);
 					const meta = host.meta(api.conversationId);
 					const isComputer = call.name === "computer";
 					const args = isComputer ? asGiven(api.conversationId, call.arguments as ComputerArgs) : (call.arguments as ComputerArgs);
@@ -899,7 +960,9 @@ export function pi2Extension(host: Host): Extension {
 					);
 					if (decision === "always") await host.allowAlways(api.conversationId, key);
 					// The rule is the engine's own proposal; the app only says "rule". Either way the person allowed this command.
-					if (decision === "rule" && proposal !== undefined && meta?.agentId !== undefined) await host.addRule(meta.agentId, proposal.folder, proposal.words);
+					// It goes to the agent the conversation runs as, whose allowed commands are the ones read (docs/projects.md, 3.4).
+					const ruled = host.agentOf(api.conversationId);
+					if (decision === "rule" && proposal !== undefined && ruled !== undefined) await host.addRule(ruled.id, proposal.folder, proposal.words);
 					return decision === "deny" ? { block: DECLINED } : undefined;
 				},
 				afterTool: async (_call, result, api, context) => {

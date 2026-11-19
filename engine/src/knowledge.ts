@@ -18,6 +18,7 @@ import {
 	removeProjectNote,
 } from "./projectnotes.ts";
 import { inProject, projectOf, projectsOn, requirePreview } from "./projects.ts";
+import { runsAs } from "./state.ts";
 
 // ---- Project instructions
 
@@ -245,8 +246,9 @@ export const knowledge: Feature = (host, engine) => {
 	 * Whose notes a conversation's remember and forget change, if memory is on for it: a chat's are chat mode's, never an
 	 * agent's, whatever it is asked; an agent's conversation's are its agent's. A chat's version counts as the chat.
 	 */
-	// #457 routes conversation agent lookups through runsAs. Until then use the library's agentId, as before.
-	const memoryAgentId = (id: ConversationId) => host.meta(id)?.agentId;
+	// The notes of the agent it runs as (state.ts, `runsAs`; docs/projects.md, 3.4): its `agentId`, but for a
+	// conversation carried over, while the preview is on.
+	const memoryAgentId = (id: ConversationId) => runsAs(host.meta(id), engine.agents());
 	// A live run's first input persists through tool rounds and steering. A queued message can start a new run in
 	// the same commit that ends the last one, so watching for an idle conversation would miss that boundary.
 	const runPreview = new Map<ConversationId, { input: NonNullable<LiveState["run"]>["inputs"][number] | undefined; on: boolean }>();

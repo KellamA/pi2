@@ -5,7 +5,7 @@ import { USER_ENTRY_KIND } from "./attachments.ts";
 import { Background, commandLine } from "./background.ts";
 import type { Feature } from "./features.ts";
 import { PlanDoc } from "./plan.ts";
-import { Agents, Library } from "./state.ts";
+import { agentOf, Agents, Library } from "./state.ts";
 import { Wakes } from "./wakes.ts";
 
 export function validateCompactionTokens(input: unknown, minimum: 0 | 1 = 1): number | null {
@@ -70,7 +70,7 @@ export async function compactionCheckpoint(tx: Tx, id: ConversationId, reason: s
 		const child = Number(key) as ConversationId;
 		const live = await tx.doc(LiveDoc, child);
 		const standing = live.run !== undefined ? "working" : live.runFailure !== undefined ? `stopped (${live.runFailure.reason})` : "idle";
-		const agent = agents.agents[meta.agentId ?? ""]?.name;
+		const agent = agentOf(meta, agents.agents)?.name;
 		const task = await subChatTask(tx, child, meta.subChatTask);
 		lines.push(`- Open sub-chat ${key} ${JSON.stringify(meta.title)}${agent === undefined ? "" : ` (${agent})`}: ${standing}.${task === "" ? "" : ` Task: ${JSON.stringify(task)}`}`);
 	}

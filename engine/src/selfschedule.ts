@@ -203,7 +203,7 @@ const FULL = `You already have ${MAX_AGENT_SCHEDULES} schedules that you set, th
 export const selfSchedule: Feature = (host) => {
 	/** The agent a conversation belongs to, when it may schedule. Read at every call, so turning it off counts at once. */
 	const scheduler = (conversationId: ConversationId): AgentProfile | undefined => {
-		const agent = host.agent(host.meta(conversationId)?.agentId);
+		const agent = host.agentOf(conversationId);
 		return agent?.schedule?.enabled === true ? agent : undefined;
 	};
 

@@ -247,11 +247,10 @@ try {
 	const made = await c().call("projects.create", { folder });
 	const projectId = made.id as string;
 	const oc = made.conversation as number;
-	const orchestratorId = (await c().until("the project", () => c().events.projects.projects.find((row: Event) => row.id === projectId))).orchestratorId;
-	const orchestrator = await c().until("the orchestrator", () => c().events.agents.agents.find((agent: Event) => agent.id === orchestratorId));
-	// Until #457 names the project's agents for it, the orchestrator is given one to hand work to.
-	await c().call("agents.save", { agent: { ...orchestrator, delegates: [worker] } });
-	await c().until("its delegates", () => c().events.agents.agents.find((agent: Event) => agent.id === orchestratorId)?.delegates?.includes(worker));
+	await c().until("the project", () => c().events.projects.projects.find((row: Event) => row.id === projectId));
+	// The orchestrator hands work to the project's agents (#457): a copy of Worker, named Worker too.
+	const copy = (await c().call("projects.addAgent", { projectId, template: worker })).id as string;
+	await c().until("the project's Worker", () => c().events.agents.agents.find((agent: Event) => agent.id === copy));
 	await c().call("conversation.open", { id: oc });
 	await c().until("open", () => c().conversations.get(oc)?.state !== undefined);
 	assert.equal(c().events.projects.projects.find((row: Event) => row.id === projectId).settings.wakeOnReports, false, "off for a new project");
@@ -283,7 +282,7 @@ try {
 		assert.equal(report.batch, null);
 		assert.equal(report.work, null);
 		assert.equal(report.delivered, null);
-		assert.equal(report.agentId, worker);
+		assert.equal(report.agentId, copy);
 	}
 	const watching = c().watched(oc);
 	assert.equal(watching.length, 10);
@@ -463,6 +462,11 @@ try {
 
 	// ---- The preview off: waking exactly as wakes.md says
 
+	// With the preview off, an agent hands work to those its own list names, as today: the orchestrator's names Worker.
+	const orchestratorId = c().events.projects.projects.find((row: Event) => row.id === projectId).orchestratorId;
+	const orchestrator = c().events.agents.agents.find((agent: Event) => agent.id === orchestratorId);
+	await c().call("agents.save", { agent: { ...orchestrator, delegates: [copy] } });
+	await c().until("its delegates", () => c().events.agents.agents.find((agent: Event) => agent.id === orchestratorId)?.delegates?.includes(copy));
 	await c().call("projects.setPreview", { on: false });
 	const g5 = gate();
 	const [off] = await c().tools(oc, `/tools ${JSON.stringify([handOffCall(task(g5, "preview-off"), "Off")])}`);
