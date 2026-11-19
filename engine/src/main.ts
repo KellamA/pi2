@@ -51,6 +51,7 @@ import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
+import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, partStart } from "./opening.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { subChatUsage } from "./subchatusage.ts";
@@ -538,7 +539,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
 		toolsOn: input.toolsOn === undefined ? (previous?.toolsOn ?? []) : validateToolsOn(input.toolsOn),
-		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens),
+		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens, 0),
 		createdAt: previous?.createdAt ?? Date.now(),
 	};
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
@@ -653,6 +654,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", ...compactionMarker(entry) };
+	if (entry.kind === "pi2.compactionTooShort") return { id, kind: "marker", text: "There is too little here to summarise yet." };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
 	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY || entry.kind === LOCAL_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
@@ -1030,12 +1032,38 @@ const chatEvent = () => ({ event: "chat", ...chatSettings(settings.chat) });
 /**
  * Sends the app a conversation as it changes. A chat with several versions is sent as the version it shows, under the
  * chat's id, and starts over with that version's entries when another is shown.
+ *
+ * With `newestFirst` (#380, opening.ts), each list sent from the start goes in parts: the newest entries first, with
+ * how many are still to come, then the older ones in `conversation.older` events, newest first, one a turn so the
+ * engine's thread is never held for long. Entries committed meanwhile go as usual, and a new start drops what of the
+ * old list was still to come.
  */
-async function subscribe(client: Client, id: number): Promise<void> {
+async function subscribe(client: Client, id: number, newestFirst = false): Promise<void> {
 	if (client.subscriptions.has(id)) return;
 	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
 	let view: ConversationView | undefined;
 	let lastSent: unknown;
+	/** The entries of the list sent last that the app has still to be sent, oldest first, and their JSON. */
+	let older: Item[] = [];
+	let olderJSON = new ItemJSON<Item>();
+	let sending: NodeJS.Immediate | undefined;
+	const sendOlder = () => {
+		if (sending !== undefined || older.length === 0) return;
+		sending = setImmediate(() => {
+			sending = undefined;
+			// Closed, or the app gone: nothing more of it is wanted.
+			if (client.subscriptions.get(id) !== subscription || client.socket.destroyed) {
+				older = [];
+				return;
+			}
+			const start = partStart(older, olderJSON.size, OLDER_BYTES);
+			const part = older.slice(start);
+			older = older.slice(0, start);
+			client.socket.write(`${olderJSON.line({ event: "conversation.older", id, earlier: older.length }, part)}\n`);
+			if (older.length === 0) olderJSON = new ItemJSON<Item>();
+			sendOlder();
+		});
+	};
 	const push = () => {
 		if (view === undefined) return;
 		// Entries never change once committed, so the app is only sent the ones it does not have yet.
@@ -1044,7 +1072,16 @@ async function subscribe(client: Client, id: number): Promise<void> {
 		const fresh = reset ? view.entries : view.entries.slice(index + 1);
 		if (view.entries.length > 0) lastSent = view.entries.at(-1)!.id;
 		const items = fresh.map(toItem).filter((item) => item !== undefined);
-		send(client, { event: "conversation", id, reset, items, state: stateOf(view, library.conversations[String(id)]) });
+		const state = stateOf(view, library.conversations[String(id)]);
+		if (!(reset && newestFirst)) {
+			send(client, { event: "conversation", id, reset, items, state });
+			return;
+		}
+		olderJSON = new ItemJSON<Item>();
+		const start = partStart(items, olderJSON.size, FIRST_BYTES, FIRST_COUNT);
+		older = items.slice(0, start);
+		if (!client.socket.destroyed) client.socket.write(`${olderJSON.line({ event: "conversation", id, reset, state, earlier: older.length }, items.slice(start))}\n`);
+		sendOlder();
 	};
 	let following = Promise.resolve();
 	const attach = async () => {
@@ -1067,7 +1104,8 @@ async function subscribe(client: Client, id: number): Promise<void> {
 	};
 	// One at a time, so two quick changes of version never leave two watches.
 	const follow = () => (following = following.then(attach).catch((error) => log("could not follow conversation", id, error instanceof Error ? error.message : "")));
-	client.subscriptions.set(id, { push, stop: async () => watch?.stop(), follow });
+	const subscription: Subscription = { push, stop: async () => watch?.stop(), follow };
+	client.subscriptions.set(id, subscription);
 	try {
 		await attach();
 	} catch (error) {
@@ -1220,9 +1258,14 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		});
 		return {};
 	},
+	/**
+	 * `{ id, newestFirst? }`: send the app the conversation, and keep sending it as it changes. With `newestFirst`, a
+	 * long one comes in parts, the newest first (`subscribe`); an app that does not ask gets it in one event.
+	 */
 	"conversation.open": async (params, client) => {
 		await conversation(params.id);
-		await subscribe(client, params.id as number);
+		if (params.newestFirst !== undefined && typeof params.newestFirst !== "boolean") throw new Error("newestFirst must be true or false");
+		await subscribe(client, params.id as number, params.newestFirst === true);
 		return {};
 	},
 	"conversation.close": async (params, client) => {

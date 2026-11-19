@@ -66,6 +66,10 @@ struct TranscriptFeed {
 
     struct Message: Encodable {
         var reset: Bool?
+        /// Entries to put before the first the page has, oldest first (#380).
+        var older: [Item]?
+        /// How many entries older than those the page has are still to come.
+        var earlier: Int?
         var items: [Item]?
         var live: Live?
         var inbox: [InboxItem]?
@@ -74,9 +78,20 @@ struct TranscriptFeed {
         var chat: Chat?
     }
 
+    /// The page is sent a long conversation newest first, as the engine sends it to the app (#380, engine/src/opening.ts):
+    /// at first the newest entries, as many as come to about `firstBytes` or number `firstCount`, then the older ones,
+    /// about `olderBytes` at a time, each once the page has drawn the one before.
+    static let firstBytes = 64 * 1024
+    static let firstCount = 40
+    static let olderBytes = 256 * 1024
+
+    /// The entries sent: `sentCount` of them, from the one whose id is `firstSent` to `lastSent`.
     private var sentCount = 0
     private var firstSent: Int?
     private var lastSent: Item?
+    /// How many entries the app has before those the page was sent, still to be sent.
+    private(set) var pending = 0
+    private var earlier: Int?
     private var live: Live?
     private var inbox: [InboxItem]?
     private var names: Names?
@@ -92,26 +107,53 @@ struct TranscriptFeed {
     }
 
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
-    mutating func update(items: [Item], state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String], chat: Chat = .none) -> Message? {
+    /// `earlier` is how many older entries the engine is still to send the app; with `withOlder` false, older entries the
+    /// app has wait (the page has not yet drawn the part before them).
+    mutating func update(items: [Item], earlier: Int = 0, state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
         var message = Message()
         var changed = false
 
-        // Entries only ever arrive at the end. Anything else (a reset, a reload) starts the page's list over.
-        let continues = sentCount <= items.count
-            && (sentCount == 0 || (items.first?.id == firstSent && items[sentCount - 1] == lastSent))
+        // Entries arrive at the end, and before the first sent: those the app has and has not sent yet, and those the
+        // engine sends after the newest (#380). Anything else (a reset, a reload) starts the page's list over.
+        let front: Int? = sentCount == 0 || items.first?.id == firstSent ? 0 : items.firstIndex(where: { $0.id == firstSent })
+        let continues = front.map { front in sentCount == 0 || (front + sentCount <= items.count && items[front + sentCount - 1] == lastSent) } ?? false
         if startOver || !continues {
             message.reset = true
             sentCount = 0
             startOver = false
             changed = true
         }
-        if items.count > sentCount {
-            message.items = Array(items[sentCount...])
+        let start: Int
+        if sentCount == 0 {
+            // The page has none of them: the newest first.
+            start = Self.partStart(items, end: items.count, bytes: Self.firstBytes, count: Self.firstCount)
+            if start < items.count {
+                message.items = Array(items[start...])
+                changed = true
+            }
+        } else {
+            let front = front ?? 0
+            start = front > 0 && withOlder ? Self.partStart(items, end: front, bytes: Self.olderBytes) : front
+            if start < front {
+                message.older = Array(items[start..<front])
+                changed = true
+            }
+            if items.count > front + sentCount {
+                message.items = Array(items[(front + sentCount)...])
+                changed = true
+            }
+        }
+        sentCount = items.count - start
+        firstSent = items.indices.contains(start) ? items[start].id : nil
+        lastSent = items.last
+        pending = start
+        // What the page is still to get: what the app has and has not sent it, and what the engine has still to send.
+        let earlier = start + earlier
+        if earlier != self.earlier || message.reset == true {
+            message.earlier = earlier
+            self.earlier = earlier
             changed = true
         }
-        sentCount = items.count
-        firstSent = items.first?.id
-        lastSent = items.last
 
         let live = Live(busy: state?.busy ?? false, partial: state?.partial, tools: state?.tools ?? [], retrying: state?.retry != nil, setup: state?.setup)
         if live != self.live {
@@ -140,6 +182,25 @@ struct TranscriptFeed {
             changed = true
         }
         return changed ? message : nil
+    }
+
+    /// Where the part of `items` that ends at `end` starts: entries are taken from `end` back until they come to about
+    /// `bytes` or number `count`, always at least one, and reaching back over tool results to the answer whose calls
+    /// they answer, as the engine cuts its parts (engine/src/opening.ts).
+    static func partStart(_ items: [Item], end: Int, bytes: Int, count: Int = .max) -> Int {
+        var start = end
+        var total = 0
+        while start > 0 && (start == end || (total < bytes && end - start < count)) {
+            start -= 1
+            total += size(of: items[start])
+        }
+        while start > 0 && items[start].kind == "tool" { start -= 1 }
+        return start
+    }
+
+    /// About how large an entry is as JSON: its text, which is most of it, and a little for the rest.
+    static func size(of item: Item) -> Int {
+        item.text.utf8.count + (item.thinking?.utf8.count ?? 0) + (item.error?.utf8.count ?? 0) + 200 * (1 + (item.toolCalls?.count ?? 0))
     }
 
     /// The message as the JSON text the page parses. The page is handed it as a string argument, never as script.

@@ -106,10 +106,20 @@ socket.on("close", () => {
 	for (const answer of waiting.values()) answer({ error: "the connection to the engine closed" });
 	waiting.clear();
 });
-let unfinished = "";
+// The start of a line still arriving, in pieces. Only each new piece is looked through for the line's end: joining and
+// splitting all of it again for every piece took this script tens of milliseconds for a conversation of 1.5 MB, which
+// it then counted as the engine's (#380).
+let unfinished: string[] = [];
 socket.setEncoding("utf8").on("data", (chunk: string) => {
-	const lines = (unfinished + chunk).split("\n");
-	unfinished = lines.pop()!;
+	const lines: string[] = [];
+	let start = 0;
+	for (let end = chunk.indexOf("\n"); end !== -1; end = chunk.indexOf("\n", start)) {
+		unfinished.push(chunk.slice(start, end));
+		lines.push(unfinished.join(""));
+		unfinished = [];
+		start = end + 1;
+	}
+	if (start < chunk.length) unfinished.push(chunk.slice(start));
 	for (const line of lines) {
 		if (line === "") continue;
 		const message = JSON.parse(line) as Answer & { event?: string };
@@ -187,6 +197,10 @@ async function round(phase: Phase, n: number, idle: number, busy: number[], larg
 		await request("conversation.close", { id: open }).catch(() => {});
 	}
 	if (large !== undefined && (await probe(phase, `conversation.open, ${largeEntries} entries`, "conversation.open", { id: large })) !== undefined) {
+		await request("conversation.close", { id: large }).catch(() => {});
+	}
+	// As the app opens it since #380: answered once the newest entries are sent, the rest following.
+	if (large !== undefined && (await probe(phase, `conversation.open, newest first`, "conversation.open", { id: large, newestFirst: true })) !== undefined) {
 		await request("conversation.close", { id: large }).catch(() => {});
 	}
 	await probe(phase, "submit, to an idle conversation", "submit", { id: idle, text: `A message while ${busy.length} runs work (${n}).` });

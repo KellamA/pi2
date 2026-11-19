@@ -18,6 +18,10 @@ enum PerfProbe {
     private struct Opening {
         let started: Double
         var steps: [String] = []
+        /// Whether older entries are still to come after the first part (#380): the line waits for the rest to be drawn.
+        var rest = false
+        var drawn = false
+        var restDrawn = false
     }
 
     private static var home: URL?
@@ -46,11 +50,12 @@ enum PerfProbe {
 
     static func now() -> Double { ProcessInfo.processInfo.systemUptime }
 
-    /// Called once, with the data folder. Looks for `perf.on` every two seconds, so it can be turned on and off while
-    /// the app runs.
+    /// Called once, with the data folder. Looks for `perf.on` at once, so that the conversation opened at launch is
+    /// measured too, and then every two seconds, so it can be turned on and off while the app runs.
     static func start(home: URL) {
         #if PI2_DEVELOPMENT
         self.home = home
+        check()
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated { check() }
         }
@@ -149,8 +154,9 @@ enum PerfProbe {
         return request.method
     }
 
-    /// A step of opening conversation `id`. "asked" starts it; "drawn" (the page has shown its entries) ends it.
-    static func opening(_ id: Int, _ step: String) {
+    /// A step of opening conversation `id`. "asked" starts it; "drawn" (the page has shown its entries) ends it, or, for
+    /// a conversation that comes in parts (`rest`), "first part drawn" and then "rest drawn" (the last of them shown).
+    static func opening(_ id: Int, _ step: String, rest: Bool = false) {
         guard active else { return }
         if step == "asked" {
             // The selection and the page each ask as the conversation comes on screen: the first one starts the clock.
@@ -161,7 +167,12 @@ enum PerfProbe {
         guard var opening = openings[id] else { return }
         let ms = Int(((now() - opening.started) * 1000).rounded())
         opening.steps.append("\(step) \(ms)ms")
-        if step.hasPrefix("drawn") {
+        if rest { opening.rest = true }
+        // "drawn" is everything the engine sent; "first part drawn" only the newest, with the rest still to come.
+        if step == "drawn" || step == "first part drawn" { opening.drawn = true }
+        if step == "drawn" || step == "rest drawn" { opening.restDrawn = true }
+        // The line is written once the conversation is drawn, and, when it came in parts, once the last part is too.
+        if opening.drawn && (!opening.rest || opening.restDrawn) {
             write("open \(id): \(opening.steps.joined(separator: ", "))")
             openings[id] = nil
         } else {

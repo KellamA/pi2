@@ -184,9 +184,11 @@ final class EngineClient {
     /// does not know the conversation and the library does not list it, the request is let go quietly: the window empties
     /// that pane once the library is in. A conversation the library lists that fails to open is still reported.
     private func requestOpen(_ id: Int) {
+        PerfProbe.opening(id, "sent")
         Task {
             do {
-                try await call("conversation.open", ["id": id])
+                // A long conversation comes newest first, and the rest just after (#380); an older engine sends it whole.
+                try await call("conversation.open", ["id": id, "newestFirst": true])
                 PerfProbe.opening(id, "answered")
             } catch {
                 if hasLoadedLibrary, !conversations.contains(where: { $0.id == id }), !archived.contains(where: { $0.id == id }) {
@@ -253,7 +255,7 @@ final class EngineClient {
             ? "\(attachments.count) attachment\(attachments.count == 1 ? "" : "s")" : text
         outgoing[id, default: []].append(OutgoingMessage(id: requestId, summary: summary))
         let asked = PerfProbe.now()
-        let shownBefore = open[id]?.items.count ?? 0
+        let lastBefore = open[id]?.items.last?.id
         let deadline = ContinuousClock.now + .seconds(60)
         var unanswered = false
         while true {
@@ -263,8 +265,7 @@ final class EngineClient {
                 // Shown as taken until the conversation shows it (in `handle`), and for a few seconds at most. The
                 // update that shows it can come before this answer.
                 let submission = result["submissionId"]?.intValue ?? 0
-                let items = open[id]?.items ?? []
-                let shown = items.count > shownBefore && items[shownBefore...].contains { $0.kind == "user" }
+                let shown = open[id]?.hasMessage(after: lastBefore) == true
                 if shown || open[id]?.state?.queued.contains(where: { $0.id == submission }) == true {
                     dropOutgoing(requestId, from: id)
                 } else if let index = outgoing[id]?.firstIndex(where: { $0.id == requestId }) {
@@ -512,6 +513,14 @@ final class EngineClient {
         let reset: Bool
         let items: [Item]
         let state: ConversationState
+        /// With a list sent from the start, how many older entries are still to come; absent from an older engine.
+        let earlier: Int?
+    }
+    /// Entries that go before those the app has, oldest first, and how many are still to come after them.
+    private struct OlderEvent: Decodable {
+        let id: Int
+        let items: [Item]
+        let earlier: Int
     }
     private struct AuthEventMessage: Decodable {
         let loginId: String
@@ -596,7 +605,7 @@ final class EngineClient {
                 let event = try decoder.decode(ConversationEvent.self, from: line)
                 guard let data = open[event.id] else { return }
                 let first = data.state == nil
-                data.apply(reset: event.reset, items: event.items, state: event.state)
+                data.apply(reset: event.reset, items: event.items, state: event.state, earlier: event.earlier)
                 // A message the engine has taken goes from the field once the conversation shows it: in the queue, or as
                 // a message of the person's in the transcript.
                 if outgoing[event.id]?.contains(where: { $0.submission != nil }) == true {
@@ -605,7 +614,15 @@ final class EngineClient {
                     outgoing[event.id]?.removeAll { $0.submission.map { arrived || queued.contains($0) } ?? false }
                     if outgoing[event.id]?.isEmpty == true { outgoing[event.id] = nil }
                 }
-                if first { PerfProbe.opening(event.id, "entries \(data.items.count) (\(line.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to read)") }
+                if first {
+                    let more = data.earlier > 0 ? ", \(data.earlier) earlier to come" : ""
+                    PerfProbe.opening(event.id, "entries \(data.items.count) (\(line.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to read\(more))", rest: data.earlier > 0)
+                }
+            case "conversation.older":
+                let event = try decoder.decode(OlderEvent.self, from: line)
+                guard let data = open[event.id] else { return }
+                data.prepend(event.items, earlier: event.earlier)
+                if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":

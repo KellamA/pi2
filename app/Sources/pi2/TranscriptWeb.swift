@@ -9,12 +9,14 @@ struct ConversationTranscript: View {
     let engine: EngineClient
     let conversationID: Int
     let items: [Item]
+    /// How many entries older than `items` are still to come (#380).
+    var earlier = 0
     let state: ConversationState?
 
     var body: some View {
         if let folder = TranscriptPage.folder {
             TranscriptWebView(
-                folder: folder, engine: engine, conversationID: conversationID, items: items, state: state,
+                folder: folder, engine: engine, conversationID: conversationID, items: items, earlier: earlier, state: state,
                 inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names, chat: chat
             )
             // The page stays hidden until it has drawn the conversation; meanwhile this shows through.
@@ -64,6 +66,7 @@ struct TranscriptWebView: NSViewRepresentable {
     let engine: EngineClient
     let conversationID: Int
     let items: [Item]
+    let earlier: Int
     let state: ConversationState?
     let inbox: [InboxItem]
     let names: TranscriptFeed.Names
@@ -80,7 +83,7 @@ struct TranscriptWebView: NSViewRepresentable {
     func updateNSView(_ view: TranscriptWebKitView, context: Context) {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
-        context.coordinator.show(conversationID: conversationID, items: items, state: state, inbox: inbox, names: names, chat: chat)
+        context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, state: state, inbox: inbox, names: names, chat: chat)
     }
 
     static func dismantleNSView(_ view: TranscriptWebKitView, coordinator: TranscriptBridge) {
@@ -98,6 +101,7 @@ final class TranscriptBridge {
     private var ready = false
     private var feed = TranscriptFeed()
     private var items: [Item] = []
+    private var earlier = 0
     private var state: ConversationState?
     private var inbox: [InboxItem] = []
     private var names: TranscriptFeed.Names?
@@ -126,12 +130,14 @@ final class TranscriptBridge {
         return view
     }
 
-    func show(conversationID: Int, items: [Item], state: ConversationState?, inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
+    func show(conversationID: Int, items: [Item], earlier: Int, state: ConversationState?, inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
         if conversationID != self.conversationID {
             self.conversationID = conversationID
             feed.restart()
+            olderOnTheWay = false
         }
         self.items = items
+        self.earlier = earlier
         self.state = state
         self.inbox = inbox
         self.names = names
@@ -161,21 +167,45 @@ final class TranscriptBridge {
         }
         let started = PerfProbe.now()
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
-        guard let message = feed.update(items: items, state: state, inbox: inbox, names: names, palette: palette, chat: chat),
+        // A long conversation goes to the page newest first, and the older entries a part at a time, each once the page
+        // has drawn the one before (#380): one part on its way at a time, whatever else is sent meanwhile.
+        guard let message = feed.update(items: items, earlier: earlier, state: state, inbox: inbox, names: names, palette: palette, chat: chat, withOlder: !olderOnTheWay),
               let json = TranscriptFeed.json(message) else {
             drawn?()
             return
         }
         PerfProbe.event("page update", bytes: json.utf8.count, since: started)
-        guard PerfProbe.active, state != nil, message.reset == true || hidden else { return send(json, then: drawn) }
-        // The whole conversation going to the page, as it does when one is opened: time it until the page has shown it.
+        var then = drawn
+        if feed.pending > 0, !olderOnTheWay {
+            olderOnTheWay = true
+            then = { [weak self] in
+                drawn?()
+                self?.olderOnTheWay = false
+                self?.push()
+            }
+        }
         let id = conversationID
+        // The last of the older entries of a conversation that came newest first: time it until the page has shown it.
+        if PerfProbe.active, message.older != nil, message.earlier == 0 {
+            PerfProbe.opening(id, "rest to page (\(json.utf8.count / 1024) KB)")
+            return send(json) {
+                PerfProbe.opening(id, "rest drawn")
+                then?()
+            }
+        }
+        guard PerfProbe.active, state != nil, message.reset == true || hidden else { return send(json, then: then) }
+        // The conversation going to the page, as it does when one is opened: time it until the page has shown it.
         PerfProbe.opening(id, "page \(message.items?.count ?? 0) entries (\(json.utf8.count / 1024) KB, \(Int(((PerfProbe.now() - started) * 1000).rounded()))ms to encode)")
+        // With older entries still to come, it is the first part that was drawn.
+        let whole = (message.earlier ?? earlier) == 0
         send(json) {
-            PerfProbe.opening(id, "drawn")
-            drawn?()
+            PerfProbe.opening(id, whole ? "drawn" : "first part drawn")
+            then?()
         }
     }
+
+    /// Whether a part of the older entries is on its way to the page, which sends the next once it has drawn it.
+    private var olderOnTheWay = false
 
     private func send(_ json: String, then done: (@MainActor () -> Void)? = nil) {
         // The JSON goes in as an argument and is parsed by the page, so nothing in it is ever run as script.
@@ -196,6 +226,7 @@ final class TranscriptBridge {
         case .ready:
             ready = true
             feed.restart()
+            olderOnTheWay = false
             // Shown once it has drawn the conversation, so it never shows empty over the loading view.
             push { [weak self] in self?.reveal() }
         case .copy(let text):
