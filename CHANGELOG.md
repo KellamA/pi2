@@ -6,6 +6,32 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.3
+
+### Added
+- An agent can link a file or folder on this Mac in its answer, as a Markdown link to its path (full, starting with `~/`, a `file:` address, or relative to the conversation's folder), and a click on the link shows it in Finder. It never opens or runs it; a file that has gone is said so in a short notice, and a file on a network volume is not looked into. Right-click a link, or a path written as code, for Show in Finder, Open (not offered for programs, scripts or applications) and Copy Path. Agents and chats are told, in one sentence of their instructions, to link the files they make for you to look at.
+- Computer use can open a context menu: the agent's `context_menu` action opens the menu a right-click would show on a control in the window, or at a point, with the app in the background. The menu's items are then listed first among the window's controls, so the agent chooses one by its number, or presses escape to close the menu. It asks before doing so, as for a click.
+
+### Changed
+- Opening a conversation is quicker: about 110 ms sooner for one not yet open, and 125 ms for going back to one already open, whatever its length. pi² keeps the next conversation's page loaded ahead, at the cost of one more web page's memory (about 30 MB) while it waits.
+- Commands an agent may run without asking are now called **allowed commands**. Find them under **Allowed commands** in the agent’s settings. Commands you already allowed still work as before.
+
+### Fixed
+- Usage no longer rereads every conversation while agents work. It updates the conversations that spent tokens or money, and still counts archived and deleted conversations in overall spend and the daily budget.
+- The agents' notes in Settings › Chat, folded under each agent's name, could not be opened or closed with VoiceOver or by an agent's computer use, since a group that folds away in a settings form answered to no accessibility action, only to a click (#367). They now open and close with an accessibility press, and computer use tells an agent when a control it clicked answers to no press and nothing changed.
+- When several sub-chats need approval or an answer, their requests scroll instead of pushing the message field and Stop out of the window.
+- The computer tool finds a parked test copy's main window even when Accessibility loses track of it.
+- Computer scrolling uses the visible view's height, not a percentage of the document, and reports how far the view moved when it can measure it.
+- The computer tool lists an app's macOS menu bar items and can click them to work in the window they open, under the usual approval rules.
+
+### For contributors
+- Use `scripts/test-copy choose` to give a throwaway copy’s next Open or Save panel an answer without browsing your Mac. Unarmed panels cancel, and the copy records each answer.
+- The conversation page's web view is in a module of its own, `TranscriptKit`, with the page loaded ahead for the next pane, and `pi2-transcript-check` checks it with real pages in windows that never come on screen; CI runs it. The speed probe's line for an opening now has a `page ready` step.
+- The load script now opens a conversation with the requested `--large` entry count in test copies. On engines without the test fixture, it adds short demo turns until it reaches the target. It prints the count or explains why setup failed.
+- `scripts/test-copy show` answers once the conversation page has drawn the conversation, so a `shot` or a computer use screenshot straight after shows it and lists its links (#453).
+- `pi2-computer-check`, which CI runs, checks how the computer tool reaches SwiftUI controls by accessibility, against stand-in views read in-process with no permission: that a disclosure group made with `pressableDisclosure` opens and closes with a press, in a grouped Form and outside one, and which element a context menu is opened on. A new `DisclosureGroup` in the app should put `pressableDisclosure` on its label (#367).
+- In a throwaway copy, pi²’s Copy buttons and menu items record what they copied instead of changing the Mac’s pasteboard. Read the latest record with `scripts/test-copy last-copy <suffix>`.
+
 ## 0.8.2
 
 ### Added
