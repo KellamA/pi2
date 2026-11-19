@@ -43,6 +43,7 @@ Keep each issue's record as [CLAUDE.md](../CLAUDE.md#issues-one-for-every-piece-
 - `scripts/issue note N "..."` for each decision or dead end worth keeping, since nobody saw you make it;
 - `scripts/issue done N "..."` once the pull request is merged, and then `gh issue view N` to check it ended closed with no "in progress" label;
 - `scripts/issue idea "Title" -b "..."` for anything worth doing outside your issue, and leave it.
+- Do not classify issues (the labels `local model` and `cloud model`): the agent that handed out the work does that ([issue-classes.md](issue-classes.md)). If you think an issue is in the wrong class, say so in your report.
 
 ## Doing the work
 

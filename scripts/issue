@@ -16,17 +16,22 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/issue <command> [arguments]
 
-  start "Title" [-b body] [-l label]...   Open an issue for work you are starting
+  start "Title" [-b body] [-l label]... [--model local|cloud]
+                                           Open an issue for work you are starting
   take N                                   Pick up an existing issue (or resume a paused one)
   note N "text"                            Add a progress note
   wait N "what for"                        Mark it waiting on the person (keeps it open)
   block N "why"                            Mark it blocked (keeps it open)
   done N "summary"                         Close it as finished, with a summary
   drop N "why"                             Close it as not going ahead
-  idea "Title" [-b body] [-l label]...     File something for later in the backlog
+  idea "Title" [-b body] [-l label]... [--model local|cloud]
+                                           File something for later in the backlog
+  classify N local|cloud                   Say which model the issue needs: put the label
+                                           "local model" or "cloud model" on it, and take the
+                                           other one off
   skip "why"                               Go ahead without an issue (GitHub unreachable,
                                            or the person said not to track this)
-  list                                     Show open issues by status
+  list                                     Show open issues by status, with each one's class
   audit [--since DATE]                     List what is wrong on the board; exits 1 if anything
                                            is (changes nothing). DATE limits the check for a
                                            missing Done summary to issues closed since then.
@@ -34,6 +39,12 @@ Usage: scripts/issue <command> [arguments]
 A text can be given as --body-file FILE instead, for a long one that should not
 pass through the shell: in place of -b for start and idea, and in place of the
 text for note, wait, block, done and drop. Give a text or a file, not both.
+
+A class says which kind of model an issue needs, "local model" or "cloud model"
+(see docs/issue-classes.md). Only the agent that hands out the work sets one,
+with classify or with --model on start and idea; both are refused in a linked git
+worktree, where an agent doing the work runs. audit reports an open issue with no
+class, and one with both.
 EOF
 }
 
@@ -45,6 +56,7 @@ clean() { local s=${1-} t='~'; printf '%s' "${s//"$HOME"/$t}"; }
 branch() { git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown"; }
 
 STATUS_LABELS=("in progress" "waiting" "blocked" "backlog")
+CLASS_LABELS=("local model" "cloud model")
 
 ensure_labels() {
 	local stamp
@@ -55,6 +67,8 @@ ensure_labels() {
 	gh label create "waiting" --color c5def5 --description "Waiting on a decision or review" --force >/dev/null
 	gh label create "blocked" --color b60205 --description "Cannot go on until something else changes" --force >/dev/null
 	gh label create "backlog" --color ededed --description "Not started; a candidate for later" --force >/dev/null
+	gh label create "local model" --color 0e8a16 --description "A model on this Mac can do it" --force >/dev/null
+	gh label create "cloud model" --color 1d76db --description "It needs a cloud model" --force >/dev/null
 	touch "$stamp"
 }
 
@@ -74,6 +88,68 @@ set_status() {
 AUDIT_SINCE=2026-11-17T04:00:00Z
 
 need_number() { [[ ${1-} =~ ^[0-9]+$ ]] || die "expected an issue number, got '${1-}'"; }
+
+# The label for a class, in $class: local or cloud. Anything else is an error.
+# What the two classes mean is in docs/issue-classes.md.
+class_label() {
+	case ${1-} in
+		local) class="local model" ;;
+		cloud) class="cloud model" ;;
+		*) die "expected a class, local or cloud, got '${1-}'" ;;
+	esac
+}
+
+# Replace whichever class label the issue has with the given one.
+set_class() {
+	local n=$1 class=$2 args=() l
+	ensure_labels
+	for l in "${CLASS_LABELS[@]}"; do
+		[[ $l == "$class" ]] || args+=(--remove-label "$l")
+	done
+	args+=(--add-label "$class")
+	gh issue edit "$n" "${args[@]}" >/dev/null
+}
+
+# A folder git names, made absolute: git gives a relative path when the folder
+# lies under the current one, and two of them have to be compared as paths.
+abs_dir() { (unset CDPATH; cd -P -- "$1" 2>/dev/null && pwd -P); }
+
+# True when this runs in a linked worktree rather than the main checkout: git's
+# own folder and the folder its worktrees share are then different places.
+linked_worktree() {
+	local gd shared
+	gd=$(git rev-parse --git-dir 2>/dev/null) || return 1
+	shared=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+	gd=$(abs_dir "$gd") || return 1
+	shared=$(abs_dir "$shared") || return 1
+	[[ $gd != "$shared" ]]
+}
+
+# Only the agent that hands out the work classifies issues, and it is in the
+# main checkout; a worker runs in a linked worktree of its own. So classifying is
+# refused there, before anything is asked of GitHub.
+only_orchestrator() {
+	if linked_worktree; then
+		die "Only the agent that hands out the work classifies issues. Say in your report which class you think it needs."
+	fi
+}
+
+# --model on start and idea, looked for before anything is asked of GitHub, so a
+# linked worktree is refused with nothing sent. create turns it into a label.
+check_model() {
+	while (($#)); do
+		case $1 in
+			--model)
+				[[ $# -ge 2 ]] || die "--model needs a class, local or cloud"
+				only_orchestrator
+				class_label "$2"
+				shift 2
+				;;
+			-b|--body|--body-file|-l|--label) shift 2 || break ;;
+			*) shift ;;
+		esac
+	done
+}
 
 # A long text goes in a file given with --body-file rather than in the command,
 # since a body with backticks in a shell argument or here-document can be run as
@@ -114,6 +190,7 @@ create() {
 			-b|--body) body=$2; shift 2 ;;
 			--body-file) body_file=${2-}; shift 2 || die "--body-file needs a file name" ;;
 			-l|--label) labels+=("$2"); shift 2 ;;
+			--model) class_label "${2-}"; labels+=("$class"); shift 2 ;;
 			*) die "unknown option $1" ;;
 		esac
 	done
@@ -141,11 +218,13 @@ create() {
 cmd=${1-}; shift || true
 case $cmd in
 	start)
+		check_model "$@"
 		ensure_labels
 		url=$(create "in progress" "$@")
 		echo "[pi2-issue] opened #${url##*/} $url"
 		;;
 	idea)
+		check_model "$@"
 		ensure_labels
 		url=$(create "backlog" "$@")
 		echo "[pi2-issue] filed #${url##*/} $url"
@@ -205,15 +284,27 @@ case $cmd in
 		[[ -n ${1-} ]] || die "say why this work is not tracked"
 		echo "[pi2-issue] skipped: $1"
 		;;
+	classify)
+		need_number "${1-}"
+		class_label "${2-}"
+		only_orchestrator
+		set_class "$1" "$class"
+		echo "[pi2-issue] classified #$1 ($class)"
+		;;
 	list)
 		for status in "in progress" "waiting" "blocked" "backlog"; do
 			echo "== $status"
-			gh issue list --label "$status" --state open --limit 50 \
-				--json number,title -q '.[] | "  #\(.number)  \(.title)"'
+			gh issue list --label "$status" --state open --limit 50 --json number,title,labels -q '
+				def klass: [.labels[].name | select(. == "local model" or . == "cloud model")]
+					| if length == 0 then "(no class)" else map("(" + . + ")") | join(" ") end;
+				.[] | "  #\(.number)  \(.title)  \(klass)"'
 		done
 		echo "== other open"
-		gh issue list --state open --limit 50 --json number,title,labels \
-			-q '.[] | select([.labels[].name] | any(. == "in progress" or . == "waiting" or . == "blocked" or . == "backlog") | not) | "  #\(.number)  \(.title)"'
+		gh issue list --state open --limit 50 --json number,title,labels -q '
+			def klass: [.labels[].name | select(. == "local model" or . == "cloud model")]
+				| if length == 0 then "(no class)" else map("(" + . + ")") | join(" ") end;
+			.[] | select([.labels[].name] | any(. == "in progress" or . == "waiting" or . == "blocked" or . == "backlog") | not) |
+				"  #\(.number)  \(.title)  \(klass)"'
 		;;
 	audit)
 		since=$AUDIT_SINCE
@@ -231,16 +322,21 @@ case $cmd in
 		# One line per problem, "<number>\t<what is wrong>", in order of number.
 		problems=$(jq -r '
 			def status: [.labels[].name | select(. == "in progress" or . == "waiting" or . == "blocked" or . == "backlog")];
+			def klass: [.labels[].name | select(. == "local model" or . == "cloud model")];
 			sort_by(.number)[] |
 			(status) as $s |
+			(klass) as $k |
 			if .state == "CLOSED" then
 				if ($s | length) > 0 then "\(.number)\tclosed, but still labelled \($s | map("\"\(.)\"") | join(" and "))" else empty end
 			else
-				if ($s | length) == 0 then "\(.number)\topen with no status label"
+				( if ($s | length) == 0 then "\(.number)\topen with no status label"
 				elif ($s | length) > 1 then "\(.number)\topen with \($s | length) status labels: \($s | join(", "))"
 				elif $s[0] == "in progress" and (.updatedAt | fromdateiso8601) < (now - 86400) then
 					"\(.number)\tin progress, but nothing has happened on it since \(.updatedAt)"
-				else empty end
+				else empty end ),
+				( if ($k | length) == 0 then "\(.number)\topen with no class label"
+				elif ($k | length) > 1 then "\(.number)\topen with \($k | length) class labels: \($k | join(", "))"
+				else empty end )
 			end' <<<"$issues")
 		# Closed as completed by agent work since $since: it should carry the
 		# summary that "done" posts. Comments are fetched only for these.

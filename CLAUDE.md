@@ -13,6 +13,7 @@ Every task an agent does in this repository gets a GitHub issue, so there is a r
 - **Ending a turn before the work is finished:** `scripts/issue wait N "what you need from the person"`, or `scripts/issue block N "why"`. Run `scripts/issue take N` when you pick it up again.
 - **Finished:** `scripts/issue done N "what changed, and what was and was not verified"`. If it is abandoned: `scripts/issue drop N "why"`. Run it even when the issue is already closed, as it is once a pull request with `Fixes #N` is merged: it posts the summary either way, takes the status label off, and closes the issue only if it is still open.
 - **Ideas for later:** when you notice something worth doing that is outside the task, file it with `scripts/issue idea "Title" -b "..."` (or `--body-file FILE` for a longer text) rather than doing it.
+- **Classifying:** every open issue has a class, `local model` or `cloud model`, saying which kind of model it needs ([docs/issue-classes.md](docs/issue-classes.md)). Only the agent that hands out the work sets it, with `scripts/issue classify N local` or `cloud`, or with `--model` when it files the issue. A worker never does.
 - **Not tracking:** only if GitHub cannot be reached, or the person said not to track something, run `scripts/issue skip "why"`.
 - Mention the issue in commit messages and pull requests (`Fixes #N` in a pull request closes it on merge).
 - A question that changes no files needs no issue.
