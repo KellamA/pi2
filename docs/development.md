@@ -269,7 +269,9 @@ After the answer finishes, archive it (this stops any work still running):
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
-In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation by id, and answers once the conversation page has drawn it (the first part of a long one), so a `shot` or a computer tool screenshot straight after shows what is there and lists its links (#453). If the page has not drawn it within 20 seconds it says so. `size test-7 820 532` sets the main window's outer frame in points; `size test-7 smallest` uses its current minimum.
+`scripts/test-copy conversations test-7` lists the copy's Library and Archive, one conversation per line: id, title and agent id, separated by tabs. A `-` means no agent; tabs and line breaks in titles are escaped.
+
+In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation by id, and answers once the conversation page has drawn it (the first part of a long one), so a `shot` or a computer tool screenshot straight after shows what is there and lists its links (#453). If the conversation is already drawn in a visible pane, `show` focuses that pane without waiting for another draw. If the page has not drawn it within 20 seconds it says so. `size test-7 820 532` sets the main window's outer frame in points; `size test-7 smallest` uses its current minimum.
 
 `answer test-7 <conversation-id> allow|deny` answers exactly one waiting approval in that conversation (use the sub-chat's own id). `allow` means Allow Once, without adding an allowed command. `fill test-7 600` prints the id of a new demo conversation with 600 synthetic entries, including long tool outputs, without running the model or commands.
 
@@ -339,11 +341,11 @@ A development build (ordinary or optimised) measures its main thread while its d
 - for each kind of request: how many, and how long their answers took;
 - how many times the app's scene body was worked out (`count scene body worked out`), which updates every scene and sets each window's settings again. While agents work there should be none: the body reads nothing that changes while agents work ([architecture.md](architecture.md#keeping-the-app-quick-while-agents-work)).
 
-It also writes a line for each conversation opened, with the time from asking for it to each step (the engine's first update, the engine's answer, its page being ready, which a page loaded ahead is at once, the page being sent the entries, the page having drawn them), and one for each message accepted. Measure an optimised build in a throwaway copy, which is what a person runs:
+It also writes a line for each conversation opened, with the time from asking for it to each step (the engine's first update, the engine's answer, its page being ready, which a page loaded ahead is at once, the page being sent the entries, the page having drawn them), and one for each message accepted. Measure an optimised build in a throwaway copy, which is what a person runs. Start it with `--no-app-nap` so macOS does not slow it down while it sits behind other windows; this changes only the copy's own preferences.
 
 ```bash
 ./app/build.sh optimised
-scripts/test-copy start test-7
+scripts/test-copy start test-7 --no-app-nap
 touch ~/Library/Application\ Support/pi2-test-7/perf.on
 ```
 
