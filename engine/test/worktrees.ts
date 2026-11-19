@@ -111,6 +111,8 @@ class Client extends EngineClient {
 }
 
 const project = repo("project");
+// Count each engine git call without bypassing the interrupted-worktree cases below.
+const gitCalls = join(scratch, "git-calls.tsv");
 const gitBin = join(scratch, "bin");
 mkdirSync(gitBin);
 const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
@@ -119,6 +121,7 @@ const moveMarker = join(scratch, "moved");
 const endMove = join(scratch, "end-move");
 writeFileSync(join(gitBin, "git"), `#!/bin/sh
 set -eu
+printf '%s\\t%s\\n' "$(/bin/pwd)" "$*" >> ${quoted(gitCalls)}
 real=${quoted(realGit)}
 if [ "\${1-}" = worktree ] && [ "\${2-}" = add ]; then
   case "\${6-}" in
@@ -671,6 +674,49 @@ try {
 	await client.until("back in the agent's folder", () => client.branch(d)?.managed === false);
 	assert.ok(!run(project, "worktree", "list").includes(`pi2/builder-${d}`), "git forgot the deleted worktree");
 	step("a worktree deleted by hand shows as missing; removing it lets git forget it");
+
+	{
+		// Which repository a folder is in, and what that repository's default branch is, are kept for a minute, so a look
+		// does not start the git processes that answer them for every folder every few seconds (#377). What the branch is
+		// and how it stands is read at every look, and a conversation moving folders reads the folders again at once.
+		const kept = repo("kept");
+		const movedTo = repo("movedTo");
+		/** How often git was asked `what` with that folder as its working folder. */
+		const asked = (what: RegExp, folder: string) =>
+			readFileSync(gitCalls, "utf8")
+				.split("\n")
+				.filter((line) => {
+					const [cwd, args = ""] = line.split("\t");
+					return cwd === folder && what.test(args);
+				}).length;
+		const whichRepo = /--show-toplevel/;
+		const itsDefault = /refs\/remotes\/origin\/HEAD/;
+		const itsStatus = /^status /;
+		const { id: keeper } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: keeper, cwd: kept });
+		await client.until("keeper tracked", () => client.branch(keeper)?.branch === "main" && client.branch(keeper));
+		assert.ok(asked(whichRepo, kept) > 0 && asked(itsDefault, kept) > 0, "the first look asked git which repository this folder is in, and what that repository's default branch is");
+		// A second conversation works in another folder of the same repository, so that repository is looked at twice.
+		const { id: sharer } = await client.call("conversation.create");
+		await client.call("conversation.configure", { id: sharer, cwd: join(kept, "sub") });
+		await client.until("sharer tracked", () => client.branch(sharer)?.branch === "main" && client.branch(sharer));
+		let statusWas = asked(itsStatus, kept);
+		await client.call("branches.refresh");
+		await client.until("looked at again", () => asked(itsStatus, kept) > statusWas);
+		const repoWas = asked(whichRepo, kept);
+		const defaultWas = asked(itsDefault, kept);
+		statusWas = asked(itsStatus, kept);
+		await client.call("branches.refresh");
+		await client.until("looked at once more", () => asked(itsStatus, kept) > statusWas);
+		assert.deepEqual([asked(whichRepo, kept), asked(itsDefault, kept)], [repoWas, defaultWas], "the look again read the branch and how it stands, but did not ask again which repository it is in or what its default branch is");
+		// A conversation moving folders drops what was kept, so the folder it left (still tracked by the other
+		// conversation) and the one it entered are both read afresh.
+		await client.call("conversation.configure", { id: sharer, cwd: movedTo });
+		await client.until("sharer moved", () => client.branch(sharer)?.repo === "movedTo" && client.branch(sharer));
+		assert.ok(asked(whichRepo, kept) > repoWas, "the next look asked again about the folder the conversation left");
+		assert.ok(asked(whichRepo, movedTo) > 0, "and about the folder it moved into");
+		step("the tracker keeps a folder's repository and a repository's default branch for a minute, and a conversation moving folders reads them again");
+	}
 
 	// A set-up still running when the engine stops is stopped with it, and said to be cut off when it starts again.
 	rmSync(pidFile, { force: true });
