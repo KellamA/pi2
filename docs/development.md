@@ -10,7 +10,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Building the app or working on pi² from pi² | [Requirements](#requirements), [Build and run](#build-and-run), [Working on pi² with pi²](#working-on-pi-with-pi) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Message fields](#message-field-checks) or [Conversation page](#conversation-page-tests) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks) or [Conversation page](#conversation-page-tests) |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | Repository scripts, checks and merging | [CI](#ci) |
@@ -176,6 +176,14 @@ cd app && swift build -c release --product pi2-layout-check && .build/release/pi
 
 A crash in it prints the step it happened in; `--verbose` prints every step.
 
+### Window size checks
+
+How a window's size follows its SwiftUI content (`app/Sources/WindowKit`) is checked by a program of its own (#400). SwiftUI sets a scene's window's smallest size from its content, working it out from inside the window's Update Constraints passes, and the app once crashed there in the background. The app's windows put `windowMinimum(width:height:)` on their content, which gives SwiftUI a fixed base to measure instead, and the main window's detail column has `columnGivesWay()`, which keeps its content from asking for more height than the window has. The program makes windows as the app's are, in windows of its own that never come on screen: a hosting view with the option SwiftUI gives a scene's window, a toolbar, and a split view's sidebar and detail. It checks that the smallest size is the one SwiftUI worked out before; that the content is never measured for it, which it was before; that very long unbroken lines in each way the app shows text from outside it, rows and request cards that come and go, and the sidebar shown and hidden change neither the smallest size nor the window, at its smallest; that a stack of requests no longer makes the split view taller than the window; and that `SizeWatch`, which writes a line to `app.log` naming a hosting view whose size changes again and again without the run loop turning, reports one once and stays quiet for a window resized as a person does. It cannot make the crash itself happen, since what kept the window's size changing then was not found. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
+```
+
 ### Message field checks
 
 What Return does in a field that sends a message (`app/Sources/ComposeKit`: Return sends, Shift-Return or Option-Return starts a new line, and Return while an input method is composing is left to it) is checked by a program of its own. It checks the decision for every combination of modifier keys, then makes a SwiftUI text field as the message field is made, in a window of its own that never comes on screen, and hands key presses straight to that window: no key is posted to the system and no permission is needed. It checks that Shift-Return puts a line break at the cursor in place of the selection and the field grows, that Return sends the text with its line breaks, that Return with marked text (what an input method shows while a candidate is chosen) does not send, and that pasted line breaks are kept. It checks a field made as a memory note is in an agent's settings (a field of a grouped form that saves with Return and keeps its text) in the same way. Then it does the same for the answer field of a question on the conversation page, which has its own copy of the rule (`keys.js`): it loads the real page from `app/Web/transcript` in a web view that keeps nothing on disk. It cannot type with a real input method, so that is still worth trying by hand after a change there. CI runs it after building the app:
@@ -337,6 +345,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Sources/BrowserKit` is pi²'s own browser: everything that touches a web page. See [browser.md](browser.md).
 - `app/Sources/PaneKit` is the tree of panes behind the conversation area and the ready-made layouts; the app's `Workspace.swift` keeps it and draws it.
 - `app/Sources/ComposeKit` is what Return does in the fields that send a message (`sendsOnReturn`, used in place of `onSubmit`).
+- `app/Sources/WindowKit` is how the app's windows get their smallest size (`windowMinimum`), and the watch that names a view whose size does not settle (`SizeWatch`).
 
 ## Conventions
 

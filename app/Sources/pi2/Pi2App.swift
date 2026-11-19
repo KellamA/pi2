@@ -1,5 +1,6 @@
 import LoginItemKit
 import SwiftUI
+import WindowKit
 
 /// What the main window is showing.
 enum Selection: Hashable {
@@ -239,7 +240,8 @@ struct Pi2App: App {
     var body: some Scene {
         Window("pi²", id: "main") {
             RootView(model: model)
-                .frame(minWidth: 820, minHeight: 480)
+                // The window's smallest size is worked out without measuring what it shows (#400).
+                .windowMinimum(width: 820, height: 480) { model.engine.note($0) }
                 .tint(.piAccent)
                 .launchWindow()
                 .onAppear {
@@ -303,6 +305,7 @@ struct Pi2App: App {
         // the sidebar or a conversation's toolbar, never at launch: the main window is what starts the engine.
         Window("Browser", id: "browser") {
             BrowserWindow(engine: model.engine)
+                .windowMinimum(width: 620, height: 400) { model.engine.note($0) }
                 .tint(.piAccent)
                 .launchWindow()
         }
@@ -321,6 +324,7 @@ struct Pi2App: App {
                     Text("No command was chosen.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .windowMinimum(width: 520, height: 320) { model.engine.note($0) }
             .tint(.piAccent)
             .launchWindow()
         }
@@ -422,6 +426,8 @@ struct RootView: View {
             }
             // An engine that keeps failing to start is said so above whatever is showing, until one starts.
             .safeAreaInset(edge: .top, spacing: 0) { EngineTroubleBanner(engine: engine) }
+            // Requests stacked above the message field cannot make the split view taller than the window (#400).
+            .columnGivesWay()
         }
         .background(WindowOpener(model: model))
         .worktreeDialogs(engine: engine)

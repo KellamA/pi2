@@ -149,7 +149,6 @@ struct BrowserWindow: View {
             }
         }
         .background(Theme.window)
-        .frame(minWidth: 620, minHeight: 400)
         .navigationTitle(page.map { $0.title.isEmpty ? "Browser" : $0.title } ?? "Browser")
         .navigationSubtitle(page?.site ?? "")
         .onAppear { typed = page?.address?.absoluteString ?? "" }

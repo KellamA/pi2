@@ -110,7 +110,6 @@ struct BackgroundOutputWindow: View {
             Divider().overlay(Theme.line)
             output
         }
-        .frame(minWidth: 520, minHeight: 320)
         .background(Theme.window)
         .navigationTitle(oneLine(commandText).isEmpty ? id : oneLine(commandText))
         .navigationSubtitle(commandText.isEmpty ? "" : id)

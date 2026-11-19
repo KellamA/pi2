@@ -671,8 +671,9 @@ final class EngineClient {
         }
     }
 
-    /// A line in app.log next to the engine's log, for working out why a connection dropped.
-    private func note(_ message: String) {
+    /// A line in app.log next to the engine's log, for working out why a connection dropped, or why a window's size did
+    /// not settle (`SizeWatch`).
+    func note(_ message: String) {
         let line = "\(Date().formatted(.iso8601)) \(message)\n"
         let url = home.appendingPathComponent("app.log")
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }

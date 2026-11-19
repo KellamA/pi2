@@ -164,6 +164,10 @@ jobs:
       - name: Check Return in the message field
         working-directory: app
         run: .build/debug/pi2-compose-check
+      # How a window's size follows its content (#400): fixed smallest size, long lines, a stack of requests.
+      - name: Check window sizes
+        working-directory: app
+        run: .build/debug/pi2-window-check
       - name: Check engine login item decisions
         working-directory: app
         run: .build/debug/pi2-login-item-check
