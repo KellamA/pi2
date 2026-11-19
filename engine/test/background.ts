@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { backgroundMarker, backgroundMarkerDetails, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
-import { EngineClient, exited, PATIENT_MS, running, stop, until } from "./patience.ts";
+import { EngineClient, exited, PATIENT_MS, running, standInApp, stop, until } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -22,6 +22,8 @@ const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-bg-work-")));
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client answers approvals as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 // A command that is waited for is stopped after two seconds here, so one in the background visibly outlives the limit.
 // A request from the app for a command's output may wait for longer than this test waits for anything, so that an answer
 // to one can only have come because there was output, or because the command ended: never because the wait ran out.

@@ -195,6 +195,7 @@ function checkBundle(app: string): Build {
 	const main = join(resources, "engine", "src", "main.ts");
 	if (!existsSync(node)) fail("The app has no Node in Contents/Resources/node.");
 	if (!existsSync(main)) fail("The app has no engine in Contents/Resources/engine/src/main.ts.");
+	if (!existsSync(join(app, "Contents", "MacOS", "pi2-peer"))) fail("The app has no Contents/MacOS/pi2-peer, so its engine could not tell the app from any other program and nobody could answer an approval.");
 	if (existsSync(join(resources, "engine", "scripts", "test-copy-fixture.ts"))) fail("The app carries the development-only test-copy fixture.");
 	if (!existsSync(join(resources, "engine", "node_modules"))) fail("The app's engine has no node_modules: its dependencies were not installed.");
 	let engineBuild = "";
@@ -332,6 +333,26 @@ async function checkAnswer(connection: Connection): Promise<void> {
 	step(`the demo model answered in a new conversation (${answer.length} characters)`);
 }
 
+/**
+ * Answers to what waits for the person are taken only from the app (#504). This check's own connection comes from Node,
+ * not the app, so the engine must refuse it, having asked the helper inside the bundle rather than for want of one.
+ */
+async function checkOthersRefused(connection: Connection): Promise<void> {
+	const verdict = await connection.call("connection.mayAnswer");
+	if (verdict?.mayAnswer !== false) fail(`The engine would take answers for the person from this check's own connection: ${JSON.stringify(verdict)}.`);
+	if (typeof verdict.why !== "string" || !/^process \d+ .*is not the app at /.test(verdict.why)) {
+		fail(`The engine could not check this connection against the app with the pi2-peer inside it: ${verdict.why}.`);
+	}
+	const refused = await connection.call("inbox.answer", { id: "none", text: "yes" }).then(
+		() => undefined,
+		(error: Error) => error.message,
+	);
+	if (refused === undefined || !refused.includes("Only the person can answer this, in the pi² app")) {
+		fail(`The engine did not refuse an answer from this check's connection as it should: ${refused ?? "it took it"}.`);
+	}
+	step(`a connection from another program may not answer for the person: ${verdict.why}`);
+}
+
 /** Stops the engine as the app does when it quits, and checks it stopped cleanly. `exitCode` is for an engine this
  * check started itself, which can say how it ended: undefined while it runs. */
 async function stopCleanly(pid: number, home: string, exitCode?: () => number | null | undefined): Promise<void> {
@@ -389,6 +410,7 @@ async function checkEngine(build: Build): Promise<void> {
 	step(`the engine inside the app listens on ${join(home, "engine.sock")}`);
 	await checkInfo(connection, build, engine.pid!);
 	await checkAnswer(connection);
+	await checkOthersRefused(connection);
 	connection.close();
 	await stopCleanly(engine.pid!, home, () => exitCode);
 }
@@ -521,6 +543,20 @@ async function checkOpenedApp(build: Build): Promise<void> {
 	connection.close();
 	await waitFor("the app to connect to its engine", () => appConnected(app, engine), START_MS, appGone);
 	step("the app connected to its engine");
+	// The app asks once it has connected (#504), and the engine writes down what it found.
+	const said = (line: string) => line.includes(`answers: process ${app} `);
+	const verdict = await waitFor(
+		"the engine to say whether it takes answers from the app",
+		() => readFileSync(join(home, "engine.log"), "utf8").split("\n").find(said),
+		START_MS,
+		appGone,
+	);
+	if (!verdict.endsWith("(may answer for the person)")) fail(`The engine will not take answers to approvals from the app itself: ${verdict}`);
+	step(`the engine takes answers for the person from the app: ${verdict.slice(verdict.indexOf("answers: ") + 9)}`);
+	const other = await connectWhenListening(home, () => (alive(engine) ? undefined : "stopped"));
+	cleanups.push(() => other.close());
+	await checkOthersRefused(other);
+	other.close();
 	process.kill(app, "SIGTERM");
 	await waitFor("the app to quit", () => !alive(app), STOP_MS);
 	step("the app quit when told to");

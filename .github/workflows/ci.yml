@@ -171,6 +171,11 @@ jobs:
       - name: Check engine login item decisions
         working-directory: app
         run: .build/debug/pi2-login-item-check
+      # Whether a connection is the app's, which alone may answer for the person (#504): real connections to a socket of
+      # its own, from itself and from /usr/bin/nc, judged by their code signatures. Signs nothing, asks for nothing.
+      - name: Check how the engine tells the app's connection
+        working-directory: app
+        run: .build/debug/pi2-peer-check
       # What a click on a link to a file in a conversation does (#451), in a temporary folder: shows nothing in Finder.
       - name: Check file links
         working-directory: app

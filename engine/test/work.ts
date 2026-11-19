@@ -11,11 +11,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { DEFAULT_ORCHESTRATOR, PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
 import { Agents } from "../src/state.ts";
 import { recordWork, Work, type WorkItem } from "../src/work.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-work-"));
 const service = `dev.pi2.credentials.test-work-${process.pid}`;
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000" };
+const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp() };
 const start = () => spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 let engine = start();
 process.on("exit", () => {

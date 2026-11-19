@@ -10,7 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 import { newestOnly } from "../src/providers.ts";
 import { usageWords } from "../src/subchatusage.ts";
-import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
+import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
@@ -25,6 +25,8 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 // An engine a test starts keeps the PATH the test gave it, and reads nobody's shell profile (src/shellpath.ts).
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client answers approvals and questions as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 // This run's own, so that a second run of the suite at the same time neither sees the keys and sign-ins this one stores
 // (its checks start from none) nor removes them under it. PI2_TEST_KEYCHAIN_SERVICE chooses one instead.
 const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? `dev.pi2.credentials.test-engine-${process.pid}`;
@@ -214,6 +216,7 @@ try {
 	let client = await Client.attach();
 	await client.until("providers", () => client.providers.length > 0);
 	await assert.rejects(client.call("test-copy.fill", { entries: 600 }), /Unknown method: test-copy\.fill/);
+	await assert.rejects(client.call("test-copy.answerer", { key: "" }), /Unknown method: test-copy\.answerer/, "only a test copy's engine has a key");
 
 	// ---- Conversations and the demo model
 	const { id: a } = await client.call("conversation.create");

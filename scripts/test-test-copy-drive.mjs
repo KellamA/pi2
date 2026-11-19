@@ -12,12 +12,13 @@ const folder = mkdtempSync(join(tmpdir(), 'pi2-drive-'));
 const path = join(folder, 'engine.sock');
 const script = join(import.meta.dirname, 'test-copy-drive.mjs');
 const run = (command, target, ...args) => new Promise(resolve => {
-	execFile(process.execPath, [script, command, target, 'test-7', ...args], { timeout: 4000 }, (error, out, err) => {
+	const env = { ...process.env, TEST_COPY_KEY_FILE: keyFile };
+	execFile(process.execPath, [script, command, target, 'test-7', ...args], { timeout: 4000, env }, (error, out, err) => {
 		resolve([error?.code ?? 0, out.trim(), err.trim()]);
 	});
 });
 const approval = { id: 'first', kind: 'approval', conversationId: 8, rootConversationId: 4 };
-let items, requests, response;
+let items, requests, response, keyFile = join(folder, 'no-key'), keyResponse = { result: {} };
 const emptyLibrary = { event: 'library', conversations: [], archived: [] };
 let library = emptyLibrary;
 const server = createServer(socket => {
@@ -25,9 +26,10 @@ const server = createServer(socket => {
 	send({ event: 'inbox', items });
 	send(library);
 	createInterface({ input: socket }).on('line', line => {
-		requests.push(JSON.parse(line));
+		const request = JSON.parse(line);
+		requests.push(request);
 		send({ event: 'conversation', id: 1 }); // not the reply, despite its id
-		send({ id: 1, ...response });
+		send({ id: request.id, ...(request.id === 0 ? keyResponse : response) });
 	});
 });
 try {
@@ -57,6 +59,20 @@ try {
 	items = [approval]; response = { error: 'That request is no longer waiting' };
 	assert.deepEqual(await run('answer', path, '8', 'allow'), [1, '', 'test-copy: That request is no longer waiting']);
 	console.log('ok: answer addresses only a single matching approval, never a question or a parent’s sub-chat');
+
+	// The copy's engine takes an answer from test-copy only with the key it wrote for it (#504): sent first, from its file.
+	keyFile = join(folder, 'answer-key');
+	writeFileSync(keyFile, 'k3y\n');
+	items = [approval]; requests = []; response = { result: {} };
+	assert.deepEqual(await run('answer', path, '8', 'allow'), [0, 'Allowed once the request in conversation #8 in test-7.', '']);
+	assert.deepEqual(requests, [
+		{ id: 0, method: 'test-copy.answerer', params: { key: 'k3y' } },
+		{ id: 1, method: 'inbox.decide', params: { id: 'first', decision: 'once' } },
+	]);
+	keyResponse = { error: "That is not this test copy's key" }; requests = [];
+	assert.deepEqual(await run('answer', path, '8', 'allow'), [1, '', "test-copy: the copy's engine did not take its key: That is not this test copy's key"]);
+	keyFile = join(folder, 'no-key'); keyResponse = { result: {} };
+	console.log('ok: answer gives the copy’s key first when it has one, and says so when the engine refuses it');
 
 	requests = []; response = { result: { id: 32, entries: 600 } };
 	assert.deepEqual(await run('fill', path, '600'), [0, 'Created conversation #32 with 600 entries in test-7.', '']);

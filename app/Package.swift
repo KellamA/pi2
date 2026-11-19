@@ -28,6 +28,9 @@ let package = Package(
         // The conversation page's web view, and the page loaded ahead for the next pane (#441). Its own module so
         // pi2-transcript-check can check them. PI2_DEVELOPMENT as for the app: the web inspector and drawing when hidden.
         .target(name: "TranscriptKit", path: "Sources/TranscriptKit", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
+        // Whether the process at the other end of a connection to the engine's socket is the app (#504). Its own module
+        // so pi2-peer-check can check it.
+        .target(name: "PeerKit", path: "Sources/PeerKit"),
         .executableTarget(
             name: "pi2",
             dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "WindowKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
@@ -60,5 +63,10 @@ let package = Package(
         .executableTarget(name: "pi2-file-link-check", dependencies: ["FileLinkKit"], path: "Sources/pi2-file-link-check"),
         // Checks TranscriptKit: pages loaded ahead and handed over, in off-screen windows of its own (#441).
         .executableTarget(name: "pi2-transcript-check", dependencies: ["TranscriptKit"], path: "Sources/pi2-transcript-check"),
+        // The engine's helper that answers whether a connection is the app's (#504). build.sh copies it into the app as
+        // Contents/MacOS/pi2-peer, where the engine finds it.
+        .executableTarget(name: "pi2-peer", dependencies: ["PeerKit"], path: "Sources/pi2-peer"),
+        // Checks PeerKit and pi2-peer on connections of its own, from itself and from /usr/bin/nc.
+        .executableTarget(name: "pi2-peer-check", dependencies: ["PeerKit"], path: "Sources/pi2-peer-check"),
     ]
 )

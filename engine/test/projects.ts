@@ -13,7 +13,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 import { ORCHESTRATOR_INSTRUCTIONS, PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-proj-"));
@@ -22,6 +22,8 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-projects-${process.pid}`;
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client answers approvals as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE };
 
 let engine: ChildProcess | undefined;

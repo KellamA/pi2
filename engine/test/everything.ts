@@ -12,7 +12,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-all-"));
 const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi2-all-repo-")));
@@ -20,6 +20,8 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-everything-${process.pid}`;
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client turns Allow everything on and answers approvals as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_COST: "5" };
 
 let engine: ChildProcess | undefined;

@@ -111,10 +111,13 @@ if [[ "$MODE" == release ]]; then
 fi
 
 swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --product pi2
+# What the engine asks whether a connection is the app's, which alone may answer for the person (#504).
+swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --product pi2-peer
 BIN="$(swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --show-bin-path)"
 rm -rf "${REPLACED[@]}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN/pi2" "$APP/Contents/MacOS/pi2"
+cp "$BIN/pi2-peer" "$APP/Contents/MacOS/pi2-peer"
 # Sparkle, for updates. ditto keeps the framework's symbolic links.
 ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
@@ -206,6 +209,7 @@ if [[ -n "${SIGN_IDENTITY:-}" ]]; then
 ENT
   sign() { codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$@"; }
   [[ -f "$APP/Contents/Resources/node" ]] && sign --entitlements build/node.entitlements "$APP/Contents/Resources/node"
+  sign "$APP/Contents/MacOS/pi2-peer"
   # Sparkle from the inside out, as its documentation sets out, so all of it carries the same team as the app.
   sign "$SPARKLE/XPCServices/Installer.xpc"
   sign --preserve-metadata=entitlements "$SPARKLE/XPCServices/Downloader.xpc"
@@ -224,6 +228,7 @@ else
   # Ad-hoc signature: enough to run here and to let the app ask for notification permission. Sparkle keeps the
   # signature it came with.
   [[ -f "$APP/Contents/Resources/node" ]] && codesign --force --sign - "$APP/Contents/Resources/node" 2>/dev/null
+  codesign --force --sign - "$APP/Contents/MacOS/pi2-peer"
   codesign --force --sign - "$APP" 2>/dev/null || true
 fi
 echo "Built $PWD/$APP ($MODE, $VERSION build $BUILD_NUMBER)"
