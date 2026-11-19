@@ -940,9 +940,11 @@ struct UsageSummary: Codable, Equatable {
         let cost: Double
         /// Paid for by a subscription sign-in, so there is no per-use cost to show.
         var subscription: Bool? = nil
-        /// Added by hand, so pi² does not know its price: the tokens are counted, the cost is not.
+        /// Some or all of the use had no known price: the tokens are counted, the cost is not.
         var unpriced: Bool? = nil
-        var id: String { key }
+        /// Picture models are in a different catalog from the models that answer in a conversation.
+        var pictureName: String? = nil
+        var id: String { pictureName == nil ? key : "picture:\(key)" }
     }
     struct AgentRow: Codable, Equatable, Identifiable {
         let agentId: String

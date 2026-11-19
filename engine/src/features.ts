@@ -30,6 +30,7 @@ import { order } from "./order.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
+import { projects } from "./projects.ts";
 import { reads } from "./reading.ts";
 import { runCode } from "./runcode.ts";
 import { scratch } from "./scratch.ts";
@@ -52,6 +53,9 @@ export type Engine = {
 	library(): { conversations: Record<string, Meta> };
 	/** Chat mode's settings as they are now (chat.ts). */
 	chatSettings(): ChatSettings;
+	/** The person's choice for Make pictures, across chats and agents. Null lets pi² choose. */
+	pictureModel(): ModelRef | null;
+	setPictureModel(model: ModelRef | null): void;
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
@@ -68,6 +72,10 @@ export type Engine = {
 	overBudget(): string | undefined;
 	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
 	providersChanged(): void;
+	/** A key of settings.json, as the engine read it at start or last saved it; undefined when absent. */
+	setting(key: "projects"): unknown;
+	/** Change a key of settings.json and save the file. The engine keeps the file, so a feature never writes it itself. */
+	saveSetting(key: "projects", value: unknown): void;
 };
 
 export type FeatureParts = {
@@ -132,6 +140,11 @@ export type FeatureParts = {
 	created?(id: number, agent: AgentProfile): Promise<void>;
 	/** An agent was duplicated: copy person-set feature settings, never its history. */
 	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
+	/**
+	 * The engine made an agent itself from settings of its own, not from another agent (a project's default orchestrator,
+	 * projects.ts): set what this feature keeps for it outside its profile.
+	 */
+	agentMade?(agentId: string, settings: { memory: boolean }): Promise<void>;
 	/** An agent is about to be deleted: remove what this feature keeps for it outside its profile. Throw to keep the agent. */
 	deletingAgent?(agentId: string): Promise<void>;
 	/** A conversation's folder was changed by the person. */
@@ -188,4 +201,12 @@ export const FEATURES: Feature[] = [
 	localRun,
 	order,
 	localModels,
+	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
+	// feature on its own line, in place of the comment that names it.
+	projects,
+	// projectRules (#459)
+	// needs (#462)
+	// reports (#463)
+	// work (#467)
+	// github (#468)
 ];

@@ -16,6 +16,30 @@ type Patch = { why: string; file: string; find: string; replace: string };
 const PATCHES: Patch[] = [
 	...COMPACTION_PATCHES,
 	{
+		why: "attribute a tool's usage to the model it actually called (#339)",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/tool.js",
+		find: `await recordUsage(tx, conversationId, "tools", call.name, result.usage);`,
+		replace: `await recordUsage(tx, conversationId, "tools", result.usageKey ?? call.name, result.usage);`,
+	},
+	{
+		why: "attribute nested tool usage in the same way (#339)",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/tool.js",
+		find: `await recordUsage(tx, conversationId, "tools", call.name, nested.usage);`,
+		replace: `await recordUsage(tx, conversationId, "tools", result.usageKey ?? call.name, nested.usage);`,
+	},
+	{
+		why: "type the optional tool usage key (#339)",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts",
+		find: `    /** Spend of the execution itself, such as a model call; stored on the result and in \`pi.usage.tools\`. */
+    readonly usage?: Usage;
+    readonly control?: ToolControl;`,
+		replace: `    /** Spend of the execution itself, such as a model call; stored on the result and in \`pi.usage.tools\`. */
+    readonly usage?: Usage;
+    /** Patched by pi2: ledger key for this usage, instead of the tool name. */
+    readonly usageKey?: string;
+    readonly control?: ToolControl;`,
+	},
+	{
 		why: "tool declarations cannot depend on the conversation (#431)",
 		file: "node_modules/@earendil-works/pi-durable/dist/harness/harness.js",
 		find: `        return resolveAgent(state, registry, resolveSettings(this.#hostSettings()), (error, extension) => this.#report(error, { kind: "extension_error", conversationId: id, extension }, context));`,

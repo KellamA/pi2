@@ -414,6 +414,10 @@ export const knowledge: Feature = (host, engine) => {
 				agents[copyId] = { enabled: agents[sourceId]?.enabled ?? false, notes: [], next: 1 };
 			});
 		},
+		// An agent the engine made from settings of its own, such as a project's default orchestrator: its switch as they say.
+		agentMade: async (agentId, settings) => {
+			await change(({ agents }) => void (record(agents, agentId).enabled = settings.memory));
+		},
 		greeting: () => [event()],
 		handlers: {
 			"memory.setEnabled": async (params) => {

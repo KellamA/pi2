@@ -41,7 +41,7 @@ import type { FeatureParts } from "./features.ts";
 import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isArchived, isPutAway } from "./archive.ts";
 import { noteSubChats, subChatsTool } from "./subchats.ts";
-import { ALLOWED_BY_EVERYTHING, type AgentProfile, type Inbox, type InboxItem, Library, type Meta } from "./state.ts";
+import { ALLOWED_BY_EVERYTHING, type AgentProfile, type Inbox, type InboxItem, Library, type Meta, projectFrom } from "./state.ts";
 import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
@@ -370,6 +370,8 @@ export function pi2Extension(host: Host): Extension {
 					madeBy: String(api.taskId),
 					// Its own agent's Allow everything, never its parent's (#294).
 					...(target.allowEverything === true ? { allowEverything: true as const } : {}),
+					// In its parent's project, if the parent is in one (projects.ts).
+					...projectFrom(library.conversations[String(parent)]),
 				};
 				return created.id;
 			}, context);

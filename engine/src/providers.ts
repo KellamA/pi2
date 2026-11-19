@@ -485,6 +485,11 @@ function demoProvider(): Provider {
 			}
 			// A section with nothing to say is empty, holding its place, and is not sent (sections.ts).
 			for (const [key, value] of sections) if (value === "") sections.delete(key);
+			if (asked === "full") {
+				// "/system full": the whole prompt, section by section, and every tool's declaration, as the model has them, so a
+				// test can check they did not change by a byte.
+				return fauxAssistantMessage(`FULL\n${JSON.stringify({ content, sections: [...sections], tools: [...offered.values()] })}`);
+			}
 			if (asked === "sizes") {
 				// "/system sizes": the characters of each part of the prompt and of the tool definitions, to measure them.
 				const parts = [["(base)", content.length], ...[...sections].map(([key, value]) => [key, value.length]), [`(tools: ${offered.size})`, JSON.stringify([...offered.values()]).length]];
@@ -552,8 +557,7 @@ function demoProvider(): Provider {
 		return demoPrompt(demoLast(context.messages)).startsWith("/slow ") ? slow : fast;
 	};
 	// Tests give the demo a picture model on a stand-in server (PI2_DEMO_PICTURES, its address on 127.0.0.1), which
-	// speaks OpenRouter's picture API, so making pictures can be tried without a provider (pictures.ts). Priced, so
-	// Usage has a cost to count.
+	// speaks OpenRouter's picture API. Both priced and unpriced models let Usage and the picker be tried without a provider.
 	const standIn = demoPictureServer();
 	const pictureModels =
 		standIn === undefined
@@ -569,6 +573,17 @@ function demoProvider(): Provider {
 						input: ["text" as const, "image" as const],
 						output: ["image" as const],
 						cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+					},
+					{
+						type: "image" as const,
+						id: "demo-pictures-unpriced",
+						name: "Demo pictures (unpriced)",
+						api: "openrouter-images" as const,
+						provider: DEMO_PROVIDER,
+						baseUrl: standIn,
+						input: ["text" as const],
+						output: ["image" as const],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					},
 				];
 	return createProvider({

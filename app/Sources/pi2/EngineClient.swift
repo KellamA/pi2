@@ -496,10 +496,20 @@ final class EngineClient {
     }
     struct PictureModels: Decodable, Equatable {
         struct Model: Decodable, Equatable {
+            struct Price: Decodable, Equatable {
+                let input: Double
+                let output: Double
+            }
             let provider: String
             let id: String
             let name: String
+            let providerName: String?
+            let canEdit: Bool?
+            let price: Price?
+            var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
+            var displayName: String { "\(providerName ?? provider) · \(name)" }
         }
+        let model: ModelRef?
         let models: [Model]
         let makers: [String]
     }

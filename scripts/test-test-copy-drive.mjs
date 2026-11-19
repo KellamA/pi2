@@ -19,10 +19,12 @@ const run = (command, target, ...args) => new Promise(resolve => {
 });
 const approval = { id: 'first', kind: 'approval', conversationId: 8, rootConversationId: 4 };
 let items, requests, response, keyFile = join(folder, 'no-key'), keyResponse = { result: {} };
+const emptyLibrary = { event: 'library', conversations: [], archived: [] };
+let library = emptyLibrary;
 const server = createServer(socket => {
 	const send = message => socket.write(JSON.stringify(message) + '\n');
-	send({ event: 'library', conversations: [] });
 	send({ event: 'inbox', items });
+	send(library);
 	createInterface({ input: socket }).on('line', line => {
 		const request = JSON.parse(line);
 		requests.push(request);
@@ -32,6 +34,18 @@ const server = createServer(socket => {
 });
 try {
 	await new Promise(resolve => server.listen(path, resolve));
+	requests = [];
+	assert.deepEqual(await run('conversations', path), [0, '', '']);
+	library = {
+		event: 'library',
+		conversations: [{ id: 8, title: 'Test pane', agentId: 'atlas' }, { id: 14, title: 'Line 1\nLine 2\tTabbed', agentId: null }],
+		archived: [{ id: 3, title: 'Archived conversation', agentId: 'forge' }],
+	};
+	assert.deepEqual(await run('conversations', path), [0, '8\tTest pane\tatlas\n14\tLine 1\\nLine 2\\tTabbed\t-\n3\tArchived conversation\tforge', '']);
+	assert.deepEqual(requests, []);
+	library = emptyLibrary;
+	console.log('ok: conversations lists the initial Library and Archive without sending a request');
+
 	for (const [decision, word, wire] of [['allow', 'Allowed once', 'once'], ['deny', 'Denied', 'deny']]) {
 		items = [approval, { ...approval, id: 'other', conversationId: 4 }, { ...approval, id: 'question', kind: 'question' }];
 		requests = []; response = { result: {} };
@@ -68,7 +82,8 @@ try {
 
 	const control = join(folder, 'control');
 	for (const [command, args, fields, reply] of [
-		['show', ['8'], { id: 8 }, { result: 'Showing conversation #8' }],
+		['show', ['8'], { id: 8 }, { result: 'Showing conversation #8, drawn' }],
+		['show', ['9'], { id: 9 }, { result: 'Showing conversation #9, though its page had not drawn it after 20 seconds' }],
 		['size', ['820', '532'], { width: 820, height: 532 }, { result: 'Sized the main window to 820×532 points' }],
 		['size', ['smallest'], { smallest: true }, { error: 'no main window' }],
 		['choose', ['app/build/file with spaces', '/tmp/second'], { paths: [join(process.cwd(), 'app/build/file with spaces'), '/tmp/second'] },

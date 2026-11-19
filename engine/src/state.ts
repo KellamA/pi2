@@ -5,6 +5,7 @@ import type { ComputerSettings } from "./computer.ts";
 import type { ReferenceFile } from "./reference.ts";
 import type { ScheduleSettings } from "./selfschedule.ts";
 import type { CommandRule } from "./rules.ts";
+import type { SwitchName } from "./projects.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type HookApi } from "@earendil-works/pi-durable";
 
@@ -73,6 +74,20 @@ export type AgentProfile = {
 	 */
 	allowEverything?: true;
 	createdAt: number;
+	// What marks a project agent (docs/projects.md, 3.3). All optional: an agent saved before has none, and is a template.
+	// `agents.save` keeps them as stored, whatever it is sent.
+	/** The project it belongs to (projects.ts). */
+	projectId?: string;
+	/** The project's orchestrator. Exactly one agent of each project not deleted has it. */
+	role?: "orchestrator";
+	/** A copy: the template it was made from, when, and the template's `updatedAt` then. */
+	template?: { id: string; copiedAt: number; templateUpdatedAt: number };
+	/** Made by an agent through a tool (#465): which, and in which conversation. Absent: made by the person or by carrying over. */
+	madeBy?: { agentId: string; conversationId: number };
+	/** When it was last saved. Absent in an agent not saved since this field came: read as `createdAt`. */
+	updatedAt?: number;
+	/** Removed through a tool (#457): kept whole, offered to nobody, deleted for good only by the person. */
+	removedAt?: number;
 };
 
 /** A variable of an agent's own: its name, and whether a value is kept for it in the Keychain. */
@@ -129,7 +144,20 @@ export type Meta = {
 	 * (see `Inbox`). Taken from its own agent at each message, never from the conversation that handed it work.
 	 */
 	allowEverything?: true;
+	/**
+	 * The project it belongs to (projects.ts): set as it is made, on every conversation of a project, sub-chats included
+	 * (taken from the parent). Never on a chat. Nothing in the epic changes `agentId`.
+	 */
+	projectId?: string;
 };
+
+/**
+ * The `projectId` a new conversation takes from what it is made from: the agent it is made with, or the conversation
+ * it is a sub-chat or a fork of. Nothing when that is in no project.
+ */
+export function projectFrom(source: { projectId?: string } | undefined): { projectId?: string } {
+	return source?.projectId === undefined ? {} : { projectId: source.projectId };
+}
 
 /**
  * Take the agent's Allow everything switch into a conversation, as each message is sent: turning it on or off counts
@@ -221,6 +249,11 @@ export type InboxItem = {
 	rule?: { words: string[]; folder: string; worktrees?: true };
 	/** For a shell command: it would be started and left running in the background (background.ts), so the approval says so. */
 	background?: true;
+	/**
+	 * Asked because a switch of the conversation's project is off (projects.ts, `requireSwitch`): which. It is answered
+	 * only Allow Once or Deny, and Allow everything does not answer it.
+	 */
+	projectSwitch?: SwitchName;
 	createdAt: number;
 };
 
@@ -247,10 +280,11 @@ export class Inbox {
 	/**
 	 * Show `item` and wait for the person. Rejects when the run is stopped. An approval in a conversation that allows
 	 * everything is answered "once" at once, without being shown: allowed this time, with nothing remembered (no rule,
-	 * no "always"), so turning the switch off later leaves nothing behind. A question is always asked.
+	 * no "always"), so turning the switch off later leaves nothing behind. A question is always asked, and so is an
+	 * approval a project's switch asks for (`projectSwitch`): the switch is the person's newer, narrower choice.
 	 */
 	async ask(item: InboxItem, api: Pick<HookApi, "memo">, context: Context): Promise<string> {
-		if (item.kind === "approval" && (await this.#unasked(item.conversationId))) {
+		if (item.kind === "approval" && item.projectSwitch === undefined && (await this.#unasked(item.conversationId))) {
 			await api.memo(ALLOWED_BY_EVERYTHING, true, context);
 			return "once";
 		}

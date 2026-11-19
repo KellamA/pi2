@@ -59,15 +59,16 @@ function engineCommand(prepare) {
 			socket.destroy();
 			if (error) reject(error); else resolve(result);
 		}
-		function send(prepared) {
+		function accept(prepared) {
 			if (!prepared) return;
+			if ('snapshot' in prepared) { finish(null, prepared.snapshot); return; }
 			request = prepared;
 			sent = true;
 			socket.write(JSON.stringify({ id: 1, method: request.method, params: request.params }) + '\n');
 		}
 		socket.once('connect', () => {
 			if (key) socket.write(JSON.stringify({ id: 0, method: 'test-copy.answerer', params: { key } }) + '\n');
-			try { send(prepare()); } catch (error) { finish(error); }
+			try { accept(prepare()); } catch (error) { finish(error); }
 		});
 		socket.once('error', error => finish(error));
 		socket.once('close', () => finish(new Error('the engine connection closed before it answered')));
@@ -76,7 +77,7 @@ function engineCommand(prepare) {
 				const message = JSON.parse(line);
 				if (message.event === undefined && message.id === 0) {
 					if (message.error !== undefined) throw new Error(`the copy's engine did not take its key: ${message.error}`);
-				} else if (!sent) send(prepare(message));
+				} else if (!sent) accept(prepare(message));
 				else if (message.event === undefined && message.id === 1) {
 					if (message.error !== undefined) throw new Error(message.error);
 					finish(null, request.summary(message.result));
@@ -109,6 +110,17 @@ try {
 			summary = await windowCommand(target, { pid: Number(pid), command, paths: absolute });
 			break;
 		}
+		case 'conversations': {
+			// The engine sends the same initial Library and Archive to every connection. No request is needed.
+			const rows = await engineCommand(event => {
+				if (event?.event !== 'library') return;
+				return { snapshot: [...event.conversations, ...event.archived] };
+			});
+			// Escape tabs and line breaks in titles so each conversation still takes one line and three fields.
+			const field = value => JSON.stringify(value).slice(1, -1);
+			for (const { id, title, agentId } of rows) console.log(`${id}\t${field(title)}\t${field(agentId ?? '-')}`);
+			break;
+		}
 		case 'answer': {
 			const id = integer(args[0], 'conversation');
 			const decision = args[1];
@@ -134,7 +146,7 @@ try {
 		}
 		default: throw new Error('unknown test-copy command');
 	}
-	console.log(`${summary} in ${suffix}.`);
+	if (summary !== undefined) console.log(`${summary} in ${suffix}.`);
 } catch (error) {
 	console.error(`test-copy: ${error.message.replace(/[\r\n]+/g, ' ')}`);
 	process.exitCode = 1;

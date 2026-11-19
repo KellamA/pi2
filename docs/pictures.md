@@ -6,7 +6,9 @@
 
 The engine reaches picture models as code mode's `models.generateImages` does: through pi-ai's `Models.generateImages`, which finds the provider's key or sign-in itself (`src/pictures.ts`). Of pi-ai's providers, only **OpenRouter** has picture models (66 in its catalog as of this writing: Google's Gemini image models, OpenAI's GPT Image, FLUX, Recraft, Seedream and others). A custom endpoint cannot have one. So in practice the tool works for a person who has added an OpenRouter key.
 
-Which model is asked: the first of a short list the person's providers have (`PREFERRED` in `src/pictures.ts`: Gemini 3.1 Flash Image, Gemini 2.5 Flash Image, GPT Image 1 Mini, GPT-5 Image Mini), chosen because they follow a description well, can change a picture they are given, and have a price in the catalog; else the first with a price; else the first. To change a picture, only a model that takes pictures is used. There is no setting to choose another yet.
+In Settings › Chat › Pictures, choose a **Picture model** for both chats and agents. It takes effect the next time Make pictures runs; it does not change the model that answers a chat. The picker lists the picture models your connected providers offer, with catalog prices in US dollars per million input and output tokens, or **Price unknown**. The provider may charge a different amount.
+
+**Chosen by pi²** is the default. pi² tries Gemini 3.1 Flash Image, Gemini 2.5 Flash Image, GPT Image 1 Mini and GPT-5 Image Mini, in that order, then the first available model with a catalog price, then the first available model. The preferred models follow a description well, can change a picture they are given, and have a price in the catalog. If your choice is no longer offered, the picker shows **Chosen by pi²** and tells you why. Your choice is kept in case it returns, unless you clear it or pick another. Only models that accept pictures can change one; if your choice cannot, pi² chooses among the ones that can.
 
 ## When there is none
 
@@ -14,7 +16,9 @@ The engine asks which picture models the person's providers can use as it starts
 
 - **The tool is offered to no one**, a chat included (the feature's `withheld`, which `toolsFor` and a chat's tools both leave out). A conversation gets it at its next message once there is one.
 - **The model is told why**, in the `pictures` section of the prompt, in a conversation that would have the tool (a chat, or an agent whose settings turn it on): "You cannot make pictures here: none of the person's providers has a model that makes them (OpenRouter has them; the person can add a key in Settings › Providers). If they ask for a picture, say so plainly." Any other conversation is told nothing.
-- **The person reads why** in the agent's settings, on the Make pictures line. The engine sends the app a `pictures` event, `{ models: [{ provider, id, name }], makers: [provider names] }`, as it connects and when the list changes.
+- **The person reads why** in the agent's settings, on the Make pictures line, and the picker tells them none of their connected providers offers a picture model.
+
+The `pictures` event carries the saved `model` (`{ provider, modelId }` or null), the available `models` and their rates and editing capability, and the `makers` that offer picture models at all. It is sent on connection and on changes. `pictures.setModel` saves the choice (`pictureModel` in `settings.json`).
 
 ## What it does
 
@@ -25,7 +29,9 @@ The engine asks which picture models the person's providers can use as it starts
 
 ## What it costs
 
-The picture model's answer comes with its token counts, which pi-ai prices from the catalog, and the tool returns them as its usage (pi durable's `pi.usage.tools`, under `make_picture`). The conversation's, the agent's and the day's totals in Usage count it, and so does the daily budget. It has no row of its own in Usage's list of models, which lists the models that answered. In OpenRouter's catalog 21 of the 66 picture models have a price; the others count their tokens at no cost, though OpenRouter charges for them, which is one reason the preferred ones are priced. OpenRouter's own figure for a request (`usage.cost`) is not read: pi-ai's picture API leaves it out.
+The picture model's answer usually comes with token counts, which pi-ai prices from the catalog. **Usage › By model** shows the tokens and estimated spend for each picture model. The same spend counts once in the conversation, agent or chat, and day totals, and towards the daily budget. Spend recorded before pi² tracked it by picture model still counts in the totals but has no model row of its own.
+
+In OpenRouter's catalog 21 of the 66 picture models have a price. When there is no known price or the model does not report usage, the row says **price unknown** instead of showing a sum. If only some of a model's use could be priced, its sum is marked **partial**. Only the known amount counts towards the budget. The provider can still charge for the rest: pi-ai's picture API does not read OpenRouter's own figure for a request (`usage.cost`).
 
 ## In the conversation
 
@@ -33,4 +39,4 @@ The row reads "Made a picture: “a lighthouse at dusk”", with the model's nam
 
 ## Checking it
 
-`engine/test/pictures.ts` runs two engines. The first has no picture model: the tool is offered to no one, an agent that turned it on and a chat have the `pictures` section and an agent that did not has nothing, and the `pictures` event names OpenRouter. The second has a picture model on a stand-in server on 127.0.0.1 that answers as OpenRouter's picture API does (`PI2_DEMO_PICTURES`, which gives the demo provider a priced model, `demo-pictures`, on that server; any other host is ignored): the tool is offered to an agent that turned it on and to a chat, makes a picture that `conversation.image` returns, counts its cost, sends the newest picture with `change`, says plainly when there is nothing to change and when the model fails, and asks nothing. No real provider is called.
+`engine/test/pictures.ts` checks the tool with no picture model and with a stand-in server on 127.0.0.1 that answers as OpenRouter's picture API does. `PI2_DEMO_PICTURES` gives the demo provider a priced model (`demo-pictures`) and an unpriced one that cannot edit (`demo-pictures-unpriced`); any other host is ignored. The test checks which conversations get the tool, model choice and fallbacks, making and changing a picture without asking for approval, failures, and the model rows, totals and budget before and after restarting. No real provider is called.

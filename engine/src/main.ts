@@ -54,6 +54,7 @@ import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
+import { pictureUsageModel } from "./pictures.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { subChatUsage } from "./subchatusage.ts";
@@ -75,7 +76,8 @@ import { runningCommands } from "./running.ts";
 import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
-import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, starterAgents, takeAgentSwitch } from "./state.ts";
+import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, starterAgents, takeAgentSwitch } from "./state.ts";
+import { admit, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -255,7 +257,17 @@ const engine: Engine = {
 	agents: () => agents,
 	library: () => library,
 	chatSettings: () => chatSettings(settings.chat),
+	pictureModel: () => settings.pictureModel ?? null,
+	setPictureModel: (model) => {
+		settings.pictureModel = model;
+		saveSettings();
+	},
 	providers: () => providers,
+	setting: (key) => settings[key],
+	saveSetting: (key, value) => {
+		(settings as Record<string, unknown>)[key] = value;
+		saveSettings();
+	},
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
 	shown: () => new Set([...clients].flatMap((client) => [...client.shown].map((id) => versions.chats[String(id)]?.current ?? id))),
@@ -418,8 +430,11 @@ const settings: {
 	defaultCompactionTokens?: number | null;
 	/** Chat mode's settings (chat.ts); read through `chatSettings`, which gives the defaults for what is missing. */
 	chat?: ChatSettings;
+	pictureModel?: ModelRef | null;
 	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
 	lastChatModel?: ModelRef;
+	/** The projects preview switch (projects.ts); read through `projectsOn()`. Absent means off. */
+	projects?: { preview: boolean };
 } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -513,7 +528,10 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 	if (input.setup !== undefined && typeof input.setup !== "string") throw new Error("The set-up command must be text");
 	if (typeof input.setup === "string" && input.setup.length > 4_000) throw new Error("The set-up command is too long: keep it under 4,000 characters, or put it in a script");
 	if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
-	const taken = Object.values(agents).some((other) => other.id !== input.id && other.name.toLowerCase() === name.toLowerCase());
+	// Names are unique among the templates (agents of no project), and among the agents of each project: every project's
+	// orchestrator may be called Orchestrator (docs/projects.md, 3.3). A new agent saved here is a template.
+	const project = input.id === undefined ? undefined : agents[input.id]?.projectId;
+	const taken = Object.values(agents).some((other) => other.id !== input.id && other.projectId === project && other.name.toLowerCase() === name.toLowerCase());
 	if (taken && copiedRules === undefined) throw new Error(`There is already an agent called ${name}`);
 	if (input.id !== undefined && agents[input.id] === undefined) throw new Error(`Unknown agent: ${input.id}`);
 	// New identities are allocated in the commit, so two requests cannot pick the same name or id.
@@ -551,7 +569,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		const doc = await tx.doc(Agents);
 		if (input.id === undefined) {
 			const base = name;
-			const taken = () => Object.values(doc.agents).some((other) => other.name.toLowerCase() === name.toLowerCase());
+			const taken = () => Object.values(doc.agents).some((other) => other.projectId === undefined && other.name.toLowerCase() === name.toLowerCase());
 			if (copiedRules !== undefined) {
 				for (let n = 2; taken(); n++) name = `${base} ${n}`;
 			} else if (taken()) throw new Error(`There is already an agent called ${name}`);
@@ -569,11 +587,15 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		const variables = doc.agents[id]?.variables;
 		// Nor Allow everything, which has its own request; a new agent, a duplicate among them, never has it (#294).
 		const everything = doc.agents[id]?.allowEverything === true;
+		// Nor what marks a project agent (docs/projects.md, 3.3): kept as stored, whatever is sent.
+		const stored = doc.agents[id];
+		const marks = stored === undefined ? {} : JSON.parse(JSON.stringify({ projectId: stored.projectId, role: stored.role, template: stored.template, madeBy: stored.madeBy, updatedAt: stored.updatedAt, removedAt: stored.removedAt }));
 		doc.agents[id] = {
 			...agent,
 			commandRules: rules,
 			...(variables === undefined ? {} : { variables: JSON.parse(JSON.stringify(variables)) }),
 			...(everything ? { allowEverything: true as const } : {}),
+			...marks,
 		};
 	}, context);
 	// The agent's conversations pick up what it may now do at their next message; see syncTools.
@@ -918,6 +940,8 @@ function libraryEvent() {
 			continuedIn: (meta.continuedIn ?? []).filter((other) => library.conversations[String(other)] !== undefined && !isDeleted(library.conversations[String(other)])),
 			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
 			allowEverything: meta.allowEverything === true,
+			// The project it belongs to (projects.ts), whether the preview is on or not.
+			projectId: meta.projectId ?? null,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
@@ -936,6 +960,7 @@ function libraryEvent() {
 			parentTitle: meta.parent === undefined ? null : (library.conversations[String(meta.parent)]?.title ?? ""),
 			chat: isChat(meta),
 			pinned: meta.pinned === true,
+			projectId: meta.projectId ?? null,
 		}))
 		.sort((a, b) => b.archivedAt - a.archivedAt);
 	return { event: "library", conversations, archived, autoArchiveDays: settings.autoArchiveDays ?? null };
@@ -1253,7 +1278,7 @@ async function continueChat(params: Params): Promise<{ id: ConversationId }> {
 			agent: change,
 			init: async (tx, id) => {
 				const conversations = (await tx.doc(Library)).conversations;
-				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId };
+				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId, ...projectFrom(agent) };
 				const chat = conversations[String(chatId)];
 				if (chat !== undefined) chat.continuedIn = [...(chat.continuedIn ?? []), id as unknown as number];
 			},
@@ -1296,6 +1321,12 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.chat === true) return createChat(params.model);
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
+		if (agent.projectId !== undefined) {
+			// A conversation with a project agent is in its project, and is a start there (docs/projects.md, 3.5 and 8.3).
+			refuseStartWith(agent);
+			const admitted = admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task: "", options: {} });
+			if (!admitted.ok) throw new Error(`Past the project's limit: ${admitted.limit.reason}`);
+		}
 		const change = await agentChange(agent, { subChat: false });
 		const now = Date.now();
 		const created = await harness.createConversation(
@@ -1303,7 +1334,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				ownership: { kind: "ownerless" },
 				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : change,
 				init: async (tx, id) => {
-					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
+					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 				},
 			},
 			context,
@@ -1390,6 +1421,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
+						// A fork of a project's conversation is in the project too, with the same agent.
+						...projectFrom(source),
 						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps, and its web switch.
 						...(isChat(source) ? { chat: true as const } : {}),
 						...(isChat(source) && source?.web === false ? { web: false as const } : {}),
@@ -1733,6 +1766,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	submit: async (params) => {
 		const conv = await conversation(params.id);
 		refuseIfPutAway(params.id as number);
+		refuseInArchivedProject(params.id as number);
 		const attachments = validateAttachments(params.attachments);
 		// Attachments can be the whole message.
 		const content = attachments.length > 0 && params.text === undefined ? "" : text(params, "text");
@@ -1782,6 +1816,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	continue: async (params) => {
 		const conv = await conversation(params.id);
 		refuseIfPutAway(params.id as number);
+		refuseInArchivedProject(params.id as number);
 		await takeSwitch(conv.id);
 		await conv.submit({ type: "continue" }, context);
 		return {};
@@ -1833,6 +1868,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const id = text(params, "id");
 		if (agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
 		if (Object.keys(agents).length === 1) throw new Error("Keep at least one agent");
+		// A project always has its orchestrator (docs/projects.md, 3.3).
+		if (agents[id].role === "orchestrator") throw new Error(`${agents[id].name} is the project's orchestrator. Make another agent the orchestrator first.`);
 		for (const feature of host.features) await feature.deletingAgent?.(id);
 		await harness.commit(async (tx) => {
 			const doc = await tx.doc(Agents);
@@ -1898,6 +1935,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (item === undefined) throw new Error("That request is no longer waiting");
 		// "rule" carries no words: the rule is the one the engine offered with the request.
 		if (decision === "rule" && item.rule === undefined) throw new Error("That request did not offer an allowed command");
+		// A project's switch that is off asks to allow one action at a time (projects.ts, `requireSwitch`).
+		if (item.projectSwitch !== undefined && decision !== "once" && decision !== "deny") throw new Error("This can only be allowed once, or denied: the project's settings ask each time");
 		if (!inbox.answer(id, decision)) throw new Error("That request is no longer waiting");
 		return {};
 	},
@@ -2117,6 +2156,7 @@ function activityEvent() {
 				rootConversationId: rootOf(id),
 				title: meta?.title ?? "",
 				agentId: meta?.agentId ?? null,
+				projectId: meta?.projectId ?? null,
 				// A chat answering is shown as a chat, not as an agent's work.
 				chat: isChat(meta),
 				status: waiting.has(id) ? "waiting" : "working",
@@ -2194,24 +2234,51 @@ function refreshUsage(): Promise<void> {
 	return refresh;
 }
 
+type UsageCounters = { input: number; output: number; totalTokens: number; cost: { total: number } };
+const emptyUsage = (): UsageCounters => ({ input: 0, output: 0, totalTokens: 0, cost: { total: 0 } });
+function addUsageCounters(sum: UsageCounters, value: UsageJson): void {
+	sum.input += value.input ?? 0;
+	sum.output += value.output ?? 0;
+	sum.totalTokens += value.totalTokens ?? 0;
+	sum.cost.total += value.cost?.total ?? 0;
+}
+
 function sessionUsage(): UsageDocShape {
 	// As in Harness.usage(), add each model/tool in durable conversation ID order, including conversations not in
 	// the library. Keep raw costs here: rounding after per-conversation pricing can change the session total.
-	type Counters = { input: number; output: number; totalTokens: number; cost: { total: number } };
-	const models: Record<string, Counters> = Object.create(null);
-	const tools: Record<string, Counters> = Object.create(null);
+	const models: Record<string, UsageCounters> = Object.create(null);
+	const tools: Record<string, UsageCounters> = Object.create(null);
 	for (const [, { doc }] of [...usageById].sort(([a], [b]) => Number(a) - Number(b))) {
 		for (const [source, target] of [[doc.models, models], [doc.tools, tools]] as const) {
 			for (const [key, value] of Object.entries(source ?? {})) {
-				const sum = (target[key] ??= { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } });
-				sum.input += value.input ?? 0;
-				sum.output += value.output ?? 0;
-				sum.totalTokens += value.totalTokens ?? 0;
-				sum.cost.total += value.cost?.total ?? 0;
+				addUsageCounters(target[key] ??= emptyUsage(), value);
 			}
 		}
 	}
 	return { models, tools };
+}
+
+/** Project picture rows from the tool ledger, without adding a second copy of the spend to model totals. */
+function pictureRows(tools: UsageDocShape["tools"]) {
+	const rows = new Map<string, { usage: UsageCounters; unpriced: boolean }>();
+	for (const [bucket, usage] of Object.entries(tools ?? {})) {
+		const model = pictureUsageModel(bucket);
+		if (model === undefined) continue;
+		const row = rows.get(model.key) ?? { usage: emptyUsage(), unpriced: false };
+		addUsageCounters(row.usage, usage);
+		row.unpriced ||= model.unpriced;
+		rows.set(model.key, row);
+	}
+	return [...rows].map(([key, { usage, unpriced }]) => {
+		const slash = key.indexOf("/");
+		const provider = key.slice(0, slash);
+		const model = providers.models.getModelOfType("image", provider, key.slice(slash + 1));
+		const providerName = providers.models.getProvider(provider)?.name ?? provider;
+		return {
+			key, input: usage.input, output: usage.output, tokens: usage.totalTokens, cost: usage.cost.total, unpriced,
+			pictureName: model === undefined ? key : `${providerName} · ${model.name}`,
+		};
+	});
 }
 
 let session: UsageDocShape = {};
@@ -2284,9 +2351,10 @@ async function updateUsage(): Promise<void> {
 	}
 	usageSummary = {
 		event: "usage",
-		models: Object.entries(session.models ?? {})
-			.map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) }))
-			.sort((x, y) => y.tokens - x.tokens),
+		models: [
+			...Object.entries(session.models ?? {}).map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) })),
+			...pictureRows(session.tools),
+		].sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		chats,
 		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),
@@ -2385,7 +2453,7 @@ async function fire(id: string, manual: boolean): Promise<void> {
 				init: async (tx, conversationId) => {
 					const current = (await tx.doc(Schedules)).schedules[id];
 					if (current === undefined || (!manual && current.nextRunAt !== due)) throw new Error("The schedule changed while it was starting");
-					(await tx.doc(Library)).conversations[String(conversationId)] = { title: current.title, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
+					(await tx.doc(Library)).conversations[String(conversationId)] = { title: current.title, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 					current.pending = { conversationId: conversationId as unknown as number, runAt: now };
 					current.lastRunAt = now;
 					current.lastConversationId = conversationId as unknown as number;

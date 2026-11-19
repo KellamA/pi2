@@ -5,7 +5,7 @@ This is the contract for the projects epic, [#450](https://github.com/KellamA/pi
 
 The design it builds is [design/projects.md](design/projects.md), with its drawings in [design/projects-drafts.html](design/projects-drafts.html). This page does not repeat why; it says exactly what. Where the design left something open, this page decides it, and [section 13](#13-decisions-this-contract-made) lists each decision with its reason. What only the owner can decide is in [section 14](#14-questions-for-the-owner), each with the answer this page is written for. Nothing in the epic starts until the owner has agreed this page (#455).
 
-Nothing here is built yet. When a piece is built, its issue updates the part of this page it built if the build had to differ, in the same pull request, so the page stays true for the issues after it. Once #483 has taken the old way out, this page becomes the guide to projects for a person and a developer.
+#456 has built the project itself, its requests and the preview switch, with the places the later issues fill in ([12.1](#121-who-owns-what-several-issues-share) says where); nothing else is built yet. When a piece is built, its issue updates the part of this page it built if the build had to differ, in the same pull request, so the page stays true for the issues after it. Once #483 has taken the old way out, this page becomes the guide to projects for a person and a developer.
 
 **How to read it.** Read [section 1](#1-words) and [section 2](#2-the-preview-switch) whatever your issue, then [12.1](#121-who-owns-what-several-issues-share) and the sections your issue's row in [12.2](#122-each-issue) names. Types are written as TypeScript, as `engine/src/state.ts` writes them. Times are milliseconds since 1970, as everywhere in the engine. "The person" is whoever uses pi²; "an agent" is a model working in a conversation.
 
@@ -1341,7 +1341,7 @@ type ProjectSettings = {
 | `release` | Nothing pi² does | Off | Off | The orchestrator is told to ask before releasing ([section 11](#11-what-the-engine-cannot-check)) |
 | `passLimits` | A start past a limit | Off | Off | A start past a limit is refused, and a limit card offered to the person |
 
-A switch that is off makes the tool call ask through the Inbox, as an approval with Allow Once and Deny only, whatever the agent's access: the Inbox item carries `projectSwitch`, which the app reads to offer only those two answers and to say which switch asked, and which `Inbox.ask` reads to ask even for an agent with Allow everything ([13](#13-decisions-this-contract-made), decision 17). One helper, `requireSwitch(conversation, switch, what)` in `projects.ts` (#456), does this for every tool that a switch governs. Turning a switch on widens reach; turning one off is made at once.
+A switch that is off makes the tool call ask through the Inbox, as an approval with Allow Once and Deny only, whatever the agent's access: the Inbox item carries `projectSwitch`, which the app reads to offer only those two answers and to say which switch asked, and which `Inbox.ask` reads to ask even for an agent with Allow everything ([13](#13-decisions-this-contract-made), decision 17). One helper, `requireSwitch(conversation, switch, what)` in `projects.ts` (#456), does this for every tool that a switch governs; [12.1](#121-who-owns-what-several-issues-share) gives its arguments and answer as built. Turning a switch on widens reach; turning one off is made at once.
 
 ### 8.2 When a report wakes the orchestrator
 
@@ -1646,6 +1646,20 @@ Each piece below has one owner, which builds it, with what the others need of it
 | `library`: `projectId` (#456), `runsAs` (#457), `orchestrator` (#466) | as named | Absent until each lands |
 | `scripts/test-copy`'s project commands, `PI2_SHOW` and `PI2_HUB` values, `PI2_GH` in its allowlist | #469 | — |
 | **Projects (preview)** in Settings, the carrying-over report sheet | #470 | Until #470, the switch is turned on through the engine (`test-copy call`) |
+
+**As #456 built them.** Every piece #456 owns is in `engine/src/projects.ts`, which says at its top which later issue fills in each place. What the table does not say:
+
+- `projectsOn(): boolean`. `inProject(conversation: number): Project | undefined`, the project, or undefined outside one, with the preview off, or in an archived or deleted project. `projectOf(conversation)` gives the project whatever the preview and its state, for what holds with the preview off too (limits, `startAgents`). `allProjects()` gives a plain copy of every project.
+- `requirePreview()` throws the refusal of section 2; every request new in the epic calls it first, but those section 2 allows with the preview off. `PROJECT_ARCHIVED` is the refusal of 4.1 for an archived project; `refuseInArchivedProject(conversation)` and `refuseStartWith(agent)` give it with the preview on, and `submit`, `continue` and `conversation.create` call them.
+- `requireSwitch(conversation, name, what)`: `conversation` is the asking tool call, `{ conversationId, id, callId, tool, arguments, api, context }`, with `id` the Inbox item's (`String(api.taskId)`, as every approval's) and `api` the hook's or tool's (for `memo`). It answers `{ ok: true }`, or `{ ok: false, reason }` with what to tell the model when the person denies. It asks in a project whose switch is off, archived or deleted or not, with the preview on or off, and nowhere else. `inbox.decide` takes only `once` or `deny` for such an item.
+- `admit(start, confirm?)` is the stub in `projects.ts` until #464; `conversation.create` with a project agent calls it already.
+- `addNews(tx, projectId, { kind, text, ref, keep?, at? })` adds to `news` inside the commit `tx`, so a piece of news is stored with what it tells of, and answers the `News` with its id. An unknown project throws.
+- `onPreviewOn(plan)`, `carryOverState()`, `ruleTokens(projectId)`, `lastWords(projectId)` are the bodies #458, #458, #459 and #466 replace; `emptyReport()` is the report of a run with nothing to do.
+- `Projects` is the document's token, for a feature that changes it in a commit of its own; the `projects` event follows any commit that changes it, by anyone, and is sent only when what it holds changed.
+- A project's orchestrator and its conversation are made in the one commit that makes the project. The default orchestrator's memory switch is set through a feature hook, `agentMade(agentId, { memory })`; a template copied as orchestrator goes through `agentDuplicated`, as `agents.duplicate` does.
+- `agents.save` keeps `projectId`, `role`, `template`, `madeBy`, `updatedAt` and `removedAt` as stored, and checks a name against the templates, or against the agents of the same project. It does not set `updatedAt` yet: #457 does, with Update from template. `agents.delete` refuses an orchestrator.
+- A conversation takes `projectId` as it is made: from its agent (`conversation.create`, a schedule's run, Continue with an Agent), from its parent (a sub-chat) or from the conversation it forks.
+- The engine's settings reach a feature through `engine.setting(key)` and `engine.saveSetting(key, value)` (`features.ts`), since the engine writes `settings.json` whole.
 
 ### 12.2 Each issue
 
