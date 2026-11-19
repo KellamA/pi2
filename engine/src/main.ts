@@ -47,7 +47,7 @@ import { compactionCheckpoint, type CompactionMarker, compactionMarker, earlyCom
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
-import { type Engine, FEATURES } from "./features.ts";
+import { type AgentSaveOptions, type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
@@ -61,6 +61,7 @@ import { subChatUsage } from "./subchatusage.ts";
 import { messageSent } from "./heed.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
+import { claim } from "./needs.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
@@ -76,8 +77,10 @@ import { runningCommands } from "./running.ts";
 import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
-import { type Access, ACCESS_LEVELS, type AgentProfile, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, starterAgents, takeAgentSwitch } from "./state.ts";
+import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { admit, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
+import { delegateTargets, projectAgentFolder, stampsAgents } from "./projectagents.ts";
+import { syncWorkForInput, WorkLimitError } from "./work.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -211,6 +214,9 @@ const host: Host = {
 	scratchFolder: () => workspace,
 	changesThings: (name) => mcp.changesThings(name),
 	agent: (id) => (id === undefined ? undefined : agents[id]),
+	// A chat's version is the chat, as for `meta`.
+	agentOf: (id) => agentOf(library.conversations[String(chatOf(id))], agents),
+	delegatesOf: (id) => delegateTargets(agentOf(library.conversations[String(chatOf(id))], agents), agents, chatOf(id)),
 	allowAlways: (id, tool) =>
 		editMeta(id, (meta) => {
 			if (!meta.autoApprove?.includes(tool)) meta.autoApprove = [...(meta.autoApprove ?? []), tool];
@@ -267,7 +273,10 @@ const engine: Engine = {
 	saveSetting: (key, value) => {
 		(settings as Record<string, unknown>)[key] = value;
 		saveSettings();
+		// The preview switched: a conversation carried over runs as another agent now (state.ts, `runsAs`).
+		if (key === "projects") runsAsChanged();
 	},
+	saveAgent: (input, options) => saveAgent(input, options),
 	busy: (id) => working.has(id),
 	// A chat on screen shows its current version (versions.ts).
 	shown: () => new Set([...clients].flatMap((client) => [...client.shown].map((id) => versions.chats[String(id)]?.current ?? id))),
@@ -300,8 +309,10 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * that could do nothing: the computer while no app is allowed, and in a sub-chat (`subChat`), handing work on and
  * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts),
  * where a sub-chat follows its own agent's list, and what a feature withholds for now (pictures with no picture model).
+ * `conversation` is the conversation's id, undefined for one not made yet: in a project, whom it may hand work to
+ * depends on which conversation it is (projectagents.ts, `delegateTargets`).
  */
-function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean) {
+function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null } = {}) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
@@ -310,8 +321,8 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	// with test copies of pi² allowed, or with Allow everything, under which any app may be used (#294).
 	const screen = hasApps(agent?.computer, agent?.allowEverything === true) ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
-	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
-	const delegate = !subChat && (agent?.delegates ?? []).some((other) => agents[other] !== undefined);
+	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat, ...where }) ?? []);
+	const delegate = !subChat && delegateTargets(agent, agents, where.conversationId).length > 0;
 	const leftOut = new Set([...toolsLeftOut(agent), ...withheld()]);
 	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras]
 		.filter((name) => !leftOut.has(name))
@@ -358,13 +369,13 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 }
 
 /** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
-async function agentChange(agent: AgentProfile, options: { subChat: boolean }): Promise<AgentChange> {
+async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange> {
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
 		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
-		tools: toolsFor(agent.access, agent, options.subChat),
+		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId }),
 		cwd: agent.cwd,
 		maxTurns: agent.maxTurns,
 	};
@@ -396,7 +407,7 @@ const harness = await Harness.open(
 				early: (id: ConversationId, window: number, policy: import("@earendil-works/pi-durable").CompactionPolicy) => {
 					const meta = library.conversations[String(id)];
 					if (meta === undefined || isChat(meta)) return undefined;
-					return earlyCompaction(agents[meta.agentId ?? ""]?.compactionTokens ?? settings.defaultCompactionTokens, window, policy);
+					return earlyCompaction(agentOf(meta, agents)?.compactionTokens ?? settings.defaultCompactionTokens, window, policy);
 				},
 				instructions: RETENTION_INSTRUCTIONS,
 				checkpoint: compactionCheckpoint,
@@ -483,11 +494,15 @@ function isSubChat(meta: Meta | undefined): boolean {
 async function syncTools(conv: Conversation): Promise<void> {
 	const id = conv.id as unknown as number;
 	const meta = library.conversations[String(id)];
-	const own = agents[meta?.agentId ?? ""];
-	// A conversation whose agent was deleted keeps the setup it has. A chat has the assistant's tools.
-	if (meta === undefined || (own === undefined && !isChat(meta))) return;
+	const own = agentOf(meta, agents);
+	if (meta === undefined) return;
+	// An agent that was deleted or removed keeps its setup, except work, which follows the project and preview.
+	if (own === undefined && !isChat(meta)) {
+		if (meta.projectId !== undefined) await harness.commit((tx) => syncWorkForInput(tx, conv.id, meta), context);
+		return;
+	}
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta)));
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id }));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -502,10 +517,10 @@ async function syncTools(conv: Conversation): Promise<void> {
  */
 async function takeSwitch(id: ConversationId): Promise<void> {
 	const known = library.conversations[String(id)];
-	if (known !== undefined && (known.allowEverything === true) === (agents[known.agentId ?? ""]?.allowEverything === true)) return;
+	if (known !== undefined && (known.allowEverything === true) === (agentOf(known, agents)?.allowEverything === true)) return;
 	await harness.commit(async (tx) => {
 		const meta = (await tx.doc(Library)).conversations[String(id)];
-		if (meta !== undefined) takeAgentSwitch(meta, agents[meta.agentId ?? ""]);
+		if (meta !== undefined) takeAgentSwitch(meta, agentOf(meta, agents));
 	}, context);
 }
 
@@ -519,21 +534,26 @@ async function editMeta(id: ConversationId, change: (meta: Meta) => void): Promi
 }
 
 // Saving and duplicating share validation and defaults; the app never assembles a copy.
-async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?: CommandRule[]): Promise<{ id: string }> {
+async function saveAgent(given: Partial<AgentProfile> | undefined, options: AgentSaveOptions = {}): Promise<{ id: string }> {
+	const copiedRules = options.copiedRules;
+	let input = given;
 	let name = typeof input?.name === "string" ? input.name.trim() : "";
 	if (input === undefined || name === "") throw new Error("Give the agent a name");
+	if (input.id !== undefined && agents[input.id] === undefined) throw new Error(`Unknown agent: ${input.id}`);
+	// The project it is in: a new one's as the engine makes it, never as the app sends it (docs/projects.md, 3.3).
+	const project = input.id === undefined ? options.project : agents[input.id]?.projectId;
+	// A project agent works in its project's folder, which the engine sets; another is refused.
+	if (project !== undefined) input = { ...input, cwd: projectAgentFolder(project, input.cwd) };
 	if (input.access !== undefined && !ACCESS_LEVELS.includes(input.access)) throw new Error(`Unknown access level: ${String(input.access)}`);
-	if (typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
+	if (project === undefined && typeof input.cwd === "string" && !(existsSync(input.cwd) && statSync(input.cwd).isDirectory())) throw new Error(`Not a folder: ${input.cwd}`);
 	if (input.worktree !== undefined && typeof input.worktree !== "boolean") throw new Error("worktree must be true or false");
 	if (input.setup !== undefined && typeof input.setup !== "string") throw new Error("The set-up command must be text");
 	if (typeof input.setup === "string" && input.setup.length > 4_000) throw new Error("The set-up command is too long: keep it under 4,000 characters, or put it in a script");
 	if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
 	// Names are unique among the templates (agents of no project), and among the agents of each project: every project's
-	// orchestrator may be called Orchestrator (docs/projects.md, 3.3). A new agent saved here is a template.
-	const project = input.id === undefined ? undefined : agents[input.id]?.projectId;
+	// orchestrator may be called Orchestrator (docs/projects.md, 3.3). Removed agents count.
 	const taken = Object.values(agents).some((other) => other.id !== input.id && other.projectId === project && other.name.toLowerCase() === name.toLowerCase());
 	if (taken && copiedRules === undefined) throw new Error(`There is already an agent called ${name}`);
-	if (input.id !== undefined && agents[input.id] === undefined) throw new Error(`Unknown agent: ${input.id}`);
 	// New identities are allocated in the commit, so two requests cannot pick the same name or id.
 	let id = input.id ?? "";
 	const previous = agents[id];
@@ -569,13 +589,14 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		const doc = await tx.doc(Agents);
 		if (input.id === undefined) {
 			const base = name;
-			const taken = () => Object.values(doc.agents).some((other) => other.projectId === undefined && other.name.toLowerCase() === name.toLowerCase());
+			const taken = () => Object.values(doc.agents).some((other) => other.projectId === project && other.name.toLowerCase() === name.toLowerCase());
 			if (copiedRules !== undefined) {
 				for (let n = 2; taken(); n++) name = `${base} ${n}`;
 			} else if (taken()) throw new Error(`There is already an agent called ${name}`);
 			const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
-			// A deleted copy may still own conversations, schedules and worktrees. Never reuse its identity.
-			id = copiedRules === undefined ? slug : `${slug}-${randomUUID()}`;
+			// A deleted copy may still own conversations, schedules and worktrees. Never reuse its identity; nor a project
+			// agent's, whose name another project's agents may have too.
+			id = copiedRules === undefined && project === undefined ? slug : `${slug}-${randomUUID()}`;
 			for (let n = 2; doc.agents[id] !== undefined; n++) id = `${slug}-${n}`;
 			agent.id = id;
 			agent.name = name;
@@ -587,9 +608,21 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		const variables = doc.agents[id]?.variables;
 		// Nor Allow everything, which has its own request; a new agent, a duplicate among them, never has it (#294).
 		const everything = doc.agents[id]?.allowEverything === true;
-		// Nor what marks a project agent (docs/projects.md, 3.3): kept as stored, whatever is sent.
+		// Nor what marks a project agent (docs/projects.md, 3.3): kept as stored, whatever is sent, or as the engine sets it.
 		const stored = doc.agents[id];
-		const marks = stored === undefined ? {} : JSON.parse(JSON.stringify({ projectId: stored.projectId, role: stored.role, template: stored.template, madeBy: stored.madeBy, updatedAt: stored.updatedAt, removedAt: stored.removedAt }));
+		const marks = JSON.parse(
+			JSON.stringify({
+				projectId: stored === undefined ? project : stored.projectId,
+				role: stored?.role,
+				template: stored?.template,
+				madeBy: stored?.madeBy,
+				updatedAt: stored?.updatedAt,
+				removedAt: stored?.removedAt,
+				...options.marks,
+			}),
+		);
+		// When it was last saved: not while the preview has never been on, when nothing new is written (projectagents.ts).
+		if (stampsAgents()) marks.updatedAt = Date.now();
 		doc.agents[id] = {
 			...agent,
 			commandRules: rules,
@@ -942,6 +975,8 @@ function libraryEvent() {
 			allowEverything: meta.allowEverything === true,
 			// The project it belongs to (projects.ts), whether the preview is on or not.
 			projectId: meta.projectId ?? null,
+			// The agent it runs as now (state.ts, `runsAs`): its `agentId`, but for a conversation carried over.
+			runsAs: runsAs(meta, agents) ?? null,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
@@ -964,6 +999,25 @@ function libraryEvent() {
 		}))
 		.sort((a, b) => b.archivedAt - a.archivedAt);
 	return { event: "library", conversations, archived, autoArchiveDays: settings.autoArchiveDays ?? null };
+}
+
+/**
+ * What the conversations carried over run as now, as one string. It changes without the library changing when the
+ * preview is switched or a project's copy of an agent is removed or put back: the apps are then sent the library, and
+ * Activity, again. Only a conversation with a `projectAgentId` can run as anything but its `agentId` (state.ts, `runsAs`).
+ */
+const runsAsNow = () =>
+	Object.entries(library.conversations)
+		.filter(([, meta]) => meta.projectAgentId !== undefined)
+		.map(([id, meta]) => `${id}:${runsAs(meta, agents) ?? ""}`)
+		.join(",");
+let runsAsSent = runsAsNow();
+function runsAsChanged(): void {
+	const now = runsAsNow();
+	if (now === runsAsSent) return;
+	runsAsSent = now;
+	broadcast(libraryEvent());
+	announceActivity();
 }
 
 /** Nothing new is started in a conversation that was put away, or in one of its sub-chats. */
@@ -1011,15 +1065,20 @@ function inboxEvent() {
 			...item,
 			conversationId,
 			title: meta?.title ?? "",
-			agentName: agents[meta?.agentId ?? ""]?.name ?? null,
+			agentName: agentOf(meta, agents)?.name ?? null,
 			rootConversationId: root,
 			rootTitle: library.conversations[String(root)]?.title ?? "",
 		};
 	});
 	return { event: "inbox", items };
 }
-inbox.onChange = () => {
+/** Send the Inbox again, and tell the features that show it (Needs you, needs.ts). */
+function announceInbox() {
 	broadcast(inboxEvent());
+	for (const feature of host.features) feature.inboxChanged?.();
+}
+inbox.onChange = () => {
+	announceInbox();
 	announceActivity();
 };
 
@@ -1321,6 +1380,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.chat === true) return createChat(params.model);
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
+		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
+		if (agent.removedAt !== undefined) throw new Error(`Unknown agent: ${agent.id}`);
 		if (agent.projectId !== undefined) {
 			// A conversation with a project agent is in its project, and is a start there (docs/projects.md, 3.5 and 8.3).
 			refuseStartWith(agent);
@@ -1421,8 +1482,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
-						// A fork of a project's conversation is in the project too, with the same agent.
+						// A fork of a project's conversation is in the project too, with the same agent, and runs as the same one.
 						...projectFrom(source),
+						...(source?.projectAgentId !== undefined ? { projectAgentId: source.projectAgentId } : {}),
 						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps, and its web switch.
 						...(isChat(source) ? { chat: true as const } : {}),
 						...(isChat(source) && source?.web === false ? { web: false as const } : {}),
@@ -1611,8 +1673,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			cursor = (batch as { next?: unknown }).next;
 			if (cursor === undefined || batch.items.length === 0) break;
 		}
-		if (params.format === "json") return { text: JSON.stringify({ title: meta?.title ?? "", agent: agents[meta?.agentId ?? ""]?.name ?? null, chat: isChat(meta), exportedAt: new Date().toISOString(), items }, null, 2) };
-		const agentName = agents[meta?.agentId ?? ""]?.name ?? "Assistant";
+		if (params.format === "json") return { text: JSON.stringify({ title: meta?.title ?? "", agent: agentOf(meta, agents)?.name ?? null, chat: isChat(meta), exportedAt: new Date().toISOString(), items }, null, 2) };
+		const agentName = agentOf(meta, agents)?.name ?? "Assistant";
 		const fence = "```";
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
@@ -1736,9 +1798,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			const access = params.access as Access;
 			if (!ACCESS_LEVELS.includes(access)) throw new Error(`Unknown access level: ${String(access)}`);
 			const meta = library.conversations[String(id)];
-			const own = agents[meta?.agentId ?? ""];
+			const own = agentOf(meta, agents);
 			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta))) }, context);
+			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta), { conversationId: id })) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -1818,7 +1880,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		refuseIfPutAway(params.id as number);
 		refuseInArchivedProject(params.id as number);
 		await takeSwitch(conv.id);
-		await conv.submit({ type: "continue" }, context);
+		if (library.conversations[String(conv.id)]?.projectId === undefined) await conv.submit({ type: "continue" }, context);
+		else await harness.commit(async (tx) => {
+			await syncWorkForInput(tx, conv.id, (await tx.doc(Library)).conversations[String(conv.id)]);
+			await conv.submit(tx, { type: "continue" });
+		}, context);
 		return {};
 	},
 	/** Read one admitted message's durable outcome, not a previous run's idle state (test-copy send). */
@@ -1860,14 +1926,20 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const sourceId = text(params, "id");
 		const source = agents[sourceId];
 		if (source === undefined) throw new Error(`Unknown agent: ${sourceId}`);
-		const { id } = await saveAgent({ ...structuredClone(source), id: undefined, name: `${source.name} copy` }, structuredClone(source.commandRules ?? []));
+		// A project agent's copy is in the same project (docs/projects.md, 4.2): not its orchestrator, nor made from its template.
+		const { id } = await saveAgent(
+			{ ...structuredClone(source), id: undefined, name: `${source.name} copy` },
+			{ copiedRules: structuredClone(source.commandRules ?? []), ...(source.projectId === undefined ? {} : { project: source.projectId }) },
+		);
 		for (const feature of host.features) await feature.agentDuplicated?.(sourceId, id);
 		return { id };
 	},
 	"agents.delete": async (params) => {
 		const id = text(params, "id");
 		if (agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
-		if (Object.keys(agents).length === 1) throw new Error("Keep at least one agent");
+		// At least one agent of no project: the one a conversation starts with when none is named, and what the agents' list
+		// shows with the preview off. Before projects, every agent was one.
+		if (agents[id].projectId === undefined && Object.values(agents).filter((agent) => agent.projectId === undefined).length === 1) throw new Error("Keep at least one agent");
 		// A project always has its orchestrator (docs/projects.md, 3.3).
 		if (agents[id].role === "orchestrator") throw new Error(`${agents[id].name} is the project's orchestrator. Make another agent the orchestrator first.`);
 		for (const feature of host.features) await feature.deletingAgent?.(id);
@@ -1927,17 +1999,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		broadcast(recoveryEvent());
 		return {};
 	},
+	// Answered through `claim` (needs.ts), as every answer to what waits for the person is, by whichever route.
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
 		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
-		const id = text(params, "id");
-		const item = inbox.get(id);
-		if (item === undefined) throw new Error("That request is no longer waiting");
-		// "rule" carries no words: the rule is the one the engine offered with the request.
-		if (decision === "rule" && item.rule === undefined) throw new Error("That request did not offer an allowed command");
-		// A project's switch that is off asks to allow one action at a time (projects.ts, `requireSwitch`).
-		if (item.projectSwitch !== undefined && decision !== "once" && decision !== "deny") throw new Error("This can only be allowed once, or denied: the project's settings ask each time");
-		if (!inbox.answer(id, decision)) throw new Error("That request is no longer waiting");
+		await claim(text(params, "id"), { kind: "approval", decision: decision as "once" | "always" | "rule" | "deny" });
 		return {};
 	},
 	/** A rule typed in an agent's settings: `command` is its words, such as "npm test". */
@@ -1957,7 +2023,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"inbox.answer": async (params) => {
 		const answer = text(params, "text");
 		if (answer.trim() === "") throw new Error("The answer is empty");
-		if (!inbox.answer(text(params, "id"), answer)) throw new Error("That question is no longer waiting");
+		await claim(text(params, "id"), { kind: "question", text: answer });
 		return {};
 	},
 
@@ -2083,8 +2149,9 @@ libraryWatch.start(async (call) => {
 	const before = library.conversations;
 	library = call.value;
 	if (usageRowsChanged(before, library.conversations)) scheduleUsageRefresh();
+	runsAsSent = runsAsNow();
 	broadcast(libraryEvent());
-	broadcast(inboxEvent()); // titles shown in the inbox come from here
+	announceInbox(); // titles shown in the inbox come from here
 	const now = putAway();
 	if (now !== wasPutAway) {
 		wasPutAway = now;
@@ -2116,7 +2183,8 @@ agentsWatch.start(async (call) => {
 	if (call.kind !== "value") return;
 	agents = call.value.agents;
 	broadcast(agentsEvent());
-	broadcast(inboxEvent());
+	announceInbox();
+	runsAsChanged();
 });
 // Features start once the conversations and agents are loaded, before any schedule is armed: what one writes into a
 // transcript as it starts (a background command the last engine left, a set-up cut short) sets the last engine's
@@ -2157,6 +2225,8 @@ function activityEvent() {
 				title: meta?.title ?? "",
 				agentId: meta?.agentId ?? null,
 				projectId: meta?.projectId ?? null,
+				// The agent it runs as now (state.ts, `runsAs`).
+				runsAs: runsAs(meta, agents) ?? null,
 				// A chat answering is shown as a chat, not as an agent's work.
 				chat: isChat(meta),
 				status: waiting.has(id) ? "waiting" : "working",
@@ -2607,7 +2677,7 @@ const server = createServer((socket) => {
 			const handle = () =>
 				handler(params, client).then(
 					(result) => send(client, { id: request.id, result }),
-					(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error) }),
+					(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error), ...(error instanceof WorkLimitError ? { data: { limit: error.limit } } : {}) }),
 				);
 			// An answer to what waits for the person is taken only from the app (#504).
 			if (!answersForThePerson(String(request.method), params)) handle();

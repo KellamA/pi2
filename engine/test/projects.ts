@@ -238,6 +238,8 @@ try {
 	const other = (await client.call("conversation.create", { agentId: a.orchestratorId })).id as number;
 	assert.equal((await client.until("its row", () => client.listed(other))).projectId, made.id);
 	await client.call("conversation.open", { id: made.conversation });
+	// The orchestrator's conversation hands work to the project's other agents, whatever its delegates say (#457, 3.3).
+	await client.call("projects.addAgent", { projectId: made.id, template: "scout" });
 	await client.answer(made.conversation, "/delegate Scout: say hello");
 	const subChat = await client.until("the sub-chat", () => client.events.library.conversations.find((row: any) => row.parent === made.conversation));
 	assert.equal(subChat.projectId, made.id);

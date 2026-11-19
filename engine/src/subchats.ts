@@ -149,10 +149,9 @@ async function limitsOf(host: Host, api: ToolExecutionApi, context: Context): Pr
 		users.set(provider, [...(users.get(provider) ?? []), who]);
 	};
 	add((await api.snapshot(AgentDoc, api.conversationId, context))?.model?.provider, "this conversation");
-	for (const id of host.agent(host.meta(api.conversationId)?.agentId)?.delegates ?? []) {
-		const agent = host.agent(id);
+	for (const agent of host.delegatesOf(api.conversationId)) {
 		// What a new sub-chat with that agent would run on: its own model, or the default one.
-		if (agent !== undefined) add((await host.agentChange(agent, { subChat: true }).catch(() => undefined))?.model?.provider, agent.name);
+		add((await host.agentChange(agent, { subChat: true }).catch(() => undefined))?.model?.provider, agent.name);
 	}
 	return ["", ...limitsReport(views, users, Date.now())];
 }
@@ -185,7 +184,7 @@ export function subChatsTool(host: Host) {
 			const mine = subChatsOf(all, caller);
 			const parentWorktree = await worktreeOf(api, caller, context);
 			const titleOf = (id: number) => all[String(id)]?.title ?? "";
-			const agentOf = (id: number) => host.agent(all[String(id)]?.agentId)?.name ?? "an agent that was deleted";
+			const agentOf = (id: number) => host.agentOf(id as unknown as ConversationId)?.name ?? "an agent that was deleted";
 			const action = args.action.trim().toLowerCase();
 
 			if (action === "list") {

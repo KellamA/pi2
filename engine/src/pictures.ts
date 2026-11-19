@@ -19,7 +19,7 @@ import type { ImageApi, ImageContent, ImageModel, ImagesInputContent } from "@ea
 import { defineTool, section } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Engine, Feature } from "./features.ts";
-import type { AgentProfile, Meta, ModelRef } from "./state.ts";
+import { type AgentProfile, agentOf, type Meta, type ModelRef } from "./state.ts";
 
 type PictureModel = ImageModel<ImageApi>;
 
@@ -188,7 +188,7 @@ export const pictures: Feature = (_host, engine) => {
 			section("pictures", (input) => {
 				if (available.length > 0) return undefined;
 				const meta = engine.library().conversations[String(input.conversationId)];
-				return wantsPictures(meta, engine.agents()[meta?.agentId ?? ""]) ? none() : undefined;
+				return wantsPictures(meta, agentOf(meta, engine.agents())) ? none() : undefined;
 			}),
 		],
 		start: look,

@@ -75,9 +75,10 @@ try {
 	const { id: otherProject, conversation: unrelated } = await app.call("projects.create", { folder: null });
 	const project = app.events.projects.projects.find((row: any) => row.id === projectId);
 	const agent = await app.until("orchestrator profile", () => app.events.agents?.agents.find((one: any) => one.id === project.orchestratorId));
-	// Until #457 gives this path a project-aware agent lookup, delegation uses the stored agentId. A sub-chat
-	// inherits its parent's projectId, but runs as Scout, so only the everyone rules bind it.
-	await app.call("agents.save", { agent: { ...agent, model: demo, delegates: ["scout"] } });
+	// The orchestrator's conversation hands work to the project's other agents (#457): a copy of Scout. A sub-chat
+	// inherits its parent's projectId, but runs as that copy, so only the everyone rules bind it.
+	await app.call("agents.save", { agent: { ...agent, model: demo } });
+	await app.call("projects.addAgent", { projectId, template: "scout" });
 	await app.open(orchestrator);
 	await app.open(unrelated);
 	const empty = (await app.prompt(orchestrator)).sections;
