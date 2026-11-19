@@ -152,7 +152,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 const rm = fs.rm;
 fs.rm = async (path, options) => {
-	if (typeof path === "string" && /\\/.removing-[^/]+\\/checkout$/.test(path) && await fs.readFile(join(path, "ignored-cut-off"), "utf8").catch(() => "") === "interrupt") {
+	if (typeof path === "string" && /\\/.removing-[^/]+\\/checkout$/.test(path) && (await fs.readFile(join(path, "ignored-cut-off"), "utf8").catch(() => "")).trim() === "interrupt") {
 		await rm(join(path, ".git"));
 		await rm(join(path, "README.md"));
 		await fs.writeFile(join(path, "ignored-cut-off"), "left behind");
