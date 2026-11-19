@@ -1,2 +1,0 @@
-### Fixed
-- The agents' notes in Settings › Chat, folded under each agent's name, could not be opened or closed with VoiceOver or by an agent's computer use, since a group that folds away in a settings form answered to no accessibility action, only to a click (#367). They now open and close with an accessibility press, and computer use tells an agent when a control it clicked answers to no press and nothing changed.
