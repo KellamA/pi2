@@ -83,7 +83,7 @@ try {
 	await app.open(unrelated);
 	const empty = (await app.prompt(orchestrator)).sections;
 	assert.equal(empty.has("project_rules"), false);
-	assert.equal(empty.has("project"), false, "#466 adds the project section separately");
+	assert.equal(empty.has("project"), true, "the project section (#466) is there, separately from the rules");
 	await app.answer(orchestrator, "BEFORE-THE-RULES-SUMMARY");
 	await app.answer(orchestrator, "/delegate Scout: say hello");
 	const worker = (await app.until("project sub-chat", () => app.events.library?.conversations.find((row: any) => row.parent === orchestrator))).id;
@@ -130,7 +130,9 @@ try {
 	const sentBeforeRename = rulesEvents();
 	await app.call("projects.rename", { id: projectId, name: "Renamed" });
 	assert.equal(rulesEvents(), sentBeforeRename);
-	assert.equal(await history(orchestrator), before, "no rules diff from renaming the project or a no-op");
+	const renamed = await history(orchestrator);
+	assert.ok(renamed.startsWith(`${before}\n`), "no rules diff from renaming the project or a no-op");
+	assert.match(renamed.slice(before.length + 1), /^project=\d+$/, "renaming changes the project section (#466) alone");
 	await assert.rejects(action("move", { id: r1, to: 2 }), /to must be/);
 	assert.deepEqual(await action("move", { id: r1, to: 1 }), {});
 	assert.deepEqual(app.rules(projectId).map((rule) => rule.id), ["r2", r1]);

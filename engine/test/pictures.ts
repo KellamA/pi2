@@ -264,7 +264,10 @@ async function start(name: string, extra: Record<string, string>, home = newHome
 		assert.equal(summary.budget.daily, 0.016);
 		assert.equal(summary.overBudget, false, "rows did not count the spend again");
 		await client.call("pictures.setModel", { model: unpriced });
-		beforeRestart = summary;
+		// The answer after the last picture can be counted in a later refresh than the picture itself: what is compared
+		// across the restart is taken after a recount, which a budget request waits for, so it holds every request.
+		await client.call("usage.setBudget", { daily: 0.016 });
+		beforeRestart = client.events.usage;
 	} finally {
 		client.close();
 		await stop(engine);

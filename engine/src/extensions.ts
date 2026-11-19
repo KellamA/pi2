@@ -53,6 +53,7 @@ import { watch } from "./wakes.ts";
 import { projectOf, projectsOn, requireSwitch, type Start } from "./projects.ts";
 import { admit, limitRefusal } from "./projectlimits.ts";
 import { createDelegateChild } from "./projectlimitstarts.ts";
+import { ownsSubChat } from "./orchestrator.ts";
 
 // A refused call run again after a crash must not start the hand-off a second time, even after its card was answered.
 const RefusedStart = defineDoc<{ reason: string | null }>({ kind: "pi2.refusedStart", version: 1, scope: "task", initial: () => ({ reason: null }), checkpointWhen: () => true });
@@ -352,7 +353,8 @@ export function pi2Extension(host: Host): Extension {
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
 				const agent = host.agentOf(args.chat as unknown as ConversationId);
-				if (meta === undefined || meta.parent !== parent || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
+				// Its own, or, for an orchestrator, one of its earlier conversations' (orchestrator.ts; docs/projects.md, 5.8).
+				if (meta === undefined || !ownsSubChat(parent, meta.parent) || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
 				}
 				if (inProject) {
@@ -364,7 +366,7 @@ export function pi2Extension(host: Host): Extension {
 					let note = "";
 					const key = `delegate:${String(api.taskId)}`;
 					const sent = await host.sendToChat(chat, args.task, key, async (tx, saved, model) => {
-						if (saved.parent !== parent || saved.deleted === true) return false;
+						if (!ownsSubChat(parent, saved.parent) || saved.deleted === true) return false;
 						held = await admitted(tx, model, start);
 						if (held !== undefined) return false;
 						restored = isArchived(saved);
@@ -813,7 +815,7 @@ export function pi2Extension(host: Host): Extension {
 		if (typeof args.chat === "number") {
 			const meta = host.meta(args.chat as unknown as ConversationId);
 			const agent = host.agentOf(args.chat as unknown as ConversationId);
-			if (meta?.parent === conversationId && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
+			if (meta !== undefined && ownsSubChat(conversationId, meta.parent) && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
 		} else if (typeof args.agent === "string") {
 			const target = byName(delegatesOf(host, api.conversationId), args.agent);
 			if (target !== undefined) what = `Start a new sub-chat with ${target.name}${title === undefined ? "" : `, “${title}”`}.`;

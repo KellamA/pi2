@@ -34,6 +34,7 @@ import { priority } from "./priority.ts";
 import { projectAgents } from "./projectagents.ts";
 import { projectLimits } from "./projectlimits.ts";
 import { needs } from "./needs.ts";
+import { orchestrator, projectPrompt } from "./orchestrator.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
 import { reads } from "./reading.ts";
@@ -75,6 +76,8 @@ export type Engine = {
 	stateChanged(id: number): void;
 	/** Send Activity again to every app: for a change to what a feature's `activity` says. */
 	activityChanged(): void;
+	/** Send the library again to every app: for a change to what it says that is kept outside `pi2.library` (a project's). */
+	libraryChanged(): void;
 	/** Why no new work may start now, in words, when today's budget is used up; undefined otherwise. */
 	overBudget(): string | undefined;
 	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
@@ -207,7 +210,8 @@ export const FEATURES: Feature[] = [
 	limitWait,
 	compaction,
 	plan,
-	// The project section (#466) will go here, before the rules (6.1).
+	// The project section (#466), before the rules (6.1).
+	projectPrompt,
 	projectRulesPrompt,
 	knowledge,
 	look,
@@ -235,6 +239,8 @@ export const FEATURES: Feature[] = [
 	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
 	projectAgents,
 	projectLimits,
+	// One conversation with the orchestrator, and Start fresh (#466): no greeting of its own either.
+	orchestrator,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
 	// feature on its own line, in place of the comment that names it.
 	projects,

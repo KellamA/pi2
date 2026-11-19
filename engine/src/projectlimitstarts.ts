@@ -4,6 +4,7 @@ import { isArchived, isPutAway } from "./archive.ts";
 import type { Host } from "./extensions.ts";
 import type { Engine, FeatureParts } from "./features.ts";
 import { type StoredNeed, onAnswer } from "./needs.ts";
+import { ownsSubChat } from "./orchestrator.ts";
 import { admit, rememberReading } from "./projectlimits.ts";
 import { addNews, PROJECT_ARCHIVED, Projects, type Start } from "./projects.ts";
 import { reportRun } from "./reports.ts";
@@ -48,7 +49,8 @@ export function onLimitAssignment(start: AssignmentAnswer): void {
 
 /** A continued child can have been archived, but not deleted, moved or switched to a different agent. */
 export function checkChild(meta: Meta | undefined, parent: number, agentId: string, agents: Record<string, AgentProfile>): asserts meta is Meta {
-	if (meta === undefined || meta.parent !== parent || (isPutAway(meta) && !isArchived(meta)) || runsAs(meta, agents) !== agentId) throw new Error("That sub-chat is no longer available to continue.");
+	// Its own, or, for an orchestrator, one of its earlier conversations' (orchestrator.ts, #466).
+	if (meta === undefined || !ownsSubChat(parent, meta.parent) || (isPutAway(meta) && !isArchived(meta)) || runsAs(meta, agents) !== agentId) throw new Error("That sub-chat is no longer available to continue.");
 }
 
 export function installLimitAnswers(host: Host, engine: Engine): FeatureParts {
