@@ -1109,8 +1109,7 @@ struct SignInSheet: View {
                         Text("Enter this code:")
                         Text(code).font(.system(.title3, design: .monospaced).weight(.semibold)).textSelection(.enabled)
                         Button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(code, forType: .string)
+                            AppCopy.write(code, kind: .signInCode, engine: engine)
                         }
                     }
                 }

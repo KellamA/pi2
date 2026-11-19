@@ -58,6 +58,7 @@ Usage: scripts/test-copy <command> [arguments]
                                    Answer the running copy's next Open or Save panel without showing it.
                                    Paths go in its data folder, the launcher's scratch folder or app/build.
   fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
+  last-copy <suffix>               Print the last Copy action recorded in this copy's data folder as JSON.
   shot <suffix> <file.png> [--window <title>]
                                    Wait for and capture the copy's largest window (or the one with that title) into a file
                                    inside this checkout. Refuses if screen capture is not already allowed.
@@ -580,6 +581,15 @@ case $cmd in
 		require_copy
 		require_engine
 		node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$DATA/engine.sock" "$SUFFIX" "$@"
+		;;
+	last-copy)
+		names "${1-}"; shift
+		(($# == 0)) || die "use: scripts/test-copy last-copy $SUFFIX"
+		require_copy
+		file="$DATA/copies.jsonl"
+		[[ ! -L $file ]] || die "refusing a symlink for the copy's record of Copy actions"
+		[[ -f $file && -s $file ]] || die "no Copy action has been recorded in $SUFFIX"
+		tail -n 1 "$file"
 		;;
 	shot)
 		names "${1-}"; shift
