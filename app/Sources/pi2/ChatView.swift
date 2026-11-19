@@ -90,7 +90,7 @@ struct ChatView: View {
                 .frame(minHeight: 0)
                 .clipped()
         } else {
-            ConversationTranscript(engine: engine, conversationID: id, items: items, state: state)
+            ConversationTranscript(engine: engine, conversationID: id, items: items, earlier: data?.earlier ?? 0, state: state)
         }
         VStack(spacing: 0) {
             // A subagent of this conversation is waiting on the person.

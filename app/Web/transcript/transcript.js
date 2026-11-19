@@ -18,6 +18,7 @@
 	const C = window.PiClipboard;
 	const K = window.PiKeys;
 	const Ch = window.PiChat;
+	const H = window.PiHistory;
 	const char = String.fromCharCode;
 	const ELLIPSIS = char(0x2026);
 	const RSQUO = char(0x2019);
@@ -64,6 +65,10 @@
 	let editing = null;
 	/** The answer whose list of models for Try Again is open, or null. */
 	let menuFor = null;
+	/** How many entries older than those the page has are still to come (#380). */
+	let earlier = 0;
+	/** Whether rows go above those on screen in the next drawing, which then keeps what is on screen in place. */
+	let above = false;
 
 	const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 	const str = (value) => (typeof value === "string" ? value : "");
@@ -82,6 +87,25 @@
 			items.clear();
 			order = [];
 			results.clear();
+		}
+		// Entries older than the first the page has: they go above it, oldest first.
+		if (Array.isArray(message.older)) {
+			const older = message.older.filter((item) => isObject(item) && Number.isInteger(item.id) && typeof item.kind === "string");
+			const next = H.prepend(order, items, older.map((item) => item.id));
+			const added = new Set(next.added);
+			for (const item of older) {
+				if (!added.has(item.id)) continue;
+				added.delete(item.id);
+				items.set(item.id, stamp(item));
+				if (item.kind === "tool" && typeof item.callId === "string") results.set(item.callId, item);
+			}
+			order = next.order;
+			if (next.added.length > 0) above = true;
+		}
+		if (Number.isInteger(message.earlier) && message.earlier >= 0) {
+			// The line at the top that says more is coming goes or comes above what is on screen too.
+			if ((message.earlier > 0) !== (earlier > 0)) above = true;
+			earlier = message.earlier;
 		}
 		if (Array.isArray(message.items)) {
 			for (const item of message.items) {
@@ -331,18 +355,23 @@
 		const failures = T.failedRuns(visible);
 		// In a chat, the rows under which a control steps between versions.
 		const versionAt = chat.enabled ? Ch.versionRows(visible, chat.versions) : new Map();
+		// While older entries are still to come, a line at the top says so.
+		if (earlier > 0) specs.push({ key: "earlier", sig: "e", build: earlierRow });
+		// The first answer of the turn each answer belongs to: entries put above can start a turn earlier (#380).
+		let turnStart = null;
 		visible.forEach((item, index) => {
 			const next = visible[index + 1];
+			if (item.kind === "assistant" && (index === 0 || visible[index - 1].kind !== "assistant")) turnStart = item.id;
 			if (failures.hidden.has(item.id)) return;
 			if (item.kind === "user") {
 				const point = versionAt.get(item.id) ?? null;
-				const own = chat.enabled ? [chatRevision, live.busy ? 1 : 0, editing && editing.id === item.id ? 1 : 0].join("/") : "";
+				const own = chat.enabled ? [chatRevision, live.busy ? 1 : 0, editing && editing.id === item.id ? 1 : 0, pointKey(point)].join("/") : "";
 				specs.push({ key: "i" + item.id, sig: "u" + rev(item) + "/" + own, build: () => userRow(item, point) });
 			} else if (item.kind === "assistant") {
 				for (const call of calls(item)) shownCalls.add(call.callId);
 				// A turn ends at the person's next message, or when the run is over; its actions wait until then.
 				const turnEnd = next ? next.kind !== "assistant" : !live.partial && !live.busy;
-				specs.push(assistantSpec(item, turnEnd, visible, index, failures.shown.get(item.id) ?? 1, versionAt.get(item.id) ?? null));
+				specs.push(assistantSpec(item, turnEnd, visible, index, failures.shown.get(item.id) ?? 1, versionAt.get(item.id) ?? null, turnStart));
 			} else if (item.kind === "setup") {
 				const spec = setupSpec(item, visible);
 				if (spec) specs.push(spec);
@@ -365,11 +394,36 @@
 		if (!live.partial && live.busy && live.tools.size === 0 && !live.retrying) {
 			specs.push({ key: "working", sig: "w", build: workingRow });
 		}
+		// Rows put above those on screen must not move them: note the first row in view and where it is, and scroll by
+		// however far it moved. A reader at the bottom stays there anyway.
+		const kept = above && !pinned && rendered ? H.anchor(entryRows(), rectOf) : null;
+		above = false;
 		reconcile(main, specs);
+		const by = H.shift(kept, rectOf);
+		if (by !== 0) scroller.scrollTop += by;
 		observePictures(main);
 		rendered = true;
 		if (pinned) scrollToBottom();
 		updateJump();
+	}
+
+	const rectOf = (row) => row.getBoundingClientRect();
+
+	/** The page's rows that show entries, down the page: not the line that says older ones are coming. */
+	function entryRows() {
+		return Array.prototype.filter.call(main.children, (row) => !row.classList.contains("earlier"));
+	}
+
+	function earlierRow() {
+		const row = el("div", "earlier", H.LOADING);
+		row.setAttribute("role", "status");
+		row.setAttribute("data-nocopy", "");
+		return row;
+	}
+
+	/** A version point as text, for the signature of the row it sits under. */
+	function pointKey(point) {
+		return point ? [point.after, point.index, point.count].join(":") : "";
 	}
 
 	let scheduled = false;
@@ -672,11 +726,12 @@
 		].join(":");
 	}
 
-	function assistantSpec(item, turnEnd, visible, index, attempts, point) {
+	function assistantSpec(item, turnEnd, visible, index, attempts, point, turnStart) {
 		const phase = phaseOf(item);
 		// A chat's controls at the end of a turn change with the chat, its sources with the results of the turn's calls.
-		const own = chat.enabled && turnEnd ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, ...turnOf(visible, index).map((answer) => calls(answer).map((call) => rev(results.get(call.callId))).join(","))].join("/") : "";
-		const sig = ["a", rev(item), turnEnd ? 1 : 0, namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase))].join("|");
+		const own = chat.enabled && turnEnd ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, pointKey(point), ...turnOf(visible, index).map((answer) => calls(answer).map((call) => rev(results.get(call.callId))).join(","))].join("/") : "";
+		// The end of a turn copies the whole turn, which starts earlier once entries come above it.
+		const sig = ["a", rev(item), turnEnd ? 1 : 0, turnEnd ? turnStart : "", namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase))].join("|");
 		return {
 			key: "i" + item.id,
 			sig,
@@ -736,10 +791,12 @@
 		const read = chat.enabled && turnEnd ? Ch.sources(turnOf(visible, index), results, MD.safeURL) : [];
 		if (read.length > 0) parts.push({ key: "sources", sig: "s" + read.map((source) => source.url + "\n" + source.title).join("\n"), build: () => sourcesList(read) });
 		if (turnEnd) {
-			const own = chat.enabled ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0].join("/") : "";
+			const own = chat.enabled ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, pointKey(point)].join("/") : "";
+			// Copy takes the whole turn, which starts earlier once older entries come above it.
+			const first = turnOf(visible, index)[0];
 			parts.push({
 				key: "actions",
-				sig: "x" + rev(item) + "/" + own,
+				sig: "x" + rev(item) + "/" + own + "/" + (first ? first.id : ""),
 				build: () => {
 					const actions = [];
 					const words = turnText(visible, index);
