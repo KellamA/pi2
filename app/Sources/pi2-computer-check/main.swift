@@ -17,7 +17,8 @@
 // - that the element whose context menu the tool opens (`Reaching.menuTarget`) is a text with `.contextMenu` itself,
 //   the row's text for a list row whose content has one, as the sidebar's rows do, and nothing for a button without one;
 // - what to do with a missing or stale AX window, a parked window, and a window a menu bar item opens;
-// - the size and direction of the wheel event (without posting it), and how actual movement is reported.
+// - the size and direction of the wheel event (without posting it), how a native scroll view takes it in-process,
+//   and how actual movement is reported.
 //
 //   cd app && swift build --product pi2-computer-check && .build/debug/pi2-computer-check
 //
@@ -259,8 +260,20 @@ final class TallDocument: NSView {
 func scrollView(documentHeight: CGFloat) -> NSScrollView {
     let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 360, height: 200))
     scroll.drawsBackground = false
+    scroll.verticalScrollElasticity = .none
     scroll.documentView = TallDocument(frame: CGRect(x: 0, y: 0, width: 360, height: documentHeight))
     return scroll
+}
+
+/// Hand the event to a local view the way AppKit does once it routes an event. No event goes to the window server.
+@MainActor
+func deliverLocally(_ event: CGEvent?, to scroll: NSScrollView, until expected: CGFloat) async -> CGFloat {
+    if let event, let wheel = NSEvent(cgEvent: event) { scroll.scrollWheel(with: wheel) }
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline, abs(scroll.contentView.bounds.minY - expected) >= 1 {
+        try? await Task.sleep(for: .milliseconds(50))
+    }
+    return scroll.contentView.bounds.minY
 }
 
 let app = NSApplication.shared
@@ -388,14 +401,22 @@ Task { @MainActor in
         let move = Input.moveEvent(at: point, windowID: 17)
         let fields: [CGEventField] = [.mouseEventWindowUnderMousePointer, .mouseEventWindowUnderMousePointerThatCanHandleThisEvent]
         check("the companion mouse move carries the destination window ID", move?.location == point && fields.allSatisfy { move?.getIntegerValueField($0) == 17 })
-        // Move the clip view locally as if a page requested 200 points but met the document end after only 85.
+        let stage = Stage(Text("Offscreen scrolling stand-in"))
+        stage.window.setContentSize(CGSize(width: 360, height: 200))
+        defer { stage.window.close() }
+        for scroll in [long, short] {
+            stage.window.contentView = scroll
+            scroll.contentView.scroll(to: CGPoint(x: 0, y: 100))
+            let expected: CGFloat = 100 + CGFloat(longPage)
+            let after = await deliverLocally(Input.scrollEvent(at: point, points: longPage), to: scroll, until: expected)
+            check("a local scroll view takes one full wheel page, regardless of document length", abs(after - expected) < 1, "scroll position: \(after)")
+        }
         let clip = short.contentView
         let limit = 900 - clip.bounds.height
-        let start = limit - 85
-        clip.scroll(to: CGPoint(x: 0, y: start))
-        let old = clip.bounds.minY
-        clip.scroll(to: CGPoint(x: 0, y: min(limit, start + CGFloat(shortPage))))
-        let moved = clip.bounds.minY - old
+        clip.scroll(to: CGPoint(x: 0, y: limit - 85))
+        let before = clip.bounds.minY
+        let after = await deliverLocally(Input.scrollEvent(at: point, points: shortPage), to: short, until: limit)
+        let moved = (after - before).rounded()
         let anchors = [CGRect(x: 20, y: 20, width: 100, height: 18), CGRect(x: 20, y: 85, width: 100, height: 18)]
         check("report the measured partial page, not the request", moved == 85 && Scrolling.movement(before: anchors, after: anchors.map { $0.offsetBy(dx: 0, dy: -moved) }, oldValue: nil, newValue: nil) == .points(85), "clip view moved \(moved)")
         check("report a scrollbar-only change as a fraction", Scrolling.movement(before: anchors, after: [nil, nil], oldValue: 0.5, newValue: 0.625) == .fraction(0.125))
