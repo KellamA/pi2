@@ -58,7 +58,21 @@ try {
 	assert.deepEqual(requests, []);
 	items = [approval]; response = { error: 'That request is no longer waiting' };
 	assert.deepEqual(await run('answer', path, '8', 'allow'), [1, '', 'test-copy: That request is no longer waiting']);
-	console.log('ok: answer addresses only a single matching approval, never a question or a parent’s sub-chat');
+	console.log('ok: the conversation form answers only a single matching approval');
+
+	const answers = [
+		{ kind: 'approval', decision: 'once' }, { kind: 'question', text: 'Friday at noon' },
+		{ kind: 'decision', choice: 'c2' }, { kind: 'decision', text: 'Another layout' },
+		{ kind: 'reach', allow: false }, { kind: 'limit', start: true },
+		{ kind: 'rule', accept: true, text: 'Use the edited rule', binds: 'everyone' },
+	];
+	response = { result: {} }; requests = [];
+	for (const answer of answers) {
+		assert.deepEqual(await run('answer', path, '124', JSON.stringify(answer)), [0, 'Answered Needs you item 124 in test-7.', '']);
+	}
+	assert.deepEqual(requests, answers.map(answer => ({ id: 1, method: 'needs.answer', params: { id: '124', answer } })));
+	assert.equal((await run('answer', path, 'n1', '{'))[0], 1);
+	assert.equal((await run('answer', path, 'n1', '[]'))[0], 1);
 
 	// The copy's engine takes an answer from test-copy only with the key it wrote for it (#504): sent first, from its file.
 	keyFile = join(folder, 'answer-key');
@@ -68,6 +82,13 @@ try {
 	assert.deepEqual(requests, [
 		{ id: 0, method: 'test-copy.answerer', params: { key: 'k3y' } },
 		{ id: 1, method: 'inbox.decide', params: { id: 'first', decision: 'once' } },
+	]);
+	requests = [];
+	const keyedAnswer = { kind: 'decision', choice: 'c1' };
+	assert.deepEqual(await run('answer', path, 'n2', JSON.stringify(keyedAnswer)), [0, 'Answered Needs you item n2 in test-7.', '']);
+	assert.deepEqual(requests, [
+		{ id: 0, method: 'test-copy.answerer', params: { key: 'k3y' } },
+		{ id: 1, method: 'needs.answer', params: { id: 'n2', answer: keyedAnswer } },
 	]);
 	keyResponse = { error: "That is not this test copy's key" }; requests = [];
 	assert.deepEqual(await run('answer', path, '8', 'allow'), [1, '', "test-copy: the copy's engine did not take its key: That is not this test copy's key"]);
@@ -79,9 +100,18 @@ try {
 	assert.deepEqual(await run('fill', path, '10001'), [1, '', 'test-copy: entries must be a positive integer (up to 10000)']);
 	assert.deepEqual(requests, [{ id: 1, method: 'test-copy.fill', params: { entries: 600 } }]);
 	console.log('ok: fill sends one fixture request and refuses an out-of-range entry count');
+	const project = { id: 'p-demo', name: 'Demo project', conversations: { Orchestrator: 8 }, omitted: ['reach (#465)'] };
+	requests = []; response = { result: project };
+	for (const option of ['--project', 'project']) {
+		assert.deepEqual(await run('fill', path, option), [0, JSON.stringify(project), 'Not seeded: reach (#465).']);
+	}
+	assert.deepEqual(requests, Array.from({ length: 2 }, () => ({ id: 1, method: 'test-copy.fillProject', params: {} })));
 
 	const control = join(folder, 'control');
 	for (const [command, args, fields, reply] of [
+		['show', ['project:Demo project#agent:Atlas', '--hub', 'board-folded'],
+			{ show: 'project:Demo project#agent:Atlas', hub: 'board-folded' }, { result: 'Recorded project:Demo project#agent:Atlas (board-folded)' }],
+		['show', ['dashboard'], { show: 'dashboard' }, { result: 'Recorded dashboard' }],
 		['show', ['8'], { id: 8 }, { result: 'Showing conversation #8, drawn' }],
 		['show', ['9'], { id: 9 }, { result: 'Showing conversation #9, though its page had not drawn it after 20 seconds' }],
 		['size', ['820', '532'], { width: 820, height: 532 }, { result: 'Sized the main window to 820×532 points' }],

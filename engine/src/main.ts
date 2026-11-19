@@ -2675,6 +2675,28 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 	} catch (error) {
 		log("test-copy cannot answer for the person in this copy:", error instanceof Error ? error.message : error);
 	}
+	const { fillProject } = await import("../scripts/test-copy-project.ts");
+	const { Reports } = await import("./reports.ts");
+	let fillingProject = false;
+	handlers["test-copy.fillProject"] = async (_params, client) => {
+		if (fillingProject) throw new Error("A demo project is already being filled in this copy");
+		fillingProject = true;
+		try {
+			return await fillProject(home, async (method, params) => {
+				const handler = handlers[method];
+				if (handler === undefined) throw new Error(`Unknown method: ${method}`);
+				return handler(params, client);
+			}, async ({ projectId, working, waiting, finished }) => {
+				const runs = activityEvent().runs;
+				const active = working.every((id) => runs.some((run) => run.conversationId === id && run.status === "working" && run.commands.length > 0));
+				if (!active || !runs.some((run) => run.conversationId === waiting && run.status === "waiting")) return false;
+				const reports = await harness.snapshot(Reports, context);
+				return reports?.projects[projectId]?.some((report) => report.conversationId === finished && report.ended?.outcome === "answered" && report.delivered === null) ?? false;
+			});
+		} finally {
+			fillingProject = false;
+		}
+	};
 	handlers["test-copy.fill"] = async (params) => {
 		const entries = fixtureSize(params.entries);
 		const agent = Object.values(agents).sort((a, b) => a.createdAt - b.createdAt)[0];
