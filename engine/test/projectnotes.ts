@@ -99,8 +99,11 @@ try {
 	const saved = await client.tool(first, "remember", { note: "Shared   from\nthe first conversation." });
 	assert.ok(!saved.isError, JSON.stringify(saved));
 	assert.match(saved.text, /Noted \(n2\)/);
-	assert.equal(saved.details?.change, undefined, "until #465 wires the record there is no change id");
-	assert.equal(client.conversations.get(first).state.projectChanges, undefined);
+	// The record of changes (#465) gives the note its change, and the conversation a line for it, with Undo.
+	assert.equal(typeof saved.details?.change, "number", JSON.stringify(saved.details));
+	const app = client;
+	const line = await app.until("the note's line", () => app.conversations.get(first)?.state.projectChanges?.find((one: any) => one.id === saved.details.change));
+	assert.deepEqual(line, { id: saved.details.change, summary: "Remembered project note n2", undone: false, canUndo: true, noUndo: null });
 	assert.deepEqual(client.notes(projectId)[1], { id: "n2", text: "Shared from the first conversation.", createdAt: client.notes(projectId)[1]!.createdAt, conversation: first, agentId: author, audience: null });
 	assert.match((await client.tool(first, "remember", { note: "SHARED from the first conversation." })).text, /already have that note \(n2\)/);
 	assert.equal((await client.call("memory.add", { projectId: otherId, text: "Only the other project reads this." })).id, "n1");
@@ -113,7 +116,7 @@ try {
 	const lookedUp = await client.tool(chat, "agent_notes", {});
 	assert.match(lookedUp.text, /Only Forge/);
 	assert.doesNotMatch(lookedUp.text, /Shared from|First line/);
-	console.log("ok  types, limits, events, note metadata, and legacy isolation; until #458 no carry and until #465 no change id");
+	console.log("ok  types, limits, events, note metadata, and legacy isolation; until #458 no carry; a change id and line since #465");
 
 	other.close();
 	other = undefined;
@@ -176,7 +179,7 @@ try {
 	assert.match(await c.memory(later), /n1: Now shared/);
 	const deleted = await c.tool(later, "forget", { id: privateId });
 	assert.match(deleted.text, /^Forgot n1\./);
-	assert.equal(deleted.details?.change, undefined);
+	assert.equal(typeof deleted.details?.change, "number");
 	assert.doesNotMatch(await c.memory(first), /Now shared/);
 	console.log("ok  restart, carried-note limits, cross-agent sharing, audience and switch, and sub-chats");
 

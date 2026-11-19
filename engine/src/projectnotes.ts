@@ -2,6 +2,7 @@
 
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type ToolExecutionApi, type Tx } from "@earendil-works/pi-durable";
+import { record } from "./changes.ts";
 import type { MemoryDoc } from "./knowledge.ts";
 import { PROJECT_ARCHIVED, Projects } from "./projects.ts";
 import { Agents } from "./state.ts";
@@ -25,9 +26,23 @@ type NoteChange = {
 	summary: string;
 };
 
-/** #465 replaces this body with record(op), in the same transaction. Until then there is no change id or Undo. */
-export async function recordNoteChange(_tx: Tx, _projectId: string, _change: NoteChange): Promise<number | undefined> {
-	return undefined;
+/** Record a note added or removed through a tool in the record of changes (changes.ts), in the note's commit: its id. */
+export async function recordNoteChange(tx: Tx, projectId: string, change: NoteChange): Promise<number | undefined> {
+	return (await record(tx, projectId, change)).id;
+}
+
+/**
+ * Put a removed note back with its id, in the caller's commit: the Undo of a removal (`note.add` with the note it
+ * removed). Refused when a note has that id. The limit on notes is not checked: the note was there before.
+ */
+export function putBackProjectNote(doc: MemoryDoc, projectId: string, note: ProjectNote): void {
+	const book = projectNotebook(doc, projectId);
+	if (book.notes.some((one) => one.id === note.id)) throw new Error(`There is already a note ${note.id}`);
+	// Where it was, by when it was made.
+	const at = book.notes.findIndex((one) => one.createdAt > note.createdAt);
+	book.notes.splice(at === -1 ? book.notes.length : at, 0, JSON.parse(JSON.stringify(note)) as ProjectNote);
+	const number = Number(note.id.slice(1));
+	if (Number.isInteger(number) && number >= book.next) book.next = number + 1;
 }
 
 export async function checkNoteProject(tx: Tx, id: string): Promise<void> {

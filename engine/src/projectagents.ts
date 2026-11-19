@@ -16,9 +16,10 @@
 //   person's (and carrying over's, #458), which copies every setting as 3.3 says.
 
 import { realpathSync } from "node:fs";
+import type { Tx } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature, FeatureParts } from "./features.ts";
-import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectOf, projectsOn, requirePreview } from "./projects.ts";
+import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectOf, Projects, projectsOn, requirePreview } from "./projects.ts";
 import { type AgentProfile, agentOf, Agents } from "./state.ts";
 
 /** What `agents.save` refuses for a project agent given a folder that is not its project's (3.3). */
@@ -176,11 +177,18 @@ let wired: { host: Host; engine: Engine } | undefined;
  */
 export async function removeAgent(id: string): Promise<void> {
 	if (wired === undefined) throw new Error("The project agents feature is not running");
-	const { host, engine } = wired;
-	const agents = engine.agents();
+	const { engine } = wired;
+	await engine.harness().commit((tx) => removeAgentIn(tx, id), engine.context());
+}
+
+/** `removeAgent` in the caller's commit `tx`, with the same checks, read from that commit: the operation `agent.remove` (changes.ts). */
+export async function removeAgentIn(tx: Tx, id: string): Promise<void> {
+	if (wired === undefined) throw new Error("The project agents feature is not running");
+	const { host } = wired;
+	const agents = (await tx.doc(Agents)).agents;
 	const agent = agents[id];
 	if (agent?.projectId === undefined || agent.removedAt !== undefined) throw new Error(`Unknown agent: ${id}`);
-	const project = allProjects()[agent.projectId];
+	const project = (await tx.doc(Projects)).projects[agent.projectId];
 	if (project === undefined || project.deletedAt !== undefined) throw new Error(`Unknown project: ${agent.projectId}`);
 	if (project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
 	if (agent.role === "orchestrator") throw new Error(`${agent.name} is the project's orchestrator. Make another agent the orchestrator first.`);
@@ -188,10 +196,7 @@ export async function removeAgent(id: string): Promise<void> {
 	if (working !== undefined) {
 		throw new Error(`${agent.name} is working on ${working[1].parent === undefined ? "conversation" : "sub-chat"} ${working[0]}. Wait for it, or ask the person to stop it.`);
 	}
-	await engine.harness().commit(async (tx) => {
-		const stored = (await tx.doc(Agents)).agents[id];
-		if (stored !== undefined && stored.removedAt === undefined) stored.removedAt = Date.now();
-	}, engine.context());
+	agent.removedAt = Date.now();
 }
 
 export const projectAgents: Feature = (host, engine) => {

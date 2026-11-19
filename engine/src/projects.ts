@@ -404,7 +404,7 @@ export function lastWords(_projectId: string): { text: string; at: number } | nu
 const isFolder = (path: string) => existsSync(path) && statSync(path).isDirectory();
 
 /** A project's folder, stored by its real path, or null for none. */
-function checkFolder(value: unknown): string | null {
+export function checkFolder(value: unknown): string | null {
 	if (value === null) return null;
 	if (typeof value !== "string" || value.trim() === "") throw new Error("folder must be a folder's path, or null");
 	if (!isFolder(value)) throw new Error(`Not a folder: ${value}`);
@@ -473,6 +473,34 @@ export function changeProjectSettings(settings: ProjectSettings, given: unknown)
 		} else throw new Error(`Unknown setting: ${key}`);
 	}
 	return next;
+}
+
+/**
+ * Rename project `id`, change its folder or any part of its settings, in the commit `tx`, each checked: what
+ * `projects.rename` and `projects.set` do, and the operation `project.change` an agent's change applies (changes.ts),
+ * so neither can do what the other could not. `folder` is checked already (`checkFolder`). Answers the settings now.
+ */
+export async function applyProjectChange(tx: Tx, id: string, given: { name?: string; folder?: string | null; settings?: unknown }): Promise<ProjectSettings> {
+	const doc = await tx.doc(Projects);
+	const project = live(doc, id);
+	if (project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
+	if (given.name !== undefined) {
+		const name = checkName(given.name);
+		if (named(doc, name, id) !== undefined) throw new Error(`There is already a project called ${name}`);
+		project.name = name;
+	}
+	if (given.folder !== undefined && given.folder !== project.folder) {
+		const folder = given.folder;
+		const same = folder === null ? undefined : ofFolder(doc, folder, id);
+		if (same !== undefined) throw new Error(`There is already a project for this folder: ${same.name}${same.archivedAt !== undefined ? "; restore it instead" : ""}`);
+		if (folder === null && project.repository !== null) throw new Error("A project with a repository attached needs a folder. Detach the repository first.");
+		project.folder = folder;
+		// Every agent of the project works in its folder (3.3): the engine sets it, never `agents.save`.
+		for (const agent of Object.values((await tx.doc(Agents)).agents)) if (agent.projectId === id) agent.cwd = folder;
+	}
+	if (given.settings !== undefined) project.settings = changeProjectSettings(project.settings, given.settings);
+	project.updatedAt = Date.now();
+	return JSON.parse(JSON.stringify(project.settings)) as ProjectSettings;
 }
 
 /** An agent's id as made for a project: its name's slug and a UUID, never reused, whatever is deleted later. */
@@ -689,13 +717,7 @@ export const projects: Feature = (host, engine) => {
 				requirePreview();
 				const id = projectId(params);
 				const name = checkName(params.name);
-				await change((doc) => {
-					const project = live(doc, id);
-					if (project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
-					if (named(doc, name, id) !== undefined) throw new Error(`There is already a project called ${name}`);
-					project.name = name;
-					project.updatedAt = Date.now();
-				});
+				await change((_doc, tx) => applyProjectChange(tx, id, { name }));
 				return {};
 			},
 			/**
@@ -706,21 +728,7 @@ export const projects: Feature = (host, engine) => {
 				requirePreview();
 				const id = projectId(params);
 				const folder = params.folder === undefined ? undefined : checkFolder(params.folder);
-				const settings = await change(async (doc, tx) => {
-					const project = live(doc, id);
-					if (project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
-					if (folder !== undefined && folder !== project.folder) {
-						const same = folder === null ? undefined : ofFolder(doc, folder, id);
-						if (same !== undefined) throw new Error(`There is already a project for this folder: ${same.name}${same.archivedAt !== undefined ? "; restore it instead" : ""}`);
-						if (folder === null && project.repository !== null) throw new Error("A project with a repository attached needs a folder. Detach the repository first.");
-						project.folder = folder;
-						// Every agent of the project works in its folder (3.3): the engine sets it, never `agents.save`.
-						for (const agent of Object.values((await tx.doc(Agents)).agents)) if (agent.projectId === id) agent.cwd = folder;
-					}
-					if (params.settings !== undefined) project.settings = changeProjectSettings(project.settings, params.settings);
-					project.updatedAt = Date.now();
-					return JSON.parse(JSON.stringify(project.settings)) as ProjectSettings;
-				});
+				const settings = await change((_doc, tx) => applyProjectChange(tx, id, { ...(folder === undefined ? {} : { folder }), ...(params.settings === undefined ? {} : { settings: params.settings }) }));
 				return { settings };
 			},
 			/** `{ id }`: out of the sidebar, with the preview on; no conversation's own state changes (3.6). */
