@@ -485,6 +485,11 @@ function demoProvider(): Provider {
 			}
 			// A section with nothing to say is empty, holding its place, and is not sent (sections.ts).
 			for (const [key, value] of sections) if (value === "") sections.delete(key);
+			if (asked === "full") {
+				// "/system full": the whole prompt, section by section, and every tool's declaration, as the model has them, so a
+				// test can check they did not change by a byte.
+				return fauxAssistantMessage(`FULL\n${JSON.stringify({ content, sections: [...sections], tools: [...offered.values()] })}`);
+			}
 			if (asked === "sizes") {
 				// "/system sizes": the characters of each part of the prompt and of the tool definitions, to measure them.
 				const parts = [["(base)", content.length], ...[...sections].map(([key, value]) => [key, value.length]), [`(tools: ${offered.size})`, JSON.stringify([...offered.values()]).length]];
