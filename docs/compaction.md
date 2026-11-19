@@ -4,9 +4,9 @@ A model reads the active conversation again on every request, even when parts co
 
 ## When it happens
 
-- **At a size you choose.** A saved agent can have an earlier size in tokens or inherit the default for all agents. Unset in both places, pi² uses the model’s normal window thresholds. A size that does not bring the normal threshold forward changes nothing. The limit is an estimate for the next request, not a hard cap: there must be older messages to cut without splitting a tool call and its results. A small target also keeps a smaller recent tail verbatim. The chat-mode assistant does not use the agent default.
+- **At a size you choose.** Settings › General › Long conversations has **Summarise earlier messages when a conversation reaches…**, the default for all agents: off, or 50,000, 100,000, 200,000, 300,000 or 500,000 tokens. Each agent's page has the same choice under Long conversations, with **Use the default** first, which inherits the default for all agents. Unset in both places, pi² uses the model’s normal window thresholds. A size that does not bring the normal threshold forward changes nothing. The limit is an estimate for the next request, not a hard cap: there must be older messages to cut without splitting a tool call and its results. A small target also keeps a smaller recent tail verbatim. The chat-mode assistant does not use the agent default.
 - **When you ask.** Choose **Summarise Earlier Messages** after the conversation finishes answering. You can retry if it is already summarizing or there is a model error.
-- **When an agent asks.** Enable **Summarize its own conversation** in the agent’s built-in tools. `compact { note }` runs at the end of the current round of tools, before the next model step. It is off by default. The note says what must be kept, and the conversation marks the summary as requested by the agent. More than one request in a round shares a summary, with the notes in call order. A script cannot call it as a nested tool.
+- **When an agent asks.** Enable **Summarise its own conversation** in the agent’s built-in tools. `compact { note }` runs at the end of the current round of tools, before the next model step. It is off by default. The note says what must be kept, and the conversation marks the summary as requested by the agent. More than one request in a round shares a summary, with the notes in call order. A script cannot call it as a nested tool.
 
 ## What stays
 
@@ -15,6 +15,14 @@ The summarizer is told to keep the person's unfinished requests and constraints,
 After the model writes, pi² adds what it knows itself: open sub-chats and their tasks and standing, running background commands and whether their ends are watched, pending wakes and any hold, the current task list, and the agent’s explicit compaction notes verbatim. This is taken from the engine’s records in the same commit as the summary marker, not copied by the model. The explicit notes carry forward through later summaries in the active context.
 
 A message sent during a summary is kept in the conversation’s queue; a wake stays in the wake queue. The summary finishes before either is delivered, and normal steering and wake ordering still applies. If a summary fails, pi² reports the error and does not move the context head or write a summary marker. A failure at the model’s hard context limit can still prevent the run from answering; the transcript and queued input remain available under the normal failed-run rules.
+
+## In the app
+
+- **Settings › General** (`CompactionDefaultSettings` in `CompactionSettings.swift`) shows the default from the `compactionSettings` event and changes it with `settings.setCompaction`. The footer says what the chosen size means ("larger than 100,000 tokens, about 75,000 words of English", at three-quarters of a word a token) and what a summary trades: later turns read less, detail is lost, the next turn writes the cache again, and the earlier messages stay readable. A size set some other way, such as through the engine's socket, is listed with the others rather than replaced.
+- **An agent's page** (`AgentCompactionSection`, `PI2_SHOW=agent:<id>#summaries`) saves the choice as `compactionTokens` with the rest of the agent; **Use the default (…)** names the default it inherits and saves `null`. There is no "off" for one agent while the default is on: the engine has no value for it. Its footer points to the built-in tool.
+- **The built-in tool** is listed with the others from the engine's `builtInTools`; the app has no switch of its own for it. The call's row reads "Asked for earlier messages to be summarised" and opens to the note.
+- **The transcript** draws a summary's line from `details.compaction`, not from the engine's `text` (`compaction` in `app/Web/transcript/tools.js`): "Earlier messages summarised by pi² at the size you set", "…, as you asked", "…, as <agent> asked" or "… by pi² as the model’s limit neared". A note is shown under the line, labelled as the agent's or yours.
+- **The size of the last request** (`lastRequestInputTokens`) is a line in the context menu of the conversation's toolbar, under the context line: "Last request read 42k tokens".
 
 ## Engine contract
 

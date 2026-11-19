@@ -439,6 +439,9 @@ struct ContextMeter: View {
             if let context = state?.context {
                 Text(context.window.map { "Context: \(Formats.tokens(context.used)) of \(Formats.tokens($0)) tokens" } ?? "Context: \(Formats.tokens(context.used)) tokens")
             }
+            if let read = state?.lastRequestInputTokens {
+                Text("Last request read \(Formats.tokens(read)) tokens")
+            }
             if let usage = state?.usage {
                 Text("This conversation: \(Formats.usage(tokens: usage.tokens, cost: usage.cost))")
             }
@@ -452,7 +455,7 @@ struct ContextMeter: View {
             Label(label, systemImage: "gauge.with.dots.needle.33percent")
                 .labelStyle(.titleAndIcon)
         }
-        .help("How full the model's context is. Earlier messages are summarised automatically when it fills up.")
+        .help("How full the model's context is. Earlier messages are summarised when it fills up, or sooner at a size set in Settings › General or the agent's settings.")
         .alert("Start a fresh context?", isPresented: $resetting) {
             TextField("Note to carry over (optional)", text: $note)
             Button("Start Fresh") {
