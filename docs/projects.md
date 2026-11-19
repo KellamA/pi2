@@ -1654,6 +1654,12 @@ Each piece below has one owner, which builds it, with what the others need of it
 - A conversation takes `projectId` as it is made: from its agent (`conversation.create`, a schedule's run, Continue with an Agent), from its parent (a sub-chat) or from the conversation it forks.
 - The engine's settings reach a feature through `engine.setting(key)` and `engine.saveSetting(key, value)` (`features.ts`), since the engine writes `settings.json` whole.
 
+**As #459 built them.** The rules live in `engine/src/projectrules.ts`.
+
+- `addRule(tx, projectId, { text, binds, addedBy })` validates and appends in the caller's transaction, returning the `ProjectRule`. Until #465 supplies the tool and acceptance handler (on #462's cards), only the person's `projects.rules.add` calls it, attributing the rule to the person. #465 supplies agent or proposal attribution and checks reach before calling it; the helper does not ask or make a card.
+- `projectRulesPrompt` sits after `plan` in `FEATURES`. #466's `project` section goes between them; until then there is no `project` section. Until #457 supplies `runsAs`, the rules prompt compares the conversation's stored `agentId` to the project's `orchestratorId`.
+- `projectRules` sits after `projects` in `FEATURES` for the greeting. It reads committed rules, including writes by `addRule` in another feature's transaction, and wires `ruleTokens` through `wireRuleTokens` in `projects.ts`. Estimates count the tagged section actually sent. The prompt keeps board order, repeating a heading if a binding recurs later in the order.
+
 **As #461 built them.** Notes extend the existing `knowledge` feature in place in `FEATURES`, so the `memory` greeting and section keep their places. Project-only note storage and tool operations live in `engine/src/projectnotes.ts`.
 
 - `Memory` and `MemoryDoc` (`knowledge.ts`) and `projectNotebook(doc, projectId)` (`projectnotes.ts`) are for #458 to write carried notes in its own commit. Until then nothing is copied from an agent's notes. `knowledge` sends the `memory` event for a commit to that document by any feature, including carrying over or Undo.

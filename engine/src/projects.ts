@@ -11,7 +11,6 @@
 //
 // - `onPreviewOn(plan)`: carrying over when the preview is turned on (#458). Until then it carries nothing over.
 // - `carryOverState()`: the `projects` event's `carryOver` (#458). Null until then.
-// - `ruleTokens(projectId)`: what a project's rules add to each request (#459). Zeros until then.
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard (#466). Null until then.
 // - `admit(start)`: the one admission check of every start (#464, who moves it to `projectlimits.ts`). Admits every start.
 // - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by #466. Stored and never told until then.
@@ -128,7 +127,7 @@ export const Projects = defineDoc<ProjectsDoc>({
 
 export type ProjectRow = Project & {
 	folderMissing: boolean;
-	/** About how many tokens the rules add to each request: an orchestrator's, and every other agent's (6.2). Zeros until #459. */
+	/** About how many tokens the rules add to each request: an orchestrator's, and every other agent's (6.2). */
 	ruleTokens: { orchestrator: number; agents: number };
 	/** The last line of the orchestrator's last finished answer, at most 200 characters, and when. Null until #466. */
 	lastWords: { text: string; at: number } | null;
@@ -389,9 +388,18 @@ export function carryOverState(): CarryOverState | null {
 	return null;
 }
 
-/** About how many tokens a project's rules add to each request (6.2). #459 fills it in; zeros until then. */
-export function ruleTokens(_projectId: string): { orchestrator: number; agents: number } {
-	return { orchestrator: 0, agents: 0 };
+let countRuleTokens = (_projectId: string): ProjectRow["ruleTokens"] => ({ orchestrator: 0, agents: 0 });
+let announceProjects = () => {};
+
+/** About how many tokens a project's rules add to each request (6.2). */
+export function ruleTokens(projectId: string): ProjectRow["ruleTokens"] {
+	return countRuleTokens(projectId);
+}
+
+/** The rules feature supplies the estimate and tells us when to check it again, without writing `pi2.projects`. */
+export function wireRuleTokens(count: typeof countRuleTokens): () => void {
+	countRuleTokens = count;
+	return announceProjects;
 }
 
 /** The last line of the project's orchestrator's last finished answer (4.3). #466 fills it in; null until then. */
@@ -509,6 +517,7 @@ export const projects: Feature = (host, engine) => {
 		sent = line;
 		engine.broadcast(event);
 	};
+	announceProjects = announce;
 	/** Read the document again, as stored, and tell the apps if what they are sent changed. */
 	const reload = async () => {
 		const read = ++reads;

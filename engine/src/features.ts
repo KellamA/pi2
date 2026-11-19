@@ -31,6 +31,7 @@ import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
 import { needs } from "./needs.ts";
+import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
 import { reads } from "./reading.ts";
 import { runCode } from "./runcode.ts";
@@ -186,6 +187,8 @@ export const FEATURES: Feature[] = [
 	limitWait,
 	compaction,
 	plan,
+	// The project section (#466) will go here, before the rules (6.1).
+	projectRulesPrompt,
 	knowledge,
 	look,
 	documents,
@@ -212,7 +215,7 @@ export const FEATURES: Feature[] = [
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
 	// feature on its own line, in place of the comment that names it.
 	projects,
-	// projectRules (#459)
+	projectRules,
 	needs,
 	// reports (#463)
 	// work (#467)
