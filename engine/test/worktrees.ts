@@ -676,9 +676,8 @@ try {
 	step("a worktree deleted by hand shows as missing; removing it lets git forget it");
 
 	{
-		// Which repository a folder is in, and what that repository's default branch is, are kept for a minute, so a look
-		// does not start the git processes that answer them for every folder every few seconds (#377). What the branch is
-		// and how it stands is read at every look, and a conversation moving folders reads the folders again at once.
+		// In ordinary folders, a look can reuse the repository and its default branch for a minute (#377). What the
+		// branch is and how it stands is read at every look, and moving folders makes the tracker ask again at once.
 		const kept = repo("kept");
 		const movedTo = repo("movedTo");
 		/** How often git was asked `what` with that folder as its working folder. */
@@ -726,7 +725,12 @@ try {
 		assert.ok(nowhereWas > 0, "the look asked git which repository this folder is in");
 		await client.call("branches.refresh");
 		assert.ok(asked(whichRepo, nowhere) > nowhereWas, "a folder in no repository is asked about again at every look");
-		step("the tracker keeps a folder's repository and a repository's default branch for a minute, and a conversation moving folders reads them again; a folder in no repository is asked again at every look");
+		const ownFolder = realpathSync(client.branch(c).root);
+		await client.call("branches.refresh");
+		const ownWas = asked(whichRepo, ownFolder);
+		await client.call("branches.refresh");
+		assert.ok(asked(whichRepo, ownFolder) > ownWas, "a worktree pi² made is asked which repository it is in at every look");
+		step("the tracker reuses answers for ordinary folders until they move, and asks again at every look about folders in no repository and worktrees pi² made");
 	}
 
 	// A set-up still running when the engine stops is stopped with it, and said to be cut off when it starts again.
