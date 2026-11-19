@@ -11,10 +11,10 @@
 //   node scripts/load.mts --socket <path>           an engine you started yourself, such as under a profiler
 //
 // Options: --runs 20, --seconds 120 (with the load), --before 15 (seconds measured before it), --pace 60 (tokens a
-// second), --command "<shell command each step runs>", --large 200 (steps of a conversation made first, of about three
-// entries each with a long output, to open as the largest conversations are opened; 0 for none), --json <file> (the numbers, to compare later), --keep (leave a
-// copy this started running). Every conversation it made is archived at the end, which stops what it was doing, and
-// its folders are removed.
+// second), --command "<shell command each step runs>", --large 200 (entries in a conversation made first, with long
+// command outputs; 0 for none, up to 10000), --json <file> (the numbers, to compare later), --keep (leave a copy this
+// started running). Every conversation it made is archived at the end, which stops what it was doing, and its folders
+// are removed.
 //
 // It never touches the installed pi²: a copy's socket is only ever the one `scripts/test-copy socket` names, after the
 // checks `call` makes, and --socket is refused for the usual data folder's.
@@ -61,7 +61,8 @@ const RUNS = number("runs", 20);
 const SECONDS = number("seconds", 120);
 const BEFORE = number("before", 15);
 const PACE = number("pace", 60);
-const LARGE = number("large", 200);
+const LARGE = options.large === undefined ? 200 : Number(options.large);
+if (!Number.isSafeInteger(LARGE) || LARGE < 0 || LARGE > 10_000 || options.large?.trim() === "") die("--large takes a whole number from 0 to 10000");
 // What a working agent runs between paragraphs: looks at its repository, lists files, and waits on something (a build,
 // a test) for a couple of seconds.
 const COMMAND = options.command ?? "git status --short && git log --oneline -3 && ls -la && sleep 2";
@@ -93,12 +94,12 @@ if (options.socket !== undefined) {
 type Answer = { id?: number; result?: unknown; error?: string };
 const waiting = new Map<number, (answer: Answer) => void>();
 const events = new Map<string, { count: number; bytes: number }>();
-/** Called with each `conversation` event, for the conversation being made large. */
-let watching: ((event: { id: number; items: unknown[]; state: { busy: boolean } }, bytes: number) => void) | undefined;
+/** Called with each `conversation` event while building the demo transcript. */
+let watching: ((event: { id: number; items: { id: number }[] }) => void) | undefined;
 let counting = false;
 let nextId = 1;
 
-const socket: Socket = await new Promise((done, fail) => {
+const socket = await new Promise<Socket>((done, fail) => {
 	const s = connect(socketPath, () => done(s));
 	s.once("error", fail);
 }).catch((error: Error) => die(`could not connect to ${socketPath}: ${error.message}`));
@@ -124,7 +125,7 @@ socket.setEncoding("utf8").on("data", (chunk: string) => {
 		if (line === "") continue;
 		const message = JSON.parse(line) as Answer & { event?: string };
 		if (message.event !== undefined) {
-			if (message.event === "conversation") watching?.(message as never, line.length);
+			if (message.event === "conversation") watching?.(message as never);
 			if (!counting) continue;
 			const kind = events.get(message.event) ?? { count: 0, bytes: 0 };
 			kind.count++;
@@ -140,6 +141,7 @@ socket.setEncoding("utf8").on("data", (chunk: string) => {
 
 /** Sends a request; resolves with its result and how long the answer took, or rejects with the engine's error. */
 function request(method: string, params: object = {}, limit = PROBE_LIMIT_MS): Promise<{ result: any; ms: number }> {
+	if (socket.destroyed) return Promise.reject(new Error(`${method}: the connection to the engine closed`));
 	const id = nextId++;
 	const began = performance.now();
 	return new Promise((done, fail) => {
@@ -210,25 +212,55 @@ async function round(phase: Phase, n: number, idle: number, busy: number[], larg
 const made: number[] = [];
 let largeEntries = 0;
 
-/** A conversation of `steps` steps, each a paragraph, a command and its long output; resolves once it has finished. */
-async function largeConversation(steps: number): Promise<number> {
+/** Prefer the same synthetic history as test-copy fill, whichever way we got the socket. */
+async function largeConversation(entries: number): Promise<number> {
+	try {
+		const { result } = await request("test-copy.fill", { entries });
+		if (!Number.isSafeInteger(result?.id) || result.id < 1) throw new Error("the fixture returned no conversation id");
+		made.push(result.id);
+		if (result.entries !== entries) throw new Error(`the fixture reported ${result.entries} entries, expected ${entries}`);
+		largeEntries = result.entries;
+		return result.id;
+	} catch (error) {
+		// A standalone engine does not expose the fixture. Do not hide other errors from an engine that does.
+		if ((error as Error).message !== "test-copy.fill: Unknown method: test-copy.fill") throw error;
+	}
+	console.log("This engine does not offer test-copy.fill; adding short demo turns instead.");
 	const id = await conversation("large");
-	let seen = false;
-	const finished = new Promise<void>((done) => {
-		onInterrupt = done;
-		watching = (event) => {
-			if (event.id !== id) return;
-			largeEntries += event.items.length;
-			if (event.state.busy) seen = true;
-			else if (seen) done();
-		};
-	});
-	await request("conversation.open", { id });
-	await request("submit", { id, text: `/work ${steps} 5000 seq 1 2000` });
-	await finished;
-	watching = undefined;
-	await request("conversation.close", { id });
-	return id;
+	const seen = new Set<number>();
+	watching = (event) => {
+		if (event.id !== id) return;
+		// A reset of the engine's window can resend entries. Those now outside it still belong to the transcript.
+		for (const item of event.items) seen.add(item.id);
+		largeEntries = seen.size;
+	};
+	try {
+		await request("conversation.open", { id });
+		while (largeEntries < entries) {
+			if (interrupted) throw new Error("interrupted");
+			const previous = largeEntries;
+			// New instructions after each short turn keep compaction from ending all the work early.
+			const steps = Math.min(10, Math.ceil((entries - previous) / 3));
+			const { result: { submissionId } } = await request("submit", { id, text: `/work ${steps} 5000 seq 1 2000` });
+			if (!Number.isSafeInteger(submissionId)) throw new Error("the engine returned no submission id");
+			const deadline = performance.now() + PROBE_LIMIT_MS;
+			for (;;) {
+				if (interrupted) throw new Error("interrupted");
+				const remaining = deadline - performance.now();
+				if (remaining <= 0) throw new Error(`demo submission ${submissionId} did not finish with a visible answer in ${PROBE_LIMIT_MS / 1000} s`);
+				// The watch may never show a busy state for a fast turn. Wait for this submission's committed answer.
+				const { result: { submission, busy } } = await request("submission.get", { id, submissionId }, remaining);
+				if (submission.status === "unanswered") throw new Error(`demo submission ${submissionId} ended without an answer: ${submission.reason}`);
+				if (submission.status === "done" && !busy && seen.has(submission.answer)) break;
+				await sleep(100);
+			}
+			if (largeEntries <= previous) throw new Error(`demo submission ${submissionId} added no new entries`);
+		}
+		await request("conversation.close", { id });
+		return id;
+	} finally {
+		watching = undefined;
+	}
 }
 const folders = mkdtempSync(join(process.env.PI2_SCRATCH ?? tmpdir(), "pi2-load-"));
 
@@ -257,12 +289,10 @@ const ms = (value: number) => (Number.isNaN(value) ? "-" : value >= 10_000 ? `${
 
 // Interrupted, it stops measuring, reports and archives what it made; interrupted again, it stops at once.
 let interrupted = false;
-let onInterrupt = () => {};
 const interrupt = () => {
 	if (interrupted) process.exit(130);
 	interrupted = true;
-	console.log("\nStopping early: the numbers so far follow.");
-	onInterrupt();
+	console.log("\nStopping early…");
 };
 process.on("SIGINT", interrupt);
 process.on("SIGTERM", interrupt);
@@ -274,8 +304,13 @@ try {
 	const idle = await conversation("idle");
 	let large: number | undefined;
 	if (LARGE > 0) {
-		console.log(`Making a conversation of ${LARGE} steps to open…`);
-		large = await largeConversation(LARGE);
+		console.log(`Making a conversation of ${LARGE} entries to open…`);
+		try {
+			large = await largeConversation(LARGE);
+			console.log(`Large conversation #${large} has ${largeEntries} entries.`);
+		} catch (error) {
+			throw new Error(`could not make the large conversation (${largeEntries} of ${LARGE} entries counted): ${(error as Error).message}`);
+		}
 	}
 	console.log(`Measuring for ${BEFORE} s before the load…`);
 	for (let n = 0, until = Date.now() + BEFORE * 1000; Date.now() < until && !interrupted; n++) {
@@ -335,6 +370,9 @@ try {
 		writeFileSync(options.json, JSON.stringify({ runs: RUNS, pace: PACE, command: COMMAND, seconds: loadSeconds, load, summary, busy: busyShare, stalls, events: Object.fromEntries(events), failures, timeline }, null, "\t"));
 		console.log(`\nThe numbers are in ${options.json}.`);
 	}
+} catch (error) {
+	console.error(`load: ${(error as Error).message}`);
+	process.exitCode = 1;
 } finally {
 	counting = false;
 	console.log(`\nArchiving the ${made.length} conversations this made…`);
