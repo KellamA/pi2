@@ -9,20 +9,19 @@
 // section), so the model can say so when asked for a picture. The person reads the same in the agent's settings.
 //
 // A picture model's spend comes back with its pictures and is kept as the tool's usage (pi durable's `pi.usage.tools`),
-// which the conversation's, the agent's and the day's totals count, and so the daily budget; it has no row of its own
-// among the models in Usage. A model with no price in pi-ai's catalog counts tokens only.
+// under a key for the model that made it. That same spend feeds the totals, the daily budget and the model's row in
+// Usage. A model with no price in pi-ai's catalog counts tokens only.
 //
 // See docs/pictures.md.
 
 import type { Context } from "@earendil-works/chord/context";
-import type { ImageContent, ImageModel, ImagesInputContent } from "@earendil-works/pi-ai";
+import type { ImageApi, ImageContent, ImageModel, ImagesInputContent } from "@earendil-works/pi-ai";
 import { defineTool, section } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Engine, Feature } from "./features.ts";
-import { type AgentProfile, agentOf, type Meta } from "./state.ts";
+import { type AgentProfile, agentOf, type Meta, type ModelRef } from "./state.ts";
 
-// biome-ignore lint/suspicious/noExplicitAny: a picture model of any API
-type PictureModel = ImageModel<any>;
+type PictureModel = ImageModel<ImageApi>;
 
 /**
  * Picture models used first, when the person's providers have them: good at following a description, able to change a
@@ -33,10 +32,23 @@ export const PREFERRED = ["google/gemini-3.1-flash-image", "google/gemini-2.5-fl
 const key = (model: PictureModel) => `${model.provider}/${model.id}`;
 const priced = (model: PictureModel) => model.cost.input + model.cost.output > 0;
 const takesPictures = (model: PictureModel) => model.input.includes("image");
+const matches = (model: PictureModel, choice: ModelRef | null) => choice !== null && model.provider === choice.provider && model.id === choice.modelId;
 
-/** The model to ask, of those available: a preferred one, else one with a price, else the first. Only one that takes a picture, to change one. */
-export function chooseModel(available: readonly PictureModel[], changing: boolean): PictureModel | undefined {
-	const usable = changing ? available.filter(takesPictures) : [...available];
+// Keep the price status from the time of the request, not what a refreshed catalog says about past spend.
+const KNOWN = "make_picture:priced/";
+const UNKNOWN = "make_picture:unpriced/";
+
+export function pictureUsageModel(bucket: string): { key: string; unpriced: boolean } | undefined {
+	if (bucket.startsWith(KNOWN)) return { key: bucket.slice(KNOWN.length), unpriced: false };
+	if (bucket.startsWith(UNKNOWN)) return { key: bucket.slice(UNKNOWN.length), unpriced: true };
+	return undefined;
+}
+
+/** Honor the person's choice when usable, otherwise prefer a short list, then any priced model, then the first. */
+export function chooseModel(available: readonly PictureModel[], changing: boolean, choice: ModelRef | null): PictureModel | undefined {
+	const usable = changing ? available.filter(takesPictures) : available;
+	const chosen = usable.find((model) => matches(model, choice));
+	if (chosen !== undefined) return chosen;
 	for (const wanted of PREFERRED) {
 		const found = usable.find((model) => key(model) === wanted);
 		if (found !== undefined) return found;
@@ -79,18 +91,29 @@ const DESCRIPTION =
 
 export const pictures: Feature = (_host, engine) => {
 	/** The picture models the person's providers can use, as of the last look: at start and whenever a provider changes. */
-	let available: PictureModel[] = [];
+	let available: readonly PictureModel[] = [];
 	/** The providers whose catalogs have picture models at all, by name, for saying where to get one. */
 	let makers: string[] = [];
 
 	const look = async (): Promise<void> => {
 		const models = engine.providers().models;
-		const before = available.map(key).join(" ");
-		available = (await models.getAvailableOfType("image").catch(() => [])) as PictureModel[];
+		const before = event();
+		available = await models.getAvailableOfType("image").catch(() => []);
 		makers = [...new Set(models.getModelsOfType("image").map((model) => model.provider))].map((id) => models.getProvider(id)?.name ?? id).filter((name) => name !== "Demo");
-		if (available.map(key).join(" ") !== before) engine.broadcast(event());
+		const after = event();
+		if (JSON.stringify(after) !== JSON.stringify(before)) engine.broadcast(after);
 	};
-	const event = () => ({ event: "pictures", models: available.map((model) => ({ provider: model.provider, id: model.id, name: model.name })), makers });
+	const event = () => ({
+		event: "pictures",
+		model: engine.pictureModel(),
+		models: available.map((model) => ({
+			provider: model.provider, id: model.id, name: model.name,
+			providerName: engine.providers().models.getProvider(model.provider)?.name ?? model.provider,
+			canEdit: takesPictures(model),
+			price: priced(model) ? { input: model.cost.input, output: model.cost.output } : null,
+		})),
+		makers,
+	});
 
 	/** What the model is told when it would have the tool but cannot: no provider of the person's has a picture model. */
 	const none = () =>
@@ -110,7 +133,7 @@ export const pictures: Feature = (_host, engine) => {
 			const changing = args.change === true;
 			if (args.description.trim() === "") return refuse("description is empty: say what the picture should show.");
 			if (available.length === 0) await look();
-			const model = chooseModel(available, changing);
+			const model = chooseModel(available, changing, engine.pictureModel());
 			if (model === undefined) return refuse(available.length === 0 ? none() : "None of the person's picture models can change a picture they are given; make a new one instead.");
 			const input: ImagesInputContent[] = [{ type: "text", text: args.description }];
 			if (changing) {
@@ -119,8 +142,15 @@ export const pictures: Feature = (_host, engine) => {
 				input.push(picture);
 			}
 			const result = await api.models.generateImages(model, { input }, context.abortSignal === undefined ? {} : { signal: context.abortSignal });
-			const usage = result.usage === undefined ? {} : { usage: result.usage };
 			const made = result.output.filter((block): block is ImageContent => block.type === "image");
+			// A picture without counters still belongs in Usage, but not with an apparent price of zero.
+			const counters = result.usage ?? (made.length === 0 ? undefined : {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			});
+			const usage = counters === undefined ? {} : {
+				usage: counters, usageKey: `${result.usage !== undefined && priced(model) ? KNOWN : UNKNOWN}${key(model)}`,
+			};
 			const said = result.output.flatMap((block) => (block.type === "text" && block.text.trim() !== "" ? [block.text.trim()] : []));
 			const details = { model: key(model), modelName: model.name, pictures: made.length, changed: changing };
 			if (result.stopReason !== "stop") {
@@ -137,6 +167,21 @@ export const pictures: Feature = (_host, engine) => {
 
 	return {
 		tools: [tool],
+		handlers: {
+			"pictures.setModel": async ({ model }) => {
+				const given = model as Partial<ModelRef> | null | undefined;
+				if (given === null) engine.setPictureModel(null);
+				else {
+					if (typeof given?.provider !== "string" || typeof given.modelId !== "string") throw new Error("Choose a picture model, or let pi² choose.");
+					const choice = { provider: given.provider, modelId: given.modelId };
+					if (!available.some((candidate) => matches(candidate, choice))) throw new Error("That picture model is no longer available. Choose another, or let pi² choose.");
+					engine.setPictureModel(choice);
+				}
+				const changed = event();
+				engine.broadcast(changed);
+				return { model: changed.model };
+			},
+		},
 		toolNames: () => ["make_picture"],
 		withheld: () => (available.length === 0 ? ["make_picture"] : []),
 		sections: [
