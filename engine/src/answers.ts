@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join } from "node:path";
 
 /** What a connection that is not the app's is told: it reaches an agent that tried, so it says what to do instead. */
 export const ONLY_IN_THE_APP =
-	"Only the person can answer this, in the pi² app: answers to approvals, questions and sign-ins, and turning on Allow everything, are not taken from a command or any other program. Ask the person instead.";
+	"Only the person can answer this, in the pi² app: answers to approvals, questions and sign-ins, starting past a project limit, and turning on Allow everything are not taken from a command or any other program. Ask the person instead.";
 
 /**
  * The requests that answer something waiting for the person, and when a request is one. Turning Allow everything off
@@ -24,6 +24,11 @@ const FOR_THE_PERSON: Record<string, (params: Record<string, unknown>) => boolea
 	"inbox.decide": () => true, // an approval
 	"inbox.answer": () => true, // a question an agent asked
 	"needs.answer": () => true, // an item in Needs you
+	// First attempts stay open to scripts; overriding the reading is the person's answer.
+	"conversation.create": (params) => params.confirmLimit !== undefined,
+	"chat.continueWithAgent": (params) => params.confirmLimit !== undefined,
+	"schedules.runNow": (params) => params.confirmLimit !== undefined,
+	"work.act": (params) => params.action === "assign" && params.confirmLimit !== undefined,
 	"auth.answer": () => true, // a prompt in a sign-in to a provider
 	"agents.allowEverything": (params) => params.on === true, // sent once the person confirmed it in the app
 };

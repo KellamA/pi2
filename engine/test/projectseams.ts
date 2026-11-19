@@ -29,7 +29,7 @@ import {
 	type Start,
 } from "../src/projects.ts";
 import { reports } from "../src/reports.ts";
-import { Inbox, type Meta } from "../src/state.ts";
+import { Agents, Inbox, Library, type Meta } from "../src/state.ts";
 import { work } from "../src/work.ts";
 import { until } from "./patience.ts";
 
@@ -142,9 +142,10 @@ assert.equal(lastWords("p1"), null);
 step("until #458 onPreviewOn carries nothing over and carryOver is null; ruleTokens zeros without rules; lastWords null until #466");
 
 const start: Start = { by: { kind: "agent", agentId: "a", conversationId: 1 }, agentId: "b", agentName: "B", kind: "new", parent: 1, chat: null, work: null, title: null, task: "Do it", options: {} };
-assert.deepEqual(admit(start), { ok: true });
-assert.deepEqual(admit({ ...start, by: { kind: "person" }, kind: "conversation", parent: null }, "a-reading"), { ok: true });
-step("until #464 admit admits every start");
+const admission = { tx: { doc: async (token: unknown) => token === Agents ? { agents: {} } : token === Library ? { conversations } : stored } as never, model: null };
+assert.deepEqual(await admit(start, undefined, admission), { ok: true, note: "Plan limits: no reading of this plan's windows yet." });
+assert.deepEqual(await admit({ ...start, by: { kind: "person" }, kind: "conversation", parent: null }, undefined, admission), { ok: true });
+step("admit has nothing to count without a plan reading, and leaves starts outside projects alone");
 
 // ---- requireSwitch
 

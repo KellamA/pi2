@@ -144,7 +144,7 @@ export class EngineClient {
 				if (typeof message.event !== "string" && message.id !== undefined && message.id !== null) {
 					const reply = this.#replies.get(message.id);
 					this.#replies.delete(message.id);
-					if (message.error !== undefined) reply?.reject(new Error(message.error));
+					if (message.error !== undefined) reply?.reject(Object.assign(new Error(message.error), message.data === undefined ? {} : { data: message.data }));
 					else reply?.resolve(message.result);
 				} else this.receive(message);
 			}

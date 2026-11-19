@@ -46,13 +46,13 @@ async function windowCommand(folder, request) {
 	}
 }
 
-function engineCommand(prepare) {
+function engineCommand(prepare, seconds = limit / 1000) {
 	return new Promise((resolve, reject) => {
 		const socket = connect(target);
 		const lines = createInterface({ input: socket });
 		let sent = false;
 		let request;
-		const timer = setTimeout(() => finish(new Error('the engine did not answer within 30 seconds')), limit);
+		const timer = setTimeout(() => finish(new Error(`the engine did not answer within ${seconds} seconds`)), seconds * 1000);
 		function finish(error, result) {
 			clearTimeout(timer);
 			lines.close();
@@ -91,8 +91,10 @@ try {
 	let summary;
 	switch (command) {
 		case 'show': {
-			const [pid, id] = args;
-			summary = await windowCommand(target, { pid: Number(pid), command, id: integer(id, 'conversation') });
+			const [pid, selection, , hub] = args;
+			const view = selection === 'dashboard' || selection?.startsWith('project:')
+				? { show: selection, hub } : { id: integer(selection, 'conversation') };
+			summary = await windowCommand(target, { pid: Number(pid), command, ...view });
 			break;
 		}
 		case 'size': {
@@ -122,8 +124,17 @@ try {
 			break;
 		}
 		case 'answer': {
-			const id = integer(args[0], 'conversation');
-			const decision = args[1];
+			const [value, decision] = args;
+			if (decision !== 'allow' && decision !== 'deny') {
+				const answer = JSON.parse(decision);
+				if (answer === null || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('answer needs a JSON object');
+				summary = await engineCommand(() => ({
+					method: 'needs.answer', params: { id: value, answer },
+					summary: () => `Answered Needs you item ${value}`,
+				}));
+				break;
+			}
+			const id = integer(value, 'conversation');
 			summary = await engineCommand(event => {
 				if (event?.event !== 'inbox') return;
 				const items = event.items.filter(item => item.kind === 'approval' && item.conversationId === id);
@@ -137,6 +148,12 @@ try {
 			break;
 		}
 		case 'fill': {
+			if (args[0] === '--project' || args[0] === 'project') {
+				const project = await engineCommand(() => ({ method: 'test-copy.fillProject', params: {}, summary: result => result }), 150);
+				console.log(JSON.stringify(project));
+				console.error(`Not seeded: ${project.omitted.join('; ')}.`);
+				break;
+			}
 			const entries = integer(args[0], 'entries', 10_000);
 			summary = await engineCommand(() => ({
 				method: 'test-copy.fill', params: { entries },

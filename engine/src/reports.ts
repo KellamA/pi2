@@ -16,8 +16,6 @@
 // there has no report, or its report wakes as wakes.md says.
 //
 // What later issues fill in:
-// - `pastLimit(projectId)`: whether the project is past one of its limits, so that no report wakes the orchestrator
-//   (8.3). #464 fills it in; false until then.
 // - `reports` `wake` as a change with a line and Undo (5.6, 5.9): #465's record of changes. Until then it is made with
 //   no line and no Undo.
 // - `work` `assign` (#467) starts runs with a report too, through `reportRun` with `work`.
@@ -27,6 +25,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { type CommitChange, defineDoc, defineTool, type SettledSubmissionRecord, type SubmissionId, type ToolExecutionApi, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
 import { arr, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { type Host, subChatResult } from "./extensions.ts";
+import { reportPastLimit } from "./projectlimits.ts";
 import type { Engine, Feature } from "./features.ts";
 import { waitForChat } from "./heed.ts";
 import { ownsSubChat } from "./orchestrator.ts";
@@ -96,16 +95,6 @@ const waited = new Set<number>();
 const following = new Set<number>();
 
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
-
-// ---- What later issues fill in
-
-/**
- * Whether project `projectId` is past one of its limits, so that no report wakes its orchestrator, whatever was chosen
- * (8.2, 8.3): the report stays undelivered, for the next turn or a `read`. #464 fills it in; until then no project is.
- */
-export function pastLimit(_projectId: string): boolean {
-	return false;
-}
 
 // ---- Which runs have a report
 
@@ -219,7 +208,7 @@ export async function settle(tx: Tx, submissionId: number, ask: Ask): Promise<Se
 		return { give: true, wake: [] };
 	}
 	if (ask.by === "wake") {
-		if (report.delivered !== null || pastLimit(projectId)) return { give: false, wake: [] };
+		if (report.delivered !== null || (await reportPastLimit(tx, projectId, ask.conversationId))) return { give: false, wake: [] };
 		await deliver("wake", ask.conversationId);
 		return { give: true, wake: [] };
 	}
@@ -238,7 +227,7 @@ export async function settle(tx: Tx, submissionId: number, ask: Ask): Promise<Se
 	if (report.delivered !== null || waited.has(submissionId)) return { give: false, wake: [] };
 	const list = doc.projects[projectId] as Report[];
 	let give: Report[] = [];
-	if (watch !== undefined && !pastLimit(projectId)) {
+	if (watch !== undefined && !(await reportPastLimit(tx, projectId, watch.conversationId))) {
 		const project = inProject(watch.conversationId);
 		const mode: ReportWake = project === undefined ? "each" : (watch.wake ?? (project.settings.wakeOnReports ? "each" : "never"));
 		const batch = report.batch === null ? [report] : list.filter((each) => each.batch === report.batch);
@@ -603,7 +592,7 @@ function reportsTool() {
 						lines.push(`- ${capital(describe(report))}: ${how}.`);
 					}
 				}
-				if (pastLimit(project.id)) lines.push("", "The project is past one of its limits, so no report wakes you now: they wait for you unread.");
+				if (await api.commit((tx) => reportPastLimit(tx, project.id, caller), context)) lines.push("", "The project is past one of its limits, so no report wakes you now: they wait for you unread.");
 				return { output: text(lines.join("\n")), details: { action, unread: unread.length, working: runs.length } };
 			}
 

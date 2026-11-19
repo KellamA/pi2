@@ -40,6 +40,8 @@ struct TestCopyControl: NSViewRepresentable {
             let pid: Int32
             let command: String
             let id: Int?
+            let show: String?
+            let hub: String?
             let width: Int?
             let height: Int?
             let smallest: Bool?
@@ -67,6 +69,9 @@ struct TestCopyControl: NSViewRepresentable {
             super.viewDidMoveToWindow()
             stop()
             guard window != nil else { return }
+            if let launch = ProjectCopyView.launch, launch.show != nil || launch.hub != nil {
+                _ = recordProjectView(launch, source: "launch")
+            }
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.poll() }
             }
@@ -114,6 +119,24 @@ struct TestCopyControl: NSViewRepresentable {
             if let json = try? JSONEncoder().encode(result) { try? json.write(to: dir.appendingPathComponent("response.json"), options: .atomic) }
         }
 
+        private struct ProjectViewRecord: Encodable {
+            let source: String
+            let view: ProjectCopyView
+        }
+
+        // Later issues can apply the same parsed view here, and acknowledge the selection after it draws.
+        private func recordProjectView(_ view: ProjectCopyView, source: String) -> [String: String] {
+            let home = folder.deletingLastPathComponent()
+            guard isDirectory(home) else { return ["error": "the copy's data folder is missing or a symlink"] }
+            do {
+                let data = try JSONEncoder().encode(ProjectViewRecord(source: source, view: view))
+                try data.write(to: home.appendingPathComponent("project-view.json"), options: .atomic)
+                return ["result": "Recorded \(view.show ?? "hub fold")\(view.hub.map { " (\($0.rawValue))" } ?? "")"]
+            } catch {
+                return ["error": "could not record the project view: \(error.localizedDescription)"]
+            }
+        }
+
         /// The answer to a request, or nil when it is to wait.
         private func apply(_ request: Request, to window: NSWindow, dir: URL) -> [String: String]? {
             switch request.command {
@@ -121,6 +144,15 @@ struct TestCopyControl: NSViewRepresentable {
                 guard let paths = request.paths else { return ["error": "missing panel answer"] }
                 return TestCopyPanels.choose(paths)
             case "show":
+                if request.show != nil || request.hub != nil {
+                    do {
+                        let view = try ProjectCopyView(show: request.show, hub: request.hub)
+                        guard view.show != nil || view.hub != nil else { return ["error": "not a project view"] }
+                        return recordProjectView(view, source: "show")
+                    } catch {
+                        return ["error": error.localizedDescription]
+                    }
+                }
                 guard let id = request.id, model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
                     return ["error": "no conversation #\(request.id ?? 0) in the copy's library"]
                 }

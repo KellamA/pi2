@@ -32,6 +32,7 @@ import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
 import { projectAgents } from "./projectagents.ts";
+import { projectLimits } from "./projectlimits.ts";
 import { needs } from "./needs.ts";
 import { orchestrator, projectPrompt } from "./orchestrator.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
@@ -237,6 +238,7 @@ export const FEATURES: Feature[] = [
 	localModels,
 	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
 	projectAgents,
+	projectLimits,
 	// One conversation with the orchestrator, and Start fresh (#466): no greeting of its own either.
 	orchestrator,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its

@@ -22,7 +22,7 @@ extension Selection {
     /// it is not about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual; so does
     /// "output:<id>", which opens a background command's output window (`OutputLaunch`).
     init?(launch value: String?, conversations: [ConversationSummary], archived: [ArchivedConversation]) {
-        guard let value, !value.isEmpty else { return nil }
+        guard let value, !value.isEmpty, !ProjectCopyView.reserves(value) else { return nil }
         switch value {
         case "inbox": self = .inbox
         case "activity": self = .activity

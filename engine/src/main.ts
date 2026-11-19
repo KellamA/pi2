@@ -26,6 +26,7 @@ import {
 	Harness,
 	LiveDoc,
 	type SubmissionId,
+	type Tx,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -78,10 +79,13 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { admit, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
+import { allProjects, refuseInArchivedProject, refuseStartWith, requirePreview, type Start } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
+import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
+import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend, type SpendDoc } from "./projectspend.ts";
+import { refusal, RequestError } from "./requesterror.ts";
 import { delegateTargets, projectAgentFolder, stampsAgents } from "./projectagents.ts";
-import { syncWorkForInput, WorkLimitError } from "./work.ts";
+import { syncWorkForInput } from "./work.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -228,11 +232,24 @@ const host: Host = {
 			(error) => log("could not save the allowed command:", error instanceof Error ? error.message : error),
 		),
 	agentChange: (agent, options) => agentChange(agent, options),
-	sendToChat: async (id, content, requestId) => {
+	sendToChat: async (id, content, requestId, prepare) => {
 		const conv = await harness.conversation(id as unknown as ConversationId, context);
 		if (conv === undefined) return undefined;
 		await takeSwitch(conv.id);
 		await syncTools(conv).catch(() => {});
+		if (prepare !== undefined) return harness.commit(async (tx) => {
+			// A completed admission is a replay, not a new start to check against today's limit.
+			const earlier = await tx.submissionByRequest(conv.id, requestId);
+			if (earlier !== undefined) return earlier.id as number;
+			const meta = (await tx.doc(Library)).conversations[String(id)];
+			if (meta === undefined) return undefined;
+			const { model } = await tx.doc(AgentDoc, conv.id);
+			if (!await prepare(tx, meta, model)) return undefined;
+			const submission = await conv.submit(tx, { type: "input", content, requestId });
+			meta.updatedAt = Date.now();
+			meta.subChatTask = Math.max(meta.subChatTask ?? 0, submission as number);
+			return submission as number;
+		}, context);
 		const submission = await conv.submit({ type: "input", content, requestId }, context);
 		await editMeta(conv.id, (meta) => {
 			meta.updatedAt = Date.now();
@@ -1309,7 +1326,7 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
  * as it was; each is linked to the other on its record. The agent's access, approvals and Allow everything apply from
  * that first message, as in any conversation of its own.
  */
-async function continueChat(params: Params): Promise<{ id: ConversationId }> {
+async function continueChat(params: Params): Promise<{ id: ConversationId; note?: string }> {
 	const shown = await conversation(params.id);
 	const chatId = chatOf(shown.id);
 	const meta = library.conversations[String(chatId)];
@@ -1324,6 +1341,8 @@ async function continueChat(params: Params): Promise<{ id: ConversationId }> {
 		cwd = text(params, "cwd");
 		if (!(existsSync(cwd) && statSync(cwd).isDirectory())) throw new Error(`Not a folder: ${cwd}`);
 	}
+	const confirm = startConfirmation(params);
+	if (agent.projectId !== undefined) refuseStartWith(agent);
 	if (busyConversations.has(chatId)) throw new Error("The chat is still answering. Wait for it to finish, or stop it, then continue with an agent.");
 	if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
 
@@ -1342,12 +1361,14 @@ async function continueChat(params: Params): Promise<{ id: ConversationId }> {
 	const model = change.model == null ? undefined : providers.models.getModel(change.model.provider, change.model.modelId);
 	const handover = chatHandover(entries, { title: meta!.title, agent: agent.name, typed: typed !== "", seesPictures: model === undefined || model.input.includes("image") });
 	const attachments = handoverAttachments(handover);
+	let note: string | undefined;
 	const now = Date.now();
 	const created = await harness.createConversation(
 		{
 			ownership: { kind: "ownerless" },
 			agent: change,
 			init: async (tx, id) => {
+				if (agent.projectId !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { from: chatId, version: shown.id, through: entries.at(-1)?.id ?? null, cwd }, typed);
 				const conversations = (await tx.doc(Library)).conversations;
 				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId, ...projectFrom(agent) };
 				const chat = conversations[String(chatId)];
@@ -1365,7 +1386,7 @@ async function continueChat(params: Params): Promise<{ id: ConversationId }> {
 	await syncTools(conv).catch((error) => log("could not update the tools of conversation", created.id, error instanceof Error ? error.message : ""));
 	await conv.submit({ type: "input", content: userContent(typed, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(typed, attachments) }, whenBusy: "followUp" }, context);
 	for (const feature of host.features) feature.messageSent?.(created.id as unknown as number);
-	return { id: created.id };
+	return { id: created.id, ...(note === undefined ? {} : { note }) };
 }
 
 // ---- Requests
@@ -1376,6 +1397,17 @@ const text = (params: Params, key: string): string => {
 	if (typeof value !== "string") throw new Error(`Missing ${key}`);
 	return value;
 };
+
+function startConfirmation(params: Params): string | undefined {
+	if (params.confirmLimit !== undefined) requirePreview();
+	return confirmLimit(params.confirmLimit);
+}
+
+async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = ""): Promise<string | undefined> {
+	const result = await admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task, options }, confirm, { tx, model });
+	if (!result.ok) throw limitError(result.limit);
+	return result.note;
+}
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
@@ -1389,24 +1421,23 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"conversation.create": async (params) => {
 		if (params.chat !== undefined && typeof params.chat !== "boolean") throw new Error("chat must be true or false");
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
+		const confirm = startConfirmation(params);
 		if (params.chat === true) return createChat(params.model);
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
 		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
 		if (agent.removedAt !== undefined) throw new Error(`Unknown agent: ${agent.id}`);
-		if (agent.projectId !== undefined) {
-			// A conversation with a project agent is in its project, and is a start there (docs/projects.md, 3.5 and 8.3).
-			refuseStartWith(agent);
-			const admitted = admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task: "", options: {} });
-			if (!admitted.ok) throw new Error(`Past the project's limit: ${admitted.limit.reason}`);
-		}
-		const change = await agentChange(agent, { subChat: false });
+		if (agent.projectId !== undefined) refuseStartWith(agent);
+		const profile = await agentChange(agent, { subChat: false });
+		const change = params.model !== undefined ? { ...profile, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : profile;
 		const now = Date.now();
+		let note: string | undefined;
 		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
-				agent: params.model !== undefined ? { ...change, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : change,
+				agent: change,
 				init: async (tx, id) => {
+					if (agent.projectId !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, {});
 					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 				},
 			},
@@ -1415,7 +1446,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		settings.lastAgent = agent.id;
 		saveSettings();
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
-		return { id: created.id };
+		return { id: created.id, ...(note === undefined ? {} : { note }) };
 	},
 	/** `{ id, pinned }`: pin a conversation to the top of its list, or unpin it. A sub-chat goes with its conversation. */
 	"conversation.pin": async (params) => {
@@ -2017,8 +2048,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"schedules.runNow": async (params) => {
 		const id = text(params, "id");
 		if (schedules[id] === undefined) throw new Error(`Unknown schedule: ${id}`);
-		await fire(id, true);
-		return { conversationId: schedules[id]?.lastConversationId ?? null };
+		const note = await fire(id, true, startConfirmation(params));
+		return { conversationId: schedules[id]?.lastConversationId ?? null, ...(note === undefined ? {} : { note }) };
 	},
 	"recovery.dismiss": async () => {
 		recovery = null;
@@ -2144,7 +2175,7 @@ let usageTimer: ReturnType<typeof setTimeout> | undefined;
 function usageRowsChanged(before: Record<string, Meta>, after: Record<string, Meta>): boolean {
 	const changed = (old: Meta | undefined, next: Meta | undefined) =>
 		(old === undefined) !== (next === undefined) || old?.title !== next?.title || old?.parent !== next?.parent ||
-		old?.agentId !== next?.agentId || isChat(old) !== isChat(next) || isPutAway(old) !== isPutAway(next);
+		old?.agentId !== next?.agentId || old?.projectId !== next?.projectId || isChat(old) !== isChat(next) || isPutAway(old) !== isPutAway(next);
 	for (const [id, { totals }] of usageById) {
 		if (totals.tokens === 0) continue;
 		const meta = before[String(id)];
@@ -2308,20 +2339,33 @@ mcp.onChange = () => {
 
 // ---- Usage: totals from pi durable's own counters, plus a per-day ledger for "today" and budgets
 
-const Spend = defineDoc<{ days: Record<string, { cost: number; tokens: number }>; lastCost: number; lastTokens: number }>({
+const Spend = defineDoc<SpendDoc>({
 	kind: "pi2.spend",
 	version: 1,
 	scope: "session",
 	initial: () => ({ days: {}, lastCost: 0, lastTokens: 0 }),
 	checkpointWhen: () => true,
 });
-const dayKey = (at = new Date()) => `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
 let usageSummary: Record<string, unknown> = { event: "usage", models: [], agents: [], chats: { cost: 0, tokens: 0 }, conversations: [], total: { cost: 0, tokens: 0 }, today: { cost: 0, tokens: 0 }, days: [], budget: { daily: null }, overBudget: false };
 let todayCost = 0;
 const overBudget = () => typeof settings.dailyBudget === "number" && todayCost >= settings.dailyBudget;
 
 // A published value is already a durable snapshot. Only the initial scan and definition-free copies need a read.
 const dirtyUsage = new Map<ConversationId, UsageDocShape | undefined | "read">();
+wireProjectSpend(async (tx, projectId) => {
+	const ledger = await tx.doc(Spend);
+	const { conversations } = await tx.doc(Library);
+	const day = dayKey();
+	let cost = 0;
+	for (const [key, meta] of Object.entries(conversations)) {
+		if (meta.projectId !== projectId) continue;
+		const id = Number(key) as unknown as ConversationId;
+		const dirty = dirtyUsage.get(id);
+		const total = dirtyUsage.has(id) && dirty !== "read" ? usageTotals(dirty) : usageById.get(id)?.totals ?? noSpend();
+		cost += conversationSpend(ledger.conversations?.[key], total, day, ledger.conversations === undefined && ledger.lastTokens !== 0).today.cost;
+	}
+	return cost;
+});
 let usageRefresh = Promise.resolve();
 /** Serialize budget changes and background refreshes so a delayed ledger write cannot publish older totals. */
 function refreshUsage(): Promise<void> {
@@ -2379,6 +2423,7 @@ function pictureRows(tools: UsageDocShape["tools"]) {
 
 let session: UsageDocShape = {};
 async function updateUsage(): Promise<void> {
+	const repriced = usagePricingChanged;
 	if (usagePricingChanged) {
 		usagePricingChanged = false;
 		try {
@@ -2405,23 +2450,35 @@ async function updateUsage(): Promise<void> {
 	if (batch.length > 0) session = sessionUsage();
 	const total = usageTotals(session);
 	// Whatever was spent since the last look belongs to today.
+	const day = dayKey();
 	const spend = await harness.commit(async (tx) => {
 		const doc = await tx.doc(Spend);
+		const changed = repriced ? [...usageById.keys(), ...batch.map(([id]) => id)] : batch.map(([id]) => id);
+		if (changed.length > 0) noteConversationSpend(doc, [...new Set(changed)].map((id) => [String(id), usageById.get(id)?.totals ?? noSpend()]), day);
 		// The total only falls when usage stops being priced (a provider now on a subscription); take that back off today.
 		const delta = { cost: total.cost - doc.lastCost, tokens: Math.max(0, total.tokens - doc.lastTokens) };
 		if (delta.cost !== 0 || delta.tokens > 0) {
 			// Create the day, then read it back: only the document's own copy records changes.
-			doc.days[dayKey()] ??= { cost: 0, tokens: 0 };
-			const day = doc.days[dayKey()]!;
-			day.cost = Math.max(0, day.cost + delta.cost);
-			day.tokens += delta.tokens;
+			doc.days[day] ??= { cost: 0, tokens: 0 };
+			const today = doc.days[day]!;
+			today.cost = Math.max(0, today.cost + delta.cost);
+			today.tokens += delta.tokens;
 			doc.lastCost = total.cost;
 			doc.lastTokens = total.tokens;
 		}
 		// A plain copy: the document itself is only readable inside this commit.
-		return { days: JSON.parse(JSON.stringify(doc.days)) as Record<string, { cost: number; tokens: number }> };
+		const projects = new Map<string, Amount>();
+		for (const project of Object.values(allProjects())) if (project.deletedAt === undefined) projects.set(project.id, noSpend());
+		if (projects.size > 0) for (const [id, meta] of Object.entries((await tx.doc(Library)).conversations)) {
+			const sum = meta.projectId === undefined ? undefined : projects.get(meta.projectId);
+			const used = doc.conversations?.[id];
+			if (sum === undefined || used?.day !== day) continue;
+			sum.cost += used.today.cost;
+			sum.tokens += used.today.tokens;
+		}
+		return { days: JSON.parse(JSON.stringify(doc.days)) as Record<string, Amount>, projects: [...projects].map(([id, today]) => ({ id, today })) };
 	}, context);
-	const today = spend.days[dayKey()] ?? { cost: 0, tokens: 0 };
+	const today = spend.days[day] ?? noSpend();
 	todayCost = today.cost;
 
 	const byAgent = new Map<string, { cost: number; tokens: number }>();
@@ -2453,6 +2510,7 @@ async function updateUsage(): Promise<void> {
 		].sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		chats,
+		projects: spend.projects,
 		conversations: byConversation.sort((x, y) => y.cost - x.cost || y.tokens - x.tokens).slice(0, 8),
 		total,
 		today,
@@ -2515,6 +2573,7 @@ let schedules = schedulesWatch.value.schedules;
 const schedulesEvent = () => ({ event: "schedules", schedules: Object.values(schedules).sort((x, y) => x.createdAt - y.createdAt) });
 let scheduleTimer: ReturnType<typeof setTimeout> | undefined;
 const firing = new Set<string>();
+const scheduleRecheck = new Map<string, number>();
 
 /** Submit the prompt of a run whose conversation exists. The request ID makes doing this twice harmless. */
 async function deliver(id: string): Promise<void> {
@@ -2531,14 +2590,16 @@ async function deliver(id: string): Promise<void> {
 }
 
 /** Start one run of a schedule: a new conversation with its agent, then its prompt. */
-async function fire(id: string, manual: boolean): Promise<void> {
+async function fire(id: string, manual: boolean, confirm?: string): Promise<string | undefined> {
 	const schedule = schedules[id];
 	if (schedule === undefined || firing.has(id)) return;
 	firing.add(id);
 	try {
 		const agent = agents[schedule.agentId] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) return;
+		if (agent.projectId !== undefined) refuseStartWith(agent);
 		const change = await agentChange(agent, { subChat: false });
+		let note: string | undefined;
 		const now = Date.now();
 		const due = schedule.nextRunAt;
 		await harness.createConversation(
@@ -2549,6 +2610,7 @@ async function fire(id: string, manual: boolean): Promise<void> {
 				init: async (tx, conversationId) => {
 					const current = (await tx.doc(Schedules)).schedules[id];
 					if (current === undefined || (!manual && current.nextRunAt !== due)) throw new Error("The schedule changed while it was starting");
+					if (agent.projectId !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { schedule: id }, current.prompt);
 					(await tx.doc(Library)).conversations[String(conversationId)] = { title: current.title, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 					current.pending = { conversationId: conversationId as unknown as number, runAt: now };
 					current.lastRunAt = now;
@@ -2564,7 +2626,12 @@ async function fire(id: string, manual: boolean): Promise<void> {
 		);
 		schedules = (await harness.snapshot(Schedules, context))?.schedules ?? schedules;
 		await deliver(id);
+		scheduleRecheck.delete(id);
+		return note;
 	} catch (error) {
+		if (manual && error instanceof RequestError) throw error;
+		// An automatic run stays due until admitted; don't spin on a refusal with a past nextRunAt.
+		if (!manual && agents[schedule.agentId]?.projectId !== undefined) scheduleRecheck.set(id, Date.now() + 60_000);
 		log("schedule", id, "did not start:", error instanceof Error ? error.message : error);
 	} finally {
 		firing.delete(id);
@@ -2575,7 +2642,7 @@ function armSchedules(): void {
 	clearTimeout(scheduleTimer);
 	const due = Object.values(schedules).filter((x) => x.enabled && x.nextRunAt !== null);
 	if (due.length === 0) return;
-	const next = Math.min(...due.map((x) => x.nextRunAt!));
+	const next = Math.min(...due.map((x) => Math.max(x.nextRunAt!, scheduleRecheck.get(x.id) ?? 0)));
 	// setTimeout cannot wait longer than about 24 days; waking early and re-arming is harmless.
 	// While the budget is used up a due run stays due; look again in a minute rather than spinning.
 	const soonest = overBudget() ? 60_000 : 0;
@@ -2586,7 +2653,7 @@ async function tickSchedules(): Promise<void> {
 	const now = Date.now();
 	for (const schedule of Object.values(schedules)) {
 		if (schedule.pending !== null) await deliver(schedule.id).catch((error) => log("schedule", schedule.id, "delivery failed:", error));
-		else if (schedule.enabled && schedule.nextRunAt !== null && schedule.nextRunAt <= now) {
+		else if (schedule.enabled && schedule.nextRunAt !== null && schedule.nextRunAt <= now && (scheduleRecheck.get(schedule.id) ?? 0) <= now) {
 			// Out of budget: the run stays due and starts once there is budget again.
 			if (overBudget()) log("schedule", schedule.id, "is waiting: today's budget is used up");
 			else await fire(schedule.id, false);
@@ -2634,6 +2701,28 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 	} catch (error) {
 		log("test-copy cannot answer for the person in this copy:", error instanceof Error ? error.message : error);
 	}
+	const { fillProject } = await import("../scripts/test-copy-project.ts");
+	const { Reports } = await import("./reports.ts");
+	let fillingProject = false;
+	handlers["test-copy.fillProject"] = async (_params, client) => {
+		if (fillingProject) throw new Error("A demo project is already being filled in this copy");
+		fillingProject = true;
+		try {
+			return await fillProject(home, async (method, params) => {
+				const handler = handlers[method];
+				if (handler === undefined) throw new Error(`Unknown method: ${method}`);
+				return handler(params, client);
+			}, async ({ projectId, working, waiting, finished }) => {
+				const runs = activityEvent().runs;
+				const active = working.every((id) => runs.some((run) => run.conversationId === id && run.status === "working" && run.commands.length > 0));
+				if (!active || !runs.some((run) => run.conversationId === waiting && run.status === "waiting")) return false;
+				const reports = await harness.snapshot(Reports, context);
+				return reports?.projects[projectId]?.some((report) => report.conversationId === finished && report.ended?.outcome === "answered" && report.delivered === null) ?? false;
+			});
+		} finally {
+			fillingProject = false;
+		}
+	};
 	handlers["test-copy.fill"] = async (params) => {
 		const entries = fixtureSize(params.entries);
 		const agent = Object.values(agents).sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -2703,7 +2792,7 @@ const server = createServer((socket) => {
 			const handle = () =>
 				handler(params, client).then(
 					(result) => send(client, { id: request.id, result }),
-					(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error), ...(error instanceof WorkLimitError ? { data: { limit: error.limit } } : {}) }),
+					(error: unknown) => send(client, { id: request.id, ...refusal(error) }),
 				);
 			// An answer to what waits for the person is taken only from the app (#504).
 			if (!answersForThePerson(String(request.method), params)) handle();
