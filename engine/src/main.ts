@@ -47,6 +47,7 @@ import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
+import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { preparePlan } from "./plan.ts";
@@ -364,8 +365,8 @@ const harness = await Harness.open(
 		// conversation that hands out work asks for the long prompt cache (src/cache.ts).
 		models: noticingRefusals(retryThinking(providers, promptCacheLifetimes(providers.models), engine.providersChanged)),
 		registry,
-		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
-		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
+		// A local engine stop or a provider limit uses pi-durable's stored retry sleep (see patch-dependencies.ts).
+		// The features are read at every use, so they are made by then.
 		settings: {
 			compaction: {
 				early: (id: ConversationId, window: number, policy: import("@earendil-works/pi-durable").CompactionPolicy) => {
@@ -377,9 +378,11 @@ const harness = await Harness.open(
 				checkpoint: compactionCheckpoint,
 			} as import("@earendil-works/pi-durable").CompactionSettings,
 			retry: {
-				host: (message: never, attempt: number, id: unknown) => {
+				host: (message: Parameters<typeof retryLocalEngine>[0], attempt: number, id: unknown, localRetries = 0) => {
+					const local = retryLocalEngine(message, localRetries, home);
 					const feature = host.features.find((candidate) => candidate.retry !== undefined);
-					return feature?.retry?.(message, attempt, id as number) ?? { spent: 0 };
+					const limit = feature?.retry?.(message, attempt, id as number);
+					return local ?? limit ?? { spent: 0 };
 				},
 			} as never,
 		},
@@ -640,7 +643,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", ...compactionMarker(entry) };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
-	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
+	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY || entry.kind === LOCAL_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
 		// With the command's id, so the line can open the window with its output.
 		const details = backgroundMarkerDetails(entry.data);

@@ -13,7 +13,10 @@
 //
 // While loading it prints "loading model … N%" and "[strata] mapping the experts ...", as Strata does, and answers 503; once loaded, `GET /v1/models` lists the model and
 // `POST /v1/chat/completions` answers "You said: <the last message>". A message holding "/crash" makes it exit
-// mid-answer, once per model file (a `.crashed` file beside it remembers). One holding "/hold <path>" is answered in
+// mid-answer, once per model file (a `.crashed` file beside it remembers). A `/engine-stop <file> <count> [<gate>]`
+// request gets Strata's engine-exit error for its first <count> attempts, once the optional gate exists. The file
+// records every prompt. Replace <gate> with `tool` to answer with a tool call, then repeat the failures after its result.
+// One holding "/hold <path>" is answered in
 // part, and finished once that file exists. When the engine gave it a key (STRATA_API_KEY), a request without it is
 // refused. It writes its own process number, and its program's, beside the model file (`.pid`, `.child`), with its
 // command line (`.args`) and the run config it was given (`.config`).
@@ -105,6 +108,29 @@ const server = createServer(async (request, response) => {
 	if (request.method !== "POST" || request.url !== "/v1/chat/completions") return refuse(response, 404, "not found");
 	const asked = JSON.parse(await body(request)) as { messages?: { role?: string; content?: unknown }[]; stream?: boolean };
 	const last = textOf([...(asked.messages ?? [])].reverse().find((message) => message.role === "user")?.content).trim();
+	const failure = /^\/engine-stop (\S+) (\d+)(?: (\S+))?$/.exec(last);
+	if (failure !== null) {
+		const path = failure[1]!;
+		const count = Number(failure[2]);
+		const gate = failure[3];
+		const withTool = gate === "tool";
+		const afterTool = withTool && asked.messages?.some((message) => message.role === "tool");
+		const record = afterTool ? `${path}.after-tool` : path;
+		const prompts: unknown[] = existsSync(record) ? JSON.parse(readFileSync(record, "utf8")) : [];
+		prompts.push(asked.messages);
+		writeFileSync(record, JSON.stringify(prompts));
+		if (prompts.length <= count) {
+			if (gate !== undefined && !withTool) while (!existsSync(gate)) await new Promise((resolve) => setTimeout(resolve, 50));
+			return refuse(response, 500, "the engine stopped unexpectedly (exit code -6); the next request restarts it");
+		}
+		if (withTool && !afterTool) {
+			const fn = { name: "update_plan", arguments: JSON.stringify({ items: [{ content: "Test retry reset", status: "completed" }] }) };
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_reset", type: "function", function: fn }] }));
+			response.write(chunk({}, "tool_calls"));
+			return response.end("data: [DONE]\n\n");
+		}
+	}
 	const answer = `You said: ${last}`;
 	response.writeHead(200, { "content-type": "text/event-stream" });
 	response.write(chunk({ role: "assistant", content: "" }));

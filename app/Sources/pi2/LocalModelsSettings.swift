@@ -595,6 +595,8 @@ private struct ConfigureLocalModelSheet: View {
             Stepper("Requests at once: \(parallel)", value: $parallel, in: 1...4)
             Text("Several conversations can use the model at the same moment; each request run at once keeps its own context in memory, and each is slower than one alone.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("One at a time is the steadier choice: with more, the engine can stop itself when two long answers overlap, and pi² then starts it again.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("A change counts from the next time the model starts.").font(.callout).foregroundStyle(.secondary)
             HStack {
                 Button("Defaults") {
