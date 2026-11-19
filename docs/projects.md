@@ -1654,6 +1654,14 @@ Each piece below has one owner, which builds it, with what the others need of it
 - A conversation takes `projectId` as it is made: from its agent (`conversation.create`, a schedule's run, Continue with an Agent), from its parent (a sub-chat) or from the conversation it forks.
 - The engine's settings reach a feature through `engine.setting(key)` and `engine.saveSetting(key, value)` (`features.ts`), since the engine writes `settings.json` whole.
 
+**As #467 built them.** `engine/src/work.ts` owns `Work`, `WorkBackend`, and the two backends' shared `checkWorkTransition` and `workTransition` functions. Local writes recheck the row in the committing transaction; for `assign` that commit also places the first input, starts the run, and saves its sub-chat watch. The watch reports as the existing `delegate` with `wait: false` does until #463 plugs in reports. Work news is saved in the same commit for #466 to deliver.
+
+- `workerOf(meta)` in `work.ts` uses `agentId` until #457 switches the lookup to `runsAs`.
+- `assign` calls `requireSwitch` before starting and `admit(start, confirm?)` at the start. Until #464 the admission check accepts every start. `WorkLimitError` already carries the reading into the socket response's `data.limit`; #464 supplies the agent's limit card and its answer. The existing all-pi² budget still applies.
+- `recordWork(tx, { projectId, action, by, before, after })` in `work.ts` is called on a change, in its transaction. Until #465 wires it to `record(op)`, it writes nothing.
+- `githubWorkBackend(project)` in `work.ts` has no backend until #468 supplies it. Dispatch refuses an attached repository rather than writing to the project's local list; #468 also supplies the GitHub listing's `readAt` and the pull-request actions. The local `Work` document is available when checking for open work before attaching.
+- The tool's `list` defaults to all open states. The person's `work.list` lists all items unless filtered; `close` needs an explicit `as`. The person can `note` through `work.act` as listed in 4.2. Optional text on `wait` or `block` adds a note, and reopening clears the result and `closedAt`.
+
 ### 12.2 Each issue
 
 What each issue builds of this contract, and whether the contract changes its scope. The issues' texts are not edited by this page: once the owner has agreed it, the agent that hands out the work edits those marked changed, saying how, as the epic's roadmap says, before handing any of them out. An issue builds the engine side of what it names unless it is an app issue (#470 on).

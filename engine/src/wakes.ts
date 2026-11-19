@@ -18,6 +18,7 @@ import { type Host, subChatResult } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { Library, type Meta } from "./state.ts";
 import { subChatActivity } from "./subchats.ts";
+import { syncWorkForInput } from "./work.ts";
 
 /** The message that wakes an agent: the model reads its content, and the transcript shows a line. */
 export const WAKE_ENTRY = "pi2.wake";
@@ -372,6 +373,7 @@ async function deliverNow(id: number): Promise<void> {
 			const { conversations } = await tx.doc(Library);
 			const content = `${head}\n\n${items.map((item) => resultText(item, conversations)).join("\n\n---\n\n")}${limit}`;
 			const data = { items: items.map((item) => ({ kind: item.kind, ref: item.ref, label: item.label, ended: item.ended })) };
+			await syncWorkForInput(tx, conv.id, conversations[String(id)]);
 			// Refused, writing nothing, if a run started meanwhile: what arrived then goes at that run's end, with the rest.
 			await conv.submit(tx, { type: "input", content, entry: { kind: WAKE_ENTRY, data }, whenBusy: "reject", requestId: `wake:${id}:${items[0]!.key}` });
 			delete doc.arrived[String(id)];

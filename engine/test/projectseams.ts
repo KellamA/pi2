@@ -27,15 +27,16 @@ import {
 	type Start,
 } from "../src/projects.ts";
 import { Inbox, type Meta } from "../src/state.ts";
+import { work } from "../src/work.ts";
 import { until } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
 
-// Its place in FEATURES: last of today's features, with the places after it for the others (4.4).
-assert.equal(FEATURES.at(-1), projects);
-step("the projects feature is last in FEATURES, where the others' places follow it");
+// Its place in FEATURES: before the greetings that build on it (4.4).
+assert.ok(FEATURES.includes(projects) && FEATURES.indexOf(work) > FEATURES.indexOf(projects));
+step("the projects greeting comes before the work greeting");
 
 const project = (id: string, extra: Partial<Project> = {}): Project => ({
 	id,

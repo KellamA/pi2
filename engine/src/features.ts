@@ -38,6 +38,7 @@ import { selfSchedule } from "./selfschedule.ts";
 import { variables } from "./variables.ts";
 import { wakes } from "./wakes.ts";
 import { thinkingNotices } from "./thinkingretry.ts";
+import { work } from "./work.ts";
 import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
@@ -87,7 +88,7 @@ export type FeatureParts = {
 	// biome-ignore lint/suspicious/noExplicitAny: tools of any parameter shape
 	wraps?: Wrap<any>[];
 	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
-	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean }): string[];
+	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string }): string[];
 	/** Which of this feature's tools a chat (chat.ts) is given, with chat mode's settings as they are now. */
 	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
@@ -207,6 +208,6 @@ export const FEATURES: Feature[] = [
 	// projectRules (#459)
 	// needs (#462)
 	// reports (#463)
-	// work (#467)
+	work,
 	// github (#468)
 ];
