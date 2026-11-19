@@ -28,7 +28,6 @@ import {
 	ruleTokens,
 	type Start,
 } from "../src/projects.ts";
-import { localModels } from "../src/localmodels.ts";
 import { reports } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
 import { until } from "./patience.ts";
@@ -37,10 +36,16 @@ function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
 
-// Its place in FEATURES: after today's features, with the projects' others after it (4.4). #463's reports is one.
-assert.ok(FEATURES.indexOf(localModels) < FEATURES.indexOf(projects));
-assert.ok(FEATURES.indexOf(projects) < FEATURES.indexOf(reports));
-step("the projects feature comes after today's features in FEATURES, and the others' places follow it");
+// Its place in FEATURES: last of today's features, with the places after it for the others (4.4), which each later
+// issue fills with its own feature: only the epic's features come after it.
+const epic = ["projects", "projectRules", "needs", "reports", "work", "github"];
+assert.ok(FEATURES.includes(projects));
+assert.deepEqual(
+	FEATURES.slice(FEATURES.indexOf(projects)).map((feature) => feature.name).filter((name) => !epic.includes(name)),
+	[],
+);
+step("the projects feature is last of today's features in FEATURES, where the others' places follow it");
+
 // The rules' greeting follows projects (4.4), independently of their section's place (6.1).
 assert.equal(FEATURES[FEATURES.indexOf(projects) + 1], projectRules);
 assert.ok(FEATURES.indexOf(projectRulesPrompt) < FEATURES.indexOf(projects));
