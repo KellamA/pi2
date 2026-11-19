@@ -1662,6 +1662,12 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `githubWorkBackend(project)` in `work.ts` has no backend until #468 supplies it. Dispatch refuses an attached repository rather than writing to the project's local list; #468 also supplies the GitHub listing's `readAt` and the pull-request actions. The local `Work` document is available when checking for open work before attaching.
 - The tool's `list` defaults to all open states. The person's `work.list` lists all items unless filtered; `close` needs an explicit `as`. The person can `note` through `work.act` as listed in 4.2. Optional text on `wait` or `block` adds a note, and reopening clears the result and `closedAt`.
 
+**As #461 built them.** Notes extend the existing `knowledge` feature in place in `FEATURES`, so the `memory` greeting and section keep their places. Project-only note storage and tool operations live in `engine/src/projectnotes.ts`.
+
+- `Memory` and `MemoryDoc` (`knowledge.ts`) and `projectNotebook(doc, projectId)` (`projectnotes.ts`) are for #458 to write carried notes in its own commit. Until then nothing is copied from an agent's notes. `knowledge` sends the `memory` event for a commit to that document by any feature, including carrying over or Undo.
+- `memoryAgentId(conversation)` in `knowledge.ts` reads `agentId` until #457 routes it through `runsAs`. A sub-chat runs with the notebook of its own agent, not the parent's; a template in a project-marked conversation is not given the project's notes.
+- `recordNoteChange(tx, projectId, { by, op, inverse, summary })` in `projectnotes.ts` is for #465. The tools already form `note.add` and `note.remove` and their inverses in the note's transaction. Until #465 wires the record this hook returns `undefined`: notes are changed, but there is no `details.change`, line or Undo. The request and tool paths share the project's lifecycle checks and note add/remove helpers; #465 will apply and check the inverse there.
+
 ### 12.2 Each issue
 
 What each issue builds of this contract, and whether the contract changes its scope. The issues' texts are not edited by this page: once the owner has agreed it, the agent that hands out the work edits those marked changed, saying how, as the epic's roadmap says, before handing any of them out. An issue builds the engine side of what it names unless it is an app issue (#470 on).
