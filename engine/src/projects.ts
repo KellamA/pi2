@@ -12,7 +12,6 @@
 // - `onPreviewOn(plan)`: carrying over when the preview is turned on (#458). Until then it carries nothing over.
 // - `carryOverState()`: the `projects` event's `carryOver` (#458). Null until then.
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard (#466). Null until then.
-// - `admit(start)`: the one admission check of every start (#464, who moves it to `projectlimits.ts`). Admits every start.
 // - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by #466. Stored and never told until then.
 // - `requireSwitch` is whole: a switch that is off asks the person, whatever the agent's access (#457, #465, #467 and
 //   #468 call it from their tools).
@@ -344,14 +343,7 @@ export async function requireSwitch(conversation: SwitchAsk, name: SwitchName, w
 	return answer === "once" ? { ok: true } : { ok: false, reason: SWITCH_DECLINED };
 }
 
-/**
- * The one admission check every start passes, at the moment it would start (8.3). #464 builds it, in
- * `projectlimits.ts`; until then this stub admits every start, so that `delegate` (#457), `work` `assign` (#467) and the
- * person's starts can call it from the start.
- */
-export function admit(_start: Start, _confirm?: string): { ok: true } | { ok: false; limit: LimitReading } {
-	return { ok: true };
-}
+export { admit } from "./projectlimits.ts";
 
 /**
  * Store one piece of news for project `projectId`'s orchestrator, in the commit `tx` that makes what it tells of (6.4).

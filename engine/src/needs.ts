@@ -14,7 +14,7 @@
 // - `reach` (#465): the request for more reach, allowed or refused. No handler yet, so an answer to one is refused and
 //   the item stays; nothing puts one until #465.
 // - `rule` (#465, adding through #459's `addRule`): a proposed rule, accepted or not. The same until then.
-// - `limit` (#464): a start refused for a limit, started anyway or left. The same until then.
+// - `limit` (#464, projectlimitstarts.ts): a start refused for a limit, started anyway or left.
 // - `ReachChange.op` is typed `unknown` until #465 gives it its type, `Op` (3.12).
 //
 // Questions and decisions are this file's own: the answer is given to the conversation that asked as a wake of the kind
@@ -60,7 +60,7 @@ export type StoredNeed =
 	| (StoredBase & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
 	| (StoredBase & { kind: "reach"; change: ReachChange; why: string | null })
 	| (StoredBase & { kind: "rule"; text: string; binds: "orchestrator" | "everyone"; why: string | null })
-	| (StoredBase & { kind: "limit"; start: Start; limit: LimitReading });
+	| (StoredBase & { kind: "limit"; start: Start; limit: LimitReading; confirmed?: LimitReading[] });
 
 export type NeedsDoc = { items: Record<string, StoredNeed>; next: number };
 
@@ -330,13 +330,17 @@ export async function claim(id: string, answer: NeedAnswer): Promise<void> {
 		if (wired.inbox.take(id, (item) => inboxAnswer(item, answer)) === undefined) throw new Error(GONE);
 		return;
 	}
-	if (current.items[id] === undefined) throw new Error(GONE);
+	const seen = current.items[id];
+	if (seen === undefined) throw new Error(GONE);
 	const engine = running;
 	const after = await engine.harness().commit(async (tx) => {
 		const doc = await needsIn(tx);
 		const need = doc.items[id];
 		if (need === undefined) throw new Error(GONE);
 		checkStored(need, answer);
+		if (need.kind === "limit" && seen.kind === "limit" && answer.kind === "limit" && answer.start && need.limit.id !== seen.limit.id) {
+			throw new Error("The limit reading changed. Look at it again before allowing this start.");
+		}
 		const handler = handlers.get(need.kind) as AnswerHandler<StoredKind> | undefined;
 		// Until the issue that puts this kind registers what its answer does (12.1), nothing could act on it: the answer is
 		// refused rather than lost, and the item stays.
@@ -421,6 +425,8 @@ export function needItems(): NeedItem[] {
 	});
 	const stored: NeedItem[] = storedNeeds().map((need) => {
 		const { id, projectId, conversationId, callId: _, createdAt, ...rest } = need;
+		// Earlier confirmations are private to the card handler; only the reading now asking is on the wire.
+		if (rest.kind === "limit") delete rest.confirmed;
 		return { ...base(id, conversationId, projectId, false, createdAt), ...rest } as NeedItem;
 	});
 	return [...waiting, ...stored].sort(oldestFirst);

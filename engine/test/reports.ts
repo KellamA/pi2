@@ -18,7 +18,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Host } from "../src/extensions.ts";
 import type { Engine } from "../src/features.ts";
 import { defaultProjectSettings, PREVIEW_OFF, type Project, type ProjectsDoc, projects } from "../src/projects.ts";
-import { pastLimit, type Report, type ReportsDoc, type ReportWake, reports, settle } from "../src/reports.ts";
+import { type Report, type ReportsDoc, type ReportWake, reports, settle } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
 import type { Watch, WakesDoc } from "../src/wakes.ts";
 import { EngineClient, exited, running, stop } from "./patience.ts";
@@ -35,11 +35,6 @@ const engineLog = join(home, "engine.log");
 function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
-
-// ---- What a later issue fills in, as it is until then
-
-assert.equal(pastLimit("p-any"), false);
-step("until #464, no project is past a limit for its reports");
 
 // ---- settle, alone: a stand-in engine and host, as projectseams.ts has them, and a stand-in commit
 {

@@ -121,7 +121,7 @@ The retrying is pi durable's: a failed request becomes a stored sleep in the run
 - a patch to pi durable (`engine/scripts/patch-dependencies.ts`) asks the engine about each failed request before its own rule: how long to wait, or to end the run, and how many attempts were spent on such waits, which then do not count against its three retries;
 - the engine keeps each wait (when it began, until when, how many refusals, whose) in a session document, `pi2.limitWaits`, for what is shown, the log, and the 6 hours.
 
-The same knowledge of the plan's windows that **Usage** shows is not used to hold back a run before it is refused; see the Known limits.
+A project can use the readings **Usage** shows to hold back new starts ([project limits](projects.md#83-limits-and-the-one-admission-check)). Outside a project, the figures do not hold work back.
 
 ## The prompt cache
 
@@ -195,6 +195,6 @@ The episodes of a provider's limit (the runs that wait for its rate limit, from 
 - Copilot's figures appear only after a request in pi², and premium requests are the only allowance shown (chat and completions are unlimited on paid plans).
 - The figures from answers are as of the start of that answer.
 - Signing in again to a different account of the same provider, without signing out first, keeps showing the old account's figures until they are next read.
-- Nothing holds a run back before a provider refuses it, however full a window is: the wait starts with the first refusal. An agent that hands out work and the person are told how the windows stand ([above](#telling-an-agent-that-hands-out-work-and-the-person)), and what to do about it is theirs.
+- Outside a project, the plan readings do not hold a run back before a provider refuses it, however full a window is: the wait starts with the first refusal. An agent that hands out work and the person are told how the windows stand ([above](#telling-an-agent-that-hands-out-work-and-the-person)). Project limits are a check on new starts, not a reservation; they do not stop work already running.
 - Nearly-used-up notices can keep a run's original provider until its work ends. A change through **Carry on with…** does remove the run from the old provider's reached-limit notice.
 - A summary of earlier messages (compaction) that a provider refuses for its limit is still retried only three times, and then fails as it did before.
