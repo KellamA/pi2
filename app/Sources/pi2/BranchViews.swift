@@ -212,7 +212,9 @@ struct BranchDetails: View {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: status.root)]) }
                     .disabled(status.state == "missing")
                 if let branch = status.branch {
-                    Button("Copy Name") { copy(branch) }.help("Copy the branch name")
+                    Button("Copy Name") {
+                        AppCopy.write(branch, kind: .branchName, engine: engine, conversation: conversationID)
+                    }.help("Copy the branch name")
                 }
                 Spacer(minLength: 8)
                 if status.managed {
@@ -234,11 +236,6 @@ struct BranchDetails: View {
         .font(.system(size: 12.5))
         .padding(14)
         .frame(width: 400, alignment: .leading)
-    }
-
-    private func copy(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
     }
 }
 
@@ -267,8 +264,7 @@ struct BranchMenu: View {
                 .disabled(status.state == "missing")
             if let branch = status.branch {
                 Button("Copy Branch Name") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(branch, forType: .string)
+                    AppCopy.write(branch, kind: .branchName, engine: engine, conversation: id)
                 }
             }
             Divider()
@@ -587,8 +583,7 @@ struct BranchesView: View {
                     .disabled(item.status.state == "missing")
                 if let branch = item.status.branch {
                     Button("Copy Branch Name") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(branch, forType: .string)
+                        AppCopy.write(branch, kind: .branchName, engine: engine, conversation: item.id)
                     }
                 }
             } label: {

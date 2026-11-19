@@ -262,8 +262,7 @@ final class TranscriptBridge {
             guard feed.pending == 0 else { return }
             engine.loadOlder(conversationID)
         case .copy(let text):
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            AppCopy.write(text, kind: .transcript, engine: engine, conversation: conversationID)
         case .openLink(let url):
             NSWorkspace.shared.open(url)
         case .decide(let id, let decision):
@@ -379,9 +378,8 @@ final class TranscriptBridge {
             NSWorkspace.shared.open(URL(fileURLWithPath: whole))
         case .copyPath:
             let whole = FileLink.resolve(path).path
-            if record("copyPath", whole) { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(whole, forType: .string)
+            _ = record("copyPath", whole, act: false)
+            AppCopy.write(whole, kind: .filePath, engine: engine, conversation: conversationID)
         }
     }
 

@@ -260,6 +260,8 @@ In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation 
 
 `answer test-7 <conversation-id> allow|deny` answers exactly one waiting approval in that conversation (use the sub-chat's own id). `allow` means Allow Once, with no rule saved. `fill test-7 600` prints the id of a new demo conversation with 600 synthetic entries, including long tool outputs, without running the model or commands.
 
+Use pi²'s own Copy buttons and menu items in a test copy, then run `scripts/test-copy last-copy test-7`. It prints the last JSON record from `copies.jsonl` in that copy's data folder, or fails if nothing was copied. The record has `kind`, `conversation` when there is one, `length` in Unicode scalars, and `text` (or just `prefix`, the first 4,096 scalars, for longer text). These actions leave the pasteboard alone; native text-selection Copy is not recorded.
+
 Before clicking a button that opens an Open or Save panel, run `scripts/test-copy choose test-7 <path>…` (or `cancel`). A successful command replaces any pending answer; the next panel uses it once, without showing. Reopening clears it, and an unarmed panel always cancels.
 Use paths in the copy’s data folder, this checkout’s `app/build`, or the conversation’s `PI2_SCRATCH` from launch. Symlinks and `..` are refused. Open needs existing items; Save can name a new file in an existing folder. Read `file-panels.jsonl` in the copy’s data folder for the panel name, selected paths or cancellation reason.
 

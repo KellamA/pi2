@@ -691,8 +691,7 @@ struct TranscriptView: View {
                             .contextMenu(previewAs: "message \(item.id)") {
                                 Button("Fork From Here") { engine.fork(conversationID, at: item.id) }
                                 Button("Copy") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(item.text, forType: .string)
+                                    AppCopy.write(item.text, kind: .message, engine: engine, conversation: conversationID)
                                 }
                             }
                     default:

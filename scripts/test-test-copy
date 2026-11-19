@@ -84,6 +84,9 @@ expect "use: scripts/test-copy size" size test-7 smallest 532
 expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
 expect "use: scripts/test-copy choose" choose test-7
+expect "a suffix is required" last-copy
+expect "is not a suffix" last-copy ../pi2
+expect "use: scripts/test-copy last-copy" last-copy test-7 extra
 for suffix in dev ../pi2 Test-7 test-7-with-a-suffix-much-too-long-for-a-socket; do
 	case $suffix in
 		dev) want="'dev' is the suffix every development build has" ;;
@@ -155,6 +158,7 @@ expect "no copy named test-7 was started from this checkout" size test-7 smalles
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" choose test-7 cancel
 expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
 expect "no copy named test-7 was started from this checkout" fill test-7 600
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" last-copy test-7
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
@@ -357,8 +361,31 @@ HOME="$T/home" expect "refusing a symlink" choose test-7 cancel
 HOME="$T/home" expect "refusing a symlink" answer test-7 8 allow
 HOME="$T/home" expect "refusing a symlink" fill test-7 600
 rm "$data/engine.sock"
+
+# Reading past Copy actions needs an owned bundle, but not a running app or engine.
+printf '%s\n' 'app_pid=99999999' "app_exe=$saved/Contents/MacOS/pi2" >"$root/app/build/test-copies/test-7/state"
+HOME="$T/home" expect "no Copy action has been recorded" last-copy test-7
+log="$data/copies.jsonl"
+ln -s "$T/elsewhere.jsonl" "$log"
+HOME="$T/home" expect "refusing a symlink for the copy's record" last-copy test-7
+rm "$log"
+touch "$log"
+HOME="$T/home" expect "no Copy action has been recorded" last-copy test-7
+latest='{"kind":"transcript","conversation":8,"length":7,"text":"one\ntwo"}'
+printf '%s\n' '{"kind":"branchName","length":4,"text":"demo"}' "$latest" >"$log"
+if out=$(HOME="$T/home" PI2_HOME="$T" "$copy" last-copy test-7) && [[ $out == "$latest" ]]; then
+	echo "ok: test-copy last-copy prints just the latest record from the copy's data folder"
+else
+	echo "FAIL: test-copy last-copy said: $out"
+	failures=$((failures + 1))
+fi
+rm "$log"
+# Restore the recorded engine for the socket checks below.
+printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
+	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
 rmdir "$data"
 ln -s "$T" "$data"
+HOME="$T/home" expect "refusing a symlink" last-copy test-7
 HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
