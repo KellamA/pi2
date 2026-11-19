@@ -1666,6 +1666,12 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `removeAgent(id)` (#465's `agent.remove`) sets `removedAt`, refusing the orchestrator, an agent working now ("Forge is working on sub-chat 14. Wait for it, or ask the person to stop it.") and an archived project's agent. Nothing calls it before #465; `agents.restore` puts an agent back.
 - `delegate`, in a conversation of a project, with the preview on or off: the approval hook asks through `requireSwitch` ("Start a new sub-chat with Forge, “Fix login”.", "Continue sub-chat 14, “Fix login”, with Forge.") while `startAgents` is off, and the tool calls `admit` as it makes or continues the sub-chat, answering "Not started: <reason>" when it is refused. Until #464, `admit` admits every start; #464 decides `passLimits` and puts the card inside it. Once #463 lands, `delegate` calls `settle`.
 
+**As #459 built them.** The rules live in `engine/src/projectrules.ts`.
+
+- `addRule(tx, projectId, { text, binds, addedBy })` validates and appends in the caller's transaction, returning the `ProjectRule`. Until #465 supplies the tool and acceptance handler (on #462's cards), only the person's `projects.rules.add` calls it, attributing the rule to the person. #465 supplies agent or proposal attribution and checks reach before calling it; the helper does not ask or make a card.
+- `projectRulesPrompt` sits after `plan` in `FEATURES`. #466's `project` section goes between them; until then there is no `project` section. The rules prompt compares the agent the conversation runs as (`runsAs`, #457) to the project's `orchestratorId`.
+- `projectRules` sits after `projects` in `FEATURES` for the greeting. It reads committed rules, including writes by `addRule` in another feature's transaction, and wires `ruleTokens` through `wireRuleTokens` in `projects.ts`. Estimates count the tagged section actually sent. The prompt keeps board order, repeating a heading if a binding recurs later in the order.
+
 **As #461 built them.** Notes extend the existing `knowledge` feature in place in `FEATURES`, so the `memory` greeting and section keep their places. Project-only note storage and tool operations live in `engine/src/projectnotes.ts`.
 
 - `Memory` and `MemoryDoc` (`knowledge.ts`) and `projectNotebook(doc, projectId)` (`projectnotes.ts`) are for #458 to write carried notes in its own commit. Until then nothing is copied from an agent's notes. `knowledge` sends the `memory` event for a commit to that document by any feature, including carrying over or Undo.
