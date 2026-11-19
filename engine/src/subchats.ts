@@ -94,7 +94,7 @@ export function branchWords(info: BranchInfo): string {
  * Whether a sub-chat or one of its own sub-chats is busy, waiting on the person or waiting for a provider's limit, and if
  * so, in words.
  */
-function activity(host: Host, ids: number[]): string | undefined {
+export function subChatActivity(host: Host, ids: number[]): string | undefined {
 	const waiting = host.inbox.list().filter((item) => ids.includes(item.conversationId));
 	if (waiting.length > 0) return `waiting on the person (${waiting[0]!.kind === "question" ? "a question" : "an approval"})`;
 	if (!ids.some((id) => host.working(id))) return undefined;
@@ -197,7 +197,7 @@ export function subChatsTool(host: Host) {
 				const lines: string[] = [];
 				for (const id of listed) {
 					const meta = all[String(id)]!;
-					const busy = activity(host, [id, ...subChatsOf(all, id)]);
+					const busy = subChatActivity(host, [id, ...subChatsOf(all, id)]);
 					const state = busy === undefined ? "idle" : watchedSubChats(caller).includes(id) ? `${busy}, and its answer will come to you as a message` : busy;
 					const where = whereWords(await whereOf(api, id, parentWorktree, context));
 					const commands = runningCommandsOf(id);
@@ -273,7 +273,7 @@ export function subChatsTool(host: Host) {
 					lines.push([`- ${id}: already archived.`, ...(await worktreeAfter(id, own))].join(" "));
 					continue;
 				}
-				const busy = activity(host, [id, ...subChatsOf(all, id)]);
+				const busy = subChatActivity(host, [id, ...subChatsOf(all, id)]);
 				if (busy !== undefined) {
 					lines.push(`- ${id}: not archived, because it is ${busy}. Archive it once it has finished.`);
 					refused.push(id);

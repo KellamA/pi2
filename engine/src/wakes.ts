@@ -16,7 +16,8 @@ import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { ConversationBusy, type ConversationId, defineDoc, type SettledSubmissionRecord, type SubmissionId } from "@earendil-works/pi-durable";
 import { type Host, subChatResult } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
-import { Library } from "./state.ts";
+import { Library, type Meta } from "./state.ts";
+import { subChatActivity } from "./subchats.ts";
 
 /** The message that wakes an agent: the model reads its content, and the transcript shows a line. */
 export const WAKE_ENTRY = "pi2.wake";
@@ -60,7 +61,9 @@ export type Watch = {
 };
 
 /** Something that ended, waiting to be handed to its conversation's agent. */
-type Arrived = { key: string; kind: WakeKind; ref: string; label: string; ended: string; text: string; at: number };
+type Arrived = { key: string; kind: WakeKind; ref: string; label: string; ended: string; text: string; at: number; failure?: SubChatFailure };
+/** Keep the older run's reason separate from its advice, which can be out of date at handover. */
+type SubChatFailure = { submissionId: number; withoutAdvice: string; usage: string };
 /** Why a conversation is not woken for now: the person stopped it, the hourly cap, or the budget. */
 type Hold = { why: "stopped" | "cap" | "budget"; since: number };
 type Doc = {
@@ -194,15 +197,16 @@ export const watched = (key: string): boolean => mirror.watching[key] !== undefi
 
 /**
  * Something watched has ended: keep it for its agent, and wake the agent if it is not answering. `ended` is a few words
- * for the person's line ("answered", "exited with code 1"); `text` is what the agent is given.
+ * for the person's line ("answered", "exited with code 1"); `text` is what the agent is given, or the failure reason
+ * with advice when `failure` allows that advice to be replaced at delivery.
  */
-export async function arrive(key: string, ended: string, text: string): Promise<void> {
+export async function arrive(key: string, ended: string, text: string, failure?: SubChatFailure): Promise<void> {
 	const id = await change((doc) => {
 		const watch = doc.watching[key];
 		if (watch === undefined) return undefined;
 		delete doc.watching[key];
 		doc.seen[key] = Date.now();
-		const item: Arrived = { key, kind: watch.kind, ref: watch.ref, label: watch.label, ended, text, at: Date.now() };
+		const item: Arrived = { key, kind: watch.kind, ref: watch.ref, label: watch.label, ended, text, at: Date.now(), ...(failure === undefined ? {} : { failure }) };
 		doc.arrived[String(watch.conversationId)] = [...(doc.arrived[String(watch.conversationId)] ?? []), item];
 		return watch.conversationId;
 	});
@@ -213,17 +217,22 @@ export async function arrive(key: string, ended: string, text: string): Promise<
 
 /** Wait for a sub-chat's submission to settle, then pass on its result. In memory: `start` picks the watches up again. */
 function follow(watch: Watch): void {
-	if (engine === undefined || host === undefined || watch.submissionId === undefined || following.has(watch.key)) return;
+	const submissionId = watch.submissionId;
+	if (engine === undefined || host === undefined || submissionId === undefined || following.has(watch.key)) return;
 	following.add(watch.key);
 	const { harness, context } = { harness: engine.harness(), context: engine.context() };
 	const child = Number(watch.ref);
 	void (async () => {
 		try {
-			const submission = await harness.submission(watch.submissionId as unknown as SubmissionId, context);
+			const submission = await harness.submission(submissionId as unknown as SubmissionId, context);
 			let settled: SettledSubmissionRecord | undefined;
 			if (submission !== undefined) settled = await submission.wait(context);
 			const result = await subChatResult(host!, harness, child, watch.agent ?? "The agent", settled, context);
-			await arrive(watch.key, result.failed ? "stopped without answering" : "answered", `${capital(watch.label)} ${result.failed ? "stopped without an answer" : "answered"}:\n\n${result.text}`);
+			if (result.failed) {
+				await arrive(watch.key, "stopped without answering", result.text, { submissionId, withoutAdvice: result.withoutAdvice, usage: result.usage });
+			} else {
+				await arrive(watch.key, "answered", `${capital(watch.label)} answered:\n\n${result.text}`);
+			}
 		} catch (error) {
 			engine?.log("could not follow", watch.label, "for conversation", watch.conversationId, error instanceof Error ? error.message : error);
 		} finally {
@@ -233,6 +242,17 @@ function follow(watch: Watch): void {
 }
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+function resultText(item: Arrived, conversations: Record<string, Meta>): string {
+	const failure = item.failure;
+	if (failure === undefined) return item.text;
+	const meta = conversations[item.ref];
+	const head = `${capital(item.label)} stopped without an answer:\n\n`;
+	if ((meta?.subChatTask ?? 0) <= failure.submissionId) return head + item.text + failure.usage;
+	const activity = host === undefined ? undefined : subChatActivity(host, [Number(item.ref)]);
+	const state = meta?.deleted === true ? "has since been deleted" : meta?.archivedAt !== undefined ? "is now archived" : activity === undefined ? "is now idle" : `is ${activity}`;
+	return `${head}${failure.withoutAdvice} It has been continued since and ${state}.${failure.usage}`;
+}
 
 // ---- Waiting for a sub-chat instead of being woken
 
@@ -251,7 +271,7 @@ export async function nextSubChats(conversationId: number, chats: number[] | und
 			const rest = list.filter((item) => !wanted(item));
 			if (rest.length === 0) delete doc.arrived[String(conversationId)];
 			else doc.arrived[String(conversationId)] = rest;
-			return mine.map((item) => ({ text: item.text }));
+			return mine.map((item) => ({ text: resultText(item, host?.conversations() ?? {}) }));
 		});
 		if (taken.length > 0) return taken;
 		if (!Object.values(mirror.watching).some((each) => each.conversationId === conversationId && wanted(each))) return "none";
@@ -349,7 +369,8 @@ async function deliverNow(id: number): Promise<void> {
 			const limit = last
 				? `\n\n[pi² has now woken you ${WAKES_PER_HOUR} times in the last hour, the most it does. Until an hour has passed since the first of them, or the person sends a message, what ends is kept for you rather than waking you.]`
 				: "";
-			const content = `${head}\n\n${items.map((item) => item.text).join("\n\n---\n\n")}${limit}`;
+			const { conversations } = await tx.doc(Library);
+			const content = `${head}\n\n${items.map((item) => resultText(item, conversations)).join("\n\n---\n\n")}${limit}`;
 			const data = { items: items.map((item) => ({ kind: item.kind, ref: item.ref, label: item.label, ended: item.ended })) };
 			// Refused, writing nothing, if a run started meanwhile: what arrived then goes at that run's end, with the rest.
 			await conv.submit(tx, { type: "input", content, entry: { kind: WAKE_ENTRY, data }, whenBusy: "reject", requestId: `wake:${id}:${items[0]!.key}` });
@@ -357,7 +378,7 @@ async function deliverNow(id: number): Promise<void> {
 			doc.woken[String(id)] = [...(doc.woken[String(id)] ?? []).filter((at) => at > Date.now() - HOUR), Date.now()];
 			delete doc.held[String(id)];
 			for (const [key, at] of Object.entries(doc.seen)) if (at < Date.now() - SEEN_MS) delete doc.seen[key];
-			const meta = (await tx.doc(Library)).conversations[String(id)];
+			const meta = conversations[String(id)];
 			if (meta !== undefined) meta.updatedAt = Date.now();
 		}, context);
 	} catch (error) {
