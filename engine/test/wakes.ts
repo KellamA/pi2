@@ -315,7 +315,11 @@ try {
 		const sub = await client.tool(b, `/tool delegate ${JSON.stringify({ agent: "Worker", task: "/background sleep 600" })}`);
 		const child = sub.details.conversationId as number;
 		await client.call("conversation.open", { id: child });
+		const startWithWake = await client.tool(child, '/tool bash {"command":"echo should-not-run","background":true,"wake":true}');
+		assert.equal(startWithWake.isError, true);
+		assert.match(startWithWake.text, /command was not started/);
 		const commands = await client.tool(child, '/tool background {"action":"list"}');
+		assert.doesNotMatch(commands.text, /should-not-run/);
 		const childBg = /bg-\d+/.exec(commands.text)?.[0];
 		assert.ok(childBg);
 		const refused = await client.tool(child, `/tool background ${JSON.stringify({ action: "wake", id: childBg })}`);
