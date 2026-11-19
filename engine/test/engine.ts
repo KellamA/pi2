@@ -217,6 +217,7 @@ try {
 	await client.until("providers", () => client.providers.length > 0);
 	await assert.rejects(client.call("test-copy.fill", { entries: 600 }), /Unknown method: test-copy\.fill/);
 	await assert.rejects(client.call("test-copy.answerer", { key: "" }), /Unknown method: test-copy\.answerer/, "only a test copy's engine has a key");
+	await assert.rejects(client.call("test-copy.fillProject", {}), /Unknown method: test-copy\.fillProject/);
 
 	// ---- Conversations and the demo model
 	const { id: a } = await client.call("conversation.create");
