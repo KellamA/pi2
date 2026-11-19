@@ -35,6 +35,14 @@ enum PerfProbe {
     private static var trips: [String: [Double]] = [:]
     private static var observer: CFRunLoopObserver?
     private static var heartbeat: DispatchSourceTimer?
+    /// How often each of a few things happened in this window, by name (`count`).
+    private static var counts: [String: Int] = [:]
+
+    /// One more of `what` in this window, such as the scene body running.
+    static func count(_ what: String) {
+        guard active else { return }
+        counts[what, default: 0] += 1
+    }
 
     static func now() -> Double { ProcessInfo.processInfo.systemUptime }
 
@@ -110,6 +118,7 @@ enum PerfProbe {
         kinds = [:]
         lags = []
         trips = [:]
+        counts = [:]
         awake = 0
         windowStart = now()
     }
@@ -186,6 +195,9 @@ enum PerfProbe {
         for (method, times) in trips.sorted(by: { $0.key < $1.key }) {
             text += String(format: "  request %@ %3d  avg %6.0fms  worst %6.0fms\n", method.padding(toLength: 24, withPad: " ", startingAt: 0), times.count,
                            times.reduce(0, +) / Double(times.count) * 1000, (times.max() ?? 0) * 1000)
+        }
+        for (what, count) in counts.sorted(by: { $0.key < $1.key }) {
+            text += "  count \(what.padding(toLength: 40, withPad: " ", startingAt: 0)) \(count)\n"
         }
         write(text.trimmingCharacters(in: .newlines))
         reset()
