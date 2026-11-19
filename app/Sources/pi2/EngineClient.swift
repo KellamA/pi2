@@ -184,6 +184,7 @@ final class EngineClient {
     /// does not know the conversation and the library does not list it, the request is let go quietly: the window empties
     /// that pane once the library is in. A conversation the library lists that fails to open is still reported.
     private func requestOpen(_ id: Int) {
+        PerfProbe.opening(id, "sent")
         Task {
             do {
                 try await call("conversation.open", ["id": id])

@@ -38,11 +38,12 @@ enum PerfProbe {
 
     static func now() -> Double { ProcessInfo.processInfo.systemUptime }
 
-    /// Called once, with the data folder. Looks for `perf.on` every two seconds, so it can be turned on and off while
-    /// the app runs.
+    /// Called once, with the data folder. Looks for `perf.on` at once, so that the conversation opened at launch is
+    /// measured too, and then every two seconds, so it can be turned on and off while the app runs.
     static func start(home: URL) {
         #if PI2_DEVELOPMENT
         self.home = home
+        check()
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated { check() }
         }
