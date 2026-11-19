@@ -16,6 +16,24 @@ type Patch = { why: string; file: string; find: string; replace: string };
 const PATCHES: Patch[] = [
 	...COMPACTION_PATCHES,
 	{
+		why: "tool declarations cannot depend on the conversation (#431)",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/harness.js",
+		find: `        return resolveAgent(state, registry, resolveSettings(this.#hostSettings()), (error, extension) => this.#report(error, { kind: "extension_error", conversationId: id, extension }, context));`,
+		replace: `        const agent = resolveAgent(state, registry, resolveSettings(this.#hostSettings()), (error, extension) => this.#report(error, { kind: "extension_error", conversationId: id, extension }, context));
+        // Patched by pi2: the host can choose declarations for this conversation after resolving names and wraps.
+        return this.#options.conversationAgent === undefined ? agent : this.#options.conversationAgent(agent, id, this, context);`,
+	},
+	{
+		why: "type the conversation agent option",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/types.d.ts",
+		find: `    readonly registry: RegistryReader<Tool>;
+    /** Run settings,`,
+		replace: `    readonly registry: RegistryReader<Tool>;
+    /** Patched by pi2: choose tool declarations for a conversation, after its agent has been resolved. */
+    readonly conversationAgent?: (agent: Agent<Tool>, id: ConversationId, read: DocumentReader, context: Context) => Agent<Tool> | Promise<Agent<Tool>>;
+    /** Run settings,`,
+	},
+	{
 		// Commands moved to the background at their time limit must inherit the run's file from their very start (#300).
 		// Keep exec's own stdin/stdout/stderr, output handling and cancellation; append only caller-owned descriptors 3+.
 		why: "foreground commands cannot inherit their run's file",
@@ -84,7 +102,7 @@ const PATCHES: Patch[] = [
     // Patched by pi2 (engine/scripts/patch-dependencies.ts): the host may decide the wait for an error itself, such as
     // a provider's rate limit, and the attempts it spent on such waits do not count against the retries.
     const host = typeof policy.host === "function" && policy.enabled
-        ? policy.host(message.stopReason === "error" && !overflow ? message : undefined, attempt, conversationId)
+        ? policy.host(message.stopReason === "error" && !overflow ? message : undefined, attempt, conversationId, request.localRetries)
         : undefined;
     const counted = Math.max(1, attempt - (host?.spent ?? 0));
     // An overflow is never retried: only a compaction can make the next request fit.
@@ -96,6 +114,64 @@ const PATCHES: Patch[] = [
             policy.enabled &&
             counted <= policy.maxRetries;
     const until = retry ? runtime.now() + (typeof host?.waitMs === "number" ? Math.max(0, host.waitMs) : retryDelayMs(policy, counted)) : 0;`,
+	},
+	{
+		// Local engine stops get a display-only notice, not a transcript entry containing the interrupted answer (#424).
+		why: "a local engine retry needs a notice and a durable count",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `        await appendAssistant(tx, conversationId, message);
+        if (failure === undefined) {
+            live.generation = { attempt, retry: { at: until, error: message.errorMessage ?? "" } };
+            const checkpoint = {
+                phase: "retry",
+                attempt,
+                ...(compacted === undefined ? {} : { compacted }),`,
+		replace: `        if (host?.notice === undefined || !retry)
+            await appendAssistant(tx, conversationId, message);
+        if (failure === undefined) {
+            live.generation = { attempt, retry: { at: until, error: message.errorMessage ?? "" } };
+            const checkpoint = {
+                phase: "retry",
+                attempt,
+                ...(host?.notice === undefined ? {} : { notice: host.notice, localRetries: host.localRetries }),
+                ...(compacted === undefined ? {} : { compacted }),`,
+	},
+	{
+		why: "keep the count of local engine stops on the next request, including across a threshold compaction",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `            const { attempt, compacted, overflow, threshold: blocked } = task.state.checkpoint;`,
+		replace: `            const { attempt, compacted, overflow, threshold: blocked, localRetries } = task.state.checkpoint;
+            const local = localRetries === undefined ? {} : { localRetries };`,
+	},
+	{
+		why: "keep the count of local engine stops through the optional compaction and next request",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `                    const checkpoint = { phase: "afterThresholdCompact", attempt, compacted: child, threshold: threshold === "blocking" };`,
+		replace: `                    const checkpoint = { phase: "afterThresholdCompact", attempt, ...local, compacted: child, threshold: threshold === "blocking" };`,
+	},
+	{
+		why: "keep the count of local engine stops on the prepared request",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `                const request = {
+                    attempt,
+                    ...(compacted === undefined ? {} : { compacted }),`,
+		replace: `                const request = {
+                    attempt,
+                    ...local,
+                    ...(compacted === undefined ? {} : { compacted }),`,
+	},
+	{
+		why: "keep the count of local engine stops after a threshold compaction",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `                return { status: "running", checkpoint: { phase: "prepare", attempt, compacted, ...(threshold === undefined ? {} : { threshold }), ...(overflow === undefined ? {} : { overflow }) } };`,
+		replace: `                const { localRetries } = task.state.checkpoint;
+                return { status: "running", checkpoint: { phase: "prepare", attempt, compacted, ...(localRetries === undefined ? {} : { localRetries }), ...(threshold === undefined ? {} : { threshold }), ...(overflow === undefined ? {} : { overflow }) } };`,
+	},
+	{
+		why: "tell the host how many local engine retries the request already used",
+		file: "node_modules/@earendil-works/pi-durable/dist/harness/generation.js",
+		find: `            const request = { attempt, compacted, model: ref, thinkingLevel, cutoff, messages: view.messages };`,
+		replace: `            const request = { attempt, compacted, model: ref, thinkingLevel, cutoff, messages: view.messages, localRetries: task.state.checkpoint.localRetries };`,
 	},
 	{
 		// The same for a request the engine stopped during: attempts spent waiting for a limit leave the usual retries for
@@ -163,7 +239,10 @@ const PATCHES: Patch[] = [
                     if (live.run?.taskId === runtime.taskId)
                         live.run.inputs.push(...users);
                 }
-                const kept = compacted === undefined ? {} : { compacted };
+                const { notice, localRetries } = task.state.checkpoint;
+                if (notice !== undefined)
+                    await tx.appendEntry(runtime.conversationId, notice);
+                const kept = { ...(compacted === undefined ? {} : { compacted }), ...(localRetries === undefined ? {} : { localRetries }) };
                 // A poll the host died during polls its response again, as the next attempt.`,
 	},
 ];

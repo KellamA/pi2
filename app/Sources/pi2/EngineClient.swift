@@ -629,7 +629,7 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor", "priority", "local", "chat":
+            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
                 if envelope.event == "limits" { Notifier.shared.limitNotices(PlanLimits(extras["limits"])?.notices ?? []) }
@@ -688,8 +688,9 @@ final class EngineClient {
         }
     }
 
-    /// A line in app.log next to the engine's log, for working out why a connection dropped.
-    private func note(_ message: String) {
+    /// A line in app.log next to the engine's log, for working out why a connection dropped, or why a window's size did
+    /// not settle (`SizeWatch`).
+    func note(_ message: String) {
         let line = "\(Date().formatted(.iso8601)) \(message)\n"
         let url = home.appendingPathComponent("app.log")
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }

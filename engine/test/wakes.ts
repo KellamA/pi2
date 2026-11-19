@@ -114,7 +114,7 @@ try {
 		return id;
 	};
 	const worker = await save({ name: "Worker", description: "Does the work", access: "full", cwd: work });
-	const lead = await save({ name: "Lead", description: "Hands out work", access: "full", cwd: work, delegates: [worker] });
+	const lead = await save({ name: "Lead", description: "Hands out work", access: "full", cwd: work, delegates: [worker], codeMode: true });
 	/** Hands `task` to a new sub-chat without waiting; returns the sub-chat's number. */
 	const handOff = async (id: number, task: string, title: string): Promise<number> => {
 		const result = await client.tool(id, `/tool delegate ${JSON.stringify({ agent: "Worker", task, title, wait: false })}`);
@@ -199,6 +199,56 @@ try {
 		step("sub_chats with wait gets the next sub-chat to finish, whichever it is, and the agent is not woken for it");
 	}
 
+	// ---- An ended run whose sub-chat the agent has already continued (#425)
+	for (const batched of [false, true]) {
+		const a = await open(lead);
+		const sub = await handOff(a, task(gate(), "stopped-first"), "Continued");
+		const other = batched ? await handOff(a, task(gate(), "stopped-second"), "Not continued") : undefined;
+		const arrived = (id: number) => client.watched(a).filter((item) => item.ref === String(id) && item.state === "arrived");
+		// Keep the failed results until the answer to the person's next message (the one that continues the sub-chat).
+		await client.call("abort", { id: a });
+		await client.until("waking held after Stop", () => client.events.wakes.held.some((item: Event) => item.conversationId === a && item.why === "stopped"));
+		for (const id of other === undefined ? [sub] : [sub, other]) {
+			await client.call("conversation.open", { id });
+			await client.until(`sub-chat ${id} working`, () => client.conversations.get(id)?.state.busy);
+			await client.call("abort", { id });
+			await client.until(`sub-chat ${id} failure arrived`, () => arrived(id).length === 1);
+		}
+		assert.equal(client.wakes(a).length, 0);
+		const resumed = gate();
+		const continuation = JSON.stringify({ agent: "Worker", chat: sub, task: task(resumed, "continued-answer"), wait: false });
+		if (batched) {
+			const hold = gate();
+			await client.call("submit", { id: a, text: `/code text(await tools.delegate(${continuation})); await tools.bash(${JSON.stringify({ command: hold.wait })});` });
+			await client.until("the continued run is watched", () => client.watched(a).some((item) => item.ref === String(sub) && item.state === "running"));
+			resumed.open();
+			await client.until("the continued run's answer arrived too", () => arrived(sub).length === 2 && client.idle(sub));
+			hold.open();
+		} else {
+			await client.call("submit", { id: a, text: `/tool delegate ${continuation}` });
+		}
+		const line = await client.woken(a, 1);
+		const failure = `sub-chat ${sub} “Continued” stopped without answering`;
+		assert.equal(line, batched ? `pi² woke the agent: ${failure}; sub-chat ${other} “Not continued” stopped without answering; sub-chat ${sub} “Continued” answered` : `pi² woke the agent: ${failure}`);
+		const given = client.items(a, "marker").find((item) => item.text === line)!.details.wake.text as string;
+		const results = given.split("\n\n---\n\n");
+		assert.equal(results.length, batched ? 3 : 1);
+		assert.match(results[0]!, /stopped without an answer:[\s\S]*its run was stopped/);
+		const status = batched ? "It has been continued since and is now idle." : "It has been continued since and is working.";
+		assert.ok(results[0]!.includes(status), given);
+		assert.doesNotMatch(results[0]!, /call delegate again/);
+		assert.ok(client.items(a, "assistant").at(-1)!.text.includes(status), "the model saw the same wake text");
+		if (batched) {
+			assert.ok(results[1]!.includes(`call delegate again with chat: ${other}.`), "a failure not yet continued still tells the agent how");
+			assert.match(results[2]!, /continued-answer/);
+			assert.ok(results[2]!.includes(`To continue it, call delegate again with chat: ${sub}.`), "an answered run is unchanged");
+		} else {
+			resumed.open();
+			assert.equal(await client.woken(a, 2), `pi² woke the agent: sub-chat ${sub} “Continued” answered`);
+		}
+		step(`an old failure still wakes the agent, but says the sub-chat was continued and is ${batched ? "idle (batched)" : "working"}`);
+	}
+
 	// ---- A command in the background with wake: true
 	{
 		const b = await open(lead);
@@ -265,7 +315,11 @@ try {
 		const sub = await client.tool(b, `/tool delegate ${JSON.stringify({ agent: "Worker", task: "/background sleep 600" })}`);
 		const child = sub.details.conversationId as number;
 		await client.call("conversation.open", { id: child });
+		const startWithWake = await client.tool(child, '/tool bash {"command":"echo should-not-run","background":true,"wake":true}');
+		assert.equal(startWithWake.isError, true);
+		assert.match(startWithWake.text, /command was not started/);
 		const commands = await client.tool(child, '/tool background {"action":"list"}');
+		assert.doesNotMatch(commands.text, /should-not-run/);
 		const childBg = /bg-\d+/.exec(commands.text)?.[0];
 		assert.ok(childBg);
 		const refused = await client.tool(child, `/tool background ${JSON.stringify({ action: "wake", id: childBg })}`);

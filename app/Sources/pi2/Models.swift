@@ -398,6 +398,8 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var toolsOff: [String]?
     /// Keys of the built-in tools off by default that it is offered, in the engine's order. Nil or empty: none of them.
     var toolsOn: [String]?
+    /// The size in tokens at which its conversations' earlier messages are summarised; nil uses the default for all agents.
+    var compactionTokens: Int?
     /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
     var commandRules: [CommandRule]?
     /// Variables its commands get. Changed through their own requests, never by saving the agent.
@@ -430,6 +432,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
             "schedule": ["enabled": schedule?.enabled ?? false],
             "toolsOff": toolsOff ?? [],
             "toolsOn": toolsOn ?? [],
+            "compactionTokens": compactionTokens as Any? ?? NSNull(),
         ]
     }
 
@@ -745,6 +748,9 @@ struct ConversationState: Codable, Equatable {
     let context: ContextSize
     let compacting: Bool
     let compactionError: String?
+    /// What the last request to the model read, in tokens (input and the prompt cache, not the answer). Nil when it is not
+    /// known, and from an engine older than this field.
+    var lastRequestInputTokens: Int? = nil
     /// The agent's task list; nil when it keeps none.
     let plan: TaskList?
     /// The nearest project instructions file (AGENTS.md or CLAUDE.md) in effect, if there is one.

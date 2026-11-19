@@ -81,8 +81,8 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 	{
 		key: "compact",
 		tools: ["compact"],
-		title: "Summarize its own conversation",
-		detail: "Asks pi² to summarize earlier messages after its current step, with a note about what to keep.",
+		title: "Summarise its own conversation",
+		detail: "Lets the agent have its earlier messages summarised when it reaches a good place, such as between two pieces of work, with a note on what the summary must keep. Later turns then read less. The conversation shows each time it asks.",
 		offByDefault: true,
 	},
 	{

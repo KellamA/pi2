@@ -34,7 +34,8 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
-import { BACKGROUND_ENTRY, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
+import { BACKGROUND_ENTRY, backgroundForSubChat, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
+import { bashForSubChat } from "./commands.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
 import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validateToolsOn } from "./builtins.ts";
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
@@ -47,6 +48,7 @@ import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
+import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, partStart } from "./opening.ts";
@@ -365,8 +367,16 @@ const harness = await Harness.open(
 		// conversation that hands out work asks for the long prompt cache (src/cache.ts).
 		models: noticingRefusals(retryThinking(providers, promptCacheLifetimes(providers.models), engine.providersChanged)),
 		registry,
-		// A refusal for a provider's limit is retried when and as often as src/limitwait.ts decides (a patched pi-durable
-		// asks `retry.host`; see engine/scripts/patch-dependencies.ts). Read at every use, so the features are made by then.
+		conversationAgent: async (agent, id, read, context) => {
+			// A sub-chat is one from its first request. Read committed metadata even during crash recovery, before the
+			// library watch has caught up; choosing by anything transient would resend tool definitions mid-conversation.
+			if (!isSubChat((await read.snapshot(Library, context))?.conversations[String(id)])) return agent;
+			const forSubChat = (tool: (typeof agent.tools)[number]) =>
+				tool.name === "bash" ? bashForSubChat(tool) : tool.name === "background" ? backgroundForSubChat(tool) : tool;
+			return { ...agent, tools: agent.tools.map(forSubChat), callable: agent.callable.map(forSubChat) };
+		},
+		// A local engine stop or a provider limit uses pi-durable's stored retry sleep (see patch-dependencies.ts).
+		// The features are read at every use, so they are made by then.
 		settings: {
 			compaction: {
 				early: (id: ConversationId, window: number, policy: import("@earendil-works/pi-durable").CompactionPolicy) => {
@@ -378,9 +388,11 @@ const harness = await Harness.open(
 				checkpoint: compactionCheckpoint,
 			} as import("@earendil-works/pi-durable").CompactionSettings,
 			retry: {
-				host: (message: never, attempt: number, id: unknown) => {
+				host: (message: Parameters<typeof retryLocalEngine>[0], attempt: number, id: unknown, localRetries = 0) => {
+					const local = retryLocalEngine(message, localRetries, home);
 					const feature = host.features.find((candidate) => candidate.retry !== undefined);
-					return feature?.retry?.(message, attempt, id as number) ?? { spent: 0 };
+					const limit = feature?.retry?.(message, attempt, id as number);
+					return local ?? limit ?? { spent: 0 };
 				},
 			} as never,
 		},
@@ -441,7 +453,9 @@ function chatOf(id: number | ConversationId): number {
 	return chatIdOf(library.conversations, id as number);
 }
 /** A sub-chat, handed work by another conversation; not a chat's version. */
-const isSubChat = (meta: Meta | undefined) => meta?.parent !== undefined && meta.version !== true;
+function isSubChat(meta: Meta | undefined): boolean {
+	return meta?.parent !== undefined && meta.version !== true;
+}
 
 /**
  * Bring a conversation's tools in line with what its agent may do now. A conversation's tools are fixed when it is
@@ -525,7 +539,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
 		toolsOn: input.toolsOn === undefined ? (previous?.toolsOn ?? []) : validateToolsOn(input.toolsOn),
-		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens),
+		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens, 0),
 		createdAt: previous?.createdAt ?? Date.now(),
 	};
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
@@ -640,8 +654,9 @@ function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", ...compactionMarker(entry) };
+	if (entry.kind === "pi2.compactionTooShort") return { id, kind: "marker", text: "There is too little here to summarise yet." };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
-	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
+	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY || entry.kind === LOCAL_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
 		// With the command's id, so the line can open the window with its output.
 		const details = backgroundMarkerDetails(entry.data);

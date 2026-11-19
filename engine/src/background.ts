@@ -21,7 +21,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
-import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
@@ -687,6 +687,28 @@ function describeCommands(conversationId: number): string | undefined {
 	].join("\n");
 }
 
+function backgroundDeclaration(subChat: boolean) {
+	return {
+		description:
+			"Work with the commands you started in the background in this conversation, with bash and `background: true`. Actions:\n" +
+			"- list: each one's id, its command, whether it is running or how it ended, and how much of its output you have not read.\n" +
+			`- read: what \`id\` has printed since you last read it, standard output and errors together, and whether it is still running. With \`wait\`, when there is nothing new it waits up to that many seconds (${MAX_WAIT_SECONDS} at most) for more output or for the command to end; a longer pause costs more than reading again. With \`tail\`, it gives the last \`tail\` lines instead, read or not, and what counts as read stays as it was.\n` +
+			"- stop: stop `id` and everything it started, and give what it printed since you last read it.\n" +
+			(subChat ? "" : "- wake: wake you when running `id` ends, with how it ended and the end of its output.\n") +
+			`Only the last ${KEEP_CHARS / 1024} KB a command printed is kept, and one read gives at most ${READ_CHARS.toLocaleString("en-US")} characters or ${READ_LINES.toLocaleString("en-US")} lines: read again for the rest.`,
+		parameters: obj({
+			action: str({ description: subChat ? "list, read or stop" : "list, read, stop or wake" }),
+			id: opt(str({ description: subChat ? 'For read and stop: the command\'s id, such as "bg-1"' : 'For read, stop and wake: the command\'s id, such as "bg-1"' })),
+			wait: opt(num({ description: `For read: seconds to wait for new output when there is none, up to ${MAX_WAIT_SECONDS}` })),
+			tail: opt(int({ description: "For read: give the last this many lines, read or not, instead of what is new" })),
+		}),
+	};
+}
+
+export function backgroundForSubChat<T extends ToolRegistration>(tool: T): T {
+	return { ...tool, ...backgroundDeclaration(true) };
+}
+
 export const background: Feature = (_host, running) => {
 	engine = running;
 
@@ -703,19 +725,7 @@ export const background: Feature = (_host, running) => {
 
 	const tool = defineTool({
 		name: "background",
-		description:
-			"Work with the commands you started in the background in this conversation, with bash and `background: true`. Actions:\n" +
-			"- list: each one's id, its command, whether it is running or how it ended, and how much of its output you have not read.\n" +
-			`- read: what \`id\` has printed since you last read it, standard output and errors together, and whether it is still running. With \`wait\`, when there is nothing new it waits up to that many seconds (${MAX_WAIT_SECONDS} at most) for more output or for the command to end; a longer pause costs more than reading again. With \`tail\`, it gives the last \`tail\` lines instead, read or not, and what counts as read stays as it was.\n` +
-			"- stop: stop `id` and everything it started, and give what it printed since you last read it.\n" +
-			"- wake: wake you when running `id` ends, with how it ended and the end of its output.\n" +
-			`Only the last ${KEEP_CHARS / 1024} KB a command printed is kept, and one read gives at most ${READ_CHARS.toLocaleString("en-US")} characters or ${READ_LINES.toLocaleString("en-US")} lines: read again for the rest.`,
-		parameters: obj({
-			action: str({ description: "list, read, stop or wake" }),
-			id: opt(str({ description: 'For read, stop and wake: the command\'s id, such as "bg-1"' })),
-			wait: opt(num({ description: `For read: seconds to wait for new output when there is none, up to ${MAX_WAIT_SECONDS}` })),
-			tail: opt(int({ description: "For read: give the last this many lines, read or not, instead of what is new" })),
-		}),
+		...backgroundDeclaration(false),
 		// Listing and reading change nothing that outlasts the engine, and stopping what is stopped changes nothing.
 		replay: "safe",
 		execute: async (args, api, context) => {

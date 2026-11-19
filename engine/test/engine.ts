@@ -386,6 +386,7 @@ try {
 		"Used: 212 requests over 38 min; read 1.4M tokens new and 21.6M from the cache, wrote 96.1K; largest prompt 148K.");
 	const { id: m } = await client.call("conversation.create", { agentId: "atlas" });
 	await client.call("conversation.open", { id: m });
+	await client.call("conversation.configure", { id: m, access: "full" });
 	await client.call("submit", { id: m, text: "/delegate Scout: say hi to the team" });
 	await client.until("delegation finished", () => {
 		const v = client.conversations.get(m);
@@ -420,9 +421,43 @@ try {
 	await client.call("submit", { id: m, text: "/continue 999999: nothing there" });
 	await client.until("bad continue refused", () => !client.conversations.get(m)!.state.busy && toolResults(m).length === 3);
 	assert.equal(toolResults(m)[2]!.isError, true);
-	await client.call("submit", { id: m, text: "/delegate Scout: a second piece of work" });
-	await client.until("second sub-chat", () => subChats() === 2 && !client.conversations.get(m)!.state.busy);
+	const shellDeclarations = "/system tools bash background";
+	await client.call("submit", { id: m, text: `/delegate Forge: ${shellDeclarations}` });
+	await settled(m, 4);
+	assert.equal(subChats(), 2);
 	step("sub-chats: listed under their parent, continued by number, and a new one for new work");
+
+	const shellChild = toolResults(m)[3]!.details.conversationId as number;
+	await client.call("conversation.open", { id: shellChild });
+	const shellAnswer = (id: number) => client.conversations.get(id)?.items.findLast((i) => i.kind === "assistant" && i.stop === "stop")?.text;
+	const childTools = await client.until("first request's tool declarations in the sub-chat", () => shellAnswer(shellChild));
+	const [childBash, childBackground] = JSON.parse(childTools);
+	assert.equal(childBash.name, "bash");
+	assert.equal(childBackground.name, "background");
+	assert.doesNotMatch(childTools, /\bwak(?:e|es|ing|en|ens)\b/i);
+	assert.deepEqual(Object.keys(childBash.parameters.properties), ["command", "timeout", "background"]);
+	assert.match(childBash.description, /`background: true`.*`read`.*`wait`/);
+	assert.equal(childBackground.parameters.properties.action.description, "list, read or stop");
+	assert.match(childBackground.description, /With `wait`/);
+
+	await client.call("submit", { id: m, text: shellDeclarations });
+	const parentTools = await client.until("tool declarations in the parent", () => {
+		const answer = shellAnswer(m);
+		return answer?.startsWith("[") ? answer : undefined;
+	});
+	const [parentBash, parentBackground] = JSON.parse(parentTools);
+	assert.match(parentBash.parameters.properties.wake.description, /waking you/);
+	assert.equal(parentBackground.parameters.properties.action.description, "list, read, stop or wake");
+	assert.match(parentBackground.description, /- wake: wake you/);
+
+	await client.call("submit", { id: shellChild, text: "/system history" });
+	const childHistory = await client.until("tool declaration history in the sub-chat", () => {
+		const answer = shellAnswer(shellChild);
+		return answer?.startsWith("HISTORY\n") ? answer : undefined;
+	});
+	assert.match(childHistory.split("\n")[1]!, /\+tool:bash\b.*\+tool:background\b/);
+	assert.doesNotMatch(childHistory.split("\n").slice(2).join("\n"), /[+-]tool:(bash|background)\b/);
+	step("sub-chats get no wake in their shell declarations, including the first request; their parent still does");
 
 	{
 		// ---- An agent's own sub-chats: listed with how each stands, the finished ones archived, and one restored by continuing it (#150)

@@ -379,6 +379,8 @@
 				const call = { callId: "wake:" + item.id, name: "pi2_wake", arguments: { summary: str(item.text) } };
 				const fixed = { status: "done", result: { text: item.details.wake.text }, command: T.markerCommand(item) };
 				specs.push({ key: "i" + item.id, sig: "w" + rev(item), build: () => el("div", "tool wake"), update: (row) => fillTool(row, call, "", fixed) });
+			} else if (T.compaction(item)) {
+				specs.push({ key: "i" + item.id, sig: "s" + rev(item) + "/" + namesRevision, build: () => compactionRow(T.compaction(item, names.agentName)) });
 			} else {
 				specs.push({ key: "i" + item.id, sig: "m" + rev(item), build: () => markerRow(str(item.text), T.markerCommand(item)) });
 			}
@@ -456,6 +458,18 @@
 		row.setAttribute("aria-label", text);
 		row.appendChild(el("span", "", text));
 		if (command) row.appendChild(outputButton(command));
+		return row;
+	}
+
+	/** The line for a summary of earlier messages, with the note on what to keep below it when there is one. */
+	function compactionRow(summary) {
+		if (!summary.note) return markerRow(summary.text);
+		const row = el("div", "compaction");
+		row.appendChild(markerRow(summary.text));
+		const note = el("div", "compaction-note");
+		note.appendChild(el("div", "compaction-note-label", summary.noteLabel));
+		note.appendChild(el("p", "", summary.note));
+		row.appendChild(note);
 		return row;
 	}
 

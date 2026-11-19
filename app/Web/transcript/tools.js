@@ -547,6 +547,11 @@
 				glyph = "list";
 				label = [t(active ? "Updating the task list" + ELLIPSIS : "Updated the task list")];
 				break;
+			case "compact":
+				// The summary itself comes after the step, as a line of its own (compaction below); this is only the asking.
+				glyph = "memory";
+				label = [t(active ? "Asking for earlier messages to be summarised" + ELLIPSIS : "Asked for earlier messages to be summarised")];
+				break;
 			case "schedule_task": {
 				glyph = "clock";
 				// Until it is done the schedule may never exist (the person can say no), so only then is it "Scheduled".
@@ -789,6 +794,10 @@
 				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images });
 				outputSection("What the app said");
 				break;
+			case "compact":
+				if (str(args.note).trim() !== "") sections.push({ kind: "text", label: "What the summary must keep", text: str(args.note).trim() });
+				outputSection("Result");
+				break;
 			case "update_plan": {
 				const steps = planSteps(args);
 				if (steps) sections.push({ kind: "plan", steps });
@@ -876,6 +885,28 @@
 		const details = isObject(item) && isObject(item.details) ? item.details : null;
 		const id = details !== null && isObject(details.background) ? str(details.background.id) : "";
 		return BACKGROUND_ID.test(id) ? id : "";
+	}
+
+	/**
+	 * The line for a summary of earlier messages (#408), from what the engine recorded rather than its words: who asked
+	 * for it, and the agent's note on what to keep, if it gave one. Null for any other line.
+	 */
+	function compaction(item, agentName = "") {
+		const details = isObject(item) && isObject(item.details) ? item.details : null;
+		if (details === null || !isObject(details.compaction)) return null;
+		const trigger = str(details.compaction.trigger);
+		const note = str(details.compaction.note).trim();
+		const agent = str(agentName).trim();
+		const text =
+			trigger === "size"
+				? "Earlier messages summarised by pi² at the size you set"
+				: trigger === "person"
+					? "Earlier messages summarised, as you asked"
+					: trigger === "agent"
+						? `Earlier messages summarised, as ${agent || "the agent"} asked`
+						: "Earlier messages summarised by pi² as the model’s limit neared";
+		const whose = trigger === "person" ? "Your" : agent ? agent + "’s" : "The agent’s";
+		return { trigger, text, note, noteLabel: `${whose} note on what to keep` };
 	}
 
 	/** An answer that is only an error: an attempt that failed before the model said or called anything. */
@@ -1019,6 +1050,7 @@
 		backgroundCommand,
 		documentWritten,
 		markerCommand,
+		compaction,
 		failedRuns,
 		detailFor,
 		subagentAnswer,
