@@ -447,15 +447,19 @@ try {
 	await client.call("conversation.open", { id: lead });
 	await client.call("submit", { id: lead, text: "/delegate Scout: bad key" });
 	const handed = await client.until("delegate's result", () => client.conversations.get(lead)?.items.find((i) => i.kind === "tool"));
-	const said = /^Scout did not finish the task: the model's provider answered with an error: “(.*invalid x-api-key.*)”\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: (\d+)\.$/.exec(handed.text);
+	const [failure, usage] = handed.text.split("\n\n");
+	const said = /^Scout did not finish the task: the model's provider answered with an error: “(.*invalid x-api-key.*)”\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: (\d+)\.$/.exec(failure!);
 	assert.ok(said !== null, handed.text);
+	assert.match(usage ?? "", /^Used: 1 request(?: over [^;\n]+)?\.$/, "the failed request has no reported tokens");
 	const sub = Number(said[2]);
 	await client.until("the sub-chat's error logged", () => new RegExp(`conversation ${sub}'s run ended on an error from Stand-in: .*invalid x-api-key`).test(log));
 	// Continued, and refused again: the same.
 	await client.until("the lead idle", () => !client.conversations.get(lead)!.state.busy);
 	await client.call("submit", { id: lead, text: `/continue ${sub}: bad key` });
 	const again = await client.until("the continued delegate's result", () => client.conversations.get(lead)!.items.filter((i) => i.kind === "tool")[1]);
-	assert.match(again.text, new RegExp(`^Scout did not finish the task: the model's provider answered with an error: “.*invalid x-api-key.*”\\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: ${sub}\\.$`));
+	const [failedAgain, usedAgain] = again.text.split("\n\n");
+	assert.equal(failedAgain, failure);
+	assert.match(usedAgain ?? "", /^Used: 2 requests(?: over [^;\n]+)?\.$/);
 	step("a sub-chat that ends on a provider's error: delegate says why and how to carry on, and engine.log names the sub-chat");
 
 	// An hour named: the wait shows in the conversation and in Activity, with its time.
