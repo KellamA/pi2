@@ -3,7 +3,8 @@
 // Two things can wake an agent: a sub-chat it handed work to with `delegate` and `wait: false`, once the sub-chat
 // answers or stops, and a command it started in the background with `bash`, `background: true` and `wake: true`, once
 // the command ends. Each is a watch, kept in a session document from the moment it starts, so that what ends while
-// the engine is down, or as it stops, still wakes the agent once when it starts again.
+// the engine is down, or as it stops, still wakes the agent once when it starts again. A third, the person's answer to
+// what the agent put under Needs you (needs.ts, #462), is not watched: it arrives in the commit that takes the answer.
 //
 // What has ended waits in the same document until its conversation is idle. Then all of it is handed to the agent as
 // one message, oldest first, which starts an answer like any message: under the conversation's turn limit, and its
@@ -13,7 +14,7 @@
 // conversation is never woken: what it was waiting for is let go, and an archived one gets a line saying so.
 
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
-import { ConversationBusy, type ConversationId, defineDoc, type SettledSubmissionRecord, type SubmissionId } from "@earendil-works/pi-durable";
+import { ConversationBusy, type ConversationId, defineDoc, type SettledSubmissionRecord, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { type Host, subChatResult } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { Library, type Meta } from "./state.ts";
@@ -42,7 +43,7 @@ const BUDGET_RECHECK_MS = 60_000;
 /** How long a watch's key is remembered once it arrived, so a call run again after a crash cannot watch it twice. */
 const SEEN_MS = 7 * 86_400_000;
 
-export type WakeKind = "subchat" | "background";
+export type WakeKind = "subchat" | "background" | "answer";
 
 /** Something a conversation's agent will be woken for when it ends. */
 export type Watch = {
@@ -213,6 +214,27 @@ export async function arrive(key: string, ended: string, text: string, failure?:
 	if (id === undefined) return;
 	for (const listener of [...(listeners.get(id) ?? [])]) listener();
 	void deliver(id);
+}
+
+/**
+ * Something that wakes `conversationId`'s agent without having been watched: the person's answer to a question or
+ * decision it put under Needs you (needs.ts, the wake kind `answer`). It is added inside `tx`, the commit that takes the
+ * answer, so the answer and its wake are stored together, once; call `arrivedIn` when that commit is made. A key already
+ * seen adds nothing.
+ */
+export async function arriveIn(tx: Tx, conversationId: number, item: { key: string; kind: WakeKind; ref: string; label: string; ended: string; text: string }): Promise<void> {
+	const doc = await tx.doc(Wakes);
+	if (doc.seen[item.key] !== undefined) return;
+	doc.seen[item.key] = Date.now();
+	doc.arrived[String(conversationId)] = [...(doc.arrived[String(conversationId)] ?? []), { ...item, at: Date.now() }];
+}
+
+/** What `arriveIn` added has been committed: read it, and wake the agent if it is not answering. */
+export async function arrivedIn(conversationId: number): Promise<void> {
+	if (engine === undefined) return;
+	mirror = copy((await engine.harness().snapshot(Wakes, engine.context())) ?? empty());
+	announce();
+	void deliver(conversationId);
 }
 
 /** Wait for a sub-chat's submission to settle, then pass on its result. In memory: `start` picks the watches up again. */
