@@ -10,7 +10,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Building the app or working on pi² from pi² | [Requirements](#requirements), [Build and run](#build-and-run), [Working on pi² with pi²](#working-on-pi-with-pi) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks) or [Conversation page](#conversation-page-tests) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Computer use](#computer-use-checks) or [Conversation page](#conversation-page-tests) |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | Repository scripts, checks and merging | [CI](#ci) |
@@ -201,6 +201,14 @@ What a click on a link to a file in a conversation does, and the link's menu (`a
 cd app && swift build --product pi2-file-link-check && .build/debug/pi2-file-link-check
 ```
 
+### Computer use checks
+
+How the computer tool reaches SwiftUI controls by accessibility alone (`app/Sources/ComputerKit`, #367, #453), as it must in a window in the background, is checked by a program of its own against stand-in views. The tool works another app through the accessibility API, which needs Accessibility, and a check must never ask for that, so the program makes the views in windows of its own that never come on screen and reads them in-process: it asks each element what the accessibility server would ask it for another app (its role, label, children, and the actions it answers to, which for SwiftUI's elements are the `accessibilityPerform…` methods they allow), after setting `AXEnhancedUserInterface` on itself, as an assistive app does, so that SwiftUI builds them. It checks that a disclosure group in a grouped Form made with `pressableDisclosure`, as pi²'s are, answers `AXPress` on its arrow, named after its label, and that a press opens it and another closes it, once each, and the same outside a Form; it says, without failing, whether SwiftUI's own arrow in a grouped Form still answers to nothing, which is why `pressableDisclosure` exists. It checks which element the tool opens a context menu on (`Reaching.menuTarget`): a text with `.contextMenu` itself, the row's text for a list row, as the sidebar's rows have, and nothing for a button without one. It opens no menu, since that would put one on the screen, so listing an open menu's items, choosing one and closing it are left to a try with the computer tool in a test copy. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-computer-check && .build/debug/pi2-computer-check
+```
+
 In a throwaway copy, a click on a file link, and the menu's Show in Finder, Open and Copy Path, write what they would have done to `file-links.jsonl` in the copy's data folder, one JSON object a line (`action`: `show`, `showFolder`, `notice`, `open`, `copyPath`, or `menu` with its `items`; `path`, made whole; `conversation`), and do nothing else, so a test never puts Finder or another app on the screen or changes the pasteboard. The notice still shows in the page.
 
 ### Conversation page tests
@@ -246,7 +254,7 @@ After the answer finishes, archive it (this stops any work still running):
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
-In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation by id. `size test-7 820 532` sets the main window's outer frame in points; `size test-7 smallest` uses its current minimum. Use `shot` once the transcript has drawn.
+In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation by id, and answers once the conversation page has drawn it (the first part of a long one), so a `shot` or a computer tool screenshot straight after shows what is there and lists its links (#453). If the page has not drawn it within 20 seconds it says so. `size test-7 820 532` sets the main window's outer frame in points; `size test-7 smallest` uses its current minimum.
 
 `answer test-7 <conversation-id> allow|deny` answers exactly one waiting approval in that conversation (use the sub-chat's own id). `allow` means Allow Once, with no rule saved. `fill test-7 600` prints the id of a new demo conversation with 600 synthetic entries, including long tool outputs, without running the model or commands.
 

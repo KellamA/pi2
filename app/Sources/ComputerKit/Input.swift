@@ -24,6 +24,20 @@ enum Input {
         }
     }
 
+    /// A secondary click, as a right-click or a Control-click: what asks a view for its context menu.
+    static func rightClick(pid: pid_t, at point: CGPoint, windowID: CGWindowID?) {
+        let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .right)
+        stamp(move, windowID)
+        move?.postToPid(pid)
+        for type in [CGEventType.rightMouseDown, .rightMouseUp] {
+            let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .right)
+            event?.setIntegerValueField(.mouseEventClickState, value: 1)
+            stamp(event, windowID)
+            event?.postToPid(pid)
+            usleep(18000)
+        }
+    }
+
     private static func stamp(_ event: CGEvent?, _ windowID: CGWindowID?) {
         guard let event, let windowID else { return }
         for field in windowFields { event.setIntegerValueField(field, value: Int64(windowID)) }
@@ -53,6 +67,9 @@ enum Input {
             index = end
         }
     }
+
+    /// The Esc key's position.
+    static let escape: CGKeyCode = 53
 
     struct Combo {
         let key: CGKeyCode

@@ -175,3 +175,7 @@ jobs:
       - name: Check file links
         working-directory: app
         run: .build/debug/pi2-file-link-check
+      # How the computer tool reaches SwiftUI controls by accessibility (#367, #453): stand-in views read in-process.
+      - name: Check how computer use reaches controls
+        working-directory: app
+        run: .build/debug/pi2-computer-check
