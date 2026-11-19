@@ -18,7 +18,7 @@ export const MAX_LENGTH = 120;
 const STATUSES: readonly string[] = ["pending", "in_progress", "completed"];
 
 /** A conversation's list. Conversation-scoped, so it survives a restart, and a fork carries it along. */
-const PlanDoc = defineDoc<{ items: PlanItem[]; updatedAt: number }>({
+export const PlanDoc = defineDoc<{ items: PlanItem[]; updatedAt: number }>({
 	kind: "pi2.plan",
 	version: 1,
 	scope: "conversation",

@@ -75,7 +75,7 @@ type Doc = {
 };
 const empty = (): Doc => ({ watching: {}, arrived: {}, woken: {}, held: {}, seen: {} });
 
-const Wakes = defineDoc<Doc>({
+export const Wakes = defineDoc<Doc>({
 	kind: "pi2.wakes",
 	version: 1,
 	scope: "session",

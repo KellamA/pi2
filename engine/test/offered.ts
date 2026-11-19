@@ -150,12 +150,12 @@ try {
 
 	assert.deepEqual(
 		client.events.agents.builtInTools.map((tool: any) => tool.key),
-		["files", "documents", "ask", "plan", "web", "pictures", "code"],
+		["files", "documents", "ask", "plan", "web", "pictures", "compact", "code"],
 		"the settings are sent the list, each with what it is for",
 	);
 	assert.deepEqual(
 		client.events.agents.builtInTools.filter((tool: any) => tool.offByDefault === true).map((tool: any) => tool.key),
-		["pictures", "code"],
+		["pictures", "compact", "code"],
 		"and which are off unless turned on",
 	);
 	assert.ok(client.events.agents.builtInTools.every((tool: any) => tool.title !== "" && tool.detail !== "" && tool.tools.length > 0));
