@@ -19,7 +19,7 @@ T=$(cd -P -- "$T" && pwd -P)
 root=$T/checkout
 mkdir -p "$root/scripts" "$root/app/build"
 cp "$script" "$root/scripts/test-copy"
-cp "$(dirname -- "$script")/test-copy-send.mjs" "$root/scripts/test-copy-send.mjs"
+cp "$(dirname -- "$script")/test-copy-send.mjs" "$(dirname -- "$script")/test-copy-drive.mjs" "$root/scripts/"
 copy=$root/scripts/test-copy
 
 failures=0
@@ -73,6 +73,16 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
+for command in show size answer fill; do
+	expect "a suffix is required" "$command"
+	expect "is not a suffix" "$command" ../pi2
+	expect "'dev' is the suffix every development build has" "$command" dev
+done
+expect "use: scripts/test-copy show" show test-7
+expect "use: scripts/test-copy size" size test-7 820
+expect "use: scripts/test-copy size" size test-7 smallest 532
+expect "use: scripts/test-copy answer" answer test-7 8 always
+expect "use: scripts/test-copy fill" fill test-7 600 extra
 for suffix in dev ../pi2 Test-7 test-7-with-a-suffix-much-too-long-for-a-socket; do
 	case $suffix in
 		dev) want="'dev' is the suffix every development build has" ;;
@@ -122,7 +132,7 @@ expect "--env needs NAME=VALUE" start test-8 --env
 expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\nPI2_HOME=elsewhere'
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\r'
-for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
+for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
 	expect "--env does not allow" start test-8 --env "$key=value"
 done
 expect "--env repeats PI2_DEMO_COST" start test-8 --env PI2_DEMO_COST=1 --env PI2_DEMO_COST=2
@@ -139,6 +149,10 @@ rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 expect "no copy named test-7 was started from this checkout" send test-7 8 hello
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" send test-7 8 hello
 expect "no copy named test-7 was started from this checkout" reopen test-7
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
+expect "no copy named test-7 was started from this checkout" size test-7 smallest
+expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
+expect "no copy named test-7 was started from this checkout" fill test-7 600
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
@@ -280,6 +294,19 @@ printf '%s\n' "app_pid=$$" 'app_start=not this process' \
 HOME="$T/home" expect "app pid is no longer the process recorded" reopen test-7
 printf '%s\n' 'app_pid=99999999' "app_exe=$saved/Contents/MacOS/pi2" >"$root/app/build/test-copies/test-7/state"
 HOME="$T/home" expect "has no recorded engine running" reopen test-7
+HOME="$T/home" expect "has no recorded engine running" answer test-7 8 allow
+HOME="$T/home" expect "has no recorded engine running" fill test-7 600
+HOME="$T/home" expect "has no recorded app running" show test-7 8
+HOME="$T/home" expect "has no recorded app running" size test-7 smallest
+printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
+	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
+/usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$dev/Contents/Info.plist"
+HOME="$T/home" expect "not this checkout's" reopen test-7
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
+# If staging the new bundle fails, the previous bundle and its state must still be there.
+printf '%s\n' '#!/bin/bash' 'exit 1' >"$T/bin/ditto"
+chmod +x "$T/bin/ditto"
+HOME="$T/home" PATH="$T/bin:$PATH" expect "could not copy the latest development build" reopen test-7
 printf '%s\n' "app_pid=$$" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"app_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >"$root/app/build/test-copies/test-7/state"
 
@@ -310,6 +337,10 @@ HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
 HOME="$T/home" expect "refusing a symlink" reopen test-7
+HOME="$T/home" expect "refusing a symlink" show test-7 8
+HOME="$T/home" expect "refusing a symlink" size test-7 820 532
+HOME="$T/home" expect "refusing a symlink" answer test-7 8 allow
+HOME="$T/home" expect "refusing a symlink" fill test-7 600
 rm "$data/engine.sock"
 rmdir "$data"
 ln -s "$T" "$data"
@@ -317,9 +348,11 @@ HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
 
-if ! node "$(dirname -- "$script")/test-test-copy-send.mjs"; then
-	failures=$((failures + 1))
-fi
+for test in test-test-copy-send.mjs test-test-copy-drive.mjs; do
+	if ! node "$(dirname -- "$script")/$test"; then
+		failures=$((failures + 1))
+	fi
+done
 HOME="$T/home" expect "refusing a symlink" reopen test-7
 
 if ((failures)); then

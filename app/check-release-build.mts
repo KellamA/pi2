@@ -37,7 +37,7 @@ const inCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
  * them at compile time (`PI2_DEVELOPMENT`), so its executable does not name them at all; one that does was built with
  * a development affordance outside that condition, which anyone could switch on.
  */
-const DEVELOPMENT_ONLY = ["PI2_SHOW", "PI2_MENU", "PI2_WINDOW_BEHIND", "PI2_WINDOW_ORIGIN", "PI2_DRAW_WHEN_HIDDEN"];
+const DEVELOPMENT_ONLY = ["PI2_SHOW", "PI2_MENU", "PI2_TEST_COPY", "PI2_WINDOW_BEHIND", "PI2_WINDOW_ORIGIN", "PI2_DRAW_WHEN_HIDDEN"];
 
 class CheckFailed extends Error {}
 function fail(message: string): never {
@@ -195,6 +195,7 @@ function checkBundle(app: string): Build {
 	const main = join(resources, "engine", "src", "main.ts");
 	if (!existsSync(node)) fail("The app has no Node in Contents/Resources/node.");
 	if (!existsSync(main)) fail("The app has no engine in Contents/Resources/engine/src/main.ts.");
+	if (existsSync(join(resources, "engine", "scripts", "test-copy-fixture.ts"))) fail("The app carries the development-only test-copy fixture.");
 	if (!existsSync(join(resources, "engine", "node_modules"))) fail("The app's engine has no node_modules: its dependencies were not installed.");
 	let engineBuild = "";
 	try {

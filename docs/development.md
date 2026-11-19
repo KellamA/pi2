@@ -236,14 +236,11 @@ After the answer finishes, archive it (this stops any work still running):
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
-To change what an existing copy shows, reopen just its app, keeping its engine and conversations. The new app is recorded for `shot` and `stop`, uses the same clean environment and window placement as `start`, and keeps the previous `--show` unless replaced (and `--menu`):
+In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation by id. `size test-7 820 532` sets the main window's outer frame in points; `size test-7 smallest` uses its current minimum. Use `shot` once the transcript has drawn.
 
-```bash
-scripts/test-copy reopen test-7 --show "$CHAT"
-scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
-```
+`answer test-7 <conversation-id> allow|deny` answers exactly one waiting approval in that conversation (use the sub-chat's own id). `allow` means Allow Once, with no rule saved. `fill test-7 600` prints the id of a new demo conversation with 600 synthetic entries, including long tool outputs, without running the model or commands.
 
-It refuses a copy this checkout did not start, a missing or changed bundle, an unrecorded engine or bundle process, a reused app pid, or a symlink for the copy, state, data or socket, before stopping anything. A failed relaunch leaves the engine and data for diagnosis and `stop`.
+After rebuilding, `scripts/test-copy reopen test-7 --show "$CHAT"` installs the latest development app from this checkout, keeping the copy's engine and data. Without `--show`, it keeps the previous launch selection (not the last `show` command); it also keeps `--menu` and the demo environment. A failed relaunch leaves the data for retry or `stop`. Rebuild and start a fresh copy to pick up engine changes, including `fill` if the engine predates it.
 
 `start --env NAME=VALUE` gives a copy an explicit demo switch without inheriting the caller's environment. For example (no provider needed):
 
