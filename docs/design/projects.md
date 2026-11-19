@@ -2,7 +2,7 @@
 
 This is the design for epic [#450](https://github.com/KellamA/pi2/issues/450): pi² organised around projects, each with an orchestrator, in place of free-standing agents and their conversations. It records what the owner decided on 19 November 2026 and what is still open. Nothing here is built yet. The drawings are in [projects-drafts.html](projects-drafts.html): open it in a browser; the buttons along its top switch between the screens.
 
-**No issue is filed for this epic until the owner has agreed the build order at the end of this page.**
+The work is split into issues, listed step by step in the epic's roadmap. The first is the contract, `docs/projects.md` ([#455](https://github.com/KellamA/pi2/issues/455)); nothing else starts until the owner has agreed it.
 
 ## Why
 
@@ -89,14 +89,16 @@ Limits on spending are the project's settings and are enforced by the app: past 
 - Whether a first, smaller version of rules (per agent, on the app as it is) is worth shipping before projects.
 - What a project with no folder at all looks like.
 
-## Build order (proposed, not agreed)
+## Roadmap
 
-Each step is split into issues that can be built side by side against a written contract. Old and new run side by side until the last step.
+The issues, step by step, are in the epic, [#450](https://github.com/KellamA/pi2/issues/450). In short:
 
-1. **The contract.** The engine's documents for a project, its agents, rules, notes, work and settings; the requests and events; the agents' tools; how what exists is carried over. Written and agreed before anything is built.
-2. **Engine foundation**, with no change to what the person sees: projects and their agents, templates, the carrying-over, rules in the prompt, Needs you as one list, the waking choices, limits enforced.
-3. **The hub**: the sidebar of projects, the two panels and their folding, Now, an agent's conversation opened in place of the board.
-4. **Agents, Rules, Notes**, and the orchestrator's tools for changing them, with the change lines, Undo, and the cards for more reach.
-5. **Work**: the list kept by pi², then GitHub's issues and pull requests, with merging in the app and the agents' tools.
-6. **The Dashboard**, taking the Inbox's place.
-7. **Taking the old way out**: the agents and conversations screens removed, the docs rewritten, the preview switch gone.
+1. **The contract** (`docs/projects.md`): the engine's documents, requests, events and tools for a project, and how what exists is carried over. Agreed by the owner before anything is built.
+2. **The engine**, with nothing a person sees changed: projects, their agents and templates, the carrying-over, rules, notes, Needs you, waking, limits, the orchestrator's own tools, the list of work and GitHub.
+3. **The hub**: the sidebar of projects, the two panels and their folding, Now, an agent's conversation in place of the board. The first release with the preview.
+4. **Agents, Rules, Notes, settings** on the board.
+5. **Work** on the board, for both kinds of list.
+6. **The Dashboard.**
+7. **Projects become the only way**: pi² itself built as a pi² project for a week, then the old screens taken out, on the owner's word.
+
+The old way and the new exist side by side behind a preview switch until the last step.
