@@ -464,7 +464,7 @@ export async function record(tx: Tx, projectId: string, given: { by: ChangeBy; o
 	if (list.length > KEEP) list.splice(0, list.length - KEEP);
 	const project = (await tx.doc(Projects)).projects[projectId];
 	const own = given.by.kind === "agent" && project?.conversation === given.by.conversationId;
-	if (project !== undefined && !own && given.by.kind !== "allowed") await addNews(tx, projectId, { kind: "change", text: given.by.kind === "person" ? `The person: ${given.summary}` : given.summary, ref: `change:${change.id}` });
+	if (project !== undefined && !own && given.by.kind !== "allowed") await addNews(tx, projectId, { kind: "change", text: given.by.kind === "person" ? `${given.summary} (by the person)` : given.summary, ref: `change:${change.id}` });
 	return copy(change);
 }
 

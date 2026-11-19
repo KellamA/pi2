@@ -637,8 +637,7 @@ function reportsTool() {
 				if ((args.chats ?? []).length === 0) return { output: text("wake needs `chats`: the sub-chats working now to choose for, from list."), isError: true };
 				const agentId = host?.agentOf(api.conversationId)?.id ?? "";
 				const chosen = await chooseWake(project.id, args.chats!, when, { kind: "agent", agentId, conversationId: caller, callId: api.callId });
-				const ended = chosen.change === undefined ? chosen.text : `${chosen.text} The person can undo it. (change ${chosen.change})`;
-				return { output: text(ended), details: { action, when, ...(chosen.change === undefined ? {} : { change: chosen.change }) }, ...(chosen.isError ? { isError: true } : {}) };
+				return { output: text(chosen.text), details: { action, when, ...(chosen.change === undefined ? {} : { change: chosen.change }) }, ...(chosen.isError ? { isError: true } : {}) };
 			}
 			return { output: text(`Unknown action "${args.action}". Use list, read or wake.`), isError: true };
 		},

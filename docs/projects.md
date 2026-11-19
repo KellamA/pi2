@@ -1741,7 +1741,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 - The tools are offered to the project's current conversation with its orchestrator (`toolNames`' `conversationId`, which #467 added), with the preview on, in a project neither archived nor deleted; a conversation not made yet, to its agent if it is the orchestrator, outside a sub-chat. Each refuses any conversation but that one, and a change without Ask first or Full access.
 - `repository` in `project_settings` `change` is refused until #468 ("pi² cannot attach a repository to a project yet"), which makes it a reach request, as 7.1 says. `show` gives the limits as set; how they stand now (today's spending, the plan windows) is #464's to add.
 - A copy of a template made by an agent is made at the baseline, and asks for the template's memory switch, allowed commands, delegates and the rest that widen in its one request. It is not given the variables' names, which are the person's.
-- `remember` and `forget` in a project answer with `details.change` and give the conversation a line with Undo; their text is as before.
+- `remember` and `forget` in a project, `work` and `reports` `wake` answer with `details.change` and give the conversation a line with Undo, but their text is as before, without "(change N)" at its end: the person can undo them, and the orchestrator cannot name them to `project_settings` `undo`. Only the three tools' results end with the number.
 
 ### 12.2 Each issue
 

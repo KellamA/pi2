@@ -385,7 +385,8 @@ try {
 	const watchOf = () => client.events.wakes?.items?.find((item: Event) => item.kind === "subchat" && item.ref === String(chat));
 	const before = (await client.until("its watch", () => watchOf())).wake;
 	const chose = await client.tool(O, `/tool reports {"action":"wake","chats":[${chat}],"when":"never"}`);
-	assert.match(chose.text, /The person can undo it\. \(change \d+\)$/);
+	assert.equal(typeof chose.details.change, "number");
+	assert.equal((await client.until("the choice's line", () => client.line(O, chose.details.change))).summary, `Chose waking for sub-chat ${chat}: never`);
 	await client.until("never", () => watchOf()?.wake === "never");
 	await client.call("changes.undo", { id: chose.details.change });
 	await client.until("the choice put back", () => watchOf()?.wake === before);
