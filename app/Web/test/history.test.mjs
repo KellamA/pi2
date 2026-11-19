@@ -72,6 +72,53 @@ test("rows put above move the page by just what keeps the row on screen where it
 	assert.equal(H.shift({ row: { isConnected: false }, top: 0 }, view.rect), 0);
 });
 
+test("what is left of a pixel goes in a sliver at the top, so the row moves back by exactly as far as it went", () => {
+	let pad = 0;
+	let scrolled = 0;
+	let moved = 0;
+	// Rows a fraction of a pixel high, arriving above part after part.
+	for (const by of [260.33, 12.5, 0.4, 99.98, 7, -30.25, 0.75]) {
+		const step = H.settle(by, pad);
+		assert.ok(Number.isInteger(step.scroll), "the page scrolls by whole pixels");
+		assert.ok(step.pad >= 0 && step.pad < 1, `the sliver stays under a pixel (${step.pad})`);
+		moved += by + (step.pad - pad);
+		scrolled += step.scroll;
+		pad = step.pad;
+		assert.ok(Math.abs(moved - scrolled) < 1e-9, `the row is back where it was (${moved - scrolled})`);
+	}
+});
+
 test("the line at the top says older entries are coming", () => {
 	assert.match(H.LOADING, /^Loading earlier entries…$/);
+});
+
+test("older entries are asked for when the reader nears the top, and only then (#440)", () => {
+	const idle = { more: true, loading: false, asked: false, earlier: 0, height: 800 };
+	// Within two screens of the top: ask.
+	assert.equal(H.wantsOlder({ ...idle, scrollTop: 0 }), true);
+	assert.equal(H.wantsOlder({ ...idle, scrollTop: 2 * 800 - 1 }), true);
+	// Further down, reading or at the bottom: not yet.
+	assert.equal(H.wantsOlder({ ...idle, scrollTop: 2 * 800 }), false);
+	assert.equal(H.wantsOlder({ ...idle, scrollTop: 40_000 }), false);
+	// A turn's Copy that needs them asks wherever the reader is.
+	assert.equal(H.wantsOlder({ ...idle, scrollTop: 40_000, now: true }), true);
+	// Nothing older, or something already on its way: never.
+	for (const busy of [{ more: false }, { loading: true }, { asked: true }, { earlier: 12 }]) {
+		assert.equal(H.wantsOlder({ ...idle, ...busy, scrollTop: 0, now: true }), false, JSON.stringify(busy));
+	}
+});
+
+test("a turn may start before the page's first entry only while older entries may come (#440)", () => {
+	const kinds = (list) => [...list].map((k, id) => ({ id, kind: k === "u" ? "user" : k === "a" ? "assistant" : "marker" }));
+	// The page starts in the middle of a turn: the turn that ends at 2 runs back to the first entry.
+	const cut = kinds("aaaua");
+	assert.equal(H.turnCut(cut, 2, true), true);
+	assert.equal(H.turnCut(cut, 4, true), false, "a turn after the person's message is whole");
+	assert.equal(H.turnCut(cut, 2, false), false, "with nothing older, the first entry is the start");
+	// The page starts with the person's message, or a line of its own: the turn is whole.
+	assert.equal(H.turnCut(kinds("uaa"), 2, true), false);
+	assert.equal(H.turnCut(kinds("maa"), 2, true), false);
+	// Only an answer ends a turn.
+	assert.equal(H.turnCut(kinds("aau"), 2, true), false);
+	assert.equal(H.turnCut([], 0, true), false);
 });

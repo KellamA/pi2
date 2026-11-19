@@ -64,12 +64,23 @@ struct TranscriptFeed {
         }
     }
 
+    /// Whether the conversation has entries older than all the app has, which the page asks for when the reader nears
+    /// its top, and whether they are being asked for (#440).
+    struct Older: Encodable, Equatable {
+        var more: Bool
+        var loading: Bool
+
+        static let none = Older(more: false, loading: false)
+    }
+
     struct Message: Encodable {
         var reset: Bool?
         /// Entries to put before the first the page has, oldest first (#380).
         var older: [Item]?
         /// How many entries older than those the page has are still to come.
         var earlier: Int?
+        /// Whether there are older entries still to ask for, and whether they are on their way (#440).
+        var history: Older?
         var items: [Item]?
         var live: Live?
         var inbox: [InboxItem]?
@@ -92,6 +103,7 @@ struct TranscriptFeed {
     /// How many entries the app has before those the page was sent, still to be sent.
     private(set) var pending = 0
     private var earlier: Int?
+    private var history: Older?
     private var live: Live?
     private var inbox: [InboxItem]?
     private var names: Names?
@@ -109,7 +121,7 @@ struct TranscriptFeed {
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
     /// `earlier` is how many older entries the engine is still to send the app; with `withOlder` false, older entries the
     /// app has wait (the page has not yet drawn the part before them).
-    mutating func update(items: [Item], earlier: Int = 0, state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
+    mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
         var message = Message()
         var changed = false
 
@@ -152,6 +164,11 @@ struct TranscriptFeed {
         if earlier != self.earlier || message.reset == true {
             message.earlier = earlier
             self.earlier = earlier
+            changed = true
+        }
+        if older != history || message.reset == true {
+            message.history = older
+            history = older
             changed = true
         }
 

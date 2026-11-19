@@ -67,8 +67,19 @@
 	let menuFor = null;
 	/** How many entries older than those the page has are still to come (#380). */
 	let earlier = 0;
+	/**
+	 * Whether the conversation has entries older than all the app has, which the page asks for when the reader nears its
+	 * top; whether the app is asking for them; and whether this page asked and has not heard back yet (#440).
+	 */
+	let more = false;
+	let loading = false;
+	let asked = false;
+	/** A turn's Copy or Save waiting for the start of the turn to come: the answer that ends it, and what to do then. */
+	let wanting = null;
 	/** Whether rows go above those on screen in the next drawing, which then keeps what is on screen in place. */
 	let above = false;
+	/** The space under a pixel at the top of the page that keeps rows put above to a fraction of a pixel (H.settle). */
+	let sliver = 0;
 
 	const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 	const str = (value) => (typeof value === "string" ? value : "");
@@ -83,10 +94,17 @@
 		if (!isObject(message)) return;
 		let follow = false;
 
+		const waiting = earlier > 0 || loading || asked;
 		if (message.reset === true) {
 			items.clear();
 			order = [];
 			results.clear();
+			asked = false;
+		}
+		if (isObject(message.history)) {
+			more = message.history.more === true;
+			loading = message.history.loading === true;
+			asked = false;
 		}
 		// Entries older than the first the page has: they go above it, oldest first.
 		if (Array.isArray(message.older)) {
@@ -102,11 +120,9 @@
 			order = next.order;
 			if (next.added.length > 0) above = true;
 		}
-		if (Number.isInteger(message.earlier) && message.earlier >= 0) {
-			// The line at the top that says more is coming goes or comes above what is on screen too.
-			if ((message.earlier > 0) !== (earlier > 0)) above = true;
-			earlier = message.earlier;
-		}
+		if (Number.isInteger(message.earlier) && message.earlier >= 0) earlier = message.earlier;
+		// The line at the top that says more is coming goes or comes above what is on screen too.
+		if (waiting !== (earlier > 0 || loading || asked)) above = true;
 		if (Array.isArray(message.items)) {
 			for (const item of message.items) {
 				if (!isObject(item) || !Number.isInteger(item.id) || typeof item.kind !== "string") continue;
@@ -354,9 +370,10 @@
 		// Failed attempts in a row show as one row, the last (a run waiting for a provider's limit can leave dozens).
 		const failures = T.failedRuns(visible);
 		// In a chat, the rows under which a control steps between versions.
-		const versionAt = chat.enabled ? Ch.versionRows(visible, chat.versions) : new Map();
-		// While older entries are still to come, a line at the top says so.
-		if (earlier > 0) specs.push({ key: "earlier", sig: "e", build: earlierRow });
+		// A point older than the first entry the page has, while older ones are to come, waits for them (#440).
+		const versionAt = chat.enabled ? Ch.versionRows(visible, chat.versions, olderToCome() ? order[0] ?? null : null) : new Map();
+		// While older entries are on their way, a line at the top says so.
+		if (earlier > 0 || loading || asked) specs.push({ key: "earlier", sig: "e", build: earlierRow });
 		// The first answer of the turn each answer belongs to: entries put above can start a turn earlier (#380).
 		let turnStart = null;
 		visible.forEach((item, index) => {
@@ -402,16 +419,75 @@
 		above = false;
 		reconcile(main, specs);
 		const by = H.shift(kept, rectOf);
-		// Rounded, as the page scrolls by whole pixels: rows are fractions of one high, and cutting them off each time
-		// would move the row a little further with every part.
-		if (by !== 0) scroller.scrollTop = Math.round(scroller.scrollTop + by);
+		// The page scrolls by whole pixels and rows are fractions of one high: what is left over goes in a sliver of space
+		// at the top, so the row stays put to a fraction of a pixel, and no further off with every part (H.settle).
+		if (by !== 0) {
+			const step = H.settle(by, sliver);
+			sliver = step.pad;
+			document.body.style.paddingTop = sliver > 0 ? sliver + "px" : "";
+			scroller.scrollTop = scroller.scrollTop + step.scroll;
+		}
 		observePictures(main);
 		rendered = true;
 		if (pinned) scrollToBottom();
 		updateJump();
+		settleTurn();
+		askIfNearTop();
 	}
 
 	const rectOf = (row) => row.getBoundingClientRect();
+
+	// MARK: Older entries (#440)
+
+	/** Whether the conversation may have entries older than the page's first: on their way, or to ask for. */
+	function olderToCome() {
+		return earlier > 0 || more || loading || asked;
+	}
+
+	/**
+	 * Asks the app for the part of entries before the first the page has, when there is one to ask for and nothing else
+	 * is on its way: when the reader nears the top, or `now` for a turn's Copy that needs them. The app asks the engine.
+	 */
+	function askOlder(now = false) {
+		if (!rendered || !H.wantsOlder({ more, loading, asked, earlier, scrollTop: scroller.scrollTop, height: window.innerHeight, now })) return;
+		asked = true;
+		above = true;
+		post({ type: "older" });
+		schedule();
+	}
+
+	function askIfNearTop() {
+		askOlder(false);
+	}
+
+	/** Whether the turn that ends at `index` may start before the page's first entry, which older entries would show. */
+	function turnCut(visible, index) {
+		return H.turnCut(visible, index, olderToCome());
+	}
+
+	/**
+	 * Runs `then` with the whole text of the turn the answer `id` ends, once the page has all of it: at once, or once
+	 * the older entries that hold its start have come, asking for them as needed. A turn's Copy never copies part of it.
+	 */
+	function wholeTurn(id, then) {
+		wanting = { id, then };
+		settleTurn();
+	}
+
+	function settleTurn() {
+		if (!wanting) return;
+		const visible = visibleItems();
+		const index = visible.findIndex((item) => item.id === wanting.id);
+		// Gone with a list started over: nothing to copy.
+		if (index === -1) {
+			wanting = null;
+			return;
+		}
+		if (turnCut(visible, index)) return askOlder(true);
+		const { then } = wanting;
+		wanting = null;
+		then(turnText(visible, index));
+	}
 
 	/** The page's rows that show entries, down the page: not the line that says older ones are coming. */
 	function entryRows() {
@@ -747,7 +823,8 @@
 		// A chat's controls at the end of a turn change with the chat, its sources with the results of the turn's calls.
 		const own = chat.enabled && turnEnd ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, pointKey(point), ...turnOf(visible, index).map((answer) => calls(answer).map((call) => rev(results.get(call.callId))).join(","))].join("/") : "";
 		// The end of a turn copies the whole turn, which starts earlier once entries come above it.
-		const sig = ["a", rev(item), turnEnd ? 1 : 0, turnEnd ? turnStart : "", namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase))].join("|");
+		const cut = turnEnd && turnCut(visible, index) ? 1 : 0;
+		const sig = ["a", rev(item), turnEnd ? 1 : 0, turnEnd ? turnStart : "", cut, namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase))].join("|");
 		return {
 			key: "i" + item.id,
 			sig,
@@ -810,15 +887,31 @@
 			const own = chat.enabled ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, pointKey(point)].join("/") : "";
 			// Copy takes the whole turn, which starts earlier once older entries come above it.
 			const first = turnOf(visible, index)[0];
+			// A turn whose start the page does not have yet gets it before it is copied or saved (#440).
+			const cut = turnCut(visible, index);
 			parts.push({
 				key: "actions",
-				sig: "x" + rev(item) + "/" + own + "/" + (first ? first.id : ""),
+				sig: "x" + rev(item) + "/" + own + "/" + (first ? first.id : "") + "/" + (cut ? 1 : 0),
 				build: () => {
 					const actions = [];
 					const words = turnText(visible, index);
-					if (words !== "") actions.push(copyAction(() => words));
+					if (words !== "" || cut) {
+						actions.push({ label: "Copy", glyph: "copy", run: (b) => {
+							if (!cut) {
+								post({ type: "copy", text: words });
+								return flash(b, "Copied");
+							}
+							flash(b, H.LOADING);
+							wholeTurn(item.id, (whole) => {
+								if (whole !== "") post({ type: "copy", text: whole });
+							});
+						} });
+					}
 					// A long answer can be kept as a file, as a code block can (#286): its Markdown, as written.
-					if (T.longAnswer(words)) actions.push({ label: "Save as a File" + ELLIPSIS, glyph: "down", run: () => post({ type: "save", text: words, name: T.saveName("answer") }) });
+					if (T.longAnswer(words)) {
+						const save = (text) => post({ type: "save", text, name: T.saveName("answer") });
+						actions.push({ label: "Save as a File" + ELLIPSIS, glyph: "down", run: () => (cut ? wholeTurn(item.id, save) : save(words)) });
+					}
 					if (!chat.enabled) {
 						actions.push({ label: "Fork from here", glyph: "fork", run: () => post({ type: "fork", entry: item.id }) });
 						return actionsBar(actions);
@@ -1739,6 +1832,8 @@
 			if (distanceFromBottom() < 40) pinned = true;
 			else if (performance.now() > ignoreScrollUntil) pinned = false;
 			updateJump();
+			// Nearing the top of what the page has: the entries before it, if there are any (#440).
+			askIfNearTop();
 		},
 		{ passive: true },
 	);

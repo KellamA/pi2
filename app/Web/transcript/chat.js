@@ -40,10 +40,14 @@
 	/**
 	 * Which row each point's control goes under: the first message or answer after the point. An answer's control goes
 	 * with the turn's actions, under its last answer. Returns a Map from the row's item id to its point.
+	 *
+	 * `from` is the id of the first entry the page has while older ones are still to come (#440), or null: a point before
+	 * it has its row among those, so it waits for them rather than land under the first row the page has.
 	 */
-	function versionRows(visible, versions) {
+	function versionRows(visible, versions, from = null) {
 		const rows = new Map();
 		for (const point of versions) {
+			if (from !== null && (point.after === null || point.after < from)) continue;
 			let index = visible.findIndex((item) => point.after === null || item.id > point.after);
 			while (index !== -1 && index < visible.length && visible[index].kind !== "user" && visible[index].kind !== "assistant") index++;
 			if (index === -1 || index >= visible.length) continue;

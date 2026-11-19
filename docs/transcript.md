@@ -51,6 +51,26 @@ Opening a conversation draws its newest entries first and the older ones just af
 
 Copy and select-all work on what the page has, which is everything the app was sent once the last part has come, a fraction of a second after the first. Export and the palette's search ask the engine, which reads every entry.
 
+## Older than the engine's window
+
+The engine's view of a conversation is a window of its newest 300 to 600 entries (`conv.watch(context, { min: 300, max: 600 })` in `subscribe`), so opening a conversation sends at most its newest 300. The entries before them come when the reader scrolls up to them (#440):
+
+- **What is older.** With `newestFirst`, every list sent from the start (the `conversation` event with `reset: true`) says `more: true` when the conversation has entries before its first, and each `conversation.older` event the app asked for says `more` too. `earlier` keeps its meaning: how many of the list are still on their way unasked.
+- **The page asks** when there is more, nothing is on its way, and the reader scrolls to within two screens of its top (`PiHistory.wantsOlder`, checked as the page scrolls and after each drawing; a list shorter than that asks at once, the reader being there already). It posts `{type: "older"}`, naming nothing. The app (`EngineClient.loadOlder`) sends the engine `conversation.older { id }`, one request a conversation at a time, and tells every page showing the conversation it is loading (`history`), which shows "Loading earlier entries…" at the top until the part has come.
+- **The engine sends one part a request**: the entries just before the oldest the app was sent since it opened the conversation, read newest first with `conv.entries({ maxEntryId, order: "descending" }, …)` and cut as the window's later parts are (`olderPart` in `opening.ts`): up to 256 KB of JSON, at least one entry, reaching back over tool results to the answer that called them. It comes as a `conversation.older` event (`earlier: 0`, and `more`), then the answer, `{ more }`. The engine keeps nothing for it but the id of the newest entry not yet sent, works from what it sent on that connection rather than from what the app names, and drops a part read for a list that has since started over, so a request crossing a change of version cannot put one version's entries in front of another's. A chat's version reads its own history, the entries it shares with the version it came from included.
+- **The app and the page** take the part as they take the window's parts: `OpenConversation.prepend` puts it in front, `TranscriptFeed` hands it to each page about 256 KB at a time, and the page puts it above without moving the row on screen. A reader at the bottom stays there; one at the top stays on the row they were reading, and scrolling up again brings the next part.
+- **Nothing older.** `more: false` (or absent) on the last event: the line goes, and the page does not ask again until a list starts over. An app from before #440 never asks and ignores `more`, and shows the window as before. An engine from before #440 sends no `more`, which the app reads as nothing older; were it asked, its "Unknown method" would make the app stop asking. Any other failure of the request does the same, rather than ask again and again.
+- **Memory.** What has been loaded stays loaded while the conversation is open, in `OpenConversation.items` and in each page, and goes when the app closes the conversation (two minutes after no pane shows it); opening it again starts from the newest. Only a reader who scrolls up through the parts loads them, so the cost follows what they chose to read. Select-all, a turn's Copy and the rows' open or closed state work on what the page has, and taking rows out of the page again would move what is on screen and make those partial. The engine holds nothing beyond its window.
+
+What this means elsewhere:
+
+- **Find.** The app has no Find in a conversation: the Edit menu has no Find and ⌘F does nothing in the page. The palette's search runs in the engine over every entry, and Export asks the engine for every entry, so neither misses what the page has not loaded. A Find added to the page must ask for the older parts until `more` is false, or say that it searched what is shown and offer the rest.
+- **Links to an entry.** There are none: a message the palette finds opens its conversation at the newest, and "Jump to latest" goes to the newest, which is always there. A link to an entry would have to ask for parts until the entry has come.
+- **A turn's Copy and Save as a File…** take the whole turn. When the turn may start before the first entry the page has (its first answer is the page's first entry, and older entries are to come; `PiHistory.turnCut`), they ask for older parts, whatever the scroll, until the turn's start has come or nothing older is left, then copy or save it whole. The line at the top says "Loading earlier entries…" meanwhile.
+- **A chat's versions.** The control that steps between versions sits under the first message or answer after the point where they part. A point older than the first entry the page has, while older entries are to come, waits for them (`PiChat.versionRows`), rather than land under the first row. Showing another version starts its list over, newest first.
+- **A second pane** on the same conversation shares the app's one `OpenConversation`, so a part either pane asked for goes to both, each keeping its own row in place. A pane opened later is sent everything the app has, newest first, then asks for more itself when its reader nears the top.
+- **Keeping the row in place.** The page scrolls by whole CSS pixels, and rows are fractions of one high. Instead of rounding each time, it scrolls by the whole pixel above the distance and takes up the rest with a sliver of space under a pixel at the top of the page (`PiHistory.settle`), so the row stays where it was to within WebKit's layout precision.
+
 ## A chat's controls
 
 When the app tells the page the conversation is a chat (`chat.enabled`), the page shows what a chat adds (#285; the engine's side is in [architecture.md](architecture.md#a-chats-versions)):
@@ -78,6 +98,7 @@ The app calls `window.pi2.receive(json)` with `callAsyncJavaScript`, passing the
 | `items` | New entries, as the engine sends them (`Item`). |
 | `older` | Entries that go before the first the page has, oldest first ([newest first](#a-long-conversation-newest-first)). |
 | `earlier` | How many entries older than those the page has are still to come; 0 when none are. |
+| `history` | `{more, loading}`: whether the conversation has entries older than all the app has, which the page asks for, and whether they are being asked for ([older than the window](#older-than-the-engines-window)). |
 | `live` | `{busy, partial, tools, retrying}`: the answer still arriving and the tools still running. A shell command running in the foreground has `startedAt` and `lastOutputAt` (ms since 1970, or null until it prints) for its clock. |
 | `inbox` | Approvals and questions waiting in this conversation (`InboxItem`). |
 | `names` | What only the app knows: `mcp` (tool name to "Server: tool"), `agents` (name, colour, model), `apps` (bundle ID to name), the conversation's `agentName`. |
@@ -90,6 +111,7 @@ The page posts to the `pi2` message handler. `TranscriptAction` checks every mes
 | Message | Checked | Then |
 |---|---|---|
 | `{type: "ready"}` | | Send everything. |
+| `{type: "older"}` | this page has every entry the app has | `EngineClient.loadOlder`: `conversation.older` when there is more and nothing is on its way |
 | `{type: "copy", text}` | non-empty string, at most 20 million characters | The general pasteboard. |
 | `{type: "openLink", url}` | http or https with a host, or mailto | The default browser or mail app. |
 | `{type: "decide", inbox, decision}` | decision is `once`, `always` or `deny`; the approval is waiting in this conversation | `inbox.decide` |
@@ -123,7 +145,9 @@ Everything in a transcript is untrusted: model output, tool output, web page tex
 cd app/Web && node --test test/
 ```
 
-covers the Markdown renderer (including hostile HTML, link schemes, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, what a selection copies as, a chat's versions, sources and models (`chat.test.mjs`), and how older entries are put in front and which row is kept in place while they are (`history.test.mjs`). CI runs it.
+covers the Markdown renderer (including hostile HTML, link schemes, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, what a selection copies as, a chat's versions, sources and models (`chat.test.mjs`), and how older entries are put in front, which row is kept in place while they are, when the page asks for more and which turn is cut short (`history.test.mjs`). CI runs it.
+
+For #440 a throwaway WebKit harness loaded the page offscreen and fed it a window of 300 entries starting in the middle of a turn, then two older parts as the page asked for them: the row on screen moved 0.0 px at each step (0.33 px with the earlier rounding), the page asked only near the top, the cut turn's Copy asked for the part with its start and then copied the whole turn, and the line went once nothing older was left. In a throwaway copy, a conversation of 1,310 entries opened at its newest 300 and came in three requests of about 250 KB (12 to 15 ms each in the engine) as Home was pressed, down to its first message.
 
 For #380 the same kind of offscreen harness fed the page a conversation of 295 entries newest first, the reader scrolled to the top of the first part, and five older parts and a new answer arrived: the row on screen moved by at most 0.3 pixels at each, the steps ran in order across the join, a reader at the bottom stayed there, and select-all copied the whole list without the loading line.
 
@@ -133,4 +157,4 @@ The page itself was checked with an offscreen harness: a throwaway Swift program
 
 - The page is copied at build time, so a change to it needs `./app/build.sh` and reopening the conversation.
 - A drag that starts on a control (a chevron, a button) does not start a selection, as in any web page; start it on text.
-- The engine sends a conversation's newest 300 entries as it is opened (its view of a conversation is a window of 300 to 600 entries), so the oldest entries of a longer one are not shown, though Export and search still read them. They could come in when the person scrolls up, with the same `conversation.older` event. What is sent is drawn whole: there is no virtual scrolling.
+- What has been loaded is drawn whole and stays in the page while the conversation is open: there is no virtual scrolling. A reader who scrolls up through several thousand entries has them all in the page ([memory](#older-than-the-engines-window)).

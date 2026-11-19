@@ -4,6 +4,9 @@
 // Every step of opening (the engine making the JSON, the app reading it and handing it to the page, the page drawing
 // it) grows with the bytes, and an entry can be 0.3 KB or 50 KB, so the parts are bounded by size; the count bounds a
 // conversation of many small entries. docs/transcript.md has the whole contract.
+//
+// Entries older than the engine's window come when the app asks (#440, `conversation.older`), a part a request, read
+// from the store before the oldest the app was sent (`olderPart`).
 
 /** The most the first part holds: about a screen of entries with long command outputs. */
 export const FIRST_BYTES = 64 * 1024;
@@ -25,6 +28,40 @@ export function partStart<T extends Entry>(items: readonly T[], size: (item: T) 
 	while (start > 0 && (start === end || (total < bytes && end - start < count))) total += size(items[--start]!);
 	while (start > 0 && items[start]!.kind === "tool") start--;
 	return start;
+}
+
+/** One page of a scan of entries, newest first, as `Conversation.entries` gives it. */
+export type EntryPage<R, C> = { readonly items: readonly R[]; readonly next?: C };
+
+/**
+ * The part of entries just older than those the app has (#440): read newest first from `read`, which scans from the
+ * entry the app has not got yet (inclusive) and on, cut as the later parts of a list are (up to `bytes`, at least one
+ * item, never starting with a tool result). Entries that show as nothing (`toItem` gives undefined) are passed over.
+ * Returns the items oldest first and `next`, the id of the newest entry not taken, to read from next time; undefined
+ * when the scan reached the start of the conversation.
+ */
+export async function olderPart<R extends { id: unknown }, T extends Entry, C>(
+	read: (cursor: C | undefined) => Promise<EntryPage<R, C>>,
+	toItem: (record: R) => T | undefined,
+	size: (item: T) => number,
+	bytes: number,
+): Promise<{ items: T[]; next: R["id"] | undefined }> {
+	const items: T[] = [];
+	let total = 0;
+	let cursor: C | undefined;
+	for (;;) {
+		const page = await read(cursor);
+		for (const record of page.items) {
+			// Full, and not ending on a tool result, whose answer would then come in another part.
+			if (items.length > 0 && total >= bytes && items.at(-1)!.kind !== "tool") return { items: items.reverse(), next: record.id };
+			const item = toItem(record);
+			if (item === undefined) continue;
+			items.push(item);
+			total += size(item);
+		}
+		cursor = page.next;
+		if (cursor === undefined || page.items.length === 0) return { items: items.reverse(), next: undefined };
+	}
 }
 
 /**

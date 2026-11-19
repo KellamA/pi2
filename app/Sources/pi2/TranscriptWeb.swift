@@ -11,12 +11,14 @@ struct ConversationTranscript: View {
     let items: [Item]
     /// How many entries older than `items` are still to come (#380).
     var earlier = 0
+    /// Whether there are entries older than those, to ask for, and whether they are being asked for (#440).
+    var older = TranscriptFeed.Older.none
     let state: ConversationState?
 
     var body: some View {
         if let folder = TranscriptPage.folder {
             TranscriptWebView(
-                folder: folder, engine: engine, conversationID: conversationID, items: items, earlier: earlier, state: state,
+                folder: folder, engine: engine, conversationID: conversationID, items: items, earlier: earlier, older: older, state: state,
                 inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names, chat: chat
             )
             // The page stays hidden until it has drawn the conversation; meanwhile this shows through.
@@ -67,6 +69,7 @@ struct TranscriptWebView: NSViewRepresentable {
     let conversationID: Int
     let items: [Item]
     let earlier: Int
+    let older: TranscriptFeed.Older
     let state: ConversationState?
     let inbox: [InboxItem]
     let names: TranscriptFeed.Names
@@ -83,7 +86,7 @@ struct TranscriptWebView: NSViewRepresentable {
     func updateNSView(_ view: TranscriptWebKitView, context: Context) {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
-        context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, state: state, inbox: inbox, names: names, chat: chat)
+        context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, older: older, state: state, inbox: inbox, names: names, chat: chat)
     }
 
     static func dismantleNSView(_ view: TranscriptWebKitView, coordinator: TranscriptBridge) {
@@ -102,6 +105,7 @@ final class TranscriptBridge {
     private var feed = TranscriptFeed()
     private var items: [Item] = []
     private var earlier = 0
+    private var older = TranscriptFeed.Older.none
     private var state: ConversationState?
     private var inbox: [InboxItem] = []
     private var names: TranscriptFeed.Names?
@@ -130,7 +134,7 @@ final class TranscriptBridge {
         return view
     }
 
-    func show(conversationID: Int, items: [Item], earlier: Int, state: ConversationState?, inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
+    func show(conversationID: Int, items: [Item], earlier: Int, older: TranscriptFeed.Older, state: ConversationState?, inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
         if conversationID != self.conversationID {
             self.conversationID = conversationID
             feed.restart()
@@ -138,6 +142,7 @@ final class TranscriptBridge {
         }
         self.items = items
         self.earlier = earlier
+        self.older = older
         self.state = state
         self.inbox = inbox
         self.names = names
@@ -169,7 +174,7 @@ final class TranscriptBridge {
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
         // A long conversation goes to the page newest first, and the older entries a part at a time, each once the page
         // has drawn the one before (#380): one part on its way at a time, whatever else is sent meanwhile.
-        guard let message = feed.update(items: items, earlier: earlier, state: state, inbox: inbox, names: names, palette: palette, chat: chat, withOlder: !olderOnTheWay),
+        guard let message = feed.update(items: items, earlier: earlier, older: older, state: state, inbox: inbox, names: names, palette: palette, chat: chat, withOlder: !olderOnTheWay),
               let json = TranscriptFeed.json(message) else {
             drawn?()
             return
@@ -229,6 +234,11 @@ final class TranscriptBridge {
             olderOnTheWay = false
             // Shown once it has drawn the conversation, so it never shows empty over the loading view.
             push { [weak self] in self?.reveal() }
+        case .older:
+            // Not while this page still has older entries of the app's to come; the engine is asked only when it said
+            // there is more, and one part at a time (EngineClient.loadOlder).
+            guard feed.pending == 0 else { return }
+            engine.loadOlder(conversationID)
         case .copy(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)

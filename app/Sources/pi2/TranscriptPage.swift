@@ -48,6 +48,8 @@ enum TranscriptPalette {
 enum TranscriptAction: Equatable {
     /// The page has loaded and wants the whole conversation.
     case ready
+    /// The reader is near the top of what the page has, and there are older entries to ask for (#440).
+    case older
     case copy(String)
     case openLink(URL)
     case decide(inbox: String, decision: String)
@@ -82,6 +84,8 @@ enum TranscriptAction: Equatable {
         switch type {
         case "ready":
             self = .ready
+        case "older":
+            self = .older
         case "copy":
             guard let text = body["text"] as? String, !text.isEmpty, text.utf16.count <= Self.copyLimit else { return nil }
             self = .copy(text)
