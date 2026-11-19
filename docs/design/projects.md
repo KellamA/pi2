@@ -61,7 +61,7 @@ The person ticks the projects to watch. Each gets a column: what needs the perso
 - **Rules** are a short list that is the person's. They are given to the model at every turn, word for word, in a section of their own outside the conversation, so no summary can change or drop them. Each rule binds the orchestrator alone or every agent in the project. The board shows them and what they cost in tokens at every request.
 - The person writes rules, or dictates one to the orchestrator. Unasked, an agent can only propose one, as a card to accept, edit or refuse. Dropping a rule is a change that widens reach, so an agent can only ask for it.
 - **Notes** are what an agent keeps for itself: facts about the project, as memory is today. They belong to the project, so a new orchestrator starts with them.
-- "Rules" today means commands an agent may run without asking (`docs/rules.md`). Those are to be called **allowed commands**.
+- [Allowed commands](../allowed-commands.md) are separate: they say which shell commands an agent may run without asking.
 
 ## Work
 

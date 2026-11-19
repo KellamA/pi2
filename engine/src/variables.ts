@@ -42,7 +42,7 @@ export function refusal(name: string): string | undefined {
 	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return `“${name}” is not a name a shell can use: letters, digits and _ only, not starting with a digit.`;
 	if (name === "PATH") return "PATH is not set here: pi² gives commands the PATH of your login shell, so change it in your shell's profile, and it counts from the next time pi² starts.";
 	if (name.startsWith("PI2_")) return "Names that start with PI2_ are pi²'s own: it sets some of them for each command itself (PI2_SCRATCH, the conversation's scratch folder, and PI2_RUN, which it finds what a command started by), and keeps the rest out of what commands get.";
-	if (SHELL_OWN.has(name) || name.startsWith("BASH_")) return `${name} is not allowed: bash reads it as it starts every command, so it would change what each command does, including the ones the agent's rules let it run without asking.`;
+	if (SHELL_OWN.has(name) || name.startsWith("BASH_")) return `${name} is not allowed: bash reads it as it starts every command, so it would change what each command does, including commands the agent is allowed to run without asking.`;
 	if (name.startsWith("DYLD_")) return `${name} would never arrive: macOS takes DYLD_ variables away from /bin/bash, which runs every command.`;
 	return undefined;
 }

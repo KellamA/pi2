@@ -33,7 +33,7 @@ It works with the models you already have: sign in with a subscription, paste an
 
 ### Run a team of agents
 
-An agent is a saved setup: a model, instructions, tools, a folder, and limits. Pick one to start a conversation. To start from an existing setup, choose **Duplicate** in the agent's sidebar context menu or its settings, or **Duplicate agent: …** in the command palette (⌘K). Its settings open with “copy” added to the name, numbered if needed. All settings are copied, including command rules and who it can hand work to; memory notes, conversations, schedules and worktrees stay with the original. Other agents cannot hand work to the copy until you allow it in their settings. Built-in agents can be copied too.
+An agent is a saved setup: a model, instructions, tools, a folder, and limits. Pick one to start a conversation. To start from an existing setup, choose **Duplicate** in the agent's sidebar context menu or its settings, or **Duplicate agent: …** in the command palette (⌘K). Its settings open with “copy” added to the name, numbered if needed. All settings are copied, including allowed commands and who it can hand work to; memory notes, conversations, schedules and worktrees stay with the original. Other agents cannot hand work to the copy until you allow it in their settings. Built-in agents can be copied too.
 
 <p align="center"><img src="docs/images/welcome.png" alt="The welcome screen with four agents to choose from" width="820"></p>
 
@@ -47,11 +47,11 @@ Tool access is set per conversation: off, read only, ask first, or full. With "a
 
 <p align="center"><img src="docs/images/inbox.png" alt="The Inbox: a command, a schedule an agent wants to set, a question, and an app action, all waiting" width="820"></p>
 
-Being asked about every `git status` gets old, and switching approvals off for the whole shell gives too much away. So an approval for a command offers a third choice: allow commands that start the same way, for that agent in that folder, from now on. Anything more involved still asks: two commands joined together unless each is covered, writing to a file, a variable, `sudo`. Rules that would allow anything, such as `bash` or `rm` on their own, cannot be made. You can review and remove rules in the agent's settings. [What a rule covers](docs/rules.md).
+Being asked about every `git status` gets old, and switching approvals off for the whole shell gives too much away. So a command approval can add an **allowed command**: that agent may run commands that start the same way in that folder from then on. Anything more involved still asks: two commands joined together unless each is covered, writing to a file, a variable, `sudo`. Broad entries such as `bash` or `rm` on their own cannot be added. You can review and remove allowed commands in the agent's settings. [What an allowed command covers](docs/allowed-commands.md#what-an-allowed-command-covers).
 
 For an agent working somewhere you can afford to lose, such as a spare Mac or a virtual machine, **Allow everything** lifts every approval and lets computer use work any app, browsers included. It is per agent, off by default, turned on only after a confirmation, and marked in red wherever the agent shows. [What it lifts and what it does not](docs/allow-everything.md).
 
-<p align="center"><img src="docs/images/rules.png" alt="An approval for npm test with the choice to always allow npm test here" width="820"></p>
+<p align="center"><img src="docs/images/allowed-commands.png" alt="An approval for npm test with the choice to always allow npm test here" width="820"></p>
 
 ### Let an agent use your apps
 
@@ -209,7 +209,7 @@ To report a security problem, see [SECURITY.md](SECURITY.md).
 - [Attachments](docs/attachments.md): what can be pasted or attached to a message, and the limits.
 - [Transcript](docs/transcript.md): how the conversation page is built, and how it is kept from running anything a model writes.
 - [Task list](docs/plan.md), [project instructions and memory](docs/knowledge.md), [look tools](docs/look.md), [plan limits](docs/limits.md), [documents](docs/documents.md), [code](docs/code.md), [pictures](docs/pictures.md).
-- [Command rules](docs/rules.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
+- [Allowed commands](docs/allowed-commands.md) and [schedules agents set](docs/schedules.md): what each allows, and what always asks.
 - [Archive](docs/archive.md): archiving, restoring, and how deleting differs.
 - [Worktrees and branches](docs/worktrees.md): working on one repository in parallel, and what the branch colours mean.
 - [pi² as a co-author](docs/commits.md): the setting that asks agents to name pi² in their commits, and what it does not do.

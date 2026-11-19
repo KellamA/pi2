@@ -60,7 +60,7 @@ Three consequences shape everything:
 - After-run automations: run tests if files changed, have another agent review before the answer stands.
 
 **Human in the loop**
-- Approval gates on risky tool calls (durable — they sleep on a signal and survive restarts), with Allow once / Always / Deny rules per agent and folder.
+- Approval gates on risky tool calls (durable — they sleep on a signal and survive restarts), with Allow Once / Always Allow / Deny, and allowed commands per agent and folder.
 - Agents can ask you a question and wait; answers from the Inbox, a notification, or the menu bar.
 
 **Always on**

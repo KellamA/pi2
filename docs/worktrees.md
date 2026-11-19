@@ -51,7 +51,7 @@ In an agent's settings, under Tools, **Give each conversation its own worktree**
 
 Conversations started by a schedule, sub-chats, and forks are not given one: a fork works in the same folder as the conversation it came from, and a sub-chat usually works in its parent's, unless the agent handing it work asks for a worktree (see below).
 
-The agent's command rules for the repository hold in these worktrees too, and a rule made in one is kept for the main checkout, so the next conversation does not ask again. See [rules.md](rules.md).
+The agent's [allowed commands](allowed-commands.md) for the repository hold in these worktrees too. An entry added in one is kept for the main checkout, so the next conversation does not ask again.
 
 If the worktree cannot be made, the conversation starts in the agent's folder as usual, and its branch icon shows that.
 
@@ -75,7 +75,7 @@ The tracker looks at a sub-chat in its parent's worktree as that worktree, so it
 
 An agent handing work on can ask for the new sub-chat to get a worktree of its own: `delegate` with `worktree`, a branch name. This is for several sub-chats changing one repository at once, so each has its own branch and checkout and none disturbs the others or its parent's folder.
 
-- pi² makes it exactly as **New Worktree…** does, in the repository the sub-chat would otherwise have worked in: the same place in the data folder, the sub-chat's folder moves into it, it is told it works there, the set-up command of the agent it hands to runs, command rules hold there, and the sidebar and **Branches** show it as the sub-chat's own worktree.
+- pi² makes it exactly as **New Worktree…** does, in the repository the sub-chat would otherwise have worked in: the same place in the data folder, the sub-chat's folder moves into it, it is told it works there, the set-up command of the agent it hands to runs, allowed commands hold there, and the sidebar and **Branches** show it as the sub-chat's own worktree.
 - The new branch starts from the commit the parent's folder is on, or from `from`: a branch, tag or commit as the repository has it now, such as `origin/main`. pi² does not fetch first. "Merged" is measured against what it started from. A branch that already exists is checked out as it is, unless `from` is given, which is then refused.
 - pi² makes worktrees for the same repository one at a time. If Git fails during checkout, pi² cleans up that attempt's files and registration and removes the new branch if it can verify that the branch has not moved and is not checked out elsewhere. It never deletes a pre-existing branch. The call fails with a short reason and what to try next, and no sub-chat is left behind.
 - It is made without asking when the conversation handing the work on has full access, since its agent could make one with git itself, or when the agent it hands to has **Give each conversation its own worktree** on. Otherwise you are asked first, with what it would make and the task; **Always Allow Here** stops the questions for the rest of that conversation.

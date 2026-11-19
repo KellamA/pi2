@@ -1,6 +1,6 @@
 import AppKit
 import SwiftUI
-import WebKit
+import TranscriptKit
 
 /// The transcript page in the app bundle, put there by app/build.sh. A bare `swift build` has no bundle to carry it,
 /// and the app shows the SwiftUI transcript instead.
@@ -10,6 +10,9 @@ enum TranscriptPage {
         let folder = resources.appendingPathComponent("transcript", isDirectory: true)
         return FileManager.default.fileExists(atPath: folder.appendingPathComponent("index.html").path) ? folder : nil
     }()
+
+    /// The page loaded ahead for the next pane that opens (#441), from the first pane on.
+    @MainActor static let spare: SparePage? = folder.map { SparePage(folder: $0) }
 }
 
 /// pi²'s palette from `Theme`, resolved for one appearance as CSS colours for the page.
@@ -217,170 +220,5 @@ enum TranscriptAction: Equatable {
         let double = number.doubleValue
         guard double.rounded() == double, abs(double) < 9_007_199_254_740_992 else { return nil }
         return number.intValue
-    }
-}
-
-/// The web view the transcript lives in. It loads the page once and nothing after: every later navigation (a link, a
-/// reload, a script, a dropped file) is cancelled, it opens no windows, keeps nothing on disk, takes no drops, and its
-/// menu offers no way to navigate, open or download. Messages from the page arrive as checked `TranscriptAction`s.
-final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate {
-    /// What the person did in the page.
-    var onAction: (TranscriptAction) -> Void = { _ in }
-    /// The page was loaded again (its process ended); it has forgotten everything it was sent.
-    var onReload: () -> Void = {}
-    /// The view's appearance changed, so the page needs the palette again.
-    var onAppearanceChange: () -> Void = {}
-    /// Items for the menu WebKit is about to show, for the file the person right-clicked (#451). The page says what
-    /// each right-click was on before WebKit asks for its menu, so these are for this menu, and are used once.
-    var fileMenuItems: (items: [(title: String, choose: () -> Void)], at: Date)?
-
-    private let folder: URL
-    private var page: URL { folder.appendingPathComponent("index.html") }
-    /// Set only between asking for the page and WebKit asking whether it may load it.
-    private var expecting: URL?
-    private let messages = MessageHandler()
-
-    init(folder: URL) {
-        self.folder = folder
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        configuration.preferences.isElementFullscreenEnabled = false
-        configuration.preferences.isFraudulentWebsiteWarningEnabled = false
-        configuration.userContentController.add(messages, contentWorld: .page, name: "pi2")
-        super.init(frame: .zero, configuration: configuration)
-        messages.view = self
-        navigationDelegate = self
-        uiDelegate = self
-        allowsLinkPreview = false
-        allowsBackForwardNavigationGestures = false
-        allowsMagnification = false
-        #if PI2_DEVELOPMENT
-        isInspectable = true
-        if ProcessInfo.processInfo.environment["PI2_DRAW_WHEN_HIDDEN"] != nil { drawWhenHidden() }
-        #endif
-        load()
-    }
-
-    #if PI2_DEVELOPMENT
-    /// WebKit stops drawing a page nobody can see: one in a covered window, or behind a locked screen. For taking
-    /// pictures of the app in those conditions (docs/development.md), a development build can be told to keep drawing.
-    /// It uses a WebKit switch that is not public, so it is never compiled into a release build.
-    private func drawWhenHidden() {
-        let selector = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
-        guard responds(to: selector), let method = method(for: selector) else { return }
-        typealias Setter = @convention(c) (AnyObject, Selector, Bool) -> Void
-        unsafeBitCast(method, to: Setter.self)(self, selector, false)
-    }
-    #endif
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    private func load() {
-        expecting = page
-        loadFileURL(page, allowingReadAccessTo: folder)
-    }
-
-    /// Stops listening to the page, for a view that is going away.
-    func close() {
-        configuration.userContentController.removeAllScriptMessageHandlers()
-        messages.view = nil
-    }
-
-    fileprivate func received(_ message: WKScriptMessage) {
-        // Only the transcript page itself, in this view's main frame, is listened to.
-        guard message.webView === self, message.frameInfo.isMainFrame,
-              message.frameInfo.request.url?.isFileURL == true, message.frameInfo.request.url?.path == page.path,
-              let action = TranscriptAction(message: message.body) else { return }
-        onAction(action)
-    }
-
-    // MARK: Navigation
-
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-        if let expecting, navigationAction.targetFrame?.isMainFrame == true, navigationAction.request.url?.isFileURL == true,
-           navigationAction.request.url?.path == expecting.path {
-            self.expecting = nil
-            return .allow
-        }
-        return .cancel
-    }
-
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        load()
-        onReload()
-    }
-
-    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        nil
-    }
-
-    // MARK: Appearance, drops, menu
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        onAppearanceChange()
-    }
-
-    /// Files and pictures dropped anywhere on the conversation are attached to the message being written, so the page
-    /// registers for no drags and a drop over it reaches the conversation.
-    override func registerForDraggedTypes(_ newTypes: [NSPasteboard.PasteboardType]) {}
-
-    private static let unwantedMenuItems: Set<String> = [
-        "WKMenuItemIdentifierReload", "WKMenuItemIdentifierGoBack", "WKMenuItemIdentifierGoForward",
-        "WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow", "WKMenuItemIdentifierDownloadLinkedFile",
-        "WKMenuItemIdentifierOpenImageInNewWindow", "WKMenuItemIdentifierDownloadImage", "WKMenuItemIdentifierOpenFrameInNewWindow",
-        "WKMenuItemIdentifierOpenMediaInNewWindow", "WKMenuItemIdentifierDownloadMedia", "WKMenuItemIdentifierShowHideMediaControls",
-        "WKMenuItemIdentifierToggleFullScreen", "WKMenuItemIdentifierToggleEnhancedFullScreen", "WKMenuItemIdentifierInspectElement",
-        "WKMenuItemIdentifierPaste",
-    ]
-
-    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
-        super.willOpenMenu(menu, with: event)
-        #if PI2_DEVELOPMENT
-        let unwanted = Self.unwantedMenuItems.subtracting(["WKMenuItemIdentifierInspectElement"])
-        #else
-        let unwanted = Self.unwantedMenuItems
-        #endif
-        for item in menu.items where unwanted.contains(item.identifier?.rawValue ?? "") { menu.removeItem(item) }
-        if let file = fileMenuItems, Date().timeIntervalSince(file.at) < 5, !file.items.isEmpty {
-            for (index, entry) in file.items.enumerated() {
-                menu.insertItem(ActionMenuItem(title: entry.title, choose: entry.choose), at: index)
-            }
-            menu.insertItem(.separator(), at: file.items.count)
-        }
-        fileMenuItems = nil
-        // No separator at either end or twice in a row once items have gone.
-        var previousWasSeparator = true
-        for item in menu.items {
-            if item.isSeparatorItem && previousWasSeparator { menu.removeItem(item) } else { previousWasSeparator = item.isSeparatorItem }
-        }
-        if let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
-    }
-}
-
-/// A menu item that does what it was given when chosen.
-private final class ActionMenuItem: NSMenuItem {
-    private let choose: () -> Void
-
-    init(title: String, choose: @escaping () -> Void) {
-        self.choose = choose
-        super.init(title: title, action: #selector(chosen), keyEquivalent: "")
-        target = self
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) { fatalError("not used") }
-
-    @objc private func chosen() { choose() }
-}
-
-/// Hands the page's messages to the view without the view's own configuration keeping it alive.
-private final class MessageHandler: NSObject, WKScriptMessageHandler {
-    weak var view: TranscriptWebKitView?
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        view?.received(message)
     }
 }
