@@ -6,7 +6,7 @@ import childProcess, { type ChildProcess, execFileSync, spawn, spawnSync, type S
 import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { forgetRun, type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, sweepRuns, useRunFolder } from "../src/processes.ts";
 import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
@@ -111,10 +111,61 @@ class Client extends EngineClient {
 }
 
 const project = repo("project");
+const gitBin = join(scratch, "bin");
+mkdirSync(gitBin);
+const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+const quoted = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+const moveMarker = join(scratch, "moved");
+const endMove = join(scratch, "end-move");
+writeFileSync(join(gitBin, "git"), `#!/bin/sh
+set -eu
+real=${quoted(realGit)}
+if [ "\${1-}" = worktree ] && [ "\${2-}" = add ]; then
+  case "\${6-}" in
+    cut-off-new|cut-off-existing)
+      "$real" worktree add --quiet --no-checkout -- "$5" "$6"
+      echo partial > "$5/partial"
+      printf 'Updating files: 18%% (50/275)\\rUpdating files: 19%% (51/275)\\r' >&2
+      if [ "$6" = cut-off-existing ]; then
+        echo 'fatal: a test checkout filter refused a file' >&2
+        exit 1
+      fi
+      kill -KILL $$ ;;
+  esac
+fi
+if [ "\${1-}" = worktree ] && [ "\${2-}" = move ]; then
+  case "\${4-}" in
+    */cut-off-move)
+      "$real" "$@"
+      printf '%s' "$5" > ${quoted(moveMarker)}
+      while [ ! -e ${quoted(endMove)} ]; do sleep 0.1; done
+      kill -KILL $$ ;;
+  esac
+fi
+exec "$real" "$@"
+`, { mode: 0o700 });
+
+// Stand in for the filesystem deleting only the start of the isolated checkout, without racing a deadline.
+const cutRm = join(scratch, "cut-rm.mjs");
+writeFileSync(cutRm, `import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { join } from "node:path";
+const rm = fs.rm;
+fs.rm = async (path, options) => {
+	if (typeof path === "string" && /\\/.removing-[^/]+\\/checkout$/.test(path) && (await fs.readFile(join(path, "ignored-cut-off"), "utf8").catch(() => "")).trim() === "interrupt") {
+		await rm(join(path, ".git"));
+		await rm(join(path, "README.md"));
+		await fs.writeFile(join(path, "ignored-cut-off"), "left behind");
+		throw Object.assign(new Error("interrupted removal"), { code: "EIO" });
+	}
+	return rm(path, options);
+};
+syncBuiltinESMExports();
+`);
 /** What the engines this test started have logged, line by line. Their log is passed on to the test's own as it comes. */
 const logged: string[] = [];
 const startEngine = (): ChildProcess => {
-	const child = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "pipe"] });
+	const child = spawn(process.execPath, ["--import", cutRm, main], { env: { ...process.env, PATH: `${gitBin}:${process.env.PATH}`, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-worktrees" }, stdio: ["ignore", "ignore", "pipe"] });
 	let rest = "";
 	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
 		process.stderr.write(chunk);
@@ -364,6 +415,9 @@ try {
 		step("delegate with worktree: asked first without full access, unless the receiving agent gets worktrees anyway");
 
 		// sub_chats says how each worktree stands, and removes one with nothing to lose when archiving, keeping its branch.
+		run(project, "config", "status.showUntrackedFiles", "no");
+		writeFileSync(join(project, ".git", "info", "exclude"), "ignored-cut-off\n");
+		writeFileSync(join(oneRoot, "ignored-cut-off"), "safe to clean up");
 		const dirty = (await delegate(lead, { agent: "Worker", task: "/bash echo unsaved > unsaved.txt", worktree: "sub-dirty" })).details.conversationId as number;
 		const listed = await client.tool(lead, `/tool sub_chats {"action":"list"}`);
 		assert.ok(listed.text.includes(`worktree of its own at ${oneRoot}, on the branch sub-one (made from main): nothing uncommitted, no commits that are not on main`), listed.text);
@@ -372,12 +426,21 @@ try {
 		assert.match(kept.text, /was left where it is\. Nothing would be lost by removing it: pass remove_worktree: true/);
 		assert.ok(existsSync(oneRoot));
 		await client.until("listed as left behind", () => client.events.branches?.leftBehind?.some((w: Event) => w.id === one));
-		const removed = await client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "archive", chats: [one, dirty], remove_worktree: true })}`);
+		const listedAfter = await client.tool(lead, `/tools ${JSON.stringify([
+			{ name: "sub_chats", arguments: { action: "archive", chats: [one, dirty], remove_worktree: true } },
+			{ name: "sub_chats", arguments: { action: "list" } },
+		])}`);
+		const removed = client.conversations.get(lead).items.filter((item: Event) => item.kind === "tool").at(-2);
+		assert.match(listedAfter.text, new RegExp(`Archived: [^\\n]*${dirty} `));
+		assert.doesNotMatch(listedAfter.text, /on the branch sub-dirty/);
 		assert.equal(removed.isError, false, removed.text);
 		assert.ok(removed.text.includes(`- ${one}: already archived. Removed its worktree at ${oneRoot}; the branch sub-one is kept.`), removed.text);
-		assert.match(removed.text, /was left where it is, since it has 1 uncommitted change; the person can remove it from Branches/);
+		assert.match(removed.text, /worktree was not removed: pi² kept it because it has 1 uncommitted change/);
 		assert.equal(existsSync(oneRoot), false, "the worktree's folder is gone");
 		assert.ok(run(project, "branch").includes("sub-one"), "its branch is kept");
+		const dirtyPath = await client.until("dirty checkout still in Branches", () => client.events.branches?.leftBehind?.find((w: Event) => w.id === dirty)?.status.root);
+		assert.equal(readFileSync(join(dirtyPath, "unsaved.txt"), "utf8"), "unsaved\n");
+		run(project, "config", "--unset", "status.showUntrackedFiles");
 		await client.until("no longer left behind", () => !client.events.branches?.leftBehind?.some((w: Event) => w.id === one) && client.events.branches?.leftBehind?.some((w: Event) => w.id === dirty));
 		const line = client.conversations.get(lead).items.filter((i: Event) => i.kind === "marker").at(-1).text;
 		assert.ok(line.includes("The agent removed a worktree with nothing uncommitted or unmerged; its branch sub-one is kept."), line);
@@ -401,7 +464,7 @@ try {
 		const listedNext = await client.tool(lead, `/tool sub_chats {"action":"list"}`);
 		assert.ok(listedNext.text.includes(`worktree of its own at ${nextRoot}, on the branch sub-second (made from main): nothing uncommitted, 1 commit not on main`), listedNext.text);
 		const keptNext = await client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "archive", chats: [next], remove_worktree: true })}`);
-		assert.ok(keptNext.text.includes(`Its worktree at ${nextRoot}, branch sub-second (`) && keptNext.text.includes("was left where it is, since its branch has 1 commit that is not on main"), keptNext.text);
+		assert.match(keptNext.text, /worktree was not removed: pi² kept it because its branch has 1 commit that is not on main/);
 		assert.ok(existsSync(nextRoot), "the new branch's commit is not lost");
 		run(project, "merge", "-q", "--ff-only", "sub-second");
 		await client.until("the second branch merged", () => client.branch(next)?.state === "merged" || client.events.branches?.leftBehind?.some((w: Event) => w.id === next && w.status.state === "merged"));
@@ -411,6 +474,76 @@ try {
 		const branches = run(project, "branch");
 		assert.ok(!branches.includes("sub-second") && branches.includes("sub-first"), `Remove Worktree and Branch deletes the branch it is on now, as Branches names it: ${branches}`);
 		step("a worktree of its own may go on to a new branch once its first is merged: the tracker, sub_chats and removing it follow the branch it is on now");
+
+		const make = (branch: string, task = "Done") => delegate(lead, { agent: "Plain", task, worktree: branch });
+		const archive = (id: number) => client.tool(lead, `/tool sub_chats ${JSON.stringify({ action: "archive", chats: [id], remove_worktree: true })}`);
+		const leftBehind = (id: number) => client.events.branches?.leftBehind?.find((entry: Event) => entry.id === id);
+		run(project, "branch", "cut-off-existing");
+		const addedBefore = run(project, "worktree", "list", "--porcelain");
+		assert.match((await make("cut-off-new")).text, /git was stopped by SIGKILL\. Retry/);
+		const failedExisting = await make("cut-off-existing");
+		assert.match(failedExisting.text, /a test checkout filter refused a file\. Retry/);
+		assert.doesNotMatch(failedExisting.text, /Updating files|Preparing worktree|Command failed/);
+		assert.doesNotMatch(run(project, "branch"), /cut-off-new/);
+		assert.match(run(project, "branch"), /cut-off-existing/);
+		assert.equal(run(project, "worktree", "list", "--porcelain"), addedBefore);
+		assert.ok(!existsSync(join(dirname(oneRoot), "cut-off-new")) && !existsSync(join(dirname(oneRoot), "cut-off-existing")));
+		const parallel = ["parallel-a", "parallel-b", "parallel-c"];
+		await client.tool(lead, `/tools ${JSON.stringify(parallel.map((branch) => ({ name: "delegate", arguments: { agent: "Plain", task: "Done", worktree: branch } })))}`);
+		const outcomes = client.conversations.get(lead).items.filter((item: Event) => item.kind === "tool").slice(-3);
+		assert.equal(new Set(outcomes.map((item: Event) => item.details?.conversationId)).size, 3);
+		assert.ok(outcomes.every((item: Event) => !item.isError));
+		for (const branch of parallel) assert.ok(run(project, "worktree", "list", "--porcelain").includes(`branch refs/heads/${branch}`));
+		step("cut-off and failed checkouts remove just their own leftovers and new branch; three delegates can make worktrees together");
+
+		const move = (await make("cut-off-move")).details.conversationId as number;
+		const movingRoot = (await client.until("moving checkout is tracked", () => client.branch(move)?.root)) as string;
+		const brokenMove = assert.rejects(client.call("worktree.remove", { id: move }), /git was stopped by SIGKILL/);
+		try {
+			await until("git moved the checkout", () => existsSync(moveMarker) && readFileSync(moveMarker, "utf8") !== "");
+			const during = await client.tool(lead, `/tool sub_chats {"action":"list"}`);
+			assert.match(during.text, /on the branch cut-off-move[^\n]*checkout status is unavailable/);
+		} finally {
+			writeFileSync(endMove, "");
+		}
+		await brokenMove;
+		assert.equal(existsSync(movingRoot), false);
+		assert.match((await archive(move)).text, /Removed its worktree/);
+		assert.equal(existsSync(readFileSync(moveMarker, "utf8")), false);
+		step("an overlapping list does not report the partial checkout, and archive retries after git is killed during removal");
+
+		for (const retryFrom of ["archive", "Branches"]) {
+			const name = `partial-${retryFrom.toLowerCase()}`;
+			const { conversationId: id } = (await make(name, "/bash echo interrupt > ignored-cut-off")).details;
+			const root = (await client.until("checkout tracked", () => client.branch(id)?.root)) as string;
+			const failedRemoval = await archive(id);
+			assert.match(failedRemoval.text, /Could not finish removing the worktree: EIO/);
+			await client.until("interrupted removal is listed under Left Behind", () => leftBehind(id)?.status.state === "unavailable");
+			const held = failedRemoval.text.match(/inspect (.+?)\. See Branches/)?.[1];
+			assert.ok(held, failedRemoval.text);
+			assert.equal(existsSync(join(held, "checkout", ".git")), false);
+			assert.equal(readFileSync(join(held, "checkout", "ignored-cut-off"), "utf8"), "left behind");
+			// A different folder now at the old path is not cleanup material.
+			mkdirSync(root);
+			writeFileSync(join(root, "work.txt"), "keep this");
+			await assert.rejects(client.call("worktree.remove", { id }), /left it alone/);
+			assert.equal(readFileSync(join(root, "work.txt"), "utf8"), "keep this");
+			rmSync(root, { recursive: true });
+			if (retryFrom === "archive") assert.match((await archive(id)).text, /Removed its worktree/);
+			else await client.call("worktree.remove", { id });
+			assert.equal(existsSync(held), false);
+			assert.doesNotMatch(run(project, "worktree", "list", "--porcelain"), new RegExp(`branch refs/heads/${name}`));
+			assert.ok(run(project, "branch").includes(name));
+		}
+		const unproven = (await make("unproven")).details.conversationId as number;
+		const unprovenRoot = (await client.until("unproven checkout tracked", () => client.branch(unproven)?.root)) as string;
+		rmSync(join(unprovenRoot, ".git"));
+		writeFileSync(join(unprovenRoot, "new-work"), "not safe to delete");
+		assert.match((await archive(unproven)).text, /pi² left it alone/);
+		await client.until("unproven leftover is listed", () => leftBehind(unproven)?.status.state === "unavailable");
+		await assert.rejects(client.call("worktree.remove", { id: unproven }), /pi² left it alone/);
+		assert.equal(readFileSync(join(unprovenRoot, "new-work"), "utf8"), "not safe to delete");
+		step("archive and Branches finish proven half-removals, but leave replaced and unproven folders alone");
 	}
 
 	// An agent whose conversations each get a worktree.

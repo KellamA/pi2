@@ -61,7 +61,9 @@ When a conversation hands work to another agent, the sub-chat starts in the fold
 
 Continuing an earlier sub-chat keeps the folder it has. Removing a worktree moves the sub-chats working in it back with their conversation.
 
-An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, as for any archived conversation (below), unless the agent asks for it to be removed and nothing would be lost: nothing uncommitted, nothing half done, and no commits that are not on what it started from. The removal is the same as **Remove Worktree, Keep Branch**: the branch stays.
+An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, unless the agent asks for it to be removed and nothing would be lost: nothing uncommitted, nothing half done, and no commits that are not on what it started from. The branch stays. If it merged elsewhere, fetch before retrying: pi² uses the refs the repository has now.
+
+Listing and removal both count untracked files that Git does not ignore, even if the repository normally hides them. Calls to `sub_chats` in the same answer run in order, so a list after archive sees the result. If a removal overlaps a separate list, the checkout's status is unavailable rather than a count from a partly removed folder.
 
 Every sub-chat whose folder is in a git repository shows its branch icon on its own row in the sidebar, so each one's branch and how it stands can be followed without opening Branches. One working in its parent's checkout, whether that is a worktree or the main checkout, has the icon faded and drawn lighter, still in the colour of how the branch stands; one with a worktree of its own, or working in another repository, has it at full strength like any conversation. So among a conversation's sub-chats, the ones on a branch of their own stand out, and a faded icon says "the same branch as the conversation above".
 
@@ -75,7 +77,7 @@ An agent handing work on can ask for the new sub-chat to get a worktree of its o
 
 - pi² makes it exactly as **New Worktree…** does, in the repository the sub-chat would otherwise have worked in: the same place in the data folder, the sub-chat's folder moves into it, it is told it works there, the set-up command of the agent it hands to runs, command rules hold there, and the sidebar and **Branches** show it as the sub-chat's own worktree.
 - The new branch starts from the commit the parent's folder is on, or from `from`: a branch, tag or commit as the repository has it now, such as `origin/main`. pi² does not fetch first. "Merged" is measured against what it started from. A branch that already exists is checked out as it is, unless `from` is given, which is then refused.
-- If the worktree cannot be made (not a git repository, a ref that does not exist, a branch that cannot be used), the call fails with the reason, and no sub-chat is left behind.
+- pi² makes worktrees for the same repository one at a time. If Git fails during checkout, pi² cleans up that attempt's files and registration and removes the new branch if it can verify that the branch has not moved and is not checked out elsewhere. It never deletes a pre-existing branch. The call fails with a short reason and what to try next, and no sub-chat is left behind.
 - It is made without asking when the conversation handing the work on has full access, since its agent could make one with git itself, or when the agent it hands to has **Give each conversation its own worktree** on. Otherwise you are asked first, with what it would make and the task; **Always Allow Here** stops the questions for the rest of that conversation.
 - Continuing the sub-chat keeps it in its worktree. Removing it works as for any other: the sub-chat goes back to its parent's folder.
 
@@ -87,7 +89,7 @@ Choose **Remove Worktree…** from the same places. The conversation goes back t
 - **Remove Worktree and Branch** deletes the branch too, but only if everything on it is merged. A branch with unmerged commits is kept, and pi² says so.
 - A worktree with uncommitted changes can only be removed by discarding them (**Remove and Discard Changes**). Commit them first to keep them.
 
-A worktree cannot be removed while its agent is working. A command the agent left running in the background in the worktree ([background.md](background.md)) does not prevent it: the command is stopped first, and the conversation says so.
+A worktree cannot be removed while its agent is working. A command the agent left running in the background in the worktree ([background.md](background.md)) does not prevent it: the command is stopped first, and the conversation says so. A stopped Git operation or a detached commit must be put in order before a normal removal. Git-ignored files such as installed packages are not counted as changes and go with the checkout.
 
 ## Worktrees left behind
 
@@ -98,7 +100,9 @@ Archiving or deleting a conversation leaves its worktree where it is, with any w
 
 Removing the worktree of an archived conversation moves it back to the folder it worked in before, so if you restore it, it carries on there.
 
-If a worktree's folder is deleted by hand, its icon turns grey and says it is missing. Removing it then lets git forget it.
+If a worktree's folder is deleted by hand, its icon turns grey and says it is missing. Removing it then lets Git forget that checkout alone.
+
+For a normal removal, pi² checks the checkout, moves it aside, then deletes its files without Git's short status deadline. If that is cut off, **Remove…** in **Left Behind** (or another `sub_chats` archive with `remove_worktree: true`) can finish it. pi² only clears a partial folder if it has a record showing that this is the same checkout and it already passed the removal check. If that proof is missing, or another folder has appeared there, pi² leaves it alone and asks you to check it by hand.
 
 ## The branch tracker
 

@@ -19,7 +19,7 @@ import type { Host } from "./extensions.ts";
 import { Library, type Meta } from "./state.ts";
 import { nextSubChats, watchedSubChats } from "./wakes.ts";
 import { unlessMessaged } from "./heed.ts";
-import { type BranchInfo, inspect, removeWorktree, type Worktree, worktreeOf } from "./worktrees.ts";
+import { type BranchInfo, inspect, removeWorktree, whyKeepWorktree, type Worktree, worktreeOf } from "./worktrees.ts";
 
 /** A line in the calling conversation's transcript: which sub-chats were archived, or restored to be continued. */
 export const SUBCHATS_ENTRY = "pi2.subchats";
@@ -78,28 +78,16 @@ const within = (folder: string, root: string) => (realish(folder) + sep).startsW
 /** How a branch stands, in words: "2 uncommitted changes, 3 commits not on main". */
 export function branchWords(info: BranchInfo): string {
 	if (info.state === "missing") return "its folder is gone";
+	if (info.state === "unavailable") return "its checkout status is unavailable";
 	const parts: string[] = [];
 	if (info.operation !== null) parts.push(`a ${info.operation} stopped half way`);
+	const changes = info.changes + info.conflicts;
+	parts.push(changes > 0 ? plural(changes, "uncommitted change") : "nothing uncommitted");
 	if (info.conflicts > 0) parts.push(`${plural(info.conflicts, "file")} with conflicts`);
-	parts.push(info.changes > 0 ? plural(info.changes, "uncommitted change") : "nothing uncommitted");
 	if (info.state === "merged") parts.push(`merged into ${info.base}`);
 	else if (info.unmerged !== null && info.base !== null) parts.push(info.unmerged === 0 ? `no commits that are not on ${info.base}` : `${plural(info.unmerged, "commit")} not on ${info.base}`);
 	if (info.upstream !== null && info.ahead > 0) parts.push(`${plural(info.ahead, "commit")} not pushed to ${info.upstream}`);
 	return parts.join(", ");
-}
-
-/**
- * Why removing a worktree would lose something, or undefined when it would not: nothing uncommitted, nothing half done,
- * and no commits that are not on the branch it was made from (or on the default branch).
- */
-export function keeps(info: BranchInfo | undefined): string | undefined {
-	if (info === undefined) return "pi² could not read how its branch stands";
-	if (info.state === "missing") return undefined;
-	if (info.operation !== null) return `a ${info.operation} is stopped half way in it`;
-	if (info.changes + info.conflicts > 0) return `it has ${plural(info.changes + info.conflicts, "uncommitted change")}`;
-	if (info.unmerged === null || info.base === null) return "pi² cannot tell whether its branch is merged";
-	if (info.unmerged > 0) return `its branch has ${plural(info.unmerged, "commit")} that ${info.unmerged === 1 ? "is" : "are"} not on ${info.base}`;
-	return undefined;
 }
 
 /**
@@ -259,18 +247,18 @@ export function subChatsTool(host: Host) {
 				// The branch it is on now: it may have gone on to a new one after its first was merged (#206).
 				const branch = where.info?.branch ?? own.branch;
 				const standing = where.info === undefined ? "" : ` (${branchWords(where.info)})`;
-				const why = keeps(where.info);
-				if (args.remove_worktree === true && why === undefined) {
+				if (args.remove_worktree === true) {
 					try {
-						await removeWorktree(id, { force: false, deleteBranch: false });
-						removed.push(branch);
-						return [`Removed its worktree at ${own.path}; the branch ${branch} is kept.`];
+						const result = await removeWorktree(id, { force: false, deleteBranch: false, onlyIfMerged: true });
+						const kept = result.branch ?? branch;
+						removed.push(kept);
+						return [`Removed its worktree at ${own.path}; the branch ${kept} is kept.`];
 					} catch (error) {
-						return [`Its worktree at ${own.path}, branch ${branch}${standing}, was left where it is: ${error instanceof Error ? error.message : String(error)}.`];
+						return [`Its worktree was not removed: ${error instanceof Error ? error.message : String(error)}. See Branches → Left Behind.`];
 					}
 				}
 				const left = `Its worktree at ${own.path}, branch ${branch}${standing}, was left where it is`;
-				if (why !== undefined) return [`${left}${args.remove_worktree === true ? `, since ${why}` : ""}; the person can remove it from Branches, where it is listed under Left Behind.`];
+				if (whyKeepWorktree(where.info) !== undefined) return [`${left}; it is listed in Branches under Left Behind.`];
 				return [`${left}. Nothing would be lost by removing it: pass remove_worktree: true to remove it.`];
 			};
 			for (const id of asked) {
