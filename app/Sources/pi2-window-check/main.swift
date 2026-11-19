@@ -12,7 +12,8 @@
 // - that very long unbroken text (a tool's error of 5,000 characters on one line) in each way the app shows text from
 //   outside, rows and request cards that come and go, and a sidebar shown and hidden, change neither the smallest
 //   size nor the size of the window, which sits at its smallest the whole time;
-// - that a stack of requests cannot make the split view taller than the window, as it did before;
+// - that a stack of requests cannot make the split view taller than the window, as it did before, and four or twelve
+//   requests leave the transcript, the message field and Stop visible at the smallest size (#489);
 // - that the watch which names a view whose size does not settle reports one that changes size again and again in one
 //   turn of the run loop, once, and stays quiet for a window resized a step a turn as a person does;
 // - that the watch on the app's scene body (#436) reports a body that reads something that then changes, once, and
@@ -65,6 +66,8 @@ final class Feed {
     var cards: [String] = []
     var rows: [String] = ["Inbox", "Activity", "Usage", "Archive"]
     var sidebar = NavigationSplitViewVisibility.all
+    var showLastRequest = false
+    @ObservationIgnored var frames: [String: CGRect] = [:]
 }
 
 /// How many times each body was worked out, by name.
@@ -170,9 +173,51 @@ struct Detail: View {
     }
 }
 
+/// Uses the conversation's bounded stack with stand-ins for its transcript, cards and composer.
+struct RequestDetail: View {
+    struct Request: Identifiable { let id: Int }
+
+    let feed: Feed
+    @State private var availableHeight: CGFloat = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                probe("transcript") { Color.gray.frame(minHeight: 0, maxHeight: .infinity) }
+                ScrollViewReader { proxy in
+                    probe("requests") {
+                        ConversationRequests(feed.cards.indices.map(Request.init), availableHeight: availableHeight) { request in
+                            probe("card-\(request.id)") {
+                                Text(feed.cards[request.id]).frame(maxWidth: .infinity).frame(height: 146)
+                            }
+                            .padding(.top, 8)
+                        }
+                    }
+                    .onChange(of: feed.showLastRequest) {
+                        if feed.showLastRequest { proxy.scrollTo(feed.cards.count - 1, anchor: .bottom) }
+                    }
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
+            VStack(spacing: 0) {
+                probe("field") { TextField("Message Atlas…", text: .constant("")).padding(12) }
+                probe("stop") { Button("Stop") {}.padding(12) }
+            }
+            .layoutPriority(1)
+        }
+        .navigationTitle("Waiting on requests")
+        .toolbar { ToolbarItem { Button("Model") {} } }
+    }
+
+    private func probe<V: View>(_ name: String, @ViewBuilder view: () -> V) -> some View {
+        view().onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { feed.frames[name] = $0 }
+    }
+}
+
 struct Content: View {
     let feed: Feed
     let givesWay: Bool
+    let boundedRequests: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility: Binding(get: { feed.sidebar }, set: { feed.sidebar = $0 })) {
@@ -181,7 +226,9 @@ struct Content: View {
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
-            if givesWay { Detail(feed: feed).columnGivesWay() } else { Detail(feed: feed) }
+            if boundedRequests { RequestDetail(feed: feed).columnGivesWay() }
+            else if givesWay { Detail(feed: feed).columnGivesWay() }
+            else { Detail(feed: feed) }
         }
     }
 }
@@ -208,7 +255,7 @@ final class Made {
     var resizes = 0
     private var observer: NSObjectProtocol?
 
-    init(fixed: Bool) {
+    init(fixed: Bool, boundedRequests: Bool = false) {
         window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1120, height: 740), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.toolbar = NSToolbar(identifier: "check")
@@ -216,7 +263,7 @@ final class Made {
         window.title = "pi²"
         let reported = reported
         let feed = feed
-        let measured = Measured(asked: asked) { Content(feed: feed, givesWay: fixed) }
+        let measured = Measured(asked: asked) { Content(feed: feed, givesWay: fixed, boundedRequests: boundedRequests) }
         let host = fixed
             ? NSHostingView(rootView: AnyView(measured.windowMinimum(width: content.width, height: content.height) { reported.lines.append($0) }))
             : NSHostingView(rootView: AnyView(measured.frame(minWidth: content.width, minHeight: content.height)))
@@ -334,6 +381,38 @@ Task { @MainActor in
         check("nothing was reported as not settling", made.reports.isEmpty, made.reports.joined(separator: "\n      "))
     }
     made.close()
+
+    await group("the composer stays in view with four or twelve requests at the smallest size") {
+        let requests = Made(fixed: true, boundedRequests: true)
+        requests.feed.cards = ["Request 1"]
+        await requests.layOut()
+        requests.window.setContentSize(fixed)
+        await requests.layOut()
+        let smallest = requests.window.frame
+        check("smallest window is 820×532", smallest.size == CGSize(width: 820, height: 532), "frame \(smallest)")
+        check("one card takes just its natural height and padding", requests.feed.frames["requests"]?.height == 154, "frames \(requests.feed.frames)")
+        let field = requests.feed.frames["field"]
+        let stop = requests.feed.frames["stop"]
+        check("field and Stop are in the window", field != nil && stop != nil && (stop?.maxY ?? .infinity) <= smallest.height, "frames \(requests.feed.frames)")
+        for count in [4, 12] {
+            requests.feed.cards = (1...count).map { "Request \($0)" }
+            await requests.layOut()
+            let frames = requests.feed.frames
+            check("\(count) requests: the window does not resize", requests.window.frame == smallest, "frame \(requests.window.frame), was \(smallest)")
+            check("\(count) requests: the field and Stop stay put", frames["field"] == field && frames["stop"] == stop, "frames \(frames)")
+            check("\(count) requests: the transcript keeps room for several lines", (frames["transcript"]?.height ?? 0) >= 100, "frames \(frames)")
+            check("\(count) requests: the last card is below the stack's viewport", (frames["card-\(count - 1)"]?.minY ?? 0) > (frames["requests"]?.maxY ?? .infinity), "frames \(frames)")
+            requests.feed.showLastRequest = true
+            await requests.layOut()
+            let last = requests.feed.frames["card-\(count - 1)"] ?? .null
+            let stack = requests.feed.frames["requests"] ?? .null
+            check("\(count) requests: the last card can scroll into the viewport", !last.isNull && stack.contains(last), "last card \(last), stack \(stack)")
+            requests.feed.cards = ["Request 1"]
+            requests.feed.showLastRequest = false
+            await requests.layOut()
+        }
+        requests.close()
+    }
 
     await group("the watch names a view whose size does not settle, once") {
         let watched = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 600, height: 400), styleMask: [.titled, .resizable], backing: .buffered, defer: false)

@@ -49,12 +49,17 @@ Usage: scripts/test-copy <command> [arguments]
                                    Values are explicit (never inherited), kept for reopen, and not secrets.
   reopen <suffix> [--show <what>]   Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show unless given another.
-  show <suffix> <conversation>     Show this conversation in the running copy's main window.
+  show <suffix> <conversation>     Show this conversation in the running copy's main window, and answer once its
+                                   page has drawn it, so a picture taken next shows it.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
   answer <suffix> <conversation> allow|deny
                                    Answer one waiting approval (allow once); refuses if more than one is waiting.
+  choose <suffix> <path>... | cancel
+                                   Answer the running copy's next Open or Save panel without showing it.
+                                   Paths go in its data folder, the launcher's scratch folder or app/build.
   fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
+  last-copy <suffix>               Print the last Copy action recorded in this copy's data folder as JSON.
   shot <suffix> <file.png> [--window <title>]
                                    Wait for and capture the copy's largest window (or the one with that title) into a file
                                    inside this checkout. Refuses if screen capture is not already allowed.
@@ -402,6 +407,7 @@ launch_app() {
 	# reaches the copy; what it needs is named here. -g keeps it from taking the focus, -n makes a new instance.
 	vars=(--env "PI2_HOME=$DATA" --env "PI2_KEYCHAIN_SERVICE=$SERVICE" --env "PI2_TEST_COPY=$SUFFIX"
 		--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
+	[[ -n ${PI2_SCRATCH-} ]] && vars+=(--env "PI2_TEST_COPY_SCRATCH=$PI2_SCRATCH")
 	[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
 	[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
 	local pair
@@ -549,12 +555,15 @@ case $cmd in
 		launch_app
 		echo "Reopened $NAME from the latest development build (app pid $APP_PID); kept its data and engine (pid $ENGINE_PID)."
 		;;
-	show|size)
+	show|size|choose)
 		names "${1-}"; shift
 		if [[ $cmd == show ]]; then
 			(($# == 1)) || die "use: scripts/test-copy show $SUFFIX <conversation>"
-		elif ! { [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; }; then
-			die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		elif [[ $cmd == size ]]; then
+			{ [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; } ||
+				die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		else
+			(($# > 0)) || die "use: scripts/test-copy choose $SUFFIX <path>... | cancel"
 		fi
 		require_copy
 		is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || die "the copy $SUFFIX has no recorded app running"
@@ -573,6 +582,15 @@ case $cmd in
 		require_copy
 		require_engine
 		node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$DATA/engine.sock" "$SUFFIX" "$@"
+		;;
+	last-copy)
+		names "${1-}"; shift
+		(($# == 0)) || die "use: scripts/test-copy last-copy $SUFFIX"
+		require_copy
+		file="$DATA/copies.jsonl"
+		[[ ! -L $file ]] || die "refusing a symlink for the copy's record of Copy actions"
+		[[ -f $file && -s $file ]] || die "no Copy action has been recorded in $SUFFIX"
+		tail -n 1 "$file"
 		;;
 	shot)
 		names "${1-}"; shift

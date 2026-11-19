@@ -1,0 +1,3 @@
+### For contributors
+- `scripts/test-copy show` answers once the conversation page has drawn the conversation, so a `shot` or a computer use screenshot straight after shows it and lists its links (#453).
+- `pi2-computer-check`, which CI runs, checks how the computer tool reaches SwiftUI controls by accessibility, against stand-in views read in-process with no permission: that a disclosure group made with `pressableDisclosure` opens and closes with a press, in a grouped Form and outside one, and which element a context menu is opened on. A new `DisclosureGroup` in the app should put `pressableDisclosure` on its label (#367).

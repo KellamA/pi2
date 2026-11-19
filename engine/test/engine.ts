@@ -946,6 +946,10 @@ try {
 	assert.ok(notAllowed.isError && /may not use/.test(notAllowed.text));
 	const incomplete = await use({ action: "click", app: NOTES });
 	assert.ok(incomplete.isError && /needs `element`/.test(incomplete.text));
+	await use({ action: "context_menu", app: NOTES, element: 1 });
+	assert.ok(client.inbox.length === 0 && sentToApp("context_menu", NOTES).at(-1)?.element === 1, "a context menu is opened by a control's number, and “always” covers it too");
+	const noMenuTarget = await use({ action: "context_menu", app: NOTES, x: 10 });
+	assert.ok(noMenuTarget.isError && /context_menu needs `element`, or both `x` and `y`/.test(noMenuTarget.text) && sentToApp("context_menu", NOTES).length === 1);
 	assert.equal(client.inbox.length, 0, "a call that cannot run is refused without bothering the person");
 
 	// Another app is asked about separately, and a refusal is final.
@@ -1004,12 +1008,12 @@ try {
 	assert.ok(!toolResults(k).at(-1)!.isError && sentToApp("open_app", COPY).length === 1, "a copy of pi² can be opened");
 	const copyShot = await use({ action: "screenshot", app: COPY });
 	assert.ok(!copyShot.isError && sentToApp("screenshot", COPY).length === 1, "a copy of pi² can be looked at");
-	for (const acting of [{ action: "click", element: 1 }, { action: "click", x: 10, y: 10 }, { action: "type", text: "hi" }, { action: "key", text: "return" }, { action: "menu", path: "File > New" }, { action: "scroll", dy: 1 }]) {
+	for (const acting of [{ action: "click", element: 1 }, { action: "click", x: 10, y: 10 }, { action: "type", text: "hi" }, { action: "key", text: "return" }, { action: "menu", path: "File > New" }, { action: "scroll", dy: 1 }, { action: "context_menu", element: 1 }]) {
 		const refused = await use({ ...acting, app: COPY });
 		assert.ok(refused.isError && /only be looked at/.test(refused.text), `a copy of pi² refuses ${JSON.stringify(acting)}`);
 	}
 	assert.equal(client.inbox.length, 0, "acting on a copy of pi² is refused without asking");
-	assert.ok(["click", "type", "key", "menu", "scroll"].every((action) => sentToApp(action, COPY).length === 0), "nothing that acts reaches a copy of pi²");
+	assert.ok(["click", "type", "key", "menu", "scroll", "context_menu"].every((action) => sentToApp(action, COPY).length === 0), "nothing that acts reaches a copy of pi²");
 	// A copy given under another spelling is still a copy: looked at, never acted on.
 	const COPY_CASE = "Dev.PI2.App.Test";
 	await client.call("agents.save", { agent: { id: custom, name: "Quill", computer: { enabled: true, apps: [NOTES, COPY_CASE] } } });
@@ -1800,7 +1804,7 @@ try {
 		const results = toolResults(second).length;
 		await client.call("submit", { id: second, text: "/bash ./run-tests || touch pwned" });
 		const compound = await client.until("compound approval", () => client.inbox.find((i) => i.conversationId === second));
-		await assert.rejects(client.call("inbox.decide", { id: compound.id, decision: "rule" }), /No rule can be made/, "the page cannot ask for a rule the engine did not offer");
+		await assert.rejects(client.call("inbox.decide", { id: compound.id, decision: "rule" }), /did not offer an allowed command/, "the page cannot save an allowed command the engine did not offer");
 		await client.call("inbox.decide", { id: compound.id, decision: "deny" });
 		await settled(second, results + 1);
 		const otherFolder = await open(smith, elsewhere);
@@ -1832,7 +1836,8 @@ try {
 
 		// By hand: the same checks, and a rule that would allow anything is refused, saying why.
 		const add = (command: string, agentId = smith, folder = project) => client.call("rules.add", { agentId, folder, command });
-		await assert.rejects(add("bash"), /bash alone would let the agent run anything/);
+		await assert.rejects(add("bash"), /Allowing bash alone would let the agent run anything/);
+		await assert.rejects(add("git status a b c d e f g"), /An allowed command can have at most 8 words/);
 		await assert.rejects(add("python3 -c"), /code it writes on the spot/);
 		await assert.rejects(add("rm -rf"), /always asks/);
 		await assert.rejects(add("sudo npm test"), /always asks/);

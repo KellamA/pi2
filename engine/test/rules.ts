@@ -290,10 +290,10 @@ const refused: string[][] = [
 	Array.from({ length: MAX_WORDS + 1 }, () => "a"),
 ];
 for (const list of refused) assert.ok(ruleRefusal(list) !== undefined, `should be refused: ${JSON.stringify(list)}`);
-assert.match(ruleRefusal(["bash"])!, /bash alone would let the agent run anything/, "says why, plainly");
+assert.match(ruleRefusal(["bash"])!, /Allowing bash alone would let the agent run anything/, "says why, plainly");
 assert.match(ruleRefusal(["rm"])!, /always asks/);
 assert.match(ruleRefusal(["npm", "run"])!, /Name the script too/);
-assert.match(ruleRefusal(["cd"])!, /cannot change folder/);
+assert.match(ruleRefusal(["cd"])!, /An allowed command is for one folder/);
 assert.match(ruleRefusal(["npm", "$X"])!, /not a plain word/);
 
 const accepted: string[][] = [

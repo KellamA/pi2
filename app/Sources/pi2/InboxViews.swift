@@ -213,7 +213,7 @@ struct InboxCard: View {
                 }
             }
             .buttonStyle(.piSecondary)
-            .help("\(who) may then run commands that start with “\(rule.command)” in \(engine.folderName(rule.folder))\(rule.worktrees == true ? " and the same folder of every worktree pi² makes from that repository," : "") without asking, in this conversation and later ones. Anything more complicated still asks. Remove the rule in the agent’s settings.")
+            .help("\(who) may then run commands that start with “\(rule.command)” in \(engine.folderName(rule.folder))\(rule.worktrees == true ? " and the same folder of every worktree pi² makes from that repository," : "") without asking, in this conversation and later ones. Anything more complicated still asks. To undo this, remove it under Allowed commands in the agent’s settings.")
         }
     }
 

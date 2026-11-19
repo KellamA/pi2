@@ -1,4 +1,5 @@
 import AppKit
+import BrowserKit
 import ComputerKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -283,15 +284,14 @@ struct ComputerUseSection: View {
     }
 
     private func add() {
-        let panel = NSOpenPanel()
-        panel.directoryURL = URL(fileURLWithPath: "/Applications")
-        panel.allowedContentTypes = [.applicationBundle]
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Add"
-        panel.message = "Choose the apps this agent may use."
-        guard panel.runModal() == .OK else { return }
+        guard let urls = FilePanels.open("computer-apps", selecting: .files, multiple: true, configure: { panel in
+            panel.directoryURL = URL(fileURLWithPath: "/Applications")
+            panel.allowedContentTypes = [.applicationBundle]
+            panel.prompt = "Add"
+            panel.message = "Choose the apps this agent may use."
+        }) else { return }
         var turnedAway: [String] = []
-        for url in panel.urls {
+        for url in urls {
             guard let bundleID = Bundle(url: url)?.bundleIdentifier else { continue }
             let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
             if ComputerPolicy.isNever(bundleID) || ComputerPolicy.same(bundleID, Bundle.main.bundleIdentifier) {

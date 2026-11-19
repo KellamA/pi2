@@ -218,6 +218,9 @@ struct WindowReader {
                 value = AX.string(got[4]) ?? (got[4] as? NSNumber).map { $0.stringValue }
             } else if role == "AXCheckBox" || role == "AXRadioButton" || role == "AXSwitch" || role == "AXToggle" {
                 value = (got[4] as? NSNumber).map { $0.intValue == 0 ? "off" : "on" }
+            } else if role == "AXDisclosureTriangle" {
+                // So a press that opened or closed it shows, and an agent can tell which it is.
+                value = (got[4] as? NSNumber).map { $0.intValue == 0 ? "closed" : "open" }
             }
             controls[index] = Control(
                 element: element, role: role, subrole: subrole, kind: kind, label: label, value: value, frame: frame,
@@ -226,6 +229,8 @@ struct WindowReader {
         }
         // A row with no name is a divider or a heading: nothing to act on, so it gives up its place.
         if listed, role == "AXRow", controls[index].label == nil { controls.remove(at: index) }
+        // So is a menu item with no name: a separator.
+        else if listed, isMenuItem, controls[index].label == nil { controls.remove(at: index) }
         // A control's own name stands for the text inside it.
         if let title = AX.string(got[2]), inner.isEmpty { return [title] }
         return inner

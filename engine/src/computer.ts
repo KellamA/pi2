@@ -24,7 +24,7 @@ export type ComputerSettings = {
 	testCopies?: boolean;
 };
 
-export const ACTIONS = ["list_apps", "open_app", "screenshot", "click", "type", "key", "scroll", "menu"] as const;
+export const ACTIONS = ["list_apps", "open_app", "screenshot", "click", "context_menu", "type", "key", "scroll", "menu"] as const;
 export type ComputerAction = (typeof ACTIONS)[number];
 
 /** Actions that only look; they never wait for approval. */
@@ -282,6 +282,8 @@ export function plainDescription(args: { action?: unknown; app?: unknown; elemen
 			return `Scroll ${Number(args.dy ?? 0) < 0 ? "up" : "down"} in ${app}`;
 		case "menu":
 			return `Choose ${String(args.path ?? "a menu item")} in ${app}`;
+		case "context_menu":
+			return `Open the context menu of ${typeof args.element === "number" ? `control ${args.element}` : "a point"} in ${app}`;
 		default:
 			return `Use ${app}`;
 	}

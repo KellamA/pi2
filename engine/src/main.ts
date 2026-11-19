@@ -18,6 +18,7 @@ import {
 	type Conversation,
 	type ConversationId,
 	type ConversationView,
+	type Cursor,
 	createRegistry,
 	defineDoc,
 	type EntryId,
@@ -214,7 +215,7 @@ const host: Host = {
 	addRule: (agentId, folder, words) =>
 		addCommandRule(agentId, folder, words).then(
 			() => {},
-			(error) => log("could not keep the rule:", error instanceof Error ? error.message : error),
+			(error) => log("could not save the allowed command:", error instanceof Error ? error.message : error),
 		),
 	agentChange: (agent, options) => agentChange(agent, options),
 	sendToChat: async (id, content, requestId) => {
@@ -606,7 +607,7 @@ async function removeCommandRule(agentId: string, folder: string, words: string[
 		if (agent === undefined) throw new Error(`Unknown agent: ${agentId}`);
 		const rules: CommandRule[] = JSON.parse(JSON.stringify(agent.commandRules ?? []));
 		const kept = rules.filter((rule) => !(sameFolder(rule.folder, folder) && sameWords(rule.words, words)));
-		if (kept.length === rules.length) throw new Error("That rule is already gone");
+		if (kept.length === rules.length) throw new Error("That allowed command is already gone");
 		agent.commandRules = kept;
 	}, context);
 }
@@ -993,6 +994,7 @@ async function providersEvent() {
 async function announceProviders(): Promise<void> {
 	broadcast(await providersEvent());
 	// Signing in or out changes which usage has a price.
+	usagePricingChanged = true;
 	scheduleUsageRefresh();
 	for (const feature of host.features) feature.providersChanged?.();
 }
@@ -1877,7 +1879,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const item = inbox.get(id);
 		if (item === undefined) throw new Error("That request is no longer waiting");
 		// "rule" carries no words: the rule is the one the engine offered with the request.
-		if (decision === "rule" && item.rule === undefined) throw new Error("No rule can be made from that request");
+		if (decision === "rule" && item.rule === undefined) throw new Error("That request did not offer an allowed command");
 		if (!inbox.answer(id, decision)) throw new Error("That request is no longer waiting");
 		return {};
 	},
@@ -1986,6 +1988,24 @@ for (const feature of host.features) {
 
 // ---- Live indexes: the library document and which conversations have work running
 
+const usageById = new Map<ConversationId, { doc: UsageDocShape; totals: ReturnType<typeof usageTotals> }>();
+let usagePricingChanged = true;
+let usageTimer: ReturnType<typeof setTimeout> | undefined;
+
+function usageRowsChanged(before: Record<string, Meta>, after: Record<string, Meta>): boolean {
+	const changed = (old: Meta | undefined, next: Meta | undefined) =>
+		(old === undefined) !== (next === undefined) || old?.title !== next?.title || old?.parent !== next?.parent ||
+		old?.agentId !== next?.agentId || isChat(old) !== isChat(next) || isPutAway(old) !== isPutAway(next);
+	for (const [id, { totals }] of usageById) {
+		if (totals.tokens === 0) continue;
+		const meta = before[String(id)];
+		if (changed(meta, after[String(id)])) return true;
+		const root = String(meta?.parent ?? id);
+		if (root !== String(id) && changed(before[root], after[root])) return true;
+	}
+	return false;
+}
+
 // The document must exist before it can be watched; this creates it on a first launch.
 await harness.commit(async (tx) => void (await tx.doc(Library)), context);
 const libraryWatch = await harness.watchDoc(Library, context);
@@ -2003,7 +2023,9 @@ const putAway = () =>
 let wasPutAway = putAway();
 libraryWatch.start(async (call) => {
 	if (call.kind !== "value") return;
+	const before = library.conversations;
 	library = call.value;
+	if (usageRowsChanged(before, library.conversations)) scheduleUsageRefresh();
 	broadcast(libraryEvent());
 	broadcast(inboxEvent()); // titles shown in the inbox come from here
 	const now = putAway();
@@ -2113,7 +2135,6 @@ graphWatch.start(async (call) => {
 	const changed = before.size !== working.size || [...working].some((id) => !before.has(id));
 	if (changed) broadcast(libraryEvent());
 	announceActivity();
-	scheduleUsageRefresh();
 });
 // A command starting or ending changes its row in the conversation, which the live document may already have shown
 // without its clock; its output reaches the conversation on its own, and only Activity needs telling of it.
@@ -2145,9 +2166,62 @@ let usageSummary: Record<string, unknown> = { event: "usage", models: [], agents
 let todayCost = 0;
 const overBudget = () => typeof settings.dailyBudget === "number" && todayCost >= settings.dailyBudget;
 
-async function refreshUsage(): Promise<void> {
-	subscriptions = await providers.subscriptionProviders();
-	const session = (await harness.usage(context)) as UsageDocShape;
+// A published value is already a durable snapshot. Only the initial scan and definition-free copies need a read.
+const dirtyUsage = new Map<ConversationId, UsageDocShape | undefined | "read">();
+let usageRefresh = Promise.resolve();
+/** Serialize budget changes and background refreshes so a delayed ledger write cannot publish older totals. */
+function refreshUsage(): Promise<void> {
+	const refresh = usageRefresh.then(updateUsage);
+	usageRefresh = refresh.catch(() => {});
+	return refresh;
+}
+
+function sessionUsage(): UsageDocShape {
+	// As in Harness.usage(), add each model/tool in durable conversation ID order, including conversations not in
+	// the library. Keep raw costs here: rounding after per-conversation pricing can change the session total.
+	type Counters = { input: number; output: number; totalTokens: number; cost: { total: number } };
+	const models: Record<string, Counters> = Object.create(null);
+	const tools: Record<string, Counters> = Object.create(null);
+	for (const [, { doc }] of [...usageById].sort(([a], [b]) => Number(a) - Number(b))) {
+		for (const [source, target] of [[doc.models, models], [doc.tools, tools]] as const) {
+			for (const [key, value] of Object.entries(source ?? {})) {
+				const sum = (target[key] ??= { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } });
+				sum.input += value.input ?? 0;
+				sum.output += value.output ?? 0;
+				sum.totalTokens += value.totalTokens ?? 0;
+				sum.cost.total += value.cost?.total ?? 0;
+			}
+		}
+	}
+	return { models, tools };
+}
+
+let session: UsageDocShape = {};
+async function updateUsage(): Promise<void> {
+	if (usagePricingChanged) {
+		usagePricingChanged = false;
+		try {
+			subscriptions = await providers.subscriptionProviders();
+		} catch (error) {
+			usagePricingChanged = true;
+			throw error;
+		}
+		for (const entry of usageById.values()) entry.totals = usageTotals(entry.doc);
+	}
+	// Swap batches before reading so a revision published during the refresh is not lost.
+	const batch = [...dirtyUsage];
+	dirtyUsage.clear();
+	try {
+		for (const [id, pending] of batch) {
+			const doc = pending === "read" ? await harness.snapshot(UsageDoc, id, context) : pending;
+			if (doc === undefined || (Object.keys(doc.models ?? {}).length === 0 && Object.keys(doc.tools ?? {}).length === 0)) usageById.delete(id);
+			else usageById.set(id, { doc, totals: usageTotals(doc) });
+		}
+	} catch (error) {
+		for (const [id, pending] of batch) if (!dirtyUsage.has(id)) dirtyUsage.set(id, pending);
+		throw error;
+	}
+	if (batch.length > 0) session = sessionUsage();
 	const total = usageTotals(session);
 	// Whatever was spent since the last look belongs to today.
 	const spend = await harness.commit(async (tx) => {
@@ -2174,8 +2248,8 @@ async function refreshUsage(): Promise<void> {
 	const chats = { cost: 0, tokens: 0 };
 	const byConversation: { id: number; title: string; cost: number; tokens: number; chat: boolean }[] = [];
 	for (const [id, meta] of Object.entries(library.conversations)) {
-		const usage = usageTotals((await harness.snapshot(UsageDoc, Number(id) as unknown as ConversationId, context)) as UsageDocShape | undefined);
-		if (usage.tokens === 0) continue;
+		const usage = usageById.get(Number(id) as unknown as ConversationId)?.totals;
+		if (usage === undefined || usage.tokens === 0) continue;
 		const agent = isChat(meta) ? chats : (byAgent.get(meta.agentId ?? "") ?? { cost: 0, tokens: 0 });
 		agent.cost += usage.cost;
 		agent.tokens += usage.tokens;
@@ -2207,12 +2281,38 @@ async function refreshUsage(): Promise<void> {
 	broadcast(usageSummary);
 	for (const feature of host.features) feature.usageChanged?.();
 }
-let usageTimer: ReturnType<typeof setTimeout> | undefined;
-/** Usage changes when work ends; recount shortly after, once, however many tasks finished together. */
-const scheduleUsageRefresh = () => {
-	clearTimeout(usageTimer);
-	usageTimer = setTimeout(() => void refreshUsage().catch((error) => log("usage refresh failed:", error)), 400);
-};
+/** Batch nearby changes without putting the next count off indefinitely when requests keep finishing. */
+function scheduleUsageRefresh(): void {
+	if (stopping || usageTimer !== undefined) return;
+	usageTimer = setTimeout(() => {
+		usageTimer = undefined;
+		void refreshUsage().catch((error) => log("usage refresh failed:", error));
+	}, 400);
+}
+
+// Usage is written with a model response (including compaction) or a tool result that reports usage. The task graph
+// also changes for work that spent nothing, and a request can end while its conversation still has work.
+harness.observeCommits({
+	advance({ changes }) {
+		for (const change of changes) {
+			if (change.type !== "document" && change.type !== "document.copy") continue;
+			if (change.record.kind !== UsageDoc.definition.kind || change.conversationId === undefined) continue;
+			const doc = change.type === "document.copy" ? "read" : change.kind === "retire" ? undefined : change.value as UsageDocShape;
+			dirtyUsage.set(change.conversationId, doc);
+			scheduleUsageRefresh();
+		}
+	},
+	end() {},
+});
+// Seed once from the durable list, not the visible library: even usage with no pi² metadata belongs in the total.
+await harness.commit(async (tx) => {
+	let cursor: Cursor | undefined;
+	do {
+		const page = await tx.scanConversations({}, 256, cursor);
+		for (const { id } of page.items) if (!dirtyUsage.has(id)) dirtyUsage.set(id, "read");
+		cursor = page.next;
+	} while (cursor !== undefined);
+}, context);
 await refreshUsage();
 
 // Providers whose list the library refreshes itself (pi-ai's models.refresh()) are asked for it, in the background.

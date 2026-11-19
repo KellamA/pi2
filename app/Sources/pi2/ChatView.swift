@@ -1,7 +1,9 @@
 import ComposeKit
 import ComputerKit
+import BrowserKit
 import SwiftUI
 import WebKit
+import WindowKit
 
 struct ChatView: View {
     let engine: EngineClient
@@ -20,6 +22,7 @@ struct ChatView: View {
 
     @State private var steer = true
     @State private var dropTargeted = false
+    @State private var heightAboveComposer: CGFloat = 0
     @FocusState private var composerFocused: Bool
 
     private var data: OpenConversation? { engine.open[id] }
@@ -80,8 +83,26 @@ struct ChatView: View {
     }
 
     /// The transcript, what is going on, and the message field. A chat keeps them in one column.
-    @ViewBuilder
     private var conversation: some View {
+        let requests = engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }
+        return VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                transcript
+                if !requests.isEmpty {
+                    ConversationRequests(requests, availableHeight: heightAboveComposer) { item in
+                        InboxCard(engine: engine, item: item, showsSource: true)
+                            .padding(.horizontal, inset).padding(.top, 8)
+                    }
+                    .frame(maxWidth: isChat ? ChatColumn.width : .infinity)
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heightAboveComposer = $0 }
+            composerArea.layoutPriority(requests.count > 1 ? 1 : 0)
+        }
+    }
+
+    @ViewBuilder
+    private var transcript: some View {
         // Until the conversation has come, the page loads beside the request, hidden, and says it is loading meanwhile
         // (ConversationTranscript), rather than show an empty pane that reads as broken.
         if !isChat, let state, isEmpty {
@@ -95,12 +116,10 @@ struct ChatView: View {
                 older: TranscriptFeed.Older(more: data?.more ?? false, loading: data?.loadingOlder ?? false), state: state
             )
         }
+    }
+
+    private var composerArea: some View {
         VStack(spacing: 0) {
-            // A subagent of this conversation is waiting on the person.
-            ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in
-                InboxCard(engine: engine, item: item, showsSource: true)
-                    .padding(.horizontal, inset).padding(.top, 8)
-            }
             if state?.compacting == true {
                 banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: Theme.acc)
             }
@@ -616,27 +635,21 @@ extension EngineClient {
         if let folder = Self.chooseFolder() { configure(id, ["cwd": folder]) }
     }
 
-    static func pickFolder() -> String? { chooseFolder() }
+    static func pickFolder(_ panel: String = "conversation-folder") -> String? { chooseFolder(panel) }
 
     /// Files and folders for an agent to keep at hand.
     static func pickReferenceFiles() -> [String] {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Add"
-        panel.message = "Choose files or folders this agent can always read."
-        return panel.runModal() == .OK ? panel.urls.map(\.path) : []
+        FilePanels.open("reference-files", selecting: .filesAndFolders, multiple: true) { panel in
+            panel.prompt = "Add"
+            panel.message = "Choose files or folders this agent can always read."
+        }?.map(\.path) ?? []
     }
 
-    private static func chooseFolder() -> String? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Use Folder"
-        panel.message = "Choose the folder this conversation's tools work in."
-        return panel.runModal() == .OK ? panel.url?.path : nil
+    private static func chooseFolder(_ name: String = "conversation-folder") -> String? {
+        FilePanels.open(name, selecting: .folders) { panel in
+            panel.prompt = "Use Folder"
+            panel.message = "Choose the folder this conversation's tools work in."
+        }?.first?.path
     }
 }
 
@@ -696,8 +709,7 @@ struct TranscriptView: View {
                             .contextMenu(previewAs: "message \(item.id)") {
                                 Button("Fork From Here") { engine.fork(conversationID, at: item.id) }
                                 Button("Copy") {
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(item.text, forType: .string)
+                                    AppCopy.write(item.text, kind: .message, engine: engine, conversation: conversationID)
                                 }
                             }
                     default:
@@ -825,6 +837,7 @@ struct ThinkingView: View {
                 Text(streaming ? "Thinking…" : "Thought").foregroundStyle(Theme.tx2)
             }
             .font(.system(size: 12.5))
+            .pressableDisclosure($expanded)
         }
     }
 }
@@ -976,8 +989,9 @@ struct ToolCard: View {
                         Text("allowed by Allow everything").font(.system(size: 11)).foregroundStyle(Theme.tx3)
                     } else if !allowedBy.isEmpty {
                         // So a command that was not asked about does not look as if nothing checked it.
-                        Text("allowed by your rule").font(.system(size: 11)).foregroundStyle(Theme.tx3)
-                            .help("Ran without asking: your rule for “\(allowedBy.joined(separator: "”, “"))” covers it")
+                        Text(allowedBy.count == 1 ? "matched an allowed command" : "matched allowed commands")
+                            .font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                            .help("Ran without asking: matched “\(allowedBy.joined(separator: "”, “"))”")
                     }
                     if isRunning {
                         Spinner()

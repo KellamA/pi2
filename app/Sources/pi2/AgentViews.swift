@@ -282,7 +282,7 @@ struct AgentEditor: View {
                         HStack {
                             Text(agent.cwd ?? "pi²’s scratch folder, unless chosen per conversation").foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                             Button("Choose…") {
-                                if let folder = EngineClient.pickFolder() { draft.wrappedValue.cwd = folder }
+                                if let folder = EngineClient.pickFolder("agent-folder") { draft.wrappedValue.cwd = folder }
                             }
                             if agent.cwd != nil { Button("Clear") { draft.wrappedValue.cwd = nil; draft.wrappedValue.worktree = false } }
                         }
@@ -546,20 +546,20 @@ struct CommandRulesSection: View {
                     Button("Remove", systemImage: "minus.circle") { remove(rule) }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
-                        .help("Remove the rule for \(rule.command): the agent asks again before running it")
+                        .help("Remove \(rule.command) from Allowed commands: the agent asks again before running it")
                 }
             }
             HStack(spacing: 8) {
                 TextField("Command", text: $command, prompt: Text("npm test"))
                     .labelsHidden()
                     .font(Theme.mono)
-                    .accessibilityLabel("Words a command starts with, for a new rule")
+                    .accessibilityLabel("First words of the command to allow")
                     .onSubmit { add() }
                 Button(newFolder.map { "in \(engine.folderName($0))" } ?? "Choose Folder…") {
-                    if let picked = EngineClient.pickFolder() { chosenFolder = picked }
+                    if let picked = EngineClient.pickFolder("rule-folder") { chosenFolder = picked }
                 }
                 .lineLimit(1)
-                .help(newFolder.map { "The rule is for \($0). Click to choose another folder." } ?? "Choose the folder the rule is for")
+                .help(newFolder.map { "Allow the command in \($0). Click to choose another folder." } ?? "Choose the folder where the command is allowed")
                 Button("Add") { add() }
                     .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || newFolder == nil)
             }
@@ -567,18 +567,18 @@ struct CommandRulesSection: View {
                 Text(problem).foregroundStyle(Theme.bad).font(.callout)
             }
         } header: {
-            Text("Commands it may run without asking")
+            Text("Allowed commands")
         } footer: {
             Text(footer).formFooter()
         }
     }
 
     private var footer: String {
-        var text = "A rule covers commands that start with its words, in that folder only: “git status” also covers “git status -sb”, but not “git push”. "
-        text += "In a git repository, that folder also means the same folder of every worktree pi² makes from it, and a rule made in one of those worktrees is kept for the main checkout. "
-        text += "It allows any options after its words, so make one only for a command you would let the agent run that way. "
-        text += "Anything more complicated still asks, and rules that would allow anything, such as bash or rm on their own, cannot be made. "
-        if access != "ask" { text += "Rules only matter while tool access is “Ask first”. " }
+        var text = "An allowed command lets this agent run commands that start with the same words without asking: “git status” also covers “git status -sb”, but not “git push”. "
+        text += "It applies only in the chosen folder. For a folder in a repository’s main checkout, it also applies in the same folder of every worktree pi² makes. An entry added in one of those worktrees is kept for the main checkout. "
+        text += "Any options after those words are allowed, so add only commands you would let the agent run with any options. "
+        text += "Anything more complicated still asks. Broad entries such as bash or rm on their own cannot be added. "
+        if access != "ask" { text += "Allowed commands only matter while tool access is “Ask first”. " }
         text += "Changes here apply at once, without Save."
         return text
     }

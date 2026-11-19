@@ -1,4 +1,4 @@
-// Rules that let an agent run particular shell commands without asking, in one folder. See docs/rules.md.
+// Allowed commands let an agent run particular shell commands without asking, in one folder. See docs/allowed-commands.md.
 //
 // Everything here is pure, so engine/test/rules.ts can try it against commands that attempt to smuggle a second one
 // past a rule. The guiding principle: the command line is read the way bash will read it, and anything this reader is
@@ -316,26 +316,26 @@ const inSet = (set: ReadonlySet<string>, name: string) => set.has(name) || set.h
 /** Why a rule with these words cannot be made, in words for the person, or undefined when it can. */
 export function ruleRefusal(words: readonly string[]): string | undefined {
 	if (words.length === 0) return "Write the command's first words, such as npm test.";
-	if (words.length > MAX_WORDS) return `A rule can have at most ${MAX_WORDS} words.`;
+	if (words.length > MAX_WORDS) return `An allowed command can have at most ${MAX_WORDS} words.`;
 	for (const word of words) {
-		if (word.length > MAX_WORD_LENGTH) return `“${word.slice(0, 40)}…” is too long for a word of a rule.`;
+		if (word.length > MAX_WORD_LENGTH) return `“${word.slice(0, 40)}…” is too long for a word in an allowed command.`;
 		if (!WORD.test(word)) return `“${word}” is not a plain word. Write the command as you would type it, without quotes, variables, wildcards, or symbols such as $ ; | & > < ( ) * ~.`;
 	}
 	const first = words[0]!;
 	if (!FIRST.test(first) || first.endsWith("/") || first === "." || first === "..") {
-		return `“${first}” is not the name of a program. A rule starts with the program to run, such as npm or ./run-tests.`;
+		return `“${first}” is not the name of a program. An allowed command starts with the program to run, such as npm or ./run-tests.`;
 	}
-	if (first.includes("=")) return "A rule cannot start by setting a variable.";
+	if (first.includes("=")) return "An allowed command cannot start by setting a variable.";
 	const name = programName(first);
 	if (inSet(ALWAYS_ASK, name)) {
 		return name === "cd" || name === "pushd" || name === "popd"
-			? "A rule cannot change folder: it is for one folder, and a command that changes folder always asks."
+			? "An allowed command is for one folder. A command that changes folder always asks."
 			: `${name} runs other commands or changes how they run, so pi² always asks before it.`;
 	}
 	if (inSet(NEVER, name)) return `${name} can delete or change things anywhere, or reach other machines, so pi² always asks before it.`;
 	if (inSet(NEEDS_MORE, name) || isPython(name)) {
 		const second = words[1];
-		if (second === undefined) return `A rule for ${name} alone would let the agent run anything with it. Add what it should run, such as ${example(name)}.`;
+		if (second === undefined) return `Allowing ${name} alone would let the agent run anything with it. Add what it should run, such as ${example(name)}.`;
 		const module = isPython(name) && second === "-m" && words[2] !== undefined && !words[2].startsWith("-");
 		if (second.startsWith("-") && !module) return `${name} ${second} lets the agent run code it writes on the spot, so pi² always asks before it.`;
 		const pair = `${name} ${second.toLowerCase()}`;
@@ -396,7 +396,7 @@ export function judgeCommand(command: string, folder: string, rules: readonly Co
 	const kept = ruleFolder(folder, worktrees);
 	// A rule kept for the worktree's own folder, as rules were before they followed worktrees, still counts there.
 	const here = rules.filter((rule) => (sameFolder(rule.folder, kept) || sameFolder(rule.folder, folder)) && ruleRefusal(rule.words) === undefined);
-	if (here.length === 0) return { allowed: false, reason: "no rule for this folder" };
+	if (here.length === 0) return { allowed: false, reason: "no allowed commands for this folder" };
 	const parsed = parseCommandLine(command);
 	if ("ask" in parsed) return { allowed: false, reason: parsed.ask };
 	const used: string[] = [];
@@ -413,9 +413,9 @@ export function judgeCommand(command: string, folder: string, rules: readonly Co
 			continue;
 		}
 		if (HARMLESS.has(head.text)) continue;
-		return { allowed: false, reason: `no rule covers ${head.text}` };
+		return { allowed: false, reason: `no allowed command covers ${head.text}` };
 	}
-	if (used.length === 0) return { allowed: false, reason: "no rule covers any part of it" };
+	if (used.length === 0) return { allowed: false, reason: "no allowed command covers any part of it" };
 	return { allowed: true, rules: used };
 }
 

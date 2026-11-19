@@ -15,7 +15,7 @@ Open the agent's settings and, under **Allow everything** (just below **Tools**)
 
 With it on, the agent:
 
-- **is asked about nothing.** Commands, writing and changing files, documents, tools of MCP servers that change things, every computer use action, clicking, typing and uploading in pi²'s browser, a worktree for a sub-chat it hands work to, and a schedule it sets for itself all go ahead without an approval. No rule and no "always" is kept for them, so switching it off again leaves nothing behind.
+- **is asked about nothing.** Commands, writing and changing files, documents, tools of MCP servers that change things, every computer use action, clicking, typing and uploading in pi²'s browser, a worktree for a sub-chat it hands work to, and a schedule it sets for itself all go ahead without an approval. No allowed command or "always" choice is kept for them, so switching it off again leaves nothing behind.
 - **may use any app** with computer use, not only the ones listed in its settings, as long as computer use is on for it. With no app listed, it still gets computer use.
 - **may control browsers** through computer use: Safari, Chrome and the others, with every account you are signed in to there. Without the switch they can only be looked at.
 - **covers scheduled runs**, which happen with nobody watching, and every conversation of the agent, including sub-chats another agent hands it.
@@ -31,7 +31,7 @@ A command that reaches its time limit is moved to the background rather than sto
 - **System Settings**, which computer use can still only look at, since it changes the Mac's security. **Password fields**, in apps and in the browser, are never typed into, and the Apple menu is off limits. What macOS itself refuses, such as an app without the Accessibility permission, stays refused.
 - **The browser's own limits**: only http and https, nothing on your Mac or your network, no downloads, uploads only of files it was given ([browser.md](browser.md#what-it-will-not-do)).
 - **The daily budget and the turn limit.** A used-up budget still refuses new work, and a run still stops at the agent's turn limit.
-- **Command rules** only ever allow; there is no rule that refuses, so there is nothing for the switch to override there.
+- **[Allowed commands](allowed-commands.md)** only ever allow; there is no entry that refuses, so there is nothing for the switch to override there.
 
 ## Sub-chats, copies and schedules
 
@@ -53,7 +53,7 @@ It is shown in red, as pi² marks anything risky:
 - every conversation of the agent has a red bar across its top, which says when the switch has changed and the conversation takes the change at its next message;
 - the agent's settings say so at the top, and under **Allow everything**; with computer use on, its section says that any app may be used.
 
-A call that would have asked for approval instead says **allowed by Allow everything** on its row once it has a result. The note stays with the call after a restart and in Markdown and JSON exports, even if you later turn the switch off. Calls that did not need approval, such as a read or a command already covered by a rule, do not get the note.
+A call that would have asked for approval instead says **allowed by Allow everything** on its row once it has a result. The note stays with the call after a restart and in Markdown and JSON exports, even if you later turn the switch off. Calls that did not need approval, such as a read or a command already covered by an allowed command, do not get the note.
 
 ## What macOS needs
 

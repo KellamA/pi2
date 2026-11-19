@@ -12,7 +12,7 @@ let package = Package(
         // Seeing and working other apps' windows. Its own module so the app and the developer probe share one copy.
         .target(name: "ComputerKit", path: "Sources/ComputerKit", swiftSettings: [.swiftLanguageMode(.v5)]),
         // pi²'s own browser: loading pages, reading them and acting in them. Its own module for the same reason.
-        .target(name: "BrowserKit", path: "Sources/BrowserKit", swiftSettings: [.swiftLanguageMode(.v5)]),
+        .target(name: "BrowserKit", path: "Sources/BrowserKit", swiftSettings: [.swiftLanguageMode(.v5), .define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
         // How the conversation area is divided into panes. Its own module so pi2-layout-check can check it.
         .target(name: "PaneKit", path: "Sources/PaneKit"),
         // What Return does in a field that sends a message. Its own module so pi2-compose-check can check it.
@@ -42,6 +42,9 @@ let package = Package(
         // A command-line way to try ComputerKit while developing. Never copied into the app: a flag on the app itself
         // would let any program borrow the app's Accessibility permission.
         .executableTarget(name: "pi2-probe", dependencies: ["ComputerKit"], path: "Sources/pi2-probe", swiftSettings: [.swiftLanguageMode(.v5)]),
+        // Checks how ComputerKit reaches SwiftUI controls by accessibility (#367, #453), against stand-in views in
+        // windows of its own that never come on screen, read in-process: it needs no Accessibility permission.
+        .executableTarget(name: "pi2-computer-check", dependencies: ["ComputerKit"], path: "Sources/pi2-computer-check", swiftSettings: [.swiftLanguageMode(.v5)]),
         // Checks BrowserKit against pages it serves itself on this Mac. Loads no real website and keeps no profile.
         .executableTarget(name: "pi2-browser-probe", dependencies: ["BrowserKit"], path: "Sources/pi2-browser-probe", swiftSettings: [.swiftLanguageMode(.v5)]),
         // Checks PaneKit's operations on the pane tree. Meant to be built with optimisation (`swift build -c release`),

@@ -55,6 +55,10 @@ try {
 		['show', ['8'], { id: 8 }, { result: 'Showing conversation #8' }],
 		['size', ['820', '532'], { width: 820, height: 532 }, { result: 'Sized the main window to 820×532 points' }],
 		['size', ['smallest'], { smallest: true }, { error: 'no main window' }],
+		['choose', ['app/build/file with spaces', '/tmp/second'], { paths: [join(process.cwd(), 'app/build/file with spaces'), '/tmp/second'] },
+			{ result: 'Armed the next panel with 2 path(s)' }],
+		['choose', ['cancel'], { paths: [] }, { result: 'Armed the next panel to cancel' }],
+		['choose', ['/outside'], { paths: ['/outside'] }, { error: 'path outside allowed roots' }],
 	]) {
 		const pending = run(command, control, '321', ...args);
 		const deadline = performance.now() + 3000;
@@ -78,7 +82,10 @@ try {
 	}
 	assert.deepEqual(await run('show', control, '321', '0'), [1, '', 'test-copy: conversation must be a positive integer']);
 	assert.deepEqual(await run('size', control, '321', '8.5', '532'), [1, '', 'test-copy: width must be a positive integer (up to 10000)']);
-	console.log('ok: show and size send requests to the recorded app and report only after it replies');
+	assert.deepEqual(await run('choose', control, '321', 'cancel', '/tmp/second'), [1, '', 'test-copy: choose takes one or more paths, or cancel on its own']);
+	assert.deepEqual(await run('choose', control, '321', ''), [1, '', 'test-copy: choose takes one or more paths, or cancel on its own']);
+	assert.deepEqual(readdirSync(control), []);
+	console.log('ok: show, size and choose send requests to the recorded app and report only after it replies');
 } finally {
 	server.close();
 	rmSync(folder, { recursive: true, force: true });

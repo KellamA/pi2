@@ -1,4 +1,5 @@
 import AppKit
+import BrowserKit
 import ComputerKit
 import FileLinkKit
 import SwiftUI
@@ -141,6 +142,7 @@ final class TranscriptBridge {
         view.onReload = { [weak self] in
             self?.ready = false
             self?.hidden = true
+            self?.undrawn = true
             self?.view?.alphaValue = 0
         }
         view.onAppearanceChange = { [weak self] in self?.push() }
@@ -154,6 +156,7 @@ final class TranscriptBridge {
             self.conversationID = conversationID
             feed.restart()
             olderOnTheWay = false
+            undrawn = true
         }
         self.items = items
         self.earlier = earlier
@@ -164,9 +167,23 @@ final class TranscriptBridge {
         self.chat = chat
         if hidden {
             push { [weak self] in self?.reveal() }
+        } else if undrawn {
+            push { [weak self] in self?.drawn() }
         } else {
             push()
         }
+    }
+
+    /// Whether the page has yet to draw this conversation since it was shown or the page loaded again.
+    private var undrawn = true
+
+    /// The page has drawn what it was sent. Once it holds the conversation, a test copy's `show` hears of it (#453).
+    private func drawn() {
+        guard undrawn, ready, state != nil else { return }
+        undrawn = false
+        #if PI2_DEVELOPMENT
+        TranscriptDrawn.note(conversationID)
+        #endif
     }
 
     /// Whether the page is still hidden: until it has loaded and drawn the conversation, which needs the conversation to
@@ -177,6 +194,7 @@ final class TranscriptBridge {
         guard hidden, state != nil else { return }
         hidden = false
         view?.alphaValue = 1
+        drawn()
     }
 
     /// Sends the page what changed. `drawn` is called once the page has drawn it, or at once when nothing changed.
@@ -249,15 +267,17 @@ final class TranscriptBridge {
             feed.restart()
             olderOnTheWay = false
             // Shown once it has drawn the conversation, so it never shows empty over the loading view.
-            push { [weak self] in self?.reveal() }
+            push { [weak self] in
+                self?.reveal()
+                self?.drawn()
+            }
         case .older:
             // Not while this page still has older entries of the app's to come; the engine is asked only when it said
             // there is more, and one part at a time (EngineClient.loadOlder).
             guard feed.pending == 0 else { return }
             engine.loadOlder(conversationID)
         case .copy(let text):
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            AppCopy.write(text, kind: .transcript, engine: engine, conversation: conversationID)
         case .openLink(let url):
             NSWorkspace.shared.open(url)
         case .decide(let id, let decision):
@@ -373,9 +393,8 @@ final class TranscriptBridge {
             NSWorkspace.shared.open(URL(fileURLWithPath: whole))
         case .copyPath:
             let whole = FileLink.resolve(path).path
-            if record("copyPath", whole) { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(whole, forType: .string)
+            _ = record("copyPath", whole, act: false)
+            AppCopy.write(whole, kind: .filePath, engine: engine, conversation: conversationID)
         }
     }
 
@@ -412,12 +431,12 @@ final class TranscriptBridge {
 
     /// Asks the person where to save a file, offering `name`, and writes it there. Says so if it cannot be written.
     private func saveFile(named name: String, write: @escaping (URL) throws -> Void) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = name
-        panel.canCreateDirectories = true
-        panel.isExtensionHidden = false
-        let finish: (NSApplication.ModalResponse) -> Void = { response in
-            guard response == .OK, let url = panel.url else { return }
+        FilePanels.beginSave("transcript-file", in: view?.window, configure: { panel in
+            panel.nameFieldStringValue = name
+            panel.canCreateDirectories = true
+            panel.isExtensionHidden = false
+        }) { url in
+            guard let url else { return }
             do {
                 try write(url)
             } catch {
@@ -427,7 +446,6 @@ final class TranscriptBridge {
                 alert.runModal()
             }
         }
-        if let window = view?.window { panel.beginSheetModal(for: window, completionHandler: finish) } else { finish(panel.runModal()) }
     }
 
     /// Fetches one of an entry's pictures from the engine and asks the person where to save it.

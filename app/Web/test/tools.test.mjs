@@ -114,7 +114,7 @@ test("a command left running in the background, and the rows that read and stop 
 	// Which rule let it start is said as for any command.
 	assert.equal(
 		line("bash", dev, "done", { details: { background: { id: "bg-3" }, allowedBy: ["npm run dev"] } }),
-		"Started npm run dev in the background bg-3 (allowed by your rule for npm run dev)",
+		"Started npm run dev in the background bg-3 (matched allowed command: npm run dev)",
 	);
 	const read = { details: { action: "read", id: "bg-3", command: "npm run dev", status: "running" } };
 	assert.equal(line("background", { action: "read", id: "bg-3" }, "running"), "Reading the output of bg-3…");
@@ -363,12 +363,12 @@ test("a hand-off whose wait a message from the person ended", () => {
 	assert.equal(T.delegation(call("delegate", { agent: "Atlas", task: "Review" }), { details: { conversationId: 4, waitEnded: "yes" } }, null).waitEnded, false);
 });
 
-test("a command one of the person's rules let through says which rule", () => {
+test("a command says which allowed commands it matched", () => {
 	const ran = T.describe(call("bash", { command: "npm test -- --grep x" }), "done", { details: { allowedBy: ["npm test"] } }, null);
-	assert.deepEqual(ran.note, [{ text: "allowed by your rule for " }, { text: "npm test", style: "code" }]);
-	assert.equal(ran.title, "Ran npm test -- --grep x (allowed by your rule for npm test)");
+	assert.deepEqual(ran.note, [{ text: "matched allowed command: " }, { text: "npm test", style: "code" }]);
+	assert.equal(ran.title, "Ran npm test -- --grep x (matched allowed command: npm test)");
 	const several = T.describe(call("bash", { command: "a && b && c" }), "done", { details: { allowedBy: ["npm test", "git status", "./run-tests"] } }, null);
-	assert.equal(several.note.map((piece) => piece.text).join(""), "allowed by your rules for npm test, git status and ./run-tests");
+	assert.equal(several.note.map((piece) => piece.text).join(""), "matched allowed commands: npm test, git status and ./run-tests");
 	for (const details of [null, {}, "x", { allowedBy: "npm test" }, { allowedBy: [] }, { allowedBy: [5, ""] }]) {
 		assert.deepEqual(T.describe(call("bash", { command: "x" }), "done", { details }, null).note, [], JSON.stringify(details));
 	}

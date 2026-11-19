@@ -1,4 +1,5 @@
 
+import ComputerKit
 import SwiftUI
 
 /// Chat mode's settings as the engine last sent them, in its `chat` event (docs/chat.md#settings).
@@ -236,10 +237,11 @@ private struct AgentNotesSection: View {
                 Text("None of your agents keeps notes. An agent does once Remember things between conversations is on in its settings.").foregroundStyle(.secondary)
             }
             ForEach(agents, id: \.0.id) { agent, notes in
-                DisclosureGroup(isExpanded: Binding(
+                let open = Binding(
                     get: { !folded.contains(agent.id) },
                     set: { open in if open { folded.remove(agent.id) } else { folded.insert(agent.id) } }
-                )) {
+                )
+                DisclosureGroup(isExpanded: open) {
                     ForEach(notes) { note in
                         Text(note.text)
                             .textSelection(.enabled)
@@ -254,6 +256,9 @@ private struct AgentNotesSection: View {
                         Text(notes.count == 1 ? "1 note" : "\(notes.count) notes").foregroundStyle(.secondary)
                         Image(systemName: "lock").foregroundStyle(.secondary).help("Read-only here")
                     }
+                    // In a grouped Form only a click opens it otherwise, and the computer tool cannot click a copy in
+                    // the background (#367).
+                    .pressableDisclosure(open)
                 }
             }
         } header: {
