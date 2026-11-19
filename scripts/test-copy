@@ -24,7 +24,7 @@
 #
 # Clicking in a copy is computer use's, not this script's: an agent whose computer use has "Test copies of pi²" on may
 # work a copy whose suffix begins with test (bundle id dev.pi2.app.test-…), which pi² checks is a copy made here of a
-# development build (docs/computer-use.md). Without that, a copy can only be looked at; nothing here works it.
+# development build (docs/computer-use.md). The commands here use only the copy's own test hooks and engine.
 #
 # Two copies with different suffixes, from one checkout or several, are independent. A second "start" with a suffix
 # already in use (from this checkout or any other) is refused before it changes anything: the copy's folder here and
@@ -47,8 +47,14 @@ Usage: scripts/test-copy <command> [arguments]
                                    app's and engine's process ids. --env may repeat, for these test variables only:
                                    PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND.
                                    Values are explicit (never inherited), kept for reopen, and not secrets.
-  reopen <suffix> [--show <what>]   Stop only the recorded app, keep its engine and data, and launch it again with
-                                   the same clean environment. Keep the previous --show unless given another.
+  reopen <suffix> [--show <what>]   Replace and launch the app from the latest development build in this checkout.
+                                   Keep its engine, data, environment and previous --show unless given another.
+  show <suffix> <conversation>     Show this conversation in the running copy's main window.
+  size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
+  size <suffix> smallest           Resize the main window to its smallest size.
+  answer <suffix> <conversation> allow|deny
+                                   Answer one waiting approval (allow once); refuses if more than one is waiting.
+  fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
   shot <suffix> <file.png> [--window <title>]
                                    Wait for and capture the copy's largest window (or the one with that title) into a file
                                    inside this checkout. Refuses if screen capture is not already allowed.
@@ -70,7 +76,7 @@ Usage: scripts/test-copy <command> [arguments]
 A suffix is lower-case letters, digits and hyphens, such as test- and your issue number: test-181.
 
 An agent whose computer use has "Test copies of pi²" on may click, type and choose menu commands in a copy whose
-suffix begins with test, by its bundle id (dev.pi2.app.test-181); one without it can only look at a copy.
+suffix begins with test, by its bundle id (dev.pi2.app.test-181). The commands above don't require computer use.
 EOF
 }
 
@@ -349,18 +355,59 @@ require_engine() {
 	[[ ! -L $DATA && ! -L $DATA/engine.sock ]] || die "refusing a symlink for the copy's data folder or engine socket"
 }
 
+# Check the built app before either making a copy or stopping one to install a rebuild.
+require_source() {
+	if [[ ! -d $SOURCE ]]; then
+		if [[ -d $RELEASE ]]; then
+			die "there is only a release build here ($(tidy "$RELEASE")), and this script copies only a development build: a release build runs on the usual data folder. Build one with ./app/build.sh, or ./app/build.sh optimised for optimisation"
+		fi
+		die "there is no development build in this checkout. Build one first: (cd engine && npm ci) && ./app/build.sh, or ./app/build.sh optimised for optimisation. This script builds nothing"
+	fi
+	local main
+	main=$("$PLIST" -c 'Print :PI2EngineMain' "$SOURCE/Contents/Info.plist" 2>/dev/null || true)
+	[[ ! -L $SOURCE && -n $main && ! -e "$SOURCE/Contents/Resources/engine" ]] ||
+		die "$(tidy "$SOURCE") is not a development build (it carries its own engine, is a symlink, or has no PI2EngineMain)"
+	[[ $main == "$ROOT/engine/src/main.ts" && -f $main ]] ||
+		die "$(tidy "$SOURCE") runs the engine at $(tidy "$main"), not this checkout's; build it again here with ./app/build.sh"
+	[[ -d "$ROOT/engine/node_modules" ]] || die "the engine's packages are not installed: run (cd engine && npm ci)"
+}
+
+copy_bundle() {
+	local app=$1
+	ditto "$SOURCE" "$app" || die "could not copy the latest development build"
+	"$PLIST" -c "Set :CFBundleIdentifier $ID" -c "Set :CFBundleName $NAME" -c "Set :CFBundleDisplayName $NAME" \
+		"$app/Contents/Info.plist" >/dev/null || die "could not give the copy its own bundle id and name"
+	[[ $("$PLIST" -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") == "$ID" ]] ||
+		die "the copy's bundle id did not change"
+	# Editing Info.plist breaks the signature; sign it again, ad hoc. ditto kept Sparkle's symbolic links.
+	codesign --force --sign - "$app" 2>/dev/null || die "could not sign the copy: codesign --force --sign - failed"
+}
+
+require_copy() {
+	[[ ! -L $COPIES && ! -L $DIR && ! -L $STATE && ! -L $DATA && ! -L $DATA/engine.sock && ! -L $APP ]] ||
+		die "refusing a symlink for the copy, state, data folder or engine socket"
+	load_state || die "no copy named $SUFFIX was started from this checkout"
+	[[ -d $APP && $("$PLIST" -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null) == "$ID" ]] ||
+		die "the copy's bundle is missing or has a different bundle id"
+	local main
+	main=$("$PLIST" -c 'Print :PI2EngineMain' "$APP/Contents/Info.plist" 2>/dev/null || true)
+	[[ $main == "$ROOT/engine/src/main.ts" && ! -e "$APP/Contents/Resources/engine" ]] ||
+		die "the copy is not a development build of this checkout"
+	[[ $APP_EXE == "$APP/Contents/MacOS/pi2" ]] || die "the recorded app executable is not the copy"
+}
+
 # Shared by start and reopen: the same clean environment and pid recording on every launch.
 launch_app() {
 	# A clean environment, so nothing the caller's shell has (PI2_HOME naming the usual data folder, above all)
 	# reaches the copy; what it needs is named here. -g keeps it from taking the focus, -n makes a new instance.
-	vars=(--env "PI2_HOME=$DATA" --env "PI2_KEYCHAIN_SERVICE=$SERVICE"
+	vars=(--env "PI2_HOME=$DATA" --env "PI2_KEYCHAIN_SERVICE=$SERVICE" --env "PI2_TEST_COPY=$SUFFIX"
 		--env PI2_WINDOW_BEHIND=1 --env PI2_WINDOW_ORIGIN=10000,10000 --env PI2_DRAW_WHEN_HIDDEN=1)
 	[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
 	[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
 	local pair
 	for pair in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do vars+=(--env "$pair"); done
 	env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" TMPDIR="${TMPDIR:-/tmp/}" LANG=en_US.UTF-8 \
-		PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -n -g "$APP" "${vars[@]}"
+		PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -n -g "$APP" "${vars[@]}" || die "could not open the copy's app"
 
 	waited=0
 	while [[ -z $APP_PID ]]; do
@@ -390,20 +437,7 @@ case $cmd in
 		[[ $SHOW != *$'\n'* ]] || die "--show takes one line"
 		[[ $MENU != *$'\n'* ]] || die "--menu takes one line"
 
-		if [[ ! -d $SOURCE ]]; then
-			if [[ -d $RELEASE ]]; then
-				die "there is only a release build here ($(tidy "$RELEASE")), and this script copies only a development build: a release build runs on the usual data folder. Build one with ./app/build.sh, or ./app/build.sh optimised for optimisation"
-			fi
-			die "there is no development build in this checkout. Build one first: (cd engine && npm ci) && ./app/build.sh, or ./app/build.sh optimised for optimisation. This script builds nothing"
-		fi
-		# A development build is one that runs its engine from a checkout instead of carrying its own; that is how
-		# the app tells, and what keeps it off the usual data folder.
-		main=$("$PLIST" -c 'Print :PI2EngineMain' "$SOURCE/Contents/Info.plist" 2>/dev/null || true)
-		[[ -n $main && ! -e "$SOURCE/Contents/Resources/engine" ]] ||
-			die "$(tidy "$SOURCE") is not a development build (it carries its own engine); build one with ./app/build.sh"
-		[[ $main == "$ROOT/engine/src/main.ts" && -f $main ]] ||
-			die "$(tidy "$SOURCE") runs the engine at $(tidy "$main"), not this checkout's; build it again here with ./app/build.sh"
-		[[ -d "$ROOT/engine/node_modules" ]] || die "the engine's packages are not installed: run (cd engine && npm ci)"
+		require_source
 
 		# Claim the suffix: first in this checkout, then on the Mac. mkdir succeeds for one caller only.
 		mkdir -p "$COPIES"
@@ -420,13 +454,7 @@ case $cmd in
 		# keep it, mark it done as finishing it would (settings.finishOnboarding), in the copy's own settings, which its
 		# engine reads as it starts. Nothing in the app changes, so a release build behaves as before.
 		((WELCOME)) || printf '{\n\t"onboarded": true\n}\n' >"$DATA/settings.json"
-		ditto "$SOURCE" "$APP"
-		"$PLIST" -c "Set :CFBundleIdentifier $ID" -c "Set :CFBundleName $NAME" -c "Set :CFBundleDisplayName $NAME" \
-			"$APP/Contents/Info.plist"
-		[[ $("$PLIST" -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist") == "$ID" ]] ||
-			die "the copy's bundle id did not change"
-		# Editing Info.plist breaks the signature; sign it again, ad hoc. ditto kept Sparkle's symbolic links.
-		codesign --force --sign - "$APP" 2>/dev/null || die "could not sign the copy: codesign --force --sign - failed"
+		copy_bundle "$APP"
 
 		launch_app
 		# Ready once the copy's own engine is named in its data folder and listening there.
@@ -490,15 +518,7 @@ case $cmd in
 			esac
 		done
 		[[ $requested_show != *$'\n'* ]] || die "--show takes one line"
-		load_state || die "no copy named $SUFFIX was started from this checkout"
-		[[ ! -L $DIR && ! -L $STATE && ! -L $DATA && ! -L $DATA/engine.sock && ! -L $APP ]] ||
-			die "refusing a symlink for the copy, state, data folder or engine socket"
-		[[ -d $APP && $("$PLIST" -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null) == "$ID" ]] ||
-			die "the copy's bundle is missing or has a different bundle id"
-		main=$("$PLIST" -c 'Print :PI2EngineMain' "$APP/Contents/Info.plist" 2>/dev/null || true)
-		[[ $main == "$ROOT/engine/src/main.ts" && ! -e "$APP/Contents/Resources/engine" ]] ||
-			die "the copy is not a development build of this checkout"
-		[[ $APP_EXE == "$APP/Contents/MacOS/pi2" ]] || die "the recorded app executable is not the copy"
+		require_copy
 		# An exited app can be reopened too, but never signal a pid that has since been reused.
 		[[ -z $(started_at "$APP_PID") ]] || is_recorded "$APP_PID" "$APP_START" "$APP_EXE" ||
 			die "the app pid is no longer the process recorded"
@@ -507,14 +527,52 @@ case $cmd in
 		done
 		follow_engine
 		is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
+		require_source
+		# Prepare the replacement before stopping the working app; don't merge files into the old signed bundle.
+		staged=$(mktemp -d "$DIR/.reopen.XXXXXXXX") || die "could not make a staging folder for the new app"
+		trap 'rm -rf -- "$staged"' EXIT
+		copy_bundle "$staged/$NAME.app"
 		((replace_show == 0)) || SHOW=$requested_show
-		stop_process app "$APP_PID" "$APP_START" "$APP_EXE"
+		stop_process app "$APP_PID" "$APP_START" "$APP_EXE" >/dev/null
 		[[ -z $(from_bundle) ]] || die "the app did not stop; nothing was reopened"
-		APP_PID="" APP_START="" APP_EXE=""
+		APP_PID="" APP_START=""
 		save_state
-		# A failed relaunch leaves the engine, data and state for diagnosis and stop; it must not remove them.
+		mv -h "$APP" "$staged/previous.app" || die "could not move the old bundle aside"
+		if ! mv -h "$staged/$NAME.app" "$APP"; then
+			if ! mv -h "$staged/previous.app" "$APP"; then
+				trap - EXIT
+				die "could not install the rebuilt app or restore the previous bundle; it is in $(tidy "$staged")"
+			fi
+			die "could not install the rebuilt app; restored the previous bundle"
+		fi
+		# A failed relaunch leaves the engine, data and state for diagnosis, retry and stop.
 		launch_app
-		echo "Reopened $NAME${SHOW:+, showing $SHOW}; app pid $APP_PID, engine pid $ENGINE_PID (kept)."
+		echo "Reopened $NAME from the latest development build (app pid $APP_PID); kept its data and engine (pid $ENGINE_PID)."
+		;;
+	show|size)
+		names "${1-}"; shift
+		if [[ $cmd == show ]]; then
+			(($# == 1)) || die "use: scripts/test-copy show $SUFFIX <conversation>"
+		elif ! { [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; }; then
+			die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		fi
+		require_copy
+		is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || die "the copy $SUFFIX has no recorded app running"
+		control="$DATA/test-copy-control"
+		[[ ! -L $control ]] || die "refusing a symlink for the copy's window control folder"
+		[[ -d $DATA ]] || die "the copy's data folder is missing"
+		node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$control" "$SUFFIX" "$APP_PID" "$@"
+		;;
+	answer|fill)
+		names "${1-}"; shift
+		if [[ $cmd == answer ]]; then
+			[[ $# == 2 && ($2 == allow || $2 == deny) ]] || die "use: scripts/test-copy answer $SUFFIX <conversation> allow|deny"
+		else
+			(($# == 1)) || die "use: scripts/test-copy fill $SUFFIX <entries>"
+		fi
+		require_copy
+		require_engine
+		node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$DATA/engine.sock" "$SUFFIX" "$@"
 		;;
 	shot)
 		names "${1-}"; shift

@@ -19,8 +19,8 @@ let package = Package(
         .target(name: "ComposeKit", path: "Sources/ComposeKit"),
         // The login item decisions, without the app's launchd calls, so pi2-login-item-check can run them safely.
         .target(name: "LoginItemKit", path: "Sources/LoginItemKit"),
-        // A window's smallest size, fixed rather than worked out from its content (#400). Its own module so
-        // pi2-window-check can check it.
+        // A window's smallest size, fixed rather than worked out from its content (#400), and the watch on the app's
+        // scene body (#436). Its own module so pi2-window-check can check them.
         .target(name: "WindowKit", path: "Sources/WindowKit"),
         .executableTarget(
             name: "pi2",

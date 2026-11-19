@@ -236,14 +236,34 @@ final class AppModel {
 struct Pi2App: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
+    #if PI2_DEVELOPMENT
+    private static let watch = BodyWatch("The app's scene body (Pi2App.body)")
+    #endif
 
     var body: some Scene {
+        #if PI2_DEVELOPMENT
+        Self.watch.watch(report: { [model] in model.engine.note($0) }) { scenes }
+        #else
+        scenes
+        #endif
+    }
+
+    /// Every scene of the app. SwiftUI works this out again, and with it every scene and each window's settings, whenever
+    /// something it read changes, so it reads nothing that changes while the app runs: no state of the model or the
+    /// engine, only the model itself, passed on to the views that show it. What depends on the inbox, the agents or the
+    /// mode is a view of its own, which SwiftUI draws again on its own (#436). A development build says in app.log if
+    /// it reads something that changes (`BodyWatch`).
+    @SceneBuilder private var scenes: some Scene {
+        #if PI2_DEVELOPMENT
+        let _ = PerfProbe.count("scene body worked out")
+        #endif
         Window("pi²", id: "main") {
             RootView(model: model)
                 // The window's smallest size is worked out without measuring what it shows (#400).
                 .windowMinimum(width: 820, height: 480) { model.engine.note($0) }
                 .tint(.piAccent)
                 .launchWindow()
+                .testCopyControl(model: model)
                 .onAppear {
                     delegate.engine = model.engine
                     model.engine.start()
@@ -257,19 +277,7 @@ struct Pi2App: App {
                 CheckForUpdatesButton()
             }
             CommandGroup(replacing: .newItem) {
-                // ⌘N starts whatever the window is showing: a chat in chat mode.
-                if model.mode == .chat {
-                    Button("New Chat") { model.newChat() }
-                        .keyboardShortcut("n")
-                } else {
-                    Button("New Conversation") { model.newConversation() }
-                        .keyboardShortcut("n")
-                }
-                Menu("New Conversation With") {
-                    ForEach(model.engine.agents) { agent in
-                        Button(agent.name) { model.newConversation(agentId: agent.id) }
-                    }
-                }
+                NewItemCommands(model: model)
                 Button("New Agent") { model.newAgent() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()
@@ -288,9 +296,7 @@ struct Pi2App: App {
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("Show Archive") { model.selection = .archive }
                 Divider()
-                // Panes are the agent view's; in chat mode they would change it out of sight.
                 PaneCommands(model: model)
-                    .disabled(model.mode == .chat)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -336,9 +342,7 @@ struct Pi2App: App {
             MenuBarView(model: model)
                 .tint(.piAccent)
         } label: {
-            // The count of things waiting, next to the icon, so it is visible without opening anything.
-            Image(systemName: model.engine.inbox.isEmpty ? "circle.hexagongrid" : "circle.hexagongrid.fill")
-            if !model.engine.inbox.isEmpty { Text("\(model.engine.inbox.count)") }
+            MenuBarLabel(engine: model.engine)
         }
         .menuBarExtraStyle(.window)
 
@@ -346,6 +350,40 @@ struct Pi2App: App {
             SettingsView(engine: model.engine)
                 .tint(.piAccent)
                 .launchWindow()
+        }
+    }
+}
+
+/// The menu bar item: the icon, filled while something waits on the person, and the count of what waits beside it, so it
+/// is visible without opening anything. A view of its own, so that the inbox changing draws this again and not every
+/// scene (#436).
+struct MenuBarLabel: View {
+    let engine: EngineClient
+
+    var body: some View {
+        Image(systemName: engine.inbox.isEmpty ? "circle.hexagongrid" : "circle.hexagongrid.fill")
+        if !engine.inbox.isEmpty { Text("\(engine.inbox.count)") }
+    }
+}
+
+/// The File menu's ways to start something new that depend on what changes while the app runs: ⌘N, which starts
+/// whatever the window is showing (a chat in chat mode), and a conversation with each agent. A view of its own, so that
+/// the mode or the agents changing draws the menu again and not every scene (#436).
+struct NewItemCommands: View {
+    let model: AppModel
+
+    var body: some View {
+        if model.mode == .chat {
+            Button("New Chat") { model.newChat() }
+                .keyboardShortcut("n")
+        } else {
+            Button("New Conversation") { model.newConversation() }
+                .keyboardShortcut("n")
+        }
+        Menu("New Conversation With") {
+            ForEach(model.engine.agents) { agent in
+                Button(agent.name) { model.newConversation(agentId: agent.id) }
+            }
         }
     }
 }

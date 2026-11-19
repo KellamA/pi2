@@ -179,7 +179,7 @@ A crash in it prints the step it happened in; `--verbose` prints every step.
 
 ### Window size checks
 
-How a window's size follows its SwiftUI content (`app/Sources/WindowKit`) is checked by a program of its own (#400). SwiftUI sets a scene's window's smallest size from its content, working it out from inside the window's Update Constraints passes, and the app once crashed there in the background. The app's windows put `windowMinimum(width:height:)` on their content, which gives SwiftUI a fixed base to measure instead, and the main window's detail column has `columnGivesWay()`, which keeps its content from asking for more height than the window has. The program makes windows as the app's are, in windows of its own that never come on screen: a hosting view with the option SwiftUI gives a scene's window, a toolbar, and a split view's sidebar and detail. It checks that the smallest size is the one SwiftUI worked out before; that the content is never measured for it, which it was before; that very long unbroken lines in each way the app shows text from outside it, rows and request cards that come and go, and the sidebar shown and hidden change neither the smallest size nor the window, at its smallest; that a stack of requests no longer makes the split view taller than the window; and that `SizeWatch`, which writes a line to `app.log` naming a hosting view whose size changes again and again without the run loop turning, reports one once and stays quiet for a window resized as a person does. It cannot make the crash itself happen, since what kept the window's size changing then was not found. CI runs it after building the app:
+How a window's size follows its SwiftUI content (`app/Sources/WindowKit`) is checked by a program of its own (#400). SwiftUI sets a scene's window's smallest size from its content, working it out from inside the window's Update Constraints passes, and the app once crashed there in the background. The app's windows put `windowMinimum(width:height:)` on their content, which gives SwiftUI a fixed base to measure instead, and the main window's detail column has `columnGivesWay()`, which keeps its content from asking for more height than the window has. The program makes windows as the app's are, in windows of its own that never come on screen: a hosting view with the option SwiftUI gives a scene's window, a toolbar, and a split view's sidebar and detail. It checks that the smallest size is the one SwiftUI worked out before; that the content is never measured for it, which it was before; that very long unbroken lines in each way the app shows text from outside it, rows and request cards that come and go, and the sidebar shown and hidden change neither the smallest size nor the window, at its smallest; that a stack of requests no longer makes the split view taller than the window; and that `SizeWatch`, which writes a line to `app.log` naming a hosting view whose size changes again and again without the run loop turning, reports one once and stays quiet for a window resized as a person does. It also checks `BodyWatch`, which a development build puts around the app's scene body (#436): that it reports, once, a body that reads something that then changes, stays quiet for one that only passes it on to a view of its own, and leaves SwiftUI seeing what the body reads as it would without it. It cannot make the crash itself happen, since what kept the window's size changing then was not found. CI runs it after building the app:
 
 ```bash
 cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
@@ -236,14 +236,11 @@ After the answer finishes, archive it (this stops any work still running):
 scripts/test-copy call test-7 conversation.archive "{\"id\":$CHAT}"
 ```
 
-To change what an existing copy shows, reopen just its app, keeping its engine and conversations. The new app is recorded for `shot` and `stop`, uses the same clean environment and window placement as `start`, and keeps the previous `--show` unless replaced (and `--menu`):
+In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation by id. `size test-7 820 532` sets the main window's outer frame in points; `size test-7 smallest` uses its current minimum. Use `shot` once the transcript has drawn.
 
-```bash
-scripts/test-copy reopen test-7 --show "$CHAT"
-scripts/test-copy shot test-7 app/build/test-copies/test-7/conversation.png
-```
+`answer test-7 <conversation-id> allow|deny` answers exactly one waiting approval in that conversation (use the sub-chat's own id). `allow` means Allow Once, with no rule saved. `fill test-7 600` prints the id of a new demo conversation with 600 synthetic entries, including long tool outputs, without running the model or commands.
 
-It refuses a copy this checkout did not start, a missing or changed bundle, an unrecorded engine or bundle process, a reused app pid, or a symlink for the copy, state, data or socket, before stopping anything. A failed relaunch leaves the engine and data for diagnosis and `stop`.
+After rebuilding, `scripts/test-copy reopen test-7 --show "$CHAT"` installs the latest development app from this checkout, keeping the copy's engine and data. Without `--show`, it keeps the previous launch selection (not the last `show` command); it also keeps `--menu` and the demo environment. A failed relaunch leaves the data for retry or `stop`. Rebuild and start a fresh copy to pick up engine changes, including `fill` if the engine predates it.
 
 `start --env NAME=VALUE` gives a copy an explicit demo switch without inheriting the caller's environment. For example (no provider needed):
 
@@ -299,7 +296,8 @@ A development build (ordinary or optimised) measures its main thread while its d
 
 - how much of the time the main thread was awake, and how late it answered a block sent to it every 50 ms from another thread (the wait a click would have), at the median, the 95th percentile and the worst;
 - for each kind of event from the engine, and each kind of reply: how many a second, their size, and the main thread's time decoding and taking them in; `page update` is a conversation page being sent what changed;
-- for each kind of request: how many, and how long their answers took.
+- for each kind of request: how many, and how long their answers took;
+- how many times the app's scene body was worked out (`count scene body worked out`), which updates every scene and sets each window's settings again. While agents work there should be none: the body reads nothing that changes while agents work ([architecture.md](architecture.md#keeping-the-app-quick-while-agents-work)).
 
 It also writes a line for each conversation opened, with the time from asking for it to each step (the engine's first update, the engine's answer, the page being sent the entries, the page having drawn them), and one for each message accepted. Measure an optimised build in a throwaway copy, which is what a person runs:
 

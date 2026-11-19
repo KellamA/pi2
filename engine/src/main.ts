@@ -4,7 +4,7 @@
 // "library", "providers", "conversation" (for opened conversations) and "auth" (during a sign-in).
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -2319,6 +2319,35 @@ schedulesWatch.start(async (call) => {
 	broadcast(schedulesEvent());
 	armSchedules();
 });
+
+// Only test-copy starts an engine with this switch and the matching copy paths. The fixture implementation is
+// outside src, so an installed engine has neither the handler nor the module, even with the switch in its environment.
+const testSuffix = process.env.PI2_TEST_COPY;
+const checkout = dirname(dirname(dirname(engineMain)));
+const fixtureSource = new URL("../scripts/test-copy-fixture.ts", import.meta.url);
+if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(testSuffix)
+	&& home === join(homedir(), "Library", "Application Support", `pi2-${testSuffix}`) && lstatSync(home).isDirectory()
+	&& process.env.PI2_KEYCHAIN_SERVICE === `dev.pi2.credentials.${testSuffix}`
+	&& existsSync(join(checkout, "app", "build", "test-copies", testSuffix, `pi² ${testSuffix}.app`, "Contents", "MacOS", "pi2"))
+	&& existsSync(fixtureSource)) {
+	const { fixtureSize, seedTranscript } = await import("../scripts/test-copy-fixture.ts");
+	handlers["test-copy.fill"] = async (params) => {
+		const entries = fixtureSize(params.entries);
+		const agent = Object.values(agents).sort((a, b) => a.createdAt - b.createdAt)[0];
+		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
+		const change = await agentChange(agent, { subChat: false });
+		const now = Date.now();
+		const created = await harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { ...change, model: { provider: DEMO_PROVIDER, modelId: DEMO_MODEL }, thinkingLevel: null },
+			init: async (tx, id) => {
+				(await tx.doc(Library)).conversations[String(id)] = { title: `Test history (${entries} entries)`, renamed: true, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id };
+				await seedTranscript(tx, id, entries, now);
+			},
+		}, context);
+		return { id: created.id, entries };
+	};
+}
 
 // ---- Socket server
 

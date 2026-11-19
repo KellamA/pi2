@@ -14,7 +14,10 @@
 //   size nor the size of the window, which sits at its smallest the whole time;
 // - that a stack of requests cannot make the split view taller than the window, as it did before;
 // - that the watch which names a view whose size does not settle reports one that changes size again and again in one
-//   turn of the run loop, once, and stays quiet for a window resized a step a turn as a person does.
+//   turn of the run loop, once, and stays quiet for a window resized a step a turn as a person does;
+// - that the watch on the app's scene body (#436) reports a body that reads something that then changes, once, and
+//   stays quiet for one that only passes it on to a view of its own; and that SwiftUI still sees what a watched body
+//   reads, and draws it again, as it would without the watch.
 //
 //   cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
 //
@@ -62,6 +65,56 @@ final class Feed {
     var cards: [String] = []
     var rows: [String] = ["Inbox", "Activity", "Usage", "Archive"]
     var sidebar = NavigationSplitViewVisibility.all
+}
+
+/// How many times each body was worked out, by name.
+@MainActor
+final class Runs {
+    var counts: [String: Int] = [:]
+    func ran(_ name: String) { counts[name, default: 0] += 1 }
+    subscript(_ name: String) -> Int { counts[name] ?? 0 }
+}
+
+/// What a watch reported.
+@MainActor
+final class Lines {
+    var lines: [String] = []
+}
+
+/// What the app's scene body once read: the inbox, here a count.
+@MainActor @Observable
+final class Waiting {
+    var count = 0
+}
+
+/// A body under a `BodyWatch`, as the app's scene body is: it reads the count itself, or only passes it on.
+struct Watched: View {
+    let waiting: Waiting
+    let watch: BodyWatch
+    let reads: Bool
+    let runs: Runs
+    let report: @MainActor @Sendable (String) -> Void
+
+    var body: some View {
+        watch.watch(report: report) {
+            runs.ran("outer")
+            return VStack {
+                if reads { Text("\(waiting.count) waiting") }
+                Shown(waiting: waiting, runs: runs)
+            }
+        }
+    }
+}
+
+/// A view of its own that reads the count, as the menu bar item's label does.
+struct Shown: View {
+    let waiting: Waiting
+    let runs: Runs
+
+    var body: some View {
+        let _ = runs.ran("inner")
+        Text("\(waiting.count)")
+    }
 }
 
 /// Every size the content was asked for, by whatever holds it.
@@ -312,6 +365,42 @@ Task { @MainActor in
         check("it is not reported again in the same launch", reports.count == 1, "\(reports.count) reports")
         watch.stop()
         watched.close()
+    }
+
+    await group("the watch on a scene body reports a read of something that changes, once") {
+        for reads in [true, false] {
+            let waiting = Waiting()
+            let runs = Runs()
+            let watch = BodyWatch("The body")
+            let reported = Lines()
+            var reports: [String] { reported.lines }
+            let report: @MainActor @Sendable (String) -> Void = { reported.lines.append($0) }
+            let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: Watched(waiting: waiting, watch: watch, reads: reads, runs: runs, report: report))
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            await settle()
+            let outer = runs["outer"], inner = runs["inner"]
+            for _ in 0..<3 {
+                waiting.count += 1
+                await settle()
+                window.layoutIfNeeded()
+                window.displayIfNeeded()
+                await settle()
+            }
+            let kind = reads ? "a body that reads the count" : "a body that passes it on"
+            check("\(kind): the view of its own is drawn again for each change", runs["inner"] - inner == 3, "drawn \(runs["inner"] - inner) times for 3 changes")
+            if reads {
+                check("\(kind): SwiftUI still sees the read and works the body out again", runs["outer"] - outer == 3, "worked out \(runs["outer"] - outer) times for 3 changes")
+                check("\(kind): it is reported once", reports.count == 1, "\(reports.count) reports")
+                check("\(kind): the report names the body", reports.first?.hasPrefix("The body read something") == true, reports.first ?? "")
+            } else {
+                check("\(kind): the body is not worked out again", runs["outer"] == outer, "worked out \(runs["outer"] - outer) times for 3 changes")
+                check("\(kind): nothing is reported", reports.isEmpty, reports.joined(separator: "\n      "))
+            }
+            window.close()
+        }
     }
 
     print(failures == 0 ? "all checks passed" : "\(failures) checks failed")
