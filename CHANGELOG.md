@@ -6,6 +6,56 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.2
+
+### Added
+- The Add Server sheet in Settings › Tools now accepts variables for a server that runs on this Mac, such as a token it needs. The values go to the Keychain, as with Variables…, and the server gets them from its first start, so it never runs once without its token.
+- Chat mode's sidebar lists archived chats under Archived, at the foot of the list, to read, restore or delete, and a search finds them there too. The Archive marks chats as chats, so they no longer show with an empty avatar.
+- Tool rows say when Allow everything let a call run without asking for approval. The note stays in the conversation and its exports even after the switch is turned off.
+- Conversations of an agent with Allow everything on now have a small red mark in the sidebar, and say so in the command palette, so you can tell from the list which ones run without asking. A sub-chat follows its own agent's switch.
+- When a run is waiting for a provider’s limit, choose **Carry on with…** to resume it with another model. One choice can also move a conversation’s waiting sub-chats. The transcript records what you changed; pi² never switches models on its own.
+- You can choose when a conversation is summarised. Settings › General has "Summarise earlier messages when a conversation reaches…", off by default, with sizes from 50,000 to 500,000 tokens and what they mean in words; each agent's page has the same choice, with "Use the default" first. Below it, both say plainly what a summary saves and what it loses.
+- An agent can ask for its own conversation to be summarised at a good moment, with a note on what the summary must keep: turn on "Summarise its own conversation" in its built-in tools (off by default).
+- The line in a conversation where earlier messages were summarised now says who asked for it (pi² at the size you set, you, the agent, or pi² as the model's limit neared), and shows the note on what to keep when there is one. The context menu in a conversation's toolbar also says how many tokens the last request read.
+- Agents that hand out work can see how many requests each sub-chat made, how long it worked, how many tokens it read and wrote, and its largest prompt, in the sub-chat list and with each answer.
+
+### Changed
+- While a code mode script waits on sub-chats, the message field explicitly says a message is read once the script has finished. Scripts keep waiting for their actual results; Stop still cancels them.
+- For conversations in ordinary folders, the branch tracker keeps answers about the folder's repository and its default branch for a minute, so a sidebar full of conversations starts fewer git processes. It still checks which repository a worktree pi² made is in at every look. A branch you change is shown within a few seconds, and moving a conversation to another folder is picked up at once.
+- A long conversation opens with its newest entries first, about a screen of them, and the older ones come in just after, above what is on screen without moving it. "Loading earlier entries…" shows at the top until they are all in.
+- While agents worked, every request from a sub-chat, and every answer to one, made the app work out all its windows and menus again and set each window's settings again, for the sake of the count beside the menu bar icon. Now only what shows the requests is drawn again.
+
+### Fixed
+- An open agent page now updates when the agent is changed elsewhere (in another window, say), without discarding edits you have not saved, and Save no longer lights up when you have changed nothing. Saving changes only what you edited, so it no longer puts older settings back over newer ones.
+- Commands moved to the background at their time limit now carry their run's file from the start too. After a crash, this lets pi² identify and stop macOS programs they left running after their first process ended, while still leaving any process it cannot prove belongs to the run alone.
+- Unsent messages and attachments stay with their conversation when you switch chats, change modes, or close a pane.
+- If a provider rejects a thinking level and lists the levels the model accepts, pi² tries the nearest one and tells you in the conversation. For models added by hand, it saves the corrected levels so the menus stop offering the wrong ones.
+- The computer tool now says when the pi² app the agent runs in is closed, so the agent does not keep reopening the app or test copy it is trying to use.
+- The computer tool includes parked test-copy windows when looking for the window to capture. It no longer reports a window as minimized just because it cannot find a usable window in the app's accessibility list.
+- `sub_chats` lists and checks the same uncommitted changes before removing a worktree, including untracked files Git does not ignore. A list no longer reports changes from a checkout that is being removed.
+- Making several worktrees for one repository no longer runs their checkouts over one another. A failed checkout cleans up its own leftovers when safe, and an interrupted clean removal can be retried from Branches or `sub_chats`. Git errors give a short reason instead of progress output.
+- pi² could quit unexpectedly in the background while agents worked: macOS ended it when its window's size did not settle as the window asked what it showed for its smallest size. The window now works out its smallest size without measuring what it shows, so the same size comes back at once every time, and if a part of the window ever keeps changing size again, `app.log` names it. The cause of the one crash seen was not found, so this is a safeguard, not a proven fix.
+- With the window at its smallest and several requests from sub-chats stacked above the message field, the sidebar was pushed up under the title bar, hiding the Agents and Chat switch. The requests now stay within the conversation's side of the window.
+- After an update, pi² refreshes an outdated engine login item even if the engine is already running the new build. This brings older login items up to date so they no longer start the engine at background priority.
+- When a model on this Mac stops unexpectedly during an answer, each affected conversation pauses and tries again on its own. Settings explains why one request at a time is steadier.
+- A wake about a sub-chat that stopped no longer tells the agent to continue it if the agent already did. It still says why the earlier run stopped and reports what the sub-chat is doing now.
+- Sub-chats are no longer offered the option to wake when a background command ends. Their tools show how to wait for output or for the command to finish instead.
+- An agent can now set Long conversations to Off even when the all-agents default is on. Its conversations are only summarised automatically near the model’s own limit.
+- Summarise Earlier Messages now says when there is too little to summarise, without adding anything to what the model reads.
+- A conversation longer than 300 entries showed only its newest 300: the older ones never appeared. Now they come in as you scroll up to them, a part at a time, above what is on screen without moving it, with "Loading earlier entries…" at the top while a part is on its way, down to the conversation's first message. A turn's Copy and Save as a File… fetch the start of the turn first when it has not come yet, so they always take the whole turn.
+
+### For contributors
+- Worker instructions require pull request bodies and pull request/issue comments to be written with the write tool and passed with `--body-file`, avoiding Bash 3.2 parsing that can execute Markdown backticks in a here-document.
+- `scripts/test-copy start --env NAME=VALUE` passes explicit values for four allowlisted demo switches, including picture stand-ins and demo cost/speed, without inheriting the caller's environment or allowing isolation overrides. Reopening keeps those values.
+- `scripts/test-copy shot` now waits for the chosen window to be capturable after starting or reopening a copy, even if macOS does not mark the window on screen.
+- `scripts/issue` takes a long text from a file: `--body-file FILE` in place of `-b` for `start` and `idea`, and in place of the text for `note`, `wait`, `block`, `done` and `drop`. A file that is missing or unreadable is an error naming it, as is giving a text and a file together, and neither sends anything to GitHub.
+- `conversation.open` takes `newestFirst: true`, and then sends a long conversation's newest entries first and the rest in `conversation.older` events (docs/transcript.md). `scripts/load.mts` measures opening the large conversation that way too, and no longer counts its own reading of a long event as the engine's time. A development build measures the conversation it opens at launch, which it missed before.
+- `pi2-window-check` checks how a window's size follows its SwiftUI content (`app/Sources/WindowKit`): that the smallest size stays the same and is worked out without measuring the content, through very long unbroken lines and requests that come and go, and that the watch naming a view whose size does not settle reports once. CI runs it in the App job ([development.md](docs/development.md#window-size-checks)).
+- `scripts/issue` knows the two issue classes. `scripts/issue classify N local` or `cloud` puts the label `local model` or `cloud model` on an issue and takes the other one off, and `--model local` or `cloud` gives an issue its class as `start` or `idea` files it. Both are refused in a linked git worktree, where an agent doing the work runs: only the agent that hands out the work classifies issues. `list` shows each open issue's class, and `audit` reports an open issue with no class, or with both. `docs/issue-classes.md` says what the two classes mean and how to choose one.
+- The app's scene body (`Pi2App.body`) reads nothing that changes while the app runs. A development build writes a line to `app.log` when it does (`BodyWatch` in `WindowKit`), `pi2-window-check` checks that watch, and `perf.log` counts how many times the body was worked out.
+- The engine takes a `conversation.older { id }` request: it sends the part of the conversation just before the oldest entry it sent that connection, as a `conversation.older` event with `more`, and every list sent from the start with `newestFirst` says `more` too. The page asks with `{type: "older"}` when the reader nears the top (docs/transcript.md, "Older than the engine's window").
+- `scripts/test-copy` can open a conversation by id, resize the main window, answer a waiting approval, and create long demo histories without clicks. `reopen` now installs the latest development build without discarding the copy's conversations.
+
 ## 0.8.1
 
 ### Added
