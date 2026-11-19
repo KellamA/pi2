@@ -21,6 +21,7 @@ Read only the sections that apply to your work. For more on one feature, see its
 | MCP servers | [An MCP server changed while a call runs on it](#an-mcp-server-changed-while-a-call-runs-on-it), [What commands can find](#what-commands-can-find), [What an agent's commands get](#what-an-agents-commands-get) |
 | Storage and credentials | [Where things live](#where-things-live) |
 | Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
+| Projects (the preview of #450) | [projects.md](projects.md), the contract every issue of the epic is built against: read its sections 1, 2 and your issue's row in its section 12 |
 
 ## The two programs
 
