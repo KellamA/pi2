@@ -781,12 +781,19 @@ struct PaneClickMonitor: NSViewRepresentable {
 
 // MARK: - Menu commands
 
-/// The View menu's pane commands.
+/// The View menu's pane commands. They read the mode here rather than in the scene, so that switching it draws this
+/// menu again and not every scene (#436).
 struct PaneCommands: View {
     let model: AppModel
     private var workspace: Workspace { model.workspace }
 
     var body: some View {
+        // Panes are the agent view's; in chat mode they would change it out of sight.
+        Group { commands }
+            .disabled(model.mode == .chat)
+    }
+
+    @ViewBuilder private var commands: some View {
         Button("Split Right") { model.splitPane(.row) }
             .keyboardShortcut("d")
             .disabled(!workspace.canSplit)
