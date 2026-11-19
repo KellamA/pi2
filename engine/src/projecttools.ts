@@ -19,7 +19,7 @@ import { putNeed } from "./needs.ts";
 import { removeAgentIn, TEMPLATE_DELETED, TEMPLATE_SETTINGS } from "./projectagents.ts";
 import { addRule, editRule, moveRule, type ProjectRule, ruleBinding, rulesIn, ruleText } from "./projectrules.ts";
 import { changeProjectSettings, checkFolder, inProject, type Project, Projects, requireSwitch, SWITCH_NAMES, type SwitchName } from "./projects.ts";
-import { ACCESS_LABELS, AGENT_FIELDS, type AgentValues, agentFieldWidens, agentValues, copy, describeFields, type Field, labelOf, PROJECT_FIELDS, projectFieldWidens, projectValues, render, same, splitNew } from "./reach.ts";
+import { ACCESS_LABELS, AGENT_FIELDS, type AgentValues, agentFieldWidens, agentValues, copy, describeFields, type Field, labelOf, projectFieldWidens, projectFields, projectValues, render, same, splitNew } from "./reach.ts";
 import { type CommandRule, type MadeWorktree, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { ACCESS_LEVELS, type Access, type AgentProfile, Agents, type ModelRef } from "./state.ts";
 import { madeWorktrees } from "./worktrees.ts";
@@ -572,7 +572,7 @@ function settingsTool(host: Host, engine: Engine) {
 					}
 					if (given.limits?.plan_share !== undefined) want["limits.planShare"] = given.limits.plan_share;
 					if (given.limits?.daily_spend !== undefined) want["limits.dailySpend"] = given.limits.daily_spend;
-					const fields = PROJECT_FIELDS.filter((name) => !same(now[name], want[name])).map((name): Field => ({ name, before: now[name], after: want[name] }));
+					const fields = projectFields().filter((name) => !same(now[name], want[name])).map((name): Field => ({ name, before: now[name], after: want[name] }));
 					if (fields.length === 0) return { text: "Nothing to change: the project has those settings already." };
 					// Checked now, as `projects.set` checks them, so that what is asked for could be made.
 					const limits = Object.fromEntries(fields.filter((field) => field.name.startsWith("limits.")).map((field) => [field.name.slice(7), field.after]));

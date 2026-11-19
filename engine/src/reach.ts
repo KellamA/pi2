@@ -157,8 +157,13 @@ export function agentFieldWidens(name: string, before: unknown, after: unknown):
 	}
 }
 
-/** The settings of a project a tool may change, as `Field` names. `wakeOnReports` is the person's switch, never here. */
-export const PROJECT_FIELDS = ["name", "folder", "repository", ...SWITCH_NAMES.map((name) => `withoutAsking.${name}`), "limits.planShare", "limits.dailySpend"] as const;
+/**
+ * The settings of a project a tool may change, as `Field` names. `wakeOnReports` is the person's switch, never here. A
+ * function, not a list made as the module loads: projects.ts, which names the switches, may not have loaded yet.
+ */
+export function projectFields(): string[] {
+	return ["name", "folder", "repository", ...SWITCH_NAMES.map((name) => `withoutAsking.${name}`), "limits.planShare", "limits.dailySpend"];
+}
 
 /** The value of each setting of a project, by `Field` name. */
 export function projectValues(project: { name: string; folder: string | null; repository: unknown; settings: ProjectSettings }): Record<string, unknown> {
