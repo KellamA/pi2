@@ -607,7 +607,8 @@ async function saveAgent(given: Partial<AgentProfile> | undefined, options: Agen
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
 		throw new Error("To give each conversation its own worktree, choose a folder in a git repository for the agent");
 	}
-	await harness.commit(async (tx) => {
+	// In the caller's commit when it gives one (a change an agent makes through a tool, recorded with it: changes.ts).
+	const write = async (tx: Tx) => {
 		const doc = await tx.doc(Agents);
 		if (input.id === undefined) {
 			const base = name;
@@ -652,7 +653,9 @@ async function saveAgent(given: Partial<AgentProfile> | undefined, options: Agen
 			...(everything ? { allowEverything: true as const } : {}),
 			...marks,
 		};
-	}, context);
+	};
+	if (options.tx !== undefined) await write(options.tx);
+	else await harness.commit(write, context);
 	// The agent's conversations pick up what it may now do at their next message; see syncTools.
 	return { id };
 }

@@ -232,7 +232,8 @@ try {
 	assert.match(sections, /A report from an agent does not wake you; it waits until you read it with reports\. Choose otherwise for particular hand-offs with reports\./);
 	assert.match(sections, /Put a decision that is the person's to them with needs_you/);
 	assert.match(sections, /\nIts work list is kept by pi²\. Keep it with the work tool, not with scripts or gh of your own\.\n/);
-	assert.doesNotMatch(sections, /project_agents/, "nothing about tools it is not offered");
+	// #465's tools are offered to it, and so named; before they landed, nothing was said of them.
+	assert.match(sections, /\nChange the project with project_agents, project_settings and project_rules; each change shows here with Undo for the person\. A change that lets agents do more is never made by a tool: it is put to the person, who allows or refuses it\.\n/);
 	assert.ok(sections.includes(rule) && sections.includes(note));
 	step("a new project's orchestrator: its first context is the state block and its message; the project section, the rules and the notes are in its prompt");
 

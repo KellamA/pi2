@@ -11,11 +11,9 @@
 //
 // What other issues fill in, each through `onAnswer(kind, handler)`, and what it does until then:
 //
-// - `reach` (#465): the request for more reach, allowed or refused. No handler yet, so an answer to one is refused and
-//   the item stays; nothing puts one until #465.
-// - `rule` (#465, adding through #459's `addRule`): a proposed rule, accepted or not. The same until then.
+// - `reach` and `rule`: a request for more reach, allowed or refused, and a proposed rule, accepted or not. changes.ts
+//   (#465) registers both as the engine makes its feature, and puts them through the orchestrator's tools.
 // - `limit` (#464, projectlimitstarts.ts): a start refused for a limit, started anyway or left.
-// - `ReachChange.op` is typed `unknown` until #465 gives it its type, `Op` (3.12).
 //
 // Questions and decisions are this file's own: the answer is given to the conversation that asked as a wake of the kind
 // `answer` (wakes.ts).
@@ -35,14 +33,19 @@ import { answerGoesTo } from "./orchestrator.ts";
 
 export type Choice = { id: string; label: string };
 
-/** A change to what agents may do, as an agent asked for it (7.2). #465 builds it; `op` is its `Op` (3.12) then. */
+/** A change to what agents may do, as an agent asked for it (7.2): changes.ts puts it and acts on its answer. */
 export type ReachChange = {
 	/** What it changes, as the person reads it: "Let Forge run commands without asking (Full access)". */
 	summary: string;
 	target: { kind: "project" } | { kind: "agent"; id: string } | { kind: "rule"; id: string };
 	fields: { name: string; before: unknown; after: unknown }[];
-	/** The change of section 3.12 it would be, once allowed. `Op` once #465 has landed. */
+	/**
+	 * The change of section 3.12 it would be, once allowed: an `Op` (changes.ts), which puts every one. Typed `unknown` here
+	 * so that what is stored is read as data, and checked again when it is allowed.
+	 */
 	op: unknown;
+	/** An agent's Undo of this change that had to be asked for: allowing it marks that change undone. */
+	undoes?: number;
 };
 
 type StoredBase = {

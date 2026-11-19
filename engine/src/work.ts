@@ -9,6 +9,7 @@ import type { Engine, Feature } from "./features.ts";
 import { addNews, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
 import { admit, limitError, limitRefusal, rememberReading } from "./projectlimits.ts";
 import { onLimitAssignment } from "./projectlimitstarts.ts";
+import { recordWorkChange } from "./changes.ts";
 import { handOffWords, reportRun, stageReportRun } from "./reports.ts";
 import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
@@ -43,11 +44,14 @@ export const Work = defineDoc<WorkDoc>({ kind: "pi2.work", version: 1, scope: "s
 
 // A tool that did its work but did not return before a crash reads its result again. The receipt lives only as long
 // as the tool task does; it is committed with the action, not memoized in a second commit after it.
-const WorkCall = defineDoc<{ call: string; item: WorkItem | null; refused?: string; note?: string }>({ kind: "pi2.workCall", version: 1, scope: "task", initial: () => ({ call: "", item: null }), checkpointWhen: () => true });
+// `change` is the change an agent's write was recorded as (changes.ts), for the result's `details.change`.
+const WorkCall = defineDoc<{ call: string; item: WorkItem | null; refused?: string; note?: string; change?: number }>({ kind: "pi2.workCall", version: 1, scope: "task", initial: () => ({ call: "", item: null }), checkpointWhen: () => true });
 
-export type WorkOperation = { projectId: string; action: WorkAction; by: Who; before: WorkItem | null; after: WorkItem };
-/** #465 wires work's operations into record(op) in this transaction; until then nothing is recorded there. */
-export function recordWork(_tx: Tx, _operation: WorkOperation): void | Promise<void> {}
+export type WorkOperation = { projectId: string; action: WorkAction; by: Who; before: WorkItem | null; after: WorkItem; callId?: string };
+/** Record an agent's write in the record of changes (changes.ts), in this transaction: the change's id, or none for the person's. */
+export function recordWork(tx: Tx, operation: WorkOperation): Promise<number | undefined> {
+	return recordWorkChange(tx, operation);
+}
 
 /** #468 supplies the backend for an attached repository. Until then do not silently use the pi² list instead. */
 export function githubWorkBackend(_project: Project): WorkBackend | undefined {
@@ -274,7 +278,8 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 				const item = workTransition(before, key, action, by, args, at, assigned?.holder);
 				if (id === null) list.next += 1;
 				if (before === null || JSON.stringify(before) !== JSON.stringify(item)) {
-					await recordWork(tx, { projectId: project.id, action, by, before: before === null ? null : retained(before), after: item });
+					const change = await recordWork(tx, { projectId: project.id, action, by, before: before === null ? null : retained(before), after: item, ...(call === undefined ? {} : { callId: call.api.callId }) });
+					if (receipt !== undefined && change !== undefined) receipt.change = change;
 					await addNews(tx, project.id, { kind: "work", text: `Work #${item.id}: ${item.title.replace(/\s+/g, " ")} (${action}).`, ref: String(item.id), at });
 					list.items[String(key)] = item;
 				}
@@ -465,13 +470,16 @@ export const work: Feature = (host, engine) => {
 					if (args.class !== undefined && args.class !== "local" && args.class !== "cloud") throw new Error("class must be local or cloud");
 					item = await mutate(project, { kind: "agent", agentId, conversationId: number }, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
 				}
-				if (action !== "assign") return { output: toolText(JSON.stringify(item)) };
+				// The change an agent's write was recorded as, for the conversation's line with Undo (docs/projects.md, 3.12).
+				const change = (await api.snapshot(WorkCall, api.taskId, context))?.change;
+				const recorded: { change?: number } = change === undefined ? {} : { change };
+				if (action !== "assign") return { output: toolText(JSON.stringify(item)), ...(change === undefined ? {} : { details: { change } }) };
 				const holder = item.takenBy!;
 				await followAssignment(item);
 				const name = host.agent(holder.agentId)?.name ?? holder.agentId;
 				const title = host.meta(conversationId(holder.conversationId))?.title ?? titleOf(args.title) ?? titleOf(item.title)!;
 				const note = (await api.snapshot(WorkCall, api.taskId, context))?.note;
-				return { output: toolText([startedWords(holder.conversationId, name, title, handOffWords(number)), note].filter(Boolean).join("\n\n")), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name } };
+				return { output: toolText([startedWords(holder.conversationId, name, title, handOffWords(number)), note].filter(Boolean).join("\n\n")), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name, ...recorded } };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { output: toolText(message), isError: true };

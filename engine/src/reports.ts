@@ -16,8 +16,8 @@
 // there has no report, or its report wakes as wakes.md says.
 //
 // What later issues fill in:
-// - `reports` `wake` as a change with a line and Undo (5.6, 5.9): #465's record of changes. Until then it is made with
-//   no line and no Undo.
+// - `reports` `wake` is a change with a line and Undo (5.6, 5.9) in #465's record of changes (changes.ts), which
+//   applies its Undo through `setWakeChoicesIn`.
 // - `work` `assign` (#467) starts runs with a report too, through `reportRun` with `work`.
 
 import { randomUUID } from "node:crypto";
@@ -31,6 +31,7 @@ import { waitForChat } from "./heed.ts";
 import { ownsSubChat } from "./orchestrator.ts";
 import { allProjects, inProject, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview } from "./projects.ts";
 import { type Arrived, commitWakes, heard, reloadWakes, reportArrival, resultText, wakeUp, type Watch, watchedRuns, Wakes } from "./wakes.ts";
+import { type ChangeBy, inverseOf, type Op, record } from "./changes.ts";
 
 // ---- The document (3.10)
 
@@ -469,7 +470,7 @@ const chatsWord = (ids: number[]) => `${ids.length === 1 ? "Sub-chat" : "Sub-cha
  * Set when the reports of the runs going now of `chats`, sub-chats of project `projectId`'s orchestrator, wake it.
  * Several with `all` or `failure` become one batch. Answers what was set, in words, and whether nothing could be.
  */
-async function chooseWake(projectId: string, chats: number[], when: ReportWake): Promise<{ text: string; isError?: true }> {
+async function chooseWake(projectId: string, chats: number[], when: ReportWake, by?: Extract<ChangeBy, { kind: "agent" }>): Promise<{ text: string; isError?: true; change?: number }> {
 	const going = (chat: number) =>
 		(mirror.projects[projectId] ?? []).filter((each) => each.conversationId === chat && each.ended === null).sort((a, b) => b.submissionId - a.submissionId)[0];
 	const watches = watchedRuns();
@@ -491,21 +492,17 @@ async function chooseWake(projectId: string, chats: number[], when: ReportWake):
 	];
 	if (chosen.length === 0) return { text: notes.join(" ") || "Name the sub-chats in `chats`.", isError: true };
 	const batch = chosen.length > 1 && (when === "all" || when === "failure") ? `b-${randomUUID()}` : null;
-	await commitWakes(async (tx, wakes) => {
-		const doc = (await tx.doc(Reports)) as ReportsDoc;
-		for (const { report, watch } of chosen) {
-			const stored = wakes.watching[watch.key];
-			if (stored !== undefined) {
-				stored.wake = when;
-				if (batch === null) delete stored.batch;
-				else stored.batch = batch;
-			}
-			const kept = locate(doc, report.submissionId)?.report;
-			if (kept !== undefined) kept.batch = batch;
-		}
+	const submissions = chosen.map(({ report }) => report.submissionId);
+	const change = await commitWakes(async (tx) => {
+		const before = await wakeChoicesIn(tx, submissions);
+		await setWakeChoicesIn(tx, submissions.map((submissionId) => ({ submissionId, wake: when, batch })));
+		// An agent's choice is a change, with a line and its Undo, which puts the choice back (5.9). One that changes
+		// nothing, as the same call run again after a crash, is none.
+		if (by === undefined || before.every((one) => one?.wake === when && one.batch === batch)) return undefined;
+		const op: Op = { kind: "wake.choice", submissions, before: before.map((one) => one?.wake ?? null), after: when, batches: { before: before.map((one) => one?.batch ?? null), after: submissions.map(() => batch) } };
+		return (await record(tx, projectId, { by, op, inverse: inverseOf(op), summary: `Chose waking for ${chatsWord(chosen.map((each) => each.chat)).toLowerCase()}: ${when}` })).id;
 	});
 	await reload();
-	// #465 records this as a change, with a line and its Undo (put the choice back).
 	const ids = chosen.map((each) => each.chat);
 	const one = ids.length === 1;
 	const count = ids.length <= 10 ? NUMBERS[ids.length] : String(ids.length);
@@ -523,7 +520,36 @@ async function chooseWake(projectId: string, chats: number[], when: ReportWake):
 					: `${chatsWord(ids)} are one batch: you will be woken only if one fails or is stopped, once, with the reports of those that ended before it; the others wait for you unread.`;
 		}
 	})();
-	return { text: [said, ...notes].join(" ") };
+	return { text: [said, ...notes].join(" "), ...(change === undefined ? {} : { change }) };
+}
+
+/**
+ * The waking chosen for runs `submissions` as stored in the commit `tx`: each one's watch's `wake` and `batch`, or
+ * undefined for a run no longer watched. For `reports` `wake` and the operation `wake.choice` (changes.ts).
+ */
+export async function wakeChoicesIn(tx: Tx, submissions: number[]): Promise<({ wake: ReportWake | null; batch: string | null } | undefined)[]> {
+	const watching = Object.values((await tx.doc(Wakes)).watching);
+	return submissions.map((id) => {
+		const watch = watching.find((each) => each.kind === "subchat" && each.submissionId === id);
+		return watch === undefined ? undefined : { wake: watch.wake ?? null, batch: watch.batch ?? null };
+	});
+}
+
+/** Set the waking of runs, in the commit `tx`: what `reports` `wake` does, and the operation `wake.choice` (changes.ts). */
+export async function setWakeChoicesIn(tx: Tx, choices: { submissionId: number; wake: ReportWake | null; batch: string | null }[]): Promise<void> {
+	const wakes = await tx.doc(Wakes);
+	const doc = (await tx.doc(Reports)) as ReportsDoc;
+	for (const choice of choices) {
+		const stored = Object.values(wakes.watching).find((each) => each.kind === "subchat" && each.submissionId === choice.submissionId);
+		if (stored !== undefined) {
+			if (choice.wake === null) delete stored.wake;
+			else stored.wake = choice.wake;
+			if (choice.batch === null) delete stored.batch;
+			else stored.batch = choice.batch;
+		}
+		const kept = locate(doc, choice.submissionId)?.report;
+		if (kept !== undefined) kept.batch = choice.batch;
+	}
 }
 
 // ---- The orchestrator's tool (5.6)
@@ -620,8 +646,9 @@ function reportsTool() {
 				const when = (args.when ?? "").trim().toLowerCase() as ReportWake;
 				if (!REPORT_WAKES.includes(when)) return { output: text("wake needs `when`: each, all, failure or never."), isError: true };
 				if ((args.chats ?? []).length === 0) return { output: text("wake needs `chats`: the sub-chats working now to choose for, from list."), isError: true };
-				const chosen = await chooseWake(project.id, args.chats!, when);
-				return { output: text(chosen.text), details: { action, when }, ...(chosen.isError ? { isError: true } : {}) };
+				const agentId = host?.agentOf(api.conversationId)?.id ?? "";
+				const chosen = await chooseWake(project.id, args.chats!, when, { kind: "agent", agentId, conversationId: caller, callId: api.callId });
+				return { output: text(chosen.text), details: { action, when, ...(chosen.change === undefined ? {} : { change: chosen.change }) }, ...(chosen.isError ? { isError: true } : {}) };
 			}
 			return { output: text(`Unknown action "${args.action}". Use list, read or wake.`), isError: true };
 		},

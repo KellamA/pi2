@@ -6,7 +6,7 @@
 
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Wrap } from "@earendil-works/pi-durable";
+import type { ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Tx, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
@@ -33,6 +33,7 @@ import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
 import { projectAgents } from "./projectagents.ts";
 import { projectLimits } from "./projectlimits.ts";
+import { changes } from "./changes.ts";
 import { needs } from "./needs.ts";
 import { orchestrator, projectPrompt } from "./orchestrator.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
@@ -101,6 +102,8 @@ export type AgentSaveOptions = {
 	project?: string;
 	/** Marks of a project agent to set, over what is stored. */
 	marks?: Pick<AgentProfile, "template" | "madeBy">;
+	/** Save in this commit rather than one of its own: a change an agent makes through a tool, recorded with it (changes.ts). */
+	tx?: Tx;
 };
 
 export type FeatureParts = {
@@ -239,6 +242,8 @@ export const FEATURES: Feature[] = [
 	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
 	projectAgents,
 	projectLimits,
+	// The record of changes, and the orchestrator's tools to change its project (#465): no greeting of its own either.
+	changes,
 	// One conversation with the orchestrator, and Start fresh (#466): no greeting of its own either.
 	orchestrator,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
