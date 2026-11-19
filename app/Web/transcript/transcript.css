@@ -85,6 +85,7 @@ button,
 .avatar,
 .caret,
 .working,
+.earlier,
 .actions,
 .code-head,
 .detail-head,
@@ -199,6 +200,13 @@ main > .msg.ends-with-tools + .msg.starts-with-tools {
 	gap: 10px;
 	color: var(--tx3);
 	font-size: 11px;
+}
+
+/* While the older entries of a long conversation are still coming (#380): quiet, and gone once they are in. */
+.earlier {
+	color: var(--tx3);
+	font-size: 11px;
+	text-align: center;
 }
 
 .marker::before,

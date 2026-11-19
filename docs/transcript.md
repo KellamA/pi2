@@ -11,6 +11,7 @@ app/Web/transcript/        the page: plain HTML, CSS and JavaScript, no build st
   clipboard.js             what a selection copies as (PiClipboard)
   keys.js                  what Return does in the answer to a question (PiKeys)
   chat.js                  a chat's versions, sources and Try Again's models (PiChat)
+  history.js               entries put above those on screen, without moving them (PiHistory)
   transcript.js            state, rows, scrolling, the bridge
 app/Web/test/              node --test: the five modules above, with a small fake DOM
 app/Sources/pi2/
@@ -38,6 +39,18 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 - **Saving as a file** (#286): a code block's Save… offers `code.<ending>` for its language (`code.py`, `code.sh`; `code.txt` for one it does not know), an open tool output's Save… its file's name when its label is one (`notes.md`) or `output.txt`, an edit's `changes.diff`. A picture opened larger has Save…, which saves it as the engine has it. A document `write_document` wrote has, at the end of its line, **Open**, which opens it in the app the person uses for that kind of file, and **Save a Copy…**: a chat's documents are kept in the data folder, where the person would not find them. Each asks the app, which shows a save panel; the page only offers a name, and names a picture or a document by the entry that holds it, never by a path.
 - The page follows new content while the reader is at the bottom. Scrolling up stops that, and a "Jump to latest" button appears. Sending a message brings the reader back.
 
+## A long conversation, newest first
+
+Opening a conversation draws its newest entries first and the older ones just after (#380), so a long one shows about as soon as a short one. Every step of opening grows with the bytes sent, not the number of entries, and an entry can be a few hundred bytes or 50 KB of command output, so the parts are cut by size:
+
+- **The engine** (`engine/src/opening.ts`), when the app asks `conversation.open` with `newestFirst: true`, sends in its first `conversation` event the newest entries that come to 64 KB of JSON or number 40, whichever comes first (at least one), with `earlier`, how many are still to come. It answers the request then. The rest follows at once in `conversation.older` events of at most 256 KB, newest first, each holding entries in order that go just before the oldest the app has, with `earlier` counting down to 0. It sends one, then lets other requests and events through before the next. A part never starts with a tool result: it reaches back to the answer whose call it is.
+- **Entries committed meanwhile** come as usual, at the end. Anything that starts the list over (another version of a chat shown, the engine's window moving on) splits the new list the same way and drops what of the old one was still to come; `conversation.close` stops it too.
+- **The app** keeps the older entries in front of the others (`OpenConversation.prepend`) and how many are to come (`earlier`). `TranscriptFeed` sends a page that has none of the entries yet the newest part the same way, and the older ones a part at a time, each once the page has drawn the one before: every pane opens its own page, which loads after the engine's entries have usually all come, and it is the page's drawing that the split saves. A second pane on the same conversation is fed the same way.
+- **The page** puts older entries above the first row. Before drawing them it notes the first row whose bottom is on screen and where it is, and after scrolls by however far it moved, rounded to whole pixels, so what is on screen stays put; a reader at the bottom stays at the bottom. While `earlier` is above 0, "Loading earlier entries…" sits at the top, and is not copied. The end of a turn is drawn again when entries come above it, since its Copy takes the whole turn.
+- **Older and newer programs.** An app that does not ask for `newestFirst` gets the conversation in one event, as before, and never `conversation.older`; an engine from before #380 ignores the request's `newestFirst` and sends no `earlier`, which the app reads as nothing to come. The page is built into the app.
+
+Copy and select-all work on what the page has, which is everything the app was sent once the last part has come, a fraction of a second after the first. Export and the palette's search ask the engine, which reads every entry.
+
 ## A chat's controls
 
 When the app tells the page the conversation is a chat (`chat.enabled`), the page shows what a chat adds (#285; the engine's side is in [architecture.md](architecture.md#a-chats-versions)):
@@ -63,6 +76,8 @@ The app calls `window.pi2.receive(json)` with `callAsyncJavaScript`, passing the
 |---|---|
 | `reset` | Forget every entry: the page has just loaded, or the conversation was reset. |
 | `items` | New entries, as the engine sends them (`Item`). |
+| `older` | Entries that go before the first the page has, oldest first ([newest first](#a-long-conversation-newest-first)). |
+| `earlier` | How many entries older than those the page has are still to come; 0 when none are. |
 | `live` | `{busy, partial, tools, retrying}`: the answer still arriving and the tools still running. A shell command running in the foreground has `startedAt` and `lastOutputAt` (ms since 1970, or null until it prints) for its clock. |
 | `inbox` | Approvals and questions waiting in this conversation (`InboxItem`). |
 | `names` | What only the app knows: `mcp` (tool name to "Server: tool"), `agents` (name, colour, model), `apps` (bundle ID to name), the conversation's `agentName`. |
@@ -108,7 +123,9 @@ Everything in a transcript is untrusted: model output, tool output, web page tex
 cd app/Web && node --test test/
 ```
 
-covers the Markdown renderer (including hostile HTML, link schemes, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, what a selection copies as, and a chat's versions, sources and models (`chat.test.mjs`). CI runs it.
+covers the Markdown renderer (including hostile HTML, link schemes, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, what a selection copies as, a chat's versions, sources and models (`chat.test.mjs`), and how older entries are put in front and which row is kept in place while they are (`history.test.mjs`). CI runs it.
+
+For #380 the same kind of offscreen harness fed the page a conversation of 295 entries newest first, the reader scrolled to the top of the first part, and five older parts and a new answer arrived: the row on screen moved by at most 0.3 pixels at each, the steps ran in order across the join, a reader at the bottom stayed there, and select-all copied the whole list without the loading line.
 
 The page itself was checked with an offscreen harness: a throwaway Swift program, kept out of the repository, that compiled `Models.swift`, `Theme.swift`, `TranscriptFeed.swift` and `TranscriptPage.swift` with a stub for `AttachmentNote`, loaded the page in the app's own `TranscriptWebKitView` in an offscreen window, fed it a realistic conversation through `TranscriptFeed`, and took snapshots in dark and light: streaming, opened rows, approval and question cards, hostile content, a 400-entry conversation, and the text a select-all copies as.
 
@@ -116,4 +133,4 @@ The page itself was checked with an offscreen harness: a throwaway Swift program
 
 - The page is copied at build time, so a change to it needs `./app/build.sh` and reopening the conversation.
 - A drag that starts on a control (a chevron, a button) does not start a selection, as in any web page; start it on text.
-- Very long conversations are rendered whole, as before; there is no paging of old entries.
+- The engine sends a conversation's newest 300 entries as it is opened (its view of a conversation is a window of 300 to 600 entries), so the oldest entries of a longer one are not shown, though Export and search still read them. They could come in when the person scrolls up, with the same `conversation.older` event. What is sent is drawn whole: there is no virtual scrolling.

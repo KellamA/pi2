@@ -1051,12 +1051,34 @@ final class OpenConversation {
     init(draft: ConversationDraft) { self.draft = draft }
     /// Nil until the engine has sent the conversation.
     private(set) var state: ConversationState?
+    /// How many entries older than `items` the engine is still to send: it sends a long conversation newest first (#380).
+    private(set) var earlier = 0
 
-    /// Takes in one update from the engine, touching only what changed.
-    func apply(reset: Bool, items new: [Item], state: ConversationState) {
+    /// Takes in one update from the engine, touching only what changed. `earlier` comes with a list sent from the start.
+    func apply(reset: Bool, items new: [Item], state: ConversationState, earlier: Int?) {
         if reset, !items.isEmpty { items = [] }
         if !new.isEmpty { items.append(contentsOf: new) }
         if self.state != state { self.state = state }
+        if reset, self.earlier != (earlier ?? 0) { self.earlier = earlier ?? 0 }
+    }
+
+    /// Takes in entries that come before those it has, and how many are still to come after them.
+    func prepend(_ older: [Item], earlier: Int) {
+        // Only what goes before the first it has, which is all of them unless a list sent from the start came between.
+        let first = items.first?.id ?? Int.max
+        let before = older.filter { $0.id < first }
+        if !before.isEmpty { items.insert(contentsOf: before, at: 0) }
+        if self.earlier != earlier { self.earlier = earlier }
+    }
+
+    /// Whether the person's message has come after the entry `last` (nil: since the conversation was empty). Entries can
+    /// arrive before those there were too, so this looks past `last` rather than counting.
+    func hasMessage(after last: Int?) -> Bool {
+        for item in items.reversed() {
+            if let last, item.id <= last { return false }
+            if item.kind == "user" { return true }
+        }
+        return false
     }
 }
 
