@@ -2483,7 +2483,7 @@ try {
 		const { order, ORDER_NOTE } = await import("../src/order.ts");
 		const wraps = new Map((order(undefined as never, undefined as never).wraps ?? []).flatMap((wrap) => ("tool" in wrap ? [[wrap.tool, wrap.wrap] as const] : [])));
 		const wrapped = (name: string) => wraps.get(name)?.({ name, description: "Its own words." } as never) as { executionMode?: string; description: string } | undefined;
-		for (const name of ["bash", "write", "edit", "write_document", "codemode"]) assert.deepEqual(wrapped(name), { name, description: "Its own words.", executionMode: "sequential" });
+		for (const name of ["bash", "write", "edit", "write_document", "codemode", "sub_chats"]) assert.deepEqual(wrapped(name), { name, description: "Its own words.", executionMode: "sequential" });
 		assert.equal(wrapped("read"), undefined, "reading alone does not make an answer's calls wait for each other");
 
 		const { id: o } = await client.call("conversation.create");

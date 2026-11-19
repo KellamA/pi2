@@ -15,7 +15,8 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, statSync } from "node:fs";
+import { rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentReader } from "@earendil-works/pi-durable";
@@ -45,6 +46,9 @@ export type Worktree = {
 	/** The commit it started at. */
 	baseCommit: string;
 	createdAt: number;
+	/** Written only after the removal checks, before Git moves the checkout out of use. */
+	checkoutId?: string;
+	removal?: { holding: string; holdingId: string; checkoutId: string; gitDir: string; gitDirId: string; branch: string; base?: string; deleting?: boolean };
 	/** How the agent's set-up command went in it, when there was one. */
 	setup?: Setup;
 };
@@ -134,7 +138,7 @@ const Worktrees = defineDoc<{ conversations: Record<string, Worktree> }>({
 });
 
 /** How a branch stands, most pressing first. The app picks the icon's colour from this. */
-export type BranchState = "missing" | "conflict" | "changes" | "detached" | "merged" | "ahead" | "behind" | "clean";
+export type BranchState = "missing" | "unavailable" | "conflict" | "changes" | "detached" | "merged" | "ahead" | "behind" | "clean";
 
 /** What the app is told about one conversation's folder. */
 export type BranchInfo = {
@@ -183,26 +187,37 @@ const POLL_MS = 5_000;
 /** How long a conversation's folder is remembered before it is read again; changes made through the app count at once. */
 const FOLDER_TTL_MS = 30_000;
 const GIT_TIMEOUT_MS = 10_000;
+// Mutations can touch thousands of files. Keep a hang guard, not the tracker's short polling deadline.
+const WORKTREE_TIMEOUT_MS = 15 * 60_000;
 
 export class GitError extends Error {}
 
 /** Runs git without touching the index lock (so it never gets in an agent's way) and without ever asking for input. */
 // Off the engine's thread (offthread.ts): the tracker runs git for every folder every few seconds.
-export async function git(args: string[], cwd: string): Promise<string> {
+export async function git(args: string[], cwd: string, timeout = GIT_TIMEOUT_MS): Promise<string> {
 	const { error, stdout, stderr } = await runOffThread("git", args, {
 		cwd,
-		timeout: GIT_TIMEOUT_MS,
+		timeout,
 		maxBuffer: 8 * 1024 * 1024,
 		env: commandEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" }),
 	});
 	if (error === null) return stdout;
-	const message = stderr.trim().split("\n").filter((line) => line.trim() !== "").pop() ?? error.message;
-	throw Object.assign(new GitError(message.replace(/^(fatal|error): /, "")), { code: error.code });
+	const lines = stderr.split(/[\r\n]+/).map((line) => line.trim()).filter((line) => line !== "" && !/^(?:[^:]+: +\d+%|Preparing worktree|HEAD is now at)/.test(line));
+	const message = error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "git printed more output than pi² can keep"
+		: error.killed ? `git was stopped after reaching its ${timeout / 1000}-second limit`
+		: error.signal !== null ? `git was stopped by ${error.signal}`
+		: lines.find((line) => /^(fatal|error): /.test(line)) ?? lines.at(-1) ?? `git ${typeof error.code === "number" ? `exited with code ${error.code}` : `failed${error.code === null ? "" : ` (${error.code})`}`}`;
+	throw Object.assign(new GitError(tailReason(message.replace(/^(fatal|error): /, ""))), { code: error.code });
 }
+
+const tailReason = (message: string) => message.length <= 240 ? message : `${message.slice(0, 239)}…`;
+const worktreeGit = (args: string[], cwd: string) => git(["worktree", ...args], cwd, WORKTREE_TIMEOUT_MS);
 
 const tryGit = (args: string[], cwd: string) => git(args, cwd).then((out) => out.trim(), () => undefined);
 
 type Repo = { root: string; gitDir: string; commonDir: string; main: string; worktree: boolean };
+type RemoveOptions = { force: boolean; deleteBranch: boolean; onlyIfMerged?: boolean };
+type RemovalResult = { branchDeleted: boolean; note: string | null; branch: string | null };
 
 /** The repository a folder is in, or undefined when it is in none (or git is missing). */
 export async function repoOf(folder: string): Promise<Repo | undefined> {
@@ -233,6 +248,37 @@ function realish(path: string): string {
 
 /** Whether `folder` is `root` or inside it. */
 const within = (folder: string, root: string) => (realish(folder) + sep).startsWith(realish(root) + sep);
+
+/** Do not mistake a symlink, replacement folder or unreadable path for the directory on record. */
+function directoryId(path: string): string | null {
+	try {
+		const stat = lstatSync(path, { bigint: true });
+		if (stat.isDirectory()) return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+		throw new Error("The recorded worktree path is not a directory. Check it by hand; pi² left it alone");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+async function registrations(root: string) {
+	const out = await worktreeGit(["list", "--porcelain", "-z"], root);
+	return out.split("\0\0").flatMap((record) => {
+		const [path, ...fields] = record.split("\0");
+		return path?.startsWith("worktree ") ? [{ path: path.slice(9), fields }] : [];
+	});
+}
+
+/** Only forget the exact missing checkout, never prune unrelated worktrees or let Git match a path suffix. */
+type Registration = Awaited<ReturnType<typeof registrations>>[number];
+const canonicalPath = (path: string) => join(realish(dirname(path)), basename(path));
+
+async function forgetCheckout(root: string, path: string, entries?: Registration[]): Promise<void> {
+	const entry = (entries ?? await registrations(root)).find((entry) => canonicalPath(entry.path) === canonicalPath(path));
+	if (entry === undefined) return;
+	if (directoryId(path) !== null || directoryId(entry.path) !== null) throw new Error("A folder is now at the old worktree path. Check it by hand; pi² left it alone");
+	await worktreeGit(["remove", "--", entry.path], root);
+}
 
 /**
  * The folder a new sub-chat starts in. It joins the folder its parent works in now (a worktree, say), unless the other
@@ -294,35 +340,57 @@ export function stateOf(info: Omit<BranchInfo, "state">, options: { merged: bool
 	return "clean";
 }
 
+const removingPaths = new Set<string>();
+let removalGeneration = 0;
+const statusArgs = ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=none"];
+
+function operationIn(gitDir: string): string | null {
+	for (const [name, operation] of Object.entries({ MERGE_HEAD: "merge", "rebase-merge": "rebase", "rebase-apply": "rebase", CHERRY_PICK_HEAD: "cherry-pick", REVERT_HEAD: "revert" })) {
+		if (existsSync(join(gitDir, name))) return operation;
+	}
+	return null;
+}
+
+function unreadableWorktree(own: Worktree, state: "missing" | "unavailable"): BranchInfo {
+	return {
+		repo: basename(own.repo),
+		root: own.path,
+		branch: own.branch,
+		head: null,
+		worktree: true,
+		managed: true,
+		upstream: null,
+		ahead: 0,
+		behind: 0,
+		base: own.base,
+		unmerged: null,
+		changes: 0,
+		conflicts: 0,
+		operation: null,
+		state,
+	};
+}
+
 /** How the folder's branch stands, or undefined when the folder is not in a git repository. */
 export async function inspect(folder: string, own?: Worktree): Promise<BranchInfo | undefined> {
-	if (own !== undefined && !isFolder(own.path)) {
-		return {
-			repo: basename(own.repo),
-			root: own.path,
-			branch: own.branch,
-			head: null,
-			worktree: true,
-			managed: true,
-			upstream: null,
-			ahead: 0,
-			behind: 0,
-			base: own.base,
-			unmerged: null,
-			changes: 0,
-			conflicts: 0,
-			operation: null,
-			state: "missing",
-		};
-	}
-	const repo = await repoOf(folder);
-	if (repo === undefined) return undefined;
-	const out = await tryGit(["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=dirty"], repo.root);
-	if (out === undefined) return undefined;
+	const generation = removalGeneration;
+	if ([...removingPaths].some((path) => own?.path === path || within(folder, path))) return own === undefined ? undefined : unreadableWorktree(own, "unavailable");
+	const info = await inspectCheckout(folder, own);
+	// A status scan begun just before a removal may have seen only part of the checkout.
+	return generation === removalGeneration ? info : own === undefined ? undefined : unreadableWorktree(own, "unavailable");
+}
+
+async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval = false): Promise<BranchInfo | undefined> {
+	if (own !== undefined && !isFolder(own.path)) return unreadableWorktree(own, own.removal === undefined && !existsSync(own.path) ? "missing" : "unavailable");
+	const repo = await repoOf(own?.path ?? folder);
+	if (repo === undefined || (own !== undefined && (!repo.worktree || realish(own.path) !== realish(repo.root)))) return own === undefined ? undefined : unreadableWorktree(own, "unavailable");
+	const out = await git(statusArgs, repo.root, checkingRemoval ? WORKTREE_TIMEOUT_MS : GIT_TIMEOUT_MS).catch((error: Error) => {
+		if (checkingRemoval) throw new Error(`git could not read the worktree's status: ${error.message}. Check git status and retry`);
+		return undefined;
+	});
+	if (out === undefined) return own === undefined ? undefined : unreadableWorktree(own, "unavailable");
 	const status = parseStatus(out);
-	const operation = ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"]
-		.map((name) => (existsSync(join(repo.gitDir, name)) ? name : undefined))
-		.find((name) => name !== undefined);
+	const operation = operationIn(repo.gitDir);
 	const managed = own !== undefined && realish(own.path) === realish(repo.root);
 	// Measured against the branch the worktree was made from, else the default branch, unless this is that branch.
 	let base = managed && own.base !== null ? own.base : await defaultBranch(repo.root);
@@ -330,7 +398,7 @@ export async function inspect(folder: string, own?: Worktree): Promise<BranchInf
 	let unmerged: number | null = null;
 	let merged = false;
 	if (base !== null && status.oid !== null) {
-		const counted = await tryGit(["rev-list", "--count", `${base}..HEAD`], repo.root);
+		const counted = await tryGit(["rev-list", "--count", `${base}..${status.oid}`], repo.root);
 		unmerged = counted === undefined ? null : Number(counted);
 		// Only a worktree pi² made can be called merged with confidence: it has moved on from where it started and
 		// everything on it is now on the base. Any other branch with nothing of its own may simply be new.
@@ -350,9 +418,21 @@ export async function inspect(folder: string, own?: Worktree): Promise<BranchInf
 		unmerged,
 		changes: status.changes,
 		conflicts: status.conflicts,
-		operation: operation === undefined ? null : ({ MERGE_HEAD: "merge", "rebase-merge": "rebase", "rebase-apply": "rebase", CHERRY_PICK_HEAD: "cherry-pick", REVERT_HEAD: "revert" } as Record<string, string>)[operation]!,
+		operation,
 	};
 	return { ...info, state: stateOf(info, { merged }) };
+}
+
+/** Whether an agent can remove this checkout and keep the branch, without leaving unmerged work behind. */
+export function whyKeepWorktree(info: BranchInfo | undefined): string | undefined {
+	if (info?.state === "missing") return undefined;
+	if (info === undefined || info.state === "unavailable") return "pi² could not read how its branch stands";
+	if (info.operation !== null) return `a ${info.operation} is stopped half way in it`;
+	const changes = info.changes + info.conflicts;
+	if (changes > 0) return `it has ${changes} uncommitted change${changes === 1 ? "" : "s"}`;
+	if (info.branch === null || info.unmerged === null || info.base === null) return "pi² cannot tell whether its branch is merged";
+	if (info.unmerged > 0) return `its branch has ${info.unmerged} commit${info.unmerged === 1 ? " that is" : "s that are"} not on ${info.base}; fetch first if it merged elsewhere`;
+	return undefined;
 }
 
 /** A branch name made from a conversation's title: "pi2/fix-the-login-page". */
@@ -383,6 +463,17 @@ export const worktrees: Feature = (_host, engine) => {
 	let gitMissing = false;
 	/** Conversations whose worktree is being made or removed right now. */
 	const changing = new Set<number>();
+	const repoChanges = new Map<string, Promise<unknown>>();
+	async function inRepo<T>(commonDir: string, change: () => Promise<T>): Promise<T> {
+		const key = realish(commonDir);
+		const next = (repoChanges.get(key) ?? Promise.resolve()).catch(() => {}).then(change);
+		repoChanges.set(key, next);
+		try {
+			return await next;
+		} finally {
+			if (repoChanges.get(key) === next) repoChanges.delete(key);
+		}
+	}
 	/**
 	 * Set-up commands running now, by conversation. `settled` resolves once their end is recorded and written; `output` is
 	 * what they have printed so far, which the conversation's state carries while they run.
@@ -633,122 +724,268 @@ export const worktrees: Feature = (_host, engine) => {
 	async function create(id: number, requested?: string, from?: string): Promise<{ path: string; branch: string }> {
 		if (mine[String(id)] !== undefined) throw new Error("This conversation already has a worktree of its own");
 		if (changing.has(id)) throw new Error("A worktree is already being made for this conversation");
-		folders.delete(id);
-		const cwd = await folderOf(id);
-		if (cwd === null) throw new Error("Choose a folder in a git repository for this conversation first");
-		const repo = await repoOf(cwd);
-		if (repo === undefined) throw new Error("This conversation's folder is not in a git repository");
-		const named = from?.trim();
-		if (named !== undefined && (named === "" || named.startsWith("-"))) throw new Error(`“${from}” is not a branch, tag or commit`);
-		const start = await tryGit(["rev-parse", "--verify", "--quiet", `${named ?? "HEAD"}^{commit}`], repo.root);
-		if (named !== undefined && (start === undefined || start === "")) throw new Error(`“${named}” is not a branch, tag or commit in ${basename(repo.main)}`);
-		if (start === undefined || start === "") throw new Error("The repository has no commits yet, so there is nothing to make a worktree from");
 		changing.add(id);
 		try {
-			const meta = engine.library().conversations[String(id)];
-			let branch = requested?.trim() || suggestBranch(meta?.title ?? "", `${meta?.agentId ?? "conversation"}-${id}`);
-			const checked = await git(["check-ref-format", "--branch", branch], repo.root).catch(() => undefined);
-			if (checked === undefined) throw new Error(`“${branch}” cannot be a branch name`);
-			branch = checked.trim();
-			const exists = async (name: string) => (await tryGit(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`], repo.root)) !== undefined;
-			// A name the person chose that already exists is checked out as it is; a suggested one gets a number instead.
-			const useExisting = requested !== undefined && requested.trim() !== "" && (await exists(branch));
-			if (useExisting && named !== undefined) throw new Error(`The branch ${branch} already exists. Choose another name, or leave out where it starts from to check it out as it is`);
-			if (!useExisting) for (let n = 2, stem = branch; await exists(branch); n++) branch = `${stem}-${n}`;
-			const current = await tryGit(["symbolic-ref", "--quiet", "--short", "HEAD"], repo.root);
-			const parent = join(engine.home, "worktrees", `${basename(repo.main)}-${createHash("sha256").update(realish(repo.commonDir)).digest("hex").slice(0, 6)}`);
-			mkdirSync(parent, { recursive: true });
-			let path = join(parent, folderName(branch));
-			for (let n = 2; existsSync(path); n++) path = join(parent, `${folderName(branch)}-${n}`);
-			await git(useExisting ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, start], repo.root).catch((error: Error) => {
-				throw new Error(`git could not make the worktree: ${error.message}`);
-			});
-			const baseCommit = (await tryGit(["rev-parse", "HEAD"], path)) ?? start;
-			// The same subfolder of the new checkout, when the conversation worked in one.
-			const inside = relative(realish(repo.root), realish(cwd));
-			const target = inside !== "" && !inside.startsWith("..") && isFolder(join(path, inside)) ? join(path, inside) : path;
-			await save((doc) => {
-				// "Merged" is measured against where it started: the ref it was made from, else the branch the folder was on.
-				doc[String(id)] = { path, branch, repo: repo.main, origin: cwd, base: useExisting ? (current ?? null) : (named ?? current ?? null), baseCommit, createdAt: Date.now() };
-			});
-			await setFolder(id, target);
-			engine.log("worktree made for conversation", id, "on", branch);
-			// The agent's set-up command, written for the agent's own repository, so run only in a worktree of that one.
-			const agent = engine.agents()[meta?.agentId ?? ""];
-			const command = agent?.setup?.trim() ?? "";
-			const theirs = command === "" || agent?.cwd == null ? undefined : await repoOf(agent.cwd);
-			if (theirs !== undefined && realish(theirs.commonDir) === realish(repo.commonDir)) {
-				await startSetup(id, path, command).catch((error) => engine.log("could not start the set-up of conversation", id, error instanceof Error ? error.message : error));
-			}
-			return { path: target, branch };
+			folders.delete(id);
+			const cwd = await folderOf(id);
+			if (cwd === null) throw new Error("Choose a folder in a git repository for this conversation first");
+			const repo = await repoOf(cwd);
+			if (repo === undefined) throw new Error("This conversation's folder is not in a git repository");
+			return await inRepo(repo.commonDir, () => createInRepo(id, cwd, repo, requested, from));
 		} finally {
 			changing.delete(id);
 			void refresh();
 		}
 	}
 
+	async function createInRepo(id: number, cwd: string, repo: Repo, requested?: string, from?: string) {
+		const named = from?.trim();
+		if (named !== undefined && (named === "" || named.startsWith("-"))) throw new Error(`“${from}” is not a branch, tag or commit`);
+		const start = await tryGit(["rev-parse", "--verify", "--quiet", `${named ?? "HEAD"}^{commit}`], repo.root);
+		if (named !== undefined && (start === undefined || start === "")) throw new Error(`“${named}” is not a branch, tag or commit in ${basename(repo.main)}`);
+		if (start === undefined || start === "") throw new Error("The repository has no commits yet, so there is nothing to make a worktree from");
+		const meta = engine.library().conversations[String(id)];
+		let branch = requested?.trim() || suggestBranch(meta?.title ?? "", `${meta?.agentId ?? "conversation"}-${id}`);
+		const checked = await git(["check-ref-format", "--branch", branch], repo.root).catch(() => undefined);
+		if (checked === undefined) throw new Error(`“${branch}” cannot be a branch name`);
+		branch = checked.trim();
+		const exists = (name: string) => git(["show-ref", "--verify", "--quiet", `refs/heads/${name}`], repo.root).then(() => true, (error) => {
+			if (error.code === 1) return false;
+			throw error;
+		});
+		// A name the person chose that already exists is checked out as it is; a suggested one gets a number instead.
+		const useExisting = requested !== undefined && requested.trim() !== "" && (await exists(branch));
+		if (useExisting && named !== undefined) throw new Error(`The branch ${branch} already exists. Choose another name, or leave out where it starts from to check it out as it is`);
+		if (!useExisting) for (let n = 2, stem = branch; await exists(branch); n++) branch = `${stem}-${n}`;
+		const current = await tryGit(["symbolic-ref", "--quiet", "--short", "HEAD"], repo.root);
+		const parent = join(engine.home, "worktrees", `${basename(repo.main)}-${createHash("sha256").update(realish(repo.commonDir)).digest("hex").slice(0, 6)}`);
+		mkdirSync(parent, { recursive: true });
+		const registered = new Set((await registrations(repo.root)).map((entry) => canonicalPath(entry.path)));
+		const stem = join(parent, folderName(branch));
+		const canonicalParent = realpathSync(parent);
+		let path = stem;
+		for (let n = 2; ; path = `${stem}-${n++}`) {
+			if (registered.has(join(canonicalParent, basename(path)))) continue;
+			try {
+				mkdirSync(path, { mode: 0o700 });
+				break;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			}
+		}
+		const reserved = directoryId(path);
+		const ref = `refs/heads/${branch}`;
+		let madeBranch = false;
+		try {
+			// Know whether we created the branch, rather than inferring it from a failed `add -b`.
+			if (!useExisting) {
+				await git(["branch", "--no-track", "--", branch, start], repo.root, WORKTREE_TIMEOUT_MS);
+				madeBranch = true;
+			}
+			await worktreeGit(["add", "--quiet", "--", path, branch], repo.root);
+		} catch (error) {
+			try {
+				const id = directoryId(path);
+				const entries = await registrations(repo.root);
+				const entry = entries.find((entry) => canonicalPath(entry.path) === join(canonicalParent, basename(path)));
+				if ((id !== null && id !== reserved) || (entry?.fields.some((field) => field.startsWith("locked") && field !== "locked initializing"))) throw new Error("the checkout changed");
+				if (madeBranch && (await git(["rev-parse", "--verify", ref], repo.root)).trim() !== start) throw new Error("the new branch moved");
+				if (id !== null) await rm(path, { recursive: true, force: true });
+				if (entry?.fields.includes("locked initializing")) await worktreeGit(["unlock", "--", path], repo.root);
+				await forgetCheckout(repo.root, path, entries);
+				// The expected old value protects commits if the branch moved while we cleaned up.
+				if (madeBranch) {
+					if ((await registrations(repo.root)).some((entry) => entry.fields.includes(`branch ${ref}`))) throw new Error("the new branch is checked out elsewhere");
+					await git(["update-ref", "-d", ref, start], repo.root, WORKTREE_TIMEOUT_MS);
+				}
+			} catch (cleanup) {
+				engine.log("could not finish cleaning up worktree creation:", cleanup instanceof Error ? cleanup.message : cleanup);
+				throw new Error(`git could not make the worktree: ${(error as Error).message}. Check ${path} and branch ${branch} before retrying`);
+			}
+			throw new Error(`git could not make the worktree: ${(error as Error).message}. Retry, or choose another branch name`);
+		}
+		const baseCommit = (await tryGit(["rev-parse", "HEAD"], path)) ?? start;
+		// The same subfolder of the new checkout, when the conversation worked in one.
+		const inside = relative(realish(repo.root), realish(cwd));
+		const target = inside !== "" && !inside.startsWith("..") && isFolder(join(path, inside)) ? join(path, inside) : path;
+		await save((doc) => {
+			// "Merged" is measured against where it started: the ref it was made from, else the branch the folder was on.
+			doc[String(id)] = { path, branch, repo: repo.main, origin: cwd, base: useExisting ? (current ?? null) : (named ?? current ?? null), baseCommit, createdAt: Date.now(), checkoutId: reserved! };
+		});
+		await setFolder(id, target);
+		engine.log("worktree made for conversation", id, "on", branch);
+		// The agent's set-up command, written for the agent's own repository, so run only in a worktree of that one.
+		const agent = engine.agents()[meta?.agentId ?? ""];
+		const command = agent?.setup?.trim() ?? "";
+		const theirs = command === "" || agent?.cwd == null ? undefined : await repoOf(agent.cwd);
+		if (theirs !== undefined && realish(theirs.commonDir) === realish(repo.commonDir)) {
+			await startSetup(id, path, command).catch((error) => engine.log("could not start the set-up of conversation", id, error instanceof Error ? error.message : error));
+		}
+		return { path: target, branch };
+	}
+
 	/** Remove conversation `id`'s worktree and move it back to the folder it worked in before. */
-	async function remove(id: number, options: { force: boolean; deleteBranch: boolean }): Promise<{ branchDeleted: boolean; note: string | null }> {
+	async function remove(id: number, options: RemoveOptions): Promise<RemovalResult> {
 		const own = mine[String(id)];
 		if (own === undefined) throw new Error("This conversation has no worktree of its own");
-		if (engine.busy(id)) throw new Error("The agent is working in this worktree. Stop it first");
-		if (changing.has(id)) throw new Error("The worktree is already being changed");
+		if (changing.has(id)) throw new Error("The worktree is already being changed. Retry after it finishes");
 		changing.add(id);
+		removingPaths.add(own.path);
+		removalGeneration++;
 		try {
-			// A set-up still running would go on writing into the folder being removed, and so would a command the agent
-			// left running in the background there.
-			const stopSetup = async () => {
-				const setup = setups.get(id);
-				setup?.stop("was stopped because the worktree was removed");
-				await Promise.all([setup?.settled, stopCommandsIn(own.path, "was stopped because its worktree was removed")]);
-			};
-			// Sub-chats working in the worktree go back with the conversation, so continuing one does not run in a folder that is gone.
-			const joined: number[] = [];
-			for (const [key, meta] of Object.entries(engine.library().conversations)) {
-				if (meta.parent !== id || mine[key] !== undefined) continue;
-				folders.delete(Number(key));
-				const cwd = await folderOf(Number(key));
-				if (cwd !== null && within(cwd, own.path)) joined.push(Number(key));
-			}
-			const repoRoot = isFolder(own.repo) ? own.repo : undefined;
-			// The branch it is on now, which is what Branches names: an agent may have started a new one here after its
-			// first was merged (#206). The one it was made on, when it cannot be read.
-			let branch = own.branch;
-			if (isFolder(own.path)) {
-				const status = parseStatus((await tryGit(["status", "--porcelain=v2", "--branch"], own.path)) ?? "");
-				branch = status.head ?? own.branch;
-				if (!options.force) {
-					if (status.changes > 0 || status.conflicts > 0) {
-						throw new Error(`The worktree has ${status.changes + status.conflicts} uncommitted change${status.changes + status.conflicts === 1 ? "" : "s"}. Commit them, or remove it anyway to lose them`);
-					}
-				}
-				await stopSetup();
-				await git(["worktree", "remove", ...(options.force ? ["--force"] : []), own.path], repoRoot ?? own.path).catch((error: Error) => {
-					throw new Error(`git could not remove the worktree: ${error.message}`);
-				});
-			} else {
-				await stopSetup();
-				// Its folder was deleted by hand: let git forget it too.
-				if (repoRoot !== undefined) await tryGit(["worktree", "prune"], repoRoot);
-			}
-			let branchDeleted = false;
-			let note: string | null = null;
-			if (options.deleteBranch && repoRoot !== undefined) {
-				const deleted = await git(["branch", options.force ? "-D" : "-d", branch], repoRoot).then(
-					() => true,
-					() => false,
-				);
-				branchDeleted = deleted;
-				if (!deleted) note = `The branch ${branch} was kept: it has commits that are not merged yet.`;
-			}
-			const back = isFolder(own.origin) ? own.origin : repoRoot;
-			await save((doc) => void delete doc[String(id)]);
-			if (back !== undefined) for (const each of [id, ...joined]) await setFolder(each, back);
-			engine.log("worktree removed for conversation", id);
-			return { branchDeleted, note };
+			const common = isFolder(own.repo) ? await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], own.repo).then((out) => out.trim()) : undefined;
+			return await inRepo(common ?? own.repo, () => removeInRepo(id, options, common));
 		} finally {
 			changing.delete(id);
+			removingPaths.delete(own.path);
+			removalGeneration++;
 			void refresh();
+		}
+	}
+
+	async function removeInRepo(id: number, options: RemoveOptions, common: string | undefined) {
+		const own = mine[String(id)]!;
+		if (engine.busy(id)) throw new Error("The agent is working in this worktree. Stop it first");
+		// A set-up still running would go on writing into the folder being removed, and so would a command the agent
+		// left running in the background there.
+		const stopSetup = async () => {
+			const setup = setups.get(id);
+			setup?.stop("was stopped because the worktree was removed");
+			await Promise.all([setup?.settled, stopCommandsIn(own.path, "was stopped because its worktree was removed")]);
+		};
+		// Sub-chats working in the worktree go back with the conversation, so continuing one does not run in a folder that is gone.
+		const joined: number[] = [];
+		for (const [key, meta] of Object.entries(engine.library().conversations)) {
+			if (meta.parent !== id || mine[key] !== undefined) continue;
+			folders.delete(Number(key));
+			const cwd = await folderOf(Number(key));
+			if (cwd !== null && within(cwd, own.path)) {
+				if (engine.busy(Number(key))) throw new Error("A sub-chat is working in this worktree. Stop it first");
+				joined.push(Number(key));
+			}
+		}
+		await stopSetup();
+		const repoRoot = common === undefined ? undefined : own.repo;
+		const checkoutId = directoryId(own.path);
+		if (!within(dirname(own.path), join(engine.home, "worktrees"))) throw new Error("The recorded path is outside pi²'s worktree folder. Check it by hand; pi² left it alone");
+		let branch: string | null = own.removal?.branch ?? own.branch;
+		if (checkoutId === null && own.removal !== undefined) {
+			await finishRemoval(id, own, own.removal, common, options.onlyIfMerged === true);
+		} else if (checkoutId !== null) {
+			const repo = await repoOf(own.path);
+			if ((own.checkoutId !== undefined && own.checkoutId !== checkoutId) || common === undefined || repo === undefined || !repo.worktree || realish(repo.root) !== realish(own.path) || realish(repo.commonDir) !== realish(common) || !lstatSync(join(own.path, ".git"), { throwIfNoEntry: false })?.isFile()) {
+				throw new Error("pi² cannot verify this folder is still its checkout or that removal had passed its checks. Check it by hand; pi² left it alone");
+			}
+			if (own.removal !== undefined) {
+				// The move never took place. Do not let the old check authorize a new removal.
+				const holding = directoryId(own.removal.holding);
+				if (checkoutId !== own.removal.checkoutId || own.removal.deleting || (holding !== null && holding !== own.removal.holdingId) || directoryId(join(own.removal.holding, "checkout")) !== null) {
+					throw new Error("The worktree path changed during removal. Check it by hand; pi² left it alone");
+				}
+				if (holding !== null) await rmdir(own.removal.holding);
+				await save((doc) => void delete doc[String(id)]!.removal);
+			}
+			const info = await inspectCheckout(own.path, own, true);
+			if (info === undefined || info.state === "unavailable") throw new Error("git could not read the worktree's status. Check git status and retry");
+			branch = info.branch;
+			if (options.onlyIfMerged) {
+				const why = whyKeepWorktree(info);
+				if (why !== undefined) throw new Error(`pi² kept it because ${why}. Check it before retrying`);
+			}
+			if (options.force) {
+				// Explicit discard is not a proof that nothing would be lost; never recover it by recursive deletion.
+				await worktreeGit(["remove", "--force", "--", own.path], own.repo).catch((error: Error) => {
+					throw new Error(`git could not remove the worktree: ${error.message}. Check it in Branches before retrying`);
+				});
+			} else {
+				const changes = info.changes + info.conflicts;
+				if (changes > 0) throw new Error(`The worktree has ${changes} uncommitted change${changes === 1 ? "" : "s"}. Commit them, or remove it anyway to lose them`);
+				if (info.operation !== null || branch === null) throw new Error("Finish the git operation or put the detached commit on a branch, then retry");
+				const gitDir = realpathSync(repo.gitDir);
+				const gitDirId = directoryId(gitDir);
+				if (gitDirId === null || dirname(gitDir) !== join(realish(common), "worktrees")) throw new Error("pi² cannot verify the worktree registration. Check it by hand");
+				const entry = (await registrations(own.repo)).find((entry) => realish(entry.path) === realish(own.path));
+				if (entry === undefined || !entry.fields.includes(`branch refs/heads/${branch}`)) throw new Error("The worktree registration changed. Check it by hand, then retry");
+				if (entry.fields.some((field) => field === "locked" || field.startsWith("locked "))) throw new Error("Git has locked this worktree. Unlock it before retrying");
+				const holding = mkdtempSync(join(realpathSync(dirname(own.path)), ".removing-"));
+				const record = { holding, holdingId: directoryId(holding)!, checkoutId, gitDir, gitDirId, branch, ...(info.base !== null && info.unmerged === 0 ? { base: info.base } : {}) };
+				await save((doc) => { doc[String(id)]!.removal = record; });
+				try {
+					// Git checks locks, submodules and the linked checkout before moving it. Agents only know the old
+					// path, so they cannot use a partly deleted checkout if the slow deletion is interrupted.
+					await worktreeGit(["move", "--", own.path, join(holding, "checkout")], own.repo);
+				} catch (error) {
+					throw new Error(`git could not move the worktree for removal: ${(error as Error).message}. Check it in Branches or retry removal`);
+				}
+				await finishRemoval(id, own, record, common, options.onlyIfMerged === true);
+			}
+		} else if (repoRoot !== undefined) {
+			// Its folder was deleted by hand. Forget just this checkout, not other missing checkouts.
+			await forgetCheckout(repoRoot, own.path);
+		}
+		let branchDeleted = false;
+		let note: string | null = null;
+		if (options.deleteBranch && repoRoot !== undefined && branch !== null) {
+			const deleted = await git(["branch", options.force ? "-D" : "-d", branch], repoRoot).then(
+				() => true,
+				() => false,
+			);
+			branchDeleted = deleted;
+			if (!deleted) note = `The branch ${branch} was kept: it has commits that are not merged yet.`;
+		}
+		const back = isFolder(own.origin) ? own.origin : repoRoot;
+		await save((doc) => void delete doc[String(id)]);
+		if (back !== undefined) for (const each of [id, ...joined]) await setFolder(each, back);
+		engine.log("worktree removed for conversation", id);
+		return { branchDeleted, note, branch };
+	}
+
+	async function finishRemoval(id: number, own: Worktree, record: NonNullable<Worktree["removal"]>, common: string | undefined, onlyIfMerged: boolean): Promise<void> {
+		const { holding, holdingId, checkoutId, gitDir, gitDirId } = record;
+		const checkout = join(holding, "checkout");
+		try {
+			if (common === undefined || dirname(gitDir) !== join(realish(common), "worktrees") || dirname(holding) !== realpathSync(dirname(own.path)) || !basename(holding).startsWith(".removing-") || directoryId(own.path) !== null) {
+				throw new Error("pi² cannot verify the recorded removal");
+			}
+			const parent = directoryId(holding);
+			const files = directoryId(checkout);
+			const admin = directoryId(gitDir);
+			if ((parent !== null && parent !== holdingId) || (files !== null && files !== checkoutId) || (admin !== null && admin !== gitDirId)) throw new Error("A folder in the recorded removal was replaced");
+			const entries = (await registrations(own.repo)).filter((entry) => {
+				const path = canonicalPath(entry.path);
+				return path === canonicalPath(own.path) || path === checkout;
+			});
+			if (entries.length > 1 || (entries.length === 1 && (admin === null || !entries[0]!.fields.includes(`branch refs/heads/${record.branch}`))) || existsSync(join(gitDir, "locked"))) {
+				throw new Error("The worktree registration changed or is locked");
+			}
+			if (onlyIfMerged && record.base === undefined) throw new Error("The recorded removal did not confirm the branch was merged. Use Branches to finish it and keep the branch");
+			if (files !== null && !record.deleting) {
+				if (admin === null || entries.length !== 1) throw new Error("The checkout can no longer be verified");
+				// Check once more once the old path is out of use. Explicit paths work even if Git moved the
+				// checkout but was cut off before updating one of its links.
+				const gitAt = ["--git-dir", gitDir, "--work-tree", checkout];
+				const status = parseStatus(await git([...gitAt, ...statusArgs], checkout, WORKTREE_TIMEOUT_MS));
+				if (status.oid === null || status.head !== record.branch || status.changes + status.conflicts > 0 || operationIn(gitDir) !== null) {
+					throw new Error("The isolated checkout changed. Its files were kept");
+				}
+				if (onlyIfMerged && (record.base === undefined || (await git([...gitAt, "rev-list", "--count", `${record.base}..${status.oid}`], checkout)).trim() !== "0")) {
+					throw new Error("The branch is not confirmed merged. Fetch first if it merged elsewhere, or keep its branch using Branches");
+				}
+				await save((doc) => { doc[String(id)]!.removal!.deleting = true; });
+			}
+			// The slow part has no deadline. The recorded, isolated directory can be retried even if there
+			// is no .git file left, without touching anything at the original path.
+			if (files !== null) await rm(checkout, { force: true, recursive: true, maxRetries: 3 });
+			if (entries[0] !== undefined) await forgetCheckout(own.repo, entries[0].path, entries);
+			if (directoryId(gitDir) === gitDirId && !existsSync(join(gitDir, "gitdir"))) {
+				// Git may have been cut off while deleting this exact registration, after unlinking its backlink.
+				await rm(gitDir, { force: true, recursive: true, maxRetries: 3 });
+			}
+			if (directoryId(gitDir) !== null) throw new Error("Some of the Git registration is still present");
+			if (parent !== null) await rmdir(holding);
+		} catch (error) {
+			const reason = error instanceof GitError ? error.message : (error as NodeJS.ErrnoException).code ?? (error as Error).message;
+			throw new Error(`Could not finish removing the worktree: ${reason}. Retry removal in Branches or inspect ${holding}`);
 		}
 	}
 
@@ -904,7 +1141,7 @@ export async function madeWorktrees(read: DocumentReader, context: Context): Pro
 }
 
 /** The worktrees feature's own ways to make and remove a worktree, for the rest of the engine; set once it is made. */
-let made: { create(id: number, branch?: string, from?: string): Promise<{ path: string; branch: string }>; remove(id: number, options: { force: boolean; deleteBranch: boolean }): Promise<{ branchDeleted: boolean; note: string | null }> } | undefined;
+let made: { create(id: number, branch?: string, from?: string): Promise<{ path: string; branch: string }>; remove(id: number, options: RemoveOptions): Promise<RemovalResult> } | undefined;
 
 /**
  * Make a worktree for conversation `id` and move it there, exactly as New Worktree… does: the same folder, record, set-up
@@ -916,7 +1153,7 @@ export function makeWorktree(id: number, branch: string | undefined, from: strin
 }
 
 /** Remove conversation `id`'s worktree with the rules Remove Worktree… has: refused with uncommitted changes unless forced. */
-export function removeWorktree(id: number, options: { force: boolean; deleteBranch: boolean }): Promise<{ branchDeleted: boolean; note: string | null }> {
+export function removeWorktree(id: number, options: RemoveOptions): Promise<RemovalResult> {
 	if (made === undefined) throw new Error("Worktrees are not available");
 	return made.remove(id, options);
 }

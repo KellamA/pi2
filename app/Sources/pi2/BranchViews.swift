@@ -14,7 +14,7 @@ extension BranchStatus {
         case "ahead", "behind": Theme.ahead
         case "merged": Theme.merged
         case "clean": Theme.ok
-        default: Theme.tx3 // missing, detached
+        default: Theme.tx3 // missing, unavailable, detached
         }
     }
 
@@ -51,6 +51,7 @@ extension BranchStatus {
     var facts: [String] {
         var lines: [String] = []
         if state == "missing" { lines.append("The worktree’s folder is gone. Remove the worktree to let git forget it.") }
+        if state == "unavailable" { return ["The checkout could not be read. Use Remove to retry an interrupted removal."] }
         if conflicts > 0 { lines.append("\(conflicts) file\(conflicts == 1 ? "" : "s") with unresolved conflicts") }
         if let operation, conflicts == 0 { lines.append("A \(operation) stopped half way") }
         if changes > 0 { lines.append("\(changes) uncommitted change\(changes == 1 ? "" : "s")") }
@@ -418,7 +419,7 @@ struct BranchesView: View {
         }
     }
 
-    private static let order = ["conflict", "changes", "missing", "ahead", "behind", "detached", "merged", "clean"]
+    private static let order = ["conflict", "changes", "missing", "unavailable", "ahead", "behind", "detached", "merged", "clean"]
 
     private var groups: [(repo: String, rows: [Row])] {
         let rows = engine.conversations.compactMap { conversation in

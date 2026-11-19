@@ -22,7 +22,8 @@ import type { ToolRegistration, Wrap } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
 
 /** Tools that change files, by name: any one of them in an answer makes its calls run in order. */
-export const IN_ORDER = ["bash", "write", "edit", "write_document", "codemode"] as const;
+// Archive changes what a later sub_chats list sees. Ordering is per tool, not per action.
+export const IN_ORDER = ["bash", "write", "edit", "write_document", "codemode", "sub_chats"] as const;
 
 /** What a model is told in the system prompt about the calls of one answer. */
 export const ORDER_NOTE =
