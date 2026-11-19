@@ -119,6 +119,15 @@ export async function listening(engine: ChildProcess, home: string, patience = P
 }
 
 /**
+ * Turn the projects' preview on as the app does (docs/projects.md, 9.8): with the plan of the report the person was
+ * shown, so that what the engine has is carried over as that report says. Answers what `projects.setPreview` answers.
+ */
+export async function previewOn(client: EngineClient): Promise<any> {
+	const { plan } = await client.call("projects.carryOver", { dryRun: true });
+	return client.call("projects.setPreview", { on: true, plan });
+}
+
+/**
  * One connection to an engine, as the app has: requests with their answers, and the events it sends, which a test's own
  * client keeps by overriding `receive`. By default each kind of event is kept by name in `events`, and a conversation's
  * items and state in `conversations`.
@@ -144,7 +153,8 @@ export class EngineClient {
 				if (typeof message.event !== "string" && message.id !== undefined && message.id !== null) {
 					const reply = this.#replies.get(message.id);
 					this.#replies.delete(message.id);
-					if (message.error !== undefined) reply?.reject(new Error(message.error));
+					// A refusal may carry data beside its message (docs/projects.md, 4.1), kept on the error as `data`.
+					if (message.error !== undefined) reply?.reject(Object.assign(new Error(message.error), message.data === undefined ? {} : { data: message.data }));
 					else reply?.resolve(message.result);
 				} else this.receive(message);
 			}

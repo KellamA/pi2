@@ -48,6 +48,7 @@ import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type AgentSaveOptions, type Engine, FEATURES } from "./features.ts";
+import { Refused } from "./refused.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
@@ -1346,6 +1347,7 @@ async function continueChat(params: Params): Promise<{ id: ConversationId }> {
 	);
 	settings.lastAgent = agent.id;
 	saveSettings();
+	for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 	const conv = (await harness.conversation(created.id, context))!;
 	// Its own agent's Allow everything, and its own tools, as for any first message of a conversation of that agent.
@@ -1402,6 +1404,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		);
 		settings.lastAgent = agent.id;
 		saveSettings();
+		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id };
 	},
@@ -2515,7 +2518,7 @@ async function fire(id: string, manual: boolean): Promise<void> {
 		const change = await agentChange(agent, { subChat: false });
 		const now = Date.now();
 		const due = schedule.nextRunAt;
-		await harness.createConversation(
+		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
 				agent: change,
@@ -2536,6 +2539,7 @@ async function fire(id: string, manual: boolean): Promise<void> {
 			},
 			context,
 		);
+		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		schedules = (await harness.snapshot(Schedules, context))?.schedules ?? schedules;
 		await deliver(id);
 	} catch (error) {
@@ -2674,10 +2678,12 @@ const server = createServer((socket) => {
 				continue;
 			}
 			const params = request.params ?? {};
+			// A refusal may carry data beside its message (refused.ts): the new report of a changed plan, a limit's reading.
+			const data = (error: unknown) => (error instanceof Refused ? { data: error.data } : error instanceof WorkLimitError ? { data: { limit: error.limit } } : {});
 			const handle = () =>
 				handler(params, client).then(
 					(result) => send(client, { id: request.id, result }),
-					(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error), ...(error instanceof WorkLimitError ? { data: { limit: error.limit } } : {}) }),
+					(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error), ...data(error) }),
 				);
 			// An answer to what waits for the person is taken only from the app (#504).
 			if (!answersForThePerson(String(request.method), params)) handle();

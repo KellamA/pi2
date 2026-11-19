@@ -9,8 +9,8 @@
 // Several later issues are built on this file side by side. What each fills in later has a place here, marked with the
 // issue that fills it, and does what the contract's 12.1 says until then:
 //
-// - `onPreviewOn(plan)`: carrying over when the preview is turned on (#458). Until then it carries nothing over.
-// - `carryOverState()`: the `projects` event's `carryOver` (#458). Null until then.
+// - `onPreviewOn(plan)`, `carryOverState()`: carrying over (#458), which carryover.ts wires in through `wireCarryOver`.
+//   Without it (a stand-in engine in a test), turning on carries nothing over, and `carryOver` is null.
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard (#466). Null until then.
 // - `admit(start)`: the one admission check of every start (#464, who moves it to `projectlimits.ts`). Admits every start.
 // - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by #466. Stored and never told until then.
@@ -369,13 +369,33 @@ export async function addNews(tx: Tx, projectId: string, news: { kind: News["kin
 
 // ---- The places later issues fill in
 
+/** What carryover.ts (#458) gives this file: the run behind `setPreview`, the event's `carryOver`, and a restored project. */
+export type CarryOverParts = {
+	previewOn(plan: string | null): Promise<CarryOverReport>;
+	state(): CarryOverState | null;
+	/** A project was restored (`projects.unarchive`): one carrying over made archived gets its orchestrator's conversation. */
+	restored(projectId: string): Promise<void>;
+};
+let carrying: CarryOverParts | undefined;
+
+/** carryover.ts wires carrying over in as its feature is made; answers what tells the apps the `projects` event again. */
+export function wireCarryOver(parts: CarryOverParts): () => void {
+	carrying = parts;
+	return () => announceProjects();
+}
+
+/** What carrying over has done, as last stored: a plain copy (carryover.ts). */
+export function carryRecord(): CarryRecord {
+	return structuredClone(current.carry);
+}
+
 /**
- * Carrying over, when the preview is turned on (9.8). #458 fills this in: work the plan out again, refuse when it is not
- * `plan` ("What would be carried over has changed since you looked. Look at it again."), run it, and answer its report.
- * Until then nothing is carried over, and the report is empty.
+ * Carrying over, when the preview is turned on (9.8): carryover.ts works the plan out again, refuses when it is not
+ * `plan` ("What would be carried over has changed since you looked. Look at it again."), runs it, and answers its
+ * report. Without carryover.ts (a stand-in engine), nothing is carried over, and the report is empty.
  */
-export async function onPreviewOn(_plan: string | null): Promise<CarryOverReport> {
-	return emptyReport();
+export async function onPreviewOn(plan: string | null): Promise<CarryOverReport> {
+	return carrying === undefined ? emptyReport() : carrying.previewOn(plan);
 }
 
 /** The report of a run with nothing to do (9.8). */
@@ -383,9 +403,9 @@ export function emptyReport(): CarryOverReport {
 	return { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, notesLeft: 0 }, already: 0, ranAt: current.carry.ranAt, backup: current.carry.backup, secretsPending: [] };
 }
 
-/** The `projects` event's `carryOver`: null while nothing was ever carried over. #458 fills it in. */
+/** The `projects` event's `carryOver`: null while nothing was ever carried over (carryover.ts). */
 export function carryOverState(): CarryOverState | null {
-	return null;
+	return carrying?.state() ?? null;
 }
 
 let countRuleTokens = (_projectId: string): ProjectRow["ruleTokens"] => ({ orchestrator: 0, agents: 0 });
@@ -752,6 +772,8 @@ export const projects: Feature = (host, engine) => {
 					delete project.archivedAt;
 					project.updatedAt = now;
 				});
+				// A project carrying over made archived has no conversation with its orchestrator until now (3.2, 9.6).
+				await carrying?.restored(id);
 				return {};
 			},
 			/** `{ id }`: shown only in the Archive, with the preview on; its folder and name are free again (3.6). */

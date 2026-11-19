@@ -102,6 +102,22 @@ export class VariableValues {
 		});
 	}
 
+	/**
+	 * Set one value only while none is kept for it, so a value set meanwhile is never overwritten. Answers whether `value` is
+	 * what is kept now: set here, or found already (by a copy cut off before it marked the profile).
+	 */
+	setUnlessSet(account: string, name: string, value: string): Promise<boolean> {
+		return this.#keychain.exclusive(account, async () => {
+			this.#known.delete(account);
+			const kept = await this.read(account);
+			if (name in kept) return kept[name] === value;
+			const next = { ...kept, [name]: value };
+			await this.#keychain.write(account, next, "the value");
+			this.#known.set(account, next);
+			return true;
+		});
+	}
+
 	/** Remove one value, and the item with the last one. */
 	remove(account: string, name: string): Promise<void> {
 		return this.#keychain.exclusive(account, async () => {
@@ -124,7 +140,26 @@ export class VariableValues {
 	}
 }
 
-let running: { values(agent: AgentProfile): Promise<Record<string, string>>; meta(id: number): Meta | undefined; agents(): Record<string, AgentProfile> } | undefined;
+let running:
+	| {
+			values(agent: AgentProfile): Promise<Record<string, string>>;
+			meta(id: number): Meta | undefined;
+			agents(): Record<string, AgentProfile>;
+			copy(from: string, to: string, names: readonly string[]): Promise<void>;
+	  }
+	| undefined;
+
+/**
+ * Copy the values of `names` from agent `from` to agent `to`, for a copy carrying over made (carryover.ts, docs/projects.md
+ * 9.5). Each is copied only while `to` still has that variable and no value for it, so a value the person set since is
+ * never overwritten and a variable they removed is not brought back; one `from` no longer has a value for is left. The
+ * value goes into the Keychain before the profile says there is one, as `variables.set` does. Throws when the Keychain
+ * cannot be read or written, having copied what it could.
+ */
+export async function copyAgentValues(from: string, to: string, names: readonly string[]): Promise<void> {
+	if (running === undefined) throw new Error("The variables feature is not running");
+	return running.copy(from, to, names);
+}
 
 /**
  * What a command of conversation `id` adds to its environment: the variables of the conversation's own agent that have
@@ -189,6 +224,18 @@ export const variables: Feature = (host, engine: Engine) => {
 		},
 		meta: (id) => host.meta(id as never),
 		agents: () => engine.agents(),
+		copy: async (from, to, names) => {
+			const source = await read(from);
+			const stored = async () => (await engine.harness().snapshot(Agents, engine.context()))?.agents[to];
+			for (const name of names) {
+				const value = source[name];
+				const variable = (await stored())?.variables?.find((each) => each.name === name);
+				if (value === undefined || variable === undefined || variable.set) continue;
+				if (!(await values.setUnlessSet(variablesAccount(to), name, value))) continue;
+				// Marked only while still listed: a variable the person removed meanwhile is not brought back.
+				await edit(to, (list) => list.map((each) => (each.name === name ? { name, set: true } : each)));
+			}
+		},
 	};
 
 	return {

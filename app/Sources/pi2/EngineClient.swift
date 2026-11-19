@@ -487,6 +487,8 @@ final class EngineClient {
         let event: String?
         let id: Int?
         let error: String?
+        /// Beside `error`, what a refusal carries for the app to act on (docs/projects.md, 4.1).
+        let data: JSONValue?
         let result: JSONValue?
     }
     private struct LibraryEvent: Decodable {
@@ -674,7 +676,7 @@ final class EngineClient {
             default:
                 guard let id = envelope.id, let continuation = pending.removeValue(forKey: id) else { return }
                 if let error = envelope.error {
-                    continuation.resume(throwing: EngineError(message: error))
+                    continuation.resume(throwing: EngineError(message: error, data: envelope.data))
                 } else {
                     continuation.resume(returning: envelope.result ?? .null)
                 }
