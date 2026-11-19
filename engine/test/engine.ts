@@ -1804,7 +1804,7 @@ try {
 		const results = toolResults(second).length;
 		await client.call("submit", { id: second, text: "/bash ./run-tests || touch pwned" });
 		const compound = await client.until("compound approval", () => client.inbox.find((i) => i.conversationId === second));
-		await assert.rejects(client.call("inbox.decide", { id: compound.id, decision: "rule" }), /No rule can be made/, "the page cannot ask for a rule the engine did not offer");
+		await assert.rejects(client.call("inbox.decide", { id: compound.id, decision: "rule" }), /did not offer an allowed command/, "the page cannot save an allowed command the engine did not offer");
 		await client.call("inbox.decide", { id: compound.id, decision: "deny" });
 		await settled(second, results + 1);
 		const otherFolder = await open(smith, elsewhere);
@@ -1836,7 +1836,8 @@ try {
 
 		// By hand: the same checks, and a rule that would allow anything is refused, saying why.
 		const add = (command: string, agentId = smith, folder = project) => client.call("rules.add", { agentId, folder, command });
-		await assert.rejects(add("bash"), /bash alone would let the agent run anything/);
+		await assert.rejects(add("bash"), /Allowing bash alone would let the agent run anything/);
+		await assert.rejects(add("git status a b c d e f g"), /An allowed command can have at most 8 words/);
 		await assert.rejects(add("python3 -c"), /code it writes on the spot/);
 		await assert.rejects(add("rm -rf"), /always asks/);
 		await assert.rejects(add("sudo npm test"), /always asks/);

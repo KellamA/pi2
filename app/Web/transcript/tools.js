@@ -693,7 +693,7 @@
 	function ruleNote(details) {
 		const rules = isObject(details) && Array.isArray(details.allowedBy) ? details.allowedBy.filter((rule) => typeof rule === "string" && rule !== "") : [];
 		if (rules.length === 0) return [];
-		const pieces = [t(rules.length === 1 ? "allowed by your rule for " : "allowed by your rules for ")];
+		const pieces = [t(rules.length === 1 ? "matched allowed command: " : "matched allowed commands: ")];
 		rules.forEach((rule, index) => {
 			if (index > 0) pieces.push(t(index === rules.length - 1 ? " and " : ", "));
 			pieces.push(code(rule));
