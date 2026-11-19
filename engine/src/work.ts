@@ -7,6 +7,7 @@ import { isPutAway } from "./archive.ts";
 import { startedWords, titleOf } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { addNews, admit, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
+import { handOffWords, reportRun, stageReportRun } from "./reports.ts";
 import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
 import { subChatFolder } from "./worktrees.ts";
@@ -369,7 +370,7 @@ export const work: Feature = (host, engine) => {
 			const taskId = await tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId: child.id });
 			(await tx.doc(LiveDoc, child.id)).run = { taskId, inputs: [submission.id], first: entry.id, turns: 0 };
 			library[String(id)] = { title: named, parent, projectId: current.id, createdAt: now, updatedAt: now, access: target.access, agentId: target.id, subChatTask: submission.id as number, ...(saved.allowEverything ? { allowEverything: true as const } : {}) };
-			// #463 switches project sub-chat results to reports. Until then, deliver as delegate with wait: false.
+			await stageReportRun(tx, current.id, { submissionId: submission.id as number, conversationId: id, agentId: target.id, title: named, work: item.id });
 			(await tx.doc(Wakes)).watching[watchKey(id)] = { key: watchKey(id), conversationId: parent, kind: "subchat", ref: String(id), label: `sub-chat ${id} “${named}”`, startedAt: now, submissionId: submission.id as number, agent: target.name };
 			return { agentId: target.id, conversationId: id };
 		};
@@ -381,7 +382,13 @@ export const work: Feature = (host, engine) => {
 		const key = watchKey(item.takenBy!.conversationId);
 		try {
 			const pending = (await engine.harness().snapshot(Wakes, engine.context()))?.watching[key];
-			if (pending !== undefined) await watch(pending);
+			if (pending?.submissionId !== undefined) {
+				const holder = item.takenBy!;
+				const title = host.meta(conversationId(holder.conversationId))?.title ?? titleOf(item.title)!;
+				// Reload and follow the staged report before attaching its watch, as delegate does.
+				await reportRun(pending.conversationId, { submissionId: pending.submissionId, conversationId: holder.conversationId, agentId: holder.agentId, title, work: item.id });
+				await watch(pending);
+			}
 		} catch (error) {
 			engine.log("could not follow assigned work:", error);
 		}
@@ -424,7 +431,7 @@ export const work: Feature = (host, engine) => {
 				await followAssignment(item);
 				const name = host.agent(holder.agentId)?.name ?? holder.agentId;
 				const title = host.meta(conversationId(holder.conversationId))?.title ?? titleOf(args.title) ?? titleOf(item.title)!;
-				return { output: toolText(startedWords(holder.conversationId, name, title)), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name } };
+				return { output: toolText(startedWords(holder.conversationId, name, title, handOffWords(number))), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name } };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { output: toolText(message), isError: true };

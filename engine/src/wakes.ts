@@ -17,6 +17,8 @@ import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { ConversationBusy, type ConversationId, defineDoc, type SettledSubmissionRecord, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { type Host, subChatResult } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
+import { projectOf } from "./projects.ts";
+import { type ReportWake, reportOf, reportWatched, settle, unreadReports, wakeFor } from "./reports.ts";
 import { Library, type Meta } from "./state.ts";
 import { subChatActivity } from "./subchats.ts";
 import { syncWorkForInput } from "./work.ts";
@@ -60,15 +62,25 @@ export type Watch = {
 	/** For a sub-chat: the submission it answers, and the agent's name. */
 	submissionId?: number;
 	agent?: string;
+	/**
+	 * Read only for a run of a sub-chat of a project's orchestrator, which has a report (reports.ts, #463): when its
+	 * report wakes the orchestrator. Absent: as the project's `wakeOnReports` says when it ends.
+	 */
+	wake?: ReportWake;
+	/** The batch it belongs to (`reports` `wake`, several chats): `all` and `failure` count over the batch's runs. */
+	batch?: string;
 };
 
-/** Something that ended, waiting to be handed to its conversation's agent. */
-type Arrived = { key: string; kind: WakeKind; ref: string; label: string; ended: string; text: string; at: number; failure?: SubChatFailure };
+/**
+ * Something that ended, waiting to be handed to its conversation's agent. `report`: the run whose report it carries
+ * (reports.ts), given only if `settle` says so in the commit that wakes the agent.
+ */
+export type Arrived = { key: string; kind: WakeKind; ref: string; label: string; ended: string; text: string; at: number; failure?: SubChatFailure; report?: number };
 /** Keep the older run's reason separate from its advice, which can be out of date at handover. */
 type SubChatFailure = { submissionId: number; withoutAdvice: string; usage: string };
 /** Why a conversation is not woken for now: the person stopped it, the hourly cap, or the budget. */
 type Hold = { why: "stopped" | "cap" | "budget"; since: number };
-type Doc = {
+export type WakesDoc = {
 	watching: Record<string, Watch>;
 	/** By conversation, oldest first. */
 	arrived: Record<string, Arrived[]>;
@@ -78,6 +90,7 @@ type Doc = {
 	/** Keys that have arrived, with when. */
 	seen: Record<string, number>;
 };
+type Doc = WakesDoc;
 const empty = (): Doc => ({ watching: {}, arrived: {}, woken: {}, held: {}, seen: {} });
 
 export const Wakes = defineDoc<Doc>({
@@ -105,13 +118,28 @@ const timers = new Map<number, ReturnType<typeof setTimeout>>();
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 async function change<T>(edit: (doc: Doc) => T): Promise<T> {
+	return commitWakes((_tx, doc) => edit(doc));
+}
+
+/** Change the document in a commit that may change others too (reports.ts), and read it back. */
+export async function commitWakes<T>(edit: (tx: Tx, doc: Doc) => T | Promise<T>): Promise<T> {
 	if (engine === undefined) throw new Error("Waking is not available here");
 	const harness = engine.harness();
-	const result = await harness.commit(async (tx) => edit(await tx.doc(Wakes)), engine.context());
+	const result = await harness.commit(async (tx) => edit(tx, await tx.doc(Wakes)), engine.context());
 	mirror = copy((await harness.snapshot(Wakes, engine.context())) ?? empty());
 	announce();
 	return result;
 }
+
+/** Read the document back after a commit made elsewhere (a tool's) that changed it. */
+export async function reloadWakes(): Promise<void> {
+	if (engine === undefined) return;
+	mirror = copy((await engine.harness().snapshot(Wakes, engine.context())) ?? empty());
+	announce();
+}
+
+/** The sub-chats' runs watched now, of every conversation. */
+export const watchedRuns = (): Watch[] => Object.values(mirror.watching).filter((each) => each.kind === "subchat");
 
 /** The conversation at the top of the sidebar that `id` belongs to. */
 const rootOf = (id: number) => engine?.library().conversations[String(id)]?.parent ?? id;
@@ -137,7 +165,7 @@ function event() {
 	const held = Object.entries(mirror.held).map(([id, hold]) => ({ conversationId: Number(id), why: hold.why, since: hold.since, until: hold.why === "cap" ? capEnds(Number(id)) : null }));
 	return { event: "wakes", items, held, perHour: WAKES_PER_HOUR };
 }
-const shown = (item: { key: string; conversationId: number; kind: WakeKind; ref: string; label: string; startedAt: number }) => ({
+const shown = (item: { key: string; conversationId: number; kind: WakeKind; ref: string; label: string; startedAt: number; wake?: ReportWake; batch?: string }) => ({
 	key: item.key,
 	conversationId: item.conversationId,
 	rootConversationId: rootOf(item.conversationId),
@@ -145,6 +173,10 @@ const shown = (item: { key: string; conversationId: number; kind: WakeKind; ref:
 	ref: item.ref,
 	label: item.label,
 	startedAt: item.startedAt,
+	// The projects epic (#463): the project of the conversation woken, and the watch's own choice and batch, as stored.
+	projectId: projectOf(item.conversationId)?.id ?? null,
+	wake: item.wake ?? null,
+	batch: item.batch ?? null,
 });
 const announce = () => engine?.broadcast(event());
 
@@ -241,6 +273,8 @@ export async function arrivedIn(conversationId: number): Promise<void> {
 /** Wait for a sub-chat's submission to settle, then pass on its result. In memory: `start` picks the watches up again. */
 function follow(watch: Watch): void {
 	const submissionId = watch.submissionId;
+	// A run with a report is followed by reports.ts, which decides what its end wakes (`settle`), and is told of the watch.
+	if (reportOf(submissionId) !== undefined) return reportWatched(submissionId);
 	if (engine === undefined || host === undefined || submissionId === undefined || following.has(watch.key)) return;
 	following.add(watch.key);
 	const { harness, context } = { harness: engine.harness(), context: engine.context() };
@@ -266,7 +300,28 @@ function follow(watch: Watch): void {
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
-function resultText(item: Arrived, conversations: Record<string, Meta>): string {
+/**
+ * A report (reports.ts) as something that arrived: worded as `follow` words a watched sub-chat's end, so that a wake, a
+ * wait and a read give it alike.
+ */
+export function reportArrival(report: { submissionId: number; conversationId: number; title: string }, result: Awaited<ReturnType<typeof subChatResult>>, at: number): Arrived {
+	const label = `sub-chat ${report.conversationId} “${report.title}”`;
+	const base = { key: `report:${report.submissionId}`, kind: "subchat" as const, ref: String(report.conversationId), label, at, report: report.submissionId };
+	if (result.failed) return { ...base, ended: "stopped without answering", text: result.text, failure: { submissionId: report.submissionId, withoutAdvice: result.withoutAdvice, usage: result.usage } };
+	return { ...base, ended: "answered", text: `${capital(label)} answered:\n\n${result.text}` };
+}
+
+/** Something that arrived for `conversationId` (a report, reports.ts): a `sub_chats` wait there looks again. */
+export function heard(conversationId: number): void {
+	for (const listener of [...(listeners.get(conversationId) ?? [])]) listener();
+}
+
+/** Hand what arrived for `conversationId` to its agent, if it can be now. */
+export function wakeUp(conversationId: number): void {
+	void deliver(conversationId);
+}
+
+export function resultText(item: Arrived, conversations: Record<string, Meta>): string {
 	const failure = item.failure;
 	if (failure === undefined) return item.text;
 	const meta = conversations[item.ref];
@@ -287,14 +342,21 @@ function resultText(item: Arrived, conversations: Record<string, Meta>): string 
 export async function nextSubChats(conversationId: number, chats: number[] | undefined, context: Context): Promise<{ text: string }[] | "none"> {
 	const wanted = (item: { kind: WakeKind; ref: string }) => item.kind === "subchat" && (chats === undefined || chats.length === 0 || chats.includes(Number(item.ref)));
 	for (;;) {
-		const taken = await change((doc) => {
+		// The reports of runs that ended and woke nobody (reports.ts) are taken too; none outside a project.
+		const unread = await unreadReports(conversationId, chats);
+		const taken = await commitWakes(async (tx, doc) => {
 			const list = doc.arrived[String(conversationId)] ?? [];
 			const mine = list.filter(wanted);
-			if (mine.length === 0) return [];
-			const rest = list.filter((item) => !wanted(item));
+			const loose = unread.filter((item) => !list.some((each) => each.report === item.report));
+			if (mine.length === 0 && loose.length === 0) return [];
+			const given: Arrived[] = [];
+			// A report is given only if `settle` says so, and taken from wherever it waits.
+			for (const item of [...mine, ...loose]) if (item.report === undefined || (await settle(tx, item.report, { by: "wait", conversationId })).give) given.push(item);
+			const rest = (doc.arrived[String(conversationId)] ?? []).filter((item) => !wanted(item));
 			if (rest.length === 0) delete doc.arrived[String(conversationId)];
 			else doc.arrived[String(conversationId)] = rest;
-			return mine.map((item) => ({ text: resultText(item, host?.conversations() ?? {}) }));
+			if (loose.length > 0) given.sort((a, b) => a.at - b.at);
+			return given.map((item) => ({ text: resultText(item, host?.conversations() ?? {}) }));
 		});
 		if (taken.length > 0) return taken;
 		if (!Object.values(mirror.watching).some((each) => each.conversationId === conversationId && wanted(each))) return "none";
@@ -318,7 +380,8 @@ export async function nextSubChats(conversationId: number, chats: number[] | und
 /** The sub-chats a conversation is waiting on without waiting in a call: for `sub_chats`' list. */
 export function watchedSubChats(conversationId: number): number[] {
 	return Object.values(mirror.watching)
-		.filter((each) => each.conversationId === conversationId && each.kind === "subchat")
+		// A run whose report will not wake the agent (reports.ts) is not one whose answer comes as a message.
+		.filter((each) => each.conversationId === conversationId && each.kind === "subchat" && wakeFor(each) !== "never")
 		.map((each) => Number(each.ref));
 }
 
@@ -383,10 +446,20 @@ async function deliverNow(id: number): Promise<void> {
 	const conv = await harness.conversation(id as unknown as ConversationId, context);
 	if (conv === undefined) return;
 	const last = recent.length + 1 === WAKES_PER_HOUR;
+	let woke = false;
 	try {
 		await harness.commit(async (tx) => {
 			const doc = await tx.doc(Wakes);
-			const items = copy(doc.arrived[String(id)] ?? []);
+			const arrived = copy(doc.arrived[String(id)] ?? []);
+			// A report goes only if `settle` gives it in this commit (reports.ts): one a wait or a read took, or one past a
+			// project's limit, is left out, and stays as it is for `reports`.
+			const items: Arrived[] = [];
+			for (const item of arrived) if (item.report === undefined || (await settle(tx, item.report, { by: "wake", conversationId: id })).give) items.push(item);
+			if (items.length < arrived.length) {
+				const rest = (doc.arrived[String(id)] ?? []).filter((item) => item.report === undefined || items.some((each) => each.report === item.report));
+				if (rest.length === 0) delete doc.arrived[String(id)];
+				else doc.arrived[String(id)] = rest;
+			}
 			if (items.length === 0) return;
 			const head = items.length === 1 ? "[pi² woke you: this ended while you were not answering.]" : `[pi² woke you: these ${items.length} ended while you were not answering, oldest first.]`;
 			const limit = last
@@ -404,6 +477,7 @@ async function deliverNow(id: number): Promise<void> {
 			for (const [key, at] of Object.entries(doc.seen)) if (at < Date.now() - SEEN_MS) delete doc.seen[key];
 			const meta = conversations[String(id)];
 			if (meta !== undefined) meta.updatedAt = Date.now();
+			woke = true;
 		}, context);
 	} catch (error) {
 		if (error instanceof ConversationBusy) return;
@@ -411,7 +485,7 @@ async function deliverNow(id: number): Promise<void> {
 	}
 	mirror = copy((await harness.snapshot(Wakes, context)) ?? empty());
 	announce();
-	engine.log("woke conversation", id, "for", waiting.map((item) => item.label).join(", "));
+	if (woke) engine.log("woke conversation", id, "for", waiting.map((item) => item.label).join(", "));
 }
 
 /** A conversation put away is never woken: what it waited for, and what arrived for it, is let go. */

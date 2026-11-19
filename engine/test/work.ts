@@ -84,7 +84,7 @@ try {
 	const { id: github } = await client.call("projects.create", { folder: null, name: "GitHub" });
 	await offline(async (harness) => {
 		assert.equal(await harness.snapshot(Work, context), undefined, "no work document before the first file");
-		// #457 will make project agents; #468 will attach a repo. Seed those fields only in this test's own database.
+		// Keep stable worker IDs in this test. #468 will attach a repo; seed it only in this test's own database.
 		await harness.commit(async (tx) => {
 			const { memory: _, ...settings } = DEFAULT_ORCHESTRATOR;
 			(await tx.doc(Agents)).agents.worker = { ...settings, id: "worker", name: "Worker", projectId, cwd: null, createdAt: 1, access: "full", instructions: "", model: { provider: "demo", modelId: "demo-1" } };
@@ -103,8 +103,8 @@ try {
 	assert.equal(await socket.offered(parent), true);
 	assert.equal(await socket.offered(worker), true);
 	assert.equal(await socket.offered(plain), false);
-	// Before #457, ordinary delegation can name a project agent. The child's first turn still follows its parent,
-	// rather than gaining work from the target profile. After #457, the delegation itself may be refused.
+	// The child's first turn must follow its parent, rather than gaining work from the target profile.
+	// #457 also filters project workers out of ordinary delegation.
 	await socket.call("agents.save", { agent: { id: "forge", name: "Forge", delegates: ["worker"] } });
 	await socket.call("submit", { id: plain, text: "/delegate Worker: /system full" });
 	const handoff = await socket.until("out-of-project delegation", () => !socket.conversations.get(plain)?.state.busy && socket.conversations.get(plain)?.items.find((item: any) => item.kind === "tool" && item.name === "delegate"));
@@ -217,14 +217,19 @@ try {
 	assert.deepEqual((await show(open)).takenBy, { agentId: "worker", conversationId: child });
 	await socket.call("conversation.open", { id: child });
 	await socket.until("child gets assignment and answers", () => socket.conversations.get(child)?.items.some((item: any) => item.kind === "assistant" && /Read the assignment's body[\s\S]*Extra directions/.test(item.text)) && !socket.conversations.get(child)?.state.busy);
-	await socket.until("assigned result delivered like delegate with wait: false until #463", () => socket.conversations.get(parent)?.items.some((item: any) => item.kind === "marker" && item.details?.wake?.text?.includes(`Sub-chat ${child} “Assigned child” answered:`)));
+	assert.match(handed.text, /Its report waits for you unread/);
+	const report = await socket.until("assignment report remains unread with waking off", () => socket.events.reports?.projects[projectId]?.find((row: any) => row.conversationId === child && row.ended?.outcome === "answered"));
+	assert.equal(report.work, open);
+	assert.equal(report.delivered, null);
 	refusal(await socket.tool(child, "assign", { id: filed.id, agent: "Worker" }), /Only the orchestrator assigns work/);
 	assert.equal(value(await socket.tool(child, "note", { id: open, text: "From its own sub-chat" })).notes.length, 1);
 	const finish = socket.tool(child, "finish", { id: open, text: "Assigned work complete" });
 	await decide("closeWork", "once");
 	assert.equal(value(await finish).result, "Assigned work complete");
+	await socket.call("projects.set", { id: projectId, settings: { wakeOnReports: true } });
 	const byPerson = await act(filed.id, "assign", { agentId: "worker" });
 	assert.equal(byPerson.item.takenBy.conversationId, byPerson.conversation);
+	await socket.until("the second assignment wakes the orchestrator with waking on", () => socket.conversations.get(parent)?.items.some((item: any) => item.kind === "marker" && item.details?.wake?.text?.includes(`Sub-chat ${byPerson.conversation} “Filed with approval” answered:`)) && !socket.conversations.get(parent)?.state.busy);
 	step("assign refuses without a claim or child, races a take, and starts a durable sub-chat for agent and person");
 
 	const beforeRestart = await list();
