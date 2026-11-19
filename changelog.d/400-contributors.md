@@ -1,2 +1,0 @@
-### For contributors
-- `pi2-window-check` checks how a window's size follows its SwiftUI content (`app/Sources/WindowKit`): that the smallest size stays the same and is worked out without measuring the content, through very long unbroken lines and requests that come and go, and that the watch naming a view whose size does not settle reports once. CI runs it in the App job ([development.md](docs/development.md#window-size-checks)).

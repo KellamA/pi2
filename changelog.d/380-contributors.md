@@ -1,2 +1,0 @@
-### For contributors
-- `conversation.open` takes `newestFirst: true`, and then sends a long conversation's newest entries first and the rest in `conversation.older` events (docs/transcript.md). `scripts/load.mts` measures opening the large conversation that way too, and no longer counts its own reading of a long event as the engine's time. A development build measures the conversation it opens at launch, which it missed before.
