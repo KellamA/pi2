@@ -50,6 +50,7 @@ import { unlessMessaged } from "./heed.ts";
 import { handOffWords, reportRun, waitForRun } from "./reports.ts";
 import { watch } from "./wakes.ts";
 import { admit, projectOf, requireSwitch, type Start } from "./projects.ts";
+import { ownsSubChat } from "./orchestrator.ts";
 
 type RuleProposal = NonNullable<InboxItem["rule"]>;
 
@@ -338,7 +339,8 @@ export function pi2Extension(host: Host): Extension {
 			if (args.chat !== undefined) {
 				const meta = host.meta(args.chat as unknown as ConversationId);
 				const agent = host.agentOf(args.chat as unknown as ConversationId);
-				if (meta === undefined || meta.parent !== parent || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
+				// Its own, or, for an orchestrator, one of its earlier conversations' (orchestrator.ts; docs/projects.md, 5.8).
+				if (meta === undefined || !ownsSubChat(parent, meta.parent) || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
 				}
 				const held = admitted({ agentId: agent.id, agentName: agent.name, kind: "continue", chat: args.chat, title: title ?? null, task: args.task, options: { ...(args.wait === undefined ? {} : { wait: args.wait }) } });
@@ -790,7 +792,7 @@ export function pi2Extension(host: Host): Extension {
 		if (typeof args.chat === "number") {
 			const meta = host.meta(args.chat as unknown as ConversationId);
 			const agent = host.agentOf(args.chat as unknown as ConversationId);
-			if (meta?.parent === conversationId && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
+			if (meta !== undefined && ownsSubChat(conversationId, meta.parent) && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
 		} else if (typeof args.agent === "string") {
 			const target = byName(delegatesOf(host, api.conversationId), args.agent);
 			if (target !== undefined) what = `Start a new sub-chat with ${target.name}${title === undefined ? "" : `, “${title}”`}.`;

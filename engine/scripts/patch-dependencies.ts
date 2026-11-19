@@ -10,11 +10,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { COMPACTION_PATCHES } from "./patch-compaction.ts";
+import { INPUT_PATCHES } from "./patch-inputs.ts";
 
 type Patch = { why: string; file: string; find: string; replace: string };
 
 const PATCHES: Patch[] = [
 	...COMPACTION_PATCHES,
+	...INPUT_PATCHES,
 	{
 		why: "attribute a tool's usage to the model it actually called (#339)",
 		file: "node_modules/@earendil-works/pi-durable/dist/harness/tool.js",

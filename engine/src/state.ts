@@ -157,6 +157,8 @@ export type Meta = {
 	 * as while the preview is on (`runsAs`).
 	 */
 	projectAgentId?: string;
+	/** A conversation with a project's orchestrator begun with Start fresh (orchestrator.ts, #466): the one it followed. */
+	freshFrom?: number;
 };
 
 /**

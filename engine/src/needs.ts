@@ -29,6 +29,7 @@ import { allProjects, inProject, type LimitReading, Projects, projectsOn, requir
 import { type AgentProfile, type InboxItem, type Meta, runsAs } from "./state.ts";
 import { chatIdOf } from "./versions.ts";
 import { arrivedIn, arriveIn } from "./wakes.ts";
+import { answerGoesTo } from "./orchestrator.ts";
 
 // ---- What is stored (3.9)
 
@@ -367,8 +368,11 @@ export function answerText(question: string, answer: string): string {
 }
 
 async function wakeWith(tx: Tx, need: StoredNeed & { question: string }, said: string): Promise<AnswerOutcome> {
-	await arriveIn(tx, need.conversationId, { key: `answer:${need.id}`, kind: "answer", ref: need.id, label: named(need.question), ended: "was answered", text: answerText(need.question, said) });
-	return { after: () => arrivedIn(need.conversationId) };
+	// Asked in an earlier conversation with the orchestrator: the answer goes to its current one (orchestrator.ts, 6.5).
+	const { to, earlier } = await answerGoesTo(tx, need.conversationId);
+	const text = answerText(need.question, said) + (earlier ? `\n\n(You asked this in your earlier conversation, ${need.conversationId}.)` : "");
+	await arriveIn(tx, to, { key: `answer:${need.id}`, kind: "answer", ref: need.id, label: named(need.question), ended: "was answered", text });
+	return { after: () => arrivedIn(to) };
 }
 
 onAnswer("question", (tx, need, answer) => wakeWith(tx, need, answer.text));

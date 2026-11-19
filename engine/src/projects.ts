@@ -11,9 +11,10 @@
 //
 // - `onPreviewOn(plan)`: carrying over when the preview is turned on (#458). Until then it carries nothing over.
 // - `carryOverState()`: the `projects` event's `carryOver` (#458). Null until then.
-// - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard (#466). Null until then.
+// - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard: orchestrator.ts (#466) supplies them
+//   through `wireLastWords`, and marks a new project's conversation for its state block through `wireFresh`.
 // - `admit(start)`: the one admission check of every start (#464, who moves it to `projectlimits.ts`). Admits every start.
-// - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by #466. Stored and never told until then.
+// - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by orchestrator.ts (#466).
 // - `requireSwitch` is whole: a switch that is off asks the person, whatever the agent's access (#457, #465, #467 and
 //   #468 call it from their tools).
 // - Each project feature after this one (#459, #462, #463, #467, #468) adds itself in its place in `FEATURES`.
@@ -355,8 +356,8 @@ export function admit(_start: Start, _confirm?: string): { ok: true } | { ok: fa
 
 /**
  * Store one piece of news for project `projectId`'s orchestrator, in the commit `tx` that makes what it tells of (6.4).
- * #466 delivers it in the catch-up; until then it is stored and never told. The project must exist; one deleted takes
- * news too, which nobody is told.
+ * orchestrator.ts (#466) delivers it in the catch-up. The project must exist; one deleted takes news too, which nobody
+ * is told.
  */
 export async function addNews(tx: Tx, projectId: string, news: { kind: News["kind"]; text: string; ref: string; keep?: true; at?: number }): Promise<News> {
 	const doc = await tx.doc(Projects);
@@ -402,9 +403,34 @@ export function wireRuleTokens(count: typeof countRuleTokens): () => void {
 	return announceProjects;
 }
 
-/** The last line of the project's orchestrator's last finished answer (4.3). #466 fills it in; null until then. */
-export function lastWords(_projectId: string): { text: string; at: number } | null {
-	return null;
+let findLastWords = (_projectId: string): ProjectRow["lastWords"] => null;
+
+/** The last line of the project's orchestrator's last finished answer (4.3), as orchestrator.ts (#466) keeps it. */
+export function lastWords(projectId: string): { text: string; at: number } | null {
+	return findLastWords(projectId);
+}
+
+/** orchestrator.ts supplies the last words, and is given what sends the `projects` event again when they change. */
+export function wireLastWords(find: typeof findLastWords): () => void {
+	findLastWords = find;
+	return () => announceProjects();
+}
+
+let markFresh = async (_tx: Tx, _conversation: number): Promise<void> => {};
+
+/**
+ * orchestrator.ts (#466) marks a new conversation with the orchestrator, in the commit that makes it, so that its first
+ * input begins with the state block (6.4). `projects.create` calls it for the project's first conversation.
+ */
+export function wireFresh(mark: typeof markFresh): void {
+	markFresh = mark;
+}
+
+let reloadNow = async (): Promise<void> => {};
+
+/** Read the document again now, after a commit made elsewhere (Start fresh, orchestrator.ts), and tell the apps. */
+export function reloadProjects(): Promise<void> {
+	return reloadNow();
 }
 
 // ---- Checking what a request gives
@@ -526,6 +552,7 @@ export const projects: Feature = (host, engine) => {
 		current = stored === undefined ? emptyProjects() : JSON.parse(JSON.stringify(stored));
 		announce();
 	};
+	reloadNow = reload;
 	/** Change the document in one commit, and have the change read back before the request answers. */
 	const change = async <T>(edit: (doc: ProjectsDoc, tx: Tx) => Promise<T> | T): Promise<T> => {
 		const value = await engine.harness().commit(async (tx) => edit(await tx.doc(Projects), tx), engine.context());
@@ -672,6 +699,8 @@ export const projects: Feature = (host, engine) => {
 								createdAt: now,
 								updatedAt: now,
 							};
+							// It begins with the state block (6.4).
+							await markFresh(tx, conversation as unknown as number);
 							(await tx.doc(Library)).conversations[String(conversation)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, projectId: id };
 						},
 					},

@@ -79,6 +79,7 @@ import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, valida
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { admit, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
+import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { delegateTargets, projectAgentFolder, stampsAgents } from "./projectagents.ts";
 import { syncWorkForInput, WorkLimitError } from "./work.ts";
 
@@ -285,6 +286,7 @@ const engine: Engine = {
 		for (const client of clients) (client.subscriptions.get(id) ?? client.subscriptions.get(chatOf(id)))?.push();
 	},
 	activityChanged: () => announceActivity(),
+	libraryChanged: () => broadcast(libraryEvent()),
 	overBudget: () => (overBudget() ? `Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up.` : undefined),
 	providersChanged: () => void announceProviders(),
 };
@@ -412,6 +414,9 @@ const harness = await Harness.open(
 				instructions: RETENTION_INSTRUCTIONS,
 				checkpoint: compactionCheckpoint,
 			} as import("@earendil-works/pi-durable").CompactionSettings,
+			// As an input is placed, a project's orchestrator is told what changed first (orchestrator.ts; a patch to pi
+			// durable, scripts/patch-inputs.ts). It does nothing anywhere else.
+			placeInput: (tx, id, now) => placeInput(tx, id as unknown as number, now),
 			retry: {
 				host: (message: Parameters<typeof retryLocalEngine>[0], attempt: number, id: unknown, localRetries = 0) => {
 					const local = retryLocalEngine(message, localRetries, home);
@@ -727,6 +732,9 @@ function toItem(entry: EntryRecord): Item | undefined {
 		return { id, kind: "marker", text: wakeMarker(entry.data), details };
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
+	// What a project's orchestrator is told, and the line in a conversation the person wrote to (orchestrator.ts).
+	const told = entry.kind.startsWith("pi2.") ? projectItem(entry) : undefined;
+	if (told !== undefined) return told;
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
 	switch (message.role) {
@@ -977,6 +985,10 @@ function libraryEvent() {
 			projectId: meta.projectId ?? null,
 			// The agent it runs as now (state.ts, `runsAs`): its `agentId`, but for a conversation carried over.
 			runsAs: runsAs(meta, agents) ?? null,
+			// A project's current or earlier conversation with its orchestrator (orchestrator.ts), or null.
+			orchestrator: orchestratorRole(Number(id)),
+			// The conversation with the orchestrator this one was started fresh from.
+			freshFrom: meta.freshFrom ?? null,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
@@ -1829,6 +1841,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const conv = await conversation(params.id);
 		refuseIfPutAway(params.id as number);
 		refuseInArchivedProject(params.id as number);
+		refuseEarlier(params.id as number);
 		const attachments = validateAttachments(params.attachments);
 		// Attachments can be the whole message.
 		const content = attachments.length > 0 && params.text === undefined ? "" : text(params, "text");
@@ -1844,16 +1857,28 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// The agent's settings may have changed since this conversation was set up.
 		await takeSwitch(conv.id);
 		await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
-		const submission = await conv.submit(
-			{
-				type: "input",
-				// With attachments the model is sent content blocks, and the entry records what the transcript shows.
-				...(attachments.length === 0 ? { content } : { content: userContent(content, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(content, attachments) } }),
-				whenBusy: params.mode === "steer" ? "steer" : "followUp",
-				...(typeof params.requestId === "string" ? { requestId: params.requestId } : {}),
-			},
-			context,
-		);
+		const draft = {
+			type: "input" as const,
+			// With attachments the model is sent content blocks, and the entry records what the transcript shows.
+			...(attachments.length === 0 ? { content } : { content: userContent(content, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(content, attachments) } }),
+			whenBusy: params.mode === "steer" ? ("steer" as const) : ("followUp" as const),
+			...(typeof params.requestId === "string" ? { requestId: params.requestId } : {}),
+		};
+		// In a project, a message to an agent other than the orchestrator is told to the orchestrator at its next turn, in
+		// the commit that takes it (orchestrator.ts). Anywhere else the message is taken as it always was.
+		const tell = tellOrchestrator(params.id as number);
+		const submission =
+			tell === undefined
+				? await conv.submit(draft, context)
+				: {
+						id: await harness.commit(async (tx) => {
+							// The same request sent again is the same message, told once.
+							const again = draft.requestId === undefined ? undefined : await tx.submissionByRequest(conv.id, draft.requestId);
+							const id = await conv.submit(tx, draft);
+							if (again === undefined) await tell(tx, content, attachments.length);
+							return id;
+						}, context),
+					};
 		// From here the message is kept, and the app is told so at once: nothing after this may make it look refused, or the
 		// person, given the text back, would send it again (#344).
 		try {
@@ -1879,6 +1904,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const conv = await conversation(params.id);
 		refuseIfPutAway(params.id as number);
 		refuseInArchivedProject(params.id as number);
+		refuseEarlier(params.id as number);
 		await takeSwitch(conv.id);
 		if (library.conversations[String(conv.id)]?.projectId === undefined) await conv.submit({ type: "continue" }, context);
 		else await harness.commit(async (tx) => {
