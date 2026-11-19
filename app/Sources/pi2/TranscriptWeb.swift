@@ -3,6 +3,7 @@ import BrowserKit
 import ComputerKit
 import FileLinkKit
 import SwiftUI
+import TranscriptKit
 import WebKit
 
 /// A conversation's transcript: one web page, so a selection can run across prose, code and tool steps and copy as
@@ -65,6 +66,12 @@ struct ConversationTranscript: View {
     }
 }
 
+/// Where the page loaded ahead for the next conversation waits, behind what the window shows (#441, `SparePage`).
+struct SparePageSpot: NSViewRepresentable {
+    func makeNSView(context: Context) -> SparePageHost { SparePageHost(spare: TranscriptPage.spare) }
+    func updateNSView(_ view: SparePageHost, context: Context) {}
+}
+
 struct TranscriptWebView: NSViewRepresentable {
     let folder: URL
     let engine: EngineClient
@@ -81,18 +88,20 @@ struct TranscriptWebView: NSViewRepresentable {
         TranscriptBridge(engine: engine, conversationID: conversationID)
     }
 
-    func makeNSView(context: Context) -> TranscriptWebKitView {
-        context.coordinator.makeView(folder: folder)
+    func makeNSView(context: Context) -> TranscriptPane {
+        TranscriptPane(page: context.coordinator.makeView(folder: folder))
     }
 
-    func updateNSView(_ view: TranscriptWebKitView, context: Context) {
+    func updateNSView(_ view: TranscriptPane, context: Context) {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
         context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, older: older, state: state, inbox: inbox, names: names, chat: chat)
     }
 
-    static func dismantleNSView(_ view: TranscriptWebKitView, coordinator: TranscriptBridge) {
-        view.close()
+    static func dismantleNSView(_ view: TranscriptPane, coordinator: TranscriptBridge) {
+        view.page.close()
+        // A page taken from the one loaded ahead and never shown is still where it waited.
+        view.page.removeFromSuperview()
     }
 }
 
@@ -121,11 +130,15 @@ final class TranscriptBridge {
     }
 
     func makeView(folder: URL) -> TranscriptWebKitView {
-        let view = TranscriptWebKitView(folder: folder)
+        // The page loaded ahead, which has never shown a conversation (#441); it may have said it is ready already.
+        let view = TranscriptPage.spare?.take() ?? TranscriptWebKitView(folder: folder)
         view.underPageBackgroundColor = NSColor(Theme.window)
         // Hidden until the page is ready, so opening a conversation never flashes an empty page.
         view.alphaValue = 0
-        view.onAction = { [weak self] action in self?.perform(action) }
+        view.onMessage = { [weak self] body in
+            guard let action = TranscriptAction(message: body) else { return }
+            self?.perform(action)
+        }
         view.onReload = { [weak self] in
             self?.ready = false
             self?.hidden = true
@@ -134,6 +147,7 @@ final class TranscriptBridge {
         }
         view.onAppearanceChange = { [weak self] in self?.push() }
         self.view = view
+        if view.isReady { perform(.ready) }
         return view
     }
 
@@ -248,6 +262,7 @@ final class TranscriptBridge {
     private func perform(_ action: TranscriptAction) {
         switch action {
         case .ready:
+            PerfProbe.opening(conversationID, "page ready")
             ready = true
             feed.restart()
             olderOnTheWay = false

@@ -42,6 +42,8 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
           Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
           Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app
+          Sources/TranscriptKit the web view the conversation page lives in, and the page loaded ahead for the next pane
+          Sources/pi2-transcript-check checks TranscriptKit, with real pages in windows that never come on screen; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
 ```
@@ -69,6 +71,7 @@ With twenty runs going, the engine sends the app dozens of events a second: `act
 - **Views that change often are small views of their own**, such as the count of runs on Activity's row, so the sidebar is not drawn again with them.
 - **The app's scene body reads nothing that changes** (`Pi2App.body`). SwiftUI works it out again whenever something it read changes, and with it every scene, setting each window's settings again; when it read the inbox for the menu bar item, every request from a sub-chat did that (#436). The menu bar item's label, the File menu's New Conversation With and what depends on the mode are views of their own (`MenuBarLabel`, `NewItemCommands`, `PaneCommands`), and a development build writes a line to `app.log` if the body reads something that then changes (`BodyWatch` in `WindowKit`).
 - **A long conversation comes newest first** (#380): the engine sends its newest entries, about 64 KB of them, then the rest in parts, and the app hands them to the page the same way, so the page draws a screen's worth before the rest. Entries older than the engine's window of 300 come a part at a time when the reader scrolls up to them (#440). See [transcript.md](transcript.md#a-long-conversation-newest-first).
+- **A page is loaded ahead for the next pane** (#441): each pane has a page of its own, and loading one took 100 to 160 ms of every opening, whatever the conversation. One page waits loaded and idle, and the next pane takes it; another is loaded a second later. See [transcript.md](transcript.md#a-page-loaded-ahead).
 - **Spinners turn in Core Animation** (`Spinner` in `Theme.swift`), not with a SwiftUI animation, which laid the window out again every frame for each one: twenty in the sidebar kept the main thread about a third busy on their own.
 
 A message sent from the message field shows at once as a chip, "Sending", then "Sent" until the conversation shows it (`EngineClient.outgoing`). It goes with a request id, and when no answer comes because the connection to the engine went, it is sent again with the same id once the engine is back, which makes the engine find the submission it may already have taken rather than take it twice. A pane whose conversation has been asked for and has not come yet says it is loading, and its toolbar leaves out the model and tool menus until there is something to show in them.

@@ -11,7 +11,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Allowed commands | [Allowed commands](allowed-commands.md), [Choosing what a copy shows](#choosing-what-a-copy-shows) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Computer use](#computer-use-checks) or [Conversation page](#conversation-page-tests) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests) or [The page loaded ahead](#the-page-loaded-ahead) |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | Repository scripts, checks and merging | [CI](#ci) |
@@ -224,6 +224,16 @@ cd app/Web && node --test test/
 
 See [transcript.md](transcript.md). The rest of the app has no automated tests.
 
+### The page loaded ahead
+
+The web view the conversation page lives in, and the page loaded ahead for the next pane (`app/Sources/TranscriptKit`, #441), are checked by a program of its own. It loads the real page from `app/Web/transcript` in web views that keep nothing on disk, in a window of its own that never comes on screen, with a place for the page loaded ahead and panes for the pages handed over, as the app's window has. It checks that nothing is loaded ahead before the first pane; that the page loaded ahead says it is ready with nobody listening, shows nothing, and waits unseen, taking no clicks or focus and out of VoiceOver's view; that a pane gets it, and it moves into the pane without ever leaving the window; that it shows the conversation it is sent next and nothing of the one the pane before shows; that a page taken while still loading says it is ready once it has loaded; that a page loaded ahead whose process is ended is let go and another loaded; that no page is handed over twice and one at most waits; and that with no place kept in a window, the page waits in no window and comes into its pane at once. To end a page's process it asks WebKit for the process's id through a call that is not public, and ends that process alone. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-transcript-check && .build/debug/pi2-transcript-check
+```
+
+What it cannot check is the app's bridge feeding a pane's page, which needs the engine, nor how soon WebKit draws on a real screen: that is for the speed probe in a throwaway copy ([Measuring the app's speed](#measuring-the-apps-speed)).
+
 ### Trying changes in a throwaway copy
 
 A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
@@ -327,7 +337,7 @@ A development build (ordinary or optimised) measures its main thread while its d
 - for each kind of request: how many, and how long their answers took;
 - how many times the app's scene body was worked out (`count scene body worked out`), which updates every scene and sets each window's settings again. While agents work there should be none: the body reads nothing that changes while agents work ([architecture.md](architecture.md#keeping-the-app-quick-while-agents-work)).
 
-It also writes a line for each conversation opened, with the time from asking for it to each step (the engine's first update, the engine's answer, the page being sent the entries, the page having drawn them), and one for each message accepted. Measure an optimised build in a throwaway copy, which is what a person runs:
+It also writes a line for each conversation opened, with the time from asking for it to each step (the engine's first update, the engine's answer, its page being ready, which a page loaded ahead is at once, the page being sent the entries, the page having drawn them), and one for each message accepted. Measure an optimised build in a throwaway copy, which is what a person runs:
 
 ```bash
 ./app/build.sh optimised
@@ -374,6 +384,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 - `app/Sources/ComposeKit` is what Return does in the fields that send a message (`sendsOnReturn`, used in place of `onSubmit`).
 - `app/Sources/WindowKit` is how the app's windows get their smallest size (`windowMinimum`), and the watch that names a view whose size does not settle (`SizeWatch`).
 - `app/Sources/FileLinkKit` is what a file linked in a conversation is once its path is made whole, and what a click and the link's menu do with it ([transcript.md](transcript.md#files-on-this-mac)).
+- `app/Sources/TranscriptKit` is the web view the conversation page lives in, and the page loaded ahead for the next pane ([transcript.md](transcript.md#a-page-loaded-ahead)).
 
 ## Conventions
 
