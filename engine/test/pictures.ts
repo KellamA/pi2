@@ -1,16 +1,14 @@
-// Making pictures (#286, src/pictures.ts). Two real engines on throwaway data folders, driven over their sockets with the
+// Making pictures (#286, #339, src/pictures.ts). Real engines on throwaway data folders, driven over their sockets with the
 // demo model; no real provider is ever called.
 //
 // The first has no picture model: `make_picture` is offered to no one, an agent that turned it on and a chat are told
 // why in the `pictures` section, an agent that did not is told nothing, and the app is told there is no model and which
-// providers have them. The second has a picture model on a stand-in server on 127.0.0.1 that speaks OpenRouter's picture
-// API (PI2_DEMO_PICTURES): an agent that turned the tool on and a chat are offered it, it makes a picture that is kept in
-// the conversation, changes the newest picture when asked, counts what it cost, says when the model fails, and never
-// asks for approval.
+// providers have them. Then there are priced and unpriced picture models on a stand-in server on 127.0.0.1. Check the
+// person's choice, fallbacks, pictures in the conversation, and what Usage and the budget count, including after restart.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,9 +102,13 @@ class Client extends EngineClient {
 	}
 }
 
-async function start(name: string, extra: Record<string, string>): Promise<{ client: Client; engine: ChildProcess }> {
+function newHome(name: string): string {
 	const home = mkdtempSync(join(tmpdir(), `pi2-pic-${name}-`));
 	folders.push(home);
+	return home;
+}
+
+async function start(name: string, extra: Record<string, string>, home = newHome(name)): Promise<{ client: Client; engine: ChildProcess }> {
 	const service = `dev.pi2.credentials.test-pictures-${name}-${process.pid}`;
 	services.push(service);
 	const engine = spawn(process.execPath, [main], { env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, ...extra }, stdio: ["ignore", "ignore", "inherit"] });
@@ -119,9 +121,10 @@ async function start(name: string, extra: Record<string, string>): Promise<{ cli
 
 // ---- No picture model
 {
-	const { client, engine } = await start("none", {});
+	const { client, engine } = await start("none", { PI2_DEMO_PICTURES: "" });
 	try {
 		const told = await client.until("pictures", () => client.events.pictures);
+		assert.equal(told.model, null, "automatic by default");
 		assert.deepEqual(told.models, [], "no picture model");
 		assert.ok(told.makers.includes("OpenRouter"), `the providers that have them: ${told.makers}`);
 		const entry = client.events.agents.builtInTools.find((tool: any) => tool.key === "pictures");
@@ -146,12 +149,23 @@ async function start(name: string, extra: Record<string, string>): Promise<{ cli
 	}
 }
 
-// ---- A picture model on a stand-in server
+// ---- Picture models on a stand-in server
 {
-	const { client, engine } = await start("some", { PI2_DEMO_PICTURES: standInUrl, PI2_DEMO_COST: "0" });
+	const home = newHome("some");
+	const env = { PI2_DEMO_PICTURES: standInUrl, PI2_DEMO_COST: "0" };
+	const missing = { provider: "demo", modelId: "demo-pictures-removed" };
+	const unpriced = { provider: "demo", modelId: "demo-pictures-unpriced" };
+	writeFileSync(join(home, "settings.json"), JSON.stringify({ pictureModel: missing }));
+	const { client, engine } = await start("some", env, home);
+	let beforeRestart: any;
 	try {
-		const told = await client.until("the picture model", () => (client.events.pictures?.models?.length > 0 ? client.events.pictures : undefined));
-		assert.deepEqual(told.models, [{ provider: "demo", id: "demo-pictures", name: "Demo pictures (stand-in)" }]);
+		const told = await client.until("the picture models", () => client.events.pictures);
+		assert.deepEqual(told.model, missing, "retain the choice when its model is not offered");
+		assert.deepEqual(told.models.map(({ provider, id, canEdit, price }: any) => ({ provider, id, canEdit, price })), [
+			{ provider: "demo", id: "demo-pictures", canEdit: true, price: { input: 1, output: 2 } },
+			{ provider: "demo", id: "demo-pictures-unpriced", canEdit: false, price: null },
+		]);
+		await assert.rejects(client.call("pictures.setModel", { model: { provider: "demo", modelId: "demo-1" } }), /no longer available/);
 
 		const plain = await client.conversationOf({ name: "Plain", access: "none" });
 		assert.ok(!(await client.offered(plain)).tools.includes("make_picture"), "still off for an agent that did not turn it on");
@@ -183,19 +197,32 @@ async function start(name: string, extra: Record<string, string>): Promise<{ cli
 		assert.ok(Math.abs(after.cost - before.cost - 0.005) < 1e-9, `cost ${after.cost - before.cost}`);
 		assert.ok(after.tokens - before.tokens >= 3000);
 		assert.deepEqual(client.events.inbox?.items ?? [], [], "nothing asked");
-		step("make_picture makes a picture with the model, keeps it in the conversation, counts its cost, asks nothing");
+		step("make_picture falls back to the automatic model, keeps the picture, counts its cost, asks nothing");
 
-		// Changing it: the newest picture in the conversation goes with the description.
+		assert.deepEqual(await client.call("pictures.setModel", { model: unpriced }), { model: unpriced });
+		assert.deepEqual((await client.until("picture model choice", () => client.events.pictures?.model?.modelId === unpriced.modelId && client.events.pictures)).model, unpriced);
+		await client.answer(painter, '/tool make_picture {"description":"A red square with the chosen model"}');
+		assert.equal(asked.at(-1)!.model, unpriced.modelId, "explicit choice overrides the priced default");
+		await client.call("usage.setBudget", { daily: 0.009 });
+		assert.equal(client.events.usage.overBudget, false, "unknown spend does not count towards the budget");
+
+		// The chosen model cannot edit. The automatic edit model gets the newest picture and the description.
 		await client.answer(painter, '/tool make_picture {"description":"Make it blue","change":true}');
 		const changed = client.tools(painter).at(-1);
 		assert.equal(changed.isError, false, changed.text);
 		assert.match(changed.text, /^Changed the picture with/);
+		assert.equal(asked.at(-1)!.model, "demo-pictures");
 		assert.deepEqual(asked.at(-1)!.content, [
 			{ type: "text", text: "Make it blue" },
 			{ type: "image_url", image_url: { url: `data:image/png;base64,${RED}` } },
 		]);
 		assert.deepEqual(await client.call("conversation.image", { id: painter, entryId: changed.id, index: 0 }), { data: BLUE, mimeType: "image/png" });
-		step("with change, the newest picture in the conversation is sent to be changed");
+		await client.call("usage.setBudget", { daily: 0.009 });
+		assert.equal(client.events.usage.overBudget, true, "the two priced calls reach the budget");
+		await assert.rejects(client.call("submit", { id: chat, text: "Budget check" }), /budget/);
+		await client.call("usage.setBudget", { daily: null });
+		assert.deepEqual(await client.call("pictures.setModel", { model: null }), { model: null });
+		step("the chosen model overrides automatic; automatic still chooses a model for editing; the budget counts known spend");
 
 		// Nothing to change in a conversation without a picture; the model's own failure said plainly.
 		const count = asked.length;
@@ -211,10 +238,43 @@ async function start(name: string, extra: Record<string, string>): Promise<{ cli
 		await client.answer(chat, '/tool make_picture {"description":"A cat"}');
 		assert.equal(client.tools(chat).at(-1).isError, false, "a chat makes pictures too");
 		assert.deepEqual(client.events.inbox?.items ?? [], [], "nothing asked");
+		assert.equal(asked.at(-1)!.model, "demo-pictures", "clearing the choice restores automatic selection");
 		step("nothing to change, and a model that fails, are said plainly; a chat makes pictures without asking");
+
+		await client.call("usage.setBudget", { daily: 0.016 });
+		const summary = client.events.usage;
+		const rows = summary.models.filter((row: any) => row.pictureName !== undefined);
+		assert.deepEqual(rows.map(({ key, input, output, tokens, cost, unpriced }: any) => ({ key, input, output, tokens, cost, unpriced })), [
+			{ key: "demo/demo-pictures", input: 3000, output: 6000, tokens: 9000, cost: 0.015, unpriced: false },
+			{ key: "demo/demo-pictures-unpriced", input: 1000, output: 2000, tokens: 3000, cost: 0, unpriced: true },
+		]);
+		assert.equal(summary.total.cost, 0.015);
+		assert.deepEqual(summary.today, summary.total);
+		assert.equal(summary.total.tokens, summary.models.reduce((sum: number, row: any) => sum + row.tokens, 0));
+		assert.equal(summary.agents.find((row: any) => row.cost > 0)?.cost, 0.01);
+		assert.equal(summary.chats.cost, 0.005);
+		assert.equal(summary.conversations.find((row: any) => row.id === painter)?.cost, 0.01);
+		assert.equal(summary.conversations.find((row: any) => row.id === chat)?.cost, 0.005);
+		assert.equal(summary.overBudget, false, "rows did not count the spend again");
+		await client.call("pictures.setModel", { model: unpriced });
+		beforeRestart = summary;
 	} finally {
 		client.close();
 		await stop(engine);
+	}
+
+	const reopened = await start("some", env, home);
+	try {
+		assert.deepEqual((await reopened.client.until("saved picture model", () => reopened.client.events.pictures)).model, unpriced);
+		const summary = await reopened.client.until("saved Usage", () => reopened.client.events.usage);
+		assert.deepEqual(summary.models, beforeRestart.models);
+		assert.deepEqual(summary.total, beforeRestart.total);
+		assert.deepEqual(summary.today, beforeRestart.today);
+		assert.equal(summary.overBudget, false);
+		step("only known spend is counted; model rows, the daily budget and the choice survive restart");
+	} finally {
+		reopened.client.close();
+		await stop(reopened.engine);
 	}
 }
 standIn.close();

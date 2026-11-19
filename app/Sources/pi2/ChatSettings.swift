@@ -72,6 +72,8 @@ struct ChatSettingsView: View {
             }
             .id(SettingsSection.newChats)
 
+            PictureModelSection(engine: engine)
+
             ChatMemorySection(engine: engine, enabled: settings.memory, setEnabled: { on in change(["memory": on]) })
                 .id(SettingsSection.memory)
             AgentNotesSection(engine: engine, enabled: settings.memory)
@@ -130,6 +132,73 @@ private struct ChatModelPicker: View {
                 Text("\(selection.modelId) (not connected)")
             } else {
                 Text("The model used last")
+            }
+        }
+    }
+}
+
+/// The picture model is shared by chats and agents; it is not the model that answers a chat.
+private struct PictureModelSection: View {
+    let engine: EngineClient
+    @State private var problem: String?
+    private let automatic = "Chosen by pi²"
+
+    var body: some View {
+        let models = engine.pictures?.models ?? []
+        let choice = engine.pictures?.model
+        let chosen = models.first { $0.ref == choice }
+        Section {
+            Picker(selection: Binding(get: { chosen?.ref }, set: { choose($0) })) {
+                Text(automatic).tag(ModelRef?.none)
+                ForEach(models, id: \.ref) { model in
+                    Text("\(model.displayName) — \(price(model))").tag(ModelRef?.some(model.ref))
+                }
+            } label: {
+                Text("Picture model")
+            } currentValueLabel: {
+                Text(chosen?.displayName ?? automatic)
+            }
+            if let chosen {
+                Text(price(chosen)).foregroundStyle(.secondary)
+                if chosen.canEdit == false {
+                    Text("This model makes new pictures only. pi² chooses a different model to edit a picture, if one is available.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if choice != nil, chosen == nil {
+                HStack {
+                    Text("Your chosen picture model is no longer available. pi² will choose until it returns.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear Choice") { choose(nil) }
+                }
+            }
+            if models.isEmpty {
+                Text("None of your connected providers offers a picture model.").foregroundStyle(.secondary)
+            }
+            if let problem {
+                Text(problem).foregroundStyle(Theme.bad).font(.callout)
+            }
+        } header: {
+            Text("Pictures")
+        } footer: {
+            Text("Used when a chat or an agent makes a picture. Prices are in US dollars. Your provider may charge a different amount.").formFooter()
+        }
+    }
+
+    private func price(_ model: EngineClient.PictureModels.Model) -> String {
+        guard let price = model.price else { return "Price unknown" }
+        let currency = FloatingPointFormatStyle<Double>.Currency(code: "USD").precision(.fractionLength(0...6))
+        return "\(price.input.formatted(currency)) in / \(price.output.formatted(currency)) out per 1M tokens"
+    }
+
+    private func choose(_ model: ModelRef?) {
+        Task {
+            do {
+                try await engine.call("pictures.setModel", ["model": model.map { ["provider": $0.provider, "modelId": $0.modelId] } ?? NSNull()])
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
             }
         }
     }
