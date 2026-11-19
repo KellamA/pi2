@@ -213,6 +213,7 @@ let engine = startEngine();
 try {
 	let client = await Client.attach();
 	await client.until("providers", () => client.providers.length > 0);
+	await assert.rejects(client.call("test-copy.fill", { entries: 600 }), /Unknown method: test-copy\.fill/);
 
 	// ---- Conversations and the demo model
 	const { id: a } = await client.call("conversation.create");

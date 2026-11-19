@@ -263,6 +263,7 @@ struct Pi2App: App {
                 .windowMinimum(width: 820, height: 480) { model.engine.note($0) }
                 .tint(.piAccent)
                 .launchWindow()
+                .testCopyControl(model: model)
                 .onAppear {
                     delegate.engine = model.engine
                     model.engine.start()
