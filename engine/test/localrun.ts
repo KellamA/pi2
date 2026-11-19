@@ -299,14 +299,21 @@ try {
 	assert.equal(JSON.parse(readFileSync(`${reset}.after-tool`, "utf8")).length, 4);
 	step("a successful request resets the budget before the next request in the same run");
 
-	// ---- A crash that drops the connection (no HTTP error response).
-	const after = await client.ask(b, "/crash now");
-	assert.equal(after.text, "You said: /crash now", "the same run restarts the crashed server and is answered");
+	// ---- A dropped connection (no HTTP error response). Keep the process alive so the zero-delay retry does not
+	// race the process exit notification. Test the process exit separately below.
+	const after = await client.ask(b, "/drop now");
+	assert.equal(after.text, "You said: /drop now", "the same run is answered after a dropped connection");
 	assert.equal(client.retries(b).length, 1);
-	assert.ok(!alive(alphaPid2));
-	assert.match(logged(), /alpha stopped unexpectedly: Strata exited with code 3/);
-	assert.notEqual(note(client.server("alpha").pid), alphaPid2);
+	assert.equal(client.server("alpha").pid, alphaPid2);
 	step("a dropped connection in the middle of an answer also carries on");
+
+	// ---- A server that exits unexpectedly while idle is started by the next request.
+	process.kill(alphaPid2, "SIGKILL");
+	await client.until("the server exit is reported", () => client.server("alpha") === undefined && client.state(b).local.status === "failed");
+	assert.match(logged(), /alpha stopped unexpectedly: Strata was ended by SIGKILL/);
+	assert.equal((await client.ask(b, "after the server exited")).text, "You said: after the server exited");
+	assert.notEqual(note(client.server("alpha").pid), alphaPid2);
+	step("an unexpected server exit is noted, and the next message starts it again");
 
 	// ---- A model that cannot start says why
 	const d = await client.conversation("broken");

@@ -12,8 +12,8 @@
 //   { "ignoreTerm": true }   it ignores SIGTERM, so only SIGKILL ends it
 //
 // While loading it prints "loading model … N%" and "[strata] mapping the experts ...", as Strata does, and answers 503; once loaded, `GET /v1/models` lists the model and
-// `POST /v1/chat/completions` answers "You said: <the last message>". A message holding "/crash" makes it exit
-// mid-answer, once per model file (a `.crashed` file beside it remembers). A `/engine-stop <file> <count> [<gate>]`
+// `POST /v1/chat/completions` answers "You said: <the last message>". A message holding "/drop" drops its socket
+// mid-answer, once per model file (a `.dropped` file beside it remembers). A `/engine-stop <file> <count> [<gate>]`
 // request gets Strata's engine-exit error for its first <count> attempts, once the optional gate exists. The file
 // records every prompt. Replace <gate> with `tool` to answer with a tool call, then repeat the failures after its result.
 // One holding "/hold <path>" is answered in
@@ -135,10 +135,10 @@ const server = createServer(async (request, response) => {
 	response.writeHead(200, { "content-type": "text/event-stream" });
 	response.write(chunk({ role: "assistant", content: "" }));
 	response.write(chunk({ content: "You said: " }));
-	if (last.includes("/crash") && !existsSync(`${modelPath}.crashed`)) {
-		writeFileSync(`${modelPath}.crashed`, "");
-		console.error("crashing, as asked");
-		process.exit(3);
+	if (last.includes("/drop") && !existsSync(`${modelPath}.dropped`)) {
+		writeFileSync(`${modelPath}.dropped`, "");
+		response.write(chunk({ content: "a partial answer" }), () => response.destroy());
+		return;
 	}
 	const hold = /\/hold (\S+)/.exec(last)?.[1];
 	if (hold !== undefined) while (!existsSync(hold)) await new Promise((resolve) => setTimeout(resolve, 50));
