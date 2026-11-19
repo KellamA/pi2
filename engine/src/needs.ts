@@ -330,13 +330,17 @@ export async function claim(id: string, answer: NeedAnswer): Promise<void> {
 		if (wired.inbox.take(id, (item) => inboxAnswer(item, answer)) === undefined) throw new Error(GONE);
 		return;
 	}
-	if (current.items[id] === undefined) throw new Error(GONE);
+	const seen = current.items[id];
+	if (seen === undefined) throw new Error(GONE);
 	const engine = running;
 	const after = await engine.harness().commit(async (tx) => {
 		const doc = await needsIn(tx);
 		const need = doc.items[id];
 		if (need === undefined) throw new Error(GONE);
 		checkStored(need, answer);
+		if (need.kind === "limit" && seen.kind === "limit" && answer.kind === "limit" && answer.start && need.limit.id !== seen.limit.id) {
+			throw new Error("The limit reading changed. Look at it again before allowing this start.");
+		}
 		const handler = handlers.get(need.kind) as AnswerHandler<StoredKind> | undefined;
 		// Until the issue that puts this kind registers what its answer does (12.1), nothing could act on it: the answer is
 		// refused rather than lost, and the item stays.

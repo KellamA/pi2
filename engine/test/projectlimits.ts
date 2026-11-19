@@ -94,7 +94,7 @@ try {
 	assert.deepEqual(row.settings.limits, { planShare: 90, dailySpend: null });
 	await c.call("conversation.open", { id: root });
 	await c.call("conversation.configure", { id: root, model: demo });
-	const worker = cid(await c.call("projects.addAgent", { projectId: project, agent: { name: "Worker", model: demo } }));
+	const worker = cid(await c.call("projects.addAgent", { projectId: project, agent: { name: "Worker", model: demo, access: "ask" } }));
 	const make = { agentId: worker, model: demo };
 	const set = (settings: object) => c.call("projects.set", { id: project, settings });
 
@@ -171,12 +171,37 @@ try {
 	await assert.rejects(answer(c, card.id), { message: GONE });
 	console.log("ok  the whole hand-off is durable; refreshed card, two answers, task and worktree preserved");
 
-	const kept = await delegate({ chat: child.id, task: "Continue the same conversation", title: "New title", wait: false });
+	const kept = await delegate({ agent: "Worker", chat: child.id, task: "Continue the same conversation", title: "New title", wait: false });
 	assert.equal(kept.isError, true);
 	const continued = await c.until("the continue card", () => c.cards().find((row) => row.start.chat === child.id));
 	await answer(c, continued.id, false);
 	assert.equal(c.items(child.id, "user").length, 1);
 	assert.equal(c.children(root).length, 1);
+	const again = await delegate({ agent: "Worker", chat: child.id, task: "This exact continuation", title: "Continued title", wait: false });
+	assert.match(again.text, /Not started:/);
+	await answer(c, (await c.until("second continue card", () => c.cards().find((row) => row.start.chat === child.id))).id);
+	await c.until("same child continued once", () => !c.conversations.get(child.id)?.state.busy && c.items(child.id, "user").length === 2);
+	assert.deepEqual(c.items(child.id, "user").map((row) => row.text), [task, "This exact continuation"]);
+	assert.equal(c.children(root).length, 1);
+
+	const { id: work } = await c.call("work.create", { projectId: project, title: "Original title", text: "Original work text." });
+	const assignment = await c.tool(root, "work", { action: "assign", id: work, agent: "Worker", task: "Extra directions." });
+	assert.match(assignment.text, /Not started:/);
+	const workCard = await c.until("assignment's card", () => c.cards().find((row) => row.start.work === work));
+	assert.equal((await c.call("work.list", { projectId: project })).items[0].state, "open");
+	await c.call("work.act", { projectId: project, id: work, action: "edit", text: "Edited after the hand-off was asked for." });
+	await answer(c, workCard.id);
+	const item = (await c.call("work.list", { projectId: project })).items[0];
+	assert.equal(item.state, "in_progress");
+	const assigned = item.takenBy.conversationId;
+	await c.call("conversation.open", { id: assigned });
+	await c.until("held assignment submitted", () => c.items(assigned, "user")[0]);
+	assert.equal(c.items(assigned, "user")[0].text, "Work #1: Original title\n\nOriginal work text.\n\nExtra directions.");
+	const { id: work2 } = await c.call("work.create", { projectId: project, title: "Person assigns" });
+	const assign = { projectId: project, id: work2, action: "assign", agentId: worker };
+	const assignLimit = await c.refused("work.act", assign);
+	assert.equal(typeof (await c.call("work.act", { ...assign, confirmLimit: assignLimit.id })).conversation, "number");
+	console.log("ok  a held assignment commits the claim and the original task once; the person can confirm an assignment too");
 
 	await set({ wakeOnReports: true, withoutAsking: { passLimits: true } });
 	const passed = await delegate({ agent: "Worker", task: "Finish without waking the parent", wait: false });
@@ -185,6 +210,23 @@ try {
 	assert.ok(reports);
 	assert.equal(c.items(root, "marker").filter((row) => row.text.startsWith("pi² woke the agent")).length, 0);
 	console.log("ok  Leave It starts nothing; passLimits permits starts but never report wakes");
+
+	// The report is eligible when it ends; hold its recipient busy until it would cross the limit.
+	plan(89);
+	await delegate({ agent: "Worker", task: "/ask Release the report?", title: "Late limit report", wait: false });
+	const inbox = (id: number) => c.until(`question from ${id}`, () => c.events.inbox?.items.find((item: any) => item.kind === "question" && item.conversationId === id));
+	const late = await c.until("late report child", () => c.children(root).find((each) => each.title === "Late limit report"));
+	const childQuestion = await inbox(late.id);
+	await c.call("submit", { id: root, text: "/ask Keep the parent busy?" });
+	const rootQuestion = await inbox(root);
+	await c.call("inbox.answer", { id: childQuestion.id, text: "Yes" });
+	await c.until("eligible report arrived but did not wake the busy parent", () => c.events.wakes?.items?.find((item: any) => item.ref === String(late.id) && item.state === "arrived"));
+	plan(95);
+	await c.call("inbox.answer", { id: rootQuestion.id, text: "Done" });
+	await c.until("the wake was withdrawn, not submitted", () => !c.conversations.get(root)?.state.busy && !c.events.wakes?.items?.some((item: any) => item.ref === String(late.id)));
+	assert.equal(c.events.reports.projects[project].find((r: any) => r.conversationId === late.id).delivered, null);
+	assert.equal(c.items(root, "marker").filter((row) => row.text.startsWith("pi² woke the agent")).length, 0);
+	console.log("ok  a previously eligible report is checked again when its wake would start");
 
 	const usage = await c.until("project's spend", () => c.events.usage?.projects?.find((row: any) => row.id === project && row.today.cost > 0));
 	assert.ok(usage.today.tokens > 0);

@@ -26,6 +26,7 @@ import {
 	Harness,
 	LiveDoc,
 	type SubmissionId,
+	type Tx,
 	UsageDoc,
 } from "@earendil-works/pi-durable";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -236,6 +237,9 @@ const host: Host = {
 		await takeSwitch(conv.id);
 		await syncTools(conv).catch(() => {});
 		if (prepare !== undefined) return harness.commit(async (tx) => {
+			// A completed admission is a replay, not a new start to check against today's limit.
+			const earlier = await tx.submissionByRequest(conv.id, requestId);
+			if (earlier !== undefined) return earlier.id as number;
 			const meta = (await tx.doc(Library)).conversations[String(id)];
 			if (meta === undefined) return undefined;
 			const { model } = await tx.doc(AgentDoc, conv.id);
@@ -1387,7 +1391,7 @@ function startConfirmation(params: Params): string | undefined {
 	return confirmLimit(params.confirmLimit);
 }
 
-async function checkPersonStart(tx: import("@earendil-works/pi-durable").Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = ""): Promise<string | undefined> {
+async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = ""): Promise<string | undefined> {
 	const result = await admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task, options }, confirm, { tx, model });
 	if (!result.ok) throw limitError(result.limit);
 	return result.note;

@@ -16,6 +16,8 @@ export type AdmissionSite = {
 	tx: Tx;
 	/** The configured model, not the profile's suggestion (default model, or a conversation that changed models). */
 	model: ModelRef | null | undefined;
+	/** #458 can supply the folder's project when it attributes a new conversation independently of its agent. */
+	projectId?: string;
 	callId?: string;
 	/** The receipt on a claimed card, not a token from a socket client. */
 	card?: readonly LimitReading[];
@@ -53,7 +55,7 @@ async function readings(tx: Tx, project: Project, model: ModelRef | null | undef
 	const max = project.settings.limits.dailySpend;
 	const used = max === null ? 0 : await spentToday(tx, project.id);
 	const now = Date.now();
-	const view = host?.features.find((feature) => feature.planLimits !== undefined)?.planLimits?.()?.find((plan) => plan.id === model?.provider);
+	const view = project.settings.limits.planShare === null || model == null ? undefined : host?.features.find((feature) => feature.planLimits !== undefined)?.planLimits?.().find((plan) => plan.id === model.provider);
 	const result = planBreaches(project.settings.limits.planShare, view, now);
 	if (max !== null && used >= max) result.breaches.push({
 		limit: "dailySpend", provider: null, window: null, used, max, resetsAt: localMidnight(now),
@@ -94,7 +96,8 @@ export function confirmLimit(given: unknown): string | undefined {
 }
 
 export function limitError(limit: LimitReading): RequestError {
-	return new RequestError(`Past the project's limit: ${limit.reason}. Work already running carries on.`, { limit });
+	const advice = projectsOn() ? "" : " Turn on Projects in Settings › General to raise the limit.";
+	return new RequestError(`Past the project's limit: ${limit.reason}. Work already running carries on.${advice}`, { limit });
 }
 
 export function limitRefusal(limit: LimitReading, card: boolean): string {
@@ -106,11 +109,10 @@ export function limitRefusal(limit: LimitReading, card: boolean): string {
  * throw), so its card and news can commit without the start. The card's handler uses this same check without making
  * a second card. A socket confirmation is private to one exact start and consumed synchronously, including on a race.
  */
-export async function admit(start: Start, confirm?: string, site?: AdmissionSite): Promise<Admission> {
-	if (site === undefined) throw new Error("A start must be checked in its transaction");
+export async function admit(start: Start, confirm: string | undefined, site: AdmissionSite): Promise<Admission> {
 	const { tx } = site;
 	const origin = start.chat ?? start.parent ?? (start.by.kind === "agent" ? start.by.conversationId : null);
-	const projectId = origin === null ? (await tx.doc(Agents)).agents[start.agentId]?.projectId : (await tx.doc(Library)).conversations[String(origin)]?.projectId;
+	const projectId = site.projectId ?? (origin === null ? (await tx.doc(Agents)).agents[start.agentId]?.projectId : (await tx.doc(Library)).conversations[String(origin)]?.projectId);
 	if (projectId === undefined) return { ok: true };
 	const project = (await tx.doc(Projects)).projects[projectId];
 	if (project === undefined || project.deletedAt !== undefined) return { ok: true };
@@ -124,7 +126,7 @@ export async function admit(start: Start, confirm?: string, site?: AdmissionSite
 	const approved = site.card ?? (matched ? token!.readings : []);
 	const blocked = uncovered(breaches, approved);
 	const notes = missing ? ["Plan limits: no reading of this plan's windows yet."] : [];
-	if (blocked === undefined || (start.by.kind === "agent" && site.card === undefined && project.settings.withoutAsking.passLimits)) {
+	if (blocked === undefined || (start.by.kind === "agent" && site.card === undefined && projectsOn() && project.settings.withoutAsking.passLimits)) {
 		if (blocked !== undefined) for (const reading of breaches) notes.push(`Passed a project limit: ${reading.reason}.`);
 		return notes.length === 0 ? { ok: true } : { ok: true, note: notes.join("\n") };
 	}
