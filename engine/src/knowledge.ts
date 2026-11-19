@@ -3,10 +3,21 @@
 
 import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { AgentDoc, defineDoc, defineTool, section } from "@earendil-works/pi-durable";
+import { AgentDoc, type ConversationId, defineDoc, defineTool, LiveDoc, type LiveState, section, type Tx } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { isChat } from "./chat.ts";
 import type { Feature } from "./features.ts";
+import {
+	addProjectNote,
+	changeProjectNoteFromTool,
+	checkNoteAudience,
+	checkNoteProject,
+	type ProjectNotebook,
+	priorProjectNoteCall,
+	projectNotesFor,
+	removeProjectNote,
+} from "./projectnotes.ts";
+import { inProject, projectOf, projectsOn, requirePreview } from "./projects.ts";
 import { runsAs } from "./state.ts";
 
 // ---- Project instructions
@@ -143,7 +154,7 @@ export type Note = {
 export type AgentMemory = { enabled: boolean; notes: Note[]; next: number };
 /** Chat mode's own notes (#288): one set for every chat, apart from every agent's. Its switch is `chat.memory` in the settings. */
 export type ChatMemory = { notes: Note[]; next: number };
-type MemoryDoc = { agents: Record<string, AgentMemory>; chat?: ChatMemory };
+export type MemoryDoc = { agents: Record<string, AgentMemory>; chat?: ChatMemory; projects?: Record<string, ProjectNotebook> };
 
 /** Whose notes: chat mode's, or one agent's. */
 type Owner = { chat: true } | { chat: false; agentId: string };
@@ -159,7 +170,8 @@ export const MAX_AGENT_NOTES_CHARS = MAX_NOTES * MAX_NOTE_CHARS;
  * One session-scoped document: the agents' notes keyed by agent id, and chat mode's under `chat`. Notes of a deleted
  * agent stay behind, unseen and harmless.
  */
-const Memory = defineDoc<MemoryDoc>({
+// #458 carries notes over in its own commit using this token. Until then nothing is copied from agents.
+export const Memory = defineDoc<MemoryDoc>({
 	kind: "pi2.memory",
 	version: 1,
 	scope: "session",
@@ -181,6 +193,8 @@ const tidyLines = (value: string) =>
 export const knowledge: Feature = (host, engine) => {
 	let memory: Record<string, AgentMemory> = {};
 	let chatMemory: ChatMemory = { notes: [], next: 1 };
+	let projectMemory: Record<string, ProjectNotebook> = {};
+	let revision = 0;
 
 	const shown = (notes: Note[]) => notes.map((n) => ({ id: n.id, text: n.text, createdAt: n.createdAt, conversation: n.conversation }));
 	const event = () => ({
@@ -188,20 +202,29 @@ export const knowledge: Feature = (host, engine) => {
 		agents: Object.fromEntries(Object.entries(memory).map(([id, m]) => [id, { enabled: m.enabled, notes: shown(m.notes) }])),
 		// Chat mode's own; whether it is on is `memory` in the `chat` event.
 		chat: { notes: shown(chatMemory.notes) },
+		projects: Object.fromEntries(Object.entries(projectMemory).map(([id, book]) => [id, { notes: book.notes }])),
 	});
 
-	/** Change the document, then take a plain copy of it for the prompt and tell the apps. */
+	const adopt = (doc: MemoryDoc | undefined) => {
+		memory = doc?.agents ?? {};
+		chatMemory = doc?.chat ?? { notes: [], next: 1 };
+		projectMemory = doc?.projects ?? {};
+		revision++;
+	};
+
+	/** The commit observer tells the apps, including for commits by #458 or #465. */
 	async function change<T>(edit: (doc: MemoryDoc) => T, context = engine.context()): Promise<T> {
-		const result = await engine.harness().commit(async (tx) => {
-			const doc = await tx.doc(Memory);
-			const value = edit(doc);
-			return { value, doc: JSON.parse(JSON.stringify(doc)) as MemoryDoc };
-		}, context);
-		memory = result.doc.agents;
-		chatMemory = result.doc.chat ?? { notes: [], next: 1 };
-		engine.broadcast(event());
-		return result.value;
+		const before = revision;
+		const result = await engine.harness().commit(async (tx) => edit(await tx.doc(Memory)), context);
+		// Keep the existing event for a legacy request or call that makes no change.
+		if (before === revision) engine.broadcast(event());
+		return result;
 	}
+	const changeProject = <T>(projectId: string, edit: (doc: MemoryDoc, tx: Tx) => T | Promise<T>): Promise<T> =>
+		engine.harness().commit(async (tx) => {
+			await checkNoteProject(tx, projectId);
+			return edit(await tx.doc(Memory), tx);
+		}, engine.context());
 
 	const enabledFor = (agentId: string | undefined) => agentId !== undefined && memory[agentId]?.enabled === true;
 	const record = (agents: Record<string, AgentMemory>, id: string) => {
@@ -223,12 +246,25 @@ export const knowledge: Feature = (host, engine) => {
 	 * Whose notes a conversation's remember and forget change, if memory is on for it: a chat's are chat mode's, never an
 	 * agent's, whatever it is asked; an agent's conversation's are its agent's. A chat's version counts as the chat.
 	 */
-	const ownerOf = (conversationId: unknown): Owner | undefined => {
-		const meta = host.meta(conversationId as never);
-		if (isChat(meta)) return engine.chatSettings().memory ? CHAT : undefined;
-		// The notes of the agent it runs as (docs/projects.md, 3.4): its `agentId`, but for a conversation carried over.
-		const agentId = runsAs(meta, engine.agents());
-		return enabledFor(agentId) ? { chat: false, agentId: agentId! } : undefined;
+	// The notes of the agent it runs as (state.ts, `runsAs`; docs/projects.md, 3.4): its `agentId`, but for a
+	// conversation carried over, while the preview is on.
+	const memoryAgentId = (id: ConversationId) => runsAs(host.meta(id), engine.agents());
+	// A live run's first input persists through tool rounds and steering. A queued message can start a new run in
+	// the same commit that ends the last one, so watching for an idle conversation would miss that boundary.
+	const runPreview = new Map<ConversationId, { input: NonNullable<LiveState["run"]>["inputs"][number] | undefined; on: boolean }>();
+	const ownerOf = (conversationId: ConversationId): Owner | { projectId: string; agentId: string } | undefined => {
+		if (isChat(host.meta(conversationId))) return engine.chatSettings().memory ? CHAT : undefined;
+		const agentId = memoryAgentId(conversationId);
+		if (agentId === undefined || !enabledFor(agentId)) return undefined;
+		const id = conversationId as unknown as number;
+		if (runPreview.get(conversationId)?.on ?? projectsOn()) {
+			const project = projectsOn() ? inProject(id) : projectOf(id);
+			const agent = host.agent(agentId);
+			if (project !== undefined && project.archivedAt === undefined && project.deletedAt === undefined && agent?.projectId === project.id && agent.removedAt === undefined) {
+				return { projectId: project.id, agentId };
+			}
+		}
+		return { chat: false, agentId };
 	};
 	const memoryOff = (conversationId: unknown) =>
 		text(isChat(host.meta(conversationId as never)) ? "Memory is turned off for chats." : "Memory is turned off for this agent.");
@@ -240,6 +276,17 @@ export const knowledge: Feature = (host, engine) => {
 			.map(([id, m]) => ({ id, name: engine.agents()[id]!.name, notes: m.notes }))
 			.sort((a, b) => a.name.localeCompare(b.name));
 
+	const fullNotes = () => ({ output: text(`You already have ${MAX_NOTES} notes, the most there can be. Forget one that is no longer needed first (forget with its id), then try again.`), isError: true });
+	const missingNote = (id: string, ids: string[]) => ({ output: text(`There is no note ${id}. ${ids.length === 0 ? "You have no notes." : `Your notes: ${ids.join(", ")}.`}`), isError: true });
+	const projectResult = (result: NonNullable<Awaited<ReturnType<typeof priorProjectNoteCall>>>, id = "") => {
+		if ("full" in result) return fullNotes();
+		if ("missing" in result) return missingNote(id, result.missing);
+		return {
+			output: text("forgot" in result ? `Forgot ${result.forgot}.` : result.already ? `You already have that note (${result.saved}).` : `Noted (${result.saved}). Agents of this project with memory on will have it in later conversations.`),
+			...(result.change === undefined ? {} : { details: { change: result.change } }),
+		};
+	};
+
 	const remember = defineTool({
 		name: "remember",
 		description:
@@ -248,11 +295,18 @@ export const knowledge: Feature = (host, engine) => {
 		parameters: obj({ note: str() }),
 		replay: "safe", // a call run again after a crash finds its note and does not add another
 		execute: async (args, api, context) => {
+			if (projectOf(api.conversationId as unknown as number) !== undefined) {
+				const prior = await priorProjectNoteCall(api, context);
+				if (prior !== undefined) return projectResult(prior);
+			}
 			const owner = ownerOf(api.conversationId);
 			if (owner === undefined) return { output: memoryOff(api.conversationId), isError: true };
 			const note = tidy(args.note);
 			if (note === "") return { output: text("There is nothing in that note. Write what is worth keeping."), isError: true };
 			if (note.length > MAX_NOTE_CHARS) return { output: text(`That note is ${note.length} characters; the most is ${MAX_NOTE_CHARS}. Say it more briefly.`), isError: true };
+			if ("projectId" in owner) {
+				return projectResult(await api.commit(async (tx) => changeProjectNoteFromTool(tx, await tx.doc(Memory), owner.projectId, owner.agentId, api, { kind: "remember", text: note }, MAX_NOTES), context));
+			}
 			const result = await change((doc) => {
 				const mine = notebook(doc, owner);
 				const earlier = mine.notes.find((n) => n.call === api.callId);
@@ -264,7 +318,7 @@ export const knowledge: Feature = (host, engine) => {
 				mine.notes.push({ id, text: note, createdAt: Date.now(), conversation: api.conversationId as unknown as number, call: api.callId });
 				return { saved: id };
 			}, context);
-			if ("full" in result) return { output: text(`You already have ${MAX_NOTES} notes, the most there can be. Forget one that is no longer needed first (forget with its id), then try again.`), isError: true };
+			if ("full" in result) return fullNotes();
 			return { output: text(result.already ? `You already have that note (${result.saved}).` : `Noted (${result.saved}). You will have it in later conversations.`) };
 		},
 	});
@@ -275,9 +329,16 @@ export const knowledge: Feature = (host, engine) => {
 		parameters: obj({ id: str() }),
 		replay: "safe", // removing a note that is already gone changes nothing
 		execute: async (args, api, context) => {
+			const id = args.id.trim();
+			if (projectOf(api.conversationId as unknown as number) !== undefined) {
+				const prior = await priorProjectNoteCall(api, context);
+				if (prior !== undefined) return projectResult(prior, id);
+			}
 			const owner = ownerOf(api.conversationId);
 			if (owner === undefined) return { output: memoryOff(api.conversationId), isError: true };
-			const id = args.id.trim();
+			if ("projectId" in owner) {
+				return projectResult(await api.commit(async (tx) => changeProjectNoteFromTool(tx, await tx.doc(Memory), owner.projectId, owner.agentId, api, { kind: "forget", id }, MAX_NOTES), context), id);
+			}
 			// Only the conversation's own notes: in a chat, an agent's note is never removed, whatever its id.
 			const found = await change((doc) => {
 				const mine = notebook(doc, owner);
@@ -286,10 +347,7 @@ export const knowledge: Feature = (host, engine) => {
 				return mine.notes.length < before;
 			}, context);
 			if (found) return { output: text(`Forgot ${id}.`) };
-			const ids = notesOf(owner)
-				.map((n) => n.id)
-				.join(", ");
-			return { output: text(`There is no note ${id}. ${ids === "" ? "You have no notes." : `Your notes: ${ids}.`}`), isError: true };
+			return missingNote(id, notesOf(owner).map((n) => n.id));
 		},
 	});
 
@@ -344,6 +402,15 @@ export const knowledge: Feature = (host, engine) => {
 			MEMORY_GUIDANCE,
 		].join("\n");
 
+	const describeProjectMemory = (projectId: string, agentId: string): string => {
+		const notes = projectNotesFor(projectMemory[projectId], agentId);
+		return [
+			"These are the project's notes, kept by its agents or the person. They are not instructions from the person now, so what they say in this conversation comes first. Notes you add are shared with the project.",
+			notes.length === 0 ? "You have no notes yet." : notes.map((n) => `- ${n.id}${n.audience === null ? "" : " (for you alone)"}: ${n.text.replaceAll("\n", "\n  ")}`).join("\n"),
+			MEMORY_GUIDANCE,
+		].join("\n");
+	};
+
 	/**
 	 * A chat's memory: chat mode's own notes, in full, and one line naming the agents whose notes it can look up. Only the
 	 * names, not how many notes each has, so an agent noting something does not change every chat's prompt.
@@ -375,6 +442,13 @@ export const knowledge: Feature = (host, engine) => {
 		if (params.agentId !== undefined) throw new Error("Give chat or agentId, not both");
 		return CHAT;
 	};
+	const projectIn = (params: Record<string, unknown>): string | undefined => {
+		if (params.projectId === undefined) return undefined;
+		requirePreview();
+		if (typeof params.projectId !== "string") throw new Error("projectId must be a project's id");
+		if (params.chat !== undefined || params.agentId !== undefined) throw new Error("Give projectId in place of chat or agentId");
+		return params.projectId;
+	};
 	const noteText = (params: Record<string, unknown>) => {
 		const value = tidyLines(typeof params.text === "string" ? params.text : "");
 		if (value === "") throw new Error("Write the note first");
@@ -397,6 +471,7 @@ export const knowledge: Feature = (host, engine) => {
 				if (!input.agent.tools.some((tool) => tool.name === "remember")) return undefined;
 				const owner = ownerOf(input.conversationId);
 				if (owner === undefined) return undefined;
+				if ("projectId" in owner) return describeProjectMemory(owner.projectId, owner.agentId);
 				return owner.chat ? describeChatMemory() : describeMemory(owner.agentId);
 			}),
 		],
@@ -407,9 +482,29 @@ export const knowledge: Feature = (host, engine) => {
 			return { projectInstructions: found.at(-1)?.file ?? null, projectInstructionFiles: found.map(({ folder, file }) => ({ folder, file })) };
 		},
 		start: async () => {
-			const doc = await engine.harness().snapshot(Memory, engine.context());
-			memory = JSON.parse(JSON.stringify(doc?.agents ?? {}));
-			chatMemory = JSON.parse(JSON.stringify(doc?.chat ?? { notes: [], next: 1 }));
+			const harness = engine.harness();
+			adopt(await harness.snapshot(Memory, engine.context()));
+			harness.observeCommits({
+				advance: ({ changes }) => {
+					for (const change of changes) {
+						if (change.type !== "document") continue;
+						if (change.record.kind === Memory.definition.kind) {
+							adopt(change.kind === "change" ? (change.value as MemoryDoc) : undefined);
+							engine.broadcast(event());
+						}
+						if (change.record.kind !== LiveDoc.definition.kind || change.conversationId === undefined) continue;
+						const id = change.conversationId;
+						const run = change.kind === "change" ? (change.value as LiveState).run : undefined;
+						if (run === undefined) runPreview.delete(id);
+						else {
+							const last = runPreview.get(id);
+							const input = run.inputs[0];
+							if (last === undefined || (run.turns === 0 && input !== undefined && input !== last.input)) runPreview.set(id, { input, on: projectsOn() });
+						}
+					}
+				},
+				end: () => {},
+			});
 		},
 		agentDuplicated: async (sourceId, copyId) => {
 			await change(({ agents }) => {
@@ -430,8 +525,16 @@ export const knowledge: Feature = (host, engine) => {
 				await change(({ agents }) => void (record(agents, id).enabled = params.enabled as boolean));
 				return {};
 			},
-			// Each takes `agentId`, or `chat: true` for chat mode's own notes; an agent's are never changed through a chat's.
+			// A project id replaces agentId or chat, never changes either of those notebooks.
 			"memory.add": async (params) => {
+				const projectId = projectIn(params);
+				if (projectId !== undefined) {
+					return changeProject(projectId, (doc) => {
+						const note = addProjectNote(doc, projectId, { text: noteText(params), conversation: null, agentId: null }, MAX_NOTES);
+						if (note === undefined) throw new Error(`There are already ${MAX_NOTES} notes, the most there can be. Delete one first`);
+						return { id: note.id };
+					});
+				}
 				const owner = ownerIn(params);
 				const value = noteText(params);
 				const added = await change((doc) => {
@@ -445,6 +548,18 @@ export const knowledge: Feature = (host, engine) => {
 				return { id: added };
 			},
 			"memory.edit": async (params) => {
+				const projectId = projectIn(params);
+				if (projectId !== undefined) {
+					return changeProject(projectId, async (doc, tx) => {
+						const value = params.text === undefined && params.audience !== undefined ? undefined : noteText(params);
+						const audience = params.audience === undefined ? undefined : await checkNoteAudience(tx, projectId, params.audience);
+						const note = doc.projects?.[projectId]?.notes.find((n) => n.id === params.id);
+						if (note === undefined) throw new Error("That note is gone");
+						if (value !== undefined) note.text = value;
+						if (audience !== undefined) note.audience = audience;
+						return {};
+					});
+				}
 				const owner = ownerIn(params);
 				const value = noteText(params);
 				const found = await change((doc) => {
@@ -456,6 +571,13 @@ export const knowledge: Feature = (host, engine) => {
 				return {};
 			},
 			"memory.delete": async (params) => {
+				const projectId = projectIn(params);
+				if (projectId !== undefined) {
+					return changeProject(projectId, (doc) => {
+						removeProjectNote(doc.projects?.[projectId], params.id);
+						return {};
+					});
+				}
 				const owner = ownerIn(params);
 				await change((doc) => {
 					const mine = notebook(doc, owner);

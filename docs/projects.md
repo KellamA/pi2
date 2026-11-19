@@ -1666,6 +1666,12 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `removeAgent(id)` (#465's `agent.remove`) sets `removedAt`, refusing the orchestrator, an agent working now ("Forge is working on sub-chat 14. Wait for it, or ask the person to stop it.") and an archived project's agent. Nothing calls it before #465; `agents.restore` puts an agent back.
 - `delegate`, in a conversation of a project, with the preview on or off: the approval hook asks through `requireSwitch` ("Start a new sub-chat with Forge, “Fix login”.", "Continue sub-chat 14, “Fix login”, with Forge.") while `startAgents` is off, and the tool calls `admit` as it makes or continues the sub-chat, answering "Not started: <reason>" when it is refused. Until #464, `admit` admits every start; #464 decides `passLimits` and puts the card inside it. Once #463 lands, `delegate` calls `settle`.
 
+**As #461 built them.** Notes extend the existing `knowledge` feature in place in `FEATURES`, so the `memory` greeting and section keep their places. Project-only note storage and tool operations live in `engine/src/projectnotes.ts`.
+
+- `Memory` and `MemoryDoc` (`knowledge.ts`) and `projectNotebook(doc, projectId)` (`projectnotes.ts`) are for #458 to write carried notes in its own commit. Until then nothing is copied from an agent's notes. `knowledge` sends the `memory` event for a commit to that document by any feature, including carrying over or Undo.
+- `memoryAgentId(conversation)` in `knowledge.ts` is the agent the conversation runs as (`runsAs`, #457). A sub-chat runs with the notebook of its own agent, not the parent's; a template in a project-marked conversation is not given the project's notes.
+- `recordNoteChange(tx, projectId, { by, op, inverse, summary })` in `projectnotes.ts` is for #465. The tools already form `note.add` and `note.remove` and their inverses in the note's transaction. Until #465 wires the record this hook returns `undefined`: notes are changed, but there is no `details.change`, line or Undo. The request and tool paths share the project's lifecycle checks and note add/remove helpers; #465 will apply and check the inverse there.
+
 ### 12.2 Each issue
 
 What each issue builds of this contract, and whether the contract changes its scope. The issues' texts are not edited by this page: once the owner has agreed it, the agent that hands out the work edits those marked changed, saying how, as the epic's roadmap says, before handing any of them out. An issue builds the engine side of what it names unless it is an app issue (#470 on).
