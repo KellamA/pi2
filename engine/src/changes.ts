@@ -24,21 +24,18 @@ import { type AnswerOutcome, needsIn, onAnswer, putNeed, type ReachChange, type 
 import { removeAgentIn } from "./projectagents.ts";
 import { type ProjectNote, putBackProjectNote, removeProjectNote } from "./projectnotes.ts";
 import { addRule, editRule, moveRule, type ProjectRule, putBackRule, removeRule, rulesIn } from "./projectrules.ts";
-import { addNews, allProjects, applyProjectChange, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, type Who } from "./projects.ts";
+import { addNews, allProjects, applyProjectChange, inProject, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, type Who } from "./projects.ts";
 import { projectTools, TOOL_NAMES } from "./projecttools.ts";
 import { agentFieldWidens, agentValues, copy, type Field, projectFieldWidens, projectValues, same } from "./reach.ts";
+import { type ReportWake, setWakeChoicesIn, wakeChoicesIn } from "./reports.ts";
 import type { CommandRule } from "./rules.ts";
+import { Work, type WorkAction, type WorkItem, type WorkOperation } from "./work.ts";
 import { type AgentProfile, Agents, Library, runsAs } from "./state.ts";
-import { arrivedIn, arriveIn } from "./wakes.ts";
+import { arrivedIn, arriveIn, reloadWakes } from "./wakes.ts";
 
 export type { Field } from "./reach.ts";
 
 // ---- What is stored (3.12)
-
-/** An action on a work item (#467): typed there. */
-export type WorkAction = string;
-/** A work item (#467): typed there. */
-export type WorkItem = Record<string, unknown>;
 
 /** Each kind of operation: what it touches, all of it. None holds a secret: variables' values never appear here. */
 export type Op =
@@ -53,9 +50,11 @@ export type Op =
 	| { kind: "rule.move"; id: string; from: number; to: number }
 	| { kind: "note.add"; note: ProjectNote }
 	| { kind: "note.remove"; note: ProjectNote }
+	// before or after empty ({}): the item was not there (filed, or the Undo of filing).
 	| { kind: "work.local"; id: number; action: WorkAction; before: Partial<WorkItem>; after: Partial<WorkItem> }
 	| { kind: "work.github"; intent: string; action: WorkAction | "pull_request" | "review" | "merge" | "send_back"; summary: string }
-	| { kind: "wake.choice"; submissions: number[]; before: (string | null)[]; after: string }
+	// after: one choice for every run, or one each (an Undo's); batches: the batch each run was in, and is put in.
+	| { kind: "wake.choice"; submissions: number[]; before: (string | null)[]; after: string | (string | null)[]; batches?: { before: (string | null)[]; after: (string | null)[] } }
 	| { kind: "orchestrator.set"; from: string; to: string };
 
 /** Who made a change: an agent through a tool, the person by allowing what an agent asked for, or the person's Undo. */
@@ -338,6 +337,81 @@ defineOp("note.remove", {
 	widens: () => false,
 });
 
+// Work kept by pi² (#467): put back as it was. For `assign`, the sub-chat started is not stopped (5.9).
+defineOp("work.local", {
+	check: async (tx, projectId, op) => {
+		const item = (await tx.doc(Work)).projects[projectId]?.items[String(op.id)];
+		if (Object.keys(op.before).length === 0) return item === undefined ? undefined : CHANGED_SINCE;
+		return item !== undefined && same(item, op.before) ? undefined : CHANGED_SINCE;
+	},
+	apply: async (tx, projectId, op) => {
+		const doc = await tx.doc(Work);
+		doc.projects[projectId] ??= { items: {}, next: 1 };
+		const list = doc.projects[projectId]!;
+		if (Object.keys(op.after).length === 0) delete list.items[String(op.id)];
+		else list.items[String(op.id)] = copy(op.after) as WorkItem;
+	},
+	inverse: (op) => ({ kind: "work.local", id: op.id, action: op.action, before: copy(op.after), after: copy(op.before) }),
+	// Work never widens reach, whatever the agent (7.1).
+	widens: () => false,
+});
+
+const WORK_DONE: Record<WorkAction, string> = {
+	file: "Filed",
+	take: "Took",
+	assign: "Assigned",
+	release: "Released",
+	wait: "Marked as waiting",
+	block: "Marked as blocked",
+	resume: "Resumed",
+	finish: "Finished",
+	close: "Closed",
+	reopen: "Reopened",
+	note: "Added a note to",
+	edit: "Edited",
+	classify: "Classified",
+};
+
+/**
+ * Record an agent's write to the work list kept by pi² (work.ts, `recordWork`), in its commit: its change's id. The
+ * person's own writes are not recorded: the record is of what agents did (3.12).
+ */
+export async function recordWorkChange(tx: Tx, operation: WorkOperation): Promise<number | undefined> {
+	if (operation.by.kind !== "agent") return undefined;
+	const after = copy(operation.after);
+	const op: Op = { kind: "work.local", id: after.id, action: operation.action, before: operation.before === null ? {} : copy(operation.before), after };
+	const title = after.title.replace(/\s+/g, " ");
+	const summary = `${WORK_DONE[operation.action]} work #${after.id} “${title.length > 60 ? `${title.slice(0, 59).trimEnd()}…` : title}”`;
+	const by: ChangeBy = { kind: "agent", agentId: operation.by.agentId, conversationId: operation.by.conversationId, callId: operation.callId ?? "" };
+	return (await record(tx, operation.projectId, { by, op, inverse: inverseOf(op), summary })).id;
+}
+
+// Waking chosen for runs going now (#463): put the choice back. A run that has ended since has nothing to put back.
+const wakeAfter = (op: Extract<Op, { kind: "wake.choice" }>) => op.submissions.map((_, index) => (typeof op.after === "string" ? op.after : (op.after[index] ?? null)));
+defineOp("wake.choice", {
+	check: async (tx, _projectId, op) => {
+		const now = await wakeChoicesIn(tx, op.submissions);
+		const after = wakeAfter(op);
+		const holds = now.every((one, index) => one !== undefined && one.wake === op.before[index] && (op.batches === undefined || one.batch === op.batches.before[index]));
+		return holds && after.length === op.submissions.length ? undefined : CHANGED_SINCE;
+	},
+	apply: async (tx, _projectId, op) => {
+		const after = wakeAfter(op);
+		const batches = op.batches?.after;
+		const now = await wakeChoicesIn(tx, op.submissions);
+		await setWakeChoicesIn(tx, op.submissions.map((submissionId, index) => ({ submissionId, wake: after[index] as ReportWake | null, batch: batches === undefined ? (now[index]?.batch ?? null) : (batches[index] ?? null) })));
+	},
+	inverse: (op) => ({
+		kind: "wake.choice",
+		submissions: [...op.submissions],
+		before: wakeAfter(op),
+		after: [...op.before],
+		...(op.batches === undefined ? {} : { batches: { before: [...op.batches.after], after: [...op.batches.before] } }),
+	}),
+	// The waking of the orchestrator's own hand-offs never widens: the limits bound it (7.1).
+	widens: () => false,
+});
+
 /** Making another agent the orchestrator, with its fresh conversation in the same commit: #466's to supply. */
 let setOrchestrator: ((tx: Tx, projectId: string, agentId: string) => Promise<void>) | undefined;
 
@@ -363,6 +437,14 @@ defineOp("orchestrator.set", {
 	inverse: () => null,
 	widens: () => true,
 });
+
+/**
+ * Once a commit that applied operations is stored: what keeps a copy of a document read only after its own commits reads
+ * it again. Waking (wakes.ts) is the one; the others follow every commit by themselves.
+ */
+export async function afterChanges(): Promise<void> {
+	await reloadWakes();
+}
 
 // ---- Recording, and Undo
 
@@ -518,7 +600,13 @@ async function answerReach(tx: Tx, need: Extract<StoredNeed, { kind: "reach" }>,
 		const undone = await changeIn(tx, change.undoes);
 		if (undone !== undefined && undone.change.undone === undefined) undone.change.undone = { at: Date.now(), by: { kind: "person" }, change: made.id };
 	}
-	return tell(tx, need, label, "was allowed", `The person allowed: ${change.summary}. (change ${made.id})`);
+	const told = await tell(tx, need, label, "was allowed", `The person allowed: ${change.summary}. (change ${made.id})`);
+	return {
+		after: async () => {
+			await afterChanges();
+			await told.after?.();
+		},
+	};
 }
 
 /** Accepting a proposed rule (5.4): added through `addRule` as the person accepted it, and recorded, with Undo. */
@@ -604,11 +692,13 @@ export const changes: Feature = (host, engine) => {
 			});
 		},
 		tools: projectTools(host, engine),
-		// To the orchestrator agent of a project neither archived nor deleted, with the preview on, outside a sub-chat, as
-		// `needs_you` is offered by agent (a feature's `toolNames` is not told the conversation). Each tool checks the
-		// conversation itself too: only the project's current conversation with its orchestrator may use them (5.1).
+		// To the project's current conversation with its orchestrator, with the preview on, in a project neither archived nor
+		// deleted (5.1). A conversation not made yet is known by its agent: the orchestrator, outside a sub-chat. Each tool
+		// checks the conversation itself too.
 		toolNames: (_access, agent, where) => {
-			if (where.subChat || agent?.role !== "orchestrator" || agent.projectId === undefined || !projectsOn()) return [];
+			if (where.subChat || !projectsOn()) return [];
+			if (where.conversationId !== undefined) return inProject(where.conversationId)?.conversation === where.conversationId ? [...TOOL_NAMES] : [];
+			if (agent?.role !== "orchestrator" || agent.projectId === undefined) return [];
 			const project = allProjects()[agent.projectId];
 			return project !== undefined && project.deletedAt === undefined && project.archivedAt === undefined ? [...TOOL_NAMES] : [];
 		},
@@ -632,6 +722,7 @@ export const changes: Feature = (host, engine) => {
 				requirePreview();
 				if (!Number.isInteger(params.id)) throw new Error("id must be a change's id");
 				await engine.harness().commit((tx) => undoIn(tx, params.id as number, { kind: "person" }, { kind: "person" }), engine.context());
+				await afterChanges();
 				await reload();
 				return {};
 			},

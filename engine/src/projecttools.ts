@@ -12,7 +12,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineTool, type JsonObject, type ToolExecutionApi, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
 import { arr, bool, int, nullable, num, obj, opt, str } from "@earendil-works/pi-schema";
 import { BUILT_IN_TOOLS } from "./builtins.ts";
-import { applyAgentFields, applyOp, askedText, askReach, canSetOrchestrator, type ChangeBy, changeIn, checkOp, inverseOf, memoryOf, type Op, opWidens, reachOf, record, undoIn, undoRefusal } from "./changes.ts";
+import { afterChanges, applyAgentFields, applyOp, askedText, askReach, canSetOrchestrator, type ChangeBy, changeIn, checkOp, inverseOf, memoryOf, type Op, opWidens, reachOf, record, undoIn, undoRefusal } from "./changes.ts";
 import type { Host } from "./extensions.ts";
 import type { Engine } from "./features.ts";
 import { putNeed } from "./needs.ts";
@@ -67,6 +67,7 @@ async function once(api: ToolExecutionApi, context: Context, work: (tx: Tx) => P
 			results[key(api)] = JSON.parse(JSON.stringify(value)) as JsonObject;
 			return value;
 		}, context);
+		await afterChanges();
 		return answer(done);
 	} catch (error) {
 		return refuse(error instanceof Error ? error.message : String(error));

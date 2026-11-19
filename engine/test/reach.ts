@@ -140,6 +140,8 @@ const cases: [Op, boolean][] = [
 	[{ kind: "rule.move", id: "r1", from: 0, to: 1 }, false],
 	[{ kind: "note.add", note }, false],
 	[{ kind: "note.remove", note }, false],
+	[{ kind: "work.local", id: 1, action: "close", before: { state: "open" }, after: { state: "done" } }, false],
+	[{ kind: "wake.choice", submissions: [4, 5], before: [null, "each"], after: "never" }, false],
 	[{ kind: "orchestrator.set", from: "a", to: "b" }, true],
 	[{ kind: "work.github", intent: "i", action: "merge", summary: "Merged #1" }, true],
 ];
@@ -148,6 +150,10 @@ for (const [op, wide] of cases) assert.equal(opWidens(op), wide, `${op.kind} ${J
 const added: Op = { kind: "rule.add", rule: projectRule, at: 2 };
 assert.equal(opWidens(inverseOf(added)!), true);
 assert.deepEqual(inverseOf(inverseOf(added)!), added);
+const chosen: Op = { kind: "wake.choice", submissions: [4, 5], before: [null, "each"], after: "all", batches: { before: [null, null], after: ["b-1", "b-1"] } };
+assert.deepEqual(inverseOf(chosen), { kind: "wake.choice", submissions: [4, 5], before: ["all", "all"], after: [null, "each"], batches: { before: ["b-1", "b-1"], after: [null, null] } }, "each run's own choice and batch put back");
+const filed: Op = { kind: "work.local", id: 3, action: "file", before: {}, after: { id: 3, title: "A" } };
+assert.deepEqual(inverseOf(filed), { kind: "work.local", id: 3, action: "file", before: { id: 3, title: "A" }, after: {} }, "filing is undone by taking the item away");
 assert.equal(inverseOf({ kind: "orchestrator.set", from: "a", to: "b" }), null, "no Undo: it starts a fresh conversation");
 assert.equal(inverseOf({ kind: "work.github", intent: "i", action: "merge", summary: "Merged #1" }), null, "no Undo: done on GitHub");
-step("an agent's Undo that would widen reach is known as such; making another agent the orchestrator and GitHub's have no Undo");
+step("an agent's Undo that would widen reach is known as such; work and waking never widen; the orchestrator and GitHub's have no Undo");
