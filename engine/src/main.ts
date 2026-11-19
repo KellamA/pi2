@@ -79,6 +79,7 @@ import { type ChatVersions, chatIdOf, points, versionRequests, Versions, version
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { admit, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
 import { delegateTargets, projectAgentFolder, stampsAgents } from "./projectagents.ts";
+import { syncWorkForInput, WorkLimitError } from "./work.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -310,7 +311,7 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * `conversation` is the conversation's id, undefined for one not made yet: in a project, whom it may hand work to
  * depends on which conversation it is (projectagents.ts, `delegateTargets`).
  */
-function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, conversation?: number) {
+function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null } = {}) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
@@ -319,8 +320,8 @@ function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: bool
 	// with test copies of pi² allowed, or with Allow everything, under which any app may be used (#294).
 	const screen = hasApps(agent?.computer, agent?.allowEverything === true) ? ["computer"] : [];
 	const web = agent?.browser?.enabled === true ? ["browser"] : [];
-	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat }) ?? []);
-	const delegate = !subChat && delegateTargets(agent, agents, conversation).length > 0;
+	const added = host.features.flatMap((feature) => feature.toolNames?.(access, agent, { subChat, ...where }) ?? []);
+	const delegate = !subChat && delegateTargets(agent, agents, where.conversationId).length > 0;
 	const leftOut = new Set([...toolsLeftOut(agent), ...withheld()]);
 	return [...files, ...reference, ...screen, ...web, ...added, "ask_user", ...(delegate ? ["delegate", "sub_chats"] : []), ...extras]
 		.filter((name) => !leftOut.has(name))
@@ -367,13 +368,13 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 }
 
 /** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
-async function agentChange(agent: AgentProfile, options: { subChat: boolean }): Promise<AgentChange> {
+async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange> {
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
 		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
-		tools: toolsFor(agent.access, agent, options.subChat),
+		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId }),
 		cwd: agent.cwd,
 		maxTurns: agent.maxTurns,
 	};
@@ -493,10 +494,14 @@ async function syncTools(conv: Conversation): Promise<void> {
 	const id = conv.id as unknown as number;
 	const meta = library.conversations[String(id)];
 	const own = agentOf(meta, agents);
-	// A conversation whose agent was deleted (or removed through a tool) keeps the setup it has. A chat has the assistant's tools.
-	if (meta === undefined || (own === undefined && !isChat(meta))) return;
+	if (meta === undefined) return;
+	// An agent that was deleted or removed keeps its setup, except work, which follows the project and preview.
+	if (own === undefined && !isChat(meta)) {
+		if (meta.projectId !== undefined) await harness.commit((tx) => syncWorkForInput(tx, conv.id, meta), context);
+		return;
+	}
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), id));
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id }));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -1777,7 +1782,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			const meta = library.conversations[String(id)];
 			const own = agentOf(meta, agents);
 			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta), id)) }, context);
+			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta), { conversationId: id })) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -1857,7 +1862,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		refuseIfPutAway(params.id as number);
 		refuseInArchivedProject(params.id as number);
 		await takeSwitch(conv.id);
-		await conv.submit({ type: "continue" }, context);
+		if (library.conversations[String(conv.id)]?.projectId === undefined) await conv.submit({ type: "continue" }, context);
+		else await harness.commit(async (tx) => {
+			await syncWorkForInput(tx, conv.id, (await tx.doc(Library)).conversations[String(conv.id)]);
+			await conv.submit(tx, { type: "continue" });
+		}, context);
 		return {};
 	},
 	/** Read one admitted message's durable outcome, not a previous run's idle state (test-copy send). */
@@ -2627,7 +2636,7 @@ const server = createServer((socket) => {
 			}
 			handler(request.params ?? {}, client).then(
 				(result) => send(client, { id: request.id, result }),
-				(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error) }),
+				(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error), ...(error instanceof WorkLimitError ? { data: { limit: error.limit } } : {}) }),
 			);
 		}
 	});

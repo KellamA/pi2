@@ -30,6 +30,7 @@ import {
 } from "../src/projects.ts";
 import { reports } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
+import { work } from "../src/work.ts";
 import { until } from "./patience.ts";
 
 function step(name: string): void {
@@ -51,6 +52,8 @@ assert.equal(FEATURES[FEATURES.indexOf(projects) + 1], projectRules);
 assert.ok(FEATURES.indexOf(projectRulesPrompt) < FEATURES.indexOf(projects));
 assert.ok(FEATURES.indexOf(projectRules) < FEATURES.indexOf(reports));
 step("the rules feature follows projects in the greetings; its prompt has a separate place");
+assert.ok(FEATURES.indexOf(work) > FEATURES.indexOf(projectRules));
+step("the work greeting follows the project and rule greetings");
 
 const project = (id: string, extra: Partial<Project> = {}): Project => ({
 	id,

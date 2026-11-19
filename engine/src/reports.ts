@@ -287,6 +287,16 @@ function announce(): void {
 
 export type Run = { submissionId: number; conversationId: number; agentId: string; title: string; work?: number };
 
+/** Assignment can store the report with its first input, so even a crash before the reply cannot lose it. */
+export async function stageReportRun(tx: Tx, projectId: string, run: Run): Promise<void> {
+	const doc = await tx.doc(Reports);
+	if (locate(doc as ReportsDoc, run.submissionId) !== undefined) return;
+	const since = Date.now() - KEEP_MS;
+	const list = (doc.projects[projectId] ?? []).filter((each) => each.delivered === null || each.delivered.at > since);
+	list.push({ submissionId: run.submissionId, conversationId: run.conversationId, agentId: run.agentId, title: run.title, batch: null, work: run.work ?? null, ended: null, delivered: null });
+	doc.projects[projectId] = list;
+}
+
 /**
  * Run `run`, started from conversation `parent`, has a report if `parent` is a project's orchestrator's conversation:
  * keep it, and follow the run. Once only for a run, so a call run again after a crash may call it again. Before its
@@ -296,14 +306,7 @@ export async function reportRun(parent: number, run: Run): Promise<void> {
 	const project = orchestratorOf(parent);
 	if (project === undefined || engine === undefined) return;
 	if (reportOf(run.submissionId) === undefined) {
-		await engine.harness().commit(async (tx) => {
-			const doc = await tx.doc(Reports);
-			if (locate(doc as ReportsDoc, run.submissionId) !== undefined) return;
-			const since = Date.now() - KEEP_MS;
-			const list = (doc.projects[project.id] ?? []).filter((each) => each.delivered === null || each.delivered.at > since);
-			list.push({ submissionId: run.submissionId, conversationId: run.conversationId, agentId: run.agentId, title: run.title, batch: null, work: run.work ?? null, ended: null, delivered: null });
-			doc.projects[project.id] = list;
-		}, engine.context());
+		await engine.harness().commit((tx) => stageReportRun(tx, project.id, run), engine.context());
 		await reload();
 	}
 	const report = reportOf(run.submissionId);

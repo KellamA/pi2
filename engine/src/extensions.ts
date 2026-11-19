@@ -89,7 +89,7 @@ export type Host = {
 	/** Keep a rule the person chose in an approval, after the same checks as one added by hand. Never throws. */
 	addRule(agentId: string, folder: string, words: string[]): Promise<void>;
 	/** How a conversation of `agent` is configured; a sub-chat goes without handing work on and scheduling. */
-	agentChange(agent: AgentProfile, options: { subChat: boolean }): Promise<AgentChange>;
+	agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
 	subChatUsage(conversationId: number, context: Context): Promise<string>;
 	/**
@@ -178,7 +178,7 @@ export async function subChatResult(host: Host, read: DocumentReader, child: num
 const COMES_AS_MESSAGE = 'Its answer will come to you as a message when it is done, waking you if you are not answering then; sub_chats with action "wait" waits for it here instead.';
 
 /** What `delegate` answers at once when it does not wait, and what becomes of the answer (`how`, in a project: reports.ts). */
-const startedWords = (id: number, name: string, title: string, how = COMES_AS_MESSAGE) =>
+export const startedWords = (id: number, name: string, title: string, how = COMES_AS_MESSAGE) =>
 	`Sub-chat ${id}, “${title}”, with ${name}, is working on it. ${how} To continue it later, call delegate again with chat: ${id}.`;
 
 /** The agent `name` names among `agents`: by its name, ignoring case, or by its id. */
@@ -376,7 +376,7 @@ export function pi2Extension(host: Host): Extension {
 				const names = allowed.map((a) => a.name).join(", ");
 				return { output: text(names === "" ? "This conversation has no agents to delegate to." : `Unknown agent "${args.agent}". Available: ${names}.`), isError: true };
 			}
-			const profile = await host.agentChange(target, { subChat: true });
+			const profile = await host.agentChange(target, { subChat: true, projectId: host.meta(api.conversationId)?.projectId ?? null });
 			// The helper works where its parent works now (its worktree, say), unless it has a project of its own elsewhere.
 			const here = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? null;
 			const change = { ...profile, cwd: await subChatFolder(here, target.cwd) };
