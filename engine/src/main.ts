@@ -538,7 +538,7 @@ async function saveAgent(input: Partial<AgentProfile> | undefined, copiedRules?:
 		schedule: input.schedule === undefined ? (previous?.schedule ?? { enabled: false }) : validateScheduleSettings(input.schedule),
 		toolsOff: input.toolsOff === undefined ? (previous?.toolsOff ?? []) : validateToolsOff(input.toolsOff),
 		toolsOn: input.toolsOn === undefined ? (previous?.toolsOn ?? []) : validateToolsOn(input.toolsOn),
-		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens),
+		compactionTokens: input.compactionTokens === undefined ? (previous?.compactionTokens ?? null) : validateCompactionTokens(input.compactionTokens, 0),
 		createdAt: previous?.createdAt ?? Date.now(),
 	};
 	if (agent.worktree === true && (agent.cwd === null || !(await inRepository(agent.cwd)))) {
@@ -653,6 +653,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", ...compactionMarker(entry) };
+	if (entry.kind === "pi2.compactionTooShort") return { id, kind: "marker", text: "There is too little here to summarise yet." };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
 	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY || entry.kind === LOCAL_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {

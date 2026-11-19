@@ -67,7 +67,7 @@ struct CompactionDefaultSettings: View {
     }
 }
 
-/// One agent's size, on its page: the default first, saved with the rest of the agent as `compactionTokens`.
+/// One agent's size, on its page: inherit with nil, opt out with 0, or save a size as `compactionTokens`.
 struct AgentCompactionSection: View {
     let engine: EngineClient
     @Binding var tokens: Int?
@@ -76,16 +76,21 @@ struct AgentCompactionSection: View {
 
     var body: some View {
         let fallback = fallback
+        let off = tokens == 0
+        let note = off
+            ? "Off: its conversations are summarised only as they near the most their model can read at once, whatever the default."
+            : CompactionSize.sentence(tokens ?? fallback, whose: "Its conversations")
         Section {
             Picker("Summarise earlier messages when a conversation reaches", selection: $tokens) {
                 Text("Use the default (\(fallback.map(CompactionSize.label) ?? "off"))").tag(Int?.none)
+                Text("Off").tag(Int?.some(0))
                 Divider()
-                ForEach(CompactionSize.choices(including: tokens), id: \.self) { Text(CompactionSize.label($0)).tag(Int?.some($0)) }
+                ForEach(CompactionSize.choices(including: off ? nil : tokens), id: \.self) { Text(CompactionSize.label($0)).tag(Int?.some($0)) }
             }
         } header: {
             Text("Long conversations")
         } footer: {
-            Text("\(CompactionSize.sentence(tokens ?? fallback, whose: "Its conversations")) Later turns then read less, but a summary loses detail; the earlier messages stay in the conversation for you. Settings › General has the default for all agents, and says more. To let the agent choose a good moment itself, such as between two pieces of work, turn on Summarise its own conversation under Built-in tools.").formFooter()
+            Text("\(note) Later turns then read less, but a summary loses detail; the earlier messages stay in the conversation for you. Settings › General has the default for all agents, and says more. To let the agent choose a good moment itself, such as between two pieces of work, turn on Summarise its own conversation under Built-in tools.").formFooter()
         }
     }
 }

@@ -111,7 +111,11 @@ export const COMPACTION_PATCHES = [
 	patch("compaction.js", "manual compaction releases the durable input queue at its own boundary", `import { admitSubmission } from "./submissions.js";`, `import { admitSubmission } from "./submissions.js";
 import { startRun } from "./generation.js";
 import { applyBoundary, isStale, prepareBoundary } from "./inbox.js";`),
-	patch("compaction.js", "allow explicit and earlier compactions to keep a different recent tail", `            const cut = selectCut(view, policy.keepRecentTokens);`, `            const cut = selectCut(view, task.input.keepRecentTokens ?? policy.keepRecentTokens);`),
+	patch("compaction.js", "allow explicit and earlier compactions to keep a different recent tail; notice a manual request with no cut", `            const cut = selectCut(view, policy.keepRecentTokens);
+            if (cut === undefined)
+                return complete(runtime, context);`, `            const cut = selectCut(view, task.input.keepRecentTokens ?? policy.keepRecentTokens);
+            if (cut === undefined)
+                return complete(runtime, context, task.input.reason === "manual");`),
 	patch("compaction.js", "give the summarizer pi²'s retention instructions without recording them as the agent's note", `                    content: [{ type: "text", text: summaryPrompt(summarizedMessages(view, cut), task.input.instructions) }],`, `                    content: [{ type: "text", text: summaryPrompt(summarizedMessages(view, cut),
                         [runtime.settings.compaction.instructions, task.input.instructions].filter(Boolean).join("\\n\\n") || undefined) }],`),
 	patch("compaction.js", "attach authoritative state at commit time and place the marker before queued inputs", `    const text = \x60\${SUMMARY_PREFIX}\${summary}\${SUMMARY_SUFFIX}\x60;
@@ -139,8 +143,13 @@ import { applyBoundary, isStale, prepareBoundary } from "./inbox.js";`),
 	patch("compaction.js", "release any new messages admitted after Stop withdrew older ones", `            removeCompactionStatus(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId);
             return { status: "terminal", outcome: { status: "aborted" } };`, `            await finishWithoutSummary(tx, runtime, await tx.doc(LiveDoc, runtime.conversationId));
             return { status: "terminal", outcome: { status: "aborted" } };`),
-	patch("compaction.js", "release queued messages when no prefix is eligible", `        removeCompactionStatus(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId);
-        return { status: "terminal", outcome: { status: "completed", result: {} } };`, `        await finishWithoutSummary(tx, runtime, await tx.doc(LiveDoc, runtime.conversationId));
+	patch("compaction.js", "place a display-only notice for short manual requests before releasing queued messages", `async function complete(runtime, context) {
+    await runtime.commit(async (tx) => {
+        removeCompactionStatus(await tx.doc(LiveDoc, runtime.conversationId), runtime.taskId);
+        return { status: "terminal", outcome: { status: "completed", result: {} } };`, `async function complete(runtime, context, noticeTooShort = false) {
+    await runtime.commit(async (tx) => {
+        const notice = noticeTooShort ? { kind: "pi2.compactionTooShort" } : undefined;
+        await finishWithoutSummary(tx, runtime, await tx.doc(LiveDoc, runtime.conversationId), undefined, notice);
         return { status: "terminal", outcome: { status: "completed", result: {} } };`),
 	patch("compaction.js", "release queued messages if the summary has too many interruptions", `    const message = \x60Compaction was interrupted \${cutOffCount(task)}\x60;
     await runtime.commit(async (tx) => {
@@ -153,24 +162,25 @@ import { applyBoundary, isStale, prepareBoundary } from "./inbox.js";`),
     await runtime.commit(async (tx) => {
         await finishWithoutSummary(tx, runtime, await tx.doc(LiveDoc, runtime.conversationId), message);`),
 	patch("compaction.js", "end a manual summary and start its next queued run in one commit", `/** Remove the status and complete without a summary. */`, `/** A failed or declined summary does not write anything of its own. */
-async function finishWithoutSummary(tx, runtime, live, error) {
+async function finishWithoutSummary(tx, runtime, live, error, notice) {
     const manual = compactionStatus(live, runtime.taskId)?.trigger === "manual";
     if (error === undefined)
         removeCompactionStatus(live, runtime.taskId);
     else
         failCompactionStatus(live, runtime.taskId, error);
     if (manual)
-        await finishIdleCompaction(tx, runtime.conversationId, live, runtime.settings, runtime.now());
+        await finishIdleCompaction(tx, runtime.conversationId, live, runtime.settings, runtime.now(), notice);
 }
-export async function finishIdleCompaction(tx, id, live, settings, now, summary) {
+export async function finishIdleCompaction(tx, id, live, settings, now, entry) {
     // A manual compaction started before the upgrade could still belong to a busy conversation.
     if (live.run !== undefined || live.compactions?.some((status) => status.trigger === "manual"))
         return {};
     const boundary = await prepareBoundary(tx, id, settings);
     let entryId;
-    if (summary !== undefined && !isStale(boundary, summary)) {
-        entryId = (await tx.appendEntry(id, summary)).id;
-        boundary.head = summary.head;
+    if (entry !== undefined && !isStale(boundary, entry)) {
+        entryId = (await tx.appendEntry(id, entry)).id;
+        if (entry.head !== undefined)
+            boundary.head = entry.head;
     }
     const { users, first } = await applyBoundary(tx, boundary, "final", now);
     if (users.length > 0)

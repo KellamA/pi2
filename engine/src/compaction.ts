@@ -8,9 +8,9 @@ import { PlanDoc } from "./plan.ts";
 import { Agents, Library } from "./state.ts";
 import { Wakes } from "./wakes.ts";
 
-export function validateCompactionTokens(input: unknown): number | null {
+export function validateCompactionTokens(input: unknown, minimum: 0 | 1 = 1): number | null {
 	if (input === null) return null;
-	if (typeof input !== "number" || !Number.isSafeInteger(input) || input < 1) throw new Error("The size for summarizing must be a whole number of tokens, 1 or more, or unset.");
+	if (typeof input !== "number" || !Number.isSafeInteger(input) || input < minimum) throw new Error(`The size for summarizing must be a whole number of tokens, ${minimum} or more, or unset.`);
 	return input;
 }
 
@@ -19,7 +19,7 @@ export function earlyCompaction(size: number | null | undefined, window: number,
 	// The ordinary threshold cannot cut until there's a full recent tail to keep. In a smaller window its
 	// background threshold can be negative, but a short configured tail can still bring a summary forward.
 	const ordinary = Math.max(policy.keepRecentTokens, window - policy.reserveTokens - policy.backgroundTokens);
-	if (size == null || size >= window || size >= ordinary) return undefined;
+	if (size == null || size === 0 || size >= window || size >= ordinary) return undefined;
 	return {
 		reserveTokens: window - size,
 		// A short target cannot work with the harness's normal 20,000-token tail.
