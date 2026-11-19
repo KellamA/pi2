@@ -108,20 +108,21 @@ export function titleOf(given: string | undefined): string | undefined {
 
 /**
  * What `delegate` answers when a sub-chat's run ended without an answer: why, in the provider's own words when it was
- * the provider's error (shortened, with no keys or account identifiers), and that the sub-chat can be carried on.
+ * the provider's error (shortened, with no keys or account identifiers), and how to carry on unless `advise` is false.
  */
-export function unfinished(name: string, chat: number, reason: string | undefined, detail: string | undefined): string {
-	const resume = `The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: ${chat}.`;
+export function unfinished(name: string, chat: number, reason: string | undefined, detail: string | undefined, advise = true): string {
+	const resume = advise ? ` The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: ${chat}.` : "";
 	if (reason === "model_error") {
-		const said = plainProviderError(detail ?? "") || "no message";
-		// pi² says itself when it stopped waiting for a limit (src/limitwait.ts); otherwise a limit is still worth naming.
-		const limit = detail !== undefined && !detail.includes(CARRY_ON) && limitOf(detail, undefined, Date.now()) !== undefined;
+		let said = plainProviderError(detail ?? "") || "no message";
+		// The engine's own notice about giving up on a limit can also tell the agent to continue.
+		if (!advise && detail?.trimEnd().endsWith(CARRY_ON) && said.endsWith(` ${CARRY_ON}`)) said = said.slice(0, -CARRY_ON.length - 1);
+		const limit = advise && detail !== undefined && !detail.includes(CARRY_ON) && limitOf(detail, undefined, Date.now()) !== undefined;
 		const why = limit ? " The provider refused it for its limit, so carrying on works once the limit has reset." : "";
-		return `${name} did not finish the task: the model's provider answered with an error: “${said}”.${why} ${resume}`;
+		return `${name} did not finish the task: the model's provider answered with an error: “${said}”.${why}${resume}`;
 	}
-	if (reason === "aborted") return `${name} did not finish the task: its run was stopped, by the person or with this conversation. ${resume}`;
+	if (reason === "aborted") return `${name} did not finish the task: its run was stopped, by the person or with this conversation.${resume}`;
 	const said = detail === undefined || detail === "" ? "" : `: ${plainProviderError(detail)}`;
-	return `${name} did not finish the task (${reason ?? "no answer"}${said}). ${resume}`;
+	return `${name} did not finish the task (${reason ?? "no answer"}${said}).${resume}`;
 }
 
 /** The end of `delegate`'s answer: which sub-chat did the work, where, and how to carry it on. */
@@ -140,15 +141,22 @@ async function resultUsage(host: Host, read: DocumentReader, id: number, context
 	return [usage, line].filter(Boolean).map((each) => `\n\n${each}`).join("");
 }
 
+type SubChatResult = { text: string; failed: false } | { text: string; failed: true; withoutAdvice: string; usage: string };
+
 /**
  * A sub-chat's work as `delegate` gives it, for one that was not waited for (wakes.ts): its answer and how to carry it
  * on, or why it has none. `settled` is undefined when its submission could not be found.
  */
-export async function subChatResult(host: Host, read: DocumentReader, child: number, name: string, settled: SettledSubmissionRecord | undefined, context: Context): Promise<{ text: string; failed: boolean }> {
+export async function subChatResult(host: Host, read: DocumentReader, child: number, name: string, settled: SettledSubmissionRecord | undefined, context: Context): Promise<SubChatResult> {
 	if (settled === undefined || settled.status !== "done" || settled.type !== "input") {
 		const reason = settled === undefined ? "its message could not be found" : "reason" in settled && settled.reason !== undefined ? String(settled.reason) : undefined;
 		const detail = settled !== undefined && "detail" in settled && settled.detail !== undefined ? String(settled.detail) : undefined;
-		return { text: unfinished(name, child, reason, detail) + (await resultUsage(host, read, child, context)), failed: true };
+		return {
+			text: unfinished(name, child, reason, detail),
+			withoutAdvice: unfinished(name, child, reason, detail, false),
+			usage: await resultUsage(host, read, child, context),
+			failed: true,
+		};
 	}
 	const title = host.meta(child as unknown as ConversationId)?.title ?? "";
 	return { text: (await host.answerText(child as unknown as ConversationId, settled.answer)) + (await footerOf(read, child, name, title, "", context)) + (await resultUsage(host, read, child, context)), failed: false };
