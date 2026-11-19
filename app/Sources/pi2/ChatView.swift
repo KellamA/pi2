@@ -3,6 +3,7 @@ import ComputerKit
 import BrowserKit
 import SwiftUI
 import WebKit
+import WindowKit
 
 struct ChatView: View {
     let engine: EngineClient
@@ -21,6 +22,7 @@ struct ChatView: View {
 
     @State private var steer = true
     @State private var dropTargeted = false
+    @State private var heightAboveComposer: CGFloat = 0
     @FocusState private var composerFocused: Bool
 
     private var data: OpenConversation? { engine.open[id] }
@@ -81,8 +83,26 @@ struct ChatView: View {
     }
 
     /// The transcript, what is going on, and the message field. A chat keeps them in one column.
-    @ViewBuilder
     private var conversation: some View {
+        let requests = engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }
+        return VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                transcript
+                if !requests.isEmpty {
+                    ConversationRequests(requests, availableHeight: heightAboveComposer) { item in
+                        InboxCard(engine: engine, item: item, showsSource: true)
+                            .padding(.horizontal, inset).padding(.top, 8)
+                    }
+                    .frame(maxWidth: isChat ? ChatColumn.width : .infinity)
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heightAboveComposer = $0 }
+            composerArea.layoutPriority(requests.count > 1 ? 1 : 0)
+        }
+    }
+
+    @ViewBuilder
+    private var transcript: some View {
         // Until the conversation has come, the page loads beside the request, hidden, and says it is loading meanwhile
         // (ConversationTranscript), rather than show an empty pane that reads as broken.
         if !isChat, let state, isEmpty {
@@ -96,12 +116,10 @@ struct ChatView: View {
                 older: TranscriptFeed.Older(more: data?.more ?? false, loading: data?.loadingOlder ?? false), state: state
             )
         }
+    }
+
+    private var composerArea: some View {
         VStack(spacing: 0) {
-            // A subagent of this conversation is waiting on the person.
-            ForEach(engine.inbox.filter { $0.rootConversationId == id && $0.conversationId != id }) { item in
-                InboxCard(engine: engine, item: item, showsSource: true)
-                    .padding(.horizontal, inset).padding(.top, 8)
-            }
             if state?.compacting == true {
                 banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: Theme.acc)
             }
