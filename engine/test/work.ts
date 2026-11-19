@@ -103,6 +103,16 @@ try {
 	assert.equal(await socket.offered(parent), true);
 	assert.equal(await socket.offered(worker), true);
 	assert.equal(await socket.offered(plain), false);
+	// Before #457, ordinary delegation can name a project agent. The child's first turn still follows its parent,
+	// rather than gaining work from the target profile. After #457, the delegation itself may be refused.
+	await socket.call("agents.save", { agent: { id: "forge", name: "Forge", delegates: ["worker"] } });
+	await socket.call("submit", { id: plain, text: "/delegate Worker: /system full" });
+	const handoff = await socket.until("out-of-project delegation", () => !socket.conversations.get(plain)?.state.busy && socket.conversations.get(plain)?.items.find((item: any) => item.kind === "tool" && item.name === "delegate"));
+	if (!handoff.isError) {
+		await socket.call("conversation.open", { id: handoff.details.conversationId });
+		const initial = await socket.until("first answer in the child", () => socket.conversations.get(handoff.details.conversationId)?.items.find((item: any) => item.kind === "assistant")?.text);
+		assert.equal(JSON.parse(initial.slice(5)).tools.some((tool: { name: string }) => tool.name === "work"), false);
+	}
 	assert.deepEqual(await call("list"), { items: [], readAt: null });
 	await assert.rejects(call("list", { projectId: github }), /GitHub work is not available yet/);
 	await assert.rejects(call("create", { projectId: github, title: "No fallback" }), /GitHub work is not available yet/);
@@ -207,6 +217,7 @@ try {
 	assert.deepEqual((await show(open)).takenBy, { agentId: "worker", conversationId: child });
 	await socket.call("conversation.open", { id: child });
 	await socket.until("child gets assignment and answers", () => socket.conversations.get(child)?.items.some((item: any) => item.kind === "assistant" && /Read the assignment's body[\s\S]*Extra directions/.test(item.text)) && !socket.conversations.get(child)?.state.busy);
+	await socket.until("assigned result delivered like delegate with wait: false until #463", () => socket.conversations.get(parent)?.items.some((item: any) => item.kind === "marker" && item.details?.wake?.text?.includes(`Sub-chat ${child} “Assigned child” answered:`)));
 	refusal(await socket.tool(child, "assign", { id: filed.id, agent: "Worker" }), /Only the orchestrator assigns work/);
 	assert.equal(value(await socket.tool(child, "note", { id: open, text: "From its own sub-chat" })).notes.length, 1);
 	const finish = socket.tool(child, "finish", { id: open, text: "Assigned work complete" });

@@ -88,7 +88,7 @@ export type FeatureParts = {
 	// biome-ignore lint/suspicious/noExplicitAny: tools of any parameter shape
 	wraps?: Wrap<any>[];
 	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
-	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string }): string[];
+	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string | null }): string[];
 	/** Which of this feature's tools a chat (chat.ts) is given, with chat mode's settings as they are now. */
 	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */

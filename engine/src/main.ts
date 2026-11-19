@@ -301,7 +301,7 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * whatever a feature leaves out there (scheduling). Last, the built-in tools the agent's settings leave out (builtins.ts),
  * where a sub-chat follows its own agent's list, and what a feature withholds for now (pictures with no picture model).
  */
-function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string } = {}) {
+function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null } = {}) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
@@ -358,7 +358,7 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 }
 
 /** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
-async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string }): Promise<AgentChange> {
+async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange> {
 	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
 	return {
 		model,
@@ -484,8 +484,12 @@ async function syncTools(conv: Conversation): Promise<void> {
 	const id = conv.id as unknown as number;
 	const meta = library.conversations[String(id)];
 	const own = agents[meta?.agentId ?? ""];
-	// A conversation whose agent was deleted keeps the setup it has. A chat has the assistant's tools.
-	if (meta === undefined || (own === undefined && !isChat(meta))) return;
+	if (meta === undefined) return;
+	// A conversation whose agent was deleted keeps its setup, except work, which follows the project and preview.
+	if (own === undefined && !isChat(meta)) {
+		if (meta.projectId !== undefined) await harness.commit((tx) => syncWorkForInput(tx, conv.id, meta), context);
+		return;
+	}
 	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
 	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id }));
 	const names = wanted.map((t) => t!.name);

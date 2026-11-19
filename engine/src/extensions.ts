@@ -77,7 +77,7 @@ export type Host = {
 	/** Keep a rule the person chose in an approval, after the same checks as one added by hand. Never throws. */
 	addRule(agentId: string, folder: string, words: string[]): Promise<void>;
 	/** How a conversation of `agent` is configured; a sub-chat goes without handing work on and scheduling. */
-	agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string }): Promise<AgentChange>;
+	agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
 	subChatUsage(conversationId: number, context: Context): Promise<string>;
 	/**
@@ -339,7 +339,7 @@ export function pi2Extension(host: Host): Extension {
 				const names = allowed.map((a) => a.name).join(", ");
 				return { output: text(names === "" ? "This conversation has no agents to delegate to." : `Unknown agent "${args.agent}". Available: ${names}.`), isError: true };
 			}
-			const profile = await host.agentChange(target, { subChat: true, projectId: host.meta(api.conversationId)?.projectId });
+			const profile = await host.agentChange(target, { subChat: true, projectId: host.meta(api.conversationId)?.projectId ?? null });
 			// The helper works where its parent works now (its worktree, say), unless it has a project of its own elsewhere.
 			const here = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? null;
 			const change = { ...profile, cwd: await subChatFolder(here, target.cwd) };

@@ -443,8 +443,9 @@ export const work: Feature = (host, engine) => {
 			if (where.conversationId !== undefined) {
 				return offersWork(inProject(where.conversationId), where.conversationId) ? ["work"] : [];
 			}
-			const id = where.projectId ?? agent?.projectId;
-			if (!projectsOn() || id === undefined) return [];
+			// A new sub-chat uses its parent's project (including no project), never its target's profile.
+			const id = where.projectId === undefined ? agent?.projectId : where.projectId;
+			if (!projectsOn() || id == null) return [];
 			return offersWork(allProjects()[id]) ? ["work"] : [];
 		},
 		start: async () => {
