@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { forgetRun, type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, sweepRuns, useRunFolder } from "../src/processes.ts";
 import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
-import { EngineClient, PATIENT_MS, stop, until } from "./patience.ts";
+import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -24,6 +24,8 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 // An engine a test starts keeps the PATH the test gave it, and reads nobody's shell profile (src/shellpath.ts).
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client answers approvals as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const run = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 function repo(name: string): string {

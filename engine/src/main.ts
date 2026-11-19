@@ -3,8 +3,8 @@
 // { id, error }; the methods are the keys of `handlers` below. The engine also pushes { event, ... } messages:
 // "library", "providers", "conversation" (for opened conversations) and "auth" (during a sign-in).
 
-import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -35,6 +35,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
+import { answersForThePerson, AppCheck, appBundle, ONLY_IN_THE_APP } from "./answers.ts";
 import { BACKGROUND_ENTRY, backgroundForSubChat, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
@@ -825,9 +826,21 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 
 /** `follow` watches the version a chat shows now, if that changed (versions.ts). */
 type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void>; older: () => Promise<{ more: boolean }> };
-/** `shown`: the conversations this app has on screen, in its panes or as chat mode's chat (`conversations.shown`). */
-type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number> };
+/**
+ * `shown`: the conversations this app has on screen, in its panes or as chat mode's chat (`conversations.shown`).
+ * `testCopy`: this connection gave the key of the test copy this engine runs (`test-copy.answerer`), so it may answer.
+ */
+type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number>; testCopy?: true };
 const clients = new Set<Client>();
+/** Whether a connection is the app's, which alone may answer for the person (answers.ts, #504). */
+const appCheck = new AppCheck(appBundle(engineMain, build, process.env), log);
+
+/** Whether `client` may answer what waits for the person, and why. */
+async function mayAnswer(client: Client): Promise<{ allowed: boolean; why: string }> {
+	if (client.testCopy === true) return { allowed: true, why: "this connection gave the test copy's key" };
+	const verdict = await appCheck.verdict(client.socket);
+	return { allowed: verdict.app, why: verdict.why };
+}
 /** Clients that registered as the computer host; the host object is kept per client so the right one is dropped. */
 const computerClients = new Set<Client>();
 const computerHostOf = new WeakMap<Client, { send: (message: unknown) => void }>();
@@ -1270,6 +1283,11 @@ const text = (params: Params, key: string): string => {
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	/** Whether this connection may answer what waits for the person (#504): the app asks once it has connected. */
+	"connection.mayAnswer": async (_params, client) => {
+		const { allowed, why } = await mayAnswer(client);
+		return { mayAnswer: allowed, why };
+	},
 	/** How late the engine's thread ran since the last time this was asked (lag.ts): for the load script. */
 	"engine.lag": async () => lag.take(),
 	"conversation.create": async (params) => {
@@ -2431,6 +2449,27 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 	&& existsSync(join(checkout, "app", "build", "test-copies", testSuffix, `pi² ${testSuffix}.app`, "Contents", "MacOS", "pi2"))
 	&& existsSync(fixtureSource)) {
 	const { fixtureSize, seedTranscript } = await import("../scripts/test-copy-fixture.ts");
+	// The key with which scripts/test-copy answers for the person in this copy (`answer`, `call`; #504), since it is not
+	// the app. A new one at each start, in the copy's own folder in the checkout, which test-copy made and removes at
+	// stop: never in the data folder, where the copy's agents work. Only the person's own files hold it.
+	const copyFolder = join(checkout, "app", "build", "test-copies", testSuffix);
+	const answerKey = randomBytes(32).toString("hex");
+	try {
+		if (!lstatSync(copyFolder).isDirectory()) throw new Error(`${copyFolder} is not a folder`);
+		const pending = join(copyFolder, `.answer-key-${process.pid}`);
+		rmSync(pending, { force: true });
+		writeFileSync(pending, `${answerKey}\n`, { mode: 0o600, flag: "wx" });
+		renameSync(pending, join(copyFolder, "answer-key"));
+		handlers["test-copy.answerer"] = async (params, client) => {
+			const given = Buffer.from(typeof params.key === "string" ? params.key : "");
+			const expected = Buffer.from(answerKey);
+			if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new Error("That is not this test copy's key");
+			client.testCopy = true;
+			return {};
+		};
+	} catch (error) {
+		log("test-copy cannot answer for the person in this copy:", error instanceof Error ? error.message : error);
+	}
 	handlers["test-copy.fill"] = async (params) => {
 		const entries = fixtureSize(params.entries);
 		const agent = Object.values(agents).sort((a, b) => a.createdAt - b.createdAt)[0];
@@ -2496,10 +2535,18 @@ const server = createServer((socket) => {
 				send(client, { id: request.id, error: `Unknown method: ${String(request.method)}` });
 				continue;
 			}
-			handler(request.params ?? {}, client).then(
-				(result) => send(client, { id: request.id, result }),
-				(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error) }),
-			);
+			const params = request.params ?? {};
+			const handle = () =>
+				handler(params, client).then(
+					(result) => send(client, { id: request.id, result }),
+					(error: unknown) => send(client, { id: request.id, error: error instanceof Error ? error.message : String(error) }),
+				);
+			// An answer to what waits for the person is taken only from the app (#504).
+			if (!answersForThePerson(String(request.method), params)) handle();
+			else {
+				const refuse = () => send(client, { id: request.id, error: ONLY_IN_THE_APP });
+				void mayAnswer(client).then(({ allowed }) => (allowed ? handle() : refuse()), refuse);
+			}
 		}
 	});
 	const drop = () => {

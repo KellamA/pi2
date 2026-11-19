@@ -441,6 +441,7 @@ final class EngineClient {
                     // After an update either the running engine or its login item may still be out of date.
                     Task { await self.reconcileEngine(on: connection) }
                     Task { await self.noteEngineFromAnotherCheckout() }
+                    Task { await self.noteIfAnswersRefused(on: connection) }
                     // The engine forgets subscriptions with the connection; ask again for what is on screen.
                     for id in self.open.keys { self.requestOpen(id) }
                     self.sendShown()
@@ -763,7 +764,6 @@ final class EngineClient {
         lastLaunch = Date()
         startsWithoutConnecting += 1
         launchFailure = nil
-        let environment = ProcessInfo.processInfo.environment
         guard let (node, main) = Self.enginePaths else {
             launchFailure = "This build does not know where its engine is. Build it again with app/build.sh."
             return
@@ -785,7 +785,7 @@ final class EngineClient {
             try EngineSpawn.run(
                 node,
                 arguments: [main],
-                environment: environment.merging(["PI2_HOME": home.path]) { _, new in new },
+                environment: engineEnvironment,
                 output: log
             ) { [weak self] ending in
                 let text = switch ending {
@@ -872,7 +872,7 @@ final class EngineClient {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: node)
         process.arguments = [main, "--restore", folder.path]
-        process.environment = ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path]) { _, new in new }
+        process.environment = engineEnvironment
         let errors = Pipe()
         process.standardError = errors
         process.standardOutput = Pipe()
@@ -970,6 +970,23 @@ final class EngineClient {
         note("connected to an engine started from \(theirs), not this build's \(main); it is left running")
     }
 
+    /// The engine takes answers to approvals and questions only from the app, which it tells by the code signature of
+    /// the process at the other end of the connection (#504). Asked once a connection is made, so that if it does not
+    /// take them from this app, app.log says why: the person could not answer anything until it did.
+    private func noteIfAnswersRefused(on connection: NWConnection) async {
+        // An engine from before #504 does not know the request, and takes answers from anyone.
+        guard let reply = try? await call("connection.mayAnswer"), self.connection === connection,
+              reply["mayAnswer"] == .bool(false) else { return }
+        note("the engine will not take answers to approvals and questions from this app: \(reply["why"]?.stringValue ?? "it did not say why")")
+    }
+
+    /// What the engine is started with: the app's own environment, its data folder, and the bundle it belongs to, by
+    /// which a development engine, running from the checkout, knows the app's connections from others (#504). A release
+    /// engine, inside the bundle, ignores it; commands an agent runs never get either (engine/src/environment.ts).
+    private var engineEnvironment: [String: String] {
+        ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path, "PI2_APP_BUNDLE": Bundle.main.bundlePath]) { _, new in new }
+    }
+
     /// Called just before an update replaces the app. Stops the engine cleanly, so it is not left running from files
     /// that are being swapped out, and keeps it stopped while this copy of the app quits. If agents should keep
     /// running without the app, the new engine is started a little later, once the new app is in place; if the new
@@ -989,7 +1006,7 @@ final class EngineClient {
             arguments: loginItem
                 ? ["-c", "sleep 20; exec /bin/launchctl kickstart \"gui/$(id -u)/$0\"", EngineLoginItem.label]
                 : ["-c", "sleep 20; exec \"$0\" \"$1\" >> \"$2\" 2>&1", node, main, home.appendingPathComponent("engine.log").path],
-            environment: ProcessInfo.processInfo.environment.merging(["PI2_HOME": home.path]) { _, new in new }
+            environment: engineEnvironment
         )
     }
 }

@@ -11,13 +11,15 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "../src/wakes.ts";
-import { EngineClient, exited, running, stop } from "./patience.ts";
+import { EngineClient, exited, running, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-wake-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-wake-work-")));
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client answers approvals as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 /** The hourly cap, made small enough to reach. */
 const CAP = 3;
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials.test-wakes", PI2_WAKES_PER_HOUR: String(CAP), PI2_DEMO_COST: "5" };

@@ -581,7 +581,9 @@ case $cmd in
 		fi
 		require_copy
 		require_engine
-		node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$DATA/engine.sock" "$SUFFIX" "$@"
+		[[ ! -L $DIR/answer-key ]] || die "refusing a symlink for the copy's answer key"
+		# The copy's engine takes an answer only from its app, or from a connection that gives the key it wrote here (#504).
+		TEST_COPY_KEY_FILE="$DIR/answer-key" node "$ROOT/scripts/test-copy-drive.mjs" "$cmd" "$DATA/engine.sock" "$SUFFIX" "$@"
 		;;
 	last-copy)
 		names "${1-}"; shift
@@ -651,9 +653,15 @@ case $cmd in
 		[[ -n ${1-} && $# -le 2 ]] || die "use: scripts/test-copy call $SUFFIX <method> [<json params>]"
 		method=$1 params=${2-'{}'}
 		require_engine
-		node --input-type=module - "$DATA/engine.sock" "$method" "$params" <<'JS'
+		[[ ! -L $DIR/answer-key ]] || die "refusing a symlink for the copy's answer key"
+		node --input-type=module - "$DATA/engine.sock" "$method" "$params" "$DIR/answer-key" <<'JS'
+import { readFileSync } from 'node:fs';
 import { connect } from 'node:net';
-const [path, method, json] = process.argv.slice(2);
+const [path, method, json, keyFile] = process.argv.slice(2);
+// The key the copy's engine wrote for test-copy, with which it takes answers for the person from this connection too
+// (#504). Read from its file, never passed on a command line.
+let key;
+try { key = readFileSync(keyFile, 'utf8').trim(); } catch {}
 let params;
 try {
 	params = JSON.parse(json);
@@ -676,7 +684,10 @@ function fail(message) {
 	process.exitCode = 1;
 	finish();
 }
-socket.once('connect', () => socket.write(JSON.stringify({ id: 1, method, params }) + '\n'));
+socket.once('connect', () => {
+	if (key) socket.write(JSON.stringify({ id: 0, method: 'test-copy.answerer', params: { key } }) + '\n');
+	socket.write(JSON.stringify({ id: 1, method, params }) + '\n');
+});
 socket.once('error', error => fail(error.message));
 socket.once('close', () => { if (!done) fail('the connection to the engine closed before it answered'); });
 socket.setEncoding('utf8').on('data', chunk => {
@@ -686,6 +697,7 @@ socket.setEncoding('utf8').on('data', chunk => {
 	try {
 		for (const line of lines) {
 			const answer = JSON.parse(line);
+			if (answer.event === undefined && answer.id === 0 && answer.error !== undefined) console.error(`test-copy: the copy's engine did not take its key: ${answer.error}`);
 			// Events (including a conversation event with its own id) are not the response.
 			if (answer.event !== undefined || answer.id !== 1) continue;
 			console.log(JSON.stringify(answer));

@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const probePath = join(import.meta.dirname, "..", "..", "app", ".build", "debug", "pi2-browser-probe");
 if (!existsSync(probePath)) {
@@ -31,6 +31,8 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "1000";
 // An engine a test starts keeps the PATH the test gave it, and reads nobody's shell profile (src/shellpath.ts).
 process.env.PI2_LOGIN_SHELL ??= "off";
+// This client answers approvals as the app does (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 const KEYCHAIN_SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 
 type Item = { id: number; kind: string; text: string; isError?: boolean };

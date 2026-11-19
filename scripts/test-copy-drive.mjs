@@ -7,6 +7,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const [command, target, suffix, ...args] = process.argv.slice(2);
 const limit = 30_000;
+// The key the copy's engine wrote for test-copy, with which it takes an answer for the person from this connection, which
+// is not the app's (#504). Read from its file, never passed on a command line.
+let key;
+try { if (process.env.TEST_COPY_KEY_FILE) key = readFileSync(process.env.TEST_COPY_KEY_FILE, 'utf8').trim(); } catch {}
 
 function integer(value, label, max = Number.MAX_SAFE_INTEGER) {
 	const n = Number(value);
@@ -62,6 +66,7 @@ function engineCommand(prepare) {
 			socket.write(JSON.stringify({ id: 1, method: request.method, params: request.params }) + '\n');
 		}
 		socket.once('connect', () => {
+			if (key) socket.write(JSON.stringify({ id: 0, method: 'test-copy.answerer', params: { key } }) + '\n');
 			try { send(prepare()); } catch (error) { finish(error); }
 		});
 		socket.once('error', error => finish(error));
@@ -69,7 +74,9 @@ function engineCommand(prepare) {
 		lines.on('line', line => {
 			try {
 				const message = JSON.parse(line);
-				if (!sent) send(prepare(message));
+				if (message.event === undefined && message.id === 0) {
+					if (message.error !== undefined) throw new Error(`the copy's engine did not take its key: ${message.error}`);
+				} else if (!sent) send(prepare(message));
 				else if (message.event === undefined && message.id === 1) {
 					if (message.error !== undefined) throw new Error(message.error);
 					finish(null, request.summary(message.result));

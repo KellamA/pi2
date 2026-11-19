@@ -10,7 +10,9 @@
 import type { ChildProcess } from "node:child_process";
 import { connect, type Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
-import { rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { scratchRoot } from "../src/scratch.ts";
 import { socketPathFor } from "../src/socket.ts";
 
@@ -20,6 +22,21 @@ const homes = new Set<string>();
 process.on("exit", () => {
 	for (const home of homes) rmSync(scratchRoot(home), { recursive: true, force: true });
 });
+
+/**
+ * A stand-in app bundle, for `PI2_APP_BUNDLE`: what a development engine asks whether a connection is the app's, which
+ * alone may answer approvals and questions (#504). `script` is its `Contents/MacOS/pi2-peer`, which is given the
+ * connection as descriptor 3 and prints one line of JSON; by default it takes every connection for the app's, for the
+ * tests that answer from their own connection as the app does. engine/test/answers.ts checks the refusals. Removed
+ * when the test ends.
+ */
+export function standInApp(script = `#!/bin/sh\necho '{"app":true,"why":"a stand-in takes every connection for the app'"'"'s"}'\n`): string {
+	const bundle = mkdtempSync(join(tmpdir(), "pi2-stand-in-app-"));
+	process.on("exit", () => rmSync(bundle, { recursive: true, force: true }));
+	mkdirSync(join(bundle, "Contents", "MacOS"), { recursive: true });
+	writeFileSync(join(bundle, "Contents", "MacOS", "pi2-peer"), script, { mode: 0o755 });
+	return bundle;
+}
 
 /** How long a wait for something that will happen, unless what is tested is broken, may take: only a hang reaches it. */
 export const PATIENT_MS = 10 * 60_000;

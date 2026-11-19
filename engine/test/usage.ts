@@ -8,13 +8,13 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness, UsageDoc, type ConversationId, type UsageState } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-usage-"));
 const price = 5;
 const model = { provider: "demo", modelId: "demo-1" };
 const key = "demo/demo-1";
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.test-usage-${process.pid}`, PI2_LOGIN_SHELL: "off", PI2_DEMO_COST: String(price), PI2_DEMO_TOKENS_PER_SECOND: "100000" };
+const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.test-usage-${process.pid}`, PI2_LOGIN_SHELL: "off", PI2_DEMO_COST: String(price), PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp() };
 const start = () => spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 const cost = (tokens: number) => tokens * price / 1_000_000;
 const count = (doc: Readonly<UsageState> | undefined) => {

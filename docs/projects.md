@@ -673,7 +673,7 @@ type Field = { name: string; before: unknown; after: unknown };
 
 ### 4.1 Conventions
 
-As every request today ([architecture.md](architecture.md#how-they-talk)): `{ id, method, params }`, answered `{ id, result }` or `{ id, error }`, where `error` is one plain sentence a person can act on. Every request in this section is meant to be the person's, made through the app, and none is checked against [section 7](#7-reach-what-an-agent-can-only-ask-for), which is for agents' tools. The engine cannot yet tell the app from a command an agent ran ([7.3](#73-who-answered)).
+As every request today ([architecture.md](architecture.md#how-they-talk)): `{ id, method, params }`, answered `{ id, result }` or `{ id, error }`, where `error` is one plain sentence a person can act on. Every request in this section is meant to be the person's, made through the app, and none is checked against [section 7](#7-reach-what-an-agent-can-only-ask-for), which is for agents' tools. The engine takes the ones that answer what waits for the person only from the app, and the rest from any connection ([7.3](#73-who-answered)).
 
 **With the preview off**, every request that exists today works exactly as today, for templates and project agents alike, with or without the fields this page adds to it. Only the requests new in this epic are refused, but `projects.list`, `projects.setPreview` and `projects.carryOver` with `dryRun`; and an existing request is refused only for a parameter that is new and names a project (`memory.add { projectId }`, `conversation.create { confirmLimit }`), with the same message as in [section 2](#2-the-preview-switch).
 
@@ -1299,9 +1299,16 @@ The same change asked again while one is waiting gives the one waiting, not a se
 
 ### 7.3 Who answered
 
-The engine cannot yet tell the app from a command an agent ran. Any command an agent runs is a process of the person's own and can connect to the engine's socket as the app does, so it can send `needs.answer`, `inbox.decide` or `agents.allowEverything` as the app would; it can answer its own approvals today in the same way.
+Any command an agent runs is a process of the person's own and can connect to the engine's socket as the app does. Since #504 the engine takes an answer to what waits for the person only from the app: it asks macOS which process is at the other end of each connection and checks it is pi² itself by its code signature ([architecture.md](architecture.md#who-may-answer-for-the-person)). From any other connection, `inbox.decide`, `inbox.answer`, `auth.answer` and `agents.allowEverything` with `on: true` are refused, with an error that tells the agent to ask the person. So a command can no longer answer its own approvals and questions.
 
-So what this page promises is this, and no more: **an agent can only ask, as long as it does not go round pi² on purpose** with a command that speaks to the socket. It takes deliberate steps (finding the socket, speaking its protocol), not what a stray instruction in a page produces by accident. #504 closes the gap, by having the engine take answers to what waits for the person only from the app; it must land before #483 makes projects the only way. The preview does not wait for it. No screen, prompt or doc of the epic may say more than this; the settings page says it in one line under the switches ([14](#14-questions-for-the-owner), question 1).
+Every request of this epic that answers something waiting for the person (`needs.answer`, and any other answer to an item of [3.9](#39-needs-you-pi2needs-and-the-inbox)) joins that list, `FOR_THE_PERSON` in `engine/src/answers.ts`, in the issue that adds it, which checks that it is refused from a connection that is not the app's (`engine/test/answers.ts` shows how).
+
+Two ways round pi² are still open, and so what this page promises is still this, and no more: **an agent can only ask, as long as it does not go round pi² on purpose**.
+
+- A command can still change an agent's settings through the socket: the requests that save an agent, a conversation's access, an allowed command or a variable are the person's, but are taken from any connection (#513). The requests of this epic that change a project's or an agent's settings are in the same case until #513 is done.
+- A command can write the data folder itself (the database, `settings.json`), or stop the engine and start one of its own on it. Nothing pi² runs as the person can be kept from the person's own files.
+
+Each takes deliberate steps (finding the socket or the database, speaking its protocol or its format), not what a stray instruction in a page produces by accident. No screen, prompt or doc of the epic may say more than this; the settings page says it in one line under the switches ([14](#14-questions-for-the-owner), question 1).
 
 ## 8. Settings: without asking, waking, limits
 
@@ -1607,7 +1614,7 @@ For `scripts/test-copy` (#469): `PI2_SHOW=project:<name or id>` opens a project'
 
 The engine enforces what goes through its own tools and requests. Three things lie outside them, and nothing in the epic may claim otherwise:
 
-- **Who answered.** The engine cannot yet tell the app from a command an agent ran ([7.3](#73-who-answered)); #504 closes that before #483.
+- **Who answered.** The engine takes an answer to what waits for the person only from the app (#504), but takes the person's settings from any connection to its socket, and cannot keep a command from the data folder ([7.3](#73-who-answered)). An agent with a shell that goes round pi² on purpose can still widen its own reach that way.
 - **A command can do what a tool would ask about.** An agent with a shell can run `gh pr merge`, `gh issue close` or a release script. Under Ask first the command waits for the person as every command does, unless an allowed command or "Always Allow bash Here" covers it ([allowed-commands.md](allowed-commands.md)); with Full access or Allow everything, nothing asks. So `merge` governs merges made through pi² (`work` and the app), and its line on the settings page says so. The `project` section tells the orchestrator to merge and keep work only with `work`.
 - **"Release" has no action in pi²**, so there is nothing for the engine to hold back. The switch is told to the orchestrator as the project's policy, and marked on the settings page as one pi² tells the agent but cannot check.
 
