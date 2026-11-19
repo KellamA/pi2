@@ -179,6 +179,31 @@ test("a background command's rows name it for its output window only as the engi
 	assert.equal(T.markerCommand(null), "");
 });
 
+test("a summary's line says who asked for it, and keeps the agent's note apart", () => {
+	const marker = (trigger, note = null) => ({ id: 20, kind: "marker", text: "Earlier messages were summarized", details: { compaction: { trigger, note } } });
+	assert.equal(T.compaction(marker("size")).text, "Earlier messages summarised by pi² at the size you set");
+	assert.equal(T.compaction(marker("person")).text, "Earlier messages summarised, as you asked");
+	assert.equal(T.compaction(marker("automatic")).text, "Earlier messages summarised by pi² as the model’s limit neared");
+	assert.equal(T.compaction(marker("agent")).text, "Earlier messages summarised, as the agent asked");
+	const asked = T.compaction(marker("agent", "  Keep the open issues #12 and #14.\n\nAnd the branch name.  "), "Forge");
+	assert.equal(asked.text, "Earlier messages summarised, as Forge asked");
+	assert.equal(asked.note, "Keep the open issues #12 and #14.\n\nAnd the branch name.", "the note as given, trimmed, never in the line");
+	assert.equal(asked.noteLabel, "Forge’s note on what to keep");
+	assert.equal(T.compaction(marker("person", "Keep the plan")).noteLabel, "Your note on what to keep");
+	assert.equal(T.compaction(marker("agent")).note, "", "no note");
+	assert.equal(T.compaction(marker("something new")).text, "Earlier messages summarised by pi² as the model’s limit neared", "an unknown trigger reads as pi²'s own");
+	assert.equal(T.compaction({ id: 21, kind: "marker", text: "Context reset" }), null, "other lines are not summaries");
+	assert.equal(T.compaction({ id: 22, kind: "marker", text: "Earlier messages were summarized (requested by you)" }), null, "never read from the words");
+	assert.equal(T.compaction(null), null);
+});
+
+test("the agent's own request for a summary shows its note", () => {
+	const asking = call("compact", { note: "Keep the decisions on #408." });
+	assert.equal(T.describe(asking, "running").title, "Asking for earlier messages to be summarised…");
+	assert.equal(T.describe(asking, "done", { text: "Summary requested for the end of this step." }).title, "Asked for earlier messages to be summarised");
+	assert.deepEqual(T.detailFor(asking, "done", { text: "Summary requested for the end of this step." })[0], { kind: "text", label: "What the summary must keep", text: "Keep the decisions on #408." });
+});
+
 test("an approval for a background command says it keeps running", () => {
 	const caption = T.backgroundCaption({ tool: "bash", background: true });
 	assert.match(caption, /^It is started and left running, with no time limit, until it ends, the agent or you stop it/);

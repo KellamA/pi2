@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable {
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
 enum SettingsSection: String {
     // General
-    case appearance, notifications, background, updates
+    case appearance, notifications, summaries, background, updates
     // Chat
     case instructions, newChats = "new-chats", memory, agentNotes = "agent-notes"
     // Providers
@@ -141,7 +141,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            GeneralSettings(home: engine.dataFolder.path)
+            GeneralSettings(engine: engine, home: engine.dataFolder.path)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
             ChatSettingsView(engine: engine)
@@ -162,6 +162,7 @@ struct SettingsView: View {
 }
 
 struct GeneralSettings: View {
+    let engine: EngineClient
     /// This copy's data folder.
     let home: String
     @AppStorage(Notifier.defaultsKey) private var notify = false
@@ -209,6 +210,8 @@ struct GeneralSettings: View {
                 Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting. A run a provider refuses for its limit waits and carries on by itself; the Inbox says so either way, and the second switch adds a notification once when the limit is reached and once when work carries on.").formFooter()
             }
             .id(SettingsSection.notifications)
+            CompactionDefaultSettings(engine: engine)
+                .id(SettingsSection.summaries)
             BackgroundSettings(home: home)
                 .id(SettingsSection.background)
             UpdateSettings()

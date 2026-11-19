@@ -39,7 +39,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
+    case profile, model, summaries, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -217,6 +217,9 @@ struct AgentEditor: View {
                     }
                 }
                 .id(AgentSection.model)
+
+                AgentCompactionSection(engine: engine, tokens: draft.compactionTokens)
+                    .id(AgentSection.summaries)
 
                 Section("Instructions") {
                     TextEditor(text: draft.instructions)
