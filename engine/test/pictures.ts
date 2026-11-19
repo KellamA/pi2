@@ -220,7 +220,8 @@ async function start(name: string, extra: Record<string, string>, home = newHome
 		await client.call("usage.setBudget", { daily: 0.009 });
 		assert.equal(client.events.usage.overBudget, true, "the two priced calls reach the budget");
 		await assert.rejects(client.call("submit", { id: chat, text: "Budget check" }), /budget/);
-		await client.call("usage.setBudget", { daily: null });
+		// Leave room for the chat's picture without forcing a usage refresh after it.
+		await client.call("usage.setBudget", { daily: 0.016 });
 		assert.deepEqual(await client.call("pictures.setModel", { model: null }), { model: null });
 		step("the chosen model overrides automatic; automatic still chooses a model for editing; the budget counts known spend");
 
@@ -241,13 +242,18 @@ async function start(name: string, extra: Record<string, string>, home = newHome
 		assert.equal(asked.at(-1)!.model, "demo-pictures", "clearing the choice restores automatic selection");
 		step("nothing to change, and a model that fails, are said plainly; a chat makes pictures without asking");
 
-		await client.call("usage.setBudget", { daily: 0.016 });
-		const summary = client.events.usage;
-		const rows = summary.models.filter((row: any) => row.pictureName !== undefined);
-		assert.deepEqual(rows.map(({ key, input, output, tokens, cost, unpriced }: any) => ({ key, input, output, tokens, cost, unpriced })), [
+		const expectedRows = [
 			{ key: "demo/demo-pictures", input: 3000, output: 6000, tokens: 9000, cost: 0.015, unpriced: false },
 			{ key: "demo/demo-pictures-unpriced", input: 1000, output: 2000, tokens: 3000, cost: 0, unpriced: true },
-		]);
+		];
+		const { summary, rows } = await client.until("Usage with all priced and unpriced picture calls", () => {
+			const summary = client.events.usage;
+			if (summary === undefined) return undefined;
+			const rows = summary.models.filter((row: any) => row.pictureName !== undefined);
+			// Earlier events can already have both rows. Wait for the last call too, then check the exact counts.
+			if (expectedRows.every((expected) => rows.some((row: any) => row.key === expected.key && row.tokens >= expected.tokens))) return { summary, rows };
+		});
+		assert.deepEqual(rows.map(({ key, input, output, tokens, cost, unpriced }: any) => ({ key, input, output, tokens, cost, unpriced })), expectedRows);
 		assert.equal(summary.total.cost, 0.015);
 		assert.deepEqual(summary.today, summary.total);
 		assert.equal(summary.total.tokens, summary.models.reduce((sum: number, row: any) => sum + row.tokens, 0));
@@ -255,6 +261,7 @@ async function start(name: string, extra: Record<string, string>, home = newHome
 		assert.equal(summary.chats.cost, 0.005);
 		assert.equal(summary.conversations.find((row: any) => row.id === painter)?.cost, 0.01);
 		assert.equal(summary.conversations.find((row: any) => row.id === chat)?.cost, 0.005);
+		assert.equal(summary.budget.daily, 0.016);
 		assert.equal(summary.overBudget, false, "rows did not count the spend again");
 		await client.call("pictures.setModel", { model: unpriced });
 		beforeRestart = summary;
