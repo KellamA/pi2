@@ -1507,11 +1507,10 @@ try {
 
 		const { id: lk } = await client.call("conversation.create");
 		await client.call("conversation.open", { id: lk });
-		let lookCalls = 0;
 		const looked = async (id: number, name: string, args: Record<string, unknown>) => {
-			lookCalls++;
+			const before = toolResults(id).length;
 			await client.call("submit", { id, text: `/tool ${name} ${JSON.stringify(args)}` });
-			await settled(id, id === lk ? lookCalls : toolResults(id).length + 1);
+			await settled(id, before + 1);
 			return toolResults(id).at(-1)! as any;
 		};
 		for (const name of ["list_files", "find_files", "search_files"]) {
