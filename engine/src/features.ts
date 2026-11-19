@@ -30,6 +30,7 @@ import { order } from "./order.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
+import { needs } from "./needs.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
 import { reads } from "./reading.ts";
@@ -162,6 +163,13 @@ export type FeatureParts = {
 	stopped?(id: number): void;
 	/** What was spent, or the daily budget, has been counted again: `engine.overBudget()` may say something else now. */
 	usageChanged?(): void;
+	/**
+	 * What the Inbox holds changed, or what it shows of an item (a conversation's title, an agent's name): told whenever
+	 * the engine sends the `inbox` event again. Needs you (needs.ts) sends its list again with it.
+	 */
+	inboxChanged?(): void;
+	/** The projects' preview was turned on or off (projects.ts, `projects.setPreview`). */
+	previewChanged?(on: boolean): void;
 	/** The engine is stopping cleanly: stop what this feature started. The app waits a few seconds for the engine, so be quick. */
 	stopping?(): Promise<void>;
 };
@@ -208,7 +216,7 @@ export const FEATURES: Feature[] = [
 	// feature on its own line, in place of the comment that names it.
 	projects,
 	projectRules,
-	// needs (#462)
+	needs,
 	// reports (#463)
 	// work (#467)
 	// github (#468)

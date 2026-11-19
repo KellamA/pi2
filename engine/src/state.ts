@@ -288,20 +288,34 @@ export class Inbox {
 			await api.memo(ALLOWED_BY_EVERYTHING, true, context);
 			return "once";
 		}
-		const answer = new Promise<string>((resolve) => this.#waiting.set(item.id, { item, resolve }));
+		let resolve!: (answer: string) => void;
+		const answer = new Promise<string>((given) => (resolve = given));
+		this.#waiting.set(item.id, { item, resolve });
 		this.onChange();
 		try {
 			return await awaitWithContext(answer, context);
 		} finally {
-			this.#waiting.delete(item.id);
+			if (this.#waiting.get(item.id)?.resolve === resolve) this.#waiting.delete(item.id);
 			this.onChange();
 		}
 	}
 
-	answer(id: string, value: string): boolean {
+	/**
+	 * Take item `id` off the list and answer it, in one step, so that a second answer finds it gone: the one way an item
+	 * is answered (`claim` in needs.ts). `answerOf` says what the waiting call is given; when it throws, the item stays
+	 * waiting and the error is the caller's. Undefined when nothing by that id is waiting.
+	 */
+	take(id: string, answerOf: (item: InboxItem) => string): InboxItem | undefined {
 		const waiting = this.#waiting.get(id);
-		waiting?.resolve(value);
-		return waiting !== undefined;
+		if (waiting === undefined) return undefined;
+		const value = answerOf(waiting.item);
+		this.#waiting.delete(id);
+		waiting.resolve(value);
+		return waiting.item;
+	}
+
+	answer(id: string, value: string): boolean {
+		return this.take(id, () => value) !== undefined;
 	}
 
 	get(id: string): InboxItem | undefined {
