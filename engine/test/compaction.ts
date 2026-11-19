@@ -58,8 +58,12 @@ try {
 	const id = await open(lead);
 	assert.deepEqual(await client.call("settings.getCompaction"), { defaultCompactionTokens: null });
 	assert.equal(client.events.agents.builtInTools.find((entry: any) => entry.key === "compact").offByDefault, true);
-	await assert.rejects(client.call("settings.setCompaction", { defaultCompactionTokens: 1.5 }), /whole number/);
-	await assert.rejects(client.call("agents.save", { agent: { id: lead, name: "Compaction Lead", compactionTokens: 0 } }), /whole number/);
+	for (const defaultCompactionTokens of [0, 1.5]) {
+		await assert.rejects(client.call("settings.setCompaction", { defaultCompactionTokens }), /whole number/);
+	}
+	for (const compactionTokens of [-1, 1.5]) {
+		await assert.rejects(client.call("agents.save", { agent: { id: lead, name: "Compaction Lead", compactionTokens } }), /whole number/);
+	}
 	const refused = await answer(id, tool("compact", { note: "not yet offered" }));
 	assert.match(refused.text, /tool reported an error/);
 	await answer(id, "Please keep the open request named UNFINISHED-418.");
@@ -68,12 +72,27 @@ try {
 	assert.ok(state(id).lastRequestInputTokens > 20_000, "the last measured request counts input tokens");
 	console.log("ok  settings and tool are off by default; the last request size is reported");
 
-	// Set the all-agents default, but override it for one agent with an at-window value.
+	const short = await open(lead);
+	await answer(short, "One short turn.");
+	const shortBefore = items(short).slice();
+	const notice = "There is too little here to summarise yet.";
+	await client.call("conversation.compact", { id: short });
+	await client.until("short conversation's notice", () => items(short).at(-1)?.text === notice && state(short)?.compacting === false);
+	const shortItems = items(short);
+	assert.deepEqual(shortItems.slice(0, -1), shortBefore);
+	assert.deepEqual(shortItems.at(-1), { id: shortItems.at(-1).id, kind: "marker", text: notice });
+	assert.equal((await answer(short, "/context")).text, "CONTEXT\nOne short turn.\n(answer)\n/context");
+	console.log("ok  manual compaction on a short conversation adds one line, not model context");
+
+	// Set the all-agents default, but override it for one agent with an at-window value, then Off.
 	await client.call("settings.setCompaction", { defaultCompactionTokens: 2_000 });
 	await client.until("the default setting event", () => client.events.compactionSettings.defaultCompactionTokens === 2_000);
 	await saveAgent({ id: lead, name: "Compaction Lead", compactionTokens: 128_000 });
 	await answer(id, "The window-sized override does not cause an early summary.");
 	assert.equal(markers(id).length, 0);
+	await saveAgent({ id: lead, name: "Compaction Lead", compactionTokens: 0 });
+	await answer(id, "Off also keeps earlier messages despite the lower default.");
+	assert.equal(markers(id).length, 0, "Off overrides the all-agents default");
 	const inheriting = await open(worker);
 	await answer(inheriting, "Some earlier work in a conversation which follows the default.");
 	await answer(inheriting, filler(500));
