@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GONE } from "../src/needs.ts";
 import { PREVIEW_OFF } from "../src/projects.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-needs-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-needs-work-")));
@@ -22,7 +22,7 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-needs-${process.pid}`;
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE };
+const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_APP_BUNDLE: standInApp() };
 
 let engine: ChildProcess | undefined;
 process.on("exit", () => {

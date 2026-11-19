@@ -23,6 +23,7 @@ export const ONLY_IN_THE_APP =
 const FOR_THE_PERSON: Record<string, (params: Record<string, unknown>) => boolean> = {
 	"inbox.decide": () => true, // an approval
 	"inbox.answer": () => true, // a question an agent asked
+	"needs.answer": () => true, // an item in Needs you
 	"auth.answer": () => true, // a prompt in a sign-in to a provider
 	"agents.allowEverything": (params) => params.on === true, // sent once the person confirmed it in the app
 };

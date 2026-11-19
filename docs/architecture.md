@@ -68,6 +68,7 @@ Any program running as the person can connect to the socket, and so can every co
 
 - `inbox.decide`: an approval, of any kind ([Approvals](#approvals));
 - `inbox.answer`: a question an agent asked;
+- `needs.answer`: an item in Needs you;
 - `auth.answer`: a prompt in a sign-in to a provider;
 - `agents.allowEverything` with `on: true`, which the app sends once the person has confirmed it. Turning it off is taken from anyone.
 

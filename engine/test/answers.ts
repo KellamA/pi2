@@ -179,6 +179,20 @@ try {
 	assert.equal((await app.settled(asked, 2))[1].text, "blue");
 	step("the app's connection answers approvals and questions");
 
+	// ---- A need that waits while the agent carries on
+	await app.call("projects.setPreview", { on: true });
+	const { id: project, conversation: orchestrator } = await app.call("projects.create", { folder: work });
+	await app.call("conversation.open", { id: orchestrator });
+	await app.call("submit", { id: orchestrator, text: '/tool needs_you {"action":"ask","question":"Which branch?"}' });
+	const need = await app.until("a stored question under Needs you", () => app.events.needs?.items.find((item: any) => item.projectId === project && item.kind === "question" && !item.blocking));
+	await app.settled(orchestrator, 1);
+	const answer = { id: need.id, answer: { kind: "question", text: "main" } };
+	assert.equal((await other.call("needs.answer", answer)).error, ONLY_IN_THE_APP);
+	assert.ok((await app.call("needs.list", { projectId: project })).items.some((item: any) => item.id === need.id), "the need still waits");
+	assert.deepEqual(await app.call("needs.answer", answer), {});
+	assert.deepEqual(await app.call("needs.list", { projectId: project }), { items: [] });
+	step("only the app's connection can answer a stored need");
+
 	// ---- A command an agent runs
 	const { id: runner } = await app.call("conversation.create", { agentId: "atlas" });
 	await app.call("conversation.open", { id: runner });

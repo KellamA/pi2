@@ -1303,7 +1303,9 @@ The same change asked again while one is waiting gives the one waiting, not a se
 
 Any command an agent runs is a process of the person's own and can connect to the engine's socket as the app does. Since #504 the engine takes an answer to what waits for the person only from the app: it asks macOS which process is at the other end of each connection and checks it is pi² itself by its code signature ([architecture.md](architecture.md#who-may-answer-for-the-person)). From any other connection, `inbox.decide`, `inbox.answer`, `auth.answer` and `agents.allowEverything` with `on: true` are refused, with an error that tells the agent to ask the person. So a command can no longer answer its own approvals and questions.
 
-Every request of this epic that answers something waiting for the person (`needs.answer`, and any other answer to an item of [3.9](#39-needs-you-pi2needs-and-the-inbox)) joins that list, `FOR_THE_PERSON` in `engine/src/answers.ts`, in the issue that adds it, which checks that it is refused from a connection that is not the app's (`engine/test/answers.ts` shows how).
+The engine also takes `needs.answer`, which answers any item in [Needs you](#39-needs-you-pi2needs-and-the-inbox), only from the app.
+
+Every new request that answers something waiting for the person joins that list, `FOR_THE_PERSON` in `engine/src/answers.ts`, in the issue that adds it, which checks that it is refused from a connection that is not the app's (`engine/test/answers.ts` shows how).
 
 Two ways round pi² are still open, and so what this page promises is still this, and no more: **an agent can only ask, as long as it does not go round pi² on purpose**.
 
