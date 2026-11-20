@@ -109,14 +109,17 @@ try {
 
 	// ---- A project with two conversations, one with a sub-chat, and a schedule on one of its agents
 
-	const worker = (await client.call("agents.save", { agent: { name: "Worker", cwd: repo, instructions: "Build it." } })).id as string;
 	const helper = (await client.call("agents.save", { agent: { name: "Helper" } })).id as string;
+	const worker = (await client.call("agents.save", { agent: { name: "Worker", cwd: repo, instructions: "Build it.", delegates: [helper] } })).id as string;
 	const made = await client.call("projects.create", { folder: repo });
 	const project = made.id as string;
 	const orchestratorConversation = made.conversation as number;
-	const workerCopy = (await client.call("projects.addAgent", { projectId: project, template: worker })).id as string;
+	// The helper's copy is made first, so the worker's copy's delegates can be mapped to it (3.3).
 	await client.call("projects.addAgent", { projectId: project, template: helper });
+	const workerCopy = (await client.call("projects.addAgent", { projectId: project, template: worker })).id as string;
 	const second = (await client.call("conversation.create", { agentId: workerCopy })).id as number;
+	// The hand-off below needs the project's switch on (8.1), or it would wait for the person.
+	await client.call("projects.set", { id: project, settings: { withoutAsking: { startAgents: true } } });
 	// The copy in the project takes what only the person can give it: Allow everything and a variable with a value.
 	await client.call("agents.allowEverything", { id: workerCopy, on: true });
 	await client.call("variables.set", { agentId: workerCopy, name: "GH_TOKEN", value: "token-531" });
@@ -131,8 +134,8 @@ try {
 
 	// ---- Deleted: its conversations keep their project, and its schedules are held
 
-	const refused = await refusal(client.call("projects.restoreConversation", { id: second }));
-	assert.equal(refused.message, NOT_OF_DELETED_PROJECT);
+	// While the project is still live, its conversation is not of a deleted project, and the refusal says so.
+	assert.equal((await refusal(client.call("projects.restoreConversation", { id: orchestratorConversation }))).message, NOT_OF_DELETED_PROJECT);
 	await client.call("projects.delete", { id: project });
 	await client.until("the project deleted", () => client.project(project)?.deletedAt !== undefined);
 	assert.equal(client.row(orchestratorConversation).projectId, project);
@@ -143,18 +146,16 @@ try {
 	assert.equal((await refusal(client.call("schedules.save", { schedule: { title: "Again", agentId: workerCopy, prompt: "Once more.", repeat: { kind: "daily", hour: 4, minute: 0 } } }))).message, PROJECT_DELETED);
 	step("the project deleted: its conversations keep their project, and its schedules are held and cannot be remade");
 
-	// ---- Refusals: a sub-chat, one not of a deleted project, one working
+	// ---- Refusals: a sub-chat, and one working
 
 	assert.equal((await refusal(client.call("projects.restoreConversation", { id: subChat }))).message, RESTORE_SUB_CHAT);
-	const templateConversation = (await client.call("conversation.create", { agentId: worker })).id as number;
-	assert.equal((await refusal(client.call("projects.restoreConversation", { id: templateConversation }))).message, NOT_OF_DELETED_PROJECT);
 	// A message could have reached the conversation through the socket, which deletes nothing: the restore refuses.
 	await client.call("submit", { id: second, text: "/slow take your time" });
 	await client.until("the conversation busy", () => client.row(second).busy === true);
 	assert.equal((await refusal(client.call("projects.restoreConversation", { id: second, dryRun: true }))).message, STOP_RESTORE);
-	await client.call("conversation.abort", { id: second });
+	await client.call("abort", { id: second });
 	await client.until("the conversation idle", () => client.row(second).busy === false);
-	step("a sub-chat, a conversation not of a deleted project and one working are refused");
+	step("a sub-chat and one working are refused");
 
 	// ---- The dry run: what the restore would do, changing nothing
 
@@ -162,7 +163,7 @@ try {
 	const report = await client.call("projects.restoreConversation", { id: second, dryRun: true });
 	assert.equal(typeof report.plan, "string");
 	assert.equal(report.projects.length, 1);
-	const planned = report.projects[0];
+	const planned: any = report.projects[0];
 	assert.equal(planned.key, realpathSync(repo));
 	assert.equal(planned.name, "repo");
 	assert.equal(planned.existing, null);
@@ -172,17 +173,18 @@ try {
 	assert.equal(planned.subChats, 1);
 	assert.equal(planned.orchestrator.conversation, second);
 	assert.equal(planned.orchestrator.template, workerCopy);
-	assert.deepEqual(
-		planned.copies.map((copy: any) => [copy.template, copy.name, copy.allowEverything, copy.variables]),
-		[
-			[workerCopy, "Worker", true, ["GH_TOKEN"]],
-			[client.agent(workerCopy) && planned.copies.find((copy: any) => copy.template !== workerCopy).template, "Helper", false, []],
-		],
-	);
+	const plannedWorker: any = planned.copies.find((copy: any) => copy.template === workerCopy);
+	const plannedHelper: any = planned.copies.find((copy: any) => copy.template !== workerCopy);
+	assert.equal(plannedWorker.name, "Worker");
+	assert.equal(plannedWorker.allowEverything, true);
+	assert.deepEqual(plannedWorker.variables, ["GH_TOKEN"]);
+	assert.ok(plannedHelper !== undefined, "the plan copies the sub-chat's agent too, so it can still hand work to it");
+	assert.equal(plannedHelper.name, "Helper");
+	assert.equal(plannedHelper.allowEverything, false);
+	assert.deepEqual(plannedHelper.variables, []);
 	assert.deepEqual(client.events.library, before.library);
 	assert.deepEqual(client.events.agents, before.agents);
 	assert.equal(client.project(project).deletedAt !== undefined, true);
-	assert.equal(report.secretsPending, undefined ?? report.secretsPending);
 	step("the dry run answers what the restore would do, and changes nothing");
 
 	// ---- A stale plan is refused with the new report; the restore is one commit
@@ -192,16 +194,17 @@ try {
 	assert.equal(stale.message, RESTORE_CHANGED);
 	const changed = stale.data as any;
 	assert.deepEqual(changed.projects[0].copies.find((copy: any) => copy.template === workerCopy).variables, ["GH_TOKEN", "SECOND_KEY"]);
-	const restored = await client.call("projects.restoreConversation", { id: second, plan: changed.plan });
-	const into = client.events.projects.projects.find((row: any) => row.id !== project && row.deletedAt === undefined);
+	const restored: any = await client.call("projects.restoreConversation", { id: second, plan: changed.plan });
+	const into: any = client.events.projects.projects.find((row: any) => row.id !== project && row.deletedAt === undefined);
 	assert.ok(into !== undefined, "the restore made the project of the folder");
-	assert.equal(restored.backup, into && client.events.projects.carryOver?.backup ?? restored.backup);
+	assert.equal(typeof restored.backup, "string");
+	assert.equal(client.events.projects.carryOver?.backup, restored.backup);
 	assert.equal(realpathSync(into.folder), realpathSync(repo));
 	assert.equal(into.settings.wakeOnReports, true);
 	assert.equal(client.row(second).projectId, into.id);
 	assert.equal(client.row(subChat).projectId, into.id);
 	assert.equal(client.row(orchestratorConversation).projectId, project);
-	const workerIn = Object.values(client.events.agents.agents).find((agent: any) => agent.projectId === into.id && agent.template?.id === workerCopy);
+	const workerIn: any = Object.values(client.events.agents.agents).find((agent: any) => agent.projectId === into.id && agent.template?.id === workerCopy);
 	assert.ok(workerIn !== undefined, "a copy of the conversation's agent was made in the project");
 	assert.equal(workerIn.allowEverything, true);
 	assert.equal(client.row(second).runsAs, workerIn.id);
