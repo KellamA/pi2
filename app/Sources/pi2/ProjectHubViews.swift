@@ -8,22 +8,46 @@ struct ProjectHubView: View {
     let projectID: String
     /// Whether the hub is too narrow for both panels, so the board is folded whatever the fold.
     @State private var narrow = false
+    /// Whether the person is typing to the orchestrator while an agent's conversation holds the board's place: one of
+    /// the two takes the keyboard and ⌘Return, and the agent's does until the person clicks in the orchestrator's
+    /// field (#473).
+    @State private var orchestratorTyping = false
     private var engine: EngineClient { model.engine }
+
+    /// The conversation of one of the project's agents shown in place of the board, while it is still in the library
+    /// (#473).
+    private var agentConversation: Int? {
+        guard let id = model.hubs.agent(projectID), engine.conversations.contains(where: { $0.id == id }) else { return nil }
+        return id
+    }
 
     var body: some View {
         if let project = engine.project(projectID) {
             let fold = model.hubs.fold(projectID)
-            let shown = fold.shown(narrow: narrow)
+            let agent = agentConversation
+            let shown = fold.shown(narrow: narrow, agent: agent != nil)
             let tab = model.hubs.tab(projectID)
+            // Exactly one of the two conversations takes the keyboard: the agent's, which the person just opened,
+            // unless they clicked in the orchestrator's field.
+            let orchestratorActive = agent == nil || orchestratorTyping
+            let agentActive = agent != nil && !orchestratorTyping
             VStack(spacing: 0) {
                 HubBar(engine: engine, project: project)
                 if shown != fold {
-                    NarrowNote { model.hubs.setFold(.conversationFolded, for: projectID) }
+                    NarrowNote(agent: agent != nil) { model.hubs.setFold(.conversationFolded, for: projectID) }
                 }
-                HubPanels(fold: fold, narrow: $narrow) {
-                    HubConversationPanel(model: model, project: project, shown: shown)
+                HubPanels(fold: fold, narrow: $narrow, agent: agent != nil) {
+                    HubConversationPanel(model: model, project: project, shown: shown, active: orchestratorActive) {
+                        orchestratorTyping = true
+                    }
                 } board: {
-                    HubBoard(model: model, project: project, tab: tab, shown: shown)
+                    if let agent {
+                        HubAgentPanel(model: model, project: project, conversation: agent, shown: shown, active: agentActive) {
+                            orchestratorTyping = false
+                        }
+                    } else {
+                        HubBoard(model: model, project: project, tab: tab, shown: shown)
+                    }
                 } strip: {
                     HubStrip(engine: engine, hubs: model.hubs, project: project)
                 }
@@ -36,9 +60,11 @@ struct ProjectHubView: View {
                 if project.conversation == nil { model.hubs.startConversation(project, engine: engine) }
             }
             #if PI2_DEVELOPMENT
-            .onChange(of: HubDrawn.Shown(project: project.id, tab: tab, fold: shown, narrow: narrow, conversation: shown == .conversationFolded ? nil : project.conversation), initial: true) { _, drawn in
+            .onChange(of: HubDrawn.Shown(project: project.id, tab: tab, fold: shown, narrow: narrow, conversation: shown == .conversationFolded ? nil : project.conversation, agent: shown == .boardFolded ? nil : agent), initial: true) { _, drawn in
                 HubDrawn.current = drawn
             }
+            // A conversation the person opens takes the keyboard, whichever one had it.
+            .onChange(of: agent) { orchestratorTyping = false }
             // The hub of the next project can appear before this one goes.
             .onDisappear { if HubDrawn.current?.project == projectID { HubDrawn.current = nil } }
             #endif
@@ -57,19 +83,25 @@ struct ProjectHubView: View {
 
 /// The line that says the board folded by itself, with the way to see it.
 private struct NarrowNote: View {
+    /// Whether an agent's conversation takes the board's place, so that it is that which folds the board, not the
+    /// board's own side being chosen: the way back is in its own header then (#473).
+    let agent: Bool
     let showBoard: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "rectangle.righthalf.inset.filled").foregroundStyle(Theme.tx3)
-            Text("The window is too narrow for both panels, so the board is folded.")
+            Text(agent ? "The window is too narrow for both panels, so the agent’s conversation takes the width."
+                       : "The window is too narrow for both panels, so the board is folded.")
                 .foregroundStyle(Theme.tx2)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 4)
-            Button("Show the Board", action: showBoard)
-                .buttonStyle(.piGhost)
-                .help("Fold the conversation instead, so the board takes the width (⌥⌘[)")
+            if !agent {
+                Button("Show the Board", action: showBoard)
+                    .buttonStyle(.piGhost)
+                    .help("Fold the conversation instead, so the board takes the width (⌥⌘[)")
+            }
         }
         .font(.system(size: 12))
         .padding(.horizontal, 12)
@@ -231,6 +263,11 @@ private struct HubConversationPanel: View {
     let model: AppModel
     let project: ProjectRow
     let shown: HubFold
+    /// Whether this conversation takes the keyboard and ⌘Return, while an agent's conversation holds the other side
+    /// (#473).
+    let active: Bool
+    /// Called when the person clicks in its message field while another conversation has the keyboard.
+    let onFocus: () -> Void
     private var engine: EngineClient { model.engine }
 
     var body: some View {
@@ -259,7 +296,7 @@ private struct HubConversationPanel: View {
             }
             Group {
                 if let id = project.conversation {
-                    ChatView(engine: engine, id: id)
+                    ChatView(engine: engine, id: id, active: active, onFocus: onFocus)
                         .id(id)
                 } else {
                     StartingConversation(hubs: model.hubs, engine: engine, project: project)
@@ -403,6 +440,55 @@ private struct BoardTabEmpty: View {
         .frame(maxWidth: 360)
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// One of the project's agents in place of the board (#473): its conversation, which the person can read and write to
+/// as any other, under its avatar and name, the conversation's title and the way back to the board.
+private struct HubAgentPanel: View {
+    let model: AppModel
+    let project: ProjectRow
+    let conversation: Int
+    let shown: HubFold
+    /// Whether this conversation takes the keyboard and ⌘Return, while the orchestrator's also shows (#473).
+    let active: Bool
+    /// Called when the person clicks in its message field while the orchestrator's conversation has the keyboard.
+    let onFocus: () -> Void
+    private var engine: EngineClient { model.engine }
+    private var summary: ConversationSummary? { engine.conversations.first { $0.id == conversation } }
+    private var agent: AgentProfile? { engine.agent(summary?.agentId) }
+    private var title: String { summary?.title ?? "" }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                // 14, as the conversation panel's header beside it (PanelHeader).
+                AgentAvatar(agent: agent, size: 14)
+                Text(agent?.name ?? "Agent")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.tx)
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(title.isEmpty ? "New conversation" : title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.tx2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(title.isEmpty ? "This conversation has no title yet" : title)
+                Spacer(minLength: 8)
+                Button("Back to the Board") { model.hubs.setAgent(nil, for: project.id) }
+                    .buttonStyle(.piGhost)
+                    .help("Show the project's board again, keeping the conversation with the orchestrator")
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(Theme.panel)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+            ChatView(engine: engine, id: conversation, active: active, onFocus: onFocus)
+                .id(conversation)
+                .environment(\.inSplitPane, shown == .both)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        }
     }
 }
 
