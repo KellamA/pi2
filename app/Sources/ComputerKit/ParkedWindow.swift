@@ -10,6 +10,23 @@ import AppKit
 /// parked. The copy does this itself, over the control folder `scripts/test-copy` gives it.
 @MainActor
 package enum ParkedWindow {
+    /// What an assistive app sets on an app it works, to have it build its accessibility scene for good.
+    private static let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+
+    /// Whether `window` is parked below every ordinary window, where ordering it front cannot show it to anyone. Only
+    /// `scripts/test-copy`'s launch switch parks a window (`PI2_WINDOW_BEHIND`); a copy opened by hand has an ordinary
+    /// window, and raising that one would put it over the person's work for as long as it took to order it back.
+    package static func isParked(_ window: NSWindow) -> Bool {
+        window.level.rawValue < NSWindow.Level.normal.rawValue
+    }
+
+    /// Whether the app is marked as wanting enhanced accessibility now: a reader may have set it and left it set, and
+    /// `expose` puts it back as it found it.
+    package static var enhancedMark: Bool? {
+        guard let value = NSApp?.accessibilityAttributeValue(enhanced) else { return nil }
+        return (value as? NSNumber)?.boolValue ?? (value as? Bool)
+    }
+
     /// Whether `window` is among the app element's windows, which is what the accessibility server lists to another
     /// app. Read in-process, asking the app element what the server would ask it for another app. Its children are
     /// not only windows — a menu bar is one too — so each child is checked, not the list cast whole.
@@ -20,14 +37,18 @@ package enum ParkedWindow {
 
     /// Join `window` to the app's accessibility window list, and put it back where it was: it rises only within its
     /// own level, where it stays behind every ordinary window, and a parked window's pixels do not change. The app is
-    /// marked as wanting enhanced accessibility first, as an assistive app's arrival does, so it has a scene for the
-    /// raise to register in — a test copy has none of its own until a reader connects, and its own report would be
-    /// empty without one. Returns whether the window is listed now.
+    /// marked as wanting enhanced accessibility for the raise, as an assistive app's arrival does, so it has a scene
+    /// for the raise to register in — a test copy has none of its own until a reader connects — and the mark is put
+    /// back as it was afterwards: it changes how an app lays out and animates, and a copy is pictured as it is.
+    /// Returns whether the window is listed now; false, raising nothing, for a window that is not parked.
     @discardableResult
     package static func expose(_ window: NSWindow) -> Bool {
-        NSApp?.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        guard isParked(window) else { return false }
+        let wasEnhanced = enhancedMark
+        if wasEnhanced != true { NSApp?.accessibilitySetValue(true, forAttribute: enhanced) }
         window.orderFrontRegardless()
         window.orderBack(nil)
+        if wasEnhanced != true { NSApp?.accessibilitySetValue(false, forAttribute: enhanced) }
         return isListed(window)
     }
 }

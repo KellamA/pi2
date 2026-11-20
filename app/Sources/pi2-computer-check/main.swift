@@ -18,8 +18,10 @@
 //   the row's text for a list row whose content has one, as the sidebar's rows do, and nothing for a button without one;
 // - what to do with a missing or stale AX window, a parked window, and a window a menu bar item opens;
 // - that a parked window joins the app's accessibility window list only after an ordering event, which is how a
-//   copy exposes its own (#579), that the tool's request reaches the copy's control folder and is taken for its
-//   answer, and that a click on a window with no listed controls is never said to have changed nothing;
+//   copy exposes its own (#579), that only a window below every ordinary one is ever raised, and that the mark for
+//   enhanced accessibility is put back after the raise; that the tool's request reaches the copy's control folder and
+//   is taken for its answer; the words given for each reason a copy's window cannot be read; and that a click on a
+//   window with no listed controls is never said to have changed nothing;
 // - the size and direction of the wheel event (as AppKit decodes it, without posting it), and how actual movement
 //   is reported.
 //
@@ -392,6 +394,11 @@ Task { @MainActor in
         // A real app has a menu bar among the app element's children, which once hid the window behind a cast;
         // give this one a menu so the listing is read the way a real copy's is.
         NSApp.mainMenu = NSMenu(title: "Main")
+        // This check app marked itself as wanting enhanced accessibility at launch, as an assistive app does. Turn that
+        // off for this case: the raise then has to set the mark for a copy with no reader attached, and is seen to put
+        // it back as it found it.
+        let enhanced = NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface")
+        NSApp.accessibilitySetValue(false, forAttribute: enhanced)
         let parked = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 550), styleMask: [.titled], backing: .buffered, defer: false)
         parked.isReleasedWhenClosed = false
         parked.title = "Parked"
@@ -399,6 +406,7 @@ Task { @MainActor in
         check("a window that has never been ordered is not in the app's accessibility window list", !ParkedWindow.isListed(parked))
         check("raising it once within its own level joins it to the list", ParkedWindow.expose(parked))
         check("it stays in the list after it is put back behind everything", ParkedWindow.isListed(parked))
+        check("the mark for enhanced accessibility is put back as it was found", ParkedWindow.enhancedMark == false)
         let before = parked.frame
         _ = ParkedWindow.expose(parked)
         check("exposing does not move the window", parked.frame == before, "frame was \(before), now \(parked.frame)")
@@ -406,7 +414,16 @@ Task { @MainActor in
         let record = ServerWindow(id: 7, pid: 42, layer: -1, frame: bounds)
         check("the parked record still pairs with the exposed window",
               ServerWindow.parkedCopy(in: [record], pid: 42)?.id == 7 && ServerWindow.matching(bounds, in: [record], pid: 42)?.id == 7)
+        // A copy opened by hand gets no PI2_WINDOW_BEHIND: its window is among ordinary windows, where raising it
+        // would put it over the person's work, so it is never raised (#579).
+        let ordinary = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        ordinary.isReleasedWhenClosed = false
+        check("a window among ordinary windows is not parked, and is never raised",
+              !ParkedWindow.isParked(ordinary) && !ParkedWindow.expose(ordinary) && !ParkedWindow.isListed(ordinary))
+        ordinary.close()
         parked.close()
+        NSApp.accessibilitySetValue(true, forAttribute: enhanced)
+        check("the mark reads as set again, as an assistive app leaves it", ParkedWindow.enhancedMark == true)
     }
 
     await group("the tool's expose request reaches the copy's control folder and is taken for its answer") {
@@ -430,8 +447,9 @@ Task { @MainActor in
               await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .oldBuild)
         folder = standInFolder(base)
         copy = standInCopy(folder, ["error": "the main window did not join the app's accessibility window list when raised"])
-        check("a copy that says its window did not join the list is a failure",
-              await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .failed)
+        let refused = "the main window did not join the app's accessibility window list when raised"
+        check("a copy that says its window did not join the list is a failure, in its own words",
+              await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .failed(refused))
         folder = standInFolder(base)
         check("a copy that never answers is busy, and its request is cleaned up",
               await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .busy
@@ -442,10 +460,34 @@ Task { @MainActor in
         let linked = base.appendingPathComponent("linked", isDirectory: true)
         try? FileManager.default.createSymbolicLink(atPath: linked.path, withDestinationPath: elsewhere.path)
         check("a symlinked control folder is refused without a request",
-              await ComputerController.exposeParkedCopy(pid: 42, folder: linked) == .failed
+              await ComputerController.exposeParkedCopy(pid: 42, folder: linked) == .failed("its control folder is not a folder or is a symbolic link")
                   && (try? FileManager.default.contentsOfDirectory(atPath: elsewhere.path))?.isEmpty == true)
         check("a control folder under a symlinked data folder is refused too",
-              await ComputerController.exposeParkedCopy(pid: 42, folder: linked.appendingPathComponent("test-copy-control")) == .failed)
+              await ComputerController.exposeParkedCopy(pid: 42, folder: linked.appendingPathComponent("test-copy-control"))
+                  == .failed("its data folder is missing or a symbolic link"))
+        // A copy from a build before #579 has no folder of its own to make one in: the request has to reach it, so that
+        // its answer is that its build predates the request rather than silence.
+        let absent = standInFolder(base).appendingPathComponent("test-copy-control", isDirectory: true)
+        let unanswered = await ComputerController.exposeParkedCopy(pid: 42, folder: absent)
+        check("a control folder the copy has not made yet is made, and the request is sent",
+              unanswered == .busy && FileManager.default.fileExists(atPath: absent.path))
+    }
+
+    await group("each reason a parked copy's window cannot be read is said with what to do next") {
+        let old = ComputerController.unreadableParkedCopy(.oldBuild)
+        check("a copy from an older build is told to rebuild it and reopen it",
+              old.contains("rebuild") && old.contains("scripts/test-copy reopen"))
+        let busy = ComputerController.unreadableParkedCopy(.busy)
+        check("a copy that did not answer is told to take another screenshot shortly",
+              busy.contains("did not answer") && busy.contains("in a moment"))
+        let listed = ComputerController.unreadableParkedCopy(.listed)
+        check("a copy that raised its window is not said to have failed to join it",
+              listed.contains("raised") && !listed.contains("did not"))
+        let failed = ComputerController.unreadableParkedCopy(.failed("the main window is not parked behind other windows, so it was not raised"))
+        check("a copy that refused says why in the copy's own words",
+              failed.contains("not parked behind other windows"))
+        check("every reason says what still works",
+              [old, busy, listed, failed, ComputerController.unreadableParkedCopy(nil)].allSatisfy { $0.contains("click at a point") })
     }
 
     await group("what a click is told when the window could not be read") {

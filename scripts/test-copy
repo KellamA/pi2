@@ -675,7 +675,7 @@ case $cmd in
 		esac
 		fi
 		echo "$out"
-		echo "The copy's parked window is raised, which is what computer use needs to read it; take a screenshot of dev.pi2.app.$SUFFIX to see its controls."
+		echo "The copy's parked window is raised, which is what computer use needs to read it. If the tool still reads no controls, the other thing it needs is pi²'s Accessibility permission, which only the person can grant, in this agent's settings under Computer use."
 		;;
 	answer|fill)
 		names "${1-}"; shift

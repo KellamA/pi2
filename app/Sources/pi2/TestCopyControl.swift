@@ -84,6 +84,9 @@ struct TestCopyControl: NSViewRepresentable {
         init(model: AppModel, folder: URL) {
             self.model = model
             self.folder = folder
+            // The computer tool asks a parked copy to raise its window over this folder (#579), and a copy's first
+            // look can come before any scripts/test-copy command has made it. A symlink is left alone: poll refuses it.
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { nil }
@@ -350,6 +353,11 @@ struct TestCopyControl: NSViewRepresentable {
                 // it back — as the Window menu's own command does for a window someone chose. The raise is what
                 // the tool needs; whether it can then be read is the tool's own answer to give.
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
+                // A copy opened by hand has no launch switch parking its window, and raising a window among ordinary
+                // ones would put it over the person's work, so that one is never raised.
+                guard ParkedWindow.isParked(window) else {
+                    return ["error": "the main window is not parked behind other windows, so it was not raised"]
+                }
                 _ = ParkedWindow.expose(window)
                 return ParkedWindow.isListed(window)
                     ? ["result": "Raised the parked main window within its own level"]

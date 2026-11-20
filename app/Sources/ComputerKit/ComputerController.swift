@@ -223,32 +223,47 @@ public actor ComputerController {
     /// What came of asking a parked test copy to join its main window to the app's accessibility list (#579): a
     /// window that was never front is absent from that list, wherever it is parked, so the tool asks the copy to
     /// raise it once within its own level — nothing a person can see — and then reads it like any app's window.
-    package enum ExposedCopy {
+    package enum ExposedCopy: Equatable {
         /// The copy answered that its window is in the list now (or already was).
         case listed
         /// The copy's build predates the request: it answered with the unknown command.
         case oldBuild
         /// No answer within the wait: the copy may be busy, or its window is not shown.
         case busy
-        /// The copy answered, but its window did not join the list.
-        case failed
+        /// The copy answered that it did not raise its window, in `why`: its own words, kept for the answer given.
+        case failed(String)
     }
 
     /// Ask the copy running under `bundleID`, already verified a throwaway test copy, to expose its parked window
     /// through the control folder its data folder holds — the same one `scripts/test-copy` drives. `pid` is the
     /// copy's own process, which it checks before answering. The copy's poll answers within a second or two.
     private static func exposeParkedCopy(_ running: NSRunningApplication, bundleID: String) async -> ExposedCopy {
-        guard let folder = TestCopy.controlFolder(bundleID: bundleID) else { return .failed }
+        guard let folder = TestCopy.controlFolder(bundleID: bundleID) else {
+            return .failed("its bundle id does not name a test copy's data folder")
+        }
         return await exposeParkedCopy(pid: running.processIdentifier, folder: folder)
     }
 
     /// The request itself, for a check with a stand-in folder: writes `request.json` naming the copy's pid, then
     /// waits for `response.json` and takes the copy's word for whether its window is in the list now.
     package static func exposeParkedCopy(pid: pid_t, folder: URL) async -> ExposedCopy {
-        guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-              values.isDirectory == true, values.isSymbolicLink == false,
-              let home = try? folder.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
-              home.isDirectory == true, home.isSymbolicLink == false else { return .failed }
+        guard let home = try? folder.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              home.isDirectory == true, home.isSymbolicLink == false else {
+            return .failed("its data folder is missing or a symbolic link")
+        }
+        if let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) {
+            guard values.isDirectory == true, values.isSymbolicLink == false else {
+                return .failed("its control folder is not a folder or is a symbolic link")
+            }
+        } else {
+            // A copy makes this folder as it starts (#579); one from a build before that may not have it, and then it
+            // could answer nothing at all. Make it as scripts/test-copy's own driver does, so an older copy still says
+            // that its build predates the request.
+            guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false,
+                                                           attributes: [.posixPermissions: 0o700])) != nil else {
+                return .failed("its control folder is missing and could not be made")
+            }
+        }
         let dir = folder.appendingPathComponent("request-expose-\(UUID().uuidString)", isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -261,10 +276,30 @@ public actor ComputerController {
             try? await Task.sleep(for: .milliseconds(100))
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("response.json")),
                   let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] else { continue }
-            if answer["error"]?.contains("unknown test-copy window command") == true { return .oldBuild }
-            return answer["error"] == nil ? .listed : .failed
+            if let error = answer["error"] {
+                return error.contains("unknown test-copy window command") ? .oldBuild : .failed(error)
+            }
+            return .listed
         }
         return .busy
+    }
+
+    /// What to tell the agent when a parked copy's window is in the window server but not in the app's accessibility
+    /// list, after the copy was asked to raise it (#579): one cause at a time, each with what still works, and never a
+    /// failure claimed where the copy did what it was asked.
+    package static func unreadableParkedCopy(_ exposed: ExposedCopy?) -> String {
+        switch exposed {
+        case .oldBuild:
+            return "The copy's window is parked out of the way, so its controls are not readable, and this copy's build predates the request that raises it: rebuild the app and run scripts/test-copy reopen <suffix>, then take another screenshot. A click at a point in a picture is still sent to the window."
+        case .busy:
+            return "The copy's window is parked out of the way, and the copy did not answer the request to raise it — it may be busy, or its window is not shown. Take another screenshot in a moment. A click at a point in a picture is still sent to the window."
+        case .listed:
+            return "The copy raised its parked window, but pi² still cannot read its controls. A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
+        case .failed(let why):
+            return "The copy's window is parked out of the way and the copy did not raise it: \(why). A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
+        case nil:
+            return "The copy's window is parked out of the way, so its controls are not readable. A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
+        }
     }
 
     /// What to tell the agent after a click was sent to a window whose controls could not be read: an empty
@@ -397,16 +432,9 @@ public actor ComputerController {
             if window == nil {
                 if parked != nil {
                     // The window is there (the window server found it) but not in the app's accessibility list:
-                    // a parked copy's window never is until the copy has raised it once (#579). Say what is wrong
-                    // and what still works, rather than blaming the app and leaving nothing to go on.
-                    switch exposed {
-                    case .oldBuild:
-                        lines.append("The copy's window is parked out of the way, so its controls are not readable, and this copy's build predates the request that exposes it: rebuild the app and run scripts/test-copy reopen <suffix>, then take another screenshot. A click at a point in a picture is still sent to the window.")
-                    case .busy:
-                        lines.append("The copy's window is parked out of the way, and the copy did not answer the request to expose it — it may be busy, or its window is not shown. Take another screenshot in a moment. A click at a point in a picture is still sent to the window.")
-                    case .listed, .failed, nil:
-                        lines.append("The copy's window is parked out of the way, and it did not join the accessibility list when the copy raised it. A click at a point in a picture is still sent to the window; the copy's own state can be read through its engine (scripts/test-copy call).")
-                    }
+                    // a parked copy's window is only joined to that list by an ordering event, which the copy was
+                    // asked for (#579). Say which cause it was and what still works, rather than blaming the app.
+                    lines.append(Self.unreadableParkedCopy(exposed))
                 } else {
                     lines.append("The window is open, but the app did not expose it through Accessibility.")
                 }
