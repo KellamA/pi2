@@ -154,6 +154,8 @@ final class ProjectsStore {
     private(set) var listed: [ProjectInfo] = []
     /// Archived projects, newest first, for the Archive.
     private(set) var archivedProjects: [ProjectInfo] = []
+    /// Deleted projects, newest first, for the Archive: their conversations are shown there alone (docs/projects.md, 3.6).
+    private(set) var deletedProjects: [ProjectInfo] = []
     private(set) var carryOver: CarryOverState?
     /// Everything that waits for the person, in every project and none: the Dashboard row's count.
     private(set) var needsCount = 0
@@ -191,6 +193,8 @@ final class ProjectsStore {
         if listed != shown { listed = shown }
         let archived = kept.filter { $0.archivedAt != nil }.sorted { ($0.archivedAt ?? 0) > ($1.archivedAt ?? 0) }
         if archivedProjects != archived { archivedProjects = archived }
+        let deleted = event.projects.filter { $0.deletedAt != nil }.sorted { ($0.deletedAt ?? 0) > ($1.deletedAt ?? 0) }
+        if deletedProjects != deleted { deletedProjects = deleted }
         if carryOver != event.carryOver { carryOver = event.carryOver }
         refresh()
     }
