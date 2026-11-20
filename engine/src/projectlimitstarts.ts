@@ -40,7 +40,8 @@ export async function createDelegateChild(tx: Tx, args: { parent: number; target
 }
 
 type LimitNeed = Extract<StoredNeed, { kind: "limit" }>;
-type AssignmentAnswer = (tx: Tx, need: LimitNeed) => Promise<{ limit: LimitNeed["limit"] } | { child: number; after?: () => Promise<void> }>;
+/** `child` null: work on GitHub, where the claim and the start come after this commit (github.ts, #468). */
+type AssignmentAnswer = (tx: Tx, need: LimitNeed) => Promise<{ limit: LimitNeed["limit"] } | { child: number | null; after?: () => Promise<void> }>;
 let startAssignment: AssignmentAnswer | undefined;
 /** #467 registers the same atomic assignment used by `work`, with the exact task held in the card. */
 export function onLimitAssignment(start: AssignmentAnswer): void {
@@ -136,7 +137,9 @@ export function installLimitAnswers(host: Host, engine: Engine): FeatureParts {
 				need.limit = result.limit;
 				return { keep: true };
 			}
-			await decided(tx, projectId, id, `The person allowed work #${start.work} to start with ${start.agentName}: sub-chat ${result.child}.`);
+			await decided(tx, projectId, id, result.child === null
+				? `The person allowed work #${start.work} to start with ${start.agentName}; it starts once it is claimed on GitHub.`
+				: `The person allowed work #${start.work} to start with ${start.agentName}: sub-chat ${result.child}.`);
 			return { after: result.after };
 		}
 		const parent = start.parent;

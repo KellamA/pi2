@@ -82,6 +82,7 @@ import { type ChatVersions, chatIdOf, points, versionRequests, Versions, version
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
+import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
 import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend, type SpendDoc } from "./projectspend.ts";
 import { refusal, RequestError } from "./requesterror.ts";
@@ -754,7 +755,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
 	// What a project's orchestrator is told, and the line in a conversation the person wrote to (orchestrator.ts).
-	const told = entry.kind.startsWith("pi2.") ? projectItem(entry) : undefined;
+	const told = entry.kind.startsWith("pi2.") ? (projectItem(entry) ?? githubItem(entry)) : undefined;
 	if (told !== undefined) return told;
 	const message = entry.model?.[0] as (AssistantLike & { role?: string; toolCallId?: string; toolName?: string; isError?: boolean }) | undefined;
 	if (message === undefined) return undefined;
@@ -2185,7 +2186,7 @@ Object.assign(
 );
 // Requests that features answer.
 for (const feature of host.features) {
-	for (const [method, handler] of Object.entries(feature.handlers ?? {})) handlers[method] = (params) => handler(params);
+	for (const [method, handler] of Object.entries(feature.handlers ?? {})) handlers[method] = (params, client) => handler(params, client);
 }
 
 // ---- Live indexes: the library document and which conversations have work running
@@ -2871,6 +2872,7 @@ const server = createServer((socket) => {
 		for (const subscription of client.subscriptions.values()) void subscription.stop();
 		// An app that quits closes its panes: what they showed is no longer shown (docs/local-models-running.md).
 		if (client.shown.size > 0) for (const feature of host.features) feature.shownChanged?.();
+		for (const feature of host.features) feature.disconnected?.(client);
 	};
 	socket.on("close", drop);
 	socket.on("error", drop);
