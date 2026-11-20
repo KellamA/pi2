@@ -17,7 +17,10 @@ import { unfinished } from "../src/extensions.ts";
 import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRefusals, type Wait, Waits } from "../src/limitwait.ts";
 import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);

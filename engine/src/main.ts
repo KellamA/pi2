@@ -36,7 +36,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
-import { answersForThePerson, AppCheck, appBundle, ONLY_IN_THE_APP } from "./answers.ts";
+import { appBundle, AppCheck, forThePerson, ONLY_IN_THE_APP, unclassified } from "./answers.ts";
 import { BACKGROUND_ENTRY, backgroundForSubChat, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
@@ -925,14 +925,14 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void>; older: () => Promise<{ more: boolean }> };
 /**
  * `shown`: the conversations this app has on screen, in its panes or as chat mode's chat (`conversations.shown`).
- * `testCopy`: this connection gave the key of the test copy this engine runs (`test-copy.answerer`), so it may answer.
+ * `testCopy`: this connection gave the key of the test copy this engine runs (`test-copy.answerer`), so it may act for the person.
  */
 type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number>; testCopy?: true };
 const clients = new Set<Client>();
-/** Whether a connection is the app's, which alone may answer for the person (answers.ts, #504). */
+/** Whether a connection is the app's, which alone may answer or make changes for the person (answers.ts, #504, #513). */
 const appCheck = new AppCheck(appBundle(engineMain, build, process.env), log);
 
-/** Whether `client` may answer what waits for the person, and why. */
+/** Whether `client` may act for the person — answer what waits, or change what the person set — and why. */
 async function mayAnswer(client: Client): Promise<{ allowed: boolean; why: string }> {
 	if (client.testCopy === true) return { allowed: true, why: "this connection gave the test copy's key" };
 	const verdict = await appCheck.verdict(client.socket);
@@ -1433,7 +1433,7 @@ async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | n
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
-	/** Whether this connection may answer what waits for the person (#504): the app asks once it has connected. */
+	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
 		return { mayAnswer: allowed, why };
@@ -2826,6 +2826,13 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 
 // ---- Socket server
 
+// Every handler is in one of the three lists in answers.ts (#513): a request not classed is a deliberate decision no one
+// made, and from now on it would be taken from any connection, which is the very thing the lists refuse. Said here once,
+// with every handler registered — features' and test-copy's included — and engine/test/reachsettings.ts fails on the line.
+for (const method of Object.keys(handlers)) {
+	if (unclassified(method)) log("reach:", method, "is in none of the lists that say who may send it (answers.ts)");
+}
+
 rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
 const server = createServer((socket) => {
 	const client: Client = { socket, subscriptions: new Map(), shown: new Set() };
@@ -2878,8 +2885,9 @@ const server = createServer((socket) => {
 					// A refusal may carry data beside its message (requesterror.ts): a changed plan's new report, a limit's reading.
 					(error: unknown) => send(client, { id: request.id, ...refusal(error) }),
 				);
-			// An answer to what waits for the person is taken only from the app (#504).
-			if (!answersForThePerson(String(request.method), params)) handle();
+			// A request that is the person's alone — an answer to what waits, or a change to what they set — is taken only
+			// from the app (#504, #513).
+			if (!forThePerson(String(request.method), params)) handle();
 			else {
 				const refuse = () => send(client, { id: request.id, error: ONLY_IN_THE_APP });
 				void mayAnswer(client).then(({ allowed }) => (allowed ? handle() : refuse()), refuse);

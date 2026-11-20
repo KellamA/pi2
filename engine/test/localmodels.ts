@@ -13,7 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DownloadError, download } from "../src/download.ts";
 import type { Catalog, CatalogFile } from "../src/localcatalog.ts";
-import { EngineClient, stop, until } from "./patience.ts";
+import { EngineClient, standInApp, stop, until } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 /** Whether a process runs: one that has ended and waits only to be reaped (Z) runs nothing. */
 const alive = (pid: number) => {
