@@ -126,9 +126,9 @@ type Project = {
 	/** The project agent that is its orchestrator: in `pi2.agents`, with this `projectId` and `role: "orchestrator"`. */
 	orchestratorId: string;
 	/**
-	 * The orchestrator's conversation now. `projects.create` makes it, empty, with the project. Null only when it was
-	 * deleted (3.6), or for a project that carrying over made archived with no conversation to take, until the next
-	 * message to the orchestrator or the project's restoring makes one.
+	 * The orchestrator's conversation now. `projects.create` makes it, empty, with the project. Null when it was deleted
+	 * (3.6), and in a project carrying over made with the default orchestrator (9.6), until the person first opens or
+	 * writes to the orchestrator: the app then makes it with `projects.startFresh`, and it begins with the state block (6.4).
 	 */
 	conversation: number | null;
 	/** Earlier conversations with the orchestrator, oldest first (Start fresh, 6.5). */
@@ -157,14 +157,21 @@ type CarryRecord = {
 	/** When a run last changed something, and the backup made before the first run that did (9.8). */
 	ranAt: number | null;
 	backup: string | null;
-	/** The grouping key of a folder (9.2) to the project carrying over put its conversations in. "none": no folder. */
+	/**
+	 * The grouping key of a folder (9.2) to the project carrying over put its conversations in. "none": no folder. Every key
+	 * that reaches a project is recorded, so a project whose folder moved is found by the old key and the new.
+	 */
 	folders: Record<string, string>;
 	/**
 	 * "<projectId> <templateId>" to the copy made or adopted for that project. Kept when the person deletes the copy: a
 	 * deleted copy is not made again (9.5).
 	 */
 	copies: Record<string, string>;
-	/** "<templateId> <noteId>" for every note of an agent's that a run has dealt with, and where it went (9.7). */
+	/**
+	 * The notes of agents a run has dealt with (9.7): "<projectId> <templateId> <noteId>" for a note copied into that
+	 * project, recorded in the commit that copies it, and where it went; "<agentId> <noteId>": "left" for a note of an agent
+	 * deleted, left where it is.
+	 */
 	notes: Record<string, { projectId: string; noteId: string } | "left">;
 	/** Copies whose variables' values are still to be copied into the Keychain (9.5). */
 	secrets: { copyId: string; templateId: string; names: string[]; tries: number; lastError: string | null }[];
@@ -213,7 +220,7 @@ removedAt?: number;
 - **What does not make sense in a project.** Every setting of an agent today holds for a project agent, except:
   - `cwd`: always the project's folder (null for a project with no folder). The engine sets it, at copying and whenever the project's folder changes; `agents.save` refuses another (“An agent of a project works in the project's folder”). This is where a *new* conversation of the agent starts. A conversation already working somewhere keeps its own folder, which is its `pi.agent` document's, not the agent's: a conversation carried over, a sub-chat in another repository, a conversation in a worktree all stay where they are ([9.6](#96-conversations-what-each-keeps)).
   - `delegates`: the orchestrator's current conversation hands work to every other agent of its project, whatever its `delegates` say, and to no agent outside it. Any other conversation of a project agent hands work to the agents its `delegates` name, which for a project agent are agents of its own project.
-- **Copying a template** into a project, by the person or by carrying over, copies every setting, through the same path as `agents.duplicate`, with these differences: the new agent gets `projectId`, `template` and the project's folder; `delegates` is mapped to the project's copies of the templates it named (a template the project has no copy of is left out); allowed commands are copied, all of them, whatever their folder (each holds only in its own folder, so one for another folder does nothing until a conversation works there); the memory switch is copied. Variables are copied with their names only, and Allow everything is not copied, as for a duplicate, except when carrying over ([9.5](#95-agents-copies-adoption-and-secrets)). No conversation, schedule or worktree is copied. A copy made **by an agent** is made at the baseline of [7.2](#72-asking-allowing-refusing), and asks for the rest.
+- **Copying a template** into a project, by the person or by carrying over, copies every setting, through the same path as `agents.duplicate`, with these differences: the new agent gets `projectId`, `template` and the project's folder; `delegates` is mapped to the project's copies of the templates it named (a template the project has no copy of is left out); allowed commands are copied, all of them, whatever their folder (each holds only in its own folder, so one for another folder does nothing until a conversation works there); the memory switch is copied. Variables are copied with their names only, and Allow everything is not copied, as for a duplicate, except when carrying over ([9.5](#95-agents-copies-adoption-and-secrets)). No conversation, schedule or worktree is copied. Carrying over makes its copies inside its own commits (9.8), not through `agents.duplicate`'s path, which commits on its own: it does there what that path's feature hooks do (`agentDuplicated`: the memory switch, the variables' names), and turns `worktree` off for a copy in a project whose folder is no repository, where `agents.save` would refuse it, saying so in the report (9.5). A copy made **by an agent** is made at the baseline of [7.2](#72-asking-allowing-refusing), and asks for the rest.
 - **Update from template** compares the copy with its template, setting by setting, over every setting a copy takes from its template except its name, `cwd`, `delegates`, allowed commands, variables and Allow everything, which are the project's own. It says what would change (`agents.updateFromTemplate` with `apply: false`) before changing anything, then changes those settings and sets `template.copiedAt` and `templateUpdatedAt`. A template deleted since leaves the copy as it is, with **Update from template** unavailable ("The template this agent was made from has been deleted").
 - **The default orchestrator** is a template that is not stored: a constant, `DEFAULT_ORCHESTRATOR` in `projects.ts`, like chat mode's assistant in `chat.ts`. It is not in the `agents` event and cannot be edited; a project made without naming a template gets a copy of it, which is an ordinary project agent from then on. Its settings: name "Orchestrator", colour violet, the default model, thinking unset, access Ask first, memory on, summarising at 100,000 tokens, the built-in tool **Summarise its own conversation** on, everything else as a new agent's defaults. Its instructions, in full:
 
@@ -227,14 +234,14 @@ The engine decides which agent a conversation runs as with one function, `runsAs
 /** The agent whose settings conversation `meta` uses at its next message. */
 function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): string | undefined {
 	const copy = meta?.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];
-	if (projectsOn() && copy !== undefined && copy.removedAt === undefined) return meta!.projectAgentId;
+	if (projectsOn() && copy !== undefined && copy.removedAt === undefined && !projectDeleted(meta!.projectId) && !projectDeleted(copy.projectId)) return meta!.projectAgentId;
 	return meta?.agentId;
 }
 ```
 
 The agents are an argument, since the engine keeps no one map of them that every caller reads (main.ts, a feature's `engine.agents()` and a commit's `tx.doc(Agents)` each have their own). Beside it, `agentOf(meta, agents)` gives the agent itself, or none for a chat, an agent deleted or one removed through a tool; most lookups use it.
 
-A conversation whose copy has been removed or deleted runs as its `agentId`; one whose `agentId` was deleted too keeps the setup it has, as a conversation whose agent was deleted does today. A conversation whose own `agentId` names a removed project agent keeps the setup it has in the same way.
+A conversation whose copy has been removed or deleted, or whose project has been deleted, runs as its `agentId`; one whose `agentId` was deleted too keeps the setup it has, as a conversation whose agent was deleted does today. A conversation whose own `agentId` names a removed project agent keeps the setup it has in the same way.
 
 Changing what a conversation runs as changes only what is taken from the agent at each message today: its tools (`syncTools`), Allow everything (`takeSwitch`), its allowed commands, memory, variables and the rest that are read from the agent as they are used. Its folder, its worktree, its "Always Allow … Here" and its access level are the conversation's own and do not change ([9.6](#96-conversations-what-each-keeps)).
 
@@ -267,7 +274,7 @@ Two states are kept apart, each with one owner, so that neither can undo the oth
 |---|---|---|---|
 | Archive a project | Unchanged. Refused while any conversation of the project is working or waiting on the person: "Stop the project's agents first." | Archived: out of the sidebar; `submit`, `continue` and starts in it refused: "This project is archived. Restore it first." Its approvals and questions cannot be waiting (it was idle); its other Needs you items stay, shown under the archived project | Its conversations show and work as today |
 | Restore a project | Unchanged | Back | — |
-| Delete a project | Unchanged. Refused as archiving is | Deleted: shown only in the Archive, under its name, with its conversations; its Needs you items withdrawn; its agents offered to nobody; its rules, notes, work and changes kept, shown nowhere | Its conversations show and work as today |
+| Delete a project | Unchanged. Refused as archiving is | Deleted: shown only in the Archive, under its name, with its conversations; its Needs you items withdrawn; its agents offered to nobody; its rules, notes, work and changes kept, shown nowhere. Its conversations keep their `projectId` and are in no project, with the preview on or off: each runs as its `agentId`, hands work to templates, reads its agent's own notes, and no switch or limit of the project holds for it (`projectOf`, `runsAs`) | Its conversations show and work as today |
 | Restore one conversation of a deleted project (the Archive, preview on) | Restored if archived | The conversation moves to the project of its folder by the lookup of [9.4](#94-projects-lookup-and-adoption) (a new one, if the folder has none not deleted): `projectId` and `projectAgentId` set again, as for a conversation made later ([9.9](#99-conversations-made-later)) | — |
 | The person archives one conversation of a project (today's Archive) | Archived, as today: its work stopped, its sub-chats archived with it | Unchanged. If it was the orchestrator's current conversation, the hub shows it archived with Restore, and `conversation` keeps pointing at it | As today |
 | The person restores it | Restored, as today | Unchanged | As today |
@@ -1428,30 +1435,32 @@ Carrying over puts what a person has today into projects, with nothing lost, not
 | A deleted conversation | Nothing | Unchanged |
 | A chat, a chat's version | Nothing: chat mode stays as it is | Unchanged |
 | A conversation whose agent was deleted | In its folder's project, running as it does today | `projectId` added |
-| An agent's memory notes | Notes of the projects its conversations were in, for that agent's copy alone (9.7) | Unchanged |
+| An agent's memory notes | Notes of each project with a copy of that agent, for that copy alone (9.7) | Unchanged |
 | Chat mode's notes | Nothing | Unchanged |
 | Allowed commands | Copied with each copy, all of them | Unchanged |
 | An agent's variables | Copied with each copy, names and values (9.5) | Unchanged |
 | Allow everything | Copied with each copy whose template has it (9.5) | Unchanged |
 | "Always Allow … Here" on a conversation | Stays on the conversation | Unchanged |
 | Approvals and questions waiting | Shown under Needs you, in their conversation's project | Unchanged |
-| Sub-chats handed over without waiting, still working | Their watches get `wake: "each"`, so they wake the orchestrator as they would have | `wake` added to the watch |
+| Sub-chats handed over without waiting, still working | Their watches are left as they are: such a run has no report, so it wakes the agent that handed it over as it would have ([wakes.md](wakes.md)); runs started afterwards follow the project's `wakeOnReports`, which is on for a project carrying over makes | Unchanged |
 | Inbox notices of plans' limits | Stay in the `limits` event, shown as today | Unchanged |
 | Worktrees | Stay where they are, with their conversations | Unchanged |
 | Schedules | Stay on their agent (the template); the conversations they make are put in projects as they are made (9.9) | Unchanged |
 
 ### 9.2 Grouping by folder
 
-A conversation's folder is its `cwd` as its `pi.agent` document holds it now (null: no folder). Its grouping key is worked out by `groupingKey(cwd)` in `carryover.ts`, without running git, as follows:
+A conversation's folder is its `cwd` as its `pi.agent` document holds it now (null: no folder). Its grouping key is worked out by `groupingKey(cwd)` in `carryover.ts` (`Grouping`, which works each path out once in a plan), without running git, as follows:
 
 1. A sub-chat: its root conversation's key, wherever it works.
 2. No folder: `none`.
 3. A folder in a worktree pi² made (`pi2.worktrees`, `madeWorktrees`): the top of the main checkout the worktree was made from, as pi² recorded it.
-4. Otherwise, from the folder upwards, the nearest folder with a `.git` entry (this is where `knowledge.ts` stops looking for instruction files; the grouping goes further):
+4. Otherwise, from the folder upwards, the nearest folder with a `.git` entry (this is where `knowledge.ts` stops looking for instruction files; the grouping goes further), but not past the home folder: a repository at the home folder (dotfiles, say) is the key of the home folder itself and no folder under it:
    - a folder `.git`: that folder is the top of a main checkout, and is the key;
-   - a file `.git` reading `gitdir: <path>` (relative paths taken from the folder that holds the file): when `<path>` is `<main>/.git/worktrees/<name>`, a linked worktree, the key is `<main>`; when it is `<super>/.git/modules/…`, a submodule, the key is the submodule's own top, the folder with the file: a submodule is a project of its own; any other `gitdir`, or one that cannot be read, the folder with the file;
+   - a file `.git` reading `gitdir: <path>` (relative paths taken from the folder that holds the file): when `<path>` is `<main>/.git/worktrees/<name>`, a linked worktree, the key is `<main>`; when it is `<super>/.git/modules/…`, a submodule, the key is the submodule's own top, the folder with the file: a submodule is a project of its own; any other `gitdir`, or one that cannot be read, the folder with the file. A worktree of a bare repository (`<repo>.git/worktrees/<name>`) is therefore a project of its own;
    - none found: the folder itself.
-5. Each key is the real path of that folder; a folder that has gone is keyed by its path as stored.
+5. Each key is the real path of that folder, as macOS gives it (`realpathSync.native`, with the case the disk has, so one folder stored with two casings is one key). A folder that has gone is walked up from as stored, so it is keyed by the repository above it that is still there, or, with none, by its path as stored (the real path of the nearest folder above it that is still there, with the rest of the path).
+
+The report says, on the project's `notices`, when a worktree's repository has gone (pi² made the worktree, or it is a linked one whose main checkout is missing: the project's folder is then missing too) and when a bare repository's worktrees are each a project of their own.
 
 So a conversation in `engine/` of a repository, one in its main checkout and one in a worktree of it are one project; two repositories, or a repository and its submodule, are two.
 
@@ -1465,11 +1474,11 @@ Carrying over is worked out as one plan, `planCarryOver(snapshot)`, a function o
 
 For each key with at least one top-level conversation that is not deleted and not yet in a project:
 
-1. **A project not deleted whose folder has this key** is the one: made earlier by carrying over, or by the person by hand (adopted: recorded in `carry.folders`, its name, folder, settings and orchestrator left exactly as they are). A folder has at most one project not deleted, so there is at most one.
+1. **A project not deleted whose folder has this key** is the one: made earlier by carrying over, or by the person by hand (adopted: recorded in `carry.folders`, its name, folder, settings and orchestrator left exactly as they are). A folder has at most one project not deleted, but several folders can have one key (a repository and its subfolder, or any number of projects with no folder), so among several: the one the record has for this key, if it is among them; otherwise the one whose folder is the key itself; then the oldest. For `none`, a project the person made with no folder is never taken: only one carrying over made, so the person's "Loose ends" never receives conversations because it was edited last.
 2. Otherwise, **the project recorded for this key** in `carry.folders`, if it is not deleted (its folder moved since; the record keeps sending this key's conversations to it, since that is where the person has been working with them).
 3. Otherwise **a new project**: named after the folder's last part ("No folder" for `none`), with " 2", " 3"… in the order of the keys when names are taken; archived when every conversation it gets is archived; with the settings of a new project, but `wakeOnReports` on and no limits ([section 8](#8-settings-without-asking-waking-limits)).
 
-A run never changes the name, folder, settings, rules or orchestrator of a project that exists.
+A run never changes the name, folder, settings, rules or orchestrator of a project that exists. When several keys reach one project (one by the record, another by the project's new folder), each is recorded, so none is reported adopted again. `adopted` in the report is true for a project found by its folder for a key the record does not send to it yet.
 
 ### 9.5 Agents: copies, adoption and secrets
 
@@ -1478,7 +1487,7 @@ For each project, the templates to copy into it are the agents its conversations
 1. **The copy recorded** in `carry.copies` for this project and template is the one, if it still exists (removed or not).
 2. Otherwise, **an agent of the project made from this template** (`template.id`), the oldest, is adopted and recorded.
 3. Otherwise, if the record names a copy the person has since deleted, **nothing is made**: the deletion stands, and that template's conversations in this project get no `projectAgentId`, so they run as the template, as today.
-4. Otherwise **a copy is made** ([3.3](#33-agents-and-templates-pi2agents)), with, beyond a copy made by hand, the template's Allow everything when it has it, and its variables' values (below).
+4. Otherwise **a copy is made** ([3.3](#33-agents-and-templates-pi2agents)), with, beyond a copy made by hand, the template's Allow everything when it has it, and its variables' values (below). The copy takes what the plan, and so the report, said of these and of its memory switch, not what the template has by the time its commit is made: a template that has lost one since gives the copy what is left, and one that has gained one since (Allow everything turned on, a variable given a value, memory turned on) stops the run as changed ("Something changed while carrying over ran…"), for the person to look at the report again. A template that makes a worktree for each conversation, copied into a project whose folder is no repository (or that has none), gives a copy with worktrees off, and the report says so (`copies[].worktreeOff`).
 
 **Variables' values.** A copy that needs them is put in `carry.secrets` in the commit that makes it. Copying the values into the Keychain, under the copy's id, is a step after that commit, taken again at every engine start and with `projects.retrySecrets` until each is done: a value is copied only while the copy's variable is still unset, so a value the person has set since is never overwritten; a copy done is taken off the list; one that fails keeps its error. While any is pending, the `projects` event's `carryOver.secretsPending` lists it, by copy, project and variable names, and the board says so on that agent: "2 of Forge's variables have not been copied from the agent it was made from. Try again, or set them by hand." The report lists, before the run, every copy that will take Allow everything or variables' values, by name ([9.8](#98-the-report-and-the-run)).
 
@@ -1493,16 +1502,16 @@ Each conversation of the project whose agent has a copy there gets `projectAgent
 
 What does change, and the report says so for each copy: a *new* sub-chat that a copy is handed starts in the project's folder ([3.3](#33-agents-and-templates-pi2agents)), where its template, if it had a folder of its own in another repository, started there. The report lists each such copy with its template's folder (`copies[].folder`), so the person sees it before the run.
 
-**The orchestrator** of a project carrying over makes (not one it adopts, whose orchestrator stands): among the project's top-level conversations that are neither archived nor deleted, whose agent still exists and that have at least one sub-chat (they hand out work), the first by the tie-break of 9.3 becomes the orchestrator's conversation, and the copy of its agent the orchestrator (`role`). When none qualifies, the project gets a copy of the default orchestrator and a new, empty conversation with it (for a project made archived, when it is restored or first written to). Every other conversation stays one of the project's other conversations.
+**The orchestrator** of a project carrying over makes (not one it adopts, whose orchestrator stands): among the project's top-level conversations that are neither archived nor deleted, whose agent still exists and that have at least one sub-chat (they hand out work), the first by the tie-break of 9.3 becomes the orchestrator's conversation, and the copy of its agent the orchestrator (`role`). When none qualifies, the project gets a copy of the default orchestrator, with no conversation yet (`conversation` null): the app makes one with `projects.startFresh` when the person first opens or writes to the orchestrator, and it begins with the state block (6.4). So no empty conversation appears in the old sidebar for each folder carried over. Every other conversation stays one of the project's other conversations.
 
 ### 9.7 Notes
 
-Each note in `pi2.memory`'s `agents` is dealt with once, and recorded in `carry.notes` by its agent and id whatever became of it, so no later run copies it again, even if the note it became has been removed:
+Each note in `pi2.memory`'s `agents` is copied once into each project it goes to, and recorded in `carry.notes` for that project (`<projectId> <templateId> <noteId>`), in the commit that copies it, whatever became of it since, so no later run copies it there again, even if the note it became has been removed or shared. A run cut off between two projects' commits leaves each project it reached recorded, and the next run copies the note only to the others. A project that gets a copy of the agent later (a later run, or a conversation made later, 9.9) gets its notes then:
 
-- a note of an agent that has a copy in one or more projects: copied to each project where a conversation of that agent's wrote it, or, for a note the person wrote (`conversation` null) or whose conversation is deleted or in no project, to every project with a copy of that agent;
+- a note of an agent that has a copy in one or more projects: copied to the project where a conversation of that agent's wrote it, when that project has a copy; or, for a note the person wrote (`conversation` null) or whose conversation is deleted, in no project or in one without a copy, to every project with a copy of that agent (a copy recorded, made or adopted by the run, and not removed);
 - copied as a `ProjectNote` with its audience the copy alone (`audience` the copy's id), its `createdAt`, and `carriedFrom` with the agent's id and name. A copy's memory switch is its template's, so a note of an agent whose memory was off is still given to nobody. So a note reaches exactly whom it reached before, until the person shares it with the project;
 - a note whose text the project already has for the same audience is not copied twice; its source is recorded as dealt with, pointing at the note that has the text;
-- a note of an agent with no copy anywhere, or of an agent deleted (whose notes are kept and shown nowhere today), is left where it is and recorded `"left"`; the report counts them (`notesLeft`).
+- a note of an agent deleted (whose notes are kept and shown nowhere today) is left where it is and recorded `"left"` (`<agentId> <noteId>`); the report counts them (`notesLeft`). A note of an agent with no copy anywhere yet is recorded nowhere, and goes to the first project that gets one.
 
 The agents' own notes are left where they are, and with the preview off are what each agent is given, as before.
 
@@ -1518,19 +1527,21 @@ type CarryOverReport = {
 		key: string;             // the grouping key: a folder, or "none"
 		name: string;
 		existing: string | null; // the project found by 9.4, if any
-		adopted: boolean;        // found by its folder, not by the record
+		adopted: boolean;        // found by its folder for a key the record does not send to it yet (9.4)
 		archived: boolean;
 		orchestrator: { conversation: number | null; title: string | null; template: string | null } | null; // null: an existing project's stands; template null: the default orchestrator
 		copies: {
 			template: string; name: string; existing: string | null;
 			allowEverything: boolean;   // the copy takes Allow everything
 			variables: string[];        // the names whose values it takes
+			worktreeOff: boolean;       // its template makes worktrees, and the project's folder is no repository: the copy does not (9.5)
 			folder: string | null;      // its template's own folder, when outside the project's: new sub-chats start elsewhere (9.6)
 		}[];
 		conversations: number;   // top-level, not archived, to be added
 		archivedConversations: number;
 		subChats: number;
 		notes: number;
+		notices: string[];       // lines for the person: a repository gone, a bare repository's worktrees (9.2)
 	}[];
 	leftOut: { chats: number; deleted: number; notesLeft: number };
 	/** Already in a project from an earlier run: left as they are. */
@@ -1548,13 +1559,15 @@ The app shows it as the person turns the preview on, before the run, with a butt
 1. Works the plan out again; a different fingerprint changes nothing (9.3).
 2. When the plan is empty, changes nothing at all, `ranAt` included, and answers the report.
 3. Before the first run that changes anything, makes a backup as **Back Up** does (`createBackup` in `backup.ts`), into `backups/` in the data folder, and records its path. That backup is a snapshot of the database and the settings files as they were before projects: it holds no Keychain item, so it cannot bring back keys or variables' values, and restoring it replaces everything done since, in projects or not. With the preview switch, which shows everything as it was without restoring anything, it is the way back ([13](#13-decisions-this-contract-made), decision 19).
-4. Commits, one commit per project (so a large library does not hold the engine's thread in one long commit): the project, its copies, the conversations' fields, the watches' `wake`, the notes, the record and `ranAt`. A run cut off between two commits leaves what was committed, which the next run finds by 9.4 and 9.5 and does not do again.
+4. Commits, one commit per project (so a large library does not hold the engine's thread in one long commit): the project, its copies, the conversations' fields, the notes, the record (its keys, copies and notes) and `ranAt`. A run cut off between two commits leaves what was committed, which the next run finds by 9.4, 9.5 and 9.7 and does not do again.
 5. Copies variables' values, as 9.5 says.
 6. Answers the report, with `ranAt`, `backup` and what is still pending.
 
 ### 9.9 Conversations made later
 
-While the preview is on, when a top-level conversation that is not a chat is made with no `projectId` (by a schedule, by Continue with an Agent, by `conversation.create` from a script with a template), the engine carries it over as it is made, with `planCarryOver` for that one conversation: into the project of its key by 9.4 (restoring that project if it was archived, as [3.6](#36-archiving-and-deleting) says; a new one if the folder's was deleted), its agent copied there by 9.5 if it has no copy yet, and `projectAgentId` set. So every conversation that is not a chat is in a project from then on.
+While the preview is on, when a top-level conversation that is not a chat is made with no `projectId` (by a schedule, by Continue with an Agent, by `conversation.create` from a script with a template, by a fork of a conversation in no project), the engine carries it over as it is made, with `planCarryOver` for that one conversation and its sub-chats: into the project of its key by 9.4 (restoring that project if it was archived, as [3.6](#36-archiving-and-deleting) says; a new one if the folder's was deleted), its agent copied there by 9.5 if it has no copy yet, with the notes that go to that copy (9.7), and `projectAgentId` set. Its start is checked against the limits of that project, as a start of one of its agents is ([8.3](#83-limits-and-the-one-admission-check)).
+
+It is carried in a commit after the one that made it. If that fails, or the engine stops between the two, the conversation is not held up; every top-level conversation that is not a chat and has no `projectId` is carried the same way, one by one, as the engine starts with the preview on, and once more after a carry that failed. One archived as it is carried goes into its project without restoring it. So every conversation that is not a chat is in a project from then on, but those of a deleted project, which keep its `projectId` and are in none (3.6); a fork of one of those is in no project, and is carried.
 
 ### 9.10 Running it again
 
@@ -1565,9 +1578,11 @@ Every step looks first, by the rules of 9.4, 9.5 and 9.7, for what an earlier ru
 Nothing is undone: the projects and everything in them stay, and turning the preview on again shows them as they were left. Meanwhile:
 
 - every conversation runs as its `agentId`, exactly as before carrying over ([3.4](#34-which-agent-a-conversation-runs-as-runsas)), in its own folder, as it always did;
-- no project section, rule, note, catch-up or tool reaches any conversation from its next message ([6.6](#66-what-switching-the-preview-off-leaves-in-a-conversation)), but a project's starts still pass its limits;
+- no project section, rule, note, catch-up or tool reaches any conversation from its next message ([6.6](#66-what-switching-the-preview-off-leaves-in-a-conversation)): a conversation carried over is told exactly what it was told before, byte for byte, whatever was changed in its project with the preview on;
+- what holds for a project's conversations whatever the preview still holds for those carried over: its `startAgents` switch asks before one of their agents starts another ([8.1](#81-what-the-orchestrator-may-do-without-asking)), and its limits hold for their starts ([8.3](#83-limits-and-the-one-admission-check)). So a carried project's settings, changed with the preview on, change how the person's old conversations start agents with it off;
+- a sub-chat made with the preview off in a conversation carried over takes its parent's `projectId` but no `projectAgentId`: with the preview on it runs as its agent, the template, not the project's copy;
 - every request that exists today works as today;
-- the old screens show every conversation where it was, since nothing in the epic writes a conversation's own archive state ([3.6](#36-archiving-and-deleting)), and the templates as the agents list; project agents are left out of that list ([10.2](#102-with-the-preview-off));
+- the old screens show every conversation where it was, since nothing in the epic writes a conversation's own archive state ([3.6](#36-archiving-and-deleting)), and no conversation is added for an orchestrator (9.6); the templates are the agents list, and project agents are left out of it by the app ([10.2](#102-with-the-preview-off)), which the app before #470 does not do (12.1);
 - the agents' own notes, allowed commands and variables were never changed, so each agent has all of them;
 - what was made in projects while the preview was on (new conversations, notes, rules, work) is kept, and conversations made in projects are listed in the old sidebar like any other.
 
@@ -1725,7 +1740,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 - **Where the catch-up is made.** pi durable places every input through one function, `appendInput`: the person's message that starts a run, a wake, a queued message or a steer placed at a boundary. A patch to it (`engine/scripts/patch-inputs.ts`) calls a setting of the engine's, `placeInput(tx, conversationId, now)`, in the commit that places the input, before its entry; `placeInput` in orchestrator.ts appends the catch-up or the state block there and clears the news it gives in the same commit. It does nothing with the preview off or in any conversation that is not a project's current conversation with its orchestrator, so a conversation in no project is placed exactly as before. A hook there may append entries and change documents; it must not read tables (`tx.entry`, `tx.scanEntries`), which a commit that has already written cannot do.
 - **The entries.** `pi2.catchUp { news }` and `pi2.state { snapshot }` carry their text as a user message, which the model reads just before the input. The transcript shows them as folded lines that open to that text, as a wake's do: "pi² told the orchestrator what changed (2)" and "pi² told the orchestrator how the project stands" (`details.wake.text`). `pi2.toldOrchestrator { news }` is display only: "The orchestrator will be told".
-- **Which conversation gets a state block.** One marked new in the commit that makes it (a conversation document, `pi2.orchestratorFresh`): the project's first conversation (`projects.create` calls `wireFresh`'s mark) and every one Start fresh or `setOrchestrator` makes. A conversation that becomes a project's otherwise (carried over, #458) gets catch-ups. A project whose conversation was deleted gets a new one with `projects.startFresh`, which is allowed then and makes one beginning with the state block; nothing else makes one.
+- **Which conversation gets a state block.** One marked new in the commit that makes it (a conversation document, `pi2.orchestratorFresh`): the project's first conversation (`projects.create` calls `wireFresh`'s mark) and every one Start fresh or `setOrchestrator` makes. A conversation that becomes a project's otherwise (carried over, #458) gets catch-ups. A project whose conversation was deleted, or one carrying over made with the default orchestrator (#458, which makes no conversation for it), gets a new one with `projects.startFresh`, which is allowed then and makes one beginning with the state block; nothing else makes one.
 - **Room.** The 200 pieces kept besides `keep` are counted when the news is given, not as it is stored: the catch-up drops the oldest past 200 and says how many. `addNews` and `settle` store every piece.
 - **The state block's parts.** `working` is every sub-chat of the project working now (`host.working`); its `since` is when this engine first saw the run working, or the sub-chat's `updatedAt` for one working when the engine started; a wait for a limit reads "waiting for its provider's limit until 15:30". `needs` is the `needs` event's items for the project (approvals and `ask_user` questions as the Inbox holds them now). `reports` is read from `pi2.reports` in the same commit. `work` is read from #467's list kept by pi² (`pi2.work`): the four open states counted, and every item in progress, waiting or blocked with who took it; a project with no open work says "Work: none.". #468 gives a project with a repository attached its own through `wireWorkState(read)`, where `read(tx, project, local)` answers `{ counts, held }` and may hand any project back to `local`. A summary's block is made in the summary's commit (`summaryState`, called by `compactionCheckpoint` last) and clears no news.
 - **What the person writes to another agent.** `submit` to a conversation in a project in the preview, other than its current conversation with the orchestrator, takes the message in a commit with a `message` piece of news (`keep`) and the `pi2.toldOrchestrator` line (`tellOrchestrator`, main.ts); the same `requestId` again is told once. Outside that, `submit` is unchanged. Only `submit` tells: a message `delegate` sends a sub-chat is the orchestrator's own doing.
@@ -1741,7 +1756,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `confirmLimit` is an opaque, short-lived receipt for the exact start and model. It is spent once; every currently exceeded window or budget must be covered. If more than one reading needs approval, the next refusal carries the next reading and remembers the earlier approvals for that start only. A reset plan window is not a reading of its next period.
 - `projectlimitstarts.ts` registers the `limit` answer. `claim` keeps the card with its new reading if the confirmed reading no longer covers the start. A continued or new delegate hand-off uses the retained options and a durable `pi2.allowedStarts` receipt, replaying the same request id after a restart. The old tool call is no longer waiting: its result comes through the report/watch. `onLimitAssignment` lets the active work backend claim and submit a held assignment in the answer's transaction. Limit answers add news, not a wake of their own.
 - `projectspend.ts` keeps per-conversation deltas in the existing Usage ledger. Admission sees committed counters, not just the coalesced Usage event; `usage.projects` groups today's amounts by library `projectId`, including archived and deleted conversations of a live project. The old ledger only has a global amount, so the first run after upgrading cannot recover its already-counted per-project shares; it uses the existing totals as its baseline.
-- Conversation creation, Continue with an Agent, scheduled starts, and assignments check limits at their creation boundary. The person's messages and retries in existing conversations are unchanged; #458 must also pass the effective project for starts newly brought into a project by its folder. #467's local assignment is wired; #468 must use the same admission seam for GitHub assignment before claiming it.
+- Conversation creation, Continue with an Agent, scheduled starts, and assignments check limits at their creation boundary. The person's messages and retries in existing conversations are unchanged. A start with a template that carrying over will put into its folder's project (9.9) passes that project as `site.projectId` (#458, `carriedProjectFor` in carryover.ts). #467's local assignment is wired; #468 must use the same admission seam for GitHub assignment before claiming it.
 
 **As #465 built them.** The record and its operations are `engine/src/changes.ts`; what widens reach, `engine/src/reach.ts`; the three tools, `engine/src/projecttools.ts`. What the table does not say:
 
@@ -1757,18 +1772,20 @@ Each piece below has one owner, which builds it, with what the others need of it
 - A copy of a template made by an agent is made at the baseline, and asks for the template's memory switch, allowed commands, delegates and the rest that widen in its one request. It is not given the variables' names, which are the person's.
 - `remember` and `forget` in a project, `work` and `reports` `wake` answer with `details.change` and give the conversation a line with Undo, but their text is as before, without "(change N)" at its end: the person can undo them, and the orchestrator cannot name them to `project_settings` `undo`. Only the three tools' results end with the number.
 
-**As #458 built them.** Carrying over is `engine/src/carryover.ts`: `groupingKey`, `planCarryOver(snapshot, only?)`, `fingerprint` and `reportOf` are plain functions of the documents (and of the `.git` entries on disk), and the `carryOver` feature, placed before `projects` in `FEATURES` with no greeting, runs them. What section 9 does not say:
+**As #458 built them.** Carrying over is `engine/src/carryover.ts`: `groupingKey` (and `Grouping`, which works each path out once for a plan), `lookUp`, `planCarryOver(snapshot, only?)`, `fingerprint` and `reportOf` are plain functions of the documents (and of the `.git` entries on disk), and the `carryOver` feature, placed after `orchestrator` and before `projects` in `FEATURES` with no greeting, runs them. What section 9 does not say:
 
-- It plugs into projects.ts through `wireCarryOver({ previewOn, state, restored })`, which `onPreviewOn`, `carryOverState` and `projects.unarchive` call, and reads the record through `carryRecord()`. Without the feature (a stand-in engine in a test) turning on carries nothing over, as before.
+- It plugs into projects.ts through `wireCarryOver({ previewOn, state })`, which `onPreviewOn` and `carryOverState` call, and reads the record through `carryRecord()`. Without the feature (a stand-in engine in a test) turning on carries nothing over, as before.
 - A request refused with data throws `RequestError(message, data)` (`requesterror.ts`, #464's); the engine answers `{ id, error, data }` (4.1). A plan that is not the one given, or no plan when there is something to do, is refused with the new report as `data`, `setPreview` turning nothing on.
-- `adopted` in the report is true for a project found by its folder that the record does not have for that key yet: one a run made or adopted before is found by its folder too, and is not adopted again.
-- Copies are made inside the project's own commit, by copying the template's stored profile as `projects.create` copies one (3.3's differences, the memory switch and the variables' names written in the same commit), not through `engine.saveAgent`, which commits on its own: a run cut off part way must never leave a copy without its project. A copy in a project with no folder has `worktree` off, having nowhere to make one from.
-- The variables' values: `copyAgentValues(from, to, names)` in variables.ts copies a value only while the copy still lists that variable with no value, in the Keychain or the profile, so a value set since is never overwritten and a variable removed since is not brought back; the value goes into the Keychain before the profile says there is one. A pending copy whose template or copy has been deleted is taken off the list, there being nothing to copy. `PI2_CARRY_SECRETS_GATE`, a test switch, holds the step while the file it names exists, so a test can kill the engine there.
-- A note going to several projects is recorded (`carry.notes`) in the commit of the last of them; a run cut off before that copies it again to those it reached, where the same text for the same audience is found and not copied twice. A template whose only copies the person made by hand is left unrecorded until a run adopts one of them. A carried note's `agentId` is the copy's for a note the agent wrote, null for one the person wrote.
+- **A conversation whose project was deleted is in no project**, with the preview on or off: `projectOf` gives none for it, `projectDeleted(id)` says so of a project, and `runsAs` gives its `agentId` even with a copy, so it hands work to the templates (`delegateTargets`), reads its agent's own notes (knowledge.ts's owner of notes, through `runsAs` and `inProject`), asks no switch of the project (`requireSwitch`), passes no limit of it (`admit` already), and has no `project` in its conversation state nor `lastLine` in Activity. A fork of it is in no project too, and is carried (9.9). `previewOnLeavingOut` (`engine/test/patience.ts`) turns the preview on as the app does and deletes the projects carrying over made, so the existing tests' conversation "in no project" is one, as before #458.
+- Copies are made inside the project's own commit, by copying the template's stored profile as `projects.create` copies one (3.3's differences, the memory switch and the variables' names written in the same commit), not through `engine.saveAgent`, which commits on its own: a run cut off part way must never leave a copy without its project. So the features' `agentDuplicated` hooks are not run; only knowledge.ts's and variables.ts's exist, and their part is done in the commit. A comment at the hook in features.ts says so, and carryplan.ts fails when another feature adds one. The copy takes Allow everything, the variables' values and the memory switch as the plan has them, and the commit stops with `CHANGED_DURING` when the template has gained one since (9.5). `worktreeOff` is worked out without running git, as the grouping is: no `.git` entry in the project's folder or above it.
+- The variables' values: `copyAgentValues(from, to, names)` in variables.ts copies a value only while the copy still lists that variable with no value, in the Keychain or the profile, so a value set since is never overwritten and a variable removed since is not brought back; the value goes into the Keychain before the profile says there is one. A pending copy whose template or copy has been deleted is taken off the list, there being nothing to copy.
+- Test switches: `PI2_CARRY_SECRETS_GATE` holds the Keychain step, and `PI2_CARRY_COMMIT_GATE` the run before each project's commit but the first, while the file it names exists (having written `<file>.started`), so a test can kill the engine there.
+- Notes are recorded per project, in the commit that copies them (9.7), so a run cut off part way leaves a whole record of what it did. Where the same text for the same audience is in a project already (a note shared since, say), it is not copied twice, and the record points at the note that has it. A carried note's `agentId` is the copy's for a note the agent wrote, null for one the person wrote.
 - A sub-chat made since in a conversation already in a project, with no `projectId` of its own, goes into that project; a sub-chat of a deleted conversation is counted with the deleted ones (`leftOut.deleted`).
-- The watches' `wake` (9.1) is not set: a project carrying over makes has `wakeOnReports` on, which #463 reads as `each`, so a sub-chat handed over without waiting wakes the orchestrator as it did.
-- Conversations made later (9.9): a feature hook, `made(id)` (features.ts), is told of a top-level conversation of an agent made by `conversation.create`, a schedule's run or Continue with an Agent, before its first message, and carries it with the plan for that conversation alone, in a commit after the one that made it. It makes no backup and does not set `ranAt`. A project it restores, and one made archived that the person restores (`projects.unarchive`), gets its default orchestrator's empty conversation then.
-- With the preview on, every conversation that is not a chat is now in a project. A test that checks what a conversation in no project is told, with the preview on, uses one whose project was deleted (`previewOnLeavingOut` in `engine/test/patience.ts`), which `inProject` leaves out; `previewOn` turns the preview on as the app does, with the plan of the report.
+- The watches' `wake` (9.1) is not written: a run handed over before carrying over has no report, so it wakes as [wakes.md](wakes.md) says, and a carried project has `wakeOnReports` on, which #463 reads as `each`, for runs started afterwards.
+- No conversation is made for a carried project's default orchestrator (9.6): `conversation` stays null, for any such project, archived or not, until the app calls `projects.startFresh` (#466) as the person first opens or writes to the orchestrator. Restoring a project makes none either. So nothing carrying over makes needs `markFresh`: the conversation `startFresh` makes is marked by it.
+- Conversations made later (9.9): a feature hook, `made(id)` (features.ts), is told of a top-level conversation of an agent made by `conversation.create`, `conversation.fork`, a schedule's run or Continue with an Agent, before its first message, and carries it with the plan for that conversation and its sub-chats, in a commit after the one that made it. It makes no backup and does not set `ranAt`. A failure is logged and starts one sweep of every conversation left in no project; the same sweep runs once every feature has started (`host.ready`), with the preview on. Before the conversation is made, `carriedProjectFor(agent, cwd)` gives `admit` the project it will go into (`lookUp` on the stored projects), and main.ts's three starts pass it as `site.projectId`; a schedule refused by it waits a minute before it is tried again, as one of a project's agents does.
+- **The old screens and project agents.** 10.2 has the app leave agents with a `projectId` out of the agents' list, the New Conversation With menu and the palette. The app as it is before #470 does not: with the preview off, after a run (through the socket, `test-copy`, a script), every copy and orchestrator is in its agents list under its template's name, and can be edited, deleted and picked for a new conversation, which then goes into its project. Only #470, which ships that filter with the switch the person turns the preview on with, makes 9.11's "project agents are left out" true; nothing in the app turns the preview on before it.
 
 ### 12.2 Each issue
 
@@ -1814,7 +1831,7 @@ What the design left open, or did not say exactly enough to build, and what this
 3. **Carried-over conversations keep their agent, and gain the project's copy beside it** (`projectAgentId`); which one they run as follows the preview switch. Nothing the old way reads is rewritten.
 4. **With the preview off, every request that exists today works as today**; only what is new is refused. A conversation outside any project is told exactly what it is told today, with the preview on or off. A project's limits and `startAgents` still hold for its conversations with the preview off, so switching off removes no protection.
 5. **One folder, one project; a repository is one folder**, grouped by the top of its main checkout, so its worktrees and subfolders join it. A submodule is a project of its own.
-6. **The carried-over orchestrator** is the agent of the most recently used conversation that hands out work and whose agent still exists, with fixed tie-breaks; where none qualifies, a default orchestrator with an empty conversation.
+6. **The carried-over orchestrator** is the agent of the most recently used conversation that hands out work and whose agent still exists, with fixed tie-breaks; where none qualifies, a default orchestrator, whose conversation is made when the person first opens or writes to it (#458: not an empty one for every folder at once).
 7. **A project may have no folder** (the design's open question): its agents work where a folderless conversation works today, the data folder's `workspace`. Carrying over puts every folderless conversation in one such project, "No folder".
 8. **A project has other conversations** besides the orchestrator's, listed under it.
 9. **A project agent's new conversations start in the project's folder**; every conversation already working keeps its own folder, worktree and allowances.
