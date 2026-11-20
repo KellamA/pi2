@@ -11,6 +11,7 @@ struct ArchiveView: View {
     @State private var working = false
     @State private var error: String?
     private var engine: EngineClient { model.engine }
+    private var showsDeletedProjects: Bool { engine.projectsPreview && !engine.projectStore.deletedProjects.isEmpty }
 
     /// What the filter leaves: every word typed has to be in the title or the agent's name.
     private var rows: [ArchivedConversation] {
@@ -40,18 +41,18 @@ struct ArchiveView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 ArchivedProjects(model: model)
-                DeletedProjects(model: model, restore: showRestore)
+                DeletedProjects(model: model, restore: showRestore, restoreDisabled: working || restore != nil)
                 if let error {
                     Text(error).font(.callout).foregroundStyle(Theme.bad)
                 }
-                if plain.isEmpty {
+                if plain.isEmpty && !showsDeletedProjects {
                     ContentUnavailableView(
                         "Nothing archived",
                         systemImage: "archivebox",
                         description: Text("Archive a conversation to clear it out of the sidebar without losing it. It is kept here, search still finds it, and you can restore it at any time.")
                     )
                     .padding(.top, 40)
-                } else {
+                } else if !plain.isEmpty {
                     list
                 }
                 automatic
@@ -62,15 +63,16 @@ struct ArchiveView: View {
         }
         .background(Theme.window)
         .navigationTitle("Archive")
-        .navigationSubtitle(engine.archived.isEmpty ? "Empty" : engine.archived.count == 1 ? "1 conversation" : "\(engine.archived.count) conversations")
+        .navigationSubtitle(showsDeletedProjects ? "Includes deleted projects" : engine.archived.isEmpty ? "Empty" : engine.archived.count == 1 ? "1 conversation" : "\(engine.archived.count) conversations")
         .sheet(item: $restore) { shown in
             RestoreSheet(shown: shown, working: working) { go(shown) } cancel: { restore = nil }
+                .interactiveDismissDisabled(working)
         }
     }
 
     private var list: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if plain.count > 6 {
+            if plain.count > 6 || !query.isEmpty {
                 TextField("Filter", text: $query, prompt: Text("Filter by title or agent, or “chat”"))
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Filter archived conversations")
@@ -87,6 +89,7 @@ struct ArchiveView: View {
 
     /// Asks the engine what restoring this conversation of a deleted project would do, and shows it (docs/projects.md, 3.6).
     private func showRestore(_ id: Int, _ title: String) {
+        guard !working, restore == nil else { return }
         error = nil
         working = true
         Task {
@@ -103,13 +106,15 @@ struct ArchiveView: View {
 
     /// Restores on the plan the person was shown. If it changed meanwhile, the engine refuses and sends the new report.
     private func go(_ shown: RestoreShown) {
+        guard !working, restore?.id == shown.id, let plan = shown.report.plan else { return }
         working = true
         Task {
             defer { working = false }
             do {
-                _ = try await engine.call("projects.restoreConversation", ["id": shown.conversation, "plan": shown.report.plan as Any? ?? NSNull()])
+                let result = try await engine.call("projects.restoreConversation", ["id": shown.conversation, "plan": plan])
                 restore = nil
-                openInProject(shown.conversation)
+                let project = try? CarryOverReport(result).projectId
+                openInProject(shown.conversation, project: project)
             } catch let refusal as EngineError {
                 if let data = refusal.data, let changed = try? CarryOverReport(.object(data)) {
                     restore = RestoreShown(conversation: shown.conversation, title: shown.title, report: changed, changed: true)
@@ -124,16 +129,12 @@ struct ArchiveView: View {
         }
     }
 
-    /// After the restore, the conversation opens in its project, once the engine has listed it.
-    private func openInProject(_ id: Int) {
-        Task {
-            for _ in 0..<40 {
-                if let project = engine.conversations.first(where: { $0.id == id })?.projectId, engine.project(project) != nil {
-                    model.openAgent(id, in: project)
-                    return
-                }
-                try? await Task.sleep(for: .milliseconds(50))
-            }
+    /// The restore's reply names the actual destination, including when the project was just made.
+    private func openInProject(_ id: Int, project: String?) {
+        if let project, engine.projectsPreview {
+            model.openAgent(id, in: project)
+        } else {
+            model.selection = .conversation(id)
         }
     }
 
@@ -258,6 +259,7 @@ struct DeletedProjects: View {
     let model: AppModel
     /// Opens the sheet for restoring one conversation: its id and title.
     let restore: (Int, String) -> Void
+    let restoreDisabled: Bool
     private var engine: EngineClient { model.engine }
 
     var body: some View {
@@ -266,7 +268,7 @@ struct DeletedProjects: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Deleted projects").font(.headline)
                 ForEach(projects) { project in
-                    DeletedProject(model: model, project: project, restore: restore)
+                    DeletedProject(model: model, project: project, restore: restore, restoreDisabled: restoreDisabled)
                 }
                 Text("A deleted project is shown nowhere else. Restore one of its conversations into the project of its folder, or delete it; the project itself stays deleted.")
                     .formFooter()
@@ -281,6 +283,7 @@ private struct DeletedProject: View {
     let model: AppModel
     let project: ProjectInfo
     let restore: (Int, String) -> Void
+    let restoreDisabled: Bool
     private var engine: EngineClient { model.engine }
 
     /// Its top-level conversations: from the sidebar's list and the Archive's own, oldest first.
@@ -318,6 +321,7 @@ private struct DeletedProject: View {
                     Button("Open") { model.selection = .conversation(conversation.id) }
                         .help("Read it without restoring it")
                     Button("Restore to a Project…") { restore(conversation.id, conversation.title) }
+                        .disabled(restoreDisabled)
                         .help("Put it back into the project of its folder, with its sub-chats")
                     Button("Delete", systemImage: "trash") { model.delete(id: conversation.id, title: conversation.title) }
                         .labelStyle(.iconOnly)
@@ -366,7 +370,7 @@ struct RestoreShown: Identifiable {
     let title: String
     let report: CarryOverReport
     var changed = false
-    var id: Int { conversation }
+    var id: String { "\(conversation):\(report.plan ?? "")" }
 }
 
 /// The sheet of a restore: where the conversation goes, which agent it runs as, and what is copied, before anything
@@ -411,6 +415,7 @@ private struct RestoreSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel, action: cancel)
                     .keyboardShortcut(.cancelAction)
+                    .disabled(working)
                 Button("Restore", action: go)
                     .keyboardShortcut(.defaultAction)
                     .disabled(working)
@@ -423,13 +428,13 @@ private struct RestoreSheet: View {
     private var intro: String {
         let name = project?.name ?? "a project"
         var line = "“\(shown.title)” is restored into \(name), the project of its folder, with its sub-chats."
-        if let copies = project?.copies, !copies.isEmpty {
-            let made = copies.filter { $0.existing == nil }.map(\.name)
-            let kept = copies.filter { $0.existing != nil }.map(\.name)
-            if !made.isEmpty { line += " It runs as a copy of its agent, \(made.joined(separator: ", ")), made there." }
-            if !kept.isEmpty { line += " It runs as the project’s copy of its agent, \(kept.joined(separator: ", "))." }
+        if report.restoresProject == true { line += " That project is archived and will be restored too." }
+        if let copy = project?.copies.first(where: { $0.template == report.rootAgent }) {
+            line += copy.existing == nil
+                ? " It runs as a new copy of its agent, \(copy.name)."
+                : " It runs as the project’s copy of its agent, \(copy.name)."
         }
-        line += " Nothing else it owns changes: its folder, its worktree and what it is allowed to do are its own."
+        line += " Its folder, worktree and conversation-specific permissions do not change."
         return line
     }
 

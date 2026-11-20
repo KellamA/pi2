@@ -82,6 +82,11 @@ struct CarryOverReport: Codable, Equatable {
     let ranAt: Double?
     let backup: String?
     let secretsPending: [CarryOverState.Pending]
+    // A single restore: the original agent whose copy the root will run as, and whether the destination comes back too.
+    let rootAgent: String?
+    let restoresProject: Bool?
+    // A completed restore: the destination, even when it was just made.
+    let projectId: String?
 
     init(_ value: JSONValue) throws {
         self = try JSONDecoder().decode(Self.self, from: JSONEncoder().encode(value))
