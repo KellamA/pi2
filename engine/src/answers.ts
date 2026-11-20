@@ -14,7 +14,7 @@ import { dirname, isAbsolute, join } from "node:path";
 
 /** What a connection that is not the app's is told: it reaches an agent that tried, so it says what to do instead. */
 export const ONLY_IN_THE_APP =
-	"Only the person can answer this, in the pi² app: answers to approvals, questions and sign-ins, starting past a project limit, and turning on Allow everything are not taken from a command or any other program. Ask the person instead.";
+	"Only the person can answer this, in the pi² app: answers to approvals, questions and sign-ins, starting past a project limit, turning on Allow everything, and restoring a conversation of a deleted project are not taken from a command or any other program. Ask the person instead.";
 
 /**
  * The requests that answer something waiting for the person, and when a request is one. Turning Allow everything off
@@ -29,6 +29,9 @@ const FOR_THE_PERSON: Record<string, (params: Record<string, unknown>) => boolea
 	"chat.continueWithAgent": (params) => params.confirmLimit !== undefined,
 	"schedules.runNow": (params) => params.confirmLimit !== undefined,
 	"work.act": (params) => params.action === "assign" && params.confirmLimit !== undefined,
+	// Moving a conversation of a deleted project between projects is the person's act, like deleting the project (#531);
+	// the dry run, which changes nothing, stays open to scripts, as a first attempt does.
+	"projects.restoreConversation": (params) => params.dryRun !== true,
 	"auth.answer": () => true, // a prompt in a sign-in to a provider
 	"agents.allowEverything": (params) => params.on === true, // sent once the person confirmed it in the app
 };

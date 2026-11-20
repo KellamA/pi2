@@ -70,9 +70,10 @@ Any program running as the person can connect to the socket, and so can every co
 - `inbox.answer`: a question an agent asked;
 - `needs.answer`: an item in Needs you;
 - `auth.answer`: a prompt in a sign-in to a provider;
-- `agents.allowEverything` with `on: true`, which the app sends once the person has confirmed it. Turning it off is taken from anyone.
+- `agents.allowEverything` with `on: true`, which the app sends once the person has confirmed it. Turning it off is taken from anyone;
+- `projects.restoreConversation` without `dryRun`, which moves a conversation of a deleted project into another project; its dry run, which changes nothing, is taken from any connection.
 
-The refusal is one error, which an agent that tried reads as its command's output: "Only the person can answer this, in the pi² app: answers to approvals, questions and sign-ins, and turning on Allow everything, are not taken from a command or any other program. Ask the person instead." The request is not looked at first, so it says nothing about whether the approval exists. Everything else on the socket is taken from any connection, as before.
+The refusal is one error, which an agent that tried reads as its command's output: "Only the person can answer this, in the pi² app: answers to approvals, questions and sign-ins, starting past a project limit, turning on Allow everything, and restoring a conversation of a deleted project are not taken from a command or any other program. Ask the person instead." The request is not looked at first, so it says nothing about whether the approval exists. Everything else on the socket is taken from any connection, as before.
 
 **How the engine tells.** macOS keeps, for each connection to a Unix socket, the audit token of the process that connected. Node cannot ask for it, so the engine starts `Contents/MacOS/pi2-peer` from the app's bundle (`app/Sources/pi2-peer`, PeerKit) with the connection as its file descriptor 3, and reads one line of JSON. The helper asks the socket for the token, has Security find that process's code, and checks it against the designated requirement of the app bundle: for a release signed with pi²'s Developer ID, the bundle id `dev.pi2.app` and pi²'s team; for an ad hoc signed build, a development build or a test copy, the cdhash of that bundle's own executable. The token names the process's version as well as its number, so a process that ended and whose number went to another is not taken for it.
 
