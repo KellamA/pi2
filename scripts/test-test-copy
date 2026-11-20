@@ -85,6 +85,9 @@ expect "use: scripts/test-copy answer-of" answer-of test-7
 expect "use: scripts/test-copy answer-of" answer-of test-7 8
 expect "--timeout needs seconds" answer-of test-7 8 42 --timeout
 expect "unknown option --bogus" answer-of test-7 8 42 --bogus
+expect "--appearance needs light or dark" start test-8 --appearance purple
+expect "--appearance needs light or dark" start test-8 --appearance
+expect "--appearance needs light or dark" reopen test-7 --appearance system
 expect "--hub needs both" reopen test-7 --hub
 expect "use: scripts/test-copy size" size test-7 820
 expect "use: scripts/test-copy size" size test-7 smallest 532

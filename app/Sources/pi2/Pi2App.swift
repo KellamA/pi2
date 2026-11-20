@@ -431,6 +431,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         AppAppearance.apply()
+        #if PI2_DEVELOPMENT
+        // A test copy's own appearance comes after the preference every build draws with, so that
+        // `scripts/test-copy start|reopen --appearance` wins (#553).
+        TestCopyAppearance.apply()
+        #endif
         NSApp.activate()
     }
 

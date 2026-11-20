@@ -2,6 +2,20 @@ import SwiftUI
 import WindowKit
 
 #if PI2_DEVELOPMENT
+/// `PI2_APPEARANCE=light|dark`, which `scripts/test-copy start|reopen --appearance` sets on the copy's launch: the copy
+/// draws in that appearance whatever the Mac's own is, so that a page can be pictured in both (#553). It is the copy's
+/// own, under its own bundle id, and the Mac's setting is not touched. Only a development build reads it, as with every
+/// test-copy control.
+enum TestCopyAppearance {
+    static func apply() {
+        switch ProcessInfo.processInfo.environment["PI2_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
+    }
+}
+
 /// Like PI2_SHOW and the file-driven performance probe, this is part of development builds only.
 /// The launch switch isn't enough: require the bundle and data folder that scripts/test-copy makes.
 @MainActor
