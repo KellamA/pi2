@@ -470,6 +470,20 @@ test("an approval for a command offers the engine's rule, and nothing else does"
 	assert.equal(T.ruleOffer(null), null);
 });
 
+test("a request a project's switch asked is answered once or not at all", () => {
+	// The card offers Allow Once and Deny alone: only the project's Settings can stop the asking, and the engine
+	// refuses anything else (#553).
+	const asked = { id: "1", kind: "approval", tool: "work", arguments: { action: "file" }, question: "File work?", projectSwitch: "fileWork" };
+	assert.equal(T.switchAsked(asked), true);
+	for (const item of [{ ...asked, projectSwitch: null }, { ...asked, projectSwitch: "" }, { ...asked, projectSwitch: undefined }, {}, null, undefined]) {
+		assert.equal(T.switchAsked(item), false, JSON.stringify(item));
+	}
+	// A command whose switch ask happens to offer a rule makes no rule out of it; the same request without the ask does.
+	const command = { id: "1", kind: "approval", tool: "bash", arguments: { command: "npm test" }, rule: { words: ["npm", "test"], folder: "/w" } };
+	assert.notEqual(T.ruleOffer(command), null);
+	assert.equal(T.ruleOffer({ ...command, projectSwitch: "commands" }), null);
+});
+
 test("the rule's button says how far the rule reaches", () => {
 	const label = (rule) => {
 		const offer = T.ruleOffer({ id: "1", kind: "approval", tool: "bash", arguments: { command: "./run-tests --fast" }, rule });

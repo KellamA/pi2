@@ -107,6 +107,9 @@ final class EngineClient {
     /// Proposed rules waiting under Needs you, by project, from the `needs` event (docs/projects.md, 3.9); the Rules
     /// tab shows their cards.
     private(set) var ruleNeeds: [String: [NeedItem]] = [:]
+    /// The reach requests and proposed rules waiting under Needs you, as the `needs` event sends them (3.9), for the
+    /// cards at the calls that asked in a conversation's page (#474).
+    private(set) var conversationNeeds: [TranscriptFeed.Need] = []
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -740,6 +743,15 @@ final class EngineClient {
                     for need in needs where !known.contains(need.id) { Notifier.shared.needsYou(need) }
                     refreshWaitingBadge()
                 }
+                // The reach requests and proposed rules a conversation's page shows cards for (#474), from the same
+                // reading of the event, with only what a card reads.
+                let shown = needs.filter { $0.kind == "reach" || $0.kind == "rule" }.map {
+                    TranscriptFeed.Need(
+                        id: $0.id, kind: $0.kind, conversationId: $0.conversationId, agentName: $0.agentName, createdAt: $0.createdAt,
+                        change: $0.change.map { TranscriptFeed.Need.ReachChange(summary: $0.summary) }, text: $0.text, binds: $0.binds?.rawValue, why: $0.why
+                    )
+                }
+                update(\.conversationNeeds, shown)
             case "projectRules":
                 update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
             case "auth":

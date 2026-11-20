@@ -420,7 +420,8 @@ struct NeedCard: View {
         }
     }
 
-    /// More reach: what it would let agents do, and the person's Allow or Deny.
+    /// More reach: what it would let agents do, and the person's Allow or Refuse — the contract's own words (7.2),
+    /// which the conversation's card uses too, so one wording answers this everywhere.
     private var reachCard: some View {
         own("more reach") {
             Text(need.change?.summary ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -430,7 +431,7 @@ struct NeedCard: View {
             HStack(spacing: 8) {
                 Button("Allow") { answer(need, ["kind": "reach", "allow": true]) }
                     .buttonStyle(.piPrimary)
-                Button("Deny") { answer(need, ["kind": "reach", "allow": false]) }
+                Button("Refuse") { answer(need, ["kind": "reach", "allow": false]) }
                     .buttonStyle(.piDanger)
                 Spacer(minLength: 0)
             }

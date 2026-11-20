@@ -132,6 +132,7 @@ extension View {
 
 struct SettingsView: View {
     let engine: EngineClient
+    let model: AppModel
     @State private var tab: SettingsTab = {
         #if PI2_DEVELOPMENT
         if let asked = SettingsLaunch.asked { return asked.tab }
@@ -158,6 +159,12 @@ struct SettingsView: View {
                 .tag(SettingsTab.storage)
         }
         .frame(width: 660, height: 600)
+        #if PI2_DEVELOPMENT
+        // The tab `scripts/test-copy show <suffix> settings:<tab>` asked for while the app runs (#553): taken when the
+        // window opens, and moved to when it is already open.
+        .onAppear { if let live = model.settingsTabLive { tab = live } }
+        .onChange(of: model.settingsTabLive) { _, live in if let live { tab = live } }
+        #endif
     }
 }
 

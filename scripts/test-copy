@@ -36,24 +36,32 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/test-copy <command> [arguments]
 
-  start <suffix> [--show <what>] [--hub <fold>] [--menu <label>] [--welcome] [--no-app-nap] [--env NAME=VALUE]
+  start <suffix> [--show <what>] [--hub <fold>] [--menu <label>] [--appearance light|dark] [--welcome]
+                 [--no-app-nap] [--env NAME=VALUE]
                                    Copy app/build/pi² dev.app as dev.pi2.app.<suffix>, sign it and launch it on a
                                    data folder of its own, behind other windows, parked in a corner, without taking
                                    the focus. <what> is what the window opens on (PI2_SHOW, docs/development.md),
                                    such as palette:<query> for the command palette. --menu prints the items of the
                                    context menu of the element with that label, such as a conversation's title
                                    (PI2_MENU). The first-run welcome is marked done in the copy's data folder, so it
-                                   does not cover the window; --welcome keeps it. --no-app-nap disables App Nap
+                                   does not cover the window; --welcome keeps it. --appearance light or dark pictures
+                                   this copy in that appearance whatever the Mac's own is, without changing the Mac's
+                                   setting. --no-app-nap disables App Nap
                                    for this copy only, for speed measurements. Prints the data folder and process
                                    ids. --env may repeat, for these test variables only:
                                    PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND,
                                    PI2_GH. Values are explicit (never inherited), kept for reopen, and not secrets.
-  reopen <suffix> [--show <what>] [--hub <fold>]
+  reopen <suffix> [--show <what>] [--hub <fold>] [--appearance light|dark]
                                    Replace and launch the app from the latest development build in this checkout.
-                                   Keep its engine, data, environment and previous --show and --hub unless replaced.
-  show <suffix> <conversation>     Show this conversation in the running copy's main window, and wait for it to draw.
-  show <suffix> project:<name-or-id>[#<tab-or-agent>] [--hub <fold>]
-  show <suffix> dashboard          Hand a project or Dashboard selection to the running app, which waits for it to draw.
+                                   Keep its engine, data, environment and previous --show, --hub and --appearance unless
+                                   replaced.
+  show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: inbox, activity, usage, archive,
+                                   branches, agent:<id>, chat[:<number or title>], palette[:<query>], settings[:<tab>],
+                                   output:<id>, a conversation's number or title, or
+                                   project:<name-or-id>[#<tab-or-agent>]. It answers once a conversation's page or a
+                                   hub has drawn it, and for any other page it says that it cannot wait for it to draw.
+  show <suffix> dashboard          Select the Dashboard's row in the sidebar of projects, and answer once it has
+                                   drawn its columns, saying how many.
                                    --hub sets PI2_HUB at launch, or the fold for a live request:
                                    both, conversation-folded or board-folded.
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
@@ -83,6 +91,10 @@ Usage: scripts/test-copy <command> [arguments]
                                    Submit and wait for this message\'s run to finish (default 600 seconds, at most 600).
                                    JSON status: done (exit 0), failed/error (1), waiting on the person (2), timeout
                                    (124). Never answers approvals or stops work when its wait ends.
+  answer-of <suffix> <conversation> <submission> [--timeout <seconds>]
+                                   Read the answer of a submission that was still running when send\'s wait ended, with
+                                   the same JSON, statuses, exit codes and limit. Submits nothing, answers nothing and
+                                   stops nothing.
   stop <suffix>                    Stop the copy's app, then its engine, by the pids recorded at start, and remove the
                                    copy, its data folder, preferences, Keychain items, Launch Services registration
                                    and the files its browser leaves.
@@ -181,6 +193,7 @@ from_bundle() {
 }
 
 APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" SHOW="" HUB="" WELCOME=0 MENU=""
+APPEARANCE=""
 TEST_ENV=()
 # Only explicit demo switches may cross the clean launch boundary. Never accept an open-ended PI2_* prefix:
 # PI2_HOME and the Keychain service are owned by this script, and future switches may weaken isolation.
@@ -204,6 +217,12 @@ check_hub() {
 		*) die "--hub needs both, conversation-folded or board-folded" ;;
 	esac
 }
+check_appearance() {
+	case $1 in
+		light|dark) ;;
+		*) die "--appearance needs light or dark" ;;
+	esac
+}
 
 # Where a copy started with --menu writes the context menu (ContextMenuPreview.fileName in the app).
 MENU_FILE=context-menu.txt
@@ -223,6 +242,7 @@ load_state() {
 			show) SHOW=$value ;;
 			hub) [[ -z $value ]] || check_hub "$value"; HUB=$value ;;
 			menu) MENU=$value ;;
+			appearance) [[ -z $value ]] || { check_appearance "$value"; APPEARANCE=$value; } ;;
 			test_env) add_test_env "$value" ;;
 		esac
 	done <"$STATE"
@@ -231,7 +251,7 @@ load_state() {
 }
 
 save_state() {
-	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" "hub=$HUB" "menu=$MENU" \
+	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" "hub=$HUB" "menu=$MENU" "appearance=$APPEARANCE" \
 		"app_pid=$APP_PID" "app_start=$APP_START" "app_exe=$APP_EXE" \
 		"engine_pid=$ENGINE_PID" "engine_start=$ENGINE_START" "engine_exe=$ENGINE_EXE" >"$STATE.new"
 	local pair
@@ -430,6 +450,7 @@ launch_app() {
 	[[ -n $SHOW ]] && vars+=(--env "PI2_SHOW=$SHOW")
 	[[ -n $HUB ]] && vars+=(--env "PI2_HUB=$HUB")
 	[[ -n $MENU ]] && vars+=(--env "PI2_MENU=$MENU")
+	[[ -n $APPEARANCE ]] && vars+=(--env "PI2_APPEARANCE=$APPEARANCE")
 	local pair
 	for pair in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do vars+=(--env "$pair"); done
 	env -i HOME="$HOME" USER="${USER-}" LOGNAME="${LOGNAME-}" TMPDIR="${TMPDIR:-/tmp/}" LANG=en_US.UTF-8 \
@@ -460,6 +481,7 @@ case $cmd in
 				--welcome) WELCOME=1; shift ;;
 				--env) [[ -n ${2-} ]] || die "--env needs NAME=VALUE"; add_test_env "$2"; shift 2 ;;
 				--menu) [[ -n ${2-} ]] || die "--menu needs the label of what to right-click, such as a conversation's title"; MENU=$2; shift 2 ;;
+				--appearance) [[ -n ${2-} ]] || die "--appearance needs light or dark"; check_appearance "$2"; APPEARANCE=$2; shift 2 ;;
 				*) die "unknown option $1" ;;
 			esac
 		done
@@ -543,11 +565,12 @@ case $cmd in
 		;;
 	reopen)
 		names "${1-}"; shift
-		requested_show="" replace_show=0 requested_hub=""
+		requested_show="" replace_show=0 requested_hub="" requested_appearance=""
 		while (($#)); do
 			case $1 in
 				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; requested_show=$2; replace_show=1; shift 2 ;;
 				--hub) check_hub "${2-}"; requested_hub=$2; shift 2 ;;
+				--appearance) [[ -n ${2-} ]] || die "--appearance needs light or dark"; check_appearance "$2"; requested_appearance=$2; shift 2 ;;
 				*) die "unknown option $1" ;;
 			esac
 		done
@@ -568,6 +591,7 @@ case $cmd in
 		copy_bundle "$staged/$NAME.app"
 		((replace_show == 0)) || SHOW=$requested_show
 		[[ -z $requested_hub ]] || HUB=$requested_hub
+		[[ -z $requested_appearance ]] || APPEARANCE=$requested_appearance
 		stop_process app "$APP_PID" "$APP_START" "$APP_EXE" >/dev/null
 		[[ -z $(from_bundle) ]] || die "the app did not stop; nothing was reopened"
 		APP_PID="" APP_START=""
@@ -763,6 +787,19 @@ JS
 		require_engine
 		node "$ROOT/scripts/test-copy-send.mjs" "$DATA/engine.sock" "$conversation" "$message" "$seconds"
 		;;
+	answer-of)
+		names "${1-}"; shift
+		(($# >= 2)) || die "use: scripts/test-copy answer-of $SUFFIX <conversation> <submission> [--timeout <seconds>]"
+		conversation=$1 submission=$2 seconds=600; shift 2
+		while (($#)); do
+			case $1 in
+				--timeout) [[ -n ${2-} ]] || die "--timeout needs seconds"; seconds=$2; shift 2 ;;
+				*) die "unknown option $1" ;;
+			esac
+		done
+		require_engine
+		node "$ROOT/scripts/test-copy-send.mjs" answer-of "$DATA/engine.sock" "$conversation" "$submission" "$seconds"
+		;;
 	stop)
 		names "${1-}"
 		[[ -d $DIR ]] ||
@@ -788,7 +825,7 @@ JS
 		load_state || true
 		follow_engine
 		state() { if is_recorded "$1" "$2" "$3"; then echo "$1, running"; elif [[ -n $1 ]]; then echo "$1, exited"; else echo "none recorded"; fi; }
-		echo "$NAME ($ID)${SHOW:+, showing $SHOW}"
+		echo "$NAME ($ID)${SHOW:+, showing $SHOW}${APPEARANCE:+, $APPEARANCE appearance}"
 		echo "  copy              $(tidy "$APP")"
 		echo "  data folder       $(tidy "$DATA")"
 		echo "  Keychain service  $SERVICE"

@@ -101,6 +101,14 @@ final class AppModel {
     /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
+    #if PI2_DEVELOPMENT
+    /// Opens the Settings window and a background command's output window, for `scripts/test-copy show` while the copy
+    /// runs (#553); set once the main window is up, so nil before that.
+    var openSettingsWindow: (() -> Void)?
+    var openOutputWindow: ((String) -> Void)?
+    /// The Settings tab the running copy was asked for, for a Settings window that is already open to move to (#553).
+    var settingsTabLive: SettingsTab?
+    #endif
     /// Conversations whose sub-chats are folded away in the sidebar.
     var collapsed: Set<Int> = []
 
@@ -376,7 +384,7 @@ struct Pi2App: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(engine: model.engine)
+            SettingsView(engine: model.engine, model: model)
                 .tint(.piAccent)
                 .launchWindow()
         }
@@ -423,6 +431,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         AppAppearance.apply()
+        #if PI2_DEVELOPMENT
+        // A test copy's own appearance comes after the preference every build draws with, so that
+        // `scripts/test-copy start|reopen --appearance` wins (#553).
+        TestCopyAppearance.apply()
+        #endif
         NSApp.activate()
     }
 
@@ -1108,6 +1121,10 @@ private struct WindowOpener: View {
         Color.clear.onAppear {
             model.showMainWindow = { openWindow(id: "main") }
             model.engine.browser.showWindow = { openWindow(id: "browser") }
+            #if PI2_DEVELOPMENT
+            model.openSettingsWindow = { openSettings() }
+            model.openOutputWindow = { openWindow(id: BackgroundOutputScene.id, value: $0) }
+            #endif
         }
         #if PI2_DEVELOPMENT
         // `PI2_SHOW=settings…` opens the Settings window, but not while the app is launching: a development build once

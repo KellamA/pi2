@@ -5,6 +5,16 @@ import SwiftUI
 /// another. A project's work is the list pi² keeps or an attached repository's issues, and only the words differ — "work"
 /// and "notes" against "issue" and "comments" — so both tabs draw them here rather than each drawing its own (#480).
 
+/// The agents a piece of work can be given to: the project's workers, not its orchestrator, which hands work out rather
+/// than takes it, and none an agent has removed through the work tool, which is no longer here to do it. Both kinds of
+/// list give work from this one list, in the order the Agents tab of the board shows them (#553).
+@MainActor
+func workAgents(engine: EngineClient, project: ProjectRow) -> [AgentProfile] {
+    engine.allAgents
+        .filter { $0.projectId == project.id && $0.id != project.orchestratorId && $0.removedAt == nil }
+        .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+}
+
 /// "Forge · sub-chat 17 · 5 min ago", or "Nobody · 5 min ago": who has it and when it last changed.
 struct WorkHolderLine: View {
     let engine: EngineClient
@@ -76,7 +86,14 @@ struct WorkGiveMenu: View {
     var body: some View {
         Menu {
             ForEach(agents) { agent in
-                Button(agent.name) { give(agent) }
+                Button { give(agent) } label: {
+                    // The agent's own face, as the row and the state line show it, so the person picks the worker they
+                    // mean rather than read a name (#553).
+                    HStack(spacing: 6) {
+                        AgentAvatar(agent: agent, size: 16)
+                        Text(agent.name)
+                    }
+                }
             }
         } label: {
             Text("Give to")

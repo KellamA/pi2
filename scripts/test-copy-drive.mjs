@@ -92,8 +92,13 @@ try {
 	switch (command) {
 		case 'show': {
 			const [pid, selection, , hub] = args;
-			const view = selection === 'dashboard' || selection?.startsWith('project:')
-				? { show: selection, hub } : { id: integer(selection, 'conversation') };
+			// A project, the Dashboard and a conversation number as they were, and every other page PI2_SHOW takes by
+			// name (usage, archive, settings:<tab>, …), which the app reads as it reads PI2_SHOW (#553).
+			let view;
+			if (selection === 'dashboard' || selection?.startsWith('project:')) view = { show: selection, hub };
+			else if (/^\d+$/.test(selection ?? '')) view = { id: integer(selection, 'conversation') };
+			else if (selection) view = { page: selection };
+			else throw new Error('conversation must be a positive integer');
 			summary = await windowCommand(target, { pid: Number(pid), command, ...view });
 			break;
 		}

@@ -192,6 +192,9 @@ struct OrchestratorModelMenu: View {
             SettingsLink { Text("Connect More Providers…") }
         } label: {
             Text("\(agent?.name ?? "Orchestrator") · \(current?.name ?? ref?.modelId ?? "No model")")
+                // The bar's own text colour, named: left to the system button the label can come
+                // out its own white-on-white, which reads as an empty pill in light appearance (#553).
+                .foregroundStyle(Theme.tx)
                 .lineLimit(1)
         }
         .menuStyle(.button)
