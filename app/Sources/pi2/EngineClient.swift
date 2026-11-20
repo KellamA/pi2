@@ -92,6 +92,11 @@ final class EngineClient {
     /// With the preview off the app shows none of them (10.2).
     private(set) var projectsPreview = false
     private(set) var projects: [ProjectRow] = []
+    /// Each project's rules, from the `projectRules` event (docs/projects.md, 4.3): the Rules tab reads it.
+    private(set) var projectRules: [String: [ProjectRule]] = [:]
+    /// Proposed rules waiting under Needs you, by project, from the `needs` event (docs/projects.md, 3.9); the Rules
+    /// tab shows their cards.
+    private(set) var ruleNeeds: [String: [RuleNeed]] = [:]
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -685,6 +690,13 @@ final class EngineClient {
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "needs":
                 projectStore.take(needs: try decoder.decode(NeedsEvent.self, from: line).items)
+                // A proposed rule waits here until answered. The whole array decodes whatever kinds are in it, so a
+                // need of a kind this app knows nothing of cannot take the tab down.
+                let ruleNeeds = try decoder.decode(RuleNeedsEvent.self, from: line).items
+                    .filter { $0.kind == "rule" && $0.projectId != nil }
+                update(\.ruleNeeds, Dictionary(grouping: ruleNeeds, by: { $0.projectId! }))
+            case "projectRules":
+                update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":

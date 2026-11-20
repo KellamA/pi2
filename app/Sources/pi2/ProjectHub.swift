@@ -19,6 +19,13 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
         let at: Double
     }
 
+    /// About how many tokens the rules add to each request (docs/projects.md, 6.2): an orchestrator's, and every other
+    /// agent's. Absent from an engine before #459 filled it.
+    struct RuleTokens: Decodable, Equatable {
+        let orchestrator: Int
+        let agents: Int
+    }
+
     let id: String
     let name: String
     /// The real path of its folder, or nil for a project with none.
@@ -34,6 +41,8 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let folderMissing: Bool?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
+    /// What the rules add to each request, for the Rules tab; nil when the engine sends none.
+    let ruleTokens: RuleTokens?
 }
 
 struct ProjectsEvent: Decodable {
