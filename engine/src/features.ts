@@ -47,6 +47,7 @@ import { variables } from "./variables.ts";
 import { wakes } from "./wakes.ts";
 import { thinkingNotices } from "./thinkingretry.ts";
 import { work } from "./work.ts";
+import { github } from "./github.ts";
 import { worktrees } from "./worktrees.ts";
 
 /** What a feature may use of the running engine. Getters, because features are made before the harness is open. */
@@ -120,8 +121,13 @@ export type FeatureParts = {
 	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
 	withheld?(): string[];
-	/** Requests from the app, by method name. Throw an Error with a plain message to refuse. */
-	handlers?: Record<string, (params: Record<string, unknown>) => Promise<unknown>>;
+	/**
+	 * Requests from the app, by method name. Throw an Error with a plain message to refuse. `connection` stands for the
+	 * connection that asked, the same object for each of its requests, for what is kept per app (`projects.watch`).
+	 */
+	handlers?: Record<string, (params: Record<string, unknown>, connection?: object) => Promise<unknown>>;
+	/** A connection closed: forget what was kept for it (the `connection` its requests were given). */
+	disconnected?(connection: object): void;
 	/** Extra fields of the conversation state the app is sent, from the conversation's view. */
 	state?(view: ConversationView, meta: Meta | undefined): Record<string, unknown>;
 	/** Extra fields of a conversation's row in Activity, while it has work running. */
@@ -253,5 +259,5 @@ export const FEATURES: Feature[] = [
 	needs,
 	reports,
 	work,
-	// github (#468)
+	github,
 ];

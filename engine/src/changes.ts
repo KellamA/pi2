@@ -12,8 +12,8 @@
 //
 // What other issues fill in, and what it does until then:
 //
-// - `work.local` and `work.github` (#467, #468) and `wake.choice` (#463) register what they do with `defineOp`. Until
-//   then nothing records one, and an Undo or a request of one is refused.
+// - `work.local` (#467, here), `work.github` (github.ts, #468) and `wake.choice` (#463) register what they do with
+//   `defineOp`. A project's `repository` is applied through github.ts (`wireRepository`).
 // - `orchestrator.set` is made by #466's `projects.setOrchestrator`, which makes the roles and the fresh conversation in a
 //   commit of its own: allowing it is checked in the commit that takes the answer, and made once that is stored.
 
@@ -270,13 +270,28 @@ function projectChangeOf(fields: Field[]): { name?: string; folder?: string | nu
 	return given;
 }
 
+/** Attaching a repository, or detaching it (github.ts, #468): what `github.attach` and `github.detach` do, in the commit `tx`. */
+let setRepository: ((tx: Tx, projectId: string, repository: unknown) => Promise<void>) | undefined;
+export function wireRepository(set: typeof setRepository): void {
+	setRepository = set;
+}
+
 defineOp("project.change", {
 	check: async (tx, projectId, op) => {
 		const project = (await tx.doc(Projects)).projects[projectId]!;
 		const values = projectValues(project);
 		return op.fields.every((field) => same(values[field.name], field.before)) ? undefined : CHANGED_SINCE;
 	},
-	apply: async (tx, projectId, op) => void (await applyProjectChange(tx, projectId, projectChangeOf(op.fields))),
+	apply: async (tx, projectId, op) => {
+		// The repository first: detaching it is what lets the folder go.
+		const repository = op.fields.find((field) => field.name === "repository");
+		if (repository !== undefined) {
+			if (setRepository === undefined) throw new Error("pi² cannot attach a repository to a project yet.");
+			await setRepository(tx, projectId, repository.after);
+		}
+		const rest = op.fields.filter((field) => field.name !== "repository");
+		if (rest.length > 0 || repository === undefined) await applyProjectChange(tx, projectId, projectChangeOf(rest));
+	},
 	inverse: (op) => ({ kind: "project.change", fields: swap(op.fields) }),
 	widens: (op) => op.fields.some((field) => projectFieldWidens(field.name, field.before, field.after)),
 });

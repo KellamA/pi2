@@ -21,8 +21,8 @@
 // conversations; `library`'s `orchestrator`, the conversation state's `project`, `activity`'s `lastLine` and
 // `projects`' `lastWords`.
 //
-// What a later issue fills in: the state block's work for a project with a GitHub repository attached (#468, through
-// `wireWorkState`). Until then it reads the list kept by pi² (work.ts), which such a project does not use.
+// The state block's work for a project with a GitHub repository attached comes from github.ts (#468), through
+// `wireWorkState`; for any other project, from the list kept by pi² (work.ts).
 // Outside a project, and with the preview off, nothing here adds anything to what a conversation is told.
 
 import { type ConversationId, defineDoc, type EntryRecord, InboxDoc, LiveDoc, type Tx } from "@earendil-works/pi-durable";
