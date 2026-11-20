@@ -19,13 +19,6 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
         let at: Double
     }
 
-    /// The parts of the project's settings the hub reads (docs/projects.md, section 8); the Settings tab (#478) reads
-    /// the rest.
-    struct Settings: Decodable, Equatable {
-        /// The person's switch: whether a report wakes the orchestrator rather than waiting to be read (8.2).
-        let wakeOnReports: Bool?
-    }
-
     /// About how many tokens the rules add to each request (docs/projects.md, 6.2): an orchestrator's, and every other
     /// agent's. Absent from an engine before #459 filled it.
     struct RuleTokens: Decodable, Equatable {
@@ -46,7 +39,6 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let deletedAt: Double?
     /// Its folder has gone since it was set.
     let folderMissing: Bool?
-    let settings: Settings?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
     /// The project's settings (docs/projects.md, section 8) as the `projects` event sends them. The Agents tab reads

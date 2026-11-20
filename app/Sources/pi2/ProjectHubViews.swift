@@ -377,7 +377,6 @@ private struct HubBoard: View {
             case .notes: ProjectNotesTab(model: model, project: project)
             case .branches: ProjectBranchesTab(model: model, project: project)
             case .settings: ProjectSettingsTab(model: model, project: project)
-            default: BoardTabEmpty(tab: tab)
             }
         }
     }
