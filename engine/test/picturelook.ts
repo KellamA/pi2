@@ -13,8 +13,10 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -141,6 +143,21 @@ try {
 	// A model that can see still gets the picture, byte for byte as before.
 	assert.match(await client.answer(seeing, "/read pic.png"), /I can see 1 picture\./);
 	assert.equal(client.tool(seeing).images, 1, "the picture is kept for a model that can see");
+
+	// A picture already in the conversation is not sent once its model is changed to one that cannot see.
+	const changed = await open({ agentId, model: { provider: "demo", modelId: "demo-1" } });
+	assert.match(await client.answer(changed, "/read pic.png"), /I can see 1 picture\./);
+	await client.call("conversation.configure", { id: changed, model: { provider: "demo", modelId: "demo-text" } });
+	assert.doesNotMatch(
+		await client.answer(changed, "/read notes.txt"),
+		/I can see \d+ picture/,
+		"a picture read before the model was changed is not sent to it",
+	);
+	assert.ok(
+		(client.conversations.get(changed).items as any[]).some((item) => item.kind === "tool" && item.images === 1),
+		"the person is still shown the picture that was read, though the model was sent a line instead",
+	);
+	step("a picture already in a conversation is not sent after its model is changed to one that cannot see");
 	const seeingBefore = await client.answer(seeing, "/system full");
 	const blindBefore = await client.answer(blind, "/system full");
 	assert.equal(blindBefore, seeingBefore, "the prompt is the same whatever the model, while the setting is None");
@@ -164,6 +181,16 @@ try {
 	assert.match(readOffered.text, /You cannot see pictures: pic\.png is one\. Ask about it with look\./);
 	assert.ok(!/I can see \d+ picture/.test(afterRead), "still no bytes reach the model that cannot see");
 	step("the line names look where a picture would have been given");
+
+	// A picture among text files in one read: the line names its own file, and the text files are still read.
+	const mixed = await client.answer(blind, '/tool read {"files":[{"path":"pic.png"},{"path":"notes.txt"}]}');
+	const mixedResult = client.tool(blind);
+	assert.equal(mixedResult.isError, false, mixedResult.text);
+	assert.equal(mixedResult.images ?? 0, 0, "no picture is kept in a call of several files");
+	assert.match(mixedResult.text, /==> pic\.png <==\nYou cannot see pictures: pic\.png is one\. Ask about it with look\./, mixedResult.text);
+	assert.match(mixedResult.text, /just text/, "the text file beside it is still read");
+	assert.ok(!/I can see \d+ picture/.test(mixed), "no bytes reach the model that cannot see");
+	step("a picture among text files in one read gets the line that names it, and no bytes");
 
 	// ---- A question about a picture, answered by the other model.
 	const spendBefore = client.conversations.get(blind).state.usage;
@@ -232,5 +259,56 @@ assert.deepEqual(beforeRestart, { provider: "demo", modelId: "demo-1" }, "the ch
 	} finally {
 		reopened.client.close();
 		await stop(reopened.engine);
+	}
+}
+
+// ---- A provider's error is the tool's error, in plain words, and the conversation carries on.
+{
+	const home = newHome("refused");
+	const folder = join(home, "folder");
+	mkdirSync(folder);
+	writeFileSync(join(folder, "pic.png"), Buffer.from(RED, "base64"));
+	// A stand-in OpenAI on 127.0.0.1, at its limit, naming a key and a request id that must not reach the model.
+	const standIn = createServer((request: IncomingMessage, response) => {
+		request.resume();
+		request.on("end", () =>
+			response.writeHead(429, { "content-type": "application/json", "x-should-retry": "false" }).end(
+				JSON.stringify({ error: { message: "Rate limit reached for this project. request id req_0123456789abcdef; key sk-not-a-real-key-0123456789", type: "rate_limit_error" } }),
+			),
+		);
+	});
+	await new Promise<void>((resolve) => standIn.listen(0, "127.0.0.1", resolve));
+	try {
+		// A model added by hand to OpenAI, on the stand-in's address: only a test can put one there (as addedmodels.ts does).
+		const base = `http://127.0.0.1:${(standIn.address() as { port: number }).port}/v1`;
+		const template = getBuiltinModels("openai").find((model) => model.api === "openai-responses")!;
+		const stored = { ...template, id: "gpt-look-refused", name: "GPT Look Refused", baseUrl: base, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+		writeFileSync(
+			join(home, "added-models.json"),
+			JSON.stringify({ openai: [{ id: "gpt-look-refused", name: "GPT Look Refused", basedOn: "a-model-the-library-dropped", contextWindow: 100_000, maxTokens: 4096, vision: true, thinkingLevels: [], addedAt: 1, model: stored }] }),
+		);
+		const refused = await start("refused", home);
+		try {
+			await refused.client.call("providers.setKey", { id: "openai", key: "sk-test-not-real" });
+			await refused.client.until("the added model offered", () => refused.client.events.look?.models?.some((model: any) => model.id === "gpt-look-refused") === true);
+			await refused.client.call("look.setModel", { model: { provider: "openai", modelId: "gpt-look-refused" } });
+			await refused.client.until("the choice", () => refused.client.events.look?.model?.modelId === "gpt-look-refused");
+			const { id: agentId } = await refused.client.call("agents.save", { agent: { name: "Blind", access: "read", model: { provider: "demo", modelId: "demo-text" }, cwd: folder } });
+			await refused.client.until("agent Blind", () => refused.client.events.agents?.agents?.some((x: any) => x.id === agentId));
+			const { id } = await refused.client.call("conversation.create", { agentId });
+			await refused.client.call("conversation.open", { id });
+			const answer = await refused.client.answer(id, '/tool look {"path":"pic.png","question":"What is in it?"}');
+			const result = refused.client.tool(id);
+			assert.equal(result.isError, true, result.text);
+			assert.match(result.text, /^GPT Look Refused could not look at the picture: OpenAI API error \(429\) rate_limit_error: Rate limit reached for this project\./, result.text);
+			assert.ok(!result.text.includes("sk-") && !result.text.includes("req_0123456789abcdef"), `no key or request id reaches the model: ${result.text}`);
+			assert.match(answer, /The tool reported an error; its output is above\./, "the conversation carries on after the provider's error");
+			step("a provider's limit is the tool's error in plain words, and the conversation carries on");
+		} finally {
+			refused.client.close();
+			await stop(refused.engine);
+		}
+	} finally {
+		standIn.close();
 	}
 }

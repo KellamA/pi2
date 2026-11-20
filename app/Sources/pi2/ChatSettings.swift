@@ -253,7 +253,7 @@ private struct LookModelSection: View {
     }
 
     private func price(_ model: EngineClient.LookModels.Model) -> String {
-        guard let price = model.price else { return "price unknown" }
+        guard let price = model.price else { return "Price unknown" }
         let currency = FloatingPointFormatStyle<Double>.Currency(code: "USD").precision(.fractionLength(0...6))
         return "\(price.input.formatted(currency)) in / \(price.output.formatted(currency)) out per 1M tokens"
     }
