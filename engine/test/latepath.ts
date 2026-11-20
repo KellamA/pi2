@@ -16,7 +16,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { adoptLoginPath, askShell, folders, GIVE_UP_MS, listenToShell, usualFolders } from "../src/shellpath.ts";
 import { socketPathFor } from "../src/socket.ts";
-import { EngineClient, listening as listeningOn, PATIENT_MS, running, stop, until } from "./patience.ts";
+import { EngineClient, listening as listeningOn, PATIENT_MS, running, standInApp, stop, until } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-latepath-")));
 const BARE = "/usr/bin:/bin:/usr/sbin:/sbin";

@@ -12,11 +12,12 @@ import { fileURLToPath } from "node:url";
 const script = fileURLToPath(new URL("../../scripts/load.mts", import.meta.url));
 
 // Only the load script runs here. A stand-in socket drives fixture and fallback outcomes without starting an app or model.
-async function run(t: TestContext, entries: number, fixture: number | "missing" | "unanswered") {
+async function run(t: TestContext, entries: number, fixture: number | "missing" | "unanswered", mayAnswer = true) {
 	const folder = await mkdtemp(join(tmpdir(), "pi2-load-test-"));
 	const path = join(folder, "engine.sock");
 	const archived: number[] = [];
 	const turns: string[] = [];
+	const methods: string[] = [];
 	let nextConversation = 0;
 	const sockets = new Set<Socket>();
 	const server = createServer(socket => {
@@ -25,8 +26,10 @@ async function run(t: TestContext, entries: number, fixture: number | "missing" 
 		const send = (message: object) => socket.write(`${JSON.stringify(message)}\n`);
 		createInterface({ input: socket }).on("line", (line) => {
 			const { id, method, params } = JSON.parse(line);
+			methods.push(method);
 			const reply = (result: object = {}) => send({ id, result });
 			switch (method) {
+				case "connection.mayAnswer": return reply({ mayAnswer });
 				case "conversation.create": return reply({ id: ++nextConversation });
 				case "conversation.configure":
 				case "conversation.open":
@@ -69,7 +72,7 @@ async function run(t: TestContext, entries: number, fixture: number | "missing" 
 			{ env: { ...process.env, PI2_SCRATCH: folder }, timeout: 120_000 },
 			(error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr }));
 	});
-	return { code, stdout, stderr, archived, turns };
+	return { code, stdout, stderr, archived, turns, methods };
 }
 
 for (const entries of [200, 600]) test(`load makes exactly ${entries} fixture entries without submitting demo work`, async t => {
@@ -78,6 +81,13 @@ for (const entries of [200, 600]) test(`load makes exactly ${entries} fixture en
 	assert.match(runResult.stdout, new RegExp(`Large conversation #2 has ${entries} entries\\.`));
 	assert.deepEqual(runResult.turns, []);
 	assert.deepEqual(runResult.archived, [1, 2]);
+});
+
+test("load refuses an unauthenticated standalone socket before creating conversations", async t => {
+	const result = await run(t, 200, "missing", false);
+	assert.equal(result.code, 1, result.stderr);
+	assert.match(result.stderr, /name a test copy instead of --socket/);
+	assert.deepEqual(result.methods, ["connection.mayAnswer"]);
 });
 
 test("load falls back to short turns and counts each entry once", async t => {
