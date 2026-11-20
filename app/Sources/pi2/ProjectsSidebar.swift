@@ -149,14 +149,17 @@ private struct ProjectBlock: View {
                 Button("Archive") { model.archiveProject(project.id) }
             }
         if open {
+            // The conversation in place of the board is not the List's selection, which stays on the project: its row is
+            // marked here instead, so that the person can see which of the agents they are reading (#473).
+            let agent = model.hubs.agent(project.id)
             OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
-                    RunRow(engine: engine, run: run) { model.openAgent(id, in: project.id) }
+                    RunRow(engine: engine, run: run, shown: agent == id) { model.openAgent(id, in: project.id) }
                         .padding(.leading, 14)
                 }
             }
-            OtherConversations(model: model, project: project, live: live)
+            OtherConversations(model: model, project: project, live: live, agent: agent)
         }
     }
 }
@@ -246,6 +249,8 @@ private struct OrchestratorRow: View {
 private struct RunRow: View {
     let engine: EngineClient
     let run: RunLive
+    /// Whether its conversation is the one in place of the project's board (#473).
+    let shown: Bool
     /// Opens its conversation in place of the board, in the project's hub (#473).
     let open: () -> Void
 
@@ -272,9 +277,11 @@ private struct RunRow: View {
                     Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).fixedSize()
                 }
             }
+            .background(shown ? Theme.card2 : .clear, in: .rect(cornerRadius: 6))
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(shown ? .isSelected : [])
         .help("\(run.waiting ? "Waiting for you" : run.atLimit ? "Waiting for a provider’s limit" : "Working"). Open its conversation in place of the board.")
     }
 }
@@ -284,6 +291,8 @@ private struct OtherConversations: View {
     let model: AppModel
     let project: ProjectInfo
     let live: ProjectLive
+    /// The conversation in place of the board, whose row is marked (#473).
+    let agent: Int?
 
     var body: some View {
         let others = live.others
@@ -318,9 +327,11 @@ private struct OtherConversations: View {
                                 .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
                             Spacer(minLength: 0)
                         }
+                        .background(agent == conversation.id ? Theme.card2 : .clear, in: .rect(cornerRadius: 6))
                         .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(agent == conversation.id ? .isSelected : [])
                     .padding(.leading, 28)
                     .help("Open its conversation in place of the board")
                     .draggable(ConversationDrag(id: conversation.id)) {

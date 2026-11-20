@@ -462,7 +462,8 @@ private struct HubAgentPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                AgentAvatar(agent: agent, size: 16)
+                // 14, as the conversation panel's header beside it (PanelHeader).
+                AgentAvatar(agent: agent, size: 14)
                 Text(agent?.name ?? "Agent")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.tx)
