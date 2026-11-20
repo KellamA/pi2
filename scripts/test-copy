@@ -51,9 +51,12 @@ Usage: scripts/test-copy <command> [arguments]
   reopen <suffix> [--show <what>] [--hub <fold>]
                                    Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show and --hub unless replaced.
-  show <suffix> <conversation>     Show this conversation in the running copy's main window, and wait for it to draw.
-  show <suffix> project:<name-or-id>[#<tab-or-agent>] [--hub <fold>]
-  show <suffix> dashboard          Hand a project or Dashboard selection to the running app, which records it.
+  show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: inbox, activity, usage, archive,
+                                   branches, agent:<id>, chat[:<number or title>], palette[:<query>], settings[:<tab>],
+                                   output:<id>, a conversation's number or title, or
+                                   project:<name-or-id>[#<tab-or-agent>]. It answers once a conversation's page or a
+                                   hub has drawn it, and for any other page it says that it cannot wait for it to draw.
+  show <suffix> dashboard          Select the Dashboard's row in the sidebar of projects, which is not drawn yet.
                                    --hub sets PI2_HUB at launch, or the fold for a live request:
                                    both, conversation-folded or board-folded.
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.

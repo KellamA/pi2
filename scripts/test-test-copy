@@ -164,6 +164,10 @@ expect "no copy named test-7 was started from this checkout" send test-7 8 hello
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" send test-7 8 hello
 expect "no copy named test-7 was started from this checkout" reopen test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
+# Every page PI2_SHOW takes goes through the argument checks, not "conversation must be a positive integer" (#553).
+for page in usage archive inbox 'settings:general' 'agent:atlas' 'palette:duplicate' 'project:Demo project#work'; do
+	PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 "$page"
+done
 expect "no copy named test-7 was started from this checkout" size test-7 smallest
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" choose test-7 cancel
 expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
