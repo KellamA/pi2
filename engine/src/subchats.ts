@@ -140,7 +140,8 @@ function whereWords(where: Where): string {
 
 /**
  * The end of `sub_chats`' list: how much of each signed-in subscription's windows is used and when each resets, and
- * which subscription this conversation and each agent it can hand work to runs on. Nothing when no feature knows.
+ * which subscription this conversation and each agent it can hand work to runs on; and the providers whose limit a
+ * refusal said is used up until a time it named (#556). Nothing when no feature knows.
  */
 async function limitsOf(host: Host, api: ToolExecutionApi, context: Context): Promise<string[]> {
 	const views = host.features.find((feature) => feature.planLimits !== undefined)?.planLimits?.();
@@ -155,7 +156,8 @@ async function limitsOf(host: Host, api: ToolExecutionApi, context: Context): Pr
 		// What a new sub-chat with that agent would run on: its own model, or the default one.
 		add((await host.agentChange(agent, { subChat: true }).catch(() => undefined))?.model?.provider, agent.name);
 	}
-	return ["", ...limitsReport(views, users, Date.now())];
+	const remembered = host.features.find((feature) => feature.rememberedLimits !== undefined)?.rememberedLimits?.() ?? [];
+	return ["", ...limitsReport(views, users, Date.now(), remembered)];
 }
 
 export const SUB_CHATS_DESCRIPTION =
