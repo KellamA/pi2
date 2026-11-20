@@ -9,7 +9,13 @@ struct InboxCard: View {
     let item: InboxItem
     /// Whether to say which agent and conversation is asking; off where the surrounding view already shows it.
     let showsSource: Bool
+    /// Whether the card is in a narrower place than the Inbox, such as a Dashboard column (#481): its row then takes
+    /// two lines rather than folding every part of it down a word at a time. Off everywhere else, so the Inbox's and the
+    /// menu bar's cards read exactly as they did.
+    var compact = false
     @State private var answer = ""
+    /// The answer's request is on its way: a second click while it goes does nothing (#481).
+    @State private var sending = false
 
     private var agent: AgentProfile? { engine.allAgents.first { $0.name == item.agentName } }
     private var isApproval: Bool { item.kind == "approval" }
@@ -74,6 +80,12 @@ struct InboxCard: View {
         }
     }
 
+    /// What is asked, in the row's words: an approval's request, or a question's asking.
+    private var asking: some View {
+        Text(isApproval ? request : "\(item.agentName ?? "The agent") has a question")
+            .font(.system(size: 13, weight: .semibold))
+    }
+
     /// What a document written by the agent is, from the ending of the file name it chose: the file itself is shown below.
     private var documentKind: String {
         switch (item.arguments["path"]?.stringValue ?? "").split(separator: ".").last?.lowercased() {
@@ -87,15 +99,33 @@ struct InboxCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                if showsSource { AgentAvatar(agent: agent, size: 20) }
-                Text(isApproval ? request : "\(item.agentName ?? "The agent") has a question")
-                    .font(.system(size: 13, weight: .semibold))
-                if showsSource {
-                    Text(item.title).foregroundStyle(Theme.tx2).lineLimit(1)
+            if compact {
+                // A Dashboard column's card is narrower than the Inbox's: what is asked takes up to two lines and the
+                // hint shortens, rather than every part of the row folding down a word at a time (#481).
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        if showsSource { AgentAvatar(agent: agent, size: 20) }
+                        asking.lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: 6) {
+                        if showsSource {
+                            Text(item.title).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer(minLength: 6)
+                        Text("waits for you").font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
+                    }
                 }
-                Spacer(minLength: 6)
-                Text("waits for you · survives restarts").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+            } else {
+                HStack(spacing: 8) {
+                    if showsSource { AgentAvatar(agent: agent, size: 20) }
+                    asking
+                    if showsSource {
+                        Text(item.title).foregroundStyle(Theme.tx2).lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    Text("waits for you · survives restarts").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                }
             }
             if isApproval {
                 // An action on a window or a web page is described in words by the app that will do it, and a schedule
@@ -223,13 +253,25 @@ struct InboxCard: View {
     }
 
     private func decide(_ decision: String) {
-        engine.perform("inbox.decide", ["id": item.id, "decision": decision])
+        guard !sending else { return }
+        sending = true
+        Task {
+            do { try await engine.call("inbox.decide", ["id": item.id, "decision": decision]) }
+            catch { engine.lastError = error.localizedDescription }
+            sending = false
+        }
     }
 
     private func send() {
-        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        engine.perform("inbox.answer", ["id": item.id, "text": answer])
+        guard !sending, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        sending = true
+        let text = answer
         answer = ""
+        Task {
+            do { try await engine.call("inbox.answer", ["id": item.id, "text": text]) }
+            catch { engine.lastError = error.localizedDescription }
+            sending = false
+        }
     }
 }
 

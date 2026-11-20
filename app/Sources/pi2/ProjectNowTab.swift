@@ -239,6 +239,9 @@ struct NeedCard: View {
     /// The answer typed into this card's field.
     @Binding var words: String
     let answer: (NeedItem, [String: Any]) -> Void
+    /// Whether the card is in a narrower place than the Now tab, such as a Dashboard column (#481): its row then takes
+    /// two lines rather than folding down a word at a time. Off on the Now tab, which has the width.
+    var compact = false
 
     private var engine: EngineClient { model.engine }
     private var agent: AgentProfile? { engine.agent(need.agentId ?? "") }
@@ -261,14 +264,14 @@ struct NeedCard: View {
                 switchCard
             } else if let item = engine.inbox.first(where: { $0.id == need.id }) {
                 // The Inbox's own card, which answers it as it does today (`inbox.decide` and `inbox.answer`).
-                InboxCard(engine: engine, item: item, showsSource: true)
+                InboxCard(engine: engine, item: item, showsSource: true, compact: compact)
             } else {
                 // The Inbox item has not reached the app, or belongs to a version of a chat the person is not looking at.
                 plainCard
             }
         case "question":
             if need.blocking, let item = engine.inbox.first(where: { $0.id == need.id }) {
-                InboxCard(engine: engine, item: item, showsSource: true)
+                InboxCard(engine: engine, item: item, showsSource: true, compact: compact)
             } else {
                 questionCard
             }
@@ -291,7 +294,10 @@ struct NeedCard: View {
     private var who: some View {
         HStack(spacing: 8) {
             AgentAvatar(agent: agent, size: 18)
+            // On one line, in a Dashboard column's narrower card as on the Now tab's (#481): the name keeps its
+            // width and the conversation's title gives way, rather than the name folding down a letter at a time.
             Text(need.agentName ?? "Someone").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
+                .lineLimit(1).layoutPriority(1)
             Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 6)
@@ -303,9 +309,30 @@ struct NeedCard: View {
     /// A card of one's own, in the Inbox card's manner.
     private func own(_ label: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                who
-                Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
+            // A wide card puts the name, the conversation and the kind on one line; a narrow one, such as a
+            // Dashboard column's, puts the name and kind on the first line and the conversation and time on the
+            // second, so the name keeps its width and the title gives way (#481).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    who
+                    Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        AgentAvatar(agent: agent, size: 18)
+                        Text(need.agentName ?? "Someone").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
+                    }
+                    HStack(spacing: 6) {
+                        Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
+                            .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        Text("asked \(LimitsFormat.ago(LimitsFormat.date(need.createdAt), now: .now))")
+                            .font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
+                    }
+                }
             }
             content()
         }

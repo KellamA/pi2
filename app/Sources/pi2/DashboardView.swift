@@ -54,18 +54,20 @@ struct DashboardView: View {
             if watched.isEmpty {
                 empty
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 0) {
-                        ForEach(watched) { project in
-                            DashboardColumn(model: model, project: project)
-                                .frame(width: Self.columnWidth)
-                                .frame(minHeight: 0, maxHeight: .infinity)
-                                .overlay(alignment: .trailing) { Rectangle().fill(Theme.line).frame(width: 1) }
+                GeometryReader { space in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 0) {
+                            ForEach(watched) { project in
+                                DashboardColumn(model: model, project: project)
+                                    .frame(width: Self.columnWidth(watched.count, in: space.size.width))
+                                    .frame(minHeight: 0, maxHeight: .infinity)
+                                    .overlay(alignment: .trailing) { Rectangle().fill(Theme.line).frame(width: 1) }
+                            }
                         }
                     }
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 }
-                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             }
         }
         .background(Theme.window)
@@ -77,8 +79,16 @@ struct DashboardView: View {
         #endif
     }
 
-    /// One column's width: fixed, so that the columns scroll sideways and never ask the window for more room.
-    static let columnWidth: CGFloat = 300
+    /// One column's width: the columns share the window's width between them, so three or four fill it as the design
+    /// draws them (docs/design/projects-drafts.html, screen 5), and never narrower than 300 points, so that more than
+    /// fit scroll sideways rather than squeeze. The window is never asked for more room either way.
+    static func columnWidth(_ count: Int, in width: CGFloat) -> CGFloat {
+        guard count > 0, width > 0 else { return minimumColumnWidth }
+        return max(minimumColumnWidth, (width / CGFloat(count)).rounded(.down))
+    }
+
+    /// The narrowest a column gets before the row scrolls instead.
+    static let minimumColumnWidth: CGFloat = 300
 
     // MARK: The projects to watch
 
@@ -155,6 +165,8 @@ private struct DashboardColumn: View {
     @State private var problems: [String: String] = [:]
     /// The answer being typed into a question's or a decision's field, by the need's id.
     @State private var words: [String: String] = [:]
+    /// The needs whose answer is on its way: a second click while it goes does nothing (#481).
+    @State private var answering: Set<String> = []
     /// The column's height, for the space the needs scroll within.
     @State private var height: CGFloat = 0
 
@@ -229,7 +241,7 @@ private struct DashboardColumn: View {
                     NeedCard(
                         model: model, need: need, problem: problems[need.id],
                         words: Binding(get: { words[need.id] ?? "" }, set: { words[need.id] = $0 }),
-                        answer: answer
+                        answer: answer, compact: true
                     )
                 }
             }
@@ -258,6 +270,8 @@ private struct DashboardColumn: View {
     /// Sends one answer to a need through the one request every kind answers by (`needs.answer`, docs/projects.md,
     /// 4.2), and keeps the engine's refusal on the card it was given from.
     private func answer(_ need: NeedItem, _ reply: [String: Any]) {
+        guard !answering.contains(need.id) else { return }
+        answering.insert(need.id)
         Task {
             do {
                 try await engine.call("needs.answer", ["id": need.id, "answer": reply])
@@ -266,6 +280,7 @@ private struct DashboardColumn: View {
             } catch {
                 problems[need.id] = error.localizedDescription
             }
+            answering.remove(need.id)
         }
     }
 }
