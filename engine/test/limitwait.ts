@@ -4,7 +4,9 @@
 //
 // No check depends on how fast the Mac is. Waits the provider does not time are made short with PI2_LIMIT_BACKOFF_MS,
 // times it names are a few milliseconds, and a wait of an hour is only looked at, stopped and carried over a restart,
-// never sat through. Each check waits for what the engine does, never for a time.
+// never sat through. Each check waits for what the engine does, never for a time. What the engine logged is waited for
+// the same way (`logSays` below): it reaches this test over a pipe, so a line can arrive after the socket event that
+// followed it, and reading `log` once then misses it (#588).
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -18,7 +20,7 @@ import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRef
 import { usedUpUntil } from "../src/limits.ts";
 import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop, until } from "./patience.ts";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -583,6 +585,15 @@ function startEngine(extra: Record<string, string> = {}): ChildProcess {
 }
 
 type Item = { kind: string; text: string; stop?: string; error?: string | null };
+/**
+ * The check that the engine logged a line, held until it arrives. The engine writes to its standard error and this test
+ * reads the pipe, so a line can reach us after the socket event that came after it: reading `log` once then misses it,
+ * which is what failed in CI (#588). The limit is patience.ts's guard against a hang, not a longer wait.
+ */
+async function logSays(what: string, line: RegExp): Promise<void> {
+	await until(`the engine's log to say ${what}`, () => (line.test(log) ? true : undefined));
+}
+
 type Model = { provider: string; modelId: string };
 type Shown = { kind: string; since: number; until: number; told: boolean; refusals: number; provider: string; model: Model | null };
 type State = {
@@ -648,7 +659,7 @@ try {
 	assert.equal(conv.state.failure, null, "the run carried on");
 	assert.equal(answer(conv), "Answered after 6 refusals.");
 	assert.equal(requests["six refusals"], 7);
-	assert.match(log, new RegExp(`conversation ${six} is waiting for Stand-in's rate limit: no time named`));
+	await logSays("the run is waiting for a rate limit with no time named", new RegExp(`conversation ${six} is waiting for Stand-in's rate limit: no time named`));
 	await client.until("the wait's end logged", () => new RegExp(`conversation ${six} carries on: Stand-in answered after .* of waiting \\(6 refusals\\)`).test(log));
 	step("a run refused six times for a rate limit, with no time named, waits and carries on by itself");
 
@@ -657,7 +668,7 @@ try {
 	conv = await client.ended(told);
 	assert.equal(conv.state.failure, null);
 	assert.equal(answer(conv), "Answered after 2 refusals.");
-	assert.match(log, new RegExp(`conversation ${told} is waiting for Stand-in's rate limit: until .*Z, the time it named`));
+	await logSays("the run waits for the time the provider named", new RegExp(`conversation ${told} is waiting for Stand-in's rate limit: until .*Z, the time it named`));
 	step("a run waits for the time the provider names (retry-after-ms, retry-after) and carries on");
 
 	// Overloaded (529), five times.
@@ -665,7 +676,7 @@ try {
 	conv = await client.ended(busy);
 	assert.equal(conv.state.failure, null);
 	assert.equal(answer(conv), "Answered after 5 refusals.");
-	assert.match(log, new RegExp(`conversation ${busy} is waiting for Stand-in being overloaded`));
+	await logSays("the run is waiting for an overloaded provider", new RegExp(`conversation ${busy} is waiting for Stand-in being overloaded`));
 	step("a run that meets an overloaded provider (529) waits and carries on");
 
 	// A message sent to steer while the run waits for a limit (#324): it does not end the wait, and it is placed as the
@@ -769,7 +780,7 @@ try {
 	const held = reached.runs[0]!.conversationId;
 	assert.equal(reached.runs[0]!.subChat, true);
 	await client.until("Activity shows the sub-chat waiting", () => client.activity.find((run) => run.conversationId === held && run.limit !== null));
-	assert.match(log, /limits: Stand-in's limit is reached: 1 run \(conversation \d+\) waits until .*Z, the time it named; a notice is in the Inbox/);
+	await logSays("a limit is reached, and a notice is in the Inbox", /limits: Stand-in's limit is reached: 1 run \(conversation \d+\) waits until .*Z, the time it named; a notice is in the Inbox/);
 	await client.until("the parent idle", () => client.conversations.get(parent)?.state.busy === false);
 	await client.call("submit", { id: parent, text: '/tool sub_chats {"action":"list"}' });
 	const listed = await client.until("sub_chats' list", () => client.conversations.get(parent)!.items.filter((i) => i.kind === "tool")[1]);
@@ -780,7 +791,7 @@ try {
 	const carried = await client.until("work carried on, in the Inbox", () => client.notices.find((notice) => notice.stage === "carried_on"));
 	assert.equal(carried.id, reached.id, "the same notice, gone on to its next stage");
 	assert.deepEqual(carried.runs.map((run) => run.conversationId), [held]);
-	assert.match(log, /limits: Stand-in answered again after .*: its limit has reset, and the 1 run \(conversation \d+\) that waited carries on/);
+	await logSays("the limit reset and the run carries on", /limits: Stand-in answered again after .*: its limit has reset, and the 1 run \(conversation \d+\) that waited carries on/);
 	await client.call("limits.dismiss", { id: carried.id });
 	await client.until("the notice dismissed", () => client.notices.length === 0 || undefined);
 	step("a limit reached is one notice in the Inbox that goes on to say work carried on, and sub_chats' list says who waits until when");
@@ -986,8 +997,10 @@ try {
 	assert.equal(shown.provider, "Stand-in");
 	assert.equal(shown.told, true);
 	assert.equal(shown.refusals, 0, "it was refused nothing: it never asked");
-	await client.until("its hold logged", () => holds().find((line) => line.includes(`conversation ${behind} waits`)));
-	assert.match(holds().at(-1)!, new RegExp(`conversation ${behind} waits for Stand-in's rate limit until .*Z, the time conversation ${learner} was told, without asking$`));
+	// The line saying the second is held, held until it arrives; and the line the wait found is the one checked, rather
+	// than a second reading of the log taken at a moment of its own (#588).
+	const heldLine = await client.until("its hold logged", () => holds().find((line) => line.includes(`conversation ${behind} waits`)));
+	assert.match(heldLine, new RegExp(`conversation ${behind} waits for Stand-in's rate limit until .*Z, the time conversation ${learner} was told, without asking$`));
 	assert.equal(requests["window second"], undefined, "the second sent no request while the first waits");
 	// At the time it named, one of them goes; the other follows when it is answered, so each is answered on its first
 	// request after the window, never refused.
@@ -1027,7 +1040,7 @@ try {
 	});
 	assert.equal(answer(conv), "Answered after 0 refusals.");
 	assert.equal(requests["window by hand"], 1, "sent at once");
-	assert.match(log, new RegExp(`conversation ${fourth} asks Stand-in now, as the person asked it to, rather than waiting until`));
+	await logSays("the person's message asks now rather than waiting", new RegExp(`conversation ${fourth} asks Stand-in now, as the person asked it to, rather than waiting until`));
 	// Answered, so nothing is held back any more: a conversation asking now is not made to wait.
 	const nextUp = await client.ask(provider, "window after");
 	conv = await client.ended(nextUp);
