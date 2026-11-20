@@ -1801,7 +1801,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9). With the
 		// preview off an export is exactly as it was (10.2), so it says none of this.
 		const changes = new Map(projectsOn() ? linesOf(conv.id).map((line) => [line.id, line]) : []);
-		const waiting = new Map(storedNeeds().map((need) => [need.id, need]));
+		const waiting = new Map(projectsOn() ? storedNeeds().map((need) => [need.id, need]) : []);
 		/** A call's change, as one quiet line: its summary, and that it was undone (3.12). */
 		const changeLine = (id: unknown): string | null => {
 			if (typeof id !== "number") return null;
@@ -1833,7 +1833,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			else if (item.kind === "setup") {
 				// Its start is left out once its end is there, as the conversation shows it.
 				const run = item.details.run;
-			const ended = item.details.status === "running" && items.some((other) => other.kind === "setup" && other.details.run === run && other.details.status !== "running");
+				const ended = item.details.status === "running" && items.some((other) => other.kind === "setup" && other.details.run === run && other.details.status !== "running");
 				if (!ended) lines.push(setupMarkdown(item.details), "");
 			}
 			else if (item.kind === "assistant") {

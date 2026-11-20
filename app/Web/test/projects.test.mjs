@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import P from "../transcript/projects.js";
+import { document, html } from "./fakedom.mjs";
 
 const at = (hours, minutes, day = 0) => {
 	const when = new Date(2026, 2, 12 + day, hours, minutes);
@@ -88,19 +89,89 @@ test("the cards: who asks, what for, and for a rule whom it would bind", () => {
 		summary: "Change Forge: access Full access (now Ask first)",
 		binds: "",
 		why: "It needs to run the checks itself.",
+		accept: "Allow",
+		refuse: "Refuse",
 	});
 	assert.deepEqual(P.cardWords({ kind: "rule", agentName: "Orchestrator", text: "Ship on Fridays.", binds: "everyone", why: "" }), {
 		title: "Orchestrator proposes a rule",
 		summary: "Ship on Fridays.",
 		binds: "Binds every agent of the project",
 		why: "",
+		accept: "Accept",
+		refuse: "Refuse",
 	});
 	assert.deepEqual(P.cardWords({ kind: "rule", agentName: "", text: "Never release on a Friday.", binds: "orchestrator", why: "Friday releases have gone wrong." }), {
 		title: "The agent proposes a rule",
 		summary: "Never release on a Friday.",
 		binds: "Binds the orchestrator only",
 		why: "Friday releases have gone wrong.",
+		accept: "Accept",
+		refuse: "Refuse",
 	});
+});
+
+test("the answers are the contract's words, the same the board's cards use (7.2)", () => {
+	// One wording everywhere: the contract's Allow and Refuse for more reach, Accept and Refuse for a rule.
+	const reach = P.cardWords({ kind: "reach", agentName: "Orchestrator", change: "Change Forge: access Full access (now Ask first)", why: "" });
+	assert.deepEqual([reach.accept, reach.refuse], ["Allow", "Refuse"]);
+	const rule = P.cardWords({ kind: "rule", agentName: "Orchestrator", text: "Ship on Fridays.", binds: "everyone", why: "" });
+	assert.deepEqual([rule.accept, rule.refuse], ["Accept", "Refuse"]);
+});
+
+test("a rule's own words and an agent's name are shown as text, never as markup", () => {
+	const [need] = P.readNeeds([
+		{
+			id: "n5",
+			kind: "rule",
+			agentName: "<img src=x onerror=alert(1)>",
+			text: "Ship </p><script>alert(1)</script> <b>on Fridays</b>",
+			binds: "everyone",
+			why: "<script>steal()</script>",
+		},
+	]);
+	const rows = P.needRows(document, need);
+	const markup = rows.map(html).join("");
+	for (const tag of ["<script", "<b>", "<img"]) assert.equal(markup.includes(tag), false, `no ${tag} from what the agent wrote`);
+	// The text is there all the same, escaped as every other text on the page.
+	assert.ok(markup.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+	assert.ok(markup.includes("&lt;img src=x onerror=alert(1)&gt;"));
+	assert.equal(rows[1].textContent, "Ship </p><script>alert(1)</script> <b>on Fridays</b>");
+	// The head is the title, with the name as it was given, and the note beside it.
+	assert.equal(rows[0].childNodes[0].textContent, "<img src=x onerror=alert(1)> proposes a rule");
+	assert.ok(html(rows[0]).includes("waits for you"));
+});
+
+test("a call's key changes when its card is answered or its line is undone elsewhere", () => {
+	// The page keys a row by this: a state that changes with nothing else about the entry has to change it, or the
+	// page never draws the new state (a card answered on the board, a change undone from another window).
+	const revisions = new WeakMap();
+	let count = 0;
+	const rev = (object) => (object ? revisions.get(object) ?? 0 : 0);
+	const stamp = (object) => {
+		revisions.set(object, ++count);
+		return object;
+	};
+	const world = () => ({ results: new Map(), changes: new Map(), needs: new Map(), knownNeeds: new Map(), answered: new Map(), refusals: new Map(), undoing: new Set(), answering: new Set(), rev });
+	const w = world();
+	const call = { callId: "c1", name: "project_settings", arguments: {} };
+	w.results.set("c1", { details: { change: 32, need: "n2" } });
+	const change = stamp({ id: 32, summary: "Change Forge: access Full access", undone: false, canUndo: true, noUndo: null, undoneAt: null, need: "n2" });
+	w.changes.set(32, change);
+	const need = stamp({ id: "n2", kind: "reach", change: "Change Forge: access Full access", text: "", binds: "", why: "" });
+	w.needs.set("n2", need);
+	w.knownNeeds.set("n2", need);
+	const waiting = P.callKey(call, w);
+	// Nothing changed: the same key, so the page draws nothing again.
+	assert.equal(P.callKey(call, w), waiting);
+	// Answered on the board: the card becomes its outcome's line.
+	w.needs.delete("n2");
+	const answered = P.callKey(call, w);
+	assert.notEqual(answered, waiting);
+	// Undone elsewhere: the line turns undone, with no button.
+	w.changes.set(32, stamp({ ...change, undone: true, canUndo: false, undoneAt: 1 }));
+	assert.notEqual(P.callKey(call, w), answered);
+	// A call that asked nothing carries nothing.
+	assert.equal(P.callKey({ callId: "c2" }, w), "0:0");
 });
 
 test("the one line a card becomes, with its outcome", () => {

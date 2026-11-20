@@ -55,6 +55,8 @@
 	/** The changes made in this conversation of a project (3.12), by their number, and the needs waiting from it. */
 	let changes = new Map();
 	let needs = new Map();
+	/** Whether the projects preview is on: with it off a conversation shows none of a project's lines or cards (10.2). */
+	let projects = true;
 	/** What each need asked, kept after it leaves the list, so the line it becomes can still say it. */
 	const knownNeeds = new Map();
 	/** An Undo or an answer on its way, by change number or need id. */
@@ -215,6 +217,17 @@
 				next.set(need.id, need);
 			}
 			needs = next;
+		}
+		// The preview's own switch: with it off, a conversation is the one it was before the preview existed (10.2), so
+		// whatever the page holds of a project goes, and none of it is drawn until it comes back on.
+		if (typeof message.projects === "boolean" && message.projects !== projects) {
+			projects = message.projects;
+			if (!projects) {
+				changes = new Map();
+				needs = new Map();
+				knownNeeds.clear();
+				refusals.clear();
+			}
 		}
 		// A refusal the engine gave to an Undo or an answer, in its own words, under the line or card that asked.
 		if (isObject(message.changeProblem) && Number.isInteger(message.changeProblem.change)) {
@@ -882,7 +895,7 @@
 		const own = chat.enabled && turnEnd ? [chatRevision, menuFor === item.id ? 1 : 0, live.busy ? 1 : 0, pointKey(point), ...turnOf(visible, index).map((answer) => calls(answer).map((call) => rev(results.get(call.callId))).join(","))].join("/") : "";
 		// The end of a turn copies the whole turn, which starts earlier once entries come above it.
 		const cut = turnEnd && turnCut(visible, index) ? 1 : 0;
-		const sig = ["a", rev(item), turnEnd ? 1 : 0, turnEnd ? turnStart : "", cut, namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase))].join("|");
+		const sig = ["a", rev(item), turnEnd ? 1 : 0, turnEnd ? turnStart : "", cut, namesRevision, attempts, own, ...calls(item).map((call) => callSignature(call, phase)), ...calls(item).map(projectKey)].join("|");
 		return {
 			key: "i" + item.id,
 			sig,
@@ -1209,22 +1222,17 @@
 
 	/** The change the person's allowing the need `id` made, where it made one: a change with no call of its own. */
 	function allowedChangeOf(need) {
-		for (const change of changes.values()) if (change.need === need) return change;
-		return null;
+		return P.allowedChange(changes, need);
 	}
 
-	/** How the change line and the need card a call's row carries are built from, for the signature of the part. */
+	/**
+	 * How the change line and the need card a call's row carries read now, for the signature of the part that holds them,
+	 * and of the answer whose row holds the part. It has to include both: a card answered on the board, or a change
+	 * undone elsewhere, changes nothing about the entry, so only its own signature can bring the new state to the page.
+	 */
 	function projectKey(call) {
-		const result = results.get(call.callId);
-		const change = P.namedOf(result, "change");
-		const need = P.namedOf(result, "need");
-		const allowed = need !== null ? allowedChangeOf(need) : null;
-		return [
-			change !== null && changes.has(change) ? [rev(changes.get(change)), rev(refusals.get(change)) || 0, undoing.has(change) ? 1 : 0].join("/") : 0,
-			need !== null
-				? [rev(needs.get(need)) || 0, rev(knownNeeds.get(need)) || 0, answered.get(need) ? answered.get(need).ended + "/" + answered.get(need).label : "", rev(refusals.get(need)) || 0, answering.has(need) ? 1 : 0, allowed !== null ? rev(allowed) + "/" + (undoing.has(allowed.id) ? 1 : 0) + "/" + (rev(refusals.get(allowed.id)) || 0) : 0].join("/")
-				: 0,
-		].join(":");
+		if (!projects) return "0";
+		return P.callKey(call, { results, changes, needs, knownNeeds, answered, refusals, undoing, answering, rev });
 	}
 
 	/** A call's row, then the line for the change it made and the card for what it asked, where it made them (3.12, 7.2). */
@@ -1232,6 +1240,8 @@
 		const specs = [];
 		for (const call of itemCalls) {
 			specs.push(toolSpec(call, phase));
+			// With the preview off, a call's row is all it had before the preview existed (10.2).
+			if (!projects) continue;
 			const result = results.get(call.callId);
 			const change = P.namedOf(result, "change");
 			if (change !== null && changes.has(change)) specs.push(changeSpec(change));
@@ -1300,6 +1310,8 @@
 			build: () => el("div", "change-line need-outcome"),
 			update: (row) => {
 				const text = P.outcomeWords(known, outcome);
+				// The card that asked was an element with a card's frame: the line it becomes is the page's quiet one.
+				row.className = "change-line need-outcome";
 				row.setAttribute("role", "separator");
 				row.setAttribute("aria-label", text);
 				row.replaceChildren(el("span", "change-summary", text));
@@ -1314,21 +1326,8 @@
 		row.setAttribute("role", "group");
 		row.setAttribute("aria-label", words.title);
 		row.replaceChildren();
-		const head = el("div", "card-head");
-		head.appendChild(el("span", "card-title", words.title));
-		const note = el("span", "card-note", "waits for you " + char(0xb7) + " survives restarts");
-		note.setAttribute("data-nocopy", "");
-		head.appendChild(note);
-		row.appendChild(head);
-		// What is asked for, as the record's own words have it, so the decision can be made from the card.
-		row.appendChild(el("p", need.kind === "rule" ? "card-question" : "card-summary words", words.summary));
-		if (words.binds !== "") {
-			const binds = el("p", "card-caption", words.binds);
-			binds.setAttribute("data-nocopy", "");
-			row.appendChild(binds);
-		}
-		// The agent's own reason, shown as its words, not pi²'s.
-		if (str(words.why) !== "") row.appendChild(el("p", "card-caption words", "Why: " + words.why));
+		// Who asks, what would be allowed or added, and why: each line built by the module that words it, as text.
+		for (const node of P.needRows(document, need)) row.appendChild(node);
 		const choices = el("div", "card-buttons");
 		choices.setAttribute("data-nocopy", "");
 		const rule = need.kind === "rule";
@@ -1338,12 +1337,15 @@
 			post({ type: "answerNeed", need: need.id, answer });
 			schedule();
 		};
-		const allow = button("btn primary", null, rule ? "Add this rule to the project" : "Allow what it asks for", rule ? "Accept" : "Allow");
+		// The words the contract and the board's cards give each kind: Allow and Refuse for reach, Accept and Refuse for a rule.
+		const allow = button("btn primary", null, words.accept);
+		allow.title = rule ? "Add this rule to the project, as it stands" : "Let the agent have what it asks for";
 		allow.addEventListener("click", (event) => {
 			event.stopPropagation();
 			decide(rule ? { kind: "rule", accept: true } : { kind: "reach", allow: true });
 		});
-		const refuse = button("btn danger", null, rule ? "Refuse the proposed rule; nothing changes" : "Refuse what it asks for; nothing changes", "Refuse");
+		const refuse = button("btn danger", null, words.refuse);
+		refuse.title = rule ? "Refuse the proposed rule; nothing changes" : "Refuse what it asks for; nothing changes";
 		refuse.addEventListener("click", (event) => {
 			event.stopPropagation();
 			decide(rule ? { kind: "rule", accept: false } : { kind: "reach", allow: false });

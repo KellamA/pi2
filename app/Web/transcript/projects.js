@@ -15,6 +15,7 @@
 
 	const QUOTE_OPEN = String.fromCharCode(0x201c);
 	const QUOTE_CLOSE = String.fromCharCode(0x201d);
+	const MIDDLE_DOT = String.fromCharCode(0xb7);
 
 	const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 	const str = (value) => (typeof value === "string" ? value : "");
@@ -91,6 +92,41 @@
 		return typeof value === "string" && value !== "" ? value : null;
 	}
 
+	/** The change a need's allowing made, where it made one: a change with no call of its own, which rides on the request. */
+	function allowedChange(changes, need) {
+		for (const change of changes.values()) if (change.need === need) return change;
+		return null;
+	}
+
+	/**
+	 * How a call's project state reads now, for the signature the page keys its row and the row's parts by: the change
+	 * line it carries, the card it asked for and that card's outcome, whether an Undo or an answer is on its way, and
+	 * the line of a change the person allowed. Everything the line or card shows has to be in it, or a state that
+	 * changes with nothing else about the entry — a card answered on the board, a change undone elsewhere — would never
+	 * be drawn. `world` is what the page keeps: the results by call id, and the maps and sets below, each `rev`ved.
+	 */
+	function callKey(call, world) {
+		const rev = world.rev;
+		const result = isObject(call) ? world.results.get(call.callId) : undefined;
+		const change = namedOf(result, "change");
+		const need = namedOf(result, "need");
+		const allowed = need === null ? null : allowedChange(world.changes, need);
+		const outcome = need === null ? undefined : world.answered.get(need);
+		const line = change !== null && world.changes.has(change) ? [rev(world.changes.get(change)), rev(world.refusals.get(change)), world.undoing.has(change) ? 1 : 0].join("/") : 0;
+		const card =
+			need === null
+				? 0
+				: [
+						rev(world.needs.get(need)),
+						rev(world.knownNeeds.get(need)),
+						outcome ? `${outcome.ended}/${outcome.label}` : "",
+						rev(world.refusals.get(need)),
+						world.answering.has(need) ? 1 : 0,
+						allowed === null ? 0 : [rev(allowed), world.undoing.has(allowed.id) ? 1 : 0, rev(world.refusals.get(allowed.id))].join("/"),
+					].join("/");
+		return `${line}:${card}`;
+	}
+
 	/** A short time, "14:32"; "yesterday 14:32" the day before; "3 Mar 14:32" any earlier. */
 	function whenText(at, now) {
 		if (typeof at !== "number" || !Number.isFinite(at) || typeof now !== "number" || !Number.isFinite(now)) return "";
@@ -122,20 +158,49 @@
 	}
 
 	/**
-	 * The words for a reach request's or a proposed rule's card (7.2): who asks, what for, and for a rule whom it
-	 * would bind. `why` is the agent's own words, shown as its reason, not pi²'s.
+	 * The words for a reach request's or a proposed rule's card (7.2): who asks, what for, for a rule whom it would
+	 * bind, and the two answers in the one wording the contract gives each kind, which the board's own cards use too —
+	 * **Allow** and **Refuse** for more reach, **Accept** and **Refuse** for a rule. `why` is the agent's own words,
+	 * shown as its reason, not pi²'s.
 	 */
 	function cardWords(need) {
 		const who = str(need.agentName) || "The agent";
 		if (need.kind === "reach") {
-			return { title: `${who} asks for more reach`, summary: need.change, binds: "", why: need.why };
+			return { title: `${who} asks for more reach`, summary: need.change, binds: "", why: need.why, accept: "Allow", refuse: "Refuse" };
 		}
 		return {
 			title: `${who} proposes a rule`,
 			summary: need.text,
 			binds: need.binds === "orchestrator" ? "Binds the orchestrator only" : "Binds every agent of the project",
 			why: need.why,
+			accept: "Accept",
+			refuse: "Refuse",
 		};
+	}
+
+	/**
+	 * The card's own text, as the elements it goes in, built with the page's `document`: who asks, what would be allowed
+	 * or added, whom a rule binds, and why it is asked. Each string goes in as `textContent`, so a rule's own words, or
+	 * an agent's name, are always shown as text and never as markup. The page adds the two buttons below them.
+	 */
+	function needRows(document, need) {
+		const words = cardWords(need);
+		const element = (tag, className, text, nocopy = false) => {
+			const node = document.createElement(tag);
+			node.setAttribute("class", className);
+			node.textContent = text;
+			if (nocopy) node.setAttribute("data-nocopy", "");
+			return node;
+		};
+		const head = document.createElement("div");
+		head.setAttribute("class", "card-head");
+		head.appendChild(element("span", "card-title", words.title));
+		// The same note the board's cards carry: this waits for the person, and it is still here after a restart.
+		head.appendChild(element("span", "card-note", `waits for you ${MIDDLE_DOT} survives restarts`, true));
+		const rows = [head, element("p", need.kind === "rule" ? "card-question" : "card-summary words", words.summary)];
+		if (words.binds !== "") rows.push(element("p", "card-caption", words.binds, true));
+		if (str(words.why) !== "") rows.push(element("p", "card-caption words", "Why: " + words.why));
+		return rows;
 	}
 
 	/**
@@ -148,5 +213,5 @@
 		return `${label} ${isObject(answer) && str(answer.ended) !== "" ? str(answer.ended) : "no longer waits for you"}`;
 	}
 
-	return { readChanges, readNeeds, answersOf, namedOf, whenText, changeWords, cardWords, outcomeWords, labelOf };
+	return { readChanges, readNeeds, answersOf, namedOf, allowedChange, callKey, whenText, changeWords, cardWords, needRows, outcomeWords, labelOf };
 });
