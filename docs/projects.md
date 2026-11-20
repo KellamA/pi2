@@ -607,7 +607,7 @@ type GithubDoc = {
 };
 ```
 
-An intent found pending after a restart, or when its call runs again, is reconciled before anything is written again: pi² looks on GitHub for what it would have made, by the marker in its text (an issue, a comment, a pull request) or by the state it would have set (a label, closed, merged). Found, it is marked done with what was found. Not found and the write cannot have happened (GitHub refused it), it is marked failed and may be tried again. (#468: an intent is one `gh` write, not one action, so a `take` is a comment and a label change, each its own intent. A state not found is written again, since writing a state twice makes nothing twice; only a creating write, an issue, a comment or a pull request, can end `unknown`.) When it cannot tell, it is marked `unknown`, nothing is written again, and the call answers: "pi² could not tell whether GitHub took this (filing “…”). Look at the repository before trying again." The person sees the same under the project's Work tab.
+An intent found pending after a restart, or when its call runs again, is reconciled before anything is written again: pi² looks on GitHub for what it would have made, by the marker in its text (an issue, a comment, a pull request) or by the state it would have set (a label, closed, merged). Found, it is marked done with what was found. Not found and the write cannot have happened (GitHub refused it), it is marked failed and may be tried again. (#468: an intent is one `gh` write, not one action, so a `take` is a comment and a label change, each its own intent. A state not found is written again, since writing a state twice makes nothing twice; only a creating write, an issue, a comment or a pull request, can end `unknown`.) When it cannot tell, it is marked `unknown`, nothing is written again, and the call answers: "pi² could not tell whether GitHub took this (filing “…”). Look at the repository before trying again." The person sees the same under the project's Work tab, and a script or a test copy can ask for them with `github.unknown` (#573).
 
 **Pull requests** are only for a GitHub project:
 
@@ -623,9 +623,11 @@ type PullRequest = {
 	state: "open" | "merged" | "closed";
 	draft: boolean;
 	checks: "passing" | "failing" | "pending" | "none";
+	/** The checks of the roll-up that failed, by name, each with its page on GitHub: empty when none fail. (#573) */
+	failingChecks: { name: string; url: string }[];
 	mergeable: "yes" | "no" | "unknown";
-	/** What reviewing agents found: the comments pi² posted for `work` `review`. */
-	findings: { agentName: string; verdict: "approve" | "changes" | "comment"; at: number; url: string }[];
+	/** What reviewing agents found: the comments pi² posted for `work` `review`. A finding carries its own words, the summary the reviewing agent wrote, under the verdict. (#573) */
+	findings: { agentName: string; verdict: "approve" | "changes" | "comment"; at: number; url: string; text: string }[];
 	/** The conversation that opened it through `work`, from `pi2.github`'s `openedBy`. */
 	openedBy: { conversationId: number } | null;
 	/** The work item it fixes, from "Fixes #N" in its text. */
@@ -775,6 +777,7 @@ Errors every new request can give, besides its own:
 | `github.sendBack { projectId, number, reason }` | `{}` | [3.11](#311-work-pi2work-pi2github-githubjson) |
 | `github.diff { projectId, number }` | `{ diff }` | As `gh pr diff --repo …` gives it, cut at 2 MB with a line saying so |
 | `github.settle { projectId, intent, happened }` | `{}` | The person says whether a write whose outcome pi² could not tell happened (`true`) or not (`false`) |
+| `github.unknown { projectId }` | `{ unknown }` | The project's writes of unknown outcome (the event's `unknown`), with the id each is settled by, for a script or a test copy (#573) |
 
 **Changes** (#465):
 

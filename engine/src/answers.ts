@@ -194,6 +194,7 @@ const OPEN_TO_ANY = new Set([
 	"changes.list",
 	"github.refresh",
 	"github.diff",
+	"github.unknown", // reads the writes whose outcome pi² could not tell (#573)
 	"memory.add",
 	"memory.edit",
 	"memory.delete", // notes never widen (projects.md 7.1)
