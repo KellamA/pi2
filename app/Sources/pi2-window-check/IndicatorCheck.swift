@@ -11,6 +11,10 @@ final class CountedPanel: NSPanel {
     private(set) var layouts = 0
     private(set) var constraintPasses = 0
     private(set) var resizes = 0
+    /// Frames set while this window was laying out or working out its constraints, which is where a window must never
+    /// be resized (#589).
+    private(set) var framesSetInLayout = 0
+    private var layingOut = false
     private var observer: NSObjectProtocol?
 
     // A designated initializer: a convenience one on a panel subclass gives the window a title bar, whatever mask it is
@@ -23,17 +27,22 @@ final class CountedPanel: NSPanel {
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         framesSet += 1
+        if layingOut { framesSetInLayout += 1 }
         super.setFrame(frameRect, display: flag)
     }
 
     override func layoutIfNeeded() {
         layouts += 1
+        layingOut = true
         super.layoutIfNeeded()
+        layingOut = false
     }
 
     override func updateConstraintsIfNeeded() {
         constraintPasses += 1
+        layingOut = true
         super.updateConstraintsIfNeeded()
+        layingOut = false
     }
 
     /// The check keeps every window it makes off every screen. AppKit would otherwise pull a visible window onto one,
@@ -53,10 +62,12 @@ final class CountedPanel: NSPanel {
         layouts = 0
         constraintPasses = 0
         resizes = 0
+        framesSetInLayout = 0
     }
 
     var counts: String {
         "frames set \(framesSet), layout passes \(layouts), Update Constraints passes \(constraintPasses), resizes \(resizes)"
+            + (framesSetInLayout == 0 ? "" : ", \(framesSetInLayout) of the frames from inside a layout pass")
     }
 
     /// A display cycle as AppKit runs one for a window that needs it: Update Constraints, then layout.
@@ -64,6 +75,18 @@ final class CountedPanel: NSPanel {
         updateConstraintsIfNeeded()
         layoutIfNeeded()
     }
+}
+
+/// Whether a constraint is one AppKit made for a view placed by its frame, not one that lays anything out.
+@MainActor
+func isAutoresizing(_ constraint: NSLayoutConstraint) -> Bool {
+    String(describing: type(of: constraint)).contains("AutoresizingMask")
+}
+
+/// Every view in a view's tree, itself included.
+@MainActor
+func views(in view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap { views(in: $0) }
 }
 
 /// Lets one turn of the run loop pass, and the display cycle that goes with it.
@@ -99,9 +122,6 @@ private final class PillProbe {
             reveal: reveal, report: { reports.lines.append($0) }, stop: {}, visibleFrame: visibleFrame
         )
     }
-
-    /// The hosting view, which sits inside the panel's plain content view (#589).
-    var hosted: NSView? { panel.contentView?.subviews.first { $0 is HostingSizing } }
 
     func close() { pill.dismiss() }
 }
@@ -263,11 +283,27 @@ private func pillCheck() async {
         check("\(name): the rows do not cover one another's pill", shortFrames[0].minY >= shortFrames[1].maxY - 6, "frames \(shortFrames)")
 
         for (row, probe) in probes.enumerated() {
-            // The stack in the issue has SwiftUI resizing the window because its content view is the hosting view.
-            check("\(name), row \(row): the panel's content view is a plain view, not a hosting view",
-                  !(probe.panel.contentView is HostingSizing), "content view \(String(describing: probe.panel.contentView.map { type(of: $0) }))")
-            check("\(name), row \(row): the hosting view sits inside the plain view, at a frame set by hand",
-                  probe.hosted?.frame == probe.panel.contentView?.bounds, "hosting view \(String(describing: probe.hosted?.frame)), content \(String(describing: probe.panel.contentView?.bounds))")
+            // The stack in the issue is SwiftUI sizing a window it is the content view of, so the pill has no SwiftUI in
+            // it at all and nothing in it is solved by Auto Layout (#589).
+            let tree = probe.panel.contentView.map { views(in: $0) } ?? []
+            let named = tree.map { String(describing: type(of: $0)) }
+            check("\(name), row \(row): the panel's content view is the pill's own view",
+                  probe.panel.contentViewController == nil && !(probe.panel.contentView is HostingSizing),
+                  "content view \(String(describing: probe.panel.contentView.map { type(of: $0) })), controller \(String(describing: probe.panel.contentViewController))")
+            check("\(name), row \(row): no view in the pill is SwiftUI's", !named.contains { $0.contains("Hosting") }, "views \(named)")
+            // AppKit's own controls keep their insides with autoresizing constraints, which is what "no Auto Layout"
+            // means here: nothing in the pill is solved by a layout constraint, and every view is placed by its frame.
+            check("\(name), row \(row): nothing in the pill is laid out by Auto Layout",
+                  tree.allSatisfy { view in view.translatesAutoresizingMaskIntoConstraints && view.constraints.allSatisfy(isAutoresizing) },
+                  "views with constraints \(tree.filter { !$0.translatesAutoresizingMaskIntoConstraints || !$0.constraints.allSatisfy(isAutoresizing) }.map { String(describing: type(of: $0)) })")
+            let horizontal = probe.panel.contentView?.constraintsAffectingLayout(for: .horizontal) ?? []
+            let vertical = probe.panel.contentView?.constraintsAffectingLayout(for: .vertical) ?? []
+            check("\(name), row \(row): nothing constrains the pill's layout", horizontal.isEmpty && vertical.isEmpty,
+                  "constraints \(horizontal.count) across, \(vertical.count) down")
+            check("\(name), row \(row): the pill is its parts, as AppKit", tree.count >= 5
+                  && tree.contains { ($0 as? NSTextField)?.stringValue.contains("Atlas") == true }
+                  && tree.contains { ($0 as? NSButton)?.attributedTitle.string.contains("Stop") == true },
+                  "views \(named)")
         }
 
         // A hundred changes of the content, long and short, some of them several in one turn, each counted: the frame it
@@ -295,6 +331,7 @@ private func pillCheck() async {
                       probe.panel.layouts <= 2 && probe.panel.constraintPasses <= 2, probe.panel.counts)
                 check("\(label): the display cycle sets no frame of its own and resizes nothing",
                       probe.panel.framesSet == 0 && probe.panel.resizes == 0, probe.panel.counts)
+                check("\(label): the pill's frame is never set from inside a layout pass", probe.panel.framesSetInLayout == 0, probe.panel.counts)
                 probe.panel.reset()
                 await nextTurn()
                 check("\(label): at most one frame in the turn after a display cycle", probe.panel.framesSet <= 1, probe.panel.counts)
@@ -328,6 +365,8 @@ private func quickAskCheck() async {
     check("Quick Ask: the content view is a plain view, not a hosting view", !(probe.panel.contentView is HostingSizing),
           "content view \(String(describing: probe.panel.contentView.map { type(of: $0) }))")
     check("Quick Ask: the hosting view sits inside it", probe.panel.contentView?.subviews.first is HostingSizing)
+    check("Quick Ask: its height comes from PanelHeight alone, never from inside a layout pass",
+          probe.panel.framesSetInLayout == 0, probe.panel.counts)
     let long = (1...12).map { "A long answer line \($0) that is long enough to wrap in the panel's width." }.joined(separator: " ")
     var tallest = short.height
     for step in 0..<100 {
