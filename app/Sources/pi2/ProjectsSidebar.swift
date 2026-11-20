@@ -297,7 +297,10 @@ private struct OtherConversations: View {
 
     var body: some View {
         let others = live.others
+        // Open while one of the group is the conversation in place of the board: an agent that stops working moves out of
+        // the working rows and into this group, and its marked row would be hidden until the person unfolded it (#553).
         let shown = model.projectsSidebar.othersShown.contains(project.id)
+            || agent.map { id in others.contains { $0.id == id } } ?? false
         if !others.isEmpty {
             Button {
                 withAnimation(.snappy(duration: 0.2)) {
