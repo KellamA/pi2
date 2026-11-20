@@ -97,6 +97,9 @@ final class EngineClient {
     /// Proposed rules waiting under Needs you, by project, from the `needs` event (docs/projects.md, 3.9); the Rules
     /// tab shows their cards.
     private(set) var ruleNeeds: [String: [NeedItem]] = [:]
+    /// The reach requests and proposed rules waiting under Needs you, as the `needs` event sends them (3.9), for the
+    /// cards at the calls that asked in a conversation's page (#474).
+    private(set) var conversationNeeds: [TranscriptFeed.Need] = []
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -699,6 +702,10 @@ final class EngineClient {
                     if let projectId = need.projectId { proposals[projectId, default: []].append(need) }
                 }
                 update(\.ruleNeeds, proposals)
+                // The reach requests and proposed rules the conversation pages show cards for (#474), read from the same
+                // event; every kind shares the base fields, so it decodes whatever kinds are in it.
+                let shown = (try? decoder.decode(TranscriptNeedsEvent.self, from: line))?.items.filter { $0.kind == "reach" || $0.kind == "rule" } ?? []
+                update(\.conversationNeeds, shown)
             case "projectRules":
                 update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
             case "auth":

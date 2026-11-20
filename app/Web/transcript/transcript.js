@@ -15,6 +15,7 @@
 
 	const MD = window.PiMarkdown;
 	const T = window.PiTools;
+	const P = window.PiProjects;
 	const C = window.PiClipboard;
 	const K = window.PiKeys;
 	const Ch = window.PiChat;
@@ -51,6 +52,18 @@
 	let live = { busy: false, partial: null, tools: new Map(), retrying: false, setup: null };
 	let liveRevision = 0;
 	let inbox = new Map();
+	/** The changes made in this conversation of a project (3.12), by their number, and the needs waiting from it. */
+	let changes = new Map();
+	let needs = new Map();
+	/** What each need asked, kept after it leaves the list, so the line it becomes can still say it. */
+	const knownNeeds = new Map();
+	/** An Undo or an answer on its way, by change number or need id. */
+	const undoing = new Set();
+	const answering = new Set();
+	/** What the engine refused, by change number or need id, in its own words. */
+	const refusals = new Map();
+	/** How each need that has been answered was answered, from the wake markers the engine wrote (the kind `answer`). */
+	let answered = new Map();
 	let names = { conversationId: 0, agentName: "", mcp: {}, agents: [], apps: {}, folder: false };
 	let namesRevision = 0;
 	/** Rows the person opened or closed, by key; rows they never touched follow their default. */
@@ -99,6 +112,12 @@
 			items.clear();
 			order = [];
 			results.clear();
+			changes = new Map();
+			needs = new Map();
+			knownNeeds.clear();
+			refusals.clear();
+			undoing.clear();
+			answering.clear();
 			asked = false;
 		}
 		if (isObject(message.history)) {
@@ -170,6 +189,41 @@
 				else next.set(entry.callId, stamp(entry));
 			}
 			inbox = next;
+		}
+		// The changes made in this conversation (3.12): each drawn where the tool call that made it is.
+		if (Array.isArray(message.changes)) {
+			const next = new Map();
+			for (const change of P.readChanges(message.changes)) {
+				const previous = changes.get(change.id);
+				if (previous && JSON.stringify(previous) === JSON.stringify(change)) next.set(change.id, previous);
+				else next.set(change.id, stamp(change));
+				// A line that no longer offers Undo takes the waiting off the one on its way to it.
+				if (!change.canUndo) undoing.delete(change.id);
+			}
+			changes = next;
+		}
+		// The reach requests and proposed rules waiting from this conversation (3.9), as cards at the calls that asked.
+		if (Array.isArray(message.needs)) {
+			const next = new Map();
+			for (const need of P.readNeeds(message.needs)) {
+				const previous = needs.get(need.id);
+				if (previous && JSON.stringify(previous) === JSON.stringify(need)) next.set(need.id, previous);
+				else {
+					stamp(need);
+					knownNeeds.set(need.id, need);
+				}
+				next.set(need.id, need);
+			}
+			needs = next;
+		}
+		// A refusal the engine gave to an Undo or an answer, in its own words, under the line or card that asked.
+		if (isObject(message.changeProblem) && Number.isInteger(message.changeProblem.change)) {
+			refusals.set(message.changeProblem.change, stamp({ text: str(message.changeProblem.text) }));
+			undoing.delete(message.changeProblem.change);
+		}
+		if (isObject(message.needProblem) && typeof message.needProblem.need === "string") {
+			refusals.set(message.needProblem.need, stamp({ text: str(message.needProblem.text) }));
+			answering.delete(message.needProblem.need);
 		}
 		if (isObject(message.names)) {
 			const n = message.names;
@@ -369,6 +423,8 @@
 		const visible = visibleItems();
 		const specs = [];
 		const shownCalls = new Set();
+		// How the needs this conversation put were answered, from its items (#474): the wake markers carry it.
+		answered = P.answersOf(Array.from(items.values()));
 		// Failed attempts in a row show as one row, the last (a run waiting for a provider's limit can leave dozens).
 		const failures = T.failedRuns(visible);
 		// In a chat, the rows under which a control steps between versions.
@@ -876,9 +932,9 @@
 		if (itemCalls.length > 0) {
 			parts.push({
 				key: "tools",
-				sig: "c" + itemCalls.map((call) => callSignature(call, phaseOf(item))).join("|") + "/" + namesRevision,
+				sig: "c" + itemCalls.map((call) => callSignature(call, phaseOf(item))).join("|") + "/" + namesRevision + "/" + itemCalls.map(projectKey).join("|"),
 				build: () => el("div", "tools"),
-				update: (box) => reconcile(box, itemCalls.map((call) => toolSpec(call, phaseOf(item)))),
+				update: (box) => reconcile(box, callSpecs(itemCalls, phaseOf(item))),
 			});
 		}
 		if (stop === "length") parts.push({ key: "length", sig: "l", build: () => noteRow("muted", "The answer was cut off at the model" + RSQUO + "s output limit.") });
@@ -1147,6 +1203,147 @@
 		const sig = callSignature(call, phase) + "/" + namesRevision;
 		if (call.name === "delegate") return { key: "d:" + call.callId, sig, build: () => el("div", "tool delegate"), update: (row) => fillDelegate(row, call, phase) };
 		return { key: "t:" + call.callId, sig, build: () => el("div", "tool"), update: (row) => fillTool(row, call, phase) };
+	}
+
+	// MARK: A project's changes and needs (#474)
+
+	/** How the change line and the need card a call's row carries are built from, for the signature of the part. */
+	function projectKey(call) {
+		const result = results.get(call.callId);
+		const change = P.namedOf(result, "change");
+		const need = P.namedOf(result, "need");
+		return [
+			change !== null && changes.has(change) ? [rev(changes.get(change)), rev(refusals.get(change)) || 0, undoing.has(change) ? 1 : 0].join("/") : 0,
+			need !== null
+				? [rev(needs.get(need)) || 0, rev(knownNeeds.get(need)) || 0, answered.get(need) ? answered.get(need).ended + "/" + answered.get(need).label : "", rev(refusals.get(need)) || 0, answering.has(need) ? 1 : 0].join("/")
+				: 0,
+		].join(":");
+	}
+
+	/** A call's row, then the line for the change it made and the card for what it asked, where it made them (3.12, 7.2). */
+	function callSpecs(itemCalls, phase) {
+		const specs = [];
+		for (const call of itemCalls) {
+			specs.push(toolSpec(call, phase));
+			const result = results.get(call.callId);
+			const change = P.namedOf(result, "change");
+			if (change !== null && changes.has(change)) specs.push(changeSpec(change));
+			const need = P.namedOf(result, "need");
+			if (need !== null) specs.push(needSpec(need));
+		}
+		return specs;
+	}
+
+	/** The line for one change (3.12): what changed, in the record's own words, with Undo while it can be. */
+	function changeSpec(id) {
+		const change = changes.get(id);
+		return {
+			key: "x:" + id,
+			sig: [rev(change), rev(refusals.get(id)) || 0, undoing.has(id) ? 1 : 0].join("/"),
+			build: () => el("div", "change-line" + (change.undone ? " undone" : "")),
+			update: (row) => fillChangeLine(row, change),
+		};
+	}
+
+	function fillChangeLine(row, change) {
+		const words = P.changeWords(change, Date.now());
+		const problem = refusals.get(change.id);
+		row.className = "change-line" + (change.undone ? " undone" : "");
+		row.setAttribute("role", change.canUndo ? "group" : "separator");
+		row.setAttribute("aria-label", words.summary + (words.note !== "" ? " " + words.note : ""));
+		row.replaceChildren();
+		row.appendChild(el("span", "change-summary", words.summary));
+		if (words.note !== "") row.appendChild(el("span", "change-note", words.note));
+		if (change.canUndo) row.appendChild(undoButton(change));
+		if (problem) row.appendChild(el("span", "change-problem", str(problem.text)));
+	}
+
+	/** Undo, at the end of a change's line: what it changed goes back as it was. */
+	function undoButton(change) {
+		const b = button("link-button undo-button", "Undo this change", "Undo");
+		b.title = "Undo this change; what it changed goes back as it was";
+		b.disabled = undoing.has(change.id);
+		b.addEventListener("click", (event) => {
+			event.stopPropagation();
+			if (undoing.has(change.id)) return;
+			undoing.add(change.id);
+			post({ type: "undo", change: change.id });
+			schedule();
+		});
+		return b;
+	}
+
+	/** The card for what a call asked for (7.2) while it waits, then the line with its outcome once answered. */
+	function needSpec(id) {
+		const open = needs.get(id);
+		const known = open ?? knownNeeds.get(id);
+		const outcome = answered.get(id);
+		const sig = [rev(open) || 0, rev(known) || 0, outcome ? outcome.ended + "/" + outcome.label : "", rev(refusals.get(id)) || 0, answering.has(id) ? 1 : 0].join("/");
+		if (open !== undefined) {
+			return { key: "n:" + id, sig, build: () => el("div", "card need " + open.kind), update: (row) => fillNeedCard(row, open) };
+		}
+		return {
+			key: "n:" + id,
+			sig,
+			build: () => el("div", "change-line need-outcome"),
+			update: (row) => {
+				const text = P.outcomeWords(known, outcome);
+				row.setAttribute("role", "separator");
+				row.setAttribute("aria-label", text);
+				row.replaceChildren(el("span", "change-summary", text));
+			},
+		};
+	}
+
+	function fillNeedCard(row, need) {
+		const words = P.cardWords(need);
+		const problem = refusals.get(need.id);
+		row.className = "card need " + need.kind;
+		row.setAttribute("role", "group");
+		row.setAttribute("aria-label", words.title);
+		row.replaceChildren();
+		const head = el("div", "card-head");
+		head.appendChild(el("span", "card-title", words.title));
+		const note = el("span", "card-note", "waits for you " + char(0xb7) + " survives restarts");
+		note.setAttribute("data-nocopy", "");
+		head.appendChild(note);
+		row.appendChild(head);
+		// What is asked for, as the record's own words have it, so the decision can be made from the card.
+		row.appendChild(el("p", need.kind === "rule" ? "card-question" : "card-summary words", words.summary));
+		if (words.binds !== "") {
+			const binds = el("p", "card-caption", words.binds);
+			binds.setAttribute("data-nocopy", "");
+			row.appendChild(binds);
+		}
+		// The agent's own reason, shown as its words, not pi²'s.
+		if (str(words.why) !== "") row.appendChild(el("p", "card-caption words", "Why: " + words.why));
+		const choices = el("div", "card-buttons");
+		choices.setAttribute("data-nocopy", "");
+		const rule = need.kind === "rule";
+		const decide = (answer) => {
+			for (const b of choices.querySelectorAll("button")) b.disabled = true;
+			answering.add(need.id);
+			post({ type: "answerNeed", need: need.id, answer });
+			schedule();
+		};
+		const allow = button("btn primary", null, rule ? "Add this rule to the project" : "Allow what it asks for", rule ? "Accept" : "Allow");
+		allow.addEventListener("click", (event) => {
+			event.stopPropagation();
+			decide(rule ? { kind: "rule", accept: true } : { kind: "reach", allow: true });
+		});
+		const refuse = button("btn danger", null, rule ? "Refuse the proposed rule; nothing changes" : "Refuse what it asks for; nothing changes", "Refuse");
+		refuse.addEventListener("click", (event) => {
+			event.stopPropagation();
+			decide(rule ? { kind: "rule", accept: false } : { kind: "reach", allow: false });
+		});
+		allow.disabled = refuse.disabled = answering.has(need.id);
+		choices.append(allow, refuse);
+		row.appendChild(choices);
+		if (problem) {
+			const text = el("p", "card-problem", str(problem.text));
+			text.setAttribute("data-nocopy", "");
+			row.appendChild(text);
+		}
 	}
 
 	/**

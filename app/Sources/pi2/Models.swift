@@ -321,6 +321,20 @@ struct AgentInfo: Codable, Equatable {
     let parent: Int?
 }
 
+/// One change made in a conversation of a project, as the conversation's state carries it (docs/projects.md, 3.12):
+/// what changed, in the record's own words, whether it was undone and whether the person can undo it. Nil from an
+/// engine without the projects preview, and for any conversation in no project.
+struct ProjectChangeLine: Codable, Equatable, Identifiable {
+    let id: Int
+    let summary: String
+    let undone: Bool
+    let canUndo: Bool
+    /// Why it has no Undo, in a few words; null for a change that has one.
+    let noUndo: String?
+    /// When it was undone, in ms since 1970; null while it was not.
+    var undoneAt: Double? = nil
+}
+
 /// Whether an agent may use apps on this Mac: which ones, and whether it asks before acting.
 struct ComputerSettings: Codable, Equatable {
     var enabled = false
@@ -801,6 +815,9 @@ struct ConversationState: Codable, Equatable {
     /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
     /// offered: an agent's conversation, or an engine older than this field.
     var versions: [VersionPoint]? = nil
+    /// The changes made in this conversation by its project's agents, oldest first (docs/projects.md, 3.12), each drawn
+    /// where the tool call that made it is. Nil in no project, and from an engine older than this field.
+    var projectChanges: [ProjectChangeLine]? = nil
 }
 
 /// What a message sent to steer a working agent waits for (engine/src/heed.ts): `holds`, the calls it comes after, such

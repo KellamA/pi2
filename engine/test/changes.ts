@@ -171,7 +171,7 @@ try {
 		{ name: "access", before: "ask", after: "full" },
 		{ name: "memory", before: false, after: true },
 	]);
-	assert.deepEqual(await client.until("the line", () => client.line(O, made.details.change)), { id: made.details.change, summary: "Made the agent Reviewer (the default model, Ask first)", undone: false, canUndo: true, noUndo: null });
+	assert.deepEqual(await client.until("the line", () => client.line(O, made.details.change)), { id: made.details.change, summary: "Made the agent Reviewer (the default model, Ask first)", undone: false, canUndo: true, noUndo: null, undoneAt: null });
 	// Every setting of a saved agent is classed (7.1): named in AGENT_FIELDS, or one no tool is offered.
 	const { AGENT_FIELDS } = await import("../src/reach.ts");
 	const notOffered = ["id", "cwd", "createdAt", "projectId", "role", "template", "madeBy", "updatedAt", "removedAt", "variables"];
@@ -478,7 +478,7 @@ try {
 	assert.match(handedOver.details.wake.text, /The person allowed: Make Reviewer the project's orchestrator in place of Orchestrator: .*This is the fresh conversation\. \(change \d+\)$/);
 	const handoverChange = changeIn(handedOver.details.wake.text);
 	const noUndo = "it started a fresh conversation; going back is another change of orchestrator";
-	assert.deepEqual(await client.until("its line, with no Undo", () => client.line(O, handoverChange)), { id: handoverChange, summary: handover.text.split(": this is")[0], undone: false, canUndo: false, noUndo });
+	assert.deepEqual(await client.until("its line, with no Undo", () => client.line(O, handoverChange)), { id: handoverChange, summary: handover.text.split(": this is")[0], undone: false, canUndo: false, noUndo, undoneAt: null });
 	await refused(client.call("changes.undo", { id: handoverChange }), `This cannot be undone: ${noUndo}.`);
 	assert.ok((await client.offered(fresh)).includes("project_agents"), "the tools go with the role");
 	step("making another agent the orchestrator is a request; allowed, it starts a fresh conversation with it, and has no Undo");

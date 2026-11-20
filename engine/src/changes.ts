@@ -680,8 +680,8 @@ async function answerRule(tx: Tx, need: Extract<StoredNeed, { kind: "rule" }>, a
 
 // ---- What the conversation is sent (projectChanges)
 
-/** One line of the conversation's record (3.12), as its state carries it. */
-export type ChangeLine = { id: number; summary: string; undone: boolean; canUndo: boolean; noUndo: string | null };
+/** One line of the conversation's record (3.12), as its state carries it. `undoneAt` is when it was undone, or null. */
+export type ChangeLine = { id: number; summary: string; undone: boolean; canUndo: boolean; noUndo: string | null; undoneAt: number | null };
 
 /** The record as last stored, and which projects are neither archived nor deleted, read with it. */
 let current: ChangesDoc = emptyChanges();
@@ -694,7 +694,7 @@ export function linesOf(id: number): ChangeLine[] {
 		const open = live.has(projectId);
 		for (const change of list) {
 			if (change.by.kind === "person" || change.by.conversationId !== id) continue;
-			lines.push({ id: change.id, summary: change.summary, undone: change.undone !== undefined, canUndo: open && change.inverse !== null && change.undone === undefined, noUndo: change.inverse === null ? noUndoWhy(change.op) : null });
+			lines.push({ id: change.id, summary: change.summary, undone: change.undone !== undefined, canUndo: open && change.inverse !== null && change.undone === undefined, noUndo: change.inverse === null ? noUndoWhy(change.op) : null, undoneAt: change.undone?.at ?? null });
 		}
 	}
 	return lines.sort((a, b) => a.id - b.id).slice(-SHOWN);
