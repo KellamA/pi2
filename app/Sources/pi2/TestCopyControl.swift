@@ -316,6 +316,38 @@ struct TestCopyControl: NSViewRepresentable {
 }
 #endif
 
+/// A row of a project's Work tab a copy was asked to open, so that a picture can show it: a copy parked behind every
+/// other window cannot be clicked (#480). The copy's own preference names it, so nothing of the person's sets it, and
+/// only a development build reads it, as with every test-copy control:
+///
+///     defaults write dev.pi2.app.test-7 work-open -string 'pull:8'
+///
+/// `issue:1` and `pull:8` open that issue or pull request, `merge:8` opens the pull request with the question to merge
+/// it showing, and `diff:8` with its diff. See docs/development.md, "Choosing what a copy shows".
+enum WorkRowLaunch: Equatable {
+    case issue(Int)
+    case pull(Int)
+    case merge(Int)
+    case diff(Int)
+
+    static var asked: WorkRowLaunch? {
+        #if PI2_DEVELOPMENT
+            guard let asked = UserDefaults.standard.string(forKey: "work-open") else { return nil }
+            let parts = asked.split(separator: ":")
+            guard parts.count == 2, let number = Int(parts[1]) else { return nil }
+            switch parts[0] {
+            case "issue": return .issue(number)
+            case "pull": return .pull(number)
+            case "merge": return .merge(number)
+            case "diff": return .diff(number)
+            default: return nil
+            }
+        #else
+            return nil
+        #endif
+    }
+}
+
 #if PI2_DEVELOPMENT
 /// How many times the transcript page has drawn each conversation from the start, once it was shown or the page loaded
 /// again: for a test copy's `show`, which answers once the page has drawn the one it asked for.

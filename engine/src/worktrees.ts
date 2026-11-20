@@ -19,7 +19,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, statSync }
 import { rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
-import type { ConversationId, DocumentReader } from "@earendil-works/pi-durable";
+import type { ConversationId, DocumentReader, Tx } from "@earendil-works/pi-durable";
 import { AgentDoc, defineDoc, section } from "@earendil-works/pi-durable";
 import { commandEnvironment } from "./environment.ts";
 import type { Feature } from "./features.ts";
@@ -1169,8 +1169,8 @@ export const worktrees: Feature = (_host, engine) => {
  * Every worktree pi² made and still has a record of (its conversation's, whether listed, archived or deleted): its folder
  * and its repository's main checkout. Command rules follow these (rules.ts, `ruleFolder`).
  */
-export async function madeWorktrees(read: DocumentReader, context: Context): Promise<MadeWorktree[]> {
-	const doc = await read.snapshot(Worktrees, context);
+export async function madeWorktrees(read: DocumentReader, context: Context, tx?: Tx): Promise<MadeWorktree[]> {
+	const doc = tx === undefined ? await read.snapshot(Worktrees, context) : await tx.doc(Worktrees);
 	return Object.values(doc?.conversations ?? {}).map(({ path, repo }) => ({ path, repo }));
 }
 
