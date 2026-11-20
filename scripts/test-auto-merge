@@ -1,0 +1,177 @@
+#!/bin/bash
+# Checks scripts/auto-merge against a stand-in for gh, put first on the PATH, which answers `pr view` and `pr checks`
+# from canned JSON in a temporary folder, writes down each command it is given, and fails `pr merge --auto` for a pull
+# request in clean status as gh does. Runs in a temporary folder and touches no pull request.
+#
+#   scripts/test-auto-merge
+
+set -uo pipefail
+
+merge="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/auto-merge"
+command -v jq >/dev/null || { echo "test-auto-merge: needs jq" >&2; exit 1; }
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+T=$(cd -P -- "$T" && pwd -P)
+
+# The stand-in. $CASE holds view.json (what `pr view` answers), checks.json (what `pr checks` answers), and the log of
+# every call, one line each with its arguments quoted as the shell would. `pr merge --merge` without `--auto` merges the
+# pull request in view.json, unless $CASE/stay-open says GitHub has not done it yet; `--auto` is refused for a clean
+# status, which is what gh does (#553).
+mkdir -p "$T/bin"
+cat >"$T/bin/gh" <<'EOF'
+#!/bin/bash
+{ printf 'gh'; printf ' %q' "$@"; echo; } >>"$CASE/log"
+args=" $* "
+case "$1 $2" in
+"pr view") cat "$CASE/view.json" ;;
+"pr checks") cat "$CASE/checks.json" ;;
+"pr merge")
+	if [[ $args == *" --auto "* && $(jq -r .mergeStateStatus "$CASE/view.json") == CLEAN ]]; then
+		echo "Pull request is in clean status" >&2
+		exit 1
+	fi
+	if [[ $args != *" --auto "* && $args == *" --merge "* && ! -f $CASE/stay-open ]]; then
+		jq '.state = "MERGED"' "$CASE/view.json" >"$CASE/view.new" && mv "$CASE/view.new" "$CASE/view.json"
+	fi
+	;;
+"api repos/{owner}/{repo}/check-runs/"*)
+	cat "$CASE/annotations.txt"
+	;;
+esac
+exit 0
+EOF
+chmod +x "$T/bin/gh"
+export PATH="$T/bin:$PATH" CASE
+pass=0 fail=0
+
+report() {
+	if [[ $1 == "$2" ]]; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		echo "FAIL $3: expected $1, got $2"
+	fi
+}
+
+# check <description> <condition...>: passes when the condition holds.
+check() {
+	local what=$1; shift
+	if "$@"; then report yes yes "$what"; else report yes no "$what"; fi
+}
+
+logged() { grep -qF -- "$1" "$CASE/log"; }
+not_logged() { ! grep -qF -- "$1" "$CASE/log"; }
+said() { grep -qF -- "$1" <<<"$out"; }
+# Whether the first call containing $1 comes before the first containing $2.
+before() {
+	local a b
+	a=$(grep -nF -- "$1" "$CASE/log" | head -1 | cut -d: -f1)
+	b=$(grep -nF -- "$2" "$CASE/log" | head -1 | cut -d: -f1)
+	[[ -n $a && -n $b ]] && ((a < b))
+}
+# pr <name> <state> <mergeStateStatus> <autoMergeRequest: null or a request>
+pr() {
+	CASE=$T/$1
+	mkdir -p "$CASE"
+	: >"$CASE/log"
+	jq -n --arg state "$2" --arg status "$3" --argjson auto "$4" \
+		'{state: $state, mergeStateStatus: $status, autoMergeRequest: $auto, url: "https://example.invalid/pull/5"}' \
+		>"$CASE/view.json"
+	echo '[{"name": "Engine", "bucket": "pass", "completedAt": "2026-01-01T10:00:00Z", "link": "https://example.invalid/runs/9/job/12"}]' \
+		>"$CASE/checks.json"
+}
+checks() { echo "$1" >"$CASE/checks.json"; }
+# run <case name>: runs scripts/auto-merge on pull request 5 with that case's answers, into $out and $status.
+run() { CASE=$T/$1; out=$("$merge" 5 2>&1); status=$?; }
+
+automerge_on='{"enabledBy": {"login": "someone"}}'
+
+# Every required check passed already: gh refuses `--auto` with "Pull request is in clean status", so it is merged
+# now, with the same kind of merge (#553).
+pr clean OPEN CLEAN null
+run clean
+report 0 "$status" "clean status: exit status"
+check "clean status: merged with a merge commit" logged "gh pr merge 5 --merge"
+check "clean status: auto-merge not turned on" not_logged "--auto"
+check "clean status: merged after looking at it" before "gh pr view 5" "gh pr merge 5 --merge"
+check "clean status: says why" said "nothing is left to wait for"
+check "clean status: says it merged" said "Merged."
+
+# Auto-merge is on and the checks have just passed: nothing is left to wait for either, so it is merged at once.
+pr clean-auto OPEN CLEAN "$automerge_on"
+run clean-auto
+report 0 "$status" "clean status with auto-merge on: exit status"
+check "clean status with auto-merge on: merged" logged "gh pr merge 5 --merge"
+check "clean status with auto-merge on: not turned off and on" not_logged "--disable-auto"
+
+# Merged by the command, and GitHub has not reported it merged yet: it says so, and again in a minute.
+pr clean-open OPEN CLEAN null
+touch "$T/clean-open/stay-open"
+run clean-open
+report 3 "$status" "clean status GitHub has not merged: exit status"
+check "clean status GitHub has not merged: says so" said "has not merged it yet"
+
+# Already merged: nothing is asked of GitHub but the view.
+pr merged MERGED CLEAN null
+run merged
+report 0 "$status" "merged: exit status"
+check "merged: says so" said "Merged."
+check "merged: no merge asked for" not_logged "gh pr merge"
+
+# Checks still running, auto-merge off: it is turned on, and the wait is named.
+pr pending OPEN BLOCKED null
+checks '[{"name": "Engine", "bucket": "pending", "completedAt": null, "link": "https://example.invalid/runs/9/job/12"}]'
+run pending
+report 3 "$status" "checks pending: exit status"
+check "checks pending: auto-merge turned on with a merge commit" logged "gh pr merge 5 --auto --merge"
+check "checks pending: the check is named" said "waiting for: Engine"
+
+# No required check has reported yet.
+pr unreported OPEN BLOCKED "$automerge_on"
+checks '[]'
+run unreported
+report 3 "$status" "no check reported: exit status"
+check "no check reported: says so" said "no required check has reported yet"
+
+# A required check that failed: what to do, and no merge.
+pr failed OPEN BLOCKED "$automerge_on"
+checks '[{"name": "Engine", "bucket": "fail", "completedAt": "2026-01-01T10:00:00Z", "link": "https://example.invalid/runs/9/job/12"}]'
+run failed
+report 1 "$status" "a failed check: exit status"
+check "a failed check: named, and the log" said "- Engine: fail. Read the log"
+check "a failed check: not merged" not_logged "gh pr merge"
+
+# A check cancelled because no runner took it: CI runs it again, which is not a failure of the change.
+pr cancelled OPEN BLOCKED "$automerge_on"
+checks '[{"name": "App", "bucket": "cancel", "completedAt": "2026-01-01T10:00:00Z", "link": "https://example.invalid/runs/9/job/12"}]'
+echo "The job was not acquired by Runner of type hosted even after multiple attempts" >"$T/cancelled/annotations.txt"
+run cancelled
+report 3 "$status" "a cancelled check: exit status"
+check "a cancelled check: said to run again by itself" said "CI runs it again by itself"
+check "a cancelled check: how to run it again" said "gh run rerun 9 --failed"
+
+# A conflict with main: what to do, and no merge.
+pr dirty OPEN DIRTY "$automerge_on"
+run dirty
+report 1 "$status" "a conflict: exit status"
+check "a conflict: says what to do" said "Merge origin/main into the branch"
+check "a conflict: not merged" not_logged "gh pr merge"
+
+# Closed without merging.
+pr closed CLOSED CLEAN null
+run closed
+report 1 "$status" "closed: exit status"
+check "closed: no merge asked for" not_logged "gh pr merge"
+
+# No number, or more than one: refused before anything is asked of GitHub.
+CASE=$T/usage; mkdir -p "$CASE"; : >"$CASE/log"
+out=$("$merge" 2>&1); status=$?
+report 2 "$status" "no number: exit status"
+check "no number: says what it takes" said "usage: scripts/auto-merge"
+out=$("$merge" 5 6 2>&1); status=$?
+report 2 "$status" "two numbers: exit status"
+check "two numbers: nothing asked of GitHub" test ! -s "$CASE/log"
+
+echo "$pass passed, $fail failed"
+((fail == 0))

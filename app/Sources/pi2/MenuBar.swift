@@ -127,8 +127,7 @@ final class QuickAsk {
     static let shared = QuickAsk()
     private var panel: NSPanel?
     private var hotKey: GlobalHotKey?
-    private var sizeWatch: SizeWatch?
-    private var pendingHeight: CGFloat?
+    private var height: PanelHeight?
 
     /// Registers ⌃⌥Space system-wide.
     func install(model: AppModel) {
@@ -161,15 +160,18 @@ final class QuickAsk {
             panel.standardWindowButton(.zoomButton)?.isHidden = true
             let host = NSHostingView(rootView: QuickAskView(
                 model: model, close: { [weak self] in self?.close() },
-                heightChanged: { [weak self] in self?.resize(to: $0) }
+                heightChanged: { [weak self] in self?.height?.want($0) }
             ).tint(.piAccent))
             host.sizingOptions = []
-            panel.contentView = host
+            // Never the panel's content view: a hosting view there sizes the window itself after each layout (#589).
+            let content = PanelContent()
+            panel.contentView = content
+            content.hold(host)
             self.panel = panel
             let engine = model.engine
             let watch = SizeWatch(threshold: SizeWatch.panelThreshold) { [weak engine] in engine?.note($0) }
             watch.start(panel)
-            sizeWatch = watch
+            height = PanelHeight(panel: panel, watch: watch)
         }
         guard let panel else { return }
         if let screen = NSScreen.main {
@@ -178,26 +180,6 @@ final class QuickAsk {
         }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate()
-    }
-
-    /// A change in the prompt or streamed answer can change the ideal height. Keep the top edge in place and
-    /// coalesce measurements: the window must not change its frame from inside the layout that measures it.
-    private func resize(to height: CGFloat) {
-        guard height.isFinite, height > 0 else { return }
-        let scheduled = pendingHeight != nil
-        pendingHeight = height.rounded(.up)
-        guard !scheduled else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let height = self.pendingHeight else { return }
-            self.pendingHeight = nil
-            guard let panel = self.panel else { return }
-            var content = panel.contentRect(forFrameRect: panel.frame)
-            content.size.height = height
-            var frame = panel.frameRect(forContentRect: content)
-            frame.origin.y = panel.frame.maxY - frame.height
-            self.sizeWatch?.setFrame(frame, of: panel)
-
-        }
     }
 
     func close() {
