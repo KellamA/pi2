@@ -18,7 +18,7 @@ import type { AssistantMessage, SimpleStreamOptions } from "@earendil-works/pi-a
 import { AgentDoc, type ConversationId, defineDoc, GenerationTask, hook, LiveDoc } from "@earendil-works/pi-durable";
 import { isPutAway } from "./archive.ts";
 import type { Engine, Feature } from "./features.ts";
-import { isNetworkError, networkFailure, noteNetworkFailure, SDK_TRANSPORT_ERROR } from "./networkwait.ts";
+import { closedStream, failureOf, isNetworkError, noteTransportFailure, SDK_TRANSPORT_ERROR, transportFailureOf, type TransportFailure } from "./networkwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { defaultThinking } from "./providers.ts";
 import { Library, type ModelRef } from "./state.ts";
@@ -133,7 +133,8 @@ export function noticingRefusals<T extends object>(models: T): T {
 				const original = value as StreamCall;
 				return (model: unknown, context: unknown, options?: StreamOptions) => {
 					let refusal: Refusal | undefined;
-					let network = false;
+					/** How the fetch itself failed: the request never got an answer. */
+					let thrown: TransportFailure | undefined;
 					let sdkAnswered = false;
 					const own = options?.fetch ?? globalThis.fetch;
 					const fetch: Fetch = async (input, init) => {
@@ -143,10 +144,10 @@ export function noticingRefusals<T extends object>(models: T): T {
 						} catch (error) {
 							// The OpenAI and Anthropic SDKs abort their own fetch on a headers deadline; Stop aborts
 							// the generation's signal too, and the adapter returns an aborted message, not an error.
-							network = isNetworkError(error, true) || (error instanceof Error && error.name === "AbortError" && init?.signal?.aborted === true && options?.signal?.aborted === false);
+							thrown = error instanceof Error && error.name === "AbortError" && init?.signal?.aborted === true && options?.signal?.aborted === false ? "network" : failureOf(error, true);
 							throw error;
 						}
-						network = false;
+						thrown = undefined;
 						refusal = response.ok ? undefined : await noted(response);
 						return response;
 					};
@@ -163,7 +164,8 @@ export function noticingRefusals<T extends object>(models: T): T {
 							if (message?.stopReason !== "error") return message;
 							const sdkError = (message as AssistantMessage & { [SDK_TRANSPORT_ERROR]?: unknown })[SDK_TRANSPORT_ERROR];
 							const google = message.api === "google-generative-ai" || message.api === "google-vertex";
-							if (message.content.length === 0 && (network || (!sdkAnswered && isNetworkError(sdkError, google)))) noteNetworkFailure(message);
+							const failure = transportFailure(message, thrown, sdkError, google, sdkAnswered, refusal);
+							if (failure !== undefined) noteTransportFailure(message, failure);
 							if (refusal !== undefined) refusals.set(message, refusal);
 							return message;
 						});
@@ -193,6 +195,21 @@ async function noted(response: Response): Promise<Refusal> {
 /** The refusal noted for a message, for tests. */
 export function refusalOf(message: object): Refusal | undefined {
 	return refusals.get(message);
+}
+
+/**
+ * How a request that ended with `message` failed at the transport, if it did. Never because of the provider's answer:
+ * a request it answered is the request's own fault, whatever its words. A stream the provider closed is recognised by
+ * its words, with or without part of an answer (the whole request is asked again, so that part is dropped); a network
+ * that is away counts only when nothing was written, as #527 has it.
+ */
+function transportFailure(message: AssistantMessage, thrown: TransportFailure | undefined, sdkError: unknown, google: boolean, answered: boolean, refusal: Refusal | undefined): TransportFailure | undefined {
+	if (refusal !== undefined) return undefined;
+	const closed = closedStream(message.errorMessage ?? "");
+	if (closed !== undefined) return closed;
+	if (message.content.length > 0) return undefined;
+	if (thrown !== undefined) return thrown;
+	return !answered && isNetworkError(sdkError, google) ? "network" : undefined;
 }
 
 // ---- How long to wait
@@ -347,9 +364,10 @@ export class Waits {
 		const spent = current?.refusals ?? 0;
 		if (message === undefined) return { spent };
 		const now = this.#callbacks.now();
-		const limit = networkFailure(message) ? undefined : limitOf(message.errorMessage ?? "", refusals.get(message), now);
+		const transport = transportFailureOf(message);
+		const limit = transport !== undefined ? undefined : limitOf(message.errorMessage ?? "", refusals.get(message), now);
 		if (limit === undefined) {
-			if (current !== undefined) this.#end(id, networkFailure(message) ? "the network went away" : `${current.providerName} answered with another error`, false, false);
+			if (current !== undefined) this.#end(id, transport === undefined ? `${current.providerName} answered with another error` : transport === "network" ? "the network went away" : "the provider closed the connection", false, false);
 			return { spent };
 		}
 		// Refused again: news again, whatever episode it slept for.

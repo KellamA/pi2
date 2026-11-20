@@ -139,8 +139,11 @@ struct ChatView: View {
                 limitBanner(wait.sentence, excluding: Set([current].compactMap { $0 }), params: ["since": wait.since],
                             help: "Continue this run with a different model")
             } else if let retry = state?.retry {
-                banner(retry.network == true ? "No network just now. Trying again…" : "The request failed and will be retried: \(retry.error)",
-                       systemImage: "arrow.clockwise", color: Theme.warn)
+                // A stream the provider closed is not the network going away, and says so (#550).
+                let text = retry.closed == true ? "The provider closed the connection. Trying again…"
+                    : retry.network == true ? "No network just now. Trying again…"
+                    : "The request failed and will be retried: \(retry.error)"
+                banner(text, systemImage: "arrow.clockwise", color: Theme.warn)
             }
             if let failure = state?.failure, !busy {
                 let stopped = failure.reason == "aborted"

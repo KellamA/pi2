@@ -53,7 +53,7 @@ import { carriedProjectFor } from "./carryover.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { CARRY_ON_ENTRY, duration, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
-import { networkFailure, NETWORK_RESUMED_ENTRY, type NetworkWait, retryNetwork } from "./networkwait.ts";
+import { NETWORK_RESUMED_ENTRY, type NetworkWait, retryNetwork, transportFailureOf } from "./networkwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
@@ -447,10 +447,13 @@ const harness = await Harness.open(
 					const limit = feature?.retry?.(message, attempt, id as number);
 					if (local !== undefined) return local;
 					const spent = (limit?.spent ?? 0) + (network?.count ?? 0);
-					if (message?.provider !== LOCAL_PROVIDER && networkFailure(message)) return { ...retryNetwork(network, now), spent };
+					// A stream the provider closed is waited out as a network that is away is (#550), and the conversation is
+					// told which of the two it was; a provider that asked for less begins at the longer waits.
+					const failure = message?.provider === LOCAL_PROVIDER ? undefined : transportFailureOf(message);
+					if (failure !== undefined) return { ...retryNetwork(network, now, undefined, failure), spent };
 					return { ...limit, spent };
 				},
-				recovered: (wait: NetworkWait, now: number) => ({ kind: NETWORK_RESUMED_ENTRY, data: { text: `The network is back. Carried on after waiting ${duration(now - wait.since)}.` } }),
+				recovered: (wait: NetworkWait, now: number) => ({ kind: NETWORK_RESUMED_ENTRY, data: { text: `${wait.closed === true ? "The provider answered again." : "The network is back."} Carried on after waiting ${duration(now - wait.since)}.` } }),
 			} as never,
 		},
 		// A conversation without a chosen folder works in the app's own scratch folder, never the home folder.
