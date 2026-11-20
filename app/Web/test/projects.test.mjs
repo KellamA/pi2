@@ -171,7 +171,16 @@ test("a call's key changes when its card is answered or its line is undone elsew
 	w.changes.set(32, stamp({ ...change, undone: true, canUndo: false, undoneAt: 1 }));
 	assert.notEqual(P.callKey(call, w), answered);
 	// A call that asked nothing carries nothing.
-	assert.equal(P.callKey({ callId: "c2" }, w), "0:0");
+	assert.equal(P.callKey({ callId: "c2" }, w), "0:0:0");
+	// A question or a decision has no card in a conversation's page (7.2), so it gets no line either, and its call's key
+	// is the one a call that asked nothing has.
+	assert.equal(P.showNeed({ needs: w.needs, knownNeeds: w.knownNeeds, answered: w.answered }, "n1"), false);
+	w.results.set("c3", { details: { need: "n1" } });
+	assert.equal(P.callKey({ callId: "c3" }, w), "0:0:0");
+	// Unless the conversation says it was answered: then the line says how, in the wake's own words.
+	w.answered.set("n1", { ended: "was answered", label: "the question “Who joins the walkthrough?”" });
+	assert.equal(P.showNeed({ needs: w.needs, knownNeeds: w.knownNeeds, answered: w.answered }, "n1"), true);
+	assert.notEqual(P.callKey({ callId: "c3" }, w), "0:0:0");
 });
 
 test("the one line a card becomes, with its outcome", () => {

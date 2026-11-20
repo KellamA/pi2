@@ -1247,7 +1247,9 @@
 			if (change !== null && changes.has(change)) specs.push(changeSpec(change));
 			const need = P.namedOf(result, "need");
 			if (need !== null) {
-				specs.push(needSpec(need));
+				// A question or a decision has no card here (7.2), so it gets no line saying it no longer waits either.
+				const card = P.showNeed({ needs, knownNeeds, answered }, need) ? needSpec(need) : null;
+				if (card !== null) specs.push(card);
 				// What allowing the request made, when it made something, has no call of its own: its line rides here.
 				const allowed = allowedChangeOf(need);
 				if (allowed !== null) specs.push(changeSpec(allowed.id));

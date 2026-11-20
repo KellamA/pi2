@@ -99,6 +99,15 @@
 	}
 
 	/**
+	 * Whether a call's need gets a line at all: a card this page holds or held (a reach request or a proposed rule,
+	 * 7.2), or one the conversation's own wake markers say was answered. A question or a decision has no card in a
+	 * conversation's page, so it gets no line either — the board answers those.
+	 */
+	function showNeed(world, need) {
+		return world.needs.has(need) || world.knownNeeds.has(need) || world.answered.has(need);
+	}
+
+	/**
 	 * How a call's project state reads now, for the signature the page keys its row and the row's parts by: the change
 	 * line it carries, the card it asked for and that card's outcome, whether an Undo or an answer is on its way, and
 	 * the line of a change the person allowed. Everything the line or card shows has to be in it, or a state that
@@ -109,8 +118,11 @@
 		const rev = world.rev;
 		const result = isObject(call) ? world.results.get(call.callId) : undefined;
 		const change = namedOf(result, "change");
-		const need = namedOf(result, "need");
-		const allowed = need === null ? null : allowedChange(world.changes, need);
+		const named = namedOf(result, "need");
+		// A need with no card and no answer of its own (a question, say) draws nothing; the change its allowing made, if
+		// it made one, still rides at the call.
+		const need = named !== null && showNeed(world, named) ? named : null;
+		const allowed = named === null ? null : allowedChange(world.changes, named);
 		const outcome = need === null ? undefined : world.answered.get(need);
 		const line = change !== null && world.changes.has(change) ? [rev(world.changes.get(change)), rev(world.refusals.get(change)), world.undoing.has(change) ? 1 : 0].join("/") : 0;
 		const card =
@@ -122,9 +134,9 @@
 						outcome ? `${outcome.ended}/${outcome.label}` : "",
 						rev(world.refusals.get(need)),
 						world.answering.has(need) ? 1 : 0,
-						allowed === null ? 0 : [rev(allowed), world.undoing.has(allowed.id) ? 1 : 0, rev(world.refusals.get(allowed.id))].join("/"),
 					].join("/");
-		return `${line}:${card}`;
+		const riding = allowed === null ? 0 : [rev(allowed), world.undoing.has(allowed.id) ? 1 : 0, rev(world.refusals.get(allowed.id))].join("/");
+		return `${line}:${card}:${riding}`;
 	}
 
 	/** A short time, "14:32"; "yesterday 14:32" the day before; "3 Mar 14:32" any earlier. */
@@ -213,5 +225,5 @@
 		return `${label} ${isObject(answer) && str(answer.ended) !== "" ? str(answer.ended) : "no longer waits for you"}`;
 	}
 
-	return { readChanges, readNeeds, answersOf, namedOf, allowedChange, callKey, whenText, changeWords, cardWords, needRows, outcomeWords, labelOf };
+	return { readChanges, readNeeds, answersOf, namedOf, allowedChange, showNeed, callKey, whenText, changeWords, cardWords, needRows, outcomeWords, labelOf };
 });
