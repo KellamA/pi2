@@ -36,6 +36,9 @@ enum PaletteLaunch {
     /// Each happens once, so opening the palette again later shows it empty, as usual.
     private static var toOpen = asked != nil
     private static var toType = asked?.isEmpty == false
+    /// A query asked for while the app runs, by `scripts/test-copy show <suffix> palette:<query>` (#553): typed the next
+    /// time the palette opens, once.
+    static var live: String?
 
     /// True the first time it is asked, when `PI2_SHOW` asked for the palette.
     static func takeOpen() -> Bool {
@@ -45,6 +48,7 @@ enum PaletteLaunch {
 
     /// The query to type into the palette, the first time it opens.
     static func takeQuery() -> String? {
+        if let live { Self.live = nil; return live }
         defer { toType = false }
         return toType ? asked : nil
     }

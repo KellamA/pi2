@@ -927,7 +927,7 @@ project_settings {
 	changes?: {
 		name?: string; folder?: string | null; repository?: string | null;   // "owner/name"
 		without_asking?: Partial<Record<"start_agents" | "file_work" | "close_work" | "make_agents" | "add_rules" | "merge" | "release" | "pass_limits", boolean>>;
-		limits?: { plan_share?: number | null; daily_spend?: number | null };
+		limits?: { plan_share?: number | null; daily_spend?: number | null;   // or planShare, dailySpend (8.3)
 	};
 	agent?: string;    // set_orchestrator: the agent of the project to become the orchestrator
 	change?: number;   // undo: the id of a change, from a result's last line
@@ -939,6 +939,7 @@ project_settings {
 - `change`: each part made at once, as one change with Undo, unless it widens reach ([7.1](#71-every-setting-classed)); those parts are asked for, and the answer says which were made and which asked.
 - Waking for the whole project (`wakeOnReports`) is not here: it is the person's switch ([8.2](#82-when-a-report-wakes-the-orchestrator)). The orchestrator chooses waking for its own hand-offs with `reports`.
 - `set_orchestrator`: always a request; when the person allows it, the engine makes the change and the fresh conversation in one commit ([6.5](#65-start-fresh)).
+- `limits` takes each limit under either of its names: `plan_share` or `planShare`, `daily_spend` or `dailySpend`, which are the names of the project's fields in [8.3](#83-limits-and-the-one-admission-check) and in the reach a change is asked with. Giving one limit under both names, with different values, is refused.
 - `undo`: undoes a change of this project's recorded in [3.12](#312-the-record-of-changes-pi2changes), as `changes.undo` does, except that an undo that would widen reach is asked for.
 
 Every change's result ends with "(change 31)", the id `undo` takes.

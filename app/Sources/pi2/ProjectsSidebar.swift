@@ -159,6 +159,9 @@ private struct ProjectBlock: View {
         if open {
             // The conversation in place of the board is not the List's selection, which stays on the project: its row is
             // marked here instead, so that the person can see which of the agents they are reading (#473).
+            // The arrow keys cannot reach the rows below: the List's selection is the window's own, and giving one of
+            // them a tag would take the selection off the hub, which is what marks the row shown (#473); reaching them
+            // would need a selection of the List's own, which is a view of its own rather than a small change (#553).
             let agent = model.hubs.agent(project.id)
             OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
