@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { unfinished } from "../src/extensions.ts";
-import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRefusals, type Wait, Waits } from "../src/limitwait.ts";
+import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRefusals, type Wait, Waits, wordedTime } from "../src/limitwait.ts";
 import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
@@ -155,7 +155,21 @@ const NOW = Date.UTC(2026, 10, 17, 12, 0, 0);
 	// ChatGPT's usage limit, in the error body.
 	assert.equal(namedTime("", { status: 429, headers: {}, body: JSON.stringify({ error: { type: "usage_limit_reached", resets_at: reset } }) }, NOW), reset * 1000);
 	assert.equal(namedTime("", { status: 429, headers: {}, body: JSON.stringify({ error: { resets_in_seconds: 90 } }) }, NOW), NOW + 90_000);
-	step("the time a provider names for asking again: retry-after (seconds, milliseconds, a date), a window's reset, an error body");
+	// A plan's short window whose reset is only said in words, as OpenCode Go says it; a month's allowance is still terminal.
+	const GO = "429 GoUsageLimitError: OpenCode Go usage limit reached (5-hour, resets in 2h 17m). To keep going now, turn on Extra Usage or upgrade to Go Plus at https://opencode.ai/console";
+	assert.equal(wordedTime(GO, NOW), NOW + (2 * 60 + 17) * 60_000);
+	assert.equal(wordedTime("Try again in ~42 min.", NOW), NOW + 42 * 60_000);
+	assert.equal(wordedTime("retry in 30s", NOW), NOW + 30_000);
+	assert.equal(wordedTime("resets in 1 day 3 hours", NOW), NOW + 27 * 60 * 60_000);
+	assert.equal(wordedTime("resets in 2 hours and 5 minutes", NOW), NOW + 125 * 60_000);
+	assert.equal(wordedTime("the limit resets soon", NOW), undefined);
+	assert.equal(wordedTime("installed in 3 minutes", NOW), undefined);
+	assert.equal(namedTime(GO, undefined, NOW), NOW + (2 * 60 + 17) * 60_000);
+	assert.deepEqual(limitOf(GO, undefined, NOW), { kind: "rate_limit", until: NOW + (2 * 60 + 17) * 60_000 });
+	assert.equal(limitOf(GO.replace("5-hour, resets in 2h 17m", "monthly, resets in 12d 3h"), undefined, NOW), undefined);
+	assert.equal(limitOf("429 GoUsageLimitError: OpenCode Go usage limit reached.", undefined, NOW), undefined);
+	assert.equal(limitOf("Monthly usage limit reached, resets in 2h", undefined, NOW), undefined);
+	step("the time a provider names for asking again: retry-after (seconds, milliseconds, a date), a window's reset, an error body, a wait in words");
 }
 
 // ---- How long a run waits
