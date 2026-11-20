@@ -12,6 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { arr, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { createEditTool } from "@earendil-works/pi-durable/tools";
 import { EngineClient, standInApp, stop } from "./patience.ts";
@@ -44,6 +45,12 @@ assert.deepEqual(
 	readStringified({ type: "object", properties: { thing: { type: "object" }, loose: { anyOf: [{ type: "string" }, { type: "object" }] } } }, { thing: JSON.stringify({ a: 1 }), loose: JSON.stringify({ b: 2 }) }),
 	{ value: { thing: { a: 1 }, loose: JSON.stringify({ b: 2 }) }, names: ["thing"] },
 );
+// An optional array, as `sub_chats` declares `chats`: pi-schema inlines `opt(arr(…))` to a plain `type: "array"` property.
+const subChats = obj({ action: str(), chats: opt(arr(int(), { description: "the numbers of the sub-chats" })) });
+assert.deepEqual(readStringified(subChats, { action: "archive", chats: "[12, 14]" }), {
+	value: { action: "archive", chats: [12, 14] },
+	names: ["chats"],
+});
 step("the reading: a string at an array or object position read as the JSON it encodes, only that and only of the kind asked");
 
 // ---- The tool with the reading added
