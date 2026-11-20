@@ -108,6 +108,11 @@ try {
 			summary = await windowCommand(target, { pid: Number(pid), command, ...size });
 			break;
 		}
+		case 'expose': {
+			const [pid] = args;
+			summary = await windowCommand(target, { pid: Number(pid), command });
+			break;
+		}
 		case 'choose': {
 			const [pid, ...paths] = args;
 			if (!paths.length || paths.some(path => !path) || (paths[0] === 'cancel' && paths.length !== 1)) {

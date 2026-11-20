@@ -73,7 +73,7 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
-for command in show size choose answer fill answer-of; do
+for command in show size choose answer fill answer-of can-click; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -94,6 +94,7 @@ expect "use: scripts/test-copy size" size test-7 smallest 532
 expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
 expect "use: scripts/test-copy choose" choose test-7
+expect "use: scripts/test-copy can-click" can-click test-7 extra
 expect "a suffix is required" last-copy
 expect "is not a suffix" last-copy ../pi2
 expect "use: scripts/test-copy last-copy" last-copy test-7 extra
@@ -185,6 +186,7 @@ expect "no copy named test-7 was started from this checkout" answer test-7 n1 '{
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" last-copy test-7
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
+expect "no copy named test-7 was started from this checkout" can-click test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
 # An inherited data-folder override cannot make an unowned copy callable.
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" call test-7 engine.info
@@ -342,6 +344,7 @@ HOME="$T/home" expect "has no recorded engine running" answer-of test-7 8 42
 HOME="$T/home" expect "has no recorded app running" show test-7 8
 HOME="$T/home" expect "has no recorded app running" size test-7 smallest
 HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
+HOME="$T/home" expect "has no recorded app running" can-click test-7
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
 /usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$dev/Contents/Info.plist"
@@ -451,6 +454,76 @@ HOME="$T/home" expect "refusing a symlink" last-copy test-7
 HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
+
+# can-click tells the causes apart with stand-ins for macOS and the copy's own app (#579).
+rm -- "$data"
+mkdir -p "$data/test-copy-control"
+# A stand-in app process that really runs from the copy's bundle, so the recorded checks pass. macOS kills a
+copied binary without a signature, so sign it ad hoc, as test-copy itself signs a copied bundle.
+mkdir -p "$saved/Contents/MacOS"
+cp /bin/sleep "$saved/Contents/MacOS/pi2"
+codesign --force --sign - "$saved/Contents/MacOS/pi2" >/dev/null 2>&1
+"$saved/Contents/MacOS/pi2" 120 &
+STANDIN_APP=$!
+printf '%s\n' "app_pid=$STANDIN_APP" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $STANDIN_APP)" \
+	"app_exe=$saved/Contents/MacOS/pi2" >"$root/app/build/test-copies/test-7/state"
+cat >"$T/bin/osascript" <<'SH'
+#!/bin/bash
+if [[ $1 == -l && $2 == JavaScript && $3 == - && $4 == app-running && $5 == dev.pi2.app ]]; then
+	[[ $CAN_CLICK_APP == yes ]] && echo running
+	exit 0
+fi
+if [[ $1 == -l && $2 == JavaScript && $3 == - && $4 == reach ]]; then
+	[[ $CAN_CLICK_WINDOW == yes ]] && echo 55
+	exit 0
+fi
+exit 1
+SH
+chmod +x "$T/bin/osascript"
+PATH="$T/bin:$PATH" CAN_CLICK_APP=no HOME="$T/home" expect "the pi² app is not running" can-click test-7
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=no HOME="$T/home" \
+	expect "no window of the copy is in the window server" can-click test-7
+rm -rf -- "$data/test-copy-control"
+ln -s "$T/elsewhere" "$data/test-copy-control"
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes HOME="$T/home" \
+	expect "refusing a symlink for the copy's window control folder" can-click test-7
+rm -- "$data/test-copy-control"
+mkdir -p "$data/test-copy-control"
+# A responder standing in for the copy's app: answers the expose request in its control folder.
+respond() {
+	local answer=$1
+	(
+		local deadline=$((SECONDS + 20)) answered=0 d
+		while ((SECONDS < deadline && !answered)); do
+			for d in "$data"/test-copy-control/request-*/; do
+				[[ -f $d/request.json && ! -f $d/response.json ]] || continue
+				printf '%s' "$answer" >"$d/response.json"
+				answered=1
+			done
+			((answered)) || sleep 0.05
+		done
+	) &
+	RESPONDER_PID=$!
+}
+respond '{"result":"Raised the parked main window"}'
+out=$(PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" "$copy" can-click test-7 2>&1)
+status=$?
+kill "$RESPONDER_PID" 2>/dev/null
+if ((status == 0)) && [[ $out == *'Raised the parked main window in test-7.'* && $out == *'parked window is raised'* ]]; then
+	echo "ok: test-copy can-click exposes the copy's parked window and says the tool can click it"
+else
+	echo "FAIL: test-copy can-click did not expose and answer (exit $status): $out"
+	failures=$((failures + 1))
+fi
+respond '{"error":"unknown test-copy window command"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	expect "predates the request that exposes its parked window" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+# Put back the symlinked data folder the reopen refusal below expects, and stop the stand-in app.
+kill "$STANDIN_APP" 2>/dev/null
+rm -rf -- "$data/test-copy-control"
+rmdir -- "$data"
+ln -s "$T" "$data"
 
 for test in test-test-copy-send.mjs test-test-copy-drive.mjs; do
 	if ! node "$(dirname -- "$script")/$test"; then

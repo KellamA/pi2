@@ -1,3 +1,4 @@
+import ComputerKit
 import SwiftUI
 import WindowKit
 
@@ -85,6 +86,9 @@ struct TestCopyControl: NSViewRepresentable {
         init(model: AppModel, folder: URL) {
             self.model = model
             self.folder = folder
+            // The computer tool asks a parked copy to raise its window over this folder (#579), and a copy's first
+            // look can come before any scripts/test-copy command has made it. A symlink is left alone: poll refuses it.
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             super.init(frame: .zero)
         }
         required init?(coder: NSCoder) { nil }
@@ -360,6 +364,22 @@ struct TestCopyControl: NSViewRepresentable {
                 if let page = request.page { return showPage(page, dir: dir) }
                 guard let id = request.id else { return ["error": "missing what to show"] }
                 return showConversation(id, dir: dir)
+            case "expose":
+                // The computer tool cannot read a parked window: it is joined to the app's accessibility windows
+                // only by an ordering event, which a copy's launch window never gets (#579). Raise this one within
+                // its own level, where it stays behind every ordinary window and nothing on screen changes, and put
+                // it back — as the Window menu's own command does for a window someone chose. The raise is what
+                // the tool needs; whether it can then be read is the tool's own answer to give.
+                guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
+                // A copy opened by hand has no launch switch parking its window, and raising a window among ordinary
+                // ones would put it over the person's work, so that one is never raised.
+                guard ParkedWindow.isParked(window) else {
+                    return ["error": "the main window is not parked behind other windows, so it was not raised"]
+                }
+                _ = ParkedWindow.expose(window)
+                return ParkedWindow.isListed(window)
+                    ? ["result": "Raised the parked main window within its own level"]
+                    : ["error": "the main window did not join the app's accessibility window list when raised"]
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size
