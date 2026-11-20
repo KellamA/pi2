@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProjectRule } from "../src/projectrules.ts";
 import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
-import { EngineClient, previewOnLeavingOut, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-rules-"));
 const gate = join(home, "summary");

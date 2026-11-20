@@ -16,7 +16,10 @@ import type { PromptInput, ToolRegistration } from "@earendil-works/pi-durable";
 import { createBashTool, createReadTool } from "@earendil-works/pi-durable/tools";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { codemodeExtension } from "../src/codemode.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-cm-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-cm-work-")));

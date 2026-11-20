@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { STRATA } from "../src/localengine.ts";
-import { EngineClient, exited, running, stop, until } from "./patience.ts";
+import { EngineClient, exited, running, standInApp, stop, until } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-local-"));
 const files = mkdtempSync(join(tmpdir(), "pi2-local-files-"));
