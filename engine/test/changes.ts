@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ASKED_CHANGED, CHANGED_SINCE } from "../src/changes.ts";
 import { PREVIEW_OFF } from "../src/projects.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-changes-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-changes-work-")));
@@ -126,12 +126,14 @@ try {
 
 	// ---- A project, and who is offered the tools
 
-	await client.call("projects.setPreview", { on: true });
+	// Turned on as the app does, with the plan of the report; the project carrying over makes for `plain` is deleted, which
+	// leaves it in no project (#458, `previewOnLeavingOut`).
+	await previewOnLeavingOut(client);
 	const created = await client.call("projects.create", { folder: work });
 	const projectId = created.id as string;
 	const O = created.conversation as number;
 	await client.call("conversation.open", { id: O });
-	const orchestratorId = (await client.until("the project", () => client.events.projects.projects[0]?.orchestratorId)) as string;
+	const orchestratorId = (await client.until("the project", () => client.events.projects.projects.find((one: Event) => one.id === projectId)?.orchestratorId)) as string;
 	const tools = await client.offered(O);
 	for (const name of ["project_agents", "project_settings", "project_rules"]) assert.ok(tools.includes(name), `${name} in ${tools.join(", ")}`);
 	assert.equal((await client.offered(plain)).some((name) => name.startsWith("project_")), false);

@@ -49,6 +49,7 @@ import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type AgentSaveOptions, type Engine, FEATURES } from "./features.ts";
+import { carriedProjectFor } from "./carryover.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
 import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
@@ -79,7 +80,7 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, refuseInArchivedProject, refuseStartWith, requirePreview, type Start } from "./projects.ts";
+import { allProjects, projectDeleted, refuseInArchivedProject, refuseStartWith, requirePreview, type Start } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
 import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend, type SpendDoc } from "./projectspend.ts";
@@ -1361,6 +1362,8 @@ async function continueChat(params: Params): Promise<{ id: ConversationId; note?
 	if (!entries.some((entry) => (entry.model?.[0] as { role?: string } | undefined)?.role === "user")) throw new Error("This chat has nothing in it yet to continue from");
 
 	const change = { ...(await agentChange(agent, { subChat: false })), cwd };
+	// A template's conversation goes into its folder's project as it is made (9.9): that project's limits hold (8.3).
+	const carriedInto = await carriedProjectFor(agent, cwd);
 	const model = change.model == null ? undefined : providers.models.getModel(change.model.provider, change.model.modelId);
 	const handover = chatHandover(entries, { title: meta!.title, agent: agent.name, typed: typed !== "", seesPictures: model === undefined || model.input.includes("image") });
 	const attachments = handoverAttachments(handover);
@@ -1371,7 +1374,7 @@ async function continueChat(params: Params): Promise<{ id: ConversationId; note?
 			ownership: { kind: "ownerless" },
 			agent: change,
 			init: async (tx, id) => {
-				if (agent.projectId !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { from: chatId, version: shown.id, through: entries.at(-1)?.id ?? null, cwd }, typed);
+				if (agent.projectId !== undefined || carriedInto !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { from: chatId, version: shown.id, through: entries.at(-1)?.id ?? null, cwd }, typed, carriedInto);
 				const conversations = (await tx.doc(Library)).conversations;
 				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId, ...projectFrom(agent) };
 				const chat = conversations[String(chatId)];
@@ -1382,6 +1385,7 @@ async function continueChat(params: Params): Promise<{ id: ConversationId; note?
 	);
 	settings.lastAgent = agent.id;
 	saveSettings();
+	for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 	const conv = (await harness.conversation(created.id, context))!;
 	// Its own agent's Allow everything, and its own tools, as for any first message of a conversation of that agent.
@@ -1406,8 +1410,9 @@ function startConfirmation(params: Params): string | undefined {
 	return confirmLimit(params.confirmLimit);
 }
 
-async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = ""): Promise<string | undefined> {
-	const result = await admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task, options }, confirm, { tx, model });
+/** The person's start, checked against its project's limits: its agent's, or `projectId`, the one it is carried into. */
+async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = "", projectId?: string): Promise<string | undefined> {
+	const result = await admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task, options }, confirm, { tx, model, ...(projectId === undefined ? {} : { projectId }) });
 	if (!result.ok) throw limitError(result.limit);
 	return result.note;
 }
@@ -1433,6 +1438,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (agent.projectId !== undefined) refuseStartWith(agent);
 		const profile = await agentChange(agent, { subChat: false });
 		const change = params.model !== undefined ? { ...profile, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : profile;
+		const carriedInto = await carriedProjectFor(agent, change.cwd ?? null);
 		const now = Date.now();
 		let note: string | undefined;
 		const created = await harness.createConversation(
@@ -1440,7 +1446,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				ownership: { kind: "ownerless" },
 				agent: change,
 				init: async (tx, id) => {
-					if (agent.projectId !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, {});
+					if (agent.projectId !== undefined || carriedInto !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, {}, "", carriedInto);
 					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 				},
 			},
@@ -1448,6 +1454,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		);
 		settings.lastAgent = agent.id;
 		saveSettings();
+		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id, ...(note === undefined ? {} : { note }) };
 	},
@@ -1528,9 +1535,10 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 						updatedAt: now,
 						access: source?.access ?? "none",
 						...(source?.agentId !== undefined ? { agentId: source.agentId } : {}),
-						// A fork of a project's conversation is in the project too, with the same agent, and runs as the same one.
-						...projectFrom(source),
-						...(source?.projectAgentId !== undefined ? { projectAgentId: source.projectAgentId } : {}),
+						// A fork of a project's conversation is in the project too, with the same agent, and runs as the same one. One of a
+						// deleted project's is in none, as that conversation is (3.6), and is carried over as one made is (9.9).
+						...(projectDeleted(source?.projectId) ? {} : projectFrom(source)),
+						...(source?.projectAgentId !== undefined && !projectDeleted(source.projectId) ? { projectAgentId: source.projectAgentId } : {}),
 						// A fork of a chat is a chat, with the assistant's tools, which the fork keeps, and its web switch.
 						...(isChat(source) ? { chat: true as const } : {}),
 						...(isChat(source) && source?.web === false ? { web: false as const } : {}),
@@ -1539,6 +1547,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		// A fork of a conversation in no project goes into its folder's project with the preview on (9.9), as one made is.
+		for (const feature of host.features) await feature.made?.(fork.id as unknown as number);
 		return { id: fork.id };
 	},
 	"conversation.compact": async (params) => {
@@ -2602,10 +2612,11 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 		if (agent === undefined) return;
 		if (agent.projectId !== undefined) refuseStartWith(agent);
 		const change = await agentChange(agent, { subChat: false });
+		const carriedInto = await carriedProjectFor(agent, change.cwd ?? null);
 		let note: string | undefined;
 		const now = Date.now();
 		const due = schedule.nextRunAt;
-		await harness.createConversation(
+		const created = await harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
 				agent: change,
@@ -2613,7 +2624,7 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 				init: async (tx, conversationId) => {
 					const current = (await tx.doc(Schedules)).schedules[id];
 					if (current === undefined || (!manual && current.nextRunAt !== due)) throw new Error("The schedule changed while it was starting");
-					if (agent.projectId !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { schedule: id }, current.prompt);
+					if (agent.projectId !== undefined || carriedInto !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { schedule: id }, current.prompt, carriedInto);
 					(await tx.doc(Library)).conversations[String(conversationId)] = { title: current.title, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 					current.pending = { conversationId: conversationId as unknown as number, runAt: now };
 					current.lastRunAt = now;
@@ -2627,6 +2638,7 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 			},
 			context,
 		);
+		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		schedules = (await harness.snapshot(Schedules, context))?.schedules ?? schedules;
 		await deliver(id);
 		scheduleRecheck.delete(id);
@@ -2634,7 +2646,7 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 	} catch (error) {
 		if (manual && error instanceof RequestError) throw error;
 		// An automatic run stays due until admitted; don't spin on a refusal with a past nextRunAt.
-		if (!manual && agents[schedule.agentId]?.projectId !== undefined) scheduleRecheck.set(id, Date.now() + 60_000);
+		if (!manual && (agents[schedule.agentId]?.projectId !== undefined || error instanceof RequestError)) scheduleRecheck.set(id, Date.now() + 60_000);
 		log("schedule", id, "did not start:", error instanceof Error ? error.message : error);
 	} finally {
 		firing.delete(id);
@@ -2795,6 +2807,7 @@ const server = createServer((socket) => {
 			const handle = () =>
 				handler(params, client).then(
 					(result) => send(client, { id: request.id, result }),
+					// A refusal may carry data beside its message (requesterror.ts): a changed plan's new report, a limit's reading.
 					(error: unknown) => send(client, { id: request.id, ...refusal(error) }),
 				);
 			// An answer to what waits for the person is taken only from the app (#504).

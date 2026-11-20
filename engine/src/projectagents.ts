@@ -19,7 +19,7 @@ import { realpathSync } from "node:fs";
 import type { Tx } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature, FeatureParts } from "./features.ts";
-import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectOf, projectsOn, requirePreview } from "./projects.ts";
+import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectDeleted, projectOf, projectsOn, requirePreview } from "./projects.ts";
 import { type AgentProfile, agentOf, Agents } from "./state.ts";
 
 /** What `agents.save` refuses for a project agent given a folder that is not its project's (3.3). */
@@ -124,13 +124,14 @@ export function templateChanges(copy: AgentProfile, template: AgentProfile, memo
  * The agents a conversation may hand work to, in order (3.3, 5.1). With the preview off, those its agent's `delegates`
  * name, as before projects. With it on: in its project's orchestrator's current conversation, every other agent of the
  * project, whatever its `delegates` say; in any other conversation of a project, those its `delegates` name that are
- * agents of that project; outside any project, those that are templates. An agent removed through a tool is offered to
- * nobody. `conversationId` is undefined for a conversation not made yet, which will be in its agent's project.
+ * agents of that project; outside any project, a deleted one's included, those that are templates. An agent removed
+ * through a tool is offered to nobody. `conversationId` is undefined for a conversation not made yet, which will be in its agent's project.
  */
 export function delegateTargets(own: AgentProfile | undefined, agents: Record<string, AgentProfile>, conversationId?: number): AgentProfile[] {
 	const named = (own?.delegates ?? []).map((id) => agents[id]).filter((agent): agent is AgentProfile => agent !== undefined && agent.removedAt === undefined);
 	if (!projectsOn()) return named;
-	const projectId = conversationId === undefined ? own?.projectId : projectOf(conversationId)?.id;
+	// A deleted project's conversations, and its agents, are in no project (3.6).
+	const projectId = conversationId === undefined ? (projectDeleted(own?.projectId) ? undefined : own?.projectId) : projectOf(conversationId)?.id;
 	if (projectId === undefined) return named.filter((agent) => agent.projectId === undefined);
 	const project = conversationId === undefined ? undefined : inProject(conversationId);
 	if (project !== undefined && project.conversation === conversationId) {
@@ -159,7 +160,7 @@ export function projectAgentFolder(projectId: string, given: unknown): string | 
 	if (given === undefined || given === folder) return folder;
 	if (typeof given === "string" && folder !== null) {
 		try {
-			if (realpathSync(given) === folder) return folder;
+			if (realpathSync.native(given) === folder) return folder;
 		} catch {
 			// Not a folder at all: not the project's either.
 		}

@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CATCH_UP_ROOM, catchUp, NEWS_KEPT, type StateSnapshot, stateText } from "../src/orchestrator.ts";
 import type { News } from "../src/projects.ts";
-import { EngineClient, exited, running, standInApp, stop } from "./patience.ts";
+import { EngineClient, exited, previewOnLeavingOut, running, standInApp, stop } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -204,7 +204,9 @@ try {
 
 	// ---- A project: the orchestrator's first context begins with the state block
 
-	await c.call("projects.setPreview", { on: true });
+	// Turned on as the app does, with the plan of the report; the project carrying over makes for `plain` is deleted, which
+	// leaves it in no project (#458, `previewOnLeavingOut`).
+	await previewOnLeavingOut(c);
 	await unchanged("with the preview on");
 	const made = await c.call("projects.create", { folder });
 	const projectId = made.id as string;

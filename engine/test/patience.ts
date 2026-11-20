@@ -119,6 +119,28 @@ export async function listening(engine: ChildProcess, home: string, patience = P
 }
 
 /**
+ * Turn the projects' preview on as the app does (docs/projects.md, 9.8): with the plan of the report the person was
+ * shown, so that what the engine has is carried over as that report says. Answers what `projects.setPreview` answers.
+ */
+export async function previewOn(client: EngineClient): Promise<any> {
+	const { plan } = await client.call("projects.carryOver", { dryRun: true });
+	return client.call("projects.setPreview", { on: true, plan });
+}
+
+/**
+ * Turn the preview on as `previewOn` does, then delete the projects carrying over made, so that the conversations made
+ * before are in no project for what they are told and offered, as before #458: with the preview on, a conversation that
+ * is not a chat is otherwise always in a project (docs/projects.md, 9.9), and a deleted project's are in none
+ * (`inProject`). For the tests that check what a conversation in no project is told, byte for byte, with the preview on.
+ */
+export async function previewOnLeavingOut(client: EngineClient): Promise<any> {
+	const answer = await previewOn(client);
+	const { projects } = await client.call("projects.list");
+	for (const project of projects) if (project.carriedAt !== undefined && project.deletedAt === undefined) await client.call("projects.delete", { id: project.id });
+	return answer;
+}
+
+/**
  * One connection to an engine, as the app has: requests with their answers, and the events it sends, which a test's own
  * client keeps by overriding `receive`. By default each kind of event is kept by name in `events`, and a conversation's
  * items and state in `conversations`.
@@ -144,6 +166,7 @@ export class EngineClient {
 				if (typeof message.event !== "string" && message.id !== undefined && message.id !== null) {
 					const reply = this.#replies.get(message.id);
 					this.#replies.delete(message.id);
+					// A refusal may carry data beside its message (docs/projects.md, 4.1), kept on the error as `data`.
 					if (message.error !== undefined) reply?.reject(Object.assign(new Error(message.error), message.data === undefined ? {} : { data: message.data }));
 					else reply?.resolve(message.result);
 				} else this.receive(message);

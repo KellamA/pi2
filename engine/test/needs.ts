@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GONE } from "../src/needs.ts";
 import { PREVIEW_OFF } from "../src/projects.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-needs-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-needs-work-")));
@@ -127,7 +127,7 @@ try {
 
 	// ---- The preview on, and a project
 
-	await client.call("projects.setPreview", { on: true });
+	await previewOnLeavingOut(client);
 	const project = await client.call("projects.create", { folder: work });
 	const orchestrator = project.conversation as number;
 	await client.call("conversation.open", { id: orchestrator });
@@ -150,7 +150,7 @@ try {
 			rootConversationId: orchestrator,
 			title: client.events.library.conversations.find((row: Event) => row.id === orchestrator).title,
 			rootTitle: client.events.library.conversations.find((row: Event) => row.id === orchestrator).title,
-			agentId: client.events.projects.projects[0].orchestratorId,
+			agentId: client.events.projects.projects.find((row: Event) => row.id === project.id).orchestratorId,
 			agentName: "Orchestrator",
 			blocking: false,
 			createdAt: 0,
@@ -260,7 +260,7 @@ try {
 
 	// ---- Withdrawn with its conversation, and with its project
 
-	const other = (await client.call("conversation.create", { agentId: client.events.projects.projects[0].orchestratorId })).id as number;
+	const other = (await client.call("conversation.create", { agentId: client.events.projects.projects.find((row: Event) => row.id === project.id).orchestratorId })).id as number;
 	await client.call("conversation.open", { id: other });
 	await client.needsYou(other, { action: "ask", question: "From the other conversation?" });
 	await client.until("n5", () => client.need("n5"));
