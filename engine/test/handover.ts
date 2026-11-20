@@ -14,7 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { chatFileName, chatHandover, handoverAttachments } from "../src/handover.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);

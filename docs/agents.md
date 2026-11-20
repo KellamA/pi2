@@ -24,6 +24,12 @@ A new worktree has none of the files git ignores, installed packages among them.
 - Do not cut a command's output with `head`, `tail` or `grep` to keep it short: what you cut is gone, and you end up running the command again. Let the tool shorten it (it keeps the whole output in a file and says where), or send a long run's output to a file in your conversation's scratch folder (`$PI2_SCRATCH`, which the system prompt names; see [architecture.md](architecture.md#a-scratch-folder)) and read the part you need.
 - A command in the foreground is stopped after two minutes unless you pass `timeout` (ten minutes at most). A long run, such as the whole test suite or a build, goes in the background with `background: true`; read it with the `background` tool and `wait`. Keep each `wait` to 240 seconds or less and ask again: a longer pause loses the prompt cache, and the whole conversation is paid for again.
 - When you need several files, or several lookups that do not depend on each other, send the calls together in one answer instead of one a turn. Each turn reads the whole conversation again.
+- The file tools (`read`, `write`, `edit`) do not expand `$PI2_SCRATCH`, or any other variable, in a path: a path written that way makes a folder named `$PI2_SCRATCH` in the working folder. Run `echo $PI2_SCRATCH` once and write the full path it prints. In a shell command `$PI2_SCRATCH` works as usual.
+- A picture from `scripts/test-copy shot` goes inside your checkout. Put the ones worth keeping in `app/build/shots/<issue>/`, which git ignores: they stay after the copy is stopped, and a reviewer can read them from your worktree.
+- If your model cannot look at pictures, say so in the first line of your report, do not read picture files, and check each state from what the copy and the engine answer and from the controls the computer tool lists.
+- `scripts/test-copy reopen` puts the copy's window back at its smallest size: run `scripts/test-copy size` again after it.
+- To make something that waits for the person in a copy (a question, a decision, a request for more reach, a proposed rule), send the demo orchestrator a message that begins `/tools` with a JSON list of tool calls; "The scripted demo model" in [development.md](development.md#the-scripted-demo-model) has the form.
+- When you bring a branch that is not yours up to date, as a reviewer of another agent's pull request does, merge `origin/main` into it; do not rebase it. A rebase rewrites the author's commits, and their worktree can then not be removed.
 
 ## Read first
 

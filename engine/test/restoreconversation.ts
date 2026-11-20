@@ -11,7 +11,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { answersForThePerson } from "../src/answers.ts";
+import { personOnly, SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { NOT_OF_DELETED_PROJECT, RESTORE_CHANGED, RESTORE_SUB_CHAT, STOP_RESTORE } from "../src/carryover.ts";
 import { PREVIEW_OFF, PROJECT_DELETED } from "../src/projects.ts";
 import { EngineClient, previewOn, standInApp, stop } from "./patience.ts";
@@ -97,8 +97,8 @@ const refusal = async (promise: Promise<unknown>): Promise<any> => {
 };
 
 // Only the app's connection may restore; the dry run, which changes nothing, stays open to any connection.
-assert.equal(answersForThePerson("projects.restoreConversation", { id: 1 }), true);
-assert.equal(answersForThePerson("projects.restoreConversation", { id: 1, dryRun: true }), false);
+assert.equal(personOnly("projects.restoreConversation", { id: 1 }), SETTINGS_ONLY_IN_THE_APP);
+assert.equal(personOnly("projects.restoreConversation", { id: 1, dryRun: true }), undefined);
 step("the restore is classed with the requests only the app may make");
 
 engine = start();

@@ -65,6 +65,9 @@ extension AgentSection {
 struct AgentEditor: View {
     @Bindable var model: AppModel
     let agentID: String
+    /// Called instead of leaving the page when the agent is deleted, when this page is shown inside another (the
+    /// Agents tab of a project's board, #475). Nil on the window's own pages, which move away as before.
+    var onDeleted: (() -> Void)? = nil
 
     @State private var draft: AgentProfile?
     /// The saved agent the draft was last brought up to date with: what the person's edits are measured from.
@@ -95,8 +98,9 @@ struct AgentEditor: View {
             }
         }
         .background(Theme.window)
+        // With the projects preview on, an agent of no project is a template (docs/projects.md, 3.3), and is titled so.
         .navigationTitle(saved?.name ?? "Agent")
-        .navigationSubtitle("Agent")
+        .navigationSubtitle(engine.projectsPreview && saved?.projectId == nil ? "Template" : "Agent")
         .toolbar {
             ToolbarItem {
                 Button("New Conversation", systemImage: "plus.bubble") { model.newConversation(agentId: agentID) }
@@ -110,7 +114,8 @@ struct AgentEditor: View {
         .confirmationDialog("Delete \(saved?.name ?? "this agent")?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 engine.perform("agents.delete", ["id": agentID])
-                model.selection = nil
+                // On the window's own pages the selection moves away; in the Agents tab, the way back is the tab's.
+                if let onDeleted { onDeleted() } else { model.selection = nil }
             }
         } message: {
             Text("Its conversations stay, and keep the setup they already have.")
@@ -411,29 +416,56 @@ struct AgentEditor: View {
             .scrollContentBackground(.hidden)
 
             Rectangle().fill(Theme.line).frame(height: 1)
-            HStack {
-                Button("Delete Agent…") { confirmingDelete = true }
-                    .buttonStyle(.piDanger)
-                    .disabled(engine.agents.count <= 1)
-                Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agentID) }
-                    .buttonStyle(.piSecondary)
-                    .disabled(changed)
-                    .help(changed ? "Save or revert your changes before duplicating" : "Duplicate this agent’s saved settings")
-                if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
-                Spacer()
-                Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(2).multilineTextAlignment(.trailing)
-                Button("Revert") { load(); error = nil }
-                    .buttonStyle(.piSecondary)
-                    .disabled(!changed)
-                Button("Save") { save() }
-                    .buttonStyle(.piPrimary)
-                    .keyboardShortcut("s")
-                    .disabled(!changed || agent.name.trimmingCharacters(in: .whitespaces).isEmpty)
+            // Two layouts: at the window's width the note sits between the buttons, as it always has; in a pane too
+            // narrow for that, such as the board's Agents tab (#475), it goes above them, so no label is cut off.
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    changes
+                    Spacer(minLength: 12)
+                    note.lineLimit(2).multilineTextAlignment(.trailing)
+                    actions
+                }
+                .frame(minWidth: 660)
+                VStack(alignment: .leading, spacing: 8) {
+                    note.fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        changes
+                        Spacer(minLength: 8)
+                        actions
+                    }
+                }
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
         }
+    }
+
+    /// Deleting and duplicating, and what went wrong if a save did.
+    @ViewBuilder
+    private var changes: some View {
+        Button("Delete Agent…") { confirmingDelete = true }
+            .buttonStyle(.piDanger)
+            .disabled(engine.agents.count <= 1)
+        Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agentID) }
+            .buttonStyle(.piSecondary)
+            .disabled(changed)
+            .help(changed ? "Save or revert your changes before duplicating" : "Duplicate this agent’s saved settings")
+        if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
+    }
+
+    private var note: some View {
+        Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        Button("Revert") { load(); error = nil }
+            .buttonStyle(.piSecondary)
+            .disabled(!changed)
+        Button("Save") { save() }
+            .buttonStyle(.piPrimary)
+            .keyboardShortcut("s")
+            .disabled(!changed || (draft?.name.trimmingCharacters(in: .whitespaces) ?? "").isEmpty)
     }
 
     private func save() {
