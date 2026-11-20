@@ -128,15 +128,19 @@ struct MemoryNoteRow: View {
     let note: MemoryNote
     /// Says who wrote a note that the person did not: "Written by the agent", or "Written in a chat".
     var writtenBy = "Written by the agent"
+    /// The lines the field grows to before it scrolls. Five suits the settings pages; the board's Notes tab shows a note
+    /// in full, however long (docs/projects.md, 3.8, lets one be 400 characters), and asks for more.
+    var maxLines = 5
     let save: (String) -> Void
     let remove: () -> Void
 
     @State private var text: String
     @FocusState private var focused: Bool
 
-    init(note: MemoryNote, writtenBy: String = "Written by the agent", save: @escaping (String) -> Void, remove: @escaping () -> Void) {
+    init(note: MemoryNote, writtenBy: String = "Written by the agent", maxLines: Int = 5, save: @escaping (String) -> Void, remove: @escaping () -> Void) {
         self.note = note
         self.writtenBy = writtenBy
+        self.maxLines = maxLines
         self.save = save
         self.remove = remove
         _text = State(initialValue: note.text)
@@ -152,7 +156,7 @@ struct MemoryNoteRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 TextField("Note", text: $text, axis: .vertical)
                     .labelsHidden()
-                    .lineLimit(1...5)
+                    .lineLimit(1...maxLines)
                     .focused($focused)
                     .accessibilityLabel("Note")
                     .accessibilityValue(text)
