@@ -18,7 +18,7 @@ import type { AssistantMessage, SimpleStreamOptions } from "@earendil-works/pi-a
 import { AgentDoc, type ConversationId, defineDoc, GenerationTask, hook, LiveDoc } from "@earendil-works/pi-durable";
 import { isPutAway } from "./archive.ts";
 import type { Engine, Feature } from "./features.ts";
-import { isNetworkError, networkFailure, noteNetworkFailure, SDK_TRANSPORT_ERROR } from "./networkwait.ts";
+import { closedStream, failureOf, isNetworkError, noteTransportFailure, SDK_TRANSPORT_ERROR, transportFailureOf, type TransportFailure } from "./networkwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { defaultThinking } from "./providers.ts";
 import { Library, type ModelRef } from "./state.ts";
@@ -34,6 +34,10 @@ export type Refusal = { status: number; headers: Record<string, string>; body?: 
 /** A refusal worth waiting for: which kind, and the time the provider named for asking again, if it named one. */
 export type Limit = { kind: "rate_limit" | "overloaded"; until?: number };
 
+/** Terminal refusals that are a plan's window when they name a reset no more than this far off; later, or with none, they are an allowance used up. */
+const WINDOW_AT_MOST = 12 * 3_600_000;
+const WINDOWED = /GoUsageLimitError|FreeUsageLimitError/;
+
 /**
  * Refusals that waiting does not cure: money or a plan's allowance used up for good (a monthly cap, no credit left, a
  * plan that does not include the model), a workspace cap only its admin can raise, a single request larger than the
@@ -46,12 +50,33 @@ const OVERLOADED = /overloaded|(?<![a-z0-9])529(?![a-z0-9])/i;
 
 /** Whether an error is a refusal to wait for, and what the provider said about when to ask again. */
 export function limitOf(text: string, refusal: Refusal | undefined, now: number): Limit | undefined {
-	if (TERMINAL.test(text) || (refusal?.body !== undefined && TERMINAL.test(refusal.body))) return undefined;
+	if (TERMINAL.test(text) || (refusal?.body !== undefined && TERMINAL.test(refusal.body))) {
+		// A plan's short window used up is waited out like any limit that names a time; the same error for a month's allowance is not.
+		const windowed = WINDOWED.test(text) || (refusal?.body !== undefined && WINDOWED.test(refusal.body));
+		const until = windowed ? namedTime(text, refusal, now) : undefined;
+		if (until === undefined || until - now > WINDOW_AT_MOST) return undefined;
+		return { kind: "rate_limit", until };
+	}
 	const status = refusal?.status;
 	const kind = status === 429 ? "rate_limit" : status === 529 ? "overloaded" : OVERLOADED.test(text) ? "overloaded" : RATE_LIMITED.test(text) ? "rate_limit" : undefined;
 	if (kind === undefined) return undefined;
 	const until = namedTime(text, refusal, now);
 	return until === undefined ? { kind } : { kind, until };
+}
+
+/**
+ * A wait written in words, as some providers put it in the error's text: "resets in 2h 17m", "try again in 45 minutes",
+ * "retry in 30s", "resets in 1 day 3 hours". The time it comes to, or undefined when the text names none.
+ */
+export function wordedTime(text: string, now: number): number | undefined {
+	const said = /(?:resets?|try again|retry)\s+in\s+~?((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,]*(?:and\s+)?)+)/i.exec(text)?.[1];
+	if (said === undefined) return undefined;
+	let ms = 0;
+	for (const [, amount, unit] of said.matchAll(/(\d+)\s*([a-z]+)/gi)) {
+		const first = unit!.toLowerCase()[0];
+		ms += Number(amount) * (first === "d" ? 24 * HOUR : first === "h" ? HOUR : first === "m" ? 60_000 : 1000);
+	}
+	return now + ms;
 }
 
 /**
@@ -84,10 +109,10 @@ export function namedTime(text: string, refusal: Refusal | undefined, now: numbe
 	if (resetsAt !== undefined && resetsAt > 0) times.push(resetsAt * 1000);
 	const resetsIn = number(error?.resets_in_seconds);
 	if (resetsIn !== undefined && resetsIn >= 0) times.push(now + resetsIn * 1000);
-	// pi-ai's own wording of that, when nothing else was read: "Try again in ~42 min."
+	// The wait in words, when nothing else was read: pi-ai's "Try again in ~42 min.", OpenCode's "resets in 2h 17m".
 	if (times.length === 0) {
-		const minutes = /try again in ~?(\d+) ?min/i.exec(text)?.[1];
-		if (minutes !== undefined) times.push(now + Number(minutes) * 60_000);
+		const worded = wordedTime(text, now) ?? (refusal?.body === undefined ? undefined : wordedTime(refusal.body, now));
+		if (worded !== undefined) times.push(worded);
 	}
 	return times.length === 0 ? undefined : Math.max(now, ...times);
 }
@@ -133,7 +158,8 @@ export function noticingRefusals<T extends object>(models: T): T {
 				const original = value as StreamCall;
 				return (model: unknown, context: unknown, options?: StreamOptions) => {
 					let refusal: Refusal | undefined;
-					let network = false;
+					/** How the fetch itself failed: the request never got an answer. */
+					let thrown: TransportFailure | undefined;
 					let sdkAnswered = false;
 					const own = options?.fetch ?? globalThis.fetch;
 					const fetch: Fetch = async (input, init) => {
@@ -143,10 +169,10 @@ export function noticingRefusals<T extends object>(models: T): T {
 						} catch (error) {
 							// The OpenAI and Anthropic SDKs abort their own fetch on a headers deadline; Stop aborts
 							// the generation's signal too, and the adapter returns an aborted message, not an error.
-							network = isNetworkError(error, true) || (error instanceof Error && error.name === "AbortError" && init?.signal?.aborted === true && options?.signal?.aborted === false);
+							thrown = error instanceof Error && error.name === "AbortError" && init?.signal?.aborted === true && options?.signal?.aborted === false ? "network" : failureOf(error, true);
 							throw error;
 						}
-						network = false;
+						thrown = undefined;
 						refusal = response.ok ? undefined : await noted(response);
 						return response;
 					};
@@ -163,7 +189,8 @@ export function noticingRefusals<T extends object>(models: T): T {
 							if (message?.stopReason !== "error") return message;
 							const sdkError = (message as AssistantMessage & { [SDK_TRANSPORT_ERROR]?: unknown })[SDK_TRANSPORT_ERROR];
 							const google = message.api === "google-generative-ai" || message.api === "google-vertex";
-							if (message.content.length === 0 && (network || (!sdkAnswered && isNetworkError(sdkError, google)))) noteNetworkFailure(message);
+							const failure = transportFailure(message, thrown, sdkError, google, sdkAnswered, refusal);
+							if (failure !== undefined) noteTransportFailure(message, failure);
 							if (refusal !== undefined) refusals.set(message, refusal);
 							return message;
 						});
@@ -193,6 +220,21 @@ async function noted(response: Response): Promise<Refusal> {
 /** The refusal noted for a message, for tests. */
 export function refusalOf(message: object): Refusal | undefined {
 	return refusals.get(message);
+}
+
+/**
+ * How a request that ended with `message` failed at the transport, if it did. Never because of the provider's answer:
+ * a request it answered is the request's own fault, whatever its words. A stream the provider closed is recognised by
+ * its words, with or without part of an answer (the whole request is asked again, so that part is dropped); a network
+ * that is away counts only when nothing was written, as #527 has it.
+ */
+function transportFailure(message: AssistantMessage, thrown: TransportFailure | undefined, sdkError: unknown, google: boolean, answered: boolean, refusal: Refusal | undefined): TransportFailure | undefined {
+	if (refusal !== undefined) return undefined;
+	const closed = closedStream(message.errorMessage ?? "");
+	if (closed !== undefined) return closed;
+	if (message.content.length > 0) return undefined;
+	if (thrown !== undefined) return thrown;
+	return !answered && isNetworkError(sdkError, google) ? "network" : undefined;
 }
 
 // ---- How long to wait
@@ -347,9 +389,10 @@ export class Waits {
 		const spent = current?.refusals ?? 0;
 		if (message === undefined) return { spent };
 		const now = this.#callbacks.now();
-		const limit = networkFailure(message) ? undefined : limitOf(message.errorMessage ?? "", refusals.get(message), now);
+		const transport = transportFailureOf(message);
+		const limit = transport !== undefined ? undefined : limitOf(message.errorMessage ?? "", refusals.get(message), now);
 		if (limit === undefined) {
-			if (current !== undefined) this.#end(id, networkFailure(message) ? "the network went away" : `${current.providerName} answered with another error`, false, false);
+			if (current !== undefined) this.#end(id, transport === undefined ? `${current.providerName} answered with another error` : transport === "network" ? "the network went away" : "the provider closed the connection", false, false);
 			return { spent };
 		}
 		// Refused again: news again, whatever episode it slept for.

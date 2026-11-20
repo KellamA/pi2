@@ -1,4 +1,4 @@
-// Checks how a window's size follows its SwiftUI content (#400).
+// Checks how a window's size follows its SwiftUI content (#400, #542).
 //
 // The app crashed in the background when the main window's hosting view, working out its content's smallest size
 // from inside an Update Constraints pass, found its size changed and asked for another pass, again and again until
@@ -22,7 +22,10 @@
 //
 //   cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
 //
-// It cannot make the crash happen: what kept the window's size changing on 18 November was not found (see #400).
+// It also orders both real indicator panels off screen and exercises short and long names with and without Show,
+// across turns and in a single burst. The hosting view stays put, supplies no window size constraints, and the
+// pill resizes only when asked, stays on one line, and fits the screen. The small-panel watch names each pill.
+// The original exception did not reproduce here (#542).
 // Exits 1 if anything failed.
 
 import AppKit
@@ -70,6 +73,8 @@ final class Feed {
     /// The fold of a project's hub, when the detail shows one (#471), and whether it said it was too narrow for both panels.
     var hubFold = HubFold.both
     var hubNarrow = false
+    /// Whether an agent's conversation takes the board's place in the hub (#473).
+    var hubAgent = false
     @ObservationIgnored var frames: [String: CGRect] = [:]
 }
 
@@ -225,7 +230,7 @@ struct HubDetail: View {
     var body: some View {
         VStack(spacing: 0) {
             probe("bar") { Text("Demo project · \(longLine)").lineLimit(1).frame(maxWidth: .infinity, minHeight: 50) }
-            HubPanels(fold: feed.hubFold, narrow: Binding(get: { feed.hubNarrow }, set: { feed.hubNarrow = $0 })) {
+            HubPanels(fold: feed.hubFold, narrow: Binding(get: { feed.hubNarrow }, set: { feed.hubNarrow = $0 }), agent: feed.hubAgent) {
                 probe("conversation") {
                     VStack(spacing: 0) {
                         Color.gray.opacity(0.2).frame(minHeight: 0, maxHeight: .infinity)
@@ -234,12 +239,7 @@ struct HubDetail: View {
                     }
                 }
             } board: {
-                probe("board") {
-                    VStack(spacing: 8) {
-                        ScrollView(.horizontal) { HStack { ForEach(["Now", "Work", "Agents", "Rules", "Notes", "Branches", "Settings"], id: \.self) { Text($0) } } }
-                        ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
-                    }
-                }
+                if feed.hubAgent { agent } else { board }
             } strip: {
                 probe("strip") {
                     HStack {
@@ -255,6 +255,35 @@ struct HubDetail: View {
         }
         .navigationTitle("Demo project")
         .toolbar { ToolbarItem { Button("Model") {} } }
+    }
+
+    /// The board's side as it is while an agent's conversation takes its place (#473): a small header with the agent,
+    /// the conversation's title and the way back, the conversation, and its field.
+    private var agent: some View {
+        probe("agent") {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Color.gray.opacity(0.2).frame(width: 16, height: 16)
+                    Text("Atlas").font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize()
+                    Text("Check the sample build").font(.system(size: 12)).lineLimit(1)
+                    Spacer(minLength: 8)
+                    probe("back") { Button("Back to the Board") {} }
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                TextField("Message Atlas…", text: .constant("")).padding(12)
+            }
+        }
+    }
+
+    private var board: some View {
+        probe("board") {
+            VStack(spacing: 8) {
+                ScrollView(.horizontal) { HStack { ForEach(["Now", "Work", "Agents", "Rules", "Notes", "Branches", "Settings"], id: \.self) { Text($0) } } }
+                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+            }
+        }
     }
 
     /// Notes where a part is while it is shown, and forgets it once it is folded away.
@@ -365,6 +394,7 @@ let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
+    await group("indicator panels keep one hosting view and size outside layout (#542)") { await indicatorCheck() }
     // The content as the app had it before: what to keep, and what to stop.
     let before = Made(fixed: false)
     await before.layOut()
@@ -506,6 +536,57 @@ Task { @MainActor in
             }
         }
         check("with the sidebar the hub is too narrow for both panels, and without it is not", widths.count == 2 && widths[0] < HubFold.narrowWidth && widths[1] >= HubFold.narrowWidth, "widths \(widths)")
+        check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
+        check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
+        hub.close()
+    }
+
+    await group("a project's hub with an agent's conversation in place of the board, at the smallest size, in each fold (#473)") {
+        let hub = Made(fixed: true, hub: true)
+        hub.feed.hubAgent = true
+        await hub.layOut()
+        check("the smallest size is the same as without the hub", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+        hub.window.setContentSize(fixed)
+        await hub.layOut()
+        let smallest = hub.window.frame
+        let bounds = hub.host.frame
+        hub.resizes = 0
+        for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+            hub.feed.sidebar = sidebar
+            for fold in HubFold.allCases {
+                hub.feed.hubFold = fold
+                await hub.layOut()
+                let frames = hub.feed.frames
+                let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(fold.rawValue)"
+                let width = frames["bar"]?.width ?? 0
+                let narrow = width < HubFold.narrowWidth
+                let shown = fold.shown(narrow: narrow, agent: true)
+                check("\(name): the window does not resize", hub.window.frame == smallest, "frame \(hub.window.frame), was \(smallest)")
+                check("\(name): smallest size", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+                check("\(name): the split view is no taller than the window", hub.tallestColumn <= hub.host.frame.height + 0.5, "a column is \(hub.tallestColumn) tall")
+                for (part, present) in [("conversation", shown != .conversationFolded), ("agent", shown != .boardFolded), ("strip", shown == .conversationFolded)] {
+                    let frame = frames[part]
+                    check("\(name): the \(part) is \(present ? "shown" : "folded away")", (frame != nil) == present, "frames \(frames)")
+                    if let frame, present {
+                        check("\(name): the \(part) is inside the window", frame.minX >= -0.5 && frame.maxX <= bounds.width + 0.5 && frame.maxY <= bounds.height + 0.5 && frame.width >= 200, "\(part) \(frame) in \(bounds.size)")
+                    }
+                }
+                check("\(name): the board is not shown while an agent's conversation is", frames["board"] == nil, "board \(String(describing: frames["board"]))")
+                if shown == .boardFolded {
+                    check("\(name): the way back goes with the agent's conversation", frames["back"] == nil, "frames \(frames)")
+                } else if let back = frames["back"], let agent = frames["agent"] {
+                    check("\(name): the way back is in the agent's own header", agent.contains(back) && back.maxY <= agent.minY + 40, "back \(back) in agent \(agent)")
+                } else {
+                    check("\(name): the way back is in the agent's own header", false, "frames \(frames)")
+                }
+                if narrow, let agent = frames["agent"] {
+                    check("\(name): the agent's conversation takes the width", abs(agent.width - width) <= 2, "agent \(agent), hub \(width) wide")
+                }
+                if shown == .both, let conversation = frames["conversation"], let agent = frames["agent"] {
+                    check("\(name): the panels share the width", abs(conversation.width - agent.width) <= 2, "conversation \(conversation), agent \(agent)")
+                }
+            }
+        }
         check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
         check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
         hub.close()

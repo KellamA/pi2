@@ -138,7 +138,8 @@ final class AppModel {
     /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
     /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
-        workspace.shownConversations.union(chats.selection.map { [$0] } ?? []).union(hubConversation.map { [$0] } ?? [])
+        workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
+            .union(hubConversation.map { [$0] } ?? []).union(hubAgentConversation.map { [$0] } ?? [])
     }
 
     var selectedConversationID: Int? {
@@ -367,6 +368,7 @@ struct Pi2App: App {
 
         MenuBarExtra {
             MenuBarView(model: model)
+                .watchWindowSize(name: "Menu Bar", threshold: SizeWatch.panelThreshold) { model.engine.note($0) }
                 .tint(.piAccent)
         } label: {
             MenuBarLabel(engine: model.engine)

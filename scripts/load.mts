@@ -8,7 +8,9 @@
 //
 //   node scripts/load.mts test-344                  a copy started from this checkout with scripts/test-copy; started
 //                                                   here, and stopped at the end, if it is not running
-//   node scripts/load.mts --socket <path>           an engine you started yourself, such as under a profiler
+//   node scripts/load.mts --socket <path>           an engine you started yourself, such as under a profiler; it has no
+//                                                   test-copy key, so it takes no change to what the person set (#513),
+//                                                   and this script stops at the access a conversation needs
 //
 // Options: --runs 20, --seconds 120 (with the load), --before 15 (seconds measured before it), --pace 60 (tokens a
 // second), --command "<shell command each step runs>", --large 200 (entries in a conversation made first, with long
@@ -20,7 +22,7 @@
 // checks `call` makes, and --socket is refused for the usual data folder's.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir, loadavg, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -301,6 +303,14 @@ const load = { before: loadavg()[0]!, end: 0 };
 const timeline: { at: number; load: number; open: number; late: number }[] = [];
 const began = Date.now();
 try {
+	// Authenticate before creating any conversations, and report failure through the same cleanup path as a failed run.
+	if (suffix !== undefined) {
+		const file = join(root, "app", "build", "test-copies", suffix, "answer-key");
+		if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`the copy ${suffix} has no regular answer-key file; restart it with scripts/test-copy`);
+		await request("test-copy.answerer", { key: readFileSync(file, "utf8").trim() });
+	} else if (!(await request("connection.mayAnswer")).result?.mayAnswer) {
+		throw new Error("this connection cannot set the access the load script needs; name a test copy instead of --socket");
+	}
 	const idle = await conversation("idle");
 	let large: number | undefined;
 	if (LARGE > 0) {

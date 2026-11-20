@@ -19,9 +19,10 @@ let package = Package(
         .target(name: "ComposeKit", path: "Sources/ComposeKit"),
         // The login item decisions, without the app's launchd calls, so pi2-login-item-check can run them safely.
         .target(name: "LoginItemKit", path: "Sources/LoginItemKit"),
-        // A window's smallest size, fixed rather than worked out from its content (#400), and the watch on the app's
-        // scene body (#436). Its own module so pi2-window-check can check them.
-        .target(name: "WindowKit", path: "Sources/WindowKit"),
+        // Colours and controls shared by the app and the indicator pill.
+        .target(name: "PiStyle", path: "Sources/PiStyle"),
+        // Window sizing and diagnostics shared by the app and pi2-window-check (#400, #436, #542).
+        .target(name: "WindowKit", dependencies: ["PiStyle"], path: "Sources/WindowKit"),
         // What a file linked in a conversation is once its path is made whole, and what a click and its menu do (#451).
         // Its own module so pi2-file-link-check can check it.
         .target(name: "FileLinkKit", path: "Sources/FileLinkKit"),
@@ -33,7 +34,7 @@ let package = Package(
         .target(name: "PeerKit", path: "Sources/PeerKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "WindowKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
             // inspector (docs/development.md). On in a debug build, and in an optimised development build, which

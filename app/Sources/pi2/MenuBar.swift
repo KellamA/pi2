@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 import ComposeKit
 import LoginItemKit
 import SwiftUI
+import WindowKit
 
 /// The menu bar popover: what needs the person, what is running, what is next, and a quick way to ask.
 struct MenuBarView: View {
@@ -126,6 +127,8 @@ final class QuickAsk {
     static let shared = QuickAsk()
     private var panel: NSPanel?
     private var hotKey: GlobalHotKey?
+    private var sizeWatch: SizeWatch?
+    private var pendingHeight: CGFloat?
 
     /// Registers ⌃⌥Space system-wide.
     func install(model: AppModel) {
@@ -156,8 +159,17 @@ final class QuickAsk {
             panel.standardWindowButton(.closeButton)?.isHidden = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
             panel.standardWindowButton(.zoomButton)?.isHidden = true
-            panel.contentView = NSHostingView(rootView: QuickAskView(model: model) { [weak self] in self?.close() }.tint(.piAccent))
+            let host = NSHostingView(rootView: QuickAskView(
+                model: model, close: { [weak self] in self?.close() },
+                heightChanged: { [weak self] in self?.resize(to: $0) }
+            ).tint(.piAccent))
+            host.sizingOptions = []
+            panel.contentView = host
             self.panel = panel
+            let engine = model.engine
+            let watch = SizeWatch(threshold: SizeWatch.panelThreshold) { [weak engine] in engine?.note($0) }
+            watch.start(panel)
+            sizeWatch = watch
         }
         guard let panel else { return }
         if let screen = NSScreen.main {
@@ -166,6 +178,26 @@ final class QuickAsk {
         }
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate()
+    }
+
+    /// A change in the prompt or streamed answer can change the ideal height. Keep the top edge in place and
+    /// coalesce measurements: the window must not change its frame from inside the layout that measures it.
+    private func resize(to height: CGFloat) {
+        guard height.isFinite, height > 0 else { return }
+        let scheduled = pendingHeight != nil
+        pendingHeight = height.rounded(.up)
+        guard !scheduled else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let height = self.pendingHeight else { return }
+            self.pendingHeight = nil
+            guard let panel = self.panel else { return }
+            var content = panel.contentRect(forFrameRect: panel.frame)
+            content.size.height = height
+            var frame = panel.frameRect(forContentRect: content)
+            frame.origin.y = panel.frame.maxY - frame.height
+            self.sizeWatch?.setFrame(frame, of: panel)
+
+        }
     }
 
     func close() {
@@ -180,6 +212,7 @@ private final class KeyablePanel: NSPanel {
 struct QuickAskView: View {
     @Bindable var model: AppModel
     let close: () -> Void
+    let heightChanged: (CGFloat) -> Void
     @State private var draft = ""
     @State private var conversationID: Int?
     @FocusState private var focused: Bool
@@ -237,6 +270,7 @@ struct QuickAskView: View {
         .padding(16)
         .frame(width: 620)
         .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heightChanged($0) }
         .background(.regularMaterial)
         // The panel has no visible title bar; use the space it would take.
         .ignoresSafeArea()

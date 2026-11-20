@@ -16,7 +16,10 @@ import { join } from "node:path";
 import { commandEnvironment, passedOn } from "../src/environment.ts";
 import { describeScratch, scratchFolder, scratchGone, scratchRoot, sweepScratch } from "../src/scratch.ts";
 import { refusal, variablesAccount } from "../src/variables.ts";
-import { EngineClient, stop, until } from "./patience.ts";
+import { EngineClient, standInApp, stop, until } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
