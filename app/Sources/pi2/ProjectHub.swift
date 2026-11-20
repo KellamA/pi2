@@ -41,14 +41,16 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let folderMissing: Bool?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
-
-    /// The project's settings (docs/projects.md, 8), as the `projects` event sends them: what the board's Settings tab
-    /// reads (#478). What the orchestrator may do without asking is not decoded here; that is the Agents tab's (#475).
+    /// The project's settings (docs/projects.md, section 8) as the `projects` event sends them. The Agents tab reads
+    /// the switches of 8.1; the Settings tab reads the rest: when reports wake the orchestrator, and the limits (#478).
     var settings: Settings? = nil
 
-    /// The person's switch for reports waking the orchestrator, and the limits that hold back starts. What an agent may
-    /// do without asking (8.1) is kept apart, on the Agents tab.
+    /// A project's settings: the switches of 8.1, which the Agents tab reads, and the rest, which the Settings tab
+    /// reads. A change to one part changes nothing in the tabs reading the other.
     struct Settings: Decodable, Equatable {
+        /// What the orchestrator may do without asking, by switch name (8.1).
+        let withoutAsking: [String: Bool]?
+        /// The person's switch for reports waking the orchestrator.
         let wakeOnReports: Bool
         struct Limits: Decodable, Equatable {
             /// Percent of a plan window, 1 to 100, or nil for none.
@@ -59,6 +61,8 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
         let limits: Limits
     }
 
+    /// Whether the orchestrator may do what the switch of 8.1 named `name` governs without asking.
+    func allows(_ name: String) -> Bool { settings?.withoutAsking?[name] ?? false }
     /// What the rules add to each request, for the Rules tab; nil when the engine sends none.
     let ruleTokens: RuleTokens?
 }
