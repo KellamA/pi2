@@ -161,8 +161,13 @@ struct ProjectWorkTab: View {
     private var engine: EngineClient { model.engine }
     private var work: ProjectWork { ProjectWork(engine.extras["work"]?["projects"]?[project.id]) }
     private var piece: WorkPiece? { opened.flatMap { id in work.items.first { $0.id == id } } }
-    /// The project's agents, as the engine lists them: who a piece of work can be given to.
-    private var agents: [AgentProfile] { engine.allAgents.filter { $0.projectId == project.id } }
+    /// The project's other agents, not its orchestrator and none a tool removed: the same list the Agents tab of the
+    /// board shows, since work is given to an agent that can take it and is here to do so (#553).
+    private var agents: [AgentProfile] {
+        engine.allAgents
+            .filter { $0.projectId == project.id && $0.id != project.orchestratorId && $0.removedAt == nil }
+            .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+    }
     private var edited: Bool {
         guard let base = draftBase else { return false }
         return draftTitle != base.title || draftText != base.text
@@ -392,7 +397,14 @@ struct ProjectWorkTab: View {
     private func giveMenu(_ piece: WorkPiece) -> some View {
         Menu {
             ForEach(agents) { agent in
-                Button(agent.name) { assign(piece, to: agent) }
+                Button { assign(piece, to: agent) } label: {
+                    // The agent's own face, as the row and the status line show it, so the person can pick the worker
+                    // they mean rather than read a name (#553).
+                    HStack(spacing: 6) {
+                        AgentAvatar(agent: agent, size: 16)
+                        Text(agent.name)
+                    }
+                }
             }
         } label: {
             Text("Give to")
