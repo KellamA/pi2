@@ -1,4 +1,4 @@
-// Checks how a window's size follows its SwiftUI content (#400).
+// Checks how a window's size follows its SwiftUI content (#400, #542).
 //
 // The app crashed in the background when the main window's hosting view, working out its content's smallest size
 // from inside an Update Constraints pass, found its size changed and asked for another pass, again and again until
@@ -22,7 +22,10 @@
 //
 //   cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
 //
-// It cannot make the crash happen: what kept the window's size changing on 18 November was not found (see #400).
+// It also orders both real indicator panels off screen and exercises short and long names with and without Show,
+// across turns and in a single burst. The hosting view stays put, supplies no window size constraints, and the
+// pill resizes only when asked, stays on one line, and fits the screen. The small-panel watch names each pill.
+// The original exception did not reproduce here (#542).
 // Exits 1 if anything failed.
 
 import AppKit
@@ -365,6 +368,7 @@ let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
+    await group("indicator panels keep one hosting view and size outside layout (#542)") { await indicatorCheck() }
     // The content as the app had it before: what to keep, and what to stop.
     let before = Made(fixed: false)
     await before.layOut()

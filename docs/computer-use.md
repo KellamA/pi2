@@ -33,7 +33,7 @@ With **Ask before each action** on, which is the default, every click, keystroke
 
 An agent with [Allow everything](allow-everything.md) on is asked about no action, may use any app, not only the ones listed, and may control browsers. The other limits below still hold, and System Settings stays look-only.
 
-While an agent is acting, a pill at the top of the screen says so. Its Stop button, or pressing Esc twice, stops the run.
+While an agent is acting, a pill at the top of the screen says so. Long names shorten in the middle to fit the screen on one line. The Stop button, or pressing Esc twice, stops the run.
 
 ## What it will not do
 
