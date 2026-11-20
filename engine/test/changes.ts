@@ -281,6 +281,14 @@ try {
 	await client.until("lowered", () => client.project(projectId).settings.limits.planShare === 50);
 	await client.call("changes.undo", { id: lowered.details.change });
 	await client.until("raised back", () => client.project(projectId).settings.limits.planShare === 90);
+	// A limit can be given under the name reach.ts and 8.3 give the project's field too (#553).
+	const byFieldName = await ps({ action: "change", changes: { limits: { planShare: 40 } } });
+	assert.doesNotMatch(byFieldName.text, /unknown field/);
+	await client.until("lowered by its field's name", () => client.project(projectId).settings.limits.planShare === 40);
+	await client.call("changes.undo", { id: byFieldName.details.change });
+	await client.until("raised back again", () => client.project(projectId).settings.limits.planShare === 90);
+	const twice = await ps({ action: "change", changes: { limits: { plan_share: 50, planShare: 60 } } });
+	assert.match(twice.text, /^plan_share and planShare are one limit: give it once\.$/);
 	const off = await ps({ action: "change", changes: { without_asking: { file_work: false } } });
 	assert.match(off.text, /^Changed the project: file work without asking to off\. The person can undo it\. \(change \d+\)$/);
 	await client.until("file work asks", () => client.project(projectId).settings.withoutAsking.fileWork === false);

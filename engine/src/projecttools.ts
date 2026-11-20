@@ -492,7 +492,8 @@ type ProjectChanges = {
 	folder?: string | null;
 	repository?: string | null;
 	without_asking?: Record<string, boolean>;
-	limits?: { plan_share?: number | null; daily_spend?: number | null };
+	// The limits by either name: `plan_share` as 5.3 names them, and `planShare` as 8.3 and reach.ts do (#553).
+	limits?: { plan_share?: number | null; daily_spend?: number | null; planShare?: number | null; dailySpend?: number | null };
 };
 
 const SETTINGS_DESCRIPTION =
@@ -501,6 +502,16 @@ const SETTINGS_DESCRIPTION =
 	"- change: make `changes`. Renaming, turning a switch off and lowering a limit are made at once, and the person can undo them. Changing the folder or the repository (\"owner/name\" on GitHub, whose issues and pull requests then become the work list; null for the list kept by pi²), turning a switch on, and raising or removing a limit widen what agents may do, so they are put to the person, whose answer comes to you later; give `why`.\n" +
 	"- set_orchestrator: ask the person to make `agent` the project's orchestrator in your place.\n" +
 	"- undo: undo change `change`, the number at the end of a change's result. An undo that would widen what agents may do is put to the person.";
+
+/**
+ * A limit given under either of its names (5.3's `plan_share`, or `planShare`, as reach.ts and 8.3 name the field): one
+ * value, or none when it was not given, and a refusal when both are given and differ (#553).
+ */
+function oneLimit(byUnderscore: number | null | undefined, byFieldName: number | null | undefined, underscore: string, field: string): number | null | undefined {
+	if (byUnderscore === undefined) return byFieldName;
+	if (byFieldName === undefined || byFieldName === byUnderscore) return byUnderscore;
+	throw new Error(`${underscore} and ${field} are one limit: give it once.`);
+}
 
 function settingsTool(host: Host, engine: Engine) {
 	return defineTool({
@@ -528,7 +539,16 @@ function settingsTool(host: Host, engine: Engine) {
 							{ description: "What you may do without asking: true lets you, false asks the person first" },
 						),
 					),
-					limits: opt(obj({ plan_share: opt(nullable(int({ description: "Percent, 1 to 100" }))), daily_spend: opt(nullable(num({ description: "Dollars" }))) })),
+					limits: opt(
+						obj({
+							plan_share: opt(nullable(int({ description: "Percent, 1 to 100" }))),
+							daily_spend: opt(nullable(num({ description: "Dollars" }))),
+							// The same limits by the names the project's own fields have (reach.ts, 8.3), so that a limit
+							// read there can be given here by that name too.
+							planShare: opt(nullable(int({ description: "Percent, 1 to 100; the same as plan_share" }))),
+							dailySpend: opt(nullable(num({ description: "Dollars; the same as daily_spend" }))),
+						}),
+					),
 				}),
 			),
 			agent: opt(str({ description: "set_orchestrator: the agent of the project to become the orchestrator" })),
@@ -584,8 +604,10 @@ function settingsTool(host: Host, engine: Engine) {
 						if (name === undefined) throw new Error(`Unknown switch: ${words}. They are: ${Object.keys(SWITCH_KEYS).join(", ")}.`);
 						want[`withoutAsking.${name}`] = on;
 					}
-					if (given.limits?.plan_share !== undefined) want["limits.planShare"] = given.limits.plan_share;
-					if (given.limits?.daily_spend !== undefined) want["limits.dailySpend"] = given.limits.daily_spend;
+					const planShare = oneLimit(given.limits?.plan_share, given.limits?.planShare, "plan_share", "planShare");
+					const dailySpend = oneLimit(given.limits?.daily_spend, given.limits?.dailySpend, "daily_spend", "dailySpend");
+					if (planShare !== undefined) want["limits.planShare"] = planShare;
+					if (dailySpend !== undefined) want["limits.dailySpend"] = dailySpend;
 					const fields = projectFields().filter((name) => !same(now[name], want[name])).map((name): Field => ({ name, before: now[name], after: want[name] }));
 					if (fields.length === 0) return { text: "Nothing to change: the project has those settings already." };
 					// Checked now, as `projects.set` checks them, so that what is asked for could be made.
