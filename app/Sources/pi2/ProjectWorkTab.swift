@@ -143,6 +143,9 @@ struct ProjectWorkTab: View {
 
     @State private var opened: Int?
     @State private var adding = false
+    /// The form takes the title's field as it comes, so a new piece starts with typing: the message field beside it has
+    /// the keyboard otherwise, and what is typed there would go to the orchestrator.
+    @FocusState private var addingTitle: Bool
     @State private var newTitle = ""
     @State private var newText = ""
     @State private var addProblem: String?
@@ -226,18 +229,27 @@ struct ProjectWorkTab: View {
     private var bar: some View {
         HStack(spacing: 8) {
             Spacer(minLength: 4)
-            Button(adding ? "Close" : "New Work") {
-                adding.toggle()
-                addProblem = nil
-                if adding { newTitle = ""; newText = "" }
+            // The form puts its own Add Work and Cancel under it, so the accent marks that one action, not a button here.
+            if !adding {
+                Button("New Work", action: beginAdding)
+                    .buttonStyle(.piPrimary)
+                    .controlSize(.small)
+                    .help("Add a piece of work to this project's list")
             }
-            .buttonStyle(.piPrimary)
-            .controlSize(.small)
-            .help("Add a piece of work to this project's list")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Theme.panel)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+
+    private func beginAdding() {
+        newTitle = ""
+        newText = ""
+        addProblem = nil
+        adding = true
+        // The field exists only once the form is in place, so it is focused on the turn after, as the composer beside it
+        // is what has the keyboard until then.
+        DispatchQueue.main.async { addingTitle = true }
     }
 
     private var newWorkForm: some View {
@@ -245,6 +257,7 @@ struct ProjectWorkTab: View {
             TextField("Title", text: $newTitle, prompt: Text("Title of the work"))
                 .textFieldStyle(.plain)
                 .font(.system(size: 12.5, weight: .medium))
+                .focused($addingTitle)
                 .accessibilityLabel("Title of the new work")
             TextField("What needs doing", text: $newText, prompt: Text("What needs doing (you can leave this empty)"), axis: .vertical)
                 .textFieldStyle(.plain)
@@ -296,9 +309,11 @@ struct ProjectWorkTab: View {
                 .foregroundStyle(Theme.tx2)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("New Work") { adding = true }
-                .buttonStyle(.piSecondary)
-                .controlSize(.small)
+            if !adding {
+                Button("New Work", action: beginAdding)
+                    .buttonStyle(.piSecondary)
+                    .controlSize(.small)
+            }
         }
         .frame(maxWidth: 360)
         .padding(24)
