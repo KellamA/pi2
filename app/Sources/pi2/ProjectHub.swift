@@ -34,6 +34,23 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let folderMissing: Bool?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
+
+    /// The project's settings (docs/projects.md, 8), as the `projects` event sends them: what the board's Settings tab
+    /// reads (#478). What the orchestrator may do without asking is not decoded here; that is the Agents tab's (#475).
+    var settings: Settings? = nil
+
+    /// The person's switch for reports waking the orchestrator, and the limits that hold back starts. What an agent may
+    /// do without asking (8.1) is kept apart, on the Agents tab.
+    struct Settings: Decodable, Equatable {
+        let wakeOnReports: Bool
+        struct Limits: Decodable, Equatable {
+            /// Percent of a plan window, 1 to 100, or nil for none.
+            let planShare: Int?
+            /// Dollars a day, or nil for none.
+            let dailySpend: Double?
+        }
+        let limits: Limits
+    }
 }
 
 struct ProjectsEvent: Decodable {

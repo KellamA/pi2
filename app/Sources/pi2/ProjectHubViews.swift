@@ -144,8 +144,8 @@ private struct HubBar: View {
 }
 
 /// The orchestrator's model. Choosing another changes the orchestrator's agent, so every conversation with it uses the
-/// new model from its next message.
-private struct OrchestratorModelMenu: View {
+/// new model from its next message. Shown in the hub's bar and on the board's Settings tab (#478).
+struct OrchestratorModelMenu: View {
     let engine: EngineClient
     let agent: AgentProfile?
 
@@ -332,7 +332,11 @@ private struct HubBoard: View {
                         .help("Fold the board, so the conversation takes the width (⌥⌘])")
                 }
             }
-            BoardTabEmpty(tab: tab)
+            switch tab {
+            case .branches: ProjectBranchesTab(model: model, project: project)
+            case .settings: ProjectSettingsTab(model: model, project: project)
+            default: BoardTabEmpty(tab: tab)
+            }
         }
     }
 }

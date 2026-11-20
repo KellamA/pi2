@@ -971,6 +971,11 @@ struct UsageSummary: Codable, Equatable {
         let tokens: Int
         var id: String { agentId }
     }
+    /// Today's spending of one project (docs/projects.md, 4.3), as the board's Settings tab reads of its limits (#478).
+    struct ProjectSpend: Codable, Equatable, Identifiable {
+        let id: String
+        let today: Spend
+    }
     struct ConversationRow: Codable, Equatable, Identifiable {
         let id: Int
         let title: String
@@ -988,6 +993,7 @@ struct UsageSummary: Codable, Equatable {
     }
     let models: [ModelRow]
     let agents: [AgentRow]
+    var projects: [ProjectSpend]? = nil
     let conversations: [ConversationRow]
     let total: Spend
     let today: Spend
