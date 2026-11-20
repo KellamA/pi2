@@ -171,7 +171,7 @@ try {
 		{ name: "access", before: "ask", after: "full" },
 		{ name: "memory", before: false, after: true },
 	]);
-	assert.deepEqual(await client.until("the line", () => client.line(O, made.details.change)), { id: made.details.change, summary: "Made the agent Reviewer (the default model, Ask first)", undone: false, canUndo: true, noUndo: null });
+	assert.deepEqual(await client.until("the line", () => client.line(O, made.details.change)), { id: made.details.change, summary: "Made the agent Reviewer (the default model, Ask first)", undone: false, canUndo: true, noUndo: null, undoneAt: null, need: null });
 	// Every setting of a saved agent is classed (7.1): named in AGENT_FIELDS, or one no tool is offered.
 	const { AGENT_FIELDS } = await import("../src/reach.ts");
 	const notOffered = ["id", "cwd", "createdAt", "projectId", "role", "template", "madeBy", "updatedAt", "removedAt", "variables"];
@@ -206,7 +206,10 @@ try {
 	assert.match(allowed, /The person allowed: Change Reviewer: access Full access \(now Ask first\); memory on \(now off\)\. \(change (\d+)\)$/);
 	const allowedChange = changeIn(allowed);
 	await client.until("Reviewer allowed", () => client.agentNamed(projectId, "Reviewer")?.access === "full" && client.events.memory?.agents?.[reviewer.id]?.enabled === true);
-	assert.equal((await client.until("the allowed line", () => client.line(O, allowedChange))).canUndo, true);
+	const allowedLine = await client.until("the allowed line", () => client.line(O, allowedChange));
+	assert.equal(allowedLine.canUndo, true);
+	// A change the person allowed has no call of its own: its line rides on the request that asked for it.
+	assert.equal(allowedLine.need, firstAsk);
 	await client.call("changes.undo", { id: allowedChange });
 	await client.until("put back", () => client.agentNamed(projectId, "Reviewer")?.access === "ask" && client.events.memory?.agents?.[reviewer.id]?.enabled === false);
 	await client.until("the line undone", () => client.line(O, allowedChange)?.undone === true && client.line(O, allowedChange)?.canUndo === false);
@@ -478,10 +481,27 @@ try {
 	assert.match(handedOver.details.wake.text, /The person allowed: Make Reviewer the project's orchestrator in place of Orchestrator: .*This is the fresh conversation\. \(change \d+\)$/);
 	const handoverChange = changeIn(handedOver.details.wake.text);
 	const noUndo = "it started a fresh conversation; going back is another change of orchestrator";
-	assert.deepEqual(await client.until("its line, with no Undo", () => client.line(O, handoverChange)), { id: handoverChange, summary: handover.text.split(": this is")[0], undone: false, canUndo: false, noUndo });
+	assert.deepEqual(await client.until("its line, with no Undo", () => client.line(O, handoverChange)), { id: handoverChange, summary: handover.text.split(": this is")[0], undone: false, canUndo: false, noUndo, undoneAt: null, need: handover.details.need });
 	await refused(client.call("changes.undo", { id: handoverChange }), `This cannot be undone: ${noUndo}.`);
 	assert.ok((await client.offered(fresh)).includes("project_agents"), "the tools go with the role");
 	step("making another agent the orchestrator is a request; allowed, it starts a fresh conversation with it, and has no Undo");
+
+	// ---- The export: each change as its line, each card as one line with its outcome (3.12, 7.2)
+
+	const exported = (await client.call("conversation.export", { id: O, format: "markdown" })).text as string;
+	// A change with Undo: its summary, in the record's own words, and no more.
+	assert.match(exported, /\*Made the agent Reviewer \(the default model, Ask first\)\*/);
+	// One undone, here or elsewhere: the same line, saying it was.
+	assert.match(exported, /\*Change Reviewer: access Full access \(now Ask first\); memory on \(now off\) \(undone\)\*/);
+	// One with no Undo (5.9): its line, with no button and no reason the export does not need.
+	assert.match(exported, /\*Make Reviewer the project's orchestrator in place of Orchestrator: it starts a fresh conversation with Reviewer, and cannot be undone\*/);
+	// The reach request allowed, and one refused, each as one line with its outcome.
+	assert.match(exported, /\*the request “Change Reviewer: access Full access \(now Ask first\); memory on \(now off\)” was allowed\*/);
+	assert.match(exported, /\*the request “Change the project [^”]*” was refused\*/);
+	// A rule accepted as edited reads as what was asked, not what it became; one refused says so.
+	assert.match(exported, /\*the proposed rule “Ask before deleting files\.” was accepted\*/);
+	assert.match(exported, /\*the proposed rule “Never merge on Fridays\.” was not accepted\*/);
+	step("an export writes each change as its line, with whether it was undone, and each card as one line with its outcome");
 
 	// ---- Archived: nothing can be undone; the preview off: the tools are gone, and a conversation in no project is as it was
 
@@ -492,7 +512,12 @@ try {
 	await client.call("projects.setPreview", { on: false });
 	assert.equal((await client.offered(O)).some((name) => name.startsWith("project_")), false);
 	assert.equal(await client.answer(plain, "/system full"), plainBefore);
-	step("archived, no change can be undone; with the preview off the tools are not offered, and a conversation in no project is told exactly what it was");
+	// With the preview off, an export is exactly as it was: none of the project's lines (10.2).
+	const plainExport = (await client.call("conversation.export", { id: O, format: "markdown" })).text as string;
+	assert.equal(/\*Made the agent Reviewer/.test(plainExport), false);
+	assert.equal(/\*the (request|proposed rule)/.test(plainExport), false);
+	assert.equal(/\(undone\)/.test(plainExport), false);
+	step("archived, no change can be undone; with the preview off the tools are not offered, an export is as it was, and a conversation in no project is told exactly what it was");
 } finally {
 	client.close();
 	await stop(engine);

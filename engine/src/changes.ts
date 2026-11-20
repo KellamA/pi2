@@ -680,8 +680,8 @@ async function answerRule(tx: Tx, need: Extract<StoredNeed, { kind: "rule" }>, a
 
 // ---- What the conversation is sent (projectChanges)
 
-/** One line of the conversation's record (3.12), as its state carries it. */
-export type ChangeLine = { id: number; summary: string; undone: boolean; canUndo: boolean; noUndo: string | null };
+/** One line of the conversation's record (3.12), as its state carries it. `need` is the request whose allowing made it (a change with no call of its own), `undoneAt` when it was undone; both null otherwise. */
+export type ChangeLine = { id: number; summary: string; undone: boolean; canUndo: boolean; noUndo: string | null; undoneAt: number | null; need: string | null };
 
 /** The record as last stored, and which projects are neither archived nor deleted, read with it. */
 let current: ChangesDoc = emptyChanges();
@@ -694,7 +694,7 @@ export function linesOf(id: number): ChangeLine[] {
 		const open = live.has(projectId);
 		for (const change of list) {
 			if (change.by.kind === "person" || change.by.conversationId !== id) continue;
-			lines.push({ id: change.id, summary: change.summary, undone: change.undone !== undefined, canUndo: open && change.inverse !== null && change.undone === undefined, noUndo: change.inverse === null ? noUndoWhy(change.op) : null });
+			lines.push({ id: change.id, summary: change.summary, undone: change.undone !== undefined, canUndo: open && change.inverse !== null && change.undone === undefined, noUndo: change.inverse === null ? noUndoWhy(change.op) : null, undoneAt: change.undone?.at ?? null, need: change.by.kind === "allowed" ? change.by.need : null });
 		}
 	}
 	return lines.sort((a, b) => a.id - b.id).slice(-SHOWN);
@@ -754,8 +754,9 @@ export const changes: Feature = (host, engine) => {
 			const project = allProjects()[agent.projectId];
 			return project !== undefined && project.deletedAt === undefined && project.archivedAt === undefined ? [...TOOL_NAMES] : [];
 		},
-		// The lines of the changes made in a conversation of a project (3.12); nothing for any other conversation.
-		state: (view, meta) => (meta?.projectId === undefined ? {} : { projectChanges: linesOf(view.conversation.id as unknown as number) }),
+		// The lines of the changes made in a conversation of a project (3.12); nothing for any other conversation, and
+		// nothing with the preview off (10.2: the old screens show none of the projects' doings).
+		state: (view, meta) => (meta?.projectId === undefined || !projectsOn() ? {} : { projectChanges: linesOf(view.conversation.id as unknown as number) }),
 		handlers: {
 			/** `{ projectId, before?, limit? }`: the project's changes, newest first, 50 by default. */
 			"changes.list": async (params) => {
