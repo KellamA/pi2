@@ -16,11 +16,12 @@
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PLAN_CHANGED } from "../src/carryover.ts";
 import { KeychainObjects } from "../src/credentials.ts";
+import { PROJECT_DELETED } from "../src/projects.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
@@ -38,6 +39,7 @@ const main = join(import.meta.dirname, "..", "src", "main.ts");
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-carryover-${process.pid}`;
 const secretsGate = join(work, "secrets-gate");
 const commitGate = join(work, "commit-gate");
+const settingsPath = join(home, "settings.json");
 
 let engine: ChildProcess | undefined;
 process.on("exit", () => {
@@ -111,7 +113,16 @@ class Client extends EngineClient {
 }
 
 const env = (extra: Record<string, string> = {}) => ({ ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, ...extra });
-const start = (extra: Record<string, string> = {}) => spawn(process.execPath, [main], { env: env(extra), stdio: ["ignore", "ignore", "inherit"] });
+const logPath = join(home, "engine.log");
+const start = (extra: Record<string, string> = {}) => {
+	// Match the app's logging: a bare engine writes to stderr, not to a file of its own.
+	const log = openSync(logPath, "a");
+	try {
+		return spawn(process.execPath, [main], { env: env(extra), stdio: ["ignore", "ignore", log] });
+	} finally {
+		closeSync(log);
+	}
+};
 const refusal = async (promise: Promise<unknown>): Promise<any> => {
 	try {
 		await promise;
@@ -222,6 +233,25 @@ try {
 	};
 	step("what a conversation of each kind is told, recorded before the run");
 
+	// A preview flag from an earlier build, with no run or backup, does not sweep the library at startup.
+	client.close();
+	await stop(engine);
+	const beforeAnyRun = JSON.parse(readFileSync(settingsPath, "utf8"));
+	writeFileSync(settingsPath, JSON.stringify({ ...beforeAnyRun, projects: { preview: true } }));
+	engine = start({ PI2_CARRY_COMMIT_GATE: commitGate });
+	client = await Client.connect(engine, home);
+	await client.until("preview on without a run", () => client.events.projects?.preview === true && client.events.agents && client.events.library && client.events.memory);
+	const beforeSweep = await client.call("projects.carryOver", { dryRun: true });
+	assert.equal(beforeSweep.ranAt, null);
+	assert.equal(beforeSweep.backup, null);
+	assert.equal(beforeSweep.projects.reduce((sum: number, entry: any) => sum + entry.conversations + entry.archivedConversations + entry.subChats, 0), made.size - deleted);
+	assert.deepEqual(client.projects, []);
+	assert.equal(client.row(ordinary).projectId, null);
+	assert.equal(existsSync(join(home, "backups")), false);
+	await client.call("projects.setPreview", { on: false });
+	await client.until("off before the first report", () => client.events.projects.preview === false);
+	step("starting with the preview on but no recorded run leaves the library to the report and backup");
+
 	// ---- The report, with the preview off: it changes nothing
 
 	const before = {
@@ -266,7 +296,7 @@ try {
 	assert.equal(copyIn(entryOf(report, plain), temp), undefined);
 	// Notes: the person's to every project with a copy of Atlas, Atlas's own to the repository's alone; Temp's left.
 	for (const entry of report.projects) assert.equal(entry.notes, entry.key === repo ? 2 : copyIn(entry, "atlas") === undefined ? 0 : 1, entry.key);
-	assert.deepEqual(report.leftOut, { chats: 2, deleted, notesLeft: 1 });
+	assert.deepEqual(report.leftOut, { chats: 2, deleted, deletedProject: 0, notesLeft: 1 });
 	assert.equal(report.already, 0);
 	assert.deepEqual([report.ranAt, report.backup, report.secretsPending], [null, null, []]);
 	// Nothing written: no event about anything stored, and the same report again.
@@ -560,7 +590,7 @@ try {
 	assert.equal((await client.call("conversation.create", { agentId: "forge" })).note, undefined, "no folder: a project with no limits");
 	// A folder no project has: a new project, with a copy of its agent and the default orchestrator, with no conversation
 	// until the person opens it; then `projects.startFresh` makes it.
-	const newcomer = (await client.call("agents.save", { agent: { name: "Newcomer", cwd: fresh, access: "read" } })).id as string;
+	const newcomer = (await client.call("agents.save", { agent: { name: "Newcomer", cwd: fresh, access: "read", delegates: ["scout"] } })).id as string;
 	const rowsBefore = client.events.library.conversations.length;
 	const inFresh = (await client.call("conversation.create", { agentId: newcomer })).id as number;
 	const freshProject = await client.until("its project", () => client.projects.find((project: any) => project.folder === fresh));
@@ -582,11 +612,42 @@ try {
 	// A chat stays out of every project.
 	const chat = (await client.call("conversation.create", { chat: true })).id as number;
 	assert.equal((await client.until("the chat", () => client.row(chat))).projectId, null);
-	// A fork of a conversation whose project was deleted is in no project, as that conversation is, and so is carried.
+	// A carried parent starts a child with the project's Scout. After deletion the parent can still delegate to
+	// templates, but cannot continue the old child, whose own agent belongs to the deleted project.
+	const freshCopy = client.row(inFresh).runsAs;
+	await client.call("projects.set", { id: freshProject.id, settings: { withoutAsking: { startAgents: true } } });
 	await client.call("conversation.open", { id: inFresh });
+	await client.answer(inFresh, "/delegate Scout: work in this project");
+	const child = await client.until("the project agent's sub-chat", () => client.events.library.conversations.find((row: any) => row.parent === inFresh));
+	assert.equal(client.agent(child.agentId).projectId, freshProject.id);
+	const toolResults = () => client.conversations.get(inFresh).items.filter((item: any) => item.kind === "tool");
+	const beforeContinue = toolResults().length;
+	const { id: schedule } = await client.call("schedules.save", { schedule: { agentId: freshCopy, title: "Deleted project's schedule", prompt: "Do not run this", repeat: { kind: "interval", minutes: 60 } } });
+	const scheduleRow = () => client.events.schedules?.schedules.find((row: any) => row.id === schedule);
+	assert.equal((await client.until("the schedule is active", () => scheduleRow())).holdReason, undefined);
+	// A carried conversation falls back to its template; the project's own conversations keep their agent.
 	await client.answer(inFresh, "something to fork from");
+	const beforeDelete = await client.call("projects.carryOver", { dryRun: true });
 	await client.call("projects.delete", { id: freshProject.id });
 	await client.until("deleted", () => client.projects.find((project: any) => project.id === freshProject.id)?.deletedAt !== undefined);
+	assert.equal((await client.until("the schedule is held", () => scheduleRow()?.holdReason && scheduleRow())).lastRunAt, null);
+	assert.equal(scheduleRow().holdReason, PROJECT_DELETED);
+	assert.equal((await refusal(client.call("schedules.runNow", { id: schedule }))).message, PROJECT_DELETED);
+	assert.equal((await refusal(client.call("conversation.create", { agentId: freshCopy }))).message, PROJECT_DELETED);
+	assert.ok(readFileSync(logPath, "utf8").includes(`schedule ${schedule} held: ${PROJECT_DELETED}`));
+	await client.until("the carried conversation falls back", () => client.row(inFresh).runsAs === newcomer);
+	assert.equal(client.row(opened).runsAs, freshProject.orchestratorId);
+	await client.answer(inFresh, `/continue ${child.id}: do not run this either`);
+	assert.equal(toolResults().length, beforeContinue + 1);
+	const blocked = toolResults().at(-1);
+	assert.equal(blocked.isError, true);
+	assert.match(blocked.text, /project was deleted/);
+	const deletedReport = await client.call("projects.carryOver", { dryRun: true });
+	assert.equal(deletedReport.already, beforeDelete.already - 2);
+	assert.deepEqual(deletedReport.leftOut, { ...beforeDelete.leftOut, deletedProject: 2 });
+	assert.equal(deletedReport.plan, null, "the deletion is not undone by a run");
+	step("a deleted project's own starts and sub-chat continuations are refused, its schedule is held and reported, and its top-level conversations are counted apart");
+	// A fork of the template-backed conversation starts outside the deleted project and so is carried.
 	const { id: fork } = await client.call("conversation.fork", { id: inFresh, entryId: client.conversations.get(inFresh).items.at(-1).id });
 	const forkRow = await client.until("the fork carried", () => client.row(fork)?.projectId !== null && client.row(fork)?.projectId !== undefined && client.row(fork));
 	const refound = client.projects.find((project: any) => project.id === forkRow.projectId);
@@ -607,7 +668,6 @@ try {
 	await client.until("the stray", () => client.row(stray));
 	client.close();
 	await stop(engine);
-	const settingsPath = join(home, "settings.json");
 	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
 	writeFileSync(settingsPath, JSON.stringify({ ...settings, projects: { preview: true } }));
 	engine = start();
@@ -615,6 +675,7 @@ try {
 	await client.until("after the restart", () => client.events.projects && client.events.agents && client.events.library);
 	const strayRow = await client.until("carried at start", () => client.row(stray)?.projectId === inPlain.id && client.row(stray));
 	assert.equal(client.agent(strayRow.runsAs).template.id, "scout");
+	assert.equal((await client.until("the schedule is still held after restart", () => scheduleRow()?.holdReason && scheduleRow())).holdReason, PROJECT_DELETED);
 	step("a conversation left in no project while the preview is on is carried as the engine starts");
 
 	// ---- An engine stopped and started again keeps it all

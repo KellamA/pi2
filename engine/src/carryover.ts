@@ -168,7 +168,7 @@ export class Grouping {
 		return { key: folder };
 	}
 
-	/** Whether `folder` is in a repository: it, or a folder above it, has a `.git` entry. */
+	/** Whether `folder` is in a repository, using the same home boundary as the grouping key. */
 	inRepository(folder: string): boolean {
 		const start = this.real(folder);
 		const known = this.#repository.get(start);
@@ -176,6 +176,7 @@ export class Grouping {
 		let found = false;
 		if (existsSync(start)) {
 			for (let at = start; ; at = dirname(at)) {
+				if (at === this.#home && at !== start) break;
 				if (gitEntry(at) !== undefined) {
 					found = true;
 					break;
@@ -277,7 +278,7 @@ export type CarryPlan = {
 	projects: PlannedProject[];
 	/** Notes of agents deleted, left where they are and recorded `"left"`: "<agentId> <noteId>". */
 	left: string[];
-	leftOut: { chats: number; deleted: number };
+	leftOut: { chats: number; deleted: number; deletedProject: number };
 	already: number;
 };
 
@@ -347,8 +348,9 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 		if (parent !== undefined && meta(id)!.version !== true && meta(id)!.deleted !== true) subChatsOf.set(parent, (subChatsOf.get(parent) ?? 0) + 1);
 	}
 
-	const leftOut = { chats: 0, deleted: 0 };
+	const leftOut = { chats: 0, deleted: 0, deletedProject: 0 };
 	let already = 0;
+	let otherUncarried = false;
 	/** Top-level conversations to add, by key; sub-chats to add, by key or by the project their root is in. */
 	const byKey = new Map<string, { tops: number[]; subs: number[] }>();
 	const byProject = new Map<string, number[]>();
@@ -367,13 +369,19 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 		const m = meta(id)!;
 		if (m.version === true) continue;
 		const root = rootOf(id);
-		if (only !== undefined && root !== only) continue;
+		if (only !== undefined && root !== only) {
+			if (m.projectId === undefined && m.deleted !== true && m.chat !== true && root !== undefined && meta(root)?.deleted !== true && meta(root)?.chat !== true) otherUncarried = true;
+			continue;
+		}
 		if (m.chat === true) {
 			if (m.deleted !== true && only === undefined) leftOut.chats++;
 			continue;
 		}
 		if (m.projectId !== undefined) {
-			if (m.parent === undefined && m.deleted !== true && only === undefined) already++;
+			if (m.parent === undefined && m.deleted !== true && only === undefined) {
+				if (doc.projects[m.projectId]?.deletedAt !== undefined) leftOut.deletedProject++;
+				else already++;
+			}
 			continue;
 		}
 		const rootMeta = root === undefined ? undefined : meta(root);
@@ -534,14 +542,12 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 		const found = new Map<string, { project: string; copy: string | null; entry: PlannedProject | undefined }>();
 		for (const [id, entry] of entries) {
 			const copy = entry.copies.find((one) => one.template === template);
-			if (copy !== undefined && (copy.existing === null || agents[copy.existing]?.removedAt === undefined)) found.set(id, { project: id, copy: copy.existing, entry });
+			if (copy !== undefined) found.set(id, { project: id, copy: copy.existing, entry });
 		}
-		// A conversation made later brings notes only to the project it goes into.
-		if (only !== undefined) return [...found.values()];
 		for (const [pair, copy] of Object.entries(doc.carry.copies)) {
 			const [projectId, from] = pair.split(" ");
 			if (from !== template || found.has(projectId!) || !liveById.has(projectId!)) continue;
-			if (agents[copy] === undefined || agents[copy].removedAt !== undefined) continue;
+			// A removed or deleted copy cannot receive a note, but still reserves the notes written in its project.
 			found.set(projectId!, { project: projectId!, copy, entry: entries.get(projectId!) });
 		}
 		return [...found.values()];
@@ -554,6 +560,10 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 		for (const [id, entry] of entries) if (entry.conversations.some((one) => one.id === conversation)) return id;
 		return undefined;
 	};
+	// Other uncarried conversations can give a note a home (or give its home a copy) in a full plan. Use that plan's
+	// routing in this case, but leave its other copies and conversations for their own carry.
+	const noteKey = (destination: string, agent: string, note: string) => JSON.stringify([destination, agent, note]);
+	let fullNotes: Set<string> | undefined;
 	const left: string[] = [];
 	const templates = only === undefined ? Object.keys(memory.agents) : [...new Set([...entries.values()].flatMap((entry) => entry.copies.map((copy) => copy.template)))];
 	for (const agentId of templates.sort()) {
@@ -569,12 +579,18 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 		if (agent.projectId !== undefined) continue;
 		const destinations = destinationsOf(agentId);
 		if (destinations.length === 0) continue;
+		if (otherUncarried) fullNotes ??= new Set(planCarryOver(snapshot).projects.flatMap((entry) =>
+			entry.notes.map((note) => noteKey(entry.existing ?? `key:${entry.key}`, note.agent, note.note)),
+		));
 		for (const note of notes) {
 			// Where a conversation of that agent's wrote it, when that project has a copy; else (the person wrote it, or its
 			// conversation is gone or in no project with a copy) every project with a copy.
 			const home = homeOf(note.conversation);
 			const there = destinations.filter((one) => one.project === home);
-			for (const destination of there.length > 0 ? there : destinations) {
+			for (const destination of fullNotes !== undefined || there.length === 0 ? destinations : there) {
+				if (fullNotes !== undefined && !fullNotes.has(noteKey(destination.project, agentId, note.id))) continue;
+				if (only !== undefined && !destination.entry?.copies.some((copy) => copy.template === agentId)) continue;
+				if (destination.copy !== null && (agents[destination.copy] === undefined || agents[destination.copy].removedAt !== undefined)) continue;
 				if (destination.entry === undefined || destination.entry.existing !== null) {
 					if (doc.carry.notes[`${destination.project} ${agentId} ${note.id}`] !== undefined) continue;
 				}
@@ -809,7 +825,7 @@ export async function applyProject(tx: Tx, entry: PlannedProject, made: Made, gr
 		const dealt = `${project.id} ${note.agent} ${note.note}`;
 		if (doc.carry.notes[dealt] !== undefined) continue;
 		const audience = note.copy ?? copyOf[note.agent];
-		if (audience === undefined || agents[audience] === undefined) continue;
+		if (audience === undefined || agents[audience] === undefined || agents[audience].removedAt !== undefined) continue;
 		const book = projectNotebook(memory, project.id);
 		const same = book.notes.find((other) => other.audience === audience && other.text.toLowerCase() === note.text.toLowerCase());
 		let id = same?.id;
@@ -866,15 +882,14 @@ export const carryOver: Feature = (host, engine) => {
 		return JSON.parse(JSON.stringify(stored ?? { projects: {}, carry: { ranAt: null, backup: null, folders: {}, copies: {}, notes: {}, secrets: [] }, news: {}, nextNews: 1 }));
 	};
 
-	/** The documents, as stored now. With `only`, only that conversation's folder is read. */
-	const snapshot = async (only?: number): Promise<CarrySnapshot> => {
+	/** The documents, as stored now. Other uncarried conversations can determine where a note belongs (9.7). */
+	const snapshot = async (): Promise<CarrySnapshot> => {
 		const harness = engine.harness();
 		const context = engine.context();
 		const conversations = (await harness.snapshot(Library, context))?.conversations ?? {};
 		const folders: Record<string, string | null> = {};
 		for (const [id, meta] of Object.entries(conversations)) {
-			if (only !== undefined && Number(id) !== only) continue;
-			if (meta.parent !== undefined || meta.chat === true || meta.deleted === true || meta.projectId !== undefined) continue;
+			if (meta.parent !== undefined || meta.chat === true || meta.version === true || meta.deleted === true || meta.projectId !== undefined) continue;
 			const agent = (await harness.snapshot(AgentDoc, Number(id) as unknown as ConversationId, context)) as { cwd?: string | null } | undefined;
 			folders[id] = agent?.cwd ?? null;
 		}
@@ -890,7 +905,7 @@ export const carryOver: Feature = (host, engine) => {
 
 	/** The plan as the documents give it now, with its report. */
 	const look = async (only?: number) => {
-		const documents = await snapshot(only);
+		const documents = await snapshot();
 		const plan = planCarryOver(documents, only);
 		return { plan, documents, report: reportOf(plan, documents.projects.carry, documents.agents) };
 	};
@@ -1004,11 +1019,11 @@ export const carryOver: Feature = (host, engine) => {
 	/**
 	 * Every top-level conversation that is not a chat, not deleted and in no project, carried one by one, with the preview
 	 * on: at engine start, and after a conversation made later could not be carried, so that one left behind (by a crash
-	 * between the commit that made it and the one that carries it, or by a failure) is carried still. A conversation of a
-	 * deleted project has a `projectId`, and stays in none (3.6).
+	 * between the commit that made it and the one that carries it, or by a failure) is carried still. Until a run is
+	 * recorded, the report and backup must come first. A conversation of a deleted project keeps its `projectId` (3.6).
 	 */
 	const strays = async (): Promise<void> => {
-		if (!projectsOn()) return;
+		if (!projectsOn() || carryRecord().ranAt === null) return;
 		const conversations = (await engine.harness().snapshot(Library, engine.context()))?.conversations ?? {};
 		const left = Object.entries(conversations)
 			.filter(([, meta]) => meta.parent === undefined && meta.chat !== true && meta.version !== true && meta.deleted !== true && meta.projectId === undefined)

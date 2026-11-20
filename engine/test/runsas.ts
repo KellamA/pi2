@@ -95,7 +95,7 @@ const engine = {
 	log: () => {},
 	agents: () => agents,
 } as unknown as Engine;
-const host = { inbox: { ask: async () => "deny" }, conversations: () => conversations, working: (id: number) => working.has(id), features: [] } as unknown as Host;
+const host = { inbox: { ask: async () => "deny" }, agent: (id: string | undefined) => id === undefined ? undefined : agents[id], conversations: () => conversations, working: (id: number) => working.has(id), features: [] } as unknown as Host;
 const feature = projects(host, engine);
 await feature.start!();
 projectAgents(host, engine);
@@ -119,7 +119,7 @@ assert.equal(agentOf(meta("deleted", { projectAgentId: "deleted-too" }), agents)
 assert.equal(runsAs(meta("forge-1"), agents), "forge-1");
 assert.equal(agentOf(meta("forge-1"), agents), undefined, "its own agent removed: none, as for a deleted agent");
 assert.equal(agentOf(meta("deleted"), agents), undefined);
-// A conversation whose project was deleted is in no project (3.6): it runs as its agentId, its copy still there.
+// A carried conversation whose project was deleted is in no project (3.6): it runs as its agentId, its copy still there.
 assert.equal(runsAs(conversations[7], agents), "scout", "its project deleted: its agentId");
 assert.equal(runsAs(conversations[8], agents), "atlas", "the deleted project's orchestrator's conversation too");
 await setPreview(false);

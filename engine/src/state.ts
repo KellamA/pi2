@@ -164,8 +164,8 @@ export type Meta = {
 /**
  * The agent whose settings conversation `meta` uses at its next message (docs/projects.md, 3.4): its project's copy of
  * its agent, for a conversation carried over, while the preview is on, the copy is neither removed nor deleted and the
- * project was not deleted; else its `agentId`, as before projects. A conversation whose project was deleted is in no
- * project (3.6). Every lookup of a conversation's agent goes through this, or through `agentOf`.
+ * project was not deleted; else its `agentId`, as before projects. A deleted project's own conversations keep their own
+ * agent; only carried conversations fall back to a template (3.6). Every lookup goes through this or `agentOf`.
  */
 export function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): string | undefined {
 	const copy = meta?.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];

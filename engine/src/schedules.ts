@@ -18,6 +18,8 @@ export type Schedule = {
 	prompt: string;
 	repeat: Repeat;
 	enabled: boolean;
+	/** Held until edited to use another agent; the person's enabled setting is left alone. */
+	holdReason?: string;
 	nextRunAt: number | null;
 	lastRunAt: number | null;
 	lastConversationId: number | null;

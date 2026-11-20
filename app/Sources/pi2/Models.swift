@@ -669,6 +669,7 @@ struct Schedule: Codable, Equatable, Identifiable {
     var prompt: String
     var `repeat`: Repeat
     var enabled: Bool
+    var holdReason: String?
     var nextRunAt: Double?
     var lastRunAt: Double?
     var lastConversationId: Int?
