@@ -1,12 +1,5 @@
 import Foundation
 
-/// The `needs` event (docs/projects.md, 4.3) read for the reach requests and proposed rules a conversation's page
-/// shows cards for (#474): only what `TranscriptFeed.Need` decodes, so a kind this app knows nothing of cannot take
-/// the reading down.
-struct TranscriptNeedsEvent: Decodable {
-    let items: [TranscriptFeed.Need]
-}
-
 /// What the transcript page is told about a conversation, and what it has been told already, so that each update
 /// carries only what changed: the entries it has not seen, and the live state, the approvals waiting at its calls,
 /// the names it shows and the palette whenever those differ from last time.

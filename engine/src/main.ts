@@ -57,6 +57,7 @@ import { NETWORK_RESUMED_ENTRY, type NetworkWait, retryNetwork, transportFailure
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
+import { lookUsageModel, pictureLook } from "./picturelook.ts";
 import { pictureUsageModel } from "./pictures.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
@@ -290,7 +291,13 @@ const engine: Engine = {
 		settings.pictureModel = model;
 		saveSettings();
 	},
+	lookModel: () => settings.lookModel ?? null,
+	setLookModel: (model) => {
+		settings.lookModel = model;
+		saveSettings();
+	},
 	providers: () => providers,
+	waitingOnThePerson: () => new Set(inbox.list().map((item) => item.conversationId)),
 	setting: (key) => settings[key],
 	saveSetting: (key, value) => {
 		(settings as Record<string, unknown>)[key] = value;
@@ -335,7 +342,7 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * `conversation` is the conversation's id, undefined for one not made yet: in a project, whom it may hand work to
  * depends on which conversation it is (projectagents.ts, `delegateTargets`).
  */
-function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null } = {}) {
+function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null; model?: ModelRef | null } = {}) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
@@ -392,13 +399,14 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 }
 
 /** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
-async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange> {
-	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
+async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null; model?: ModelRef }): Promise<AgentChange> {
+	// The model the conversation starts with: the person's choice where `conversation.create` was given one.
+	const model = options.model ?? (agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel());
 	return {
 		model,
 		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
-		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId }),
+		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId, model }),
 		cwd: agent.cwd,
 		maxTurns: agent.maxTurns,
 	};
@@ -478,10 +486,14 @@ const settings: {
 	/** Chat mode's settings (chat.ts); read through `chatSettings`, which gives the defaults for what is missing. */
 	chat?: ChatSettings;
 	pictureModel?: ModelRef | null;
+	/** The model that looks at pictures for one that cannot see them (#540, picturelook.ts); null until the person picks. */
+	lookModel?: ModelRef | null;
 	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
 	lastChatModel?: ModelRef;
 	/** The projects preview switch (projects.ts); read through `projectsOn()`. Absent means off. */
 	projects?: { preview: boolean };
+	/** Keeping this Mac awake while agents work (keepawake.ts); read through `awakeSettings`. Absent means on, and not on battery. */
+	awake?: { keep: boolean; battery: boolean };
 } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -537,8 +549,9 @@ async function syncTools(conv: Conversation): Promise<void> {
 		if (meta.projectId !== undefined) await harness.commit((tx) => syncWorkForInput(tx, conv.id, meta), context);
 		return;
 	}
-	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id }));
+	const agent = await harness.snapshot(AgentDoc, conv.id, context);
+	const current = agent?.tools;
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id, model: agent?.model }));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -1479,8 +1492,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
 		if (agent.removedAt !== undefined) throw new Error(`Unknown agent: ${agent.id}`);
 		if (agent.projectId !== undefined) refuseStartWith(agent);
-		const profile = await agentChange(agent, { subChat: false });
-		const change = params.model !== undefined ? { ...profile, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : profile;
+		const change = await agentChange(agent, { subChat: false, ...(params.model !== undefined ? { model: params.model as ModelRef } : {}) });
 		const carriedInto = await carriedProjectFor(agent, change.cwd ?? null);
 		const now = Date.now();
 		let note: string | undefined;
@@ -1945,6 +1957,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
 			rememberModel({ provider: model.provider, modelId: model.modelId }, chat);
 			for (const feature of host.features) feature.modelChanged?.(id);
+			// What the conversation is offered can follow its model: `look`, for one that cannot see pictures (picturelook.ts).
+			await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
 		}
 		if (params.thinkingLevel !== undefined) await conv.configure({ thinkingLevel: params.thinkingLevel as never }, context);
 		if (params.cwd !== undefined) {
@@ -1958,8 +1972,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			if (!ACCESS_LEVELS.includes(access)) throw new Error(`Unknown access level: ${String(access)}`);
 			const meta = library.conversations[String(id)];
 			const own = agentOf(meta, agents);
-			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta), { conversationId: id })) }, context);
+			const agent = await harness.snapshot(AgentDoc, conv.id, context);
+			await conv.configure({ tools: keepingOrder(agent?.tools, toolsFor(access, own, isSubChat(meta), { conversationId: id, model: agent?.model })) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -2543,6 +2557,30 @@ function pictureRows(tools: UsageDocShape["tools"]) {
 	});
 }
 
+/** The rows of models that looked at pictures for models that cannot see them (#540), from the same tool ledger. */
+function lookRows(tools: UsageDocShape["tools"]) {
+	const rows = new Map<string, { usage: UsageCounters; unpriced: boolean }>();
+	for (const [bucket, usage] of Object.entries(tools ?? {})) {
+		const model = lookUsageModel(bucket);
+		if (model === undefined) continue;
+		const row = rows.get(model.key) ?? { usage: emptyUsage(), unpriced: false };
+		addUsageCounters(row.usage, usage);
+		row.unpriced ||= model.unpriced;
+		rows.set(model.key, row);
+	}
+	return [...rows].map(([key, { usage, unpriced }]) => {
+		const slash = key.indexOf("/");
+		const provider = key.slice(0, slash);
+		const model = providers.models.getModel(provider, key.slice(slash + 1));
+		const providerName = providers.models.getProvider(provider)?.name ?? provider;
+		// Such a model can also answer conversations of its own, which have a row of their own: say what this one is for.
+		return {
+			key, input: usage.input, output: usage.output, tokens: usage.totalTokens, cost: usage.cost.total, unpriced,
+			lookName: model === undefined ? `${key} · looking at pictures` : `${providerName} · ${model.name} · looking at pictures`,
+		};
+	});
+}
+
 let session: UsageDocShape = {};
 async function updateUsage(): Promise<void> {
 	const repriced = usagePricingChanged;
@@ -2629,6 +2667,7 @@ async function updateUsage(): Promise<void> {
 		models: [
 			...Object.entries(session.models ?? {}).map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) })),
 			...pictureRows(session.tools),
+			...lookRows(session.tools),
 		].sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		chats,

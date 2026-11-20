@@ -206,7 +206,7 @@ struct CarryOverSheet: View {
 }
 
 /// One project in the report: where it comes from, what goes into it and what to know.
-private struct ProjectPlanView: View {
+struct ProjectPlanView: View {
     let project: CarryOverReport.Project
 
     private var status: String {

@@ -54,6 +54,9 @@ final class EngineClient {
     /// The picture models the person's providers can use, for making pictures (engine/src/pictures.ts), and the providers
     /// that have such models at all, by name, for saying where to get one when there is none. Nil until the engine says.
     private(set) var pictures: PictureModels?
+    /// The models that can look at pictures for one that cannot see them, and the person's choice (engine/src/picturelook.ts).
+    /// Nil until the engine says.
+    private(set) var look: LookModels?
     private(set) var inbox: [InboxItem] = [] {
         didSet {
             guard inbox != oldValue else { return }
@@ -92,6 +95,9 @@ final class EngineClient {
     /// With the preview off the app shows none of them (10.2).
     private(set) var projectsPreview = false
     private(set) var projects: [ProjectRow] = []
+    /// Everything waiting for the person, of every project and none, as the `needs` event sends it (docs/projects.md,
+    /// 3.9): the Now tab's cards. The sidebar's counts, and the Rules tab's proposals, come of the same reading.
+    private(set) var needs: [NeedItem] = []
     /// Each project's rules, from the `projectRules` event (docs/projects.md, 4.3): the Rules tab reads it.
     private(set) var projectRules: [String: [ProjectRule]] = [:]
     /// Proposed rules waiting under Needs you, by project, from the `needs` event (docs/projects.md, 3.9); the Rules
@@ -534,6 +540,25 @@ final class EngineClient {
         let models: [Model]
         let makers: [String]
     }
+    /// The models the person's connected providers offer that take pictures, for looking at ones a conversation's own
+    /// model cannot see (engine/src/picturelook.ts, #540). Nil until the engine says.
+    struct LookModels: Decodable, Equatable {
+        struct Model: Decodable, Equatable {
+            struct Price: Decodable, Equatable {
+                let input: Double
+                let output: Double
+            }
+            let provider: String
+            let id: String
+            let name: String
+            let providerName: String?
+            let price: Price?
+            var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
+            var displayName: String { "\(providerName ?? provider) · \(name)" }
+        }
+        let model: ModelRef?
+        let models: [Model]
+    }
     private struct AgentsEvent: Decodable {
         let agents: [AgentProfile]
         let builtInTools: [BuiltInTool]?
@@ -616,6 +641,8 @@ final class EngineClient {
                 update(\.builtInTools, event.builtInTools ?? [])
             case "pictures":
                 update(\.pictures, try decoder.decode(PictureModels.self, from: line))
+            case "look":
+                update(\.look, try decoder.decode(LookModels.self, from: line))
             case "inbox":
                 update(\.inbox, try decoder.decode(InboxEvent.self, from: line).items)
             case "activity":
@@ -692,9 +719,9 @@ final class EngineClient {
                 data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "needs":
-                // One reading of the event for both: the sidebar's count of what waits, and a proposed rule waiting to
-                // be answered, which the Rules tab shows. The whole array decodes whatever kinds are in it, so a need of
-                // a kind this app knows nothing of cannot take either down.
+                // One reading of the event for all three: the sidebar's count of what waits, a proposed rule waiting to
+                // be answered, which the Rules tab shows, and the Now tab's cards. The whole array decodes whatever kinds
+                // are in it, so a need of a kind this app knows nothing of cannot take any of them down.
                 let needs = try decoder.decode(NeedItemsEvent.self, from: line).items
                 projectStore.take(needs: needs.map { NeedRef(id: $0.id, projectId: $0.projectId) })
                 var proposals: [String: [NeedItem]] = [:]
@@ -702,9 +729,15 @@ final class EngineClient {
                     if let projectId = need.projectId { proposals[projectId, default: []].append(need) }
                 }
                 update(\.ruleNeeds, proposals)
-                // The reach requests and proposed rules the conversation pages show cards for (#474), read from the same
-                // event; every kind shares the base fields, so it decodes whatever kinds are in it.
-                let shown = (try? decoder.decode(TranscriptNeedsEvent.self, from: line))?.items.filter { $0.kind == "reach" || $0.kind == "rule" } ?? []
+                update(\.needs, needs)
+                // The reach requests and proposed rules a conversation's page shows cards for (#474), from the same
+                // reading of the event, with only what a card reads.
+                let shown = needs.filter { $0.kind == "reach" || $0.kind == "rule" }.map {
+                    TranscriptFeed.Need(
+                        id: $0.id, kind: $0.kind, conversationId: $0.conversationId, agentName: $0.agentName, createdAt: $0.createdAt,
+                        change: $0.change.map { TranscriptFeed.Need.ReachChange(summary: $0.summary) }, text: $0.text, binds: $0.binds?.rawValue, why: $0.why
+                    )
+                }
                 update(\.conversationNeeds, shown)
             case "projectRules":
                 update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
@@ -714,7 +747,7 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "work":
+            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "work", "github", "reports", "awake":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
                 if envelope.event == "limits" { Notifier.shared.limitNotices(PlanLimits(extras["limits"])?.notices ?? []) }
