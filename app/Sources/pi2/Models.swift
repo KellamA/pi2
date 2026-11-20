@@ -766,6 +766,7 @@ struct ConversationState: Codable, Equatable {
     let context: ContextSize
     let compacting: Bool
     let compactionError: String?
+    var compactionErrorId: Int? = nil
     /// What the last request to the model read, in tokens (input and the prompt cache, not the answer). Nil when it is not
     /// known, and from an engine older than this field.
     var lastRequestInputTokens: Int? = nil

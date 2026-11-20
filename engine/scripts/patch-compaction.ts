@@ -13,13 +13,17 @@ export const COMPACTION_PATCHES = [
                     const child = await createCompaction(tx, conversationId, { reason: "threshold" }, runtime.taskId);
                     const checkpoint = { phase: "prepare", attempt, compacted: child, threshold: true };`, `            const policy = compactionPolicy(settings, model, agent.compaction);
             const early = settings.compaction.early?.(conversationId, resolved.contextWindow, policy);
-            const threshold = compacted === undefined
-                ? thresholdCompaction(view, entries, resolved.contextWindow, policy, early)
+            const automaticContext = compacted === undefined && policy.enabled
+                ? await automaticCompactionContext(runtime, view, entries.flatMap((entry) => entry.model ?? []), context)
+                : undefined;
+            const threshold = automaticContext !== undefined
+                ? thresholdCompaction(view, automaticContext.tokens, resolved.contextWindow, policy, early)
                 : undefined;
             if (threshold !== undefined) {
                 // No request can overtake the summary. Only a window-edge failure stops the generation.
                 await runtime.commit(async (tx) => {
                     const child = await createCompaction(tx, conversationId, {
+                        automaticContext,
                         reason: threshold === "size" ? "size" : "threshold",
                         ...(threshold === "size" ? { keepRecentTokens: early.keepRecentTokens } : {}),
                     }, runtime.taskId);
@@ -40,10 +44,16 @@ export const COMPACTION_PATCHES = [
     if (over === undefined || selectCut(view, policy.keepRecentTokens) === undefined)
         return undefined;
     return over;
-}`, `function thresholdCompaction(view, planned, contextWindow, policy, early) {
-    if (!policy.enabled || contextWindow <= 0)
+}`, `async function automaticCompactionContext(runtime, view, extra, context) {
+    const candidate = { head: view.head?.id ?? null, tokens: estimateContext(view, extra) };
+    const live = await runtime.snapshot(LiveDoc, runtime.conversationId, context);
+    if (runtime.settings.compaction.automaticReady?.(live?.compactionCooldown, candidate, runtime.now()) === false)
         return undefined;
-    const tokens = estimateContext(view, planned.flatMap((entry) => entry.model ?? []));
+    return candidate;
+}
+function thresholdCompaction(view, tokens, contextWindow, policy, early) {
+    if (contextWindow <= 0)
+        return undefined;
     const blocking = contextWindow - policy.reserveTokens;
     const background = blocking - policy.backgroundTokens;
     if (tokens > blocking && selectCut(view, policy.keepRecentTokens) !== undefined)
@@ -70,7 +80,13 @@ export const COMPACTION_PATCHES = [
             }, context);
         },
         request: async (task, runtime, context) => {`),
-	patch("generation.js", "place steers after overflow compaction too", `                const checkpoint = { phase: "prepare", attempt, compacted: child, overflow: text };`, `                const checkpoint = { phase: "afterThresholdCompact", attempt, compacted: child, overflow: text };`),
+	patch("generation.js", "check the cooldown even if the provider rather than the estimate detects the limit", `        if (selectCut(view, compaction.keepRecentTokens) !== undefined) {
+            const text = message.errorMessage ?? "Context overflow";`, `        const automaticContext = await automaticCompactionContext(runtime, view, [], context);
+        if (automaticContext !== undefined && selectCut(view, compaction.keepRecentTokens) !== undefined) {
+            const text = message.errorMessage ?? "Context overflow";`),
+	patch("generation.js", "place steers after overflow compaction too", `                const child = await createCompaction(tx, conversationId, { reason: "overflow" }, runtime.taskId);
+                const checkpoint = { phase: "prepare", attempt, compacted: child, overflow: text };`, `                const child = await createCompaction(tx, conversationId, { reason: "overflow", automaticContext }, runtime.taskId);
+                const checkpoint = { phase: "afterThresholdCompact", attempt, compacted: child, overflow: text };`),
 	patch("generation.js", "resume a tool round after its summary, without restarting tools", `            const { assistant, tools, pending } = task.state.checkpoint;
             const [next, ...rest] = pending;
             if (next === undefined)
@@ -103,7 +119,6 @@ export const COMPACTION_PATCHES = [
             const live = await tx.doc(LiveDoc, this.id);
             if (live.run !== undefined || live.compactions?.length > 0)
                 throw new Error("Wait for this conversation to finish answering or summarizing, then try again.");
-            delete live.compactionFailure;
             return createCompaction(tx, this.id, input);
         }, context);`),
 	patch("submissions.js", "durably queue inputs behind a manual summary (including a wake racing admission)", `    const busy = live.run !== undefined;`, `    const summarizing = live.compactions?.some((status) => status.trigger === "manual") === true;
@@ -116,8 +131,41 @@ import { applyBoundary, isStale, prepareBoundary } from "./inbox.js";`),
                 return complete(runtime, context);`, `            const cut = selectCut(view, task.input.keepRecentTokens ?? policy.keepRecentTokens);
             if (cut === undefined)
                 return complete(runtime, context, task.input.reason === "manual");`),
+	patch("compaction.js", "give the summary its own output allowance and use the lowest thinking level", `                thinkingLevel: agent.thinkingLevel,
+                streamOptions: settings.stream,
+                maxTokens: Math.min(Math.floor(0.8 * policy.reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY),`, `                thinkingLevel: settings.compaction.summaryThinking?.(model) ?? "off",
+                streamOptions: settings.stream,
+                maxTokens: Math.min(settings.compaction.summaryTokens ?? 16_384,
+                    model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY),`),
 	patch("compaction.js", "give the summarizer pi²'s retention instructions without recording them as the agent's note", `                    content: [{ type: "text", text: summaryPrompt(summarizedMessages(view, cut), task.input.instructions) }],`, `                    content: [{ type: "text", text: summaryPrompt(summarizedMessages(view, cut),
-                        [runtime.settings.compaction.instructions, task.input.instructions].filter(Boolean).join("\\n\\n") || undefined) }],`),
+                        [runtime.settings.compaction.instructions, task.input.instructions].filter(Boolean).join("\\n\\n") || undefined, request.shorter ? maxTokens : undefined) }],`),
+	patch("compaction.js", "do not inherit reasoning from stream settings", `            const { deferred: _deferred, ...forwarded } = streamOptions;`, `            const { deferred: _deferred, reasoning: _reasoning, ...forwarded } = streamOptions;`),
+	patch("compaction.js", "use the host's provider adapters, including learned thinking levels", `            const message = await runtime.models.completeSimple(model, { messages }, options);`, `            const message = await runtime.models.streamSimple(model, { messages }, options).result();`),
+	patch("compaction.js", "retry a length stop once, after recording what it cost", `                if (summary !== undefined)
+                    return placeSummary(tx, runtime, current, live, firstKept, summary);
+                if (retry) {`, `                if (summary !== undefined)
+                    return placeSummary(tx, runtime, current, live, firstKept, summary);
+                if (message.stopReason === "length" && !request.shorter) {
+                    const status = compactionStatus(live, runtime.taskId);
+                    if (status !== undefined)
+                        status.attempt += 1;
+                    // No portable way to resume a completed response. Keep the same source and leave the partial text out.
+                    return { status: "running", checkpoint: { phase: "summarize", ...request, shorter: true } };
+                }
+                if (retry) {`),
+	patch("compaction.js", "keep the displayed attempt count increasing across both kinds of retry", `                    status.attempt = attempt;`, `                    status.attempt += 1;`),
+	patch("compaction.js", "give a length retry a concrete shorter target and prioritize what later work needs", `function summaryPrompt(messages, instructions) {
+    const focus = instructions === undefined ? "" : \x60\\n\\nAdditional focus: \${instructions}\x60;
+    return \x60<conversation>\\n\${serializeConversation(messages)}\\n</conversation>\\n\\n\${SUMMARIZATION_PROMPT}\${focus}\x60;
+}`, `function summaryPrompt(messages, instructions, retryBudget) {
+    const focus = instructions === undefined ? "" : \x60\\n\\nAdditional focus: \${instructions}\x60;
+    const shorter = retryBudget === undefined ? "" : \x60\\n\\nThe previous summary hit the output limit. Write a complete, shorter summary in at most \${Math.max(1, Math.floor(retryBudget / 2))} tokens. Keep only what later work needs: open requests, decisions, standing instructions, blockers, and what is running. Drop background and incidental detail.\x60;
+    return \x60<conversation>\\n\${serializeConversation(messages)}\\n</conversation>\\n\\n\${SUMMARIZATION_PROMPT}\${focus}\${shorter}\x60;
+}`),
+	patch("compaction.js", "record the estimated active size when admitting an automatic summary", `    const status = { taskId, trigger: input.reason, blocking: owner !== undefined, attempt: 1 };`, `    const status = { taskId, trigger: input.reason, blocking: owner !== undefined, attempt: 1,
+        ...(input.automaticContext === undefined ? {} : { automaticContext: input.automaticContext }) };`),
+	patch("compaction.js", "a successful summary clears the warning and the cooldown", `    delete live.compactionFailure;`, `    delete live.compactionFailure;
+    delete live.compactionCooldown;`),
 	patch("compaction.js", "attach authoritative state at commit time and place the marker before queued inputs", `    const text = \x60\${SUMMARY_PREFIX}\${summary}\${SUMMARY_SUFFIX}\x60;
     const entry = {
         kind: CompactionEntry.kind,
@@ -167,7 +215,7 @@ async function finishWithoutSummary(tx, runtime, live, error, notice) {
     if (error === undefined)
         removeCompactionStatus(live, runtime.taskId);
     else
-        failCompactionStatus(live, runtime.taskId, error);
+        failCompactionStatus(live, runtime.taskId, error, runtime.now());
     if (manual)
         await finishIdleCompaction(tx, runtime.conversationId, live, runtime.settings, runtime.now(), notice);
 }
@@ -192,6 +240,16 @@ export async function finishIdleCompaction(tx, id, live, settings, now, entry) {
 	patch("live.js", "faulted manual compactions must release queued inputs too", `import { convertPartial } from "./generation.js";`, `import { convertPartial } from "./generation.js";
 import { finishIdleCompaction } from "./compaction.js";`),
 	patch("live.js", "pass settings to the scheduler's compaction cleanup", `export async function settleSchedulerOutcome(tx, record, outcome) {`, `export async function settleSchedulerOutcome(tx, record, outcome, settings, now) {`),
+	patch("live.js", "persist the automatic cooldown independently of the warning", `export function failCompactionStatus(live, taskId, error) {
+    const status = compactionStatus(live, taskId);
+    if (status !== undefined)
+        live.compactionFailure = { taskId: status.taskId, trigger: status.trigger, error };`, `export function failCompactionStatus(live, taskId, error, now) {
+    const status = compactionStatus(live, taskId);
+    if (status !== undefined) {
+        live.compactionFailure = { taskId: status.taskId, trigger: status.trigger, error };
+        if (status.automaticContext !== undefined)
+            live.compactionCooldown = { ...status.automaticContext, at: now };
+    }`),
 	patch("live.js", "release the queue after an unexpected compaction error", `        if (cutOff)
             removeCompactionStatus(live, record.id);
         else
@@ -200,7 +258,7 @@ import { finishIdleCompaction } from "./compaction.js";`),
         if (cutOff)
             removeCompactionStatus(live, record.id);
         else
-            failCompactionStatus(live, record.id, outcome.status === "faulted" ? outcome.error.message : outcome.reason);
+            failCompactionStatus(live, record.id, outcome.status === "faulted" ? outcome.error.message : outcome.reason, now);
         if (manual && !record.abortRequested)
             await finishIdleCompaction(tx, record.conversationId, live, settings, now);
         return;`),

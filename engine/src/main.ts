@@ -44,7 +44,7 @@ import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut, validateToolsOff, validate
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
 import { chatHandover, handoverAttachments } from "./handover.ts";
 import { codemodeExtension } from "./codemode.ts";
-import { compactionCheckpoint, type CompactionMarker, compactionMarker, earlyCompaction, RETENTION_INSTRUCTIONS, validateCompactionTokens } from "./compaction.ts";
+import { automaticCompactionReady, compactionCheckpoint, compactionErrorText, type CompactionMarker, compactionMarker, earlyCompaction, RETENTION_INSTRUCTIONS, SUMMARY_TOKENS, summaryThinking, validateCompactionTokens } from "./compaction.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
@@ -433,6 +433,9 @@ const harness = await Harness.open(
 				},
 				instructions: RETENTION_INSTRUCTIONS,
 				checkpoint: compactionCheckpoint,
+				summaryTokens: SUMMARY_TOKENS,
+				summaryThinking: (model: Parameters<typeof summaryThinking>[0]) => summaryThinking(model, providers.reportedThinking(model)),
+				automaticReady: automaticCompactionReady,
 			} as import("@earendil-works/pi-durable").CompactionSettings,
 			// As an input is placed, a project's orchestrator is told what changed first (orchestrator.ts; a patch to pi
 			// durable, scripts/patch-inputs.ts). It does nothing anywhere else.
@@ -787,7 +790,7 @@ type LiveDocShape = {
 	tools?: { callId: string; name: string; status: string; output?: string; details?: unknown }[];
 	runFailure?: { reason: string; detail?: string };
 	compactions?: unknown[];
-	compactionFailure?: { error?: string };
+	compactionFailure?: { taskId: number; error: string };
 	lastRequestInputTokens?: number;
 };
 
@@ -882,7 +885,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 		context: contextSize,
 		lastRequestInputTokens: live.lastRequestInputTokens ?? input,
 		compacting: (live.compactions ?? []).length > 0,
-		compactionError: live.compactionFailure?.error ?? null,
+		compactionError: live.compactionFailure === undefined ? null : compactionErrorText(live.compactionFailure.error),
+		compactionErrorId: live.compactionFailure?.taskId ?? null,
 		// An archived conversation, or a sub-chat of one, is not in the list the app is sent; its title and standing
 		// come with it here, so it can still be shown, read-only.
 		title: meta?.title ?? "",
@@ -1565,6 +1569,15 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const conv = await conversation(params.id);
 		refuseIfPutAway(params.id as number);
 		await conv.compact(instructions, context);
+		return {};
+	},
+	"conversation.dismissCompactionError": async (params) => {
+		const conv = await conversation(params.id);
+		await harness.commit(async (tx) => {
+			const live = await tx.doc(LiveDoc, conv.id);
+			// A dismissal from an older view must not hide a newer failure.
+			if (live.compactionFailure !== undefined && live.compactionFailure.taskId === params.errorId) delete live.compactionFailure;
+		}, context);
 		return {};
 	},
 	"conversation.reset": async (params) => {

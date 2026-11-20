@@ -23,6 +23,8 @@ struct ChatView: View {
     @State private var steer = true
     @State private var dropTargeted = false
     @State private var heightAboveComposer: CGFloat = 0
+    @State private var retryingSummary = false
+    @State private var summaryNote = ""
     @FocusState private var composerFocused: Bool
 
     private var data: OpenConversation? { engine.open[id] }
@@ -124,7 +126,7 @@ struct ChatView: View {
                 banner("Summarising earlier messages to free up context…", systemImage: "arrow.down.right.and.arrow.up.left", color: Theme.acc)
             }
             if let error = state?.compactionError, state?.compacting != true {
-                banner("The last attempt to summarise the conversation failed: \(error)", systemImage: "exclamationmark.triangle", color: Theme.warn)
+                compactionBanner(error, errorID: state?.compactionErrorId)
             }
             // Its sub-chats that wait for a provider's limit, in one line kept up to date (#343).
             let subChats = engine.subChatLimitWaits[id] ?? []
@@ -215,6 +217,36 @@ struct ChatView: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             .panel(fill: color.opacity(0.08), border: color.opacity(0.3))
             .padding(.horizontal, inset).padding(.top, 8)
+    }
+
+    private func compactionBanner(_ error: String, errorID: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(Theme.warn)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                if !archived {
+                    Button("Try Again…") {
+                        summaryNote = ""
+                        retryingSummary = true
+                    }
+                    .disabled(busy)
+                }
+                if let errorID {
+                    Button("Dismiss") { engine.perform("conversation.dismissCompactionError", ["id": id, "errorId": errorID]) }
+                }
+            }
+            .buttonStyle(.piSecondary)
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .panel(fill: Theme.warn.opacity(0.08), border: Theme.warn.opacity(0.3))
+        .padding(.horizontal, inset).padding(.top, 8)
+        .alert("Summarise earlier messages?", isPresented: $retryingSummary) {
+            TextField("What should the summary keep? (optional)", text: $summaryNote)
+            Button("Summarise") { engine.perform("conversation.compact", ["id": id, "instructions": summaryNote]) }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private func limitBanner(_ text: String, excluding: Set<ModelRef>, params: [String: Any], help: String) -> some View {
