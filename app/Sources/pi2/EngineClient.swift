@@ -92,6 +92,9 @@ final class EngineClient {
     /// With the preview off the app shows none of them (10.2).
     private(set) var projectsPreview = false
     private(set) var projects: [ProjectRow] = []
+    /// Everything waiting for the person, of every project and none, as the `needs` event sends it (docs/projects.md,
+    /// 3.9): the Now tab's cards. The sidebar's counts, and the Rules tab's proposals, come of the same reading.
+    private(set) var needs: [NeedItem] = []
     /// Each project's rules, from the `projectRules` event (docs/projects.md, 4.3): the Rules tab reads it.
     private(set) var projectRules: [String: [ProjectRule]] = [:]
     /// Proposed rules waiting under Needs you, by project, from the `needs` event (docs/projects.md, 3.9); the Rules
@@ -689,9 +692,9 @@ final class EngineClient {
                 data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "needs":
-                // One reading of the event for both: the sidebar's count of what waits, and a proposed rule waiting to
-                // be answered, which the Rules tab shows. The whole array decodes whatever kinds are in it, so a need of
-                // a kind this app knows nothing of cannot take either down.
+                // One reading of the event for all three: the sidebar's count of what waits, a proposed rule waiting to
+                // be answered, which the Rules tab shows, and the Now tab's cards. The whole array decodes whatever kinds
+                // are in it, so a need of a kind this app knows nothing of cannot take any of them down.
                 let needs = try decoder.decode(NeedItemsEvent.self, from: line).items
                 projectStore.take(needs: needs.map { NeedRef(id: $0.id, projectId: $0.projectId) })
                 var proposals: [String: [NeedItem]] = [:]
@@ -699,6 +702,7 @@ final class EngineClient {
                     if let projectId = need.projectId { proposals[projectId, default: []].append(need) }
                 }
                 update(\.ruleNeeds, proposals)
+                update(\.needs, needs)
             case "projectRules":
                 update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
             case "auth":
@@ -707,7 +711,7 @@ final class EngineClient {
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "work":
+            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "work", "reports":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
                 if envelope.event == "limits" { Notifier.shared.limitNotices(PlanLimits(extras["limits"])?.notices ?? []) }
