@@ -2900,10 +2900,10 @@ const server = createServer((socket) => {
 				);
 			// A request that is the person's alone — an answer to what waits, or a change to what they set — is taken only
 			// from the app (#504, #513).
-			const refusal = personOnly(method, params);
-			if (refusal === undefined) handle();
+			const reason = personOnly(method, params);
+			if (reason === undefined) handle();
 			else {
-				const refuse = () => send(client, { id: request.id, error: refusal });
+				const refuse = () => send(client, { id: request.id, error: reason });
 				void mayAnswer(client).then(({ allowed }) => (allowed ? handle() : refuse()), refuse);
 			}
 		}
