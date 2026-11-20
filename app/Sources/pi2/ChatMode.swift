@@ -158,7 +158,9 @@ struct ModeSwitch: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            segment(.agents, "Agents", icon: "person.2", shortcut: "⌘1") {
+            // With the Projects preview on, this side lists projects (ProjectsSidebar.swift).
+            let projects = engine.projectsPreview
+            segment(.agents, projects ? "Projects" : "Agents", icon: projects ? "folder" : "person.2", shortcut: "⌘1") {
                 if model.mode == .chat {
                     if !engine.inbox.isEmpty {
                         Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting on you")
@@ -177,7 +179,7 @@ struct ModeSwitch: View {
         .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
         .background(Theme.side)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Agents or Chat")
+        .accessibilityLabel(engine.projectsPreview ? "Projects or Chat" : "Agents or Chat")
     }
 
     private func segment<Badge: View>(_ mode: WindowMode, _ title: String, icon: String, shortcut: String, @ViewBuilder badge: () -> Badge) -> some View {

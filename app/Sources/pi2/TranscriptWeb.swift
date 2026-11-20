@@ -49,7 +49,7 @@ struct ConversationTranscript: View {
         for server in engine.mcpServers {
             for tool in server.tools { mcp[tool.toolName] = "\(server.name): \(tool.name)" }
         }
-        let agents = engine.agents.map { agent in
+        let agents = engine.allAgents.map { agent in
             TranscriptFeed.Agent(
                 id: agent.id, name: agent.name, color: TranscriptPalette.css(AgentColor.color(agent.color)) ?? "",
                 model: engine.shortModelName(agent.model)

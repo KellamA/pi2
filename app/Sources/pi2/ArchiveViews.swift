@@ -19,6 +19,7 @@ struct ArchiveView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                ArchivedProjects(model: model)
                 if engine.archived.isEmpty {
                     ContentUnavailableView(
                         "Nothing archived",

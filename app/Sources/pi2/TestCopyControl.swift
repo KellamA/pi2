@@ -145,7 +145,6 @@ struct TestCopyControl: NSViewRepresentable {
             let view: ProjectCopyView
         }
 
-        // Later issues can apply the same parsed view here, and acknowledge the selection after it draws.
         private func recordProjectView(_ view: ProjectCopyView, source: String) -> [String: String] {
             let home = folder.deletingLastPathComponent()
             guard isDirectory(home) else { return ["error": "the copy's data folder is missing or a symlink"] }
@@ -170,7 +169,12 @@ struct TestCopyControl: NSViewRepresentable {
         /// draw it. A fold alone applies to the project shown. The Dashboard and an agent's conversation in place of the
         /// board are later issues', and are only recorded.
         private func showProject(_ view: ProjectCopyView, dir: URL) -> [String: String]? {
-            if view.show == "dashboard" { return ["result": "Recorded dashboard; the Dashboard is not drawn yet"] }
+            if view.show == "dashboard" {
+                // The sidebar's row is selected (#470); what it opens is the Dashboard's issue (#481).
+                guard model.engine.projectsPreview else { return ["error": "the copy has the projects preview off; fill it with --project first"] }
+                model.selection = .dashboard
+                return ["result": "Selected the Dashboard's row; the Dashboard is not drawn yet"]
+            }
             let fold = view.hub.flatMap { HubFold(rawValue: $0.rawValue) }
             let id: String
             if let project = view.project {

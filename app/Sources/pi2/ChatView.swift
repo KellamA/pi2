@@ -1050,7 +1050,7 @@ struct SubagentCard: View {
 
     private var profile: AgentProfile? {
         let name = subagent?.name ?? call.arguments["agent"]?.stringValue ?? ""
-        return engine.agents.first { $0.name.caseInsensitiveCompare(name) == .orderedSame || $0.id == name }
+        return engine.allAgents.first { $0.name.caseInsensitiveCompare(name) == .orderedSame || $0.id == name }
     }
     private var task: String { call.arguments["task"]?.stringValue ?? "" }
     /// The answer without the footer the engine adds for the model.

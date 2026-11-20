@@ -13,6 +13,8 @@ enum Selection: Hashable {
     case conversation(Int)
     /// A project's hub, by the project's id (ProjectHub.swift), with the projects preview on.
     case project(String)
+    /// The Dashboard's row in the sidebar of projects, with the preview on (ProjectsSidebar.swift; drawn by #481).
+    case dashboard
 }
 
 #if PI2_DEVELOPMENT
@@ -88,9 +90,16 @@ final class AppModel {
             // Anything else chosen (from the menu bar, the palette, a notification) is shown in the agent view.
             if selection != nil, !chats.holdingMode { mode = .agents }
             // A conversation chosen anywhere goes to the pane that has it, or else the focused pane.
-            if case .conversation(let id) = selection, selection != oldValue { workspace.show(id) }
+            if case .conversation(let id) = selection, selection != oldValue {
+                workspace.show(id)
+                // With the projects preview on, the sidebar unfolds the project the conversation belongs to.
+                if engine.projectsPreview, let project = engine.conversations.first(where: { $0.id == id })?.projectId { projectsSidebar.open = project }
+            }
+            if case .project(let id) = selection { projectsSidebar.open = id }
         }
     }
+    /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
+    let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
     /// Conversations whose sub-chats are folded away in the sidebar.
     var collapsed: Set<Int> = []
@@ -437,6 +446,8 @@ struct RootView: View {
             Group {
                 if model.mode == .chat {
                     ChatSidebar(model: model)
+                } else if engine.projectsPreview {
+                    ProjectsSidebar(model: model)
                 } else {
                     SidebarView(model: model)
                 }
@@ -469,6 +480,8 @@ struct RootView: View {
                     case .project(let id):
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
+                    case .dashboard:
+                        DashboardPlaceholder(model: model)
                     case .conversation, nil:
                         WelcomeView(model: model)
                     }
@@ -483,6 +496,7 @@ struct RootView: View {
             .columnGivesWay()
         }
         .background(WindowOpener(model: model))
+        .projectsPreviewFollowing(model: model)
         .worktreeDialogs(engine: engine)
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
         .sheet(isPresented: Binding(get: { engine.onboarded == false }, set: { _ in })) {
@@ -881,7 +895,7 @@ struct SidebarFooter: View {
 }
 
 /// An agent in the sidebar: its avatar and name, the model it runs, and a quick way to start a conversation with it.
-private struct AgentRow: View {
+struct AgentRow: View {
     let model: AppModel
     let agent: AgentProfile
     @State private var hovering = false

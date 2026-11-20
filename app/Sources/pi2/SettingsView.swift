@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable {
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
 enum SettingsSection: String {
     // General
-    case appearance, notifications, summaries, background, updates
+    case appearance, notifications, projects, summaries, background, updates
     // Chat
     case instructions, newChats = "new-chats", memory, agentNotes = "agent-notes"
     // Providers
@@ -210,6 +210,8 @@ struct GeneralSettings: View {
                 Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting. A run a provider refuses for its limit waits and carries on by itself; the Inbox says so either way, and the second switch adds a notification once when the limit is reached and once when work carries on.").formFooter()
             }
             .id(SettingsSection.notifications)
+            ProjectsPreviewSettings(engine: engine)
+                .id(SettingsSection.projects)
             CompactionDefaultSettings(engine: engine)
                 .id(SettingsSection.summaries)
             BackgroundSettings(home: home)
@@ -603,7 +605,7 @@ struct ModelsSheet: View {
 
     /// What removing a model added by hand does to what uses it.
     private func removalNote(_ model: ModelInfo) -> String {
-        let agents = engine.agents.filter { $0.model == model.ref }.map(\.name)
+        let agents = engine.allAgents.filter { $0.model == model.ref }.map(\.name)
         let users = agents.isEmpty ? "" : " \(ListFormatter.localizedString(byJoining: agents)) \(agents.count == 1 ? "uses" : "use") it, and will start new conversations on the default model instead."
         return "A conversation that uses it stops with a message at its next turn, until another model is chosen.\(users) You can add it again later."
     }

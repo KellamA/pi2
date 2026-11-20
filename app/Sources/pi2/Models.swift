@@ -84,6 +84,12 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
     var allowEverything: Bool? = nil
+    /// The project it belongs to (docs/projects.md, 3.5), whether the preview is on or not.
+    var projectId: String? = nil
+    /// The agent it runs as now: its `agentId`, but for a conversation carried over while the preview is on (3.4).
+    var runsAs: String? = nil
+    /// "current" or "earlier" for a project's conversation with its orchestrator; nil for any other.
+    var orchestrator: String? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
@@ -142,6 +148,8 @@ struct ArchivedConversation: Codable, Identifiable, Equatable {
     let parentTitle: String?
     /// An archived chat with pi²'s own assistant.
     var chat: Bool? = nil
+    /// The project it belongs to, if any.
+    var projectId: String? = nil
 }
 
 struct ToolCall: Codable, Equatable, Identifiable {
@@ -409,6 +417,11 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     /// after a confirmation, never by saving the agent, and not copied to a duplicate.
     var allowEverything: Bool?
     var createdAt: Double
+    /// The project it belongs to (docs/projects.md, 3.3). Nil for a template, which is every agent made the old way.
+    /// Kept as stored by the engine, whatever `agents.save` is sent.
+    var projectId: String? = nil
+    /// "orchestrator" for a project's orchestrator.
+    var role: String? = nil
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
     var payload: [String: Any] {
@@ -597,6 +610,9 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     var commands: [RunningCommand]?
     /// A chat answering, rather than an agent's work (docs/chat.md).
     var chat: Bool?
+    /// The project its conversation belongs to, and the agent it runs as (docs/projects.md, 4.3).
+    var projectId: String?
+    var runsAs: String?
     var id: Int { conversationId }
 }
 
