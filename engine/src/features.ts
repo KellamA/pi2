@@ -30,6 +30,7 @@ import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
+import { pictureLook } from "./picturelook.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
@@ -68,6 +69,9 @@ export type Engine = {
 	/** The person's choice for Make pictures, across chats and agents. Null lets pi² choose. */
 	pictureModel(): ModelRef | null;
 	setPictureModel(model: ModelRef | null): void;
+	/** The person's choice for which model looks at pictures for one that cannot see them (picturelook.ts). None until they pick. */
+	lookModel(): ModelRef | null;
+	setLookModel(model: ModelRef | null): void;
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
@@ -119,8 +123,8 @@ export type FeatureParts = {
 	/** Changes to tools from elsewhere (pi durable's coding tools, say), applied wherever they are offered. */
 	// biome-ignore lint/suspicious/noExplicitAny: tools of any parameter shape
 	wraps?: Wrap<any>[];
-	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
-	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string | null }): string[];
+	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. `model` is the conversation's own, where it is known. */
+	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string | null; model?: ModelRef | null }): string[];
 	/** Which of this feature's tools a chat (chat.ts) is given, with chat mode's settings as they are now. */
 	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
@@ -250,6 +254,8 @@ export const FEATURES: Feature[] = [
 	worktrees,
 	commands,
 	reads,
+	// Looking at pictures with a model that can see them (#540): after `reads`, whose wrap of `read` its own wrap follows.
+	pictureLook,
 	scratch,
 	variables,
 	coauthor,
