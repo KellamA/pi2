@@ -2910,22 +2910,32 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 	const { fillProject } = await import("../scripts/test-copy-project.ts");
 	const { Reports } = await import("./reports.ts");
 	let fillingProject = false;
-	handlers["test-copy.fillProject"] = async (_params, client) => {
+	handlers["test-copy.fillProject"] = async (params, client) => {
 		if (fillingProject) throw new Error("A demo project is already being filled in this copy");
+		const name = typeof params.name === "string" ? params.name.trim() : undefined;
+		if ("name" in params && typeof params.name !== "string") throw new Error("A demo project's name is a string");
+		if (name !== undefined && (name.length === 0 || name.length > 60)) throw new Error("A demo project's name is 1 to 60 characters, trimmed");
+		const count = "count" in params ? params.count : 1;
+		if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 8) throw new Error("A count of demo projects is a whole number from 1 to 8");
 		fillingProject = true;
 		try {
 			// The fixture is itself app-only. These calls and all of their arguments come from the fixture, not the socket.
-			return await fillProject(home, async (method, params) => {
+			const call = async (method: string, callParams: Record<string, unknown>) => {
 				const handler = handlers[method];
 				if (handler === undefined) throw new Error(`Unknown method: ${method}`);
-				return handler(params, client);
-			}, async ({ projectId, working, waiting, finished }) => {
+				return handler(callParams, client);
+			};
+			const ready = async ({ projectId, working, waiting, finished }: { projectId: string; working: number[]; waiting: number; finished: number }) => {
 				const runs = activityEvent().runs;
 				const active = working.every((id) => runs.some((run) => run.conversationId === id && run.status === "working" && run.commands.length > 0));
 				if (!active || !runs.some((run) => run.conversationId === waiting && run.status === "waiting")) return false;
 				const reports = await harness.snapshot(Reports, context);
 				return reports?.projects[projectId]?.some((report) => report.conversationId === finished && report.ended?.outcome === "answered" && report.delivered === null) ?? false;
-			});
+			};
+			// `--project <count>` fills that many, one after another, so a copy can hold several for the Dashboard (#481).
+			const filled: unknown[] = [];
+			for (let made = 0; made < count; made++) filled.push(await fillProject(home, call, ready, name));
+			return count === 1 ? filled[0] : filled;
 		} finally {
 			fillingProject = false;
 		}

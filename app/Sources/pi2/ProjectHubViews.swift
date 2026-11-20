@@ -502,9 +502,9 @@ private struct HubAgentPanel: View {
 
 // MARK: - The strip
 
-/// Along the bottom of the board while the conversation is folded: the orchestrator's last words, and a field that
-/// sends it a message.
-private struct HubStrip: View {
+/// Along the bottom of the board while the conversation is folded, and along the bottom of a Dashboard column (#481):
+/// the orchestrator's last words, and a field that sends it a message.
+struct HubStrip: View {
     let engine: EngineClient
     let hubs: ProjectHubs
     let project: ProjectRow

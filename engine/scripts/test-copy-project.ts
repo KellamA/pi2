@@ -8,7 +8,12 @@ type Request = (method: string, params: Params) => Promise<unknown>;
 const omitted = ["reach and proposed-rule requests (#465)", "limit cards (#464)", "GitHub pull requests (#468)"];
 const sleep = "/bin/sleep 540";
 
-export async function fillProject(home: string, request: Request, ready: (ids: { projectId: string; working: number[]; waiting: number; finished: number }) => Promise<boolean>) {
+export async function fillProject(
+	home: string,
+	request: Request,
+	ready: (ids: { projectId: string; working: number[]; waiting: number; finished: number }) => Promise<boolean>,
+	given?: string,
+) {
 	const deadline = Date.now() + 120_000;
 	const call = async <T>(method: string, params: Params = {}): Promise<T> => await request(method, params) as T;
 	const until = async (label: string, check: () => boolean | Promise<boolean>) => {
@@ -37,7 +42,7 @@ export async function fillProject(home: string, request: Request, ready: (ids: {
 		await call("projects.setPreview", { on: true, ...(plan === undefined ? {} : { plan }) });
 	}
 	const { projects } = await call<{ projects: { name: string }[] }>("projects.list");
-	const base = "Demo project";
+	const base = given ?? "Demo project";
 	const names = new Set(projects.map(({ name }) => name.toLowerCase()));
 	let name = base;
 	for (let n = 2; names.has(name.toLowerCase()); n++) name = `${base} ${n}`;

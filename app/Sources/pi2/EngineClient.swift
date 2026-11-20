@@ -60,9 +60,13 @@ final class EngineClient {
     private(set) var inbox: [InboxItem] = [] {
         didSet {
             guard inbox != oldValue else { return }
-            NSApp.dockTile.badgeLabel = inbox.isEmpty ? nil : String(inbox.count)
             let known = Set(oldValue.map(\.id))
-            for item in inbox where !known.contains(item.id) { Notifier.shared.needsYou(item) }
+            // With the projects preview on, the `needs` event covers the Inbox too, so it counts and notifies what waits
+            // in the Inbox's place (docs/projects.md, 10.3, #481); with it off, the Inbox does, as before.
+            if !projectsPreview {
+                for item in inbox where !known.contains(item.id) { Notifier.shared.needsYou(item) }
+            }
+            refreshWaitingBadge()
         }
     }
     private(set) var hasLoadedLibrary = false
@@ -687,6 +691,8 @@ final class EngineClient {
                 }
                 update(\.projectsPreview, event.preview)
                 update(\.projects, event.projects)
+                // Which list the Dock's badge counts turns with the preview switch (#481).
+                refreshWaitingBadge()
                 // What the sidebar and Settings read of it (Projects.swift): without the orchestrator's last words, which
                 // change with every finished answer and would draw the list of projects again for nothing.
                 if let sidebar = try? decoder.decode(SidebarProjectsEvent.self, from: line) { projectStore.take(projects: sidebar) }
@@ -728,8 +734,15 @@ final class EngineClient {
                 for need in needs where need.kind == "rule" {
                     if let projectId = need.projectId { proposals[projectId, default: []].append(need) }
                 }
+                let known = Set(self.needs.map(\.id))
                 update(\.ruleNeeds, proposals)
                 update(\.needs, needs)
+                // With the preview on, this list is what waits for the person in the Inbox's place: the Dock's badge,
+                // and the notifications, come from it (10.3, #481).
+                if projectsPreview {
+                    for need in needs where !known.contains(need.id) { Notifier.shared.needsYou(need) }
+                    refreshWaitingBadge()
+                }
                 // The reach requests and proposed rules a conversation's page shows cards for (#474), from the same
                 // reading of the event, with only what a card reads.
                 let shown = needs.filter { $0.kind == "reach" || $0.kind == "rule" }.map {
@@ -769,10 +782,22 @@ final class EngineClient {
         }
     }
 
+    /// What the menu bar item counts beside its icon and what the Dock's badge shows: with the projects preview on,
+    /// everything waiting in the `needs` event in place of the Inbox (docs/projects.md, 10.3, #481); with it off, the
+    /// Inbox's, as before.
+    var waitingCount: Int { projectsPreview ? needs.count : inbox.count }
+
     /// Sets a property only when the value differs. A property of an observable object tells every view that reads it
     /// of each set, even to the same value, and the engine sends most of these again whenever anything in them changes.
     private func update<Value: Equatable>(_ path: ReferenceWritableKeyPath<EngineClient, Value>, _ value: Value) {
         if self[keyPath: path] != value { self[keyPath: path] = value }
+    }
+
+    /// The Dock's badge: what waits for the person. With the projects preview on, everything in the `needs` event counts
+    /// in place of the Inbox's (docs/projects.md, 10.3, #481); with it off, the Inbox's as before.
+    private func refreshWaitingBadge() {
+        let count = projectsPreview ? needs.count : inbox.count
+        NSApp.dockTile.badgeLabel = count == 0 ? nil : String(count)
     }
 
     private func handleAuth(_ event: AuthEventMessage) {

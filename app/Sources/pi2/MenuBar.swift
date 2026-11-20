@@ -24,7 +24,9 @@ struct MenuBarView: View {
                 .sendsOnReturn(ask)
                 .disabled(engine.status != .connected)
 
-            if !engine.inbox.isEmpty {
+            if engine.projectsPreview {
+                needsByProject
+            } else if !engine.inbox.isEmpty {
                 section("Needs you")
                 ForEach(engine.inbox) { InboxCard(engine: engine, item: $0, showsSource: true) }
             }
@@ -101,6 +103,36 @@ struct MenuBarView: View {
         Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
     }
 
+    /// What waits, by project: each opens its project's hub on the Now tab, where its card is answered in place
+    /// (docs/projects.md, 10.3, #481); a need of a conversation in no project opens that conversation, as the Inbox's
+    /// own card does.
+    private var needsByProject: some View {
+        let byProject = Dictionary(grouping: engine.needs, by: { $0.projectId })
+        let projects = engine.projects.filter { byProject[$0.id] != nil }
+        let loose = byProject[nil] ?? []
+        return VStack(alignment: .leading, spacing: 12) {
+            if !engine.needs.isEmpty { section("Needs you") }
+            ForEach(projects) { project in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        ProjectMark(name: project.name, color: engine.agent(project.orchestratorId)?.color, size: 14)
+                        Text(project.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    ForEach(byProject[project.id] ?? []) { need in
+                        MenuBarNeedRow(engine: engine, need: need) {
+                            model.showProject(project.id, tab: .now)
+                            show(nil)
+                        }
+                    }
+                }
+            }
+            ForEach(loose) { need in
+                MenuBarNeedRow(engine: engine, need: need) { show(.conversation(need.rootConversationId)) }
+            }
+        }
+    }
+
     private func show(_ selection: Selection?) {
         if let selection { model.selection = selection }
         openWindow(id: "main")
@@ -116,6 +148,40 @@ struct MenuBarView: View {
             await engine.submit(text, to: id, steer: false)
             show(.conversation(id))
         }
+    }
+}
+
+/// One thing waiting under Needs you, as the menu bar item lists it with the projects preview on (#481): who asks,
+/// what it asks, and where it waits. Clicking it opens where the card is answered.
+struct MenuBarNeedRow: View {
+    let engine: EngineClient
+    let need: NeedItem
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 8) {
+                AgentAvatar(agent: engine.agent(need.agentId ?? ""), size: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(need.agentName ?? "Someone")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Text(need.short)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.tx2)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+                Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 }
 

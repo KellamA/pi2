@@ -73,6 +73,8 @@ struct TestCopyControl: NSViewRepresentable {
         /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`, and
         /// whether showing an agent's conversation unfolded a folded board (#553).
         private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, unfolded: Bool, until: Date)] = []
+        /// `show` requests for the Dashboard, answered once it has drawn its columns, or after `limit` (#481).
+        private var dashboardWaiting: [(dir: URL, until: Date)] = []
         /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown, and how long to
         /// wait for an agent's conversation of it named there.
         private var launchProject: ProjectCopyView?
@@ -140,6 +142,17 @@ struct TestCopyControl: NSViewRepresentable {
                 }
                 return false
             }
+            dashboardWaiting = dashboardWaiting.filter { wait in
+                if let drawn = DashboardDrawn.current {
+                    let columns = drawn.count == 1 ? "1 column" : "\(drawn.count) columns"
+                    answer(wait.dir, ["result": "Showing the Dashboard, \(columns), drawn"])
+                } else if Date() >= wait.until {
+                    answer(wait.dir, ["result": "Showing the Dashboard, though it had not drawn after \(Int(Self.limit)) seconds"])
+                } else {
+                    return isDirectory(wait.dir)
+                }
+                return false
+            }
             // A project made after launch, such as by `fill --project`, opens when it comes, as a conversation does. An
             // agent's conversation named there comes with the library and the activity, so it is waited for, but not for
             // ever: past the limit the hub opens on its board.
@@ -197,13 +210,18 @@ struct TestCopyControl: NSViewRepresentable {
 
         /// Shows the hub `view` asks for: its project, its tab, its fold and, when it names an agent, that agent's
         /// conversation in place of the board (#473). Nil when the answer is to wait for the hub to draw it. A fold alone
-        /// applies to the project shown. The Dashboard is a later issue's, and is only recorded.
+        /// applies to the project shown. The Dashboard is answered once it has drawn its columns (#481).
         private func showProject(_ view: ProjectCopyView, dir: URL) -> [String: String]? {
             if view.show == "dashboard" {
-                // The sidebar's row is selected (#470); what it opens is the Dashboard's issue (#481).
                 guard model.engine.projectsPreview else { return ["error": "the copy has the projects preview off; fill it with --project first"] }
                 model.selection = .dashboard
-                return ["result": "Selected the Dashboard's row; the Dashboard is not drawn yet"]
+                // Answered once the Dashboard has drawn its columns, as a hub is once it has drawn what was asked.
+                if let drawn = DashboardDrawn.current {
+                    let columns = drawn.count == 1 ? "1 column" : "\(drawn.count) columns"
+                    return ["result": "Showing the Dashboard, \(columns), drawn"]
+                }
+                dashboardWaiting.append((dir, Date().addingTimeInterval(Self.limit)))
+                return nil
             }
             let fold = view.hub.flatMap { HubFold(rawValue: $0.rawValue) }
             let id: String

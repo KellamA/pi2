@@ -104,9 +104,9 @@ struct ProjectNowTab: View {
 
     private var needsSection: some View {
         VStack(spacing: 0) {
-            sectionHeader("Needs you", count: needs.count)
+            ProjectSectionHeader(title: "Needs you", count: needs.count)
             if needs.isEmpty {
-                calm("Nothing needs you right now.")
+                QuietLine(text: "Nothing needs you right now.")
             } else {
                 // However many there are, they scroll within a space of their own and never push the sections below
                 // out of the tab (#489's stack: at most 60% of what is left after the header).
@@ -119,27 +119,6 @@ struct ProjectNowTab: View {
                 }
             }
         }
-    }
-
-    private func sectionHeader(_ title: String, count: Int? = nil) -> some View {
-        HStack(spacing: 6) {
-            Text(title).sectionLabel()
-            if let count, count > 0 {
-                Text(String(count)).font(Theme.label).monospacedDigit().foregroundStyle(Theme.tx3)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 7)
-        .background(Theme.panel)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
-    }
-
-    private func calm(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 12.5))
-            .foregroundStyle(Theme.tx3)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
     }
 
     // MARK: Working now
@@ -161,7 +140,7 @@ struct ProjectNowTab: View {
                 .foregroundStyle(Theme.tx3)
                 .formFooter()
             if runs.isEmpty {
-                calm("Nobody is working right now.")
+                QuietLine(text: "Nobody is working right now.")
             } else {
                 ForEach(runs) { run in
                     WorkingRow(engine: engine, run: run, waking: waking) {
@@ -188,7 +167,7 @@ struct ProjectNowTab: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Finished today").sectionLabel()
             if reports.isEmpty {
-                calm("Nothing has finished today yet.")
+                QuietLine(text: "Nothing has finished today yet.")
             } else {
                 ForEach(reports) { report in
                     FinishedRow(engine: engine, report: report)
@@ -214,17 +193,55 @@ struct ProjectNowTab: View {
     }
 }
 
+// MARK: - The bits both a tab and the Dashboard's columns show
+
+/// A section's header on a board tab and in a Dashboard column: its name, and a count when there is one.
+struct ProjectSectionHeader: View {
+    let title: String
+    var count: Int? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title).sectionLabel()
+            if let count, count > 0 {
+                Text(String(count)).font(Theme.label).monospacedDigit().foregroundStyle(Theme.tx3)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(Theme.panel)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+}
+
+/// One quiet line where a section has nothing to say.
+struct QuietLine: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12.5))
+            .foregroundStyle(Theme.tx3)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+    }
+}
+
 // MARK: - The cards
 
 /// One need's card: what is asked, which agent asks and on what, and the controls that answer it in place. Approvals
-/// and questions the Inbox already answers reuse its card; every other kind has its own here.
-private struct NeedCard: View {
+/// and questions the Inbox already answers reuse its card; every other kind has its own here. Shown in the board's Now
+/// tab and in a Dashboard column (#481).
+struct NeedCard: View {
     let model: AppModel
     let need: NeedItem
     let problem: String?
     /// The answer typed into this card's field.
     @Binding var words: String
     let answer: (NeedItem, [String: Any]) -> Void
+    /// Whether the card is in a narrower place than the Now tab, such as a Dashboard column (#481): its row then takes
+    /// two lines rather than folding down a word at a time. Off on the Now tab, which has the width.
+    var compact = false
 
     private var engine: EngineClient { model.engine }
     private var agent: AgentProfile? { engine.agent(need.agentId ?? "") }
@@ -247,14 +264,14 @@ private struct NeedCard: View {
                 switchCard
             } else if let item = engine.inbox.first(where: { $0.id == need.id }) {
                 // The Inbox's own card, which answers it as it does today (`inbox.decide` and `inbox.answer`).
-                InboxCard(engine: engine, item: item, showsSource: true)
+                InboxCard(engine: engine, item: item, showsSource: true, compact: compact)
             } else {
                 // The Inbox item has not reached the app, or belongs to a version of a chat the person is not looking at.
                 plainCard
             }
         case "question":
             if need.blocking, let item = engine.inbox.first(where: { $0.id == need.id }) {
-                InboxCard(engine: engine, item: item, showsSource: true)
+                InboxCard(engine: engine, item: item, showsSource: true, compact: compact)
             } else {
                 questionCard
             }
@@ -277,7 +294,10 @@ private struct NeedCard: View {
     private var who: some View {
         HStack(spacing: 8) {
             AgentAvatar(agent: agent, size: 18)
+            // On one line, in a Dashboard column's narrower card as on the Now tab's (#481): the name keeps its
+            // width and the conversation's title gives way, rather than the name folding down a letter at a time.
             Text(need.agentName ?? "Someone").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
+                .lineLimit(1).layoutPriority(1)
             Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 6)
@@ -289,9 +309,30 @@ private struct NeedCard: View {
     /// A card of one's own, in the Inbox card's manner.
     private func own(_ label: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                who
-                Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
+            // A wide card puts the name, the conversation and the kind on one line; a narrow one, such as a
+            // Dashboard column's, puts the name and kind on the first line and the conversation and time on the
+            // second, so the name keeps its width and the title gives way (#481).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    who
+                    Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        AgentAvatar(agent: agent, size: 18)
+                        Text(need.agentName ?? "Someone").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
+                    }
+                    HStack(spacing: 6) {
+                        Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
+                            .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        Text("asked \(LimitsFormat.ago(LimitsFormat.date(need.createdAt), now: .now))")
+                            .font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
+                    }
+                }
             }
             content()
         }
@@ -448,11 +489,14 @@ private struct NeedCard: View {
 // MARK: - Working now
 
 /// One agent working in the project: its avatar and name, its model, how long, its last line, and whether its report
-/// will wake the orchestrator. Clicking it opens its conversation in place of the board (#473).
-private struct WorkingRow: View {
+/// will wake the orchestrator. Clicking it opens its conversation in place of the board (#473). Shown in the board's
+/// Now tab, and in a Dashboard column with `compact`, which drops the conversation's title and the words about waking
+/// so that it fits a column's width (#481).
+struct WorkingRow: View {
     let engine: EngineClient
     let run: ActivityRun
     let waking: Bool
+    var compact = false
     let open: () -> Void
 
     private var agent: AgentProfile? { engine.agent(run.runsAs ?? run.agentId ?? "") }
@@ -488,7 +532,7 @@ private struct WorkingRow: View {
                     if let modelName {
                         Text("· \(modelName)").font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
                     }
-                    if !run.title.isEmpty {
+                    if !run.title.isEmpty, !compact {
                         Text("· \(run.title)").font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
                     }
                     Spacer(minLength: 6)
@@ -497,7 +541,7 @@ private struct WorkingRow: View {
                 if let line = run.lastLine, !line.isEmpty {
                     Text(line).font(.system(size: 12)).foregroundStyle(Theme.tx2).lineLimit(1)
                 }
-                if let waking = watchWords {
+                if let waking = watchWords, !compact {
                     Text(waking).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(2)
                 }
             }

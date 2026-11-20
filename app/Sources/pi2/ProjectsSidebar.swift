@@ -398,27 +398,6 @@ private struct TemplateRows: View {
     }
 }
 
-/// What the Dashboard's row shows until the Dashboard is built (#481).
-struct DashboardPlaceholder: View {
-    let model: AppModel
-
-    var body: some View {
-        VStack(spacing: 14) {
-            ContentUnavailableView {
-                Label("The Dashboard is not built yet", systemImage: "square.grid.2x2")
-            } description: {
-                Text("It will show the projects you choose to watch side by side: what needs you, who is working, and each orchestrator’s last words. Until then, approvals and questions wait in the Inbox.")
-            } actions: {
-                Button("Open Inbox") { model.selection = .inbox }
-                    .buttonStyle(.piSecondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.window)
-        .navigationTitle("Dashboard")
-    }
-}
-
 /// Archived projects, at the top of the Archive while the preview is on, each with Restore.
 struct ArchivedProjects: View {
     let model: AppModel
