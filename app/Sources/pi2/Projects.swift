@@ -94,13 +94,12 @@ struct SidebarProjectsEvent: Decodable {
     let carryOver: CarryOverState?
 }
 
-/// One thing waiting for the person, as much as the sidebar reads of it: whose project it is.
-struct NeedRef: Decodable, Equatable {
+/// One thing waiting for the person, as much as the sidebar reads of it: whose project it is. The `needs` event
+/// decodes as `NeedItemsEvent` (ProjectRulesTab.swift), which the Rules tab reads the proposed rules from.
+struct NeedRef: Equatable {
     let id: String
     let projectId: String?
 }
-
-struct NeedsEvent: Decodable { let items: [ProjectNeed] }
 
 /// A conversation of a project that is not the orchestrator's, as the sidebar lists it under the project.
 struct ProjectConversation: Equatable, Identifiable {

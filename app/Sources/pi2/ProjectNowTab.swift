@@ -9,103 +9,6 @@ import WindowKit
 
 // MARK: - What the engine sends
 
-/// One need as the engine's `needs` event sends it (docs/projects.md, 3.9): every kind the contract lists in one flat
-/// structure, with the fields of the kinds that do not use them left out. The approval's Inbox counterpart answers it,
-/// as it does today; every other kind is answered here with `needs.answer`.
-struct ProjectNeed: Decodable, Equatable, Identifiable {
-    struct Choice: Decodable, Equatable {
-        let id: String
-        let label: String
-    }
-
-    /// A reach request's change, as the person reads it (7.2): what it would let agents do.
-    struct ReachChange: Decodable, Equatable {
-        let summary: String
-    }
-
-    /// The start the project's limit stopped (8.3), as the person reads it.
-    struct Start: Decodable, Equatable {
-        let agentName: String?
-        let title: String?
-        let task: String?
-    }
-
-    /// What was over when the start was refused: `reason` is the sentence the person reads.
-    struct LimitReading: Decodable, Equatable {
-        let reason: String
-    }
-
-    let id: String
-    let projectId: String?
-    let conversationId: Int
-    let rootConversationId: Int
-    let title: String
-    let rootTitle: String
-    let agentId: String?
-    let agentName: String?
-    /// True for approvals and ask_user questions only: the agent is held until the person answers.
-    let blocking: Bool
-    /// Milliseconds since 1970.
-    let createdAt: Double
-    let kind: String
-
-    // An approval.
-    let tool: String?
-    let arguments: JSONValue?
-    let question: String?
-    var site: String?
-    var when: String?
-    var rule: RuleOffer?
-    var background: Bool?
-    /// Which of the project's switches is off and asked (8.1): then `answers` is ["once", "deny"] only.
-    var projectSwitch: String?
-    var answers: [String]?
-
-    // A question or decision.
-    let choices: [Choice]?
-    let words: Bool?
-
-    // A proposed rule.
-    let text: String?
-    let binds: String?
-    let why: String?
-
-    // More reach, and a start the project's limit stopped.
-    let change: ReachChange?
-    let start: Start?
-    let limit: LimitReading?
-
-    /// Which switch asked, in words the person reads, or the switch's own name when the app does not know it.
-    var switchWords: String? {
-        projectSwitch.map {
-            switch $0 {
-            case "startAgents": "starting agents without asking"
-            case "fileWork": "filing work without asking"
-            case "closeWork": "closing work without asking"
-            case "makeAgents": "making agents without asking"
-            case "addRules": "adding rules without asking"
-            case "merge": "merging without asking"
-            case "release": "releasing work without asking"
-            case "passLimits": "going past the project's limits"
-            default: $0
-            }
-        }
-    }
-
-    /// The line that says what it is, as the engine names the kinds to a person who answers the wrong one.
-    var named: String {
-        switch kind {
-        case "approval": "a request for approval"
-        case "question": "a question"
-        case "decision": "a decision"
-        case "reach": "a request for more reach"
-        case "rule": "a proposed rule"
-        case "limit": "a start held back by the project's limit"
-        default: "something that waits for you"
-        }
-    }
-}
-
 /// One report as the engine's `reports` event sends it (docs/projects.md, 3.10): how a run the orchestrator handed out
 /// ended, and whether it has been given to the orchestrator yet.
 struct ProjectReport: Identifiable, Equatable {
@@ -152,37 +55,6 @@ struct ProjectReports {
     }
 }
 
-/// The board tabs the app tells the engine it shows (`projects.watch`, docs/projects.md, 4.2), so that the engine reads
-/// GitHub for them. Each send gives the whole set of a project's shown tabs, and the sends are made in the order the
-/// tabs came and went, so one tab's going cannot clobber another's coming. The Work tab (#479) joins here: one line at
-/// each of its call sites.
-@MainActor
-final class ProjectTabWatch {
-    static let shared = ProjectTabWatch()
-    /// The tabs each project's board shows now, by project id.
-    private var shown: [String: Set<HubTab>] = [:]
-
-    func shows(_ project: String, tab: HubTab, engine: EngineClient) {
-        var tabs = shown[project] ?? []
-        guard !tabs.contains(tab) else { return }
-        tabs.insert(tab)
-        shown[project] = tabs
-        send(project, engine: engine)
-    }
-
-    func hides(_ project: String, tab: HubTab, engine: EngineClient) {
-        guard var tabs = shown[project], tabs.contains(tab) else { return }
-        tabs.remove(tab)
-        shown[project] = tabs
-        send(project, engine: engine)
-    }
-
-    private func send(_ project: String, engine: EngineClient) {
-        let tabs = (shown[project] ?? []).map(\.rawValue)
-        Task { try? await engine.call("projects.watch", ["projectId": project, "tabs": tabs]) }
-    }
-}
-
 // MARK: - The tab
 
 /// The board's Now tab: what needs the person at the top, answered in place; who is working now, with the project's
@@ -201,7 +73,7 @@ struct ProjectNowTab: View {
     @State private var words: [String: String] = [:]
 
     private var engine: EngineClient { model.engine }
-    private var needs: [ProjectNeed] { engine.needs.filter { $0.projectId == project.id } }
+    private var needs: [NeedItem] { engine.needs.filter { $0.projectId == project.id } }
     /// The project's runs, its orchestrator's included, oldest first as the engine lists them.
     private var runs: [ActivityRun] { engine.activity.filter { $0.projectId == project.id && $0.chat != true } }
     private var reports: [ProjectReport] { ProjectReports(engine.extras["reports"]?["projects"]?[project.id]).items }
@@ -329,7 +201,7 @@ struct ProjectNowTab: View {
 
     /// Sends one answer to a need through the one request every kind answers by (`needs.answer`, docs/projects.md,
     /// 4.2), and keeps the engine's refusal on the card it was given from.
-    private func answer(_ need: ProjectNeed, _ reply: [String: Any]) {
+    private func answer(_ need: NeedItem, _ reply: [String: Any]) {
         Task {
             do {
                 try await engine.call("needs.answer", ["id": need.id, "answer": reply])
@@ -348,11 +220,11 @@ struct ProjectNowTab: View {
 /// and questions the Inbox already answers reuse its card; every other kind has its own here.
 private struct NeedCard: View {
     let model: AppModel
-    let need: ProjectNeed
+    let need: NeedItem
     let problem: String?
     /// The answer typed into this card's field.
     @Binding var words: String
-    let answer: (ProjectNeed, [String: Any]) -> Void
+    let answer: (NeedItem, [String: Any]) -> Void
 
     private var engine: EngineClient { model.engine }
     private var agent: AgentProfile? { engine.agent(need.agentId ?? "") }
@@ -391,7 +263,8 @@ private struct NeedCard: View {
         case "reach":
             reachCard
         case "rule":
-            ruleCard
+            // The Rules tab's own card, so a proposal reads and answers the same in both places.
+            RuleProposalCard(engine: engine, need: need)
         case "limit":
             limitCard
         default:
@@ -523,33 +396,13 @@ private struct NeedCard: View {
         }
     }
 
-    /// A proposed rule: accept it as it stands, or decline it.
-    private var ruleCard: some View {
-        own("proposed rule") {
-            Text(need.text ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            Text("Binds \(need.binds == "orchestrator" ? "the orchestrator only" : "every agent of the project")")
-                .foregroundStyle(Theme.tx2)
-            if let why = need.why {
-                Text("Why: \(why)").foregroundStyle(Theme.tx2).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack(spacing: 8) {
-                Button("Add Rule") { answer(need, ["kind": "rule", "accept": true]) }
-                    .buttonStyle(.piPrimary)
-                    .help("Add this rule to the project as it stands, word for word")
-                Button("Decline") { answer(need, ["kind": "rule", "accept": false]) }
-                    .buttonStyle(.piDanger)
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
     /// A start the project's limit stopped: what it wanted to do, and whether to start it anyway.
     private var limitCard: some View {
         own("held back by a limit") {
             if let start = need.start {
                 let what = [start.title, start.task].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ": ")
                 if !what.isEmpty {
-                    Text("\(start.agentName ?? "An agent") wants to start \(what)")
+                    Text("\(start.agentName ?? "An agent") wants to start “\(what)”")
                         .foregroundStyle(Theme.tx).fixedSize(horizontal: false, vertical: true)
                 }
             }

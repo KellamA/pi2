@@ -26,6 +26,13 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
         let wakeOnReports: Bool?
     }
 
+    /// About how many tokens the rules add to each request (docs/projects.md, 6.2): an orchestrator's, and every other
+    /// agent's. Absent from an engine before #459 filled it.
+    struct RuleTokens: Decodable, Equatable {
+        let orchestrator: Int
+        let agents: Int
+    }
+
     let id: String
     let name: String
     /// The real path of its folder, or nil for a project with none.
@@ -42,6 +49,8 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let settings: Settings?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
+    /// What the rules add to each request, for the Rules tab; nil when the engine sends none.
+    let ruleTokens: RuleTokens?
 }
 
 struct ProjectsEvent: Decodable {
@@ -147,6 +156,55 @@ extension EngineClient {
     func project(_ id: String) -> ProjectRow? {
         guard projectsPreview else { return nil }
         return projects.first { $0.id == id && $0.deletedAt == nil }
+    }
+}
+
+/// What the app has told the engine it shows of a project, through `projects.watch` (docs/projects.md, 4.2, 10.3): the
+/// one place the board's tabs say so, the Now tab (#472) and the Work tab (#479) both. The engine keeps one watch for
+/// each connection, so every send names the project the person is looking at and all of that project's tabs on screen.
+/// A tab that comes can appear before the tab that goes disappears — switching tabs, switching projects, folding the
+/// board and closing the window alike — so a going tab tells the engine what is left rather than emptying the watch, and
+/// there is nothing for it to undo: whichever of the two arrives last, the engine is left watching the tabs that show.
+@MainActor
+final class ProjectTabWatch {
+    static let shared = ProjectTabWatch()
+    /// The tabs each project's board shows now, by project id, and the projects in the order they were last shown in.
+    private var shown: [String: Set<HubTab>] = [:]
+    private var order: [String] = []
+    /// The last send, so that the calls reach the engine in the order they were made.
+    private var sending: Task<Void, Never>?
+
+    func shows(_ project: String, tab: HubTab, engine: EngineClient) {
+        var tabs = shown[project] ?? []
+        guard !tabs.contains(tab) else { return }
+        tabs.insert(tab)
+        shown[project] = tabs
+        order.removeAll { $0 == project }
+        order.append(project)
+        send(engine)
+    }
+
+    func hides(_ project: String, tab: HubTab, engine: EngineClient) {
+        guard var tabs = shown[project], tabs.contains(tab) else { return }
+        tabs.remove(tab)
+        shown[project] = tabs
+        send(engine)
+    }
+
+    /// The newest project that still has a tab on screen, with every tab of it that does; the app shows none when there
+    /// is no such project.
+    private func send(_ engine: EngineClient) {
+        let params: [String: Any]
+        if let project = order.last(where: { !(shown[$0] ?? []).isEmpty }) {
+            params = ["projectId": project, "tabs": (shown[project] ?? []).map(\.rawValue)]
+        } else {
+            params = ["projectId": NSNull(), "tabs": [String]()]
+        }
+        let before = sending
+        sending = Task {
+            _ = await before?.value
+            _ = try? await engine.call("projects.watch", params)
+        }
     }
 }
 
