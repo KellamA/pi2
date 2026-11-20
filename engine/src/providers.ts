@@ -14,6 +14,7 @@ import {
 	type Model,
 	type MutableModels,
 	type Provider,
+	type SimpleStreamOptions,
 	type ThinkingLevelMap,
 } from "@earendil-works/pi-ai";
 import { lazyStream } from "@earendil-works/pi-ai/api/lazy";
@@ -351,26 +352,31 @@ function demoPrompt(last: DemoMessage | undefined): string {
 }
 
 /** Tests hold the demo summary at an explicitly opened gate, not for a fixed time. */
-async function demoSummary(gate: string, prompt: string, signal?: AbortSignal) {
-	const readGate = () => readFile(gate, "utf8").catch((error: NodeJS.ErrnoException) => {
+async function demoSummary(gate: string, prompt: string, options?: SimpleStreamOptions) {
+	const readGate = (path: string) => readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
 		if (error.code !== "ENOENT") throw error;
 		return undefined;
 	});
-	const outcome = await readGate();
-	if (outcome !== undefined) {
-		await writeFile(`${gate}.started`, prompt);
-		while ((await readGate()) !== undefined) await pause(50, undefined, { signal });
+	let outcome = await readGate(gate);
+	if (outcome === undefined) {
+		gate += ".retry";
+		outcome = await readGate(gate);
 	}
-	return outcome === "fail"
-		? fauxAssistantMessage("", { stopReason: "error", errorMessage: "The demo summarizer refused the request." })
-		: fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.");
+	if (outcome !== undefined) {
+		await writeFile(`${gate}.started`, JSON.stringify({ prompt, maxTokens: options?.maxTokens, reasoning: options?.reasoning }));
+		while ((await readGate(gate)) !== undefined) await pause(50, undefined, { signal: options?.signal });
+	}
+	if (outcome === "fail") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "The demo summarizer refused the request." });
+	if (outcome === "length") return fauxAssistantMessage("An unfinished summary", { stopReason: "length" });
+	return fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.");
 }
 
 /** A scripted stand-in model so the app works before any provider is connected. `/bash` and `/read` make it call tools. */
 function demoProvider(): Provider {
 	// Tests add a second demo model that cannot see images, to check what such a model is given.
 	const textOnly = process.env.PI2_DEMO_TEXT_MODEL === "1" ? [{ id: "demo-text", name: "Demo model (text only)", input: ["text" as const] }] : [];
-	const models = [{ id: DEMO_MODEL, name: "Demo model (scripted)" }, ...textOnly];
+	const gate = process.env.PI2_DEMO_COMPACTION_GATE;
+	const models = [{ id: DEMO_MODEL, name: "Demo model (scripted)", ...(gate === undefined ? {} : { reasoning: true, maxTokens: 32_000 }) }, ...textOnly];
 	// It types at a readable pace. Tests set PI2_DEMO_TOKENS_PER_SECOND to speed it up, since most of their time would
 	// otherwise go to waiting on it; a message that starts with "/slow " is still answered at the readable pace, for the
 	// tests that need an answer to be on its way (to stop it, queue behind it or kill the engine in the middle of it).
@@ -378,14 +384,13 @@ function demoProvider(): Provider {
 	const speed = Number(process.env.PI2_DEMO_TOKENS_PER_SECOND);
 	const slow = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: READABLE });
 	const fast = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: Number.isFinite(speed) && speed > 0 ? speed : READABLE });
-	const gate = process.env.PI2_DEMO_COMPACTION_GATE;
-	const step = (request: { messages: readonly unknown[] }, options?: { signal?: AbortSignal }) => {
+	const step = (request: { messages: readonly unknown[] }, options?: SimpleStreamOptions) => {
 		const last = demoLast(request.messages);
 		// A long conversation can be compacted; don't echo the whole source back.
 		const summaryPrompt = demoPrompt(last);
 		if (summaryPrompt.startsWith("<conversation>\n")) return gate === undefined
 			? fauxAssistantMessage("The demo model's summary: the conversation went on as it shows.")
-			: demoSummary(gate, summaryPrompt, options?.signal);
+			: demoSummary(gate, summaryPrompt, options);
 		const work = demoWork(request.messages);
 		if (work !== undefined && (last?.role === "user" || last?.role === "toolResult")) {
 			if (work.done >= work.steps) return fauxAssistantMessage(`Done: I ran it ${work.done} time${work.done === 1 ? "" : "s"}.`);
@@ -407,6 +412,7 @@ function demoProvider(): Provider {
 		const woken = typed.startsWith("[pi² woke you") ? typed.split("\n").find((line) => line.startsWith("/"))?.trim() : undefined;
 		const prompt = woken ?? (typed.startsWith("/slow ") ? typed.slice(6).trim() : typed);
 		if (gate !== undefined && prompt.startsWith("/compaction-history ")) return fauxAssistantMessage("History recorded.");
+		if (gate !== undefined && prompt === "/compaction-overflow") return fauxAssistantMessage("", { stopReason: "error", errorMessage: "The input exceeds the context window." });
 		if (prompt.startsWith("/bash ")) {
 			return fauxAssistantMessage([fauxText("Running that command."), fauxToolCall("bash", { command: prompt.slice(6) })], { stopReason: "toolUse" });
 		}

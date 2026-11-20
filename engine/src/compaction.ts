@@ -1,4 +1,5 @@
 // pi²'s policy, tool, and authoritative checkpoint for pi durable's compaction task (#418).
+import { type Api, getSupportedThinkingLevels, type Model, type ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { type CompactionPolicy, type ConversationId, defineTool, type EntryRecord, InboxDoc, LiveDoc, type SubmissionId, type ToolControl, type Tx } from "@earendil-works/pi-durable";
 import { obj, str } from "@earendil-works/pi-schema";
 import { USER_ENTRY_KIND } from "./attachments.ts";
@@ -26,6 +27,24 @@ export function earlyCompaction(size: number | null | undefined, window: number,
 		// A short target cannot work with the harness's normal 20,000-token tail.
 		keepRecentTokens: Math.min(policy.keepRecentTokens, Math.floor(size / 4)),
 	};
+}
+
+// Room for open work in a long conversation, independent of when we decide to cut it.
+export const SUMMARY_TOKENS = 24_000;
+
+export function summaryThinking(model: Model<Api>, learned?: ThinkingLevelMap) {
+	return getSupportedThinkingLevels(learned === undefined ? model : { ...model, thinkingLevelMap: learned })[0] ?? "off";
+}
+
+type CompactionSize = { tokens: number; head: number | null };
+export function automaticCompactionReady(failure: (CompactionSize & { at: number }) | undefined, current: CompactionSize, now: number) {
+	return failure === undefined || failure.head !== current.head ||
+		(now - failure.at >= 10 * 60_000 && current.tokens >= failure.tokens + Math.ceil(failure.tokens / 10));
+}
+
+export function compactionErrorText(error: string) {
+	const detail = error.length > 250 ? `${error.slice(0, 249)}…` : error;
+	return `Couldn’t summarise earlier messages: ${detail}\nWhen the conversation is idle, try again with a note on what matters. If the model requires thinking, try one with a lower minimum. Or start a new conversation.`;
 }
 
 export const RETENTION_INSTRUCTIONS =

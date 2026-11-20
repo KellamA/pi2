@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createFauxCore } from "@earendil-works/pi-ai/providers/faux";
+import { automaticCompactionReady, SUMMARY_TOKENS, summaryThinking } from "../src/compaction.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-compact-"));
@@ -22,11 +24,28 @@ const filler = (size: number) => `/compaction-history ${"keep context long enoug
 const file = (name: string) => join(work, name);
 const command = (name: string) => `touch '${file(`${name}.started`)}'; while [ ! -e '${file(name)}' ]; do sleep 0.1; done; printf '%s\\n' '${name} finished'`;
 const release = (name: string) => writeFileSync(file(name), "");
-const armSummary = (mode = "succeed") => { rmSync(`${gate}.started`, { force: true }); writeFileSync(gate, mode); };
-const releaseSummary = () => rmSync(gate);
+const armSummary = (mode = "succeed", second?: string) => {
+	rmSync(`${gate}.started`, { force: true });
+	rmSync(`${gate}.retry.started`, { force: true });
+	if (second !== undefined) writeFileSync(`${gate}.retry`, second);
+	writeFileSync(gate, mode);
+};
+const releaseSummary = (retry = false) => rmSync(retry ? `${gate}.retry` : gate);
+const summaryRequest = (retry = false): { prompt: string; maxTokens: number; reasoning?: string } =>
+	JSON.parse(readFileSync(`${retry ? `${gate}.retry` : gate}.started`, "utf8"));
 
 let passed = false;
 try {
+	const { models: [reasoning] } = createFauxCore({ models: [{ id: "reasoning", reasoning: true }], provider: "stand-in" });
+	assert.equal(summaryThinking(reasoning), "off");
+	assert.equal(summaryThinking(reasoning, { off: null, minimal: null }), "low");
+	const failed = { head: 1, tokens: 201, at: 10_000 };
+	const afterTenMinutes = failed.at + 600_000;
+	assert.equal(automaticCompactionReady(failed, { head: 1, tokens: 222 }, afterTenMinutes - 1), false);
+	assert.equal(automaticCompactionReady(failed, { head: 1, tokens: 221 }, afterTenMinutes), false);
+	assert.equal(automaticCompactionReady(failed, { head: 1, tokens: 222 }, afterTenMinutes), true);
+	assert.equal(automaticCompactionReady(failed, { head: 2, tokens: 201 }, failed.at), true, "a fresh context is not the failed one");
+
 	const client = await EngineClient.connect(engine, home);
 	await client.until("initial settings and agents", () => client.events.compactionSettings && client.events.agents);
 	const items = (id: number): any[] => client.conversations.get(id)?.items ?? [];
@@ -54,7 +73,7 @@ try {
 		return id as string;
 	};
 	const worker = await saveAgent({ name: "Compaction Worker", access: "full", cwd: work });
-	const lead = await saveAgent({ name: "Compaction Lead", access: "full", cwd: work, delegates: [worker] });
+	const lead = await saveAgent({ name: "Compaction Lead", access: "full", cwd: work, delegates: [worker], thinkingLevel: "high" });
 	const id = await open(lead);
 	assert.deepEqual(await client.call("settings.getCompaction"), { defaultCompactionTokens: null });
 	assert.equal(client.events.agents.builtInTools.find((entry: any) => entry.key === "compact").offByDefault, true);
@@ -101,17 +120,77 @@ try {
 	await saveAgent({ id: worker, name: "Compaction Worker", compactionTokens: 2_000 });
 	const individual = await open(worker);
 	await answer(individual, "Earlier work for the per-agent threshold.");
-	armSummary("fail");
+	armSummary("length", "length");
 	await submit(individual, filler(500));
 	await client.until("size summary reaches the model", () => existsSync(`${gate}.started`));
 	const steer = await submit(individual, "STEER AFTER SIZE FAILURE", "steer");
 	releaseSummary();
+	await client.until("the shorter size summary reaches the model", () => existsSync(`${gate}.retry.started`));
+	releaseSummary(true);
 	await client.until("the steer answered despite the failed early summary", () => state(individual)?.busy === false && items(individual).at(-1)?.text?.includes("STEER AFTER SIZE FAILURE"));
 	assert.equal((await client.call("submission.get", { id: individual, submissionId: steer.submissionId })).submission.status, "done");
 	assert.equal(markers(individual).length, 0);
-	assert.match(state(individual).compactionError, /refused/);
+	assert.match(state(individual).compactionError, /summary is incomplete.*\n.*note on what matters.*start a new conversation/);
+	const errorId = state(individual).compactionErrorId;
+	await client.call("conversation.dismissCompactionError", { id: individual, errorId: errorId - 1 });
+	await client.call("conversation.dismissCompactionError", { id: individual, errorId });
+	await client.until("the warning is dismissed", () => state(individual)?.compactionError === null);
+	armSummary();
+	await submit(individual, "NEXT TURN IN COOLDOWN");
+	await client.until("answer or unexpected repeat summary", () => existsSync(`${gate}.started`) || (state(individual)?.busy === false && items(individual).at(-1)?.kind === "assistant" && items(individual).at(-1)?.text?.includes("NEXT TURN IN COOLDOWN")));
+	assert.equal(existsSync(`${gate}.started`), false, "dismissing the banner does not let automatic attempts through");
+	assert.equal(markers(individual).length, 0);
+	// A separate long history makes a normal-tail manual cut eligible even while the early threshold is cooling down.
+	releaseSummary();
+	await answer(individual, filler(2_800));
+	armSummary();
+	await client.call("conversation.compact", { id: individual });
+	await client.until("manual summary bypasses cooldown", () => existsSync(`${gate}.started`));
+	releaseSummary();
+	await client.until("a manual marker", () => markers(individual)[0]?.details.compaction.trigger === "person");
 	await saveAgent({ id: worker, name: "Compaction Worker", compactionTokens: null });
-	console.log("ok  default, override, and per-agent earlier threshold; a steer survives a failed early summary");
+	console.log("ok  an early summary fails twice; a steer survives; cooldown survives dismissal and manual compaction bypasses it");
+
+	const overflowing = await open(lead);
+	await answer(overflowing, "Earlier context before the provider reports overflow.");
+	await answer(overflowing, filler(2_800));
+	armSummary("fail");
+	await submit(overflowing, "/compaction-overflow");
+	await client.until("summary after provider overflow", () => existsSync(`${gate}.started`));
+	releaseSummary();
+	await client.until("first overflow run fails", () => state(overflowing)?.busy === false && state(overflowing)?.compactionError?.includes("refused"));
+	const overflowWarning = state(overflowing).compactionErrorId;
+	armSummary();
+	const nextOverflow = await submit(overflowing, "/compaction-overflow");
+	await client.until("second overflow ends or reaches the summary again", () => existsSync(`${gate}.started`) ||
+		(state(overflowing)?.busy === false && items(overflowing).at(-1)?.kind === "assistant" && items(overflowing).filter((item) => item.kind === "user" && item.text === "/compaction-overflow").length === 2));
+	assert.equal(existsSync(`${gate}.started`), false, "provider overflow cannot bypass the cooldown");
+	assert.equal(state(overflowing).compactionErrorId, overflowWarning);
+	assert.notEqual((await client.call("submission.get", { id: overflowing, submissionId: nextOverflow.submissionId })).submission.status, "done");
+	releaseSummary();
+	console.log("ok  a provider-reported overflow cannot bypass the automatic cooldown");
+
+	const beforeLength = items(id).slice();
+	armSummary("length", "length");
+	await client.call("conversation.compact", { id, instructions: "Keep UNFINISHED-418." });
+	await client.until("length-limited summary reaches the model", () => existsSync(`${gate}.started`));
+	const first = summaryRequest();
+	assert.equal(first.maxTokens, SUMMARY_TOKENS);
+	assert.equal(first.reasoning, undefined, "the high-thinking conversation gets a summary with thinking off");
+	releaseSummary();
+	await client.until("shorter retry after length stop", () => existsSync(`${gate}.retry.started`));
+	const second = summaryRequest(true);
+	assert.equal(second.maxTokens, first.maxTokens);
+	assert.equal(second.reasoning, first.reasoning);
+	assert.ok(second.prompt.startsWith(first.prompt));
+	assert.match(second.prompt, /at most 12000 tokens.*open requests, decisions, standing instructions, blockers, and what is running/);
+	assert.doesNotMatch(second.prompt, /An unfinished summary/);
+	releaseSummary(true);
+	await client.until("length failure", () => state(id)?.compacting === false && state(id)?.compactionError?.includes("summary is incomplete"));
+	assert.deepEqual(items(id), beforeLength);
+	assert.equal(markers(id).length, 0);
+	assert.match((await answer(id, "/compaction-context")).text, /UNFINISHED-418/, "double length failure keeps the old context");
+	console.log("ok  two length stops leave no summary; the retry has the same source and a shorter target");
 
 	// Exercise the idle (menu) boundary with a failure. No new history beyond the input and answer; no hidden head change.
 	const before = items(id).slice();
@@ -127,9 +206,16 @@ try {
 	assert.equal(markers(id).length, 0);
 	assert.match(state(id).compactionError, /refused/);
 	assert.match((await answer(id, "/compaction-context")).text, /UNFINISHED-418/, "no hidden change to model context on failure");
+	armSummary("length", "succeed");
 	await client.call("conversation.compact", { id });
-	await client.until("successful menu summary", () => markers(id)[0]?.details.compaction.trigger === "person");
-	console.log("ok  a manual failure changes no history and releases queued input; the menu can then summarize");
+	await client.until("first request of successful menu summary", () => existsSync(`${gate}.started`));
+	releaseSummary();
+	await client.until("successful shorter request reaches the model", () => existsSync(`${gate}.retry.started`));
+	assert.equal(markers(id).length, 0, "nothing is placed after the first stop for length");
+	releaseSummary(true);
+	await client.until("successful menu summary", () => markers(id)[0]?.details.compaction.trigger === "person" && state(id)?.compactionError === null);
+	assert.equal(markers(id).length, 1);
+	console.log("ok  failure releases queued input; a length retry succeeds and clears the warning");
 
 	// At the agent boundary, keep durable work that the demo summarizer deliberately ignores.
 	await saveAgent({ id: lead, name: "Compaction Lead", toolsOn: ["compact"] });
@@ -142,8 +228,8 @@ try {
 	await submit(id, tool("compact", { note: "Verbatim rule: keep KNOWN-418." }));
 	await client.until("agent summary reaches the model", () => existsSync(`${gate}.started`));
 	assert.ok(items(id).some((item) => item.name === "compact" && !item.isError), "compaction is after the tool result");
-	assert.match(readFileSync(`${gate}.started`, "utf8"), /Keep every unfinished request.*Preserve what the person asked/s);
-	assert.match(readFileSync(`${gate}.started`, "utf8"), /Verbatim rule: keep KNOWN-418/);
+	assert.match(summaryRequest().prompt, /Keep every unfinished request.*Preserve what the person asked/s);
+	assert.match(summaryRequest().prompt, /Verbatim rule: keep KNOWN-418/);
 	const during = await submit(id, "PERSON DURING SUMMARY", "steer");
 	release("watched");
 	await client.until("the wake durably arrived while summarizing", () => client.events.wakes?.items.some((each: any) => each.state === "arrived" && each.kind === "background"));
