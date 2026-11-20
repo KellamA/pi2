@@ -56,8 +56,9 @@ struct TestCopyControl: NSViewRepresentable {
         /// `show` requests answered once the page has drawn the conversation, or after `limit`: the request's folder,
         /// the conversation, and how many drawings the page had made when it was asked.
         private var waiting: [(dir: URL, id: Int, after: Int, until: Date)] = []
-        /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`.
-        private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, until: Date)] = []
+        /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`, and
+        /// whether showing an agent's conversation unfolded a folded board (#553).
+        private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, unfolded: Bool, until: Date)] = []
         /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown, and how long to
         /// wait for an agent's conversation of it named there.
         private var launchProject: ProjectCopyView?
@@ -116,7 +117,7 @@ struct TestCopyControl: NSViewRepresentable {
                 return false
             }
             hubWaiting = hubWaiting.filter { wait in
-                if let drawn = hubDrawn(wait.asked, project: wait.project) {
+                if let drawn = hubDrawn(wait.asked, project: wait.project, unfolded: wait.unfolded) {
                     answer(wait.dir, ["result": drawn])
                 } else if Date() >= wait.until {
                     answer(wait.dir, ["result": "Showing the project, though the hub had not drawn it after \(Int(Self.limit)) seconds"])
@@ -209,15 +210,18 @@ struct TestCopyControl: NSViewRepresentable {
                 case .problem(let why): return ["error": why]
                 }
             }
+            // Showing an agent's conversation unfolds a board folded in the preferences, which is kept there: the answer
+            // says so (#553).
+            let unfolded = conversation != nil && (fold ?? model.hubs.fold(id)) == .boardFolded
             model.showProject(id, tab: view.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: fold)
             if let conversation { model.openAgent(conversation, in: id) }
-            hubWaiting.append((dir, view, id, Date().addingTimeInterval(Self.limit)))
+            hubWaiting.append((dir, view, id, unfolded, Date().addingTimeInterval(Self.limit)))
             return nil
         }
 
         /// What to answer once the hub has drawn the project, with its tab and fold, and the orchestrator's conversation
         /// when its panel shows it; nil until then.
-        private func hubDrawn(_ asked: ProjectCopyView, project: String) -> String? {
+        private func hubDrawn(_ asked: ProjectCopyView, project: String, unfolded: Bool) -> String? {
             let fold = model.hubs.fold(project)
             guard let drawn = HubDrawn.current, drawn.project == project, drawn.tab == model.hubs.tab(project),
                   drawn.fold == fold.shown(narrow: drawn.narrow, agent: drawn.agent != nil),
@@ -238,7 +242,9 @@ struct TestCopyControl: NSViewRepresentable {
                 let summary = model.engine.conversations.first { $0.id == conversation }
                 let who = model.engine.agent(summary?.agentId)?.name ?? "an agent"
                 let title = (summary?.title ?? "").isEmpty ? "" : " “\(summary?.title ?? "")”"
-                return "; the conversation with \(who)\(title) in place of the board"
+                // The board shows, so an unfolded one really is: a window too narrow to hold both panels keeps it folded,
+                // and `words` says so instead.
+                return "; the conversation with \(who)\(title) in place of the board\(unfolded && drawn.fold != .boardFolded ? ", which was unfolded" : "")"
             } ?? (asked.agent.map { "; no conversation of \($0) is in place of the board" } ?? "")
             return "Showing project “\(name)”, \(drawn.tab.title), \(words), drawn\(agent)"
         }
