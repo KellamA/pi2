@@ -37,8 +37,8 @@ struct AwakeSettings: View {
         } footer: {
             // Two paragraphs, so the lid's limit and what agents cannot do with it are each easy to read.
             VStack(alignment: .leading, spacing: 8) {
-                Text("While any conversation is working — or waiting for a provider’s limit or the network to carry on by itself — pi² stops this Mac going to sleep by itself. The display can still sleep, and the Mac is allowed to sleep again a minute after the last run ends. On battery, only with “Also on battery” on.").formFooter()
-                Text("Closing the lid of a Mac with no display attached still puts it to sleep: no app can prevent that; an external display, or an administrator’s “sudo pmset disablesleep”, is what changes it. With the screen locked or the lid closed, agents cannot take pictures of windows or work other apps, so work that checks the screen needs the Mac open and unlocked.").formFooter()
+                Text("While agents work or wait for a limit or the network, pi² stops this Mac sleeping by itself; the display can sleep. It lets go a minute after the last run, on battery only with “Also on battery” on.").formFooter()
+                Text("Closing the lid of a Mac with no display attached still puts it to sleep: no app can prevent that; an external display, or an administrator’s “sudo pmset disablesleep”, can. With the screen locked or the lid closed, agents cannot take pictures of windows or work other apps.").formFooter()
             }
         }
     }

@@ -10,7 +10,8 @@
 // process and end by itself when that process ends, however it ends (a clean stop, `kill -9`, a crash: caffeinate
 // polls the pid, so no code of ours has to run for the assertion to be let go). The engine stops it directly as well:
 // at once on a clean stop and on the setting being turned off, and a minute after the last run ends otherwise, so that
-// a run that ends and another that starts do not flap it.
+// a run that ends and another that starts do not flap it. It also watches the holder itself, so one that ends while the
+// Mac is still to be kept awake is started again, and one that ends with nothing left to hold is not believed in.
 //
 // Only on power, unless the second switch says "Also on battery" (off by default). The power source is read with
 // `pmset -g ps`, which changes nothing, and only while it matters: with "Also on battery" on, power is never read.
@@ -22,6 +23,7 @@
 // cannot take pictures of windows or work other apps.
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { Engine, Feature } from "./features.ts";
 import { runOffThread } from "./offthread.ts";
 
@@ -43,6 +45,15 @@ export type Power = "ac" | "battery";
 export async function readPower(env: NodeJS.ProcessEnv, run: (file: string, args: readonly string[]) => Promise<{ stdout: string }> = runOffThread): Promise<Power> {
 	const forced = env.PI2_AWAKE_POWER;
 	if (forced === "ac" || forced === "battery") return forced;
+	// A test can name a file holding `pmset -g ps`'s words instead, so it can change the power source while the engine
+	// runs and watch being unplugged let the Mac sleep again.
+	if (forced !== undefined) {
+		try {
+			return readFileSync(forced, "utf8").includes("Battery Power") ? "battery" : "ac";
+		} catch {
+			return "ac";
+		}
+	}
 	const { stdout } = await run("/usr/bin/pmset", ["-g", "ps"]).catch(() => ({ stdout: "" }));
 	return stdout.includes("Battery Power") ? "battery" : "ac";
 }
@@ -76,7 +87,7 @@ function setting(name: string, fallback: number): number {
 /** How long the assertion is held after the last run ends, so a run that ends and another that starts do not flap it. */
 export const GRACE_MS = setting("PI2_AWAKE_GRACE_MS", 60_000);
 /** How often the power source is looked at while work goes on, so being unplugged lets the Mac sleep again. */
-const POWER_POLL_MS = 30_000;
+const POWER_POLL_MS = setting("PI2_AWAKE_POLL_MS", 30_000);
 
 /** The program that holds the assertion; a stand-in can be named for tests. */
 const PROGRAM = process.env.PI2_AWAKE_PROGRAM ?? "/usr/bin/caffeinate";
@@ -92,6 +103,8 @@ export const keepAwake: Feature = (_host, engine) => {
 	let letGoAt: number | undefined;
 	let graceTimer: ReturnType<typeof setTimeout> | undefined;
 	let powerTimer: ReturnType<typeof setInterval> | undefined;
+	/** When the holder was last started, so one that ends at once is not started over and over. */
+	let startedAt = 0;
 	const event = () => ({ event: "awake", keep: settings.keep, battery: settings.battery, holding });
 	const conversationsWorking = (): number => {
 		const waiting = engine.waitingOnThePerson();
@@ -109,6 +122,9 @@ export const keepAwake: Feature = (_host, engine) => {
 	/** Whether the power source matters now: it does only with the setting on, work going and battery not allowed. */
 	const powerMatters = (conversations: number): boolean => settings.keep && conversations > 0 && !settings.battery;
 
+	/** Whether the Mac is to be kept awake now, as the decision in `keepingAwake` puts it. */
+	const wanted = (): boolean => settings.keep && conversationsWorking() > 0 && (settings.battery || power !== "battery");
+
 	const stopHolding = (why: string): void => {
 		clearTimeout(graceTimer);
 		graceTimer = undefined;
@@ -120,6 +136,43 @@ export const keepAwake: Feature = (_host, engine) => {
 		if (!holding) return;
 		holding = false;
 		engine.log(`letting this Mac sleep again: ${why}`);
+		engine.broadcast(event());
+	};
+
+	/** Start a holder, and watch it: one that ends by itself is noticed rather than believed for ever. */
+	const startHolding = (conversations: number): void => {
+		holding = true;
+		startedAt = Date.now();
+		const child = spawn(PROGRAM, ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+		holder = child;
+		// A program that could not be started never held anything: say so, and let the next change try again rather than
+		// starting it over and over.
+		child.once("error", (error) => {
+			engine.log(`could not keep this Mac awake: ${error.message}`);
+			if (holder !== child) return;
+			holder = undefined;
+			if (!holding) return;
+			holding = false;
+			engine.broadcast(event());
+		});
+		// A holder that ends by itself — killed, or a caffeinate that gave up — is one nothing holds any more: hold it
+		// again while it is still wanted, and only then, so the app and `engine.log` never say it is held while it is not.
+		child.once("exit", (code, signal) => {
+			if (holder !== child) return;
+			holder = undefined;
+			if (!holding) return;
+			const why = signal ?? `code ${code}`;
+			if (wanted() && Date.now() - startedAt > 1_000) {
+				engine.log(`the program that keeps this Mac awake ended (${why}); holding it again`);
+				holding = false;
+				decide();
+				return;
+			}
+			holding = false;
+			engine.log(`could not keep this Mac awake: the program ended (${why})`);
+			engine.broadcast(event());
+		});
+		engine.log(`keeping this Mac awake: ${conversations} conversation${conversations === 1 ? "" : "s"} working${settings.battery ? " (battery allowed)" : ""}`);
 		engine.broadcast(event());
 	};
 
@@ -139,6 +192,10 @@ export const keepAwake: Feature = (_host, engine) => {
 		} else if (powerTimer !== undefined) {
 			clearInterval(powerTimer);
 			powerTimer = undefined;
+			// Read again when it next matters, rather than trusting a reading from before the Mac was unplugged or plugged
+			// in while nothing worked: the first run after that would otherwise hold for half a minute on battery, or not
+			// hold for half a minute on power.
+			power = undefined;
 		}
 		if (settings.keep && conversations > 0 && (settings.battery || power !== "battery")) {
 			// Work is going on: hold it now, and take back any grace that had begun.
@@ -146,11 +203,7 @@ export const keepAwake: Feature = (_host, engine) => {
 			graceTimer = undefined;
 			letGoAt = undefined;
 			if (holding) return;
-			holding = true;
-			holder = spawn(PROGRAM, ["-i", "-w", String(process.pid)], { stdio: "ignore" });
-			holder.once("error", (error) => engine.log(`could not keep this Mac awake: ${error.message}`));
-			engine.log(`keeping this Mac awake: ${conversations} conversation${conversations === 1 ? "" : "s"} working${settings.battery ? " (battery allowed)" : ""}`);
-			engine.broadcast(event());
+			startHolding(conversations);
 			return;
 		}
 		if (!holding) return;
@@ -166,7 +219,7 @@ export const keepAwake: Feature = (_host, engine) => {
 				graceTimer = undefined;
 				letGoAt = undefined;
 				// Look again, so work that came back within the grace keeps the holder it already has.
-				if (settings.keep && conversationsWorking() > 0 && (settings.battery || power !== "battery")) return;
+				if (wanted()) return;
 				stopHolding("no conversation is working any more");
 			}, GRACE_MS);
 			graceTimer.unref();
@@ -199,6 +252,12 @@ export const keepAwake: Feature = (_host, engine) => {
 			decide();
 		},
 		inboxChanged: () => decide(),
-		stopping: async () => stopHolding("the engine is stopping"),
+		stopping: async () => {
+			if (powerTimer !== undefined) {
+				clearInterval(powerTimer);
+				powerTimer = undefined;
+			}
+			stopHolding("the engine is stopping");
+		},
 	};
 };
