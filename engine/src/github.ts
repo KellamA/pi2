@@ -92,9 +92,11 @@ export type PullRequest = {
 	state: "open" | "merged" | "closed";
 	draft: boolean;
 	checks: "passing" | "failing" | "pending" | "none";
+	/** The checks of the roll-up that failed, by name, each with its page on GitHub: empty when none fail (#573). */
+	failingChecks: { name: string; url: string }[];
 	mergeable: "yes" | "no" | "unknown";
 	/** What reviewing agents found: the comments pi² posted for `work` `review`. */
-	findings: { agentName: string; verdict: "approve" | "changes" | "comment"; at: number; url: string }[];
+	findings: { agentName: string; verdict: "approve" | "changes" | "comment"; at: number; url: string; text: string }[];
 	/** The conversation that opened it through `work`, from `openedBy`. */
 	openedBy: { conversationId: number } | null;
 	/** The work item it fixes, from "Fixes #N" in its text. */
@@ -213,7 +215,9 @@ type GhIssue = {
 	closedAt?: string | null;
 	comments?: GhComment[];
 };
-type GhCheck = { status?: string; conclusion?: string | null; state?: string };
+// A check of the roll-up is a check run (`name`, `status`, `conclusion`, `detailsUrl`) or a commit's status
+// (`context`, `state`, `targetUrl`); the name and page below are whichever of the two it is.
+type GhCheck = { status?: string; conclusion?: string | null; state?: string; name?: string; context?: string; detailsUrl?: string; targetUrl?: string };
 type GhPull = {
 	number: number;
 	title: string;
@@ -397,16 +401,39 @@ export function issueItem(issue: GhIssue, intents: Record<string, Intent>): Work
 	};
 }
 
+/** Whether one check of the roll-up has run and failed, as GitHub says it in either of the two shapes. */
+function failed(check: GhCheck): boolean {
+	const status = (check.status ?? (check.state === "PENDING" || check.state === "EXPECTED" ? "IN_PROGRESS" : "COMPLETED")).toUpperCase();
+	const conclusion = (check.conclusion ?? check.state ?? "").toUpperCase();
+	return status === "COMPLETED" && ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "ERROR", "STARTUP_FAILURE"].includes(conclusion);
+}
+
 function checksOf(rollup: GhCheck[] | null | undefined): PullRequest["checks"] {
+	if (failingChecksOf(rollup).length > 0) return "failing";
 	if (rollup == null || rollup.length === 0) return "none";
 	let pending = false;
 	for (const check of rollup) {
 		const status = (check.status ?? (check.state === "PENDING" || check.state === "EXPECTED" ? "IN_PROGRESS" : "COMPLETED")).toUpperCase();
-		const conclusion = (check.conclusion ?? check.state ?? "").toUpperCase();
-		if (status !== "COMPLETED") pending = true;
-		else if (["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "ERROR", "STARTUP_FAILURE"].includes(conclusion)) return "failing";
+		if (status !== "COMPLETED") {
+			pending = true;
+			break;
+		}
 	}
 	return pending ? "pending" : "passing";
+}
+
+/** The checks of the roll-up that failed, by name, each with its page on GitHub (#573): what the opened pull request lists. */
+function failingChecksOf(rollup: GhCheck[] | null | undefined): PullRequest["failingChecks"] {
+	if (rollup == null) return [];
+	const failing: PullRequest["failingChecks"] = [];
+	for (const check of rollup) {
+		if (!failed(check)) continue;
+		const name = String(check.name ?? check.context ?? "").trim();
+		const url = String(check.detailsUrl ?? check.targetUrl ?? "").trim();
+		// A check GitHub leaves unnamed is still a failure the person can see, with the pull request for its page.
+		failing.push({ name: name === "" ? "a check" : name, url });
+	}
+	return failing;
 }
 
 /** A pull request as 3.11 has it. */
@@ -424,11 +451,19 @@ export function pullOf(pull: GhPull, intents: Record<string, Intent>, openedBy: 
 		state: pull.state.toUpperCase() === "MERGED" ? "merged" : pull.state.toUpperCase() === "CLOSED" ? "closed" : "open",
 		draft: pull.isDraft === true,
 		checks: checksOf(pull.statusCheckRollup),
+		failingChecks: failingChecksOf(pull.statusCheckRollup),
 		mergeable: pull.mergeable === "MERGEABLE" ? "yes" : pull.mergeable === "CONFLICTING" ? "no" : "unknown",
 		findings: (pull.comments ?? [])
 			.map((comment) => parseComment(comment, intents))
 			.filter((comment) => comment.role === "review" && comment.intent !== undefined)
-			.map((comment) => ({ agentName: String(comment.intent!.args.agentName ?? "an agent"), verdict: comment.intent!.args.verdict as Verdict, at: comment.at, url: comment.url })),
+			// The finding's own words are the comment pi² posted without the verdict line it began with (#573).
+			.map((comment) => ({
+				agentName: String(comment.intent!.args.agentName ?? "an agent"),
+				verdict: comment.intent!.args.verdict as Verdict,
+				at: comment.at,
+				url: comment.url,
+				text: comment.text.replace(/^\*\*(Approved|Changes requested|Comment)\.\*\*\s*/, ""),
+			})),
 		openedBy: opened === undefined ? null : { conversationId: opened.conversationId },
 		work: fixes === null ? null : Number(fixes[1]),
 	};
@@ -1226,6 +1261,14 @@ export async function setRepositoryIn(tx: Tx, projectId: string, repository: Rep
 	project.updatedAt = Date.now();
 }
 
+/** The project's writes whose outcome pi² could not tell, oldest first (3.11): what the `github` event carries and `github.unknown` answers (#573). */
+function unknownWrites(project: Project): { intent: string; summary: string; at: number }[] {
+	return Object.values(intentsOf(project))
+		.filter((intent) => intent.state === "unknown")
+		.sort((a, b) => a.at - b.at)
+		.map((intent) => ({ intent: intent.id, summary: String(intent.args.summary ?? intent.action), at: intent.at }));
+}
+
 // ---- The feature
 
 type Watch = { projectId: string; tabs: string[] };
@@ -1251,10 +1294,7 @@ export const github: Feature = (host, running) => {
 				repository: copy(project.repository),
 				issues: listing?.issues ?? [],
 				pulls: listing?.pulls ?? [],
-				unknown: Object.values(intentsOf(project))
-					.filter((intent) => intent.state === "unknown")
-					.sort((a, b) => a.at - b.at)
-					.map((intent) => ({ intent: intent.id, summary: String(intent.args.summary ?? intent.action), at: intent.at })),
+				unknown: unknownWrites(project),
 			};
 		}
 		return { event: "github", projects };
@@ -1450,6 +1490,12 @@ export const github: Feature = (host, running) => {
 				const bytes = Buffer.from(diff, "utf8");
 				if (bytes.length <= DIFF_BYTES) return { diff };
 				return { diff: `${bytes.subarray(0, DIFF_BYTES).toString("utf8")}\n[pi² cut the diff here: it is longer than 2 MB. gh pr diff ${n} --repo ${repoName(repositoryOf(project))} shows all of it.]` };
+			},
+			/** `{ projectId }`: the writes whose outcome pi² could not tell, with the id each is settled by (#573). */
+			"github.unknown": async (params) => {
+				requirePreview();
+				await readMirror();
+				return { unknown: unknownWrites(attached(params.projectId)) };
 			},
 			"github.settle": async (params) => {
 				requirePreview();

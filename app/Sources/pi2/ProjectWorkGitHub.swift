@@ -3,15 +3,24 @@ import SwiftUI
 /// A pull request of the attached repository, as the `github` event sends it (docs/projects.md, 3.11): its branches, its
 /// checks as one state, what reviewing agents found, and whether GitHub would merge it.
 struct GitHubPull: Identifiable, Equatable {
-    /// One finding a reviewing agent posted through `work` `review`. The event carries the verdict and who gave it, not
-    /// the words of the finding, which are read on GitHub.
+    /// One finding a reviewing agent posted through `work` `review`: the verdict, who gave it and when, and the
+    /// finding's own words, the summary the reviewing agent wrote (#573).
     struct Finding: Equatable, Identifiable {
         let agentName: String
         /// "approve", "changes" or "comment".
         let verdict: String
         let at: Date
         let url: String
+        /// The finding's own words, as the reviewing agent wrote them.
+        let text: String
         var id: String { "\(agentName)|\(at.timeIntervalSince1970)|\(url)" }
+    }
+
+    /// One of the pull request's checks that failed, with its page on GitHub (#573).
+    struct FailingCheck: Equatable, Identifiable {
+        let name: String
+        let url: String
+        var id: String { "\(name)|\(url)" }
     }
 
     let number: Int
@@ -26,6 +35,8 @@ struct GitHubPull: Identifiable, Equatable {
     let draft: Bool
     /// "passing", "failing", "pending" or "none".
     let checks: String
+    /// The checks that failed, each with its page on GitHub; empty when none fail (#573).
+    let failingChecks: [FailingCheck]
     /// "yes", "no" or "unknown".
     let mergeable: String
     let findings: [Finding]
@@ -49,6 +60,10 @@ struct GitHubPull: Identifiable, Equatable {
         state = value["state"]?.stringValue ?? "open"
         self.draft = draft
         checks = value["checks"]?.stringValue ?? "none"
+        failingChecks = (value["failingChecks"]?.arrayValue ?? []).compactMap { check in
+            guard let name = check["name"]?.stringValue else { return nil }
+            return FailingCheck(name: name, url: check["url"]?.stringValue ?? "")
+        }
         mergeable = value["mergeable"]?.stringValue ?? "unknown"
         findings = (value["findings"]?.arrayValue ?? []).compactMap { finding in
             guard let agentName = finding["agentName"]?.stringValue else { return nil }
@@ -58,7 +73,8 @@ struct GitHubPull: Identifiable, Equatable {
                 agentName: agentName,
                 verdict: finding["verdict"]?.stringValue ?? "comment",
                 at: Date(timeIntervalSince1970: at / 1000),
-                url: finding["url"]?.stringValue ?? ""
+                url: finding["url"]?.stringValue ?? "",
+                text: finding["text"]?.stringValue ?? ""
             )
         }
         openedBy = value["openedBy"]?["conversationId"]?.intValue
@@ -77,11 +93,12 @@ struct GitHubPull: Identifiable, Equatable {
         }
     }
 
-    /// "Checks passing", "Checks failing", "Checks running", "No checks": the pull request's checks as one state.
+    /// "2 checks failing", "1 check failing", "Checks passing", "Checks running", "No checks": the pull request's
+    /// checks, the failing ones counted (#573).
     var checksWords: String {
         switch checks {
         case "passing": "Checks passing"
-        case "failing": "Checks failing"
+        case "failing": "\(failingChecks.count) \(failingChecks.count == 1 ? "check" : "checks") failing"
         case "pending": "Checks running"
         default: "No checks"
         }
@@ -169,6 +186,8 @@ struct ProjectWorkGitHub: View {
     @State private var draftText = ""
     @State private var draftBase: WorkPiece?
     @State private var noteText = ""
+    /// The findings whose words are shown in full, by the finding's id (#573).
+    @State private var unfoldedFindings: Set<String> = []
     /// What the person asked for and the engine has not answered yet: while one of these is on its way, nothing else in
     /// the tab is sent, so a second click while the first is on its way writes nothing twice.
     @State private var working: String?
@@ -636,12 +655,7 @@ struct ProjectWorkGitHub: View {
                             .foregroundStyle(Theme.tx2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if pull.checks == "failing" {
-                        Text("Its checks are failing. GitHub shows which of them under the pull request, and pi² only knows that they failed.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.tx2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    failingChecksList(pull)
                     if pull.mergeable == "no" {
                         Text("GitHub says it conflicts with \(pull.base), so it cannot be merged as it is.")
                             .font(.system(size: 12))
@@ -673,7 +687,41 @@ struct ProjectWorkGitHub: View {
         }
     }
 
-    /// What reviewing agents found: each verdict, who gave it and when. The words of a finding are on GitHub.
+    /// The pull request's checks that failed, each its name opening its page on GitHub in the browser (#573). The
+    /// roll-up once said only that some had failed, without which.
+    @ViewBuilder
+    private func failingChecksList(_ pull: GitHubPull) -> some View {
+        if pull.checks == "failing" {
+            if pull.failingChecks.isEmpty {
+                Text("Its checks are failing. GitHub shows which of them under the pull request, and pi² only knows that they failed.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.tx2)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("\(pull.failingChecks.count) \(pull.failingChecks.count == 1 ? "check" : "checks") failing")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.tx3)
+                    ForEach(pull.failingChecks) { check in
+                        Button {
+                            if let url = URL(string: check.url) { NSWorkspace.shared.open(url) }
+                        } label: {
+                            Label(check.name, systemImage: "xmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.bad)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(check.url.isEmpty)
+                        .help(check.url.isEmpty ? "This check has no page of its own" : "Open \(check.name) on GitHub")
+                        .accessibilityLabel("Failing check \(check.name)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// What reviewing agents found: each verdict, who gave it and when, with its words under the verdict (#573).
     private func findings(_ pull: GitHubPull) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("What reviewing agents found").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.tx3)
@@ -683,18 +731,43 @@ struct ProjectWorkGitHub: View {
                     .foregroundStyle(Theme.tx3)
             }
             ForEach(pull.findings.sorted { $0.at > $1.at }) { finding in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(capitalised(GitHubPull.verdictWords(finding.verdict)))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(finding.verdict == "approve" ? Theme.ok : finding.verdict == "changes" ? Theme.warn : Theme.tx2)
-                    Text(finding.agentName)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Theme.tx)
-                    Text("·").foregroundStyle(Theme.tx3)
-                    Text(LimitsFormat.ago(finding.at, now: Date()))
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.tx3)
-                    Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(capitalised(GitHubPull.verdictWords(finding.verdict)))
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(finding.verdict == "approve" ? Theme.ok : finding.verdict == "changes" ? Theme.warn : Theme.tx2)
+                        Text(finding.agentName)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Theme.tx)
+                        Text("·").foregroundStyle(Theme.tx3)
+                        Text(LimitsFormat.ago(finding.at, now: Date()))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.tx3)
+                        Spacer(minLength: 0)
+                    }
+                    if !finding.text.isEmpty {
+                        Text(finding.text)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Theme.tx)
+                            .textSelection(.enabled)
+                            // At most a few lines of it; the rest is one click away.
+                            .lineLimit(unfoldedFindings.contains(finding.id) ? nil : 3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if finding.text.count > 120 || finding.text.contains("\n") {
+                            Button(unfoldedFindings.contains(finding.id) ? "Show Less" : "Show All") {
+                                if unfoldedFindings.contains(finding.id) {
+                                    unfoldedFindings.remove(finding.id)
+                                } else {
+                                    unfoldedFindings.insert(finding.id)
+                                }
+                            }
+                            .buttonStyle(.piGhost)
+                            .controlSize(.small)
+                            .accessibilityLabel(unfoldedFindings.contains(finding.id)
+                                ? "Show less of the finding \(finding.agentName) posted"
+                                : "Show all of the finding \(finding.agentName) posted")
+                        }
+                    }
                 }
             }
         }

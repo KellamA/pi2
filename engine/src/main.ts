@@ -63,6 +63,7 @@ import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { subChatUsage } from "./subchatusage.ts";
 import { messageSent } from "./heed.ts";
+import { preparedTool } from "./stringargs.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim } from "./needs.ts";
@@ -423,12 +424,17 @@ const harness = await Harness.open(
 		models: noticingRefusals(retryThinking(providers, promptCacheLifetimes(providers.models), engine.providersChanged)),
 		registry,
 		conversationAgent: async (agent, id, read, context) => {
+			// An argument sent as a JSON string where its tool's schema says an array or an object is read as the value it
+			// encodes (#572, src/stringargs.ts), for every tool alike: this is the one place every resolved tool passes
+			// through, before pi durable checks the call's arguments, and it changes no declaration the model is sent.
+			const readStrings = (tool: (typeof agent.tools)[number]) => preparedTool(id, tool);
+			const withStringsRead = { ...agent, tools: agent.tools.map(readStrings), callable: agent.callable.map(readStrings) };
 			// A sub-chat is one from its first request. Read committed metadata even during crash recovery, before the
 			// library watch has caught up; choosing by anything transient would resend tool definitions mid-conversation.
-			if (!isSubChat((await read.snapshot(Library, context))?.conversations[String(id)])) return agent;
+			if (!isSubChat((await read.snapshot(Library, context))?.conversations[String(id)])) return withStringsRead;
 			const forSubChat = (tool: (typeof agent.tools)[number]) =>
 				tool.name === "bash" ? bashForSubChat(tool) : tool.name === "background" ? backgroundForSubChat(tool) : tool;
-			return { ...agent, tools: agent.tools.map(forSubChat), callable: agent.callable.map(forSubChat) };
+			return { ...withStringsRead, tools: withStringsRead.tools.map(forSubChat), callable: withStringsRead.callable.map(forSubChat) };
 		},
 		// Local engine stops, network outages and provider limits use pi-durable's stored retry sleep (see patch-dependencies.ts).
 		// The features are read at every use, so they are made by then.
