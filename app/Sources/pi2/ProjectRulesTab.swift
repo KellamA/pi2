@@ -162,6 +162,30 @@ struct NeedItem: Decodable, Equatable, Identifiable {
         default: "something that waits for you"
         }
     }
+
+    /// What it asks, in one short line: the menu bar item's list of what waits and its notifications (#481).
+    var short: String {
+        switch kind {
+        case "approval":
+            question ?? ToolCall(callId: "", name: tool ?? "", arguments: arguments ?? .null).summary
+        case "question", "decision":
+            question ?? ""
+        case "reach":
+            change?.summary ?? "Asks for more reach"
+        case "rule":
+            text.map { "Proposes a rule: \($0)" } ?? "Proposes a rule"
+        case "limit":
+            limitShort
+        default:
+            question ?? text ?? named
+        }
+    }
+
+    /// A start held back by the limit, in one line: what it wanted to start, when the need says.
+    private var limitShort: String {
+        let what = [start?.title, start?.task].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ": ")
+        return what.isEmpty ? "A start is held back by the project's limit" : "Held back by the limit: \(what)"
+    }
 }
 
 struct NeedItemsEvent: Decodable {

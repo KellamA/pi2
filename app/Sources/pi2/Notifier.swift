@@ -56,4 +56,23 @@ final class Notifier {
         content.sound = .default
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: item.id, content: content, trigger: nil))
     }
+
+    /// One thing waiting under Needs you, as the `needs` event sends it (docs/projects.md, 3.9): with the projects
+    /// preview on, these are notified in the Inbox's place (#481). What it asks is what the card asks.
+    func needsYou(_ need: NeedItem) {
+        guard enabled, !NSApp.isActive else { return }
+        let content = UNMutableNotificationContent()
+        let who = need.agentName ?? "An agent"
+        content.title = switch need.kind {
+        case "approval": "\(who) needs approval"
+        case "question", "decision": "\(who) has a question"
+        case "reach": "\(who) asks for more reach"
+        case "rule": "\(who) proposes a rule"
+        case "limit": "\(who) is held back by a limit"
+        default: "\(who) needs you"
+        }
+        content.body = need.short
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: need.id, content: content, trigger: nil))
+    }
 }

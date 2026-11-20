@@ -149,10 +149,15 @@ try {
 		}
 		case 'fill': {
 			if (args[0] === '--project' || args[0] === 'project') {
-				const project = await engineCommand(() => ({ method: 'test-copy.fillProject', params: {}, summary: result => result }), 150);
-				console.log(JSON.stringify(project));
-				console.error(`Not seeded: ${project.omitted.join('; ')}.`);
-				break;
+				// A name for one project of that name, or a count of them; neither makes one as before (#481).
+				const given = args[1] ?? '';
+			if (given.includes('\n')) throw new Error('a project name takes one line');
+			const params = given === '' ? {} : /^\d+$/.test(given) ? { count: integer(given, 'count', 8) } : { name: given };
+			const project = await engineCommand(() => ({ method: 'test-copy.fillProject', params, summary: result => result }), 150 * (params.count ?? 1));
+			const made = Array.isArray(project) ? project : [project];
+			for (const one of made) console.log(JSON.stringify(one));
+			console.error(`Not seeded: ${made[0].omitted.join('; ')}.`);
+			break;
 			}
 			const entries = integer(args[0], 'entries', 10_000);
 			summary = await engineCommand(() => ({

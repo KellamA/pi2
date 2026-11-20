@@ -53,7 +53,7 @@ Usage: scripts/test-copy <command> [arguments]
                                    Keep its engine, data, environment and previous --show and --hub unless replaced.
   show <suffix> <conversation>     Show this conversation in the running copy's main window, and wait for it to draw.
   show <suffix> project:<name-or-id>[#<tab-or-agent>] [--hub <fold>]
-  show <suffix> dashboard          Hand a project or Dashboard selection to the running app, which records it.
+  show <suffix> dashboard          Hand a project or Dashboard selection to the running app, which waits for it to draw.
                                    --hub sets PI2_HUB at launch, or the fold for a live request:
                                    both, conversation-folded or board-folded.
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
@@ -68,6 +68,8 @@ Usage: scripts/test-copy <command> [arguments]
                                    Paths go in its data folder, the launcher's scratch folder or app/build.
   fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
   fill <suffix> --project          Turn the preview on and make a demo project. Prints its id and its conversation ids.
+  fill <suffix> --project <name|count>
+                                   Make one demo project with that name, or that many (up to 8) for the Dashboard.
   last-copy <suffix>               Print the last Copy action recorded in this copy's data folder as JSON.
   shot <suffix> <file.png> [--window <title>]
                                    Wait for and capture the copy's largest window (or the one with that title) into a file
@@ -609,7 +611,8 @@ case $cmd in
 			[[ $# == 2 && ($2 == allow || $2 == deny || $2 =~ ^[[:space:]]*\{) ]] ||
 				die "use: scripts/test-copy answer $SUFFIX <conversation> allow|deny or <need-id> '<json answer>'"
 		else
-			(($# == 1)) || die "use: scripts/test-copy fill $SUFFIX <entries> | --project"
+			{ [[ $# == 1 ]] || [[ $# == 2 && ($1 == --project || $1 == project) && -n ${2-} && ${2-} != *$'\n'* && ${2-} != *$'\r'* ]]; } ||
+				die "use: scripts/test-copy fill $SUFFIX <entries> | --project [<name or count>]"
 		fi
 		require_copy
 		require_engine

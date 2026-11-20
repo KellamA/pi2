@@ -390,8 +390,8 @@ struct MenuBarLabel: View {
     let engine: EngineClient
 
     var body: some View {
-        Image(systemName: engine.inbox.isEmpty ? "circle.hexagongrid" : "circle.hexagongrid.fill")
-        if !engine.inbox.isEmpty { Text("\(engine.inbox.count)") }
+        Image(systemName: engine.waitingCount == 0 ? "circle.hexagongrid" : "circle.hexagongrid.fill")
+        if engine.waitingCount > 0 { Text("\(engine.waitingCount)") }
     }
 }
 
@@ -483,7 +483,7 @@ struct RootView: View {
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
                     case .dashboard:
-                        DashboardPlaceholder(model: model)
+                        DashboardView(model: model)
                     case .conversation, nil:
                         WelcomeView(model: model)
                     }
