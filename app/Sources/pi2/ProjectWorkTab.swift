@@ -72,6 +72,11 @@ struct ProjectWork {
             return inState.isEmpty ? nil : (group.state, group.name, inState)
         }
     }
+
+    /// The word the tab shows for a state; a state it does not know reads as the engine sent it.
+    static func name(of state: String) -> String {
+        groups.first { $0.state == state }?.name ?? state
+    }
 }
 
 /// What the project's limit was when the engine refused to start an agent (docs/projects.md, 8.3), with the opaque id of
@@ -92,7 +97,13 @@ struct WorkLimit: Equatable {
     }
 
     /// The limit as the person reads its name.
-    var name: String { kind == "dailySpend" ? "daily spending limit" : "plan share limit" }
+    var name: String {
+        switch kind {
+        case "dailySpend": "daily spending limit"
+        case "planShare": "plan share limit"
+        default: "limit"
+        }
+    }
 }
 
 /// An assignment the project's limit refused: held until the person confirms that one start or leaves it (8.3).
@@ -196,10 +207,10 @@ struct ProjectWorkTab: View {
         VStack(spacing: 0) {
             bar
             if adding { newWorkForm }
-            ScrollView {
-                if work.items.isEmpty {
-                    empty.padding(24)
-                } else {
+            if work.items.isEmpty {
+                empty
+            } else {
+                ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         ForEach(work.grouped, id: \.state) { group in
                             groupView(group)
@@ -290,6 +301,7 @@ struct ProjectWorkTab: View {
                 .controlSize(.small)
         }
         .frame(maxWidth: 360)
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -400,14 +412,15 @@ struct ProjectWorkTab: View {
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    TextField("Title", text: $draftTitle)
+                    TextField("Title", text: $draftTitle, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1...)
                         .accessibilityLabel("Title of work #\(piece.id)")
                     TextField("Text", text: $draftText, prompt: Text("What needs doing (you can leave this empty)"), axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12.5))
-                        .lineLimit(2...10)
+                        .lineLimit(2...)
                         .accessibilityLabel("Text of work #\(piece.id)")
                     if edited {
                         HStack(spacing: 8) {
@@ -442,14 +455,17 @@ struct ProjectWorkTab: View {
         }
     }
 
-    /// Who holds it, where it is worked on, and what class of model it needs.
+    /// Where it is, who holds it, where it is worked on, and what class of model it needs. The state is said here too: a
+    /// waiting or blocked piece has a holder who is not working on it.
     private func status(_ piece: WorkPiece) -> some View {
         HStack(spacing: 6) {
+            Text(ProjectWork.name(of: piece.state)).fontWeight(.medium).foregroundStyle(Theme.tx2)
+            Text("·").foregroundStyle(Theme.tx3)
             if let agentId = piece.holderAgentId {
                 AgentAvatar(agent: engine.agent(agentId), size: 12)
                 Text(engine.agent(agentId)?.name ?? agentId).foregroundStyle(Theme.tx2)
                 if let chat = piece.holderConversation {
-                    Text("· working in sub-chat \(chat)").foregroundStyle(Theme.tx3)
+                    Text("· sub-chat \(chat)").foregroundStyle(Theme.tx3)
                 }
             } else {
                 Text("Nobody has this yet").foregroundStyle(Theme.tx3)
@@ -486,6 +502,20 @@ struct ProjectWorkTab: View {
                     .controlSize(.small)
                     .help("Carry on with this work: it goes back to in progress")
             }
+            Menu {
+                Button("Local model") { act(piece, "classify", ["class": "local"]) }
+                Button("Cloud model") { act(piece, "classify", ["class": "cloud"]) }
+                Button("Not classified") { act(piece, "classify", ["class": NSNull()]) }
+            } label: {
+                Text("Classify")
+            }
+            .menuStyle(.button)
+            .controlSize(.small)
+            .fixedSize()
+            .help("Say what class of model this work needs")
+            .accessibilityLabel("Classify work #\(piece.id)")
+            // Closing work is the final action, so it sits apart from the ones taken while the work carries on.
+            Spacer(minLength: 8)
             if held || piece.state == "open" {
                 Menu {
                     Button("Close as Done") { act(piece, "close", ["as": "done"]) }
@@ -505,19 +535,6 @@ struct ProjectWorkTab: View {
                     .controlSize(.small)
                     .help("Open this work again: its result is cleared")
             }
-            Menu {
-                Button("Local model") { act(piece, "classify", ["class": "local"]) }
-                Button("Cloud model") { act(piece, "classify", ["class": "cloud"]) }
-                Button("Not classified") { act(piece, "classify", ["class": NSNull()]) }
-            } label: {
-                Text("Classify")
-            }
-            .menuStyle(.button)
-            .controlSize(.small)
-            .fixedSize()
-            .help("Say what class of model this work needs")
-            .accessibilityLabel("Classify work #\(piece.id)")
-            Spacer(minLength: 0)
         }
     }
 
@@ -534,17 +551,20 @@ struct ProjectWorkTab: View {
                         .foregroundStyle(Theme.tx)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(noteLine(note))
-                        .font(.caption)
-                        .foregroundStyle(Theme.tx3)
+                    noteLine(note)
                 }
             }
         }
     }
 
-    private func noteLine(_ note: WorkPiece.Note) -> String {
+    private func noteLine(_ note: WorkPiece.Note) -> some View {
         let who = note.agentId.map { engine.agent($0)?.name ?? $0 } ?? "You"
-        return "\(who) · \(LimitsFormat.ago(note.at, now: Date()))"
+        // The time is kept current as the row's is, since the page stays open while a note ages.
+        return TimelineView(.periodic(from: .now, by: 30)) { context in
+            Text("\(who) · \(LimitsFormat.ago(note.at, now: context.date))")
+                .font(.caption)
+                .foregroundStyle(Theme.tx3)
+        }
     }
 
     private func noteField(_ piece: WorkPiece) -> some View {
@@ -574,8 +594,11 @@ struct ProjectWorkTab: View {
     }
 
     private func save(_ piece: WorkPiece) {
-        let title = draftTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The title is one line wherever it is shown, so a line break typed into it becomes a space.
+        let title = draftTitle.split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
+        draftTitle = title
         Task {
             do {
                 try await engine.call("work.act", ["projectId": project.id, "id": piece.id, "action": "edit", "title": title, "text": draftText])
