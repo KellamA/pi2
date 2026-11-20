@@ -198,6 +198,43 @@ symlinkSync(join(tmpdir()), join(root, "escape"));
 assert.ok("refused" in (await look.locate(root, "escape")), "a link out of the folder is not followed");
 assert.ok("refused" in (await look.locate(root, "../..")), ".. cannot climb out");
 assert.ok("real" in (await look.locate(root, "src/deep/..")));
+
+// A path may begin with $PI2_SCRATCH, which stands for the conversation's scratch folder (#564): these tools look there
+// as well as in the conversation's folder, and name what they find there in the words the agent can write straight back.
+const apart = realpathSync(mkdtempSync(join(tmpdir(), "pi2-look-scratch-")));
+process.on("exit", () => rmSync(apart, { recursive: true, force: true }));
+mkdirSync(join(apart, "notes"));
+writeFileSync(join(apart, "notes", "one.md"), "needle in scratch\n");
+const scratchOf = () => apart;
+const at = await look.locate(root, "$PI2_SCRATCH/notes/one.md", scratchOf);
+assert.ok("real" in at && at.real === join(apart, "notes/one.md") && at.base === apart && at.here === "$PI2_SCRATCH/notes/one.md", JSON.stringify(at));
+const atOwn = await look.locate(root, "${PI2_SCRATCH}", scratchOf);
+assert.ok("real" in atOwn && atOwn.real === apart && atOwn.here === "$PI2_SCRATCH", JSON.stringify(atOwn));
+const scratchListing = await look.listFiles(root, "$PI2_SCRATCH", undefined, scratchOf);
+assert.match(scratchListing.text, /^\$PI2_SCRATCH\/ : 1 entry\nnotes\//);
+const scratchFinding = await look.findFiles(root, "**/*.md", "$PI2_SCRATCH", never, undefined, undefined, scratchOf);
+assert.ok(scratchFinding.text.includes("$PI2_SCRATCH/notes/one.md"), scratchFinding.text);
+const scratchSearching = await look.searchFiles(root, { query: "needle", path: "$PI2_SCRATCH" }, never, undefined, scratchOf);
+assert.ok(scratchSearching.text.includes("$PI2_SCRATCH/notes/one.md\n  1: needle in scratch"), scratchSearching.text);
+// Another variable is refused with one line, and nothing is looked at; so is $PI2_SCRATCH with no scratch folder to name.
+for (const path of ["$HOME", "$HOME/notes", "${TMPDIR}/notes"]) {
+	for (const [name, run] of [
+		["list_files", () => look.listFiles(root, path, undefined, scratchOf)],
+		["find_files", () => look.findFiles(root, "*", path, never, undefined, undefined, scratchOf)],
+		["search_files", () => look.searchFiles(root, { query: "needle", path }, never, undefined, scratchOf)],
+	] as const) {
+		const refused = await run();
+		assert.ok(refused.isError && /do not expand variables/.test(refused.text), `${name} ${path}: ${refused.text}`);
+	}
+}
+assert.match((await look.listFiles(root, "$PI2_SCRATCH/notes", undefined, () => undefined)).text, /no scratch folder/);
+// A folder really named that way is still the folder, and stays inside the conversation's own.
+mkdirSync(join(root, "$odd"));
+writeFileSync(join(root, "$odd", "x.txt"), "as written\n");
+const literalListing = await look.listFiles(root, "$odd", undefined, scratchOf);
+assert.equal(literalListing.isError, undefined, literalListing.text);
+assert.ok(literalListing.text.includes("x.txt"), literalListing.text);
+assert.ok("refused" in (await look.locate(root, "$odd/../../..", scratchOf)), "and it is no way out");
 assert.match((await look.findFiles(root, "**/*.ts", undefined, never, { files: 1, ms: PATIENT_MS })).text, /Stopped after looking at 1 files/);
 assert.equal(look.clip("a".repeat(1000), 500).length <= look.clip("a".repeat(1000), 500).length && look.clip("a".repeat(1000), 500).length <= 242, true);
 assert.ok(look.clip(`${"a".repeat(500)}NEEDLE${"b".repeat(500)}`, 500).includes("NEEDLE"), "a long line is cut around the match");
