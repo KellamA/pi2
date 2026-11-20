@@ -34,6 +34,10 @@ export type Refusal = { status: number; headers: Record<string, string>; body?: 
 /** A refusal worth waiting for: which kind, and the time the provider named for asking again, if it named one. */
 export type Limit = { kind: "rate_limit" | "overloaded"; until?: number };
 
+/** Terminal refusals that are a plan's window when they name a reset no more than this far off; later, or with none, they are an allowance used up. */
+const WINDOW_AT_MOST = 12 * 3_600_000;
+const WINDOWED = /GoUsageLimitError|FreeUsageLimitError/;
+
 /**
  * Refusals that waiting does not cure: money or a plan's allowance used up for good (a monthly cap, no credit left, a
  * plan that does not include the model), a workspace cap only its admin can raise, a single request larger than the
@@ -46,12 +50,33 @@ const OVERLOADED = /overloaded|(?<![a-z0-9])529(?![a-z0-9])/i;
 
 /** Whether an error is a refusal to wait for, and what the provider said about when to ask again. */
 export function limitOf(text: string, refusal: Refusal | undefined, now: number): Limit | undefined {
-	if (TERMINAL.test(text) || (refusal?.body !== undefined && TERMINAL.test(refusal.body))) return undefined;
+	if (TERMINAL.test(text) || (refusal?.body !== undefined && TERMINAL.test(refusal.body))) {
+		// A plan's short window used up is waited out like any limit that names a time; the same error for a month's allowance is not.
+		const windowed = WINDOWED.test(text) || (refusal?.body !== undefined && WINDOWED.test(refusal.body));
+		const until = windowed ? namedTime(text, refusal, now) : undefined;
+		if (until === undefined || until - now > WINDOW_AT_MOST) return undefined;
+		return { kind: "rate_limit", until };
+	}
 	const status = refusal?.status;
 	const kind = status === 429 ? "rate_limit" : status === 529 ? "overloaded" : OVERLOADED.test(text) ? "overloaded" : RATE_LIMITED.test(text) ? "rate_limit" : undefined;
 	if (kind === undefined) return undefined;
 	const until = namedTime(text, refusal, now);
 	return until === undefined ? { kind } : { kind, until };
+}
+
+/**
+ * A wait written in words, as some providers put it in the error's text: "resets in 2h 17m", "try again in 45 minutes",
+ * "retry in 30s", "resets in 1 day 3 hours". The time it comes to, or undefined when the text names none.
+ */
+export function wordedTime(text: string, now: number): number | undefined {
+	const said = /(?:resets?|try again|retry)\s+in\s+~?((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b[\s,]*(?:and\s+)?)+)/i.exec(text)?.[1];
+	if (said === undefined) return undefined;
+	let ms = 0;
+	for (const [, amount, unit] of said.matchAll(/(\d+)\s*([a-z]+)/gi)) {
+		const first = unit!.toLowerCase()[0];
+		ms += Number(amount) * (first === "d" ? 24 * HOUR : first === "h" ? HOUR : first === "m" ? 60_000 : 1000);
+	}
+	return now + ms;
 }
 
 /**
@@ -84,10 +109,10 @@ export function namedTime(text: string, refusal: Refusal | undefined, now: numbe
 	if (resetsAt !== undefined && resetsAt > 0) times.push(resetsAt * 1000);
 	const resetsIn = number(error?.resets_in_seconds);
 	if (resetsIn !== undefined && resetsIn >= 0) times.push(now + resetsIn * 1000);
-	// pi-ai's own wording of that, when nothing else was read: "Try again in ~42 min."
+	// The wait in words, when nothing else was read: pi-ai's "Try again in ~42 min.", OpenCode's "resets in 2h 17m".
 	if (times.length === 0) {
-		const minutes = /try again in ~?(\d+) ?min/i.exec(text)?.[1];
-		if (minutes !== undefined) times.push(now + Number(minutes) * 60_000);
+		const worded = wordedTime(text, now) ?? (refusal?.body === undefined ? undefined : wordedTime(refusal.body, now));
+		if (worded !== undefined) times.push(worded);
 	}
 	return times.length === 0 ? undefined : Math.max(now, ...times);
 }
