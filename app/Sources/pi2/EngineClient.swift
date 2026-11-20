@@ -54,6 +54,9 @@ final class EngineClient {
     /// The picture models the person's providers can use, for making pictures (engine/src/pictures.ts), and the providers
     /// that have such models at all, by name, for saying where to get one when there is none. Nil until the engine says.
     private(set) var pictures: PictureModels?
+    /// The models that can look at pictures for one that cannot see them, and the person's choice (engine/src/picturelook.ts).
+    /// Nil until the engine says.
+    private(set) var look: LookModels?
     private(set) var inbox: [InboxItem] = [] {
         didSet {
             guard inbox != oldValue else { return }
@@ -534,6 +537,25 @@ final class EngineClient {
         let models: [Model]
         let makers: [String]
     }
+    /// The models the person's connected providers offer that take pictures, for looking at ones a conversation's own
+    /// model cannot see (engine/src/picturelook.ts, #540). Nil until the engine says.
+    struct LookModels: Decodable, Equatable {
+        struct Model: Decodable, Equatable {
+            struct Price: Decodable, Equatable {
+                let input: Double
+                let output: Double
+            }
+            let provider: String
+            let id: String
+            let name: String
+            let providerName: String?
+            let price: Price?
+            var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
+            var displayName: String { "\(providerName ?? provider) · \(name)" }
+        }
+        let model: ModelRef?
+        let models: [Model]
+    }
     private struct AgentsEvent: Decodable {
         let agents: [AgentProfile]
         let builtInTools: [BuiltInTool]?
@@ -616,6 +638,8 @@ final class EngineClient {
                 update(\.builtInTools, event.builtInTools ?? [])
             case "pictures":
                 update(\.pictures, try decoder.decode(PictureModels.self, from: line))
+            case "look":
+                update(\.look, try decoder.decode(LookModels.self, from: line))
             case "inbox":
                 update(\.inbox, try decoder.decode(InboxEvent.self, from: line).items)
             case "activity":
