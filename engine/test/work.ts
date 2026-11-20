@@ -1,7 +1,7 @@
 // The built-in work list, driven through a real engine with a throwaway home and the scripted demo model.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -15,12 +15,17 @@ import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.
 
 const home = mkdtempSync(join(tmpdir(), "pi2-work-"));
 const service = `dev.pi2.credentials.test-work-${process.pid}`;
-const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp() };
+// A stand-in gh (gh-stand-in.mjs) that knows no repository: the project with one attached is never read from GitHub.
+const ghFolder = mkdtempSync(join(tmpdir(), "pi2-work-gh-"));
+writeFileSync(join(ghFolder, "state.json"), JSON.stringify({ repos: {} }));
+writeFileSync(join(ghFolder, "gh"), `#!/bin/sh\nGH_STAND_IN_STATE='${join(ghFolder, "state.json")}' exec '${process.execPath}' '${join(import.meta.dirname, "gh-stand-in.mjs")}' "$@"\n`, { mode: 0o755 });
+const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp(), PI2_GH: join(ghFolder, "gh") };
 const start = () => spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 let engine = start();
 process.on("exit", () => {
 	if (engine.exitCode === null && engine.signalCode === null) engine.kill("SIGKILL");
 	rmSync(home, { recursive: true, force: true });
+	rmSync(ghFolder, { recursive: true, force: true });
 	try {
 		while (true) execFileSync("/usr/bin/security", ["delete-generic-password", "-s", service], { stdio: "ignore" });
 	} catch { /* None left. */ }
@@ -116,8 +121,9 @@ try {
 		assert.equal(JSON.parse(initial.slice(5)).tools.some((tool: { name: string }) => tool.name === "work"), false);
 	}
 	assert.deepEqual(await call("list"), { items: [], readAt: null });
-	await assert.rejects(call("list", { projectId: github }), /GitHub work is not available yet/);
-	await assert.rejects(call("create", { projectId: github, title: "No fallback" }), /GitHub work is not available yet/);
+	// The project with a repository attached is GitHub's (#468): never the list kept by pi² instead.
+	await assert.rejects(call("list", { projectId: github }), /GitHub refused it: .*Could not resolve to a Repository/);
+	await assert.rejects(call("create", { projectId: github, title: "No fallback" }), /Could not resolve to a Repository/);
 	await assert.rejects(call("list", { projectId: "__proto__" }), /Unknown project/);
 	await assert.rejects(create(" "), /1 to 200/);
 	await assert.rejects(create("a".repeat(201)), /1 to 200/);
@@ -234,12 +240,13 @@ try {
 	await socket.until("the second assignment wakes the orchestrator with waking on", () => socket.conversations.get(parent)?.items.some((item: any) => item.kind === "marker" && item.details?.wake?.text?.includes(`Sub-chat ${byPerson.conversation} “Filed with approval” answered:`)) && !socket.conversations.get(parent)?.state.busy);
 	step("assign refuses without a claim or child, races a take, and starts a durable sub-chat for agent and person");
 
-	// The orchestrator is told of both assignments at its next turn (#466), in a catch-up in front of the wake.
+	// The orchestrator is told of the person's assignment at its next turn (#466), in a catch-up in front of the wake; its
+	// own assignment is not news to it (#468).
 	const told = (socket.conversations.get(parent)?.items ?? [])
 		.filter((item: any) => item.kind === "marker" && typeof item.text === "string" && item.text.startsWith("pi² told the orchestrator what changed"))
 		.flatMap((item: any) => String(item.details?.wake?.text ?? "").split("\n"))
 		.filter((line: string) => /\(assign\)\.$/.test(line));
-	assert.equal(told.length, 2, "both assignments told to the orchestrator");
+	assert.equal(told.length, 1, "the person's assignment told to the orchestrator, and not its own");
 	const beforeRestart = await list();
 	await socket.call("projects.setPreview", { on: false });
 	assert.equal(await socket.offered(worker), false);

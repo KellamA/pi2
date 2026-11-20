@@ -23,6 +23,7 @@ import { ACCESS_LABELS, AGENT_FIELDS, type AgentValues, agentFieldWidens, agentV
 import { type CommandRule, type MadeWorktree, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { ACCESS_LEVELS, type Access, type AgentProfile, Agents, type ModelRef } from "./state.ts";
 import { madeWorktrees } from "./worktrees.ts";
+import { checkRepository, parseRepository, type Repository } from "./github.ts";
 
 export const TOOL_NAMES = ["project_agents", "project_settings", "project_rules"] as const;
 
@@ -497,7 +498,7 @@ type ProjectChanges = {
 const SETTINGS_DESCRIPTION =
 	"See and change this project's settings. Only the project's orchestrator has it.\n" +
 	"- show: its name, folder, work list, the switches for what you may do without asking, and its limits.\n" +
-	"- change: make `changes`. Renaming, turning a switch off and lowering a limit are made at once, and the person can undo them. Changing the folder, turning a switch on, and raising or removing a limit widen what agents may do, so they are put to the person, whose answer comes to you later; give `why`.\n" +
+	"- change: make `changes`. Renaming, turning a switch off and lowering a limit are made at once, and the person can undo them. Changing the folder or the repository (\"owner/name\" on GitHub, whose issues and pull requests then become the work list; null for the list kept by pi²), turning a switch on, and raising or removing a limit widen what agents may do, so they are put to the person, whose answer comes to you later; give `why`.\n" +
 	"- set_orchestrator: ask the person to make `agent` the project's orchestrator in your place.\n" +
 	"- undo: undo change `change`, the number at the end of a change's result. An undo that would widen what agents may do is put to the person.";
 
@@ -556,13 +557,26 @@ function settingsTool(host: Host, engine: Engine) {
 			if (!mayChange(call)) return refuse(NO_ACCESS);
 			if (action === "set_orchestrator" && !canSetOrchestrator()) return refuse("pi² cannot make another agent the orchestrator yet. Tell the person, if it matters.");
 			const why = args.why?.trim() || null;
+			// A repository is looked up with gh before the commit, so that only one gh can see is asked for (github.ts, #468).
+			let repository: Repository | null | undefined;
+			const named = action === "change" ? (args.changes as ProjectChanges | undefined)?.repository : undefined;
+			if (typeof named === "string") {
+				const parsed = parseRepository(named);
+				if (parsed === undefined) return refuse("repository must be owner/name, as GitHub names it.");
+				try {
+					repository = await checkRepository(parsed, project.folder ?? engine.home);
+				} catch (error) {
+					return refuse(error instanceof Error ? error.message : String(error));
+				}
+			} else if (named === null) repository = null;
 			return once(api, context, async (tx) => {
 				const stored = await projectIn(tx, project.id);
 				if (action === "change") {
 					const given = (args.changes ?? {}) as ProjectChanges;
-					if (given.repository !== undefined) throw new Error("pi² cannot attach a repository to a project yet. Tell the person, if it matters.");
 					const now = projectValues(stored);
 					const want = { ...now };
+					// Attaching or detaching a repository widens reach (7.1): it is always asked for.
+					if (repository !== undefined) want.repository = repository;
 					if (given.name !== undefined) want.name = given.name.trim();
 					if (given.folder !== undefined) want.folder = checkFolder(given.folder);
 					for (const [words, on] of Object.entries(given.without_asking ?? {})) {

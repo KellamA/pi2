@@ -44,8 +44,27 @@ export const Work = defineDoc<WorkDoc>({ kind: "pi2.work", version: 1, scope: "s
 
 // A tool that did its work but did not return before a crash reads its result again. The receipt lives only as long
 // as the tool task does; it is committed with the action, not memoized in a second commit after it.
-// `change` is the change an agent's write was recorded as (changes.ts), for the result's `details.change`.
-const WorkCall = defineDoc<{ call: string; item: WorkItem | null; refused?: string; note?: string; change?: number }>({ kind: "pi2.workCall", version: 1, scope: "task", initial: () => ({ call: "", item: null }), checkpointWhen: () => true });
+// `change` is the change an agent's write was recorded as (changes.ts), for the result's `details.change`. `text` is
+// a pull request's action's answer (github.ts), which has no work item.
+type WorkReceipt = { call: string; item: WorkItem | null; refused?: string; note?: string; change?: number; text?: string };
+const WorkCall = defineDoc<WorkReceipt>({ kind: "pi2.workCall", version: 1, scope: "task", initial: () => ({ call: "", item: null }), checkpointWhen: () => true });
+
+/** Keep what a `work` call did with its task, in the commit `tx` that finishes it (github.ts): a call run again gives it. */
+export async function workReceipt(tx: Tx, call: Call, done: Omit<WorkReceipt, "call">): Promise<void> {
+	const receipt = await tx.doc(WorkCall, call.api.taskId);
+	receipt.call = call.api.callId;
+	receipt.item = done.item === null ? null : retained(done.item);
+	for (const key of ["refused", "note", "change", "text"] as const) {
+		if (done[key] === undefined) delete receipt[key];
+		else (receipt as Record<string, unknown>)[key] = done[key];
+	}
+}
+
+/** What a `work` call kept with its task, if this call finished already. */
+export async function workReceiptOf(call: Call): Promise<WorkReceipt | undefined> {
+	const receipt = await call.api.snapshot(WorkCall, call.api.taskId, call.context);
+	return receipt?.call === call.api.callId ? receipt : undefined;
+}
 
 export type WorkOperation = { projectId: string; action: WorkAction; by: Who; before: WorkItem | null; after: WorkItem; callId?: string };
 /** Record an agent's write in the record of changes (changes.ts), in this transaction: the change's id, or none for the person's. */
@@ -53,9 +72,43 @@ export function recordWork(tx: Tx, operation: WorkOperation): Promise<number | u
 	return recordWorkChange(tx, operation);
 }
 
-/** #468 supplies the backend for an attached repository. Until then do not silently use the pi² list instead. */
-export function githubWorkBackend(_project: Project): WorkBackend | undefined {
-	return undefined;
+/** A pull request of an attached repository (docs/projects.md, 3.11): github.ts reads and acts on them. */
+export type PullAction = "pull_request" | "review" | "merge" | "send_back";
+
+/**
+ * What an assignment on GitHub needs of this file (github.ts): the admission check of #464, in a commit of its own before
+ * the item is claimed on GitHub, and the start of the sub-chat once it is, without checking again.
+ */
+export type GithubAssign = {
+	/** The agent assigned. */
+	agentId: string;
+	admit(tx: Tx, project: Project, item: WorkItem): Promise<{ ok: true; note?: string } | { ok: false; limit: LimitReading }>;
+	start(tx: Tx, project: Project, item: WorkItem, admitted: { note?: string }): Promise<NonNullable<WorkItem["takenBy"]>>;
+};
+export type GithubWriting = { call?: Call; confirmedSwitch?: SwitchName; assign?: GithubAssign };
+
+/** What github.ts (#468) supplies for a project with a repository attached. */
+export type GithubWork = {
+	backend(project: Project, writing: GithubWriting): WorkBackend;
+	/** When the listing was read; null when it never was. */
+	readAt(project: Project): number | null;
+	/** A line for the tool's `list` and `show`: when the listing was read, and why it is not newer. */
+	listingNote(project: Project): string;
+	/** A pull request's action (5.7): the text the model is given, and the change it was recorded as. */
+	pull(project: Project, action: PullAction, by: Who, args: Record<string, unknown>, call: Call): Promise<{ text: string; change?: number }>;
+	/** Start Anyway on a limit card for an assignment: claim the item on GitHub, then start (`launch`), once the card's commit is made. */
+	assignHeld(project: Project, start: Start, launch: (tx: Tx, item: WorkItem) => Promise<NonNullable<WorkItem["takenBy"]>>): Promise<WorkItem>;
+};
+let github: GithubWork | undefined;
+
+/** github.ts plugs the GitHub backend in here as the engine makes its feature. */
+export function wireGithubWork(given: GithubWork): void {
+	github = given;
+}
+
+/** The backend of a project with a repository attached; undefined until github.ts is running. Never the pi² list instead. */
+export function githubWorkBackend(project: Project, writing: GithubWriting = {}): WorkBackend | undefined {
+	return github?.backend(project, writing);
 }
 
 const openStates: WorkState[] = ["open", "in_progress", "waiting", "blocked"];
@@ -88,8 +141,7 @@ const table: Record<WorkAction, Row> = {
 	classify: { from: states, to: "same", holder: "same", agent: "orchestrator", person: true },
 };
 
-const actions = Object.keys(table) as WorkAction[];
-const pullActions = ["pull_request", "review", "merge", "send_back"];
+const pullActions: string[] = ["pull_request", "review", "merge", "send_back"] satisfies PullAction[];
 const retained = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const conversationId = (id: number): ConversationId => id as unknown as ConversationId;
 const numberId = (id: unknown): number => {
@@ -130,10 +182,20 @@ function workText(value: string | undefined): string | undefined {
 	if (value !== undefined && value.length > 20_000) throw new Error("text must be at most 20,000 characters");
 	return value;
 }
-const unknownItem = (id: number) => new Error(`Unknown work item: #${id}`);
-const canWrite = (access: Access) => access === "ask" || access === "full";
-const writeRefusal = "This agent's access does not let it change the work list.";
-const orchestrates = (project: Project, by: Who) => by.kind === "agent" && by.conversationId === project.conversation && by.agentId === project.orchestratorId;
+export const unknownItem = (id: number) => new Error(`Unknown work item: #${id}`);
+export const canWrite = (access: Access | undefined) => access === "ask" || access === "full";
+export const writeRefusal = "This agent's access does not let it change the work list.";
+/** Whether `by` is the project's orchestrator, in its current conversation. */
+export const orchestrates = (project: Project, by: Who) => by.kind === "agent" && by.conversationId === project.conversation && by.agentId === project.orchestratorId;
+
+/**
+ * News for the orchestrator of a change to the work list (6.4), in the commit that makes it: none for what the
+ * orchestrator did itself, in its own conversation, which is not news to it (#466).
+ */
+export async function workNews(tx: Tx, project: Project, by: Who, text: string, ref: string, at = Date.now()): Promise<void> {
+	if (orchestrates(project, by)) return;
+	await addNews(tx, project.id, { kind: "work", text, ref, at });
+}
 const heldBy = (item: WorkItem | null, by: Who) => by.kind === "agent" && item?.takenBy?.agentId === by.agentId && item.takenBy.conversationId === by.conversationId;
 
 function actor(project: Project, by: Who, action: WorkAction, access?: Access): void {
@@ -204,8 +266,34 @@ export function workTransition(before: WorkItem | null, id: number, action: Work
 
 type Launched = { holder: NonNullable<WorkItem["takenBy"]>; note?: string };
 type Runner = (tx: Tx, project: Project, item: WorkItem) => Promise<Launched | { limit: LimitReading }>;
-type Call = { api: ToolExecutionApi; context: Context };
-type Write = { call?: Call; launch?: Runner; confirmedSwitch?: SwitchName };
+export type Call = { api: ToolExecutionApi; context: Context };
+type Write = { call?: Call; launch?: Runner; confirmedSwitch?: SwitchName; assign?: GithubAssign };
+
+/** The line of news for a change to a work item. */
+export const workNewsText = (item: Pick<WorkItem, "id" | "title">, action: string) => `Work #${item.id}: ${item.title.replace(/\s+/g, " ")} (${action}).`;
+
+/**
+ * Check, in the commit `tx`, that `by` may make `action` now (both backends): the project live and not archived, with the
+ * kind of list expected; for an agent, its conversation current in the project, its access, its role, and the switch it
+ * was asked about still the one that holds. Answers the project and the agents as stored.
+ */
+export async function checkWriterIn(tx: Tx, projectId: string, by: Who, action: WorkAction, confirmedSwitch: SwitchName | undefined, onGithub: boolean): Promise<{ project: Project; agents: Record<string, AgentProfile> }> {
+	requirePreview();
+	const current = liveProject((await tx.doc(Projects)).projects[projectId], projectId, true);
+	if ((current.repository !== null) !== onGithub) throw new Error("The project's work list changed. Look at it again.");
+	const meta = by.kind === "agent" ? (await tx.doc(Library)).conversations[String(by.conversationId)] : undefined;
+	const agents = (await tx.doc(Agents)).agents;
+	if (by.kind === "agent" && (meta?.projectId !== current.id || isPutAway(meta) || runsAs(meta, agents) !== by.agentId || current.earlier.includes(by.conversationId))) {
+		throw new Error("Use work from a current conversation in this project.");
+	}
+	actor(current, by, action, meta?.access);
+	const gate = table[action].switch;
+	if (by.kind === "agent" && gate !== undefined && !current.settings.withoutAsking[gate] && confirmedSwitch !== gate) {
+		throw new Error("The project's permission changed. Ask the person before trying again.");
+	}
+	if (by.kind === "agent" && (agents[by.agentId] === undefined || agents[by.agentId]?.removedAt !== undefined)) throw new Error(`Unknown agent: ${by.agentId}`);
+	return { project: current, agents };
+}
 
 function offersWork(project: Project | undefined, id?: number): boolean {
 	return project !== undefined && project.archivedAt === undefined && project.deletedAt === undefined && (id === undefined || !project.earlier.includes(id));
@@ -222,7 +310,7 @@ export async function syncWorkForInput(tx: Tx, id: ConversationId, meta: Meta | 
 
 function backendFor(engine: Engine, project: Project, writing: Write = {}): WorkBackend {
 	if (project.repository === null) return localWorkBackend(engine, writing);
-	const backend = githubWorkBackend(project);
+	const backend = githubWorkBackend(project, { call: writing.call, confirmedSwitch: writing.confirmedSwitch, assign: writing.assign });
 	if (backend === undefined) throw new Error("GitHub work is not available yet.");
 	return backend;
 }
@@ -243,20 +331,7 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 					if (receipt.refused !== undefined) return { refused: receipt.refused };
 					if (receipt.item !== null) return retained(receipt.item);
 				}
-				requirePreview();
-				const current = liveProject((await tx.doc(Projects)).projects[project.id], project.id, true);
-				if (current.repository !== null) throw new Error("The project's work list changed. Look at it again.");
-				const meta = by.kind === "agent" ? (await tx.doc(Library)).conversations[String(by.conversationId)] : undefined;
-				const agents = (await tx.doc(Agents)).agents;
-				if (by.kind === "agent" && (meta?.projectId !== current.id || isPutAway(meta) || runsAs(meta, agents) !== by.agentId || current.earlier.includes(by.conversationId))) {
-					throw new Error("Use work from a current conversation in this project.");
-				}
-				actor(current, by, action, meta?.access);
-				const gate = table[action].switch;
-				if (by.kind === "agent" && gate !== undefined && !current.settings.withoutAsking[gate] && confirmedSwitch !== gate) {
-					throw new Error("The project's permission changed. Ask the person before trying again.");
-				}
-				if (by.kind === "agent" && (agents[by.agentId] === undefined || agents[by.agentId]?.removedAt !== undefined)) throw new Error(`Unknown agent: ${by.agentId}`);
+				const { project: current, agents } = await checkWriterIn(tx, project.id, by, action, confirmedSwitch, false);
 				const doc = await tx.doc(Work);
 				if (doc.projects[project.id] === undefined) doc.projects[project.id] = { items: {}, next: 1 };
 				const list = doc.projects[project.id]!;
@@ -280,7 +355,7 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 				if (before === null || JSON.stringify(before) !== JSON.stringify(item)) {
 					const change = await recordWork(tx, { projectId: project.id, action, by, before: before === null ? null : retained(before), after: item, ...(call === undefined ? {} : { callId: call.api.callId }) });
 					if (receipt !== undefined && change !== undefined) receipt.change = change;
-					await addNews(tx, project.id, { kind: "work", text: `Work #${item.id}: ${item.title.replace(/\s+/g, " ")} (${action}).`, ref: String(item.id), at });
+					await workNews(tx, current, by, workNewsText(item, action), String(item.id), at);
 					list.items[String(key)] = item;
 				}
 				if (receipt !== undefined && call !== undefined) {
@@ -358,17 +433,31 @@ export const work: Feature = (host, engine) => {
 		const reader = call?.api ?? engine.harness();
 		const parentFolder = (await reader.snapshot(AgentDoc, conversationId(parent), context))?.cwd ?? null;
 		const agent = { ...await host.agentChange(target, { subChat: true }), cwd: await subChatFolder(parentFolder, target.cwd) };
-		const launch: Runner = async (tx, current, item) => {
+		const startOf = (item: WorkItem): Start => {
 			const task = [`Work #${item.id}: ${item.title}`, item.text, extra].filter(Boolean).join("\n\n");
-			const start: Start = { by, agentId: target.id, agentName: target.name, kind: "assign", parent, chat: null, work: item.id, title: title ?? titleOf(item.title)!, task, options: {} };
-			const result = await launchAssignment(tx, current, start, target, agent, { confirm, callId: call?.api.callId });
+			return { by, agentId: target.id, agentName: target.name, kind: "assign", parent, chat: null, work: item.id, title: title ?? titleOf(item.title)!, task, options: {} };
+		};
+		const launch: Runner = async (tx, current, item) => {
+			const result = await launchAssignment(tx, current, startOf(item), target, agent, { confirm, callId: call?.api.callId });
 			if ("holder" in result) onStarted?.(result.note);
 			return result;
 		};
-		return backendFor(engine, project, { launch, call, confirmedSwitch }).apply(project, action, id, by, args);
+		// On GitHub the claim is no commit of pi²'s: the admission check comes first, then the claim, then the start (github.ts).
+		const assign: GithubAssign = {
+			agentId: target.id,
+			admit: (tx, _current, item) => admit(startOf(item), confirm, { tx, model: agent.model, callId: call?.api.callId }),
+			start: async (tx, current, item, admitted) => {
+				const result = await launchAssignment(tx, current, startOf(item), target, agent, { admitted });
+				if (!("holder" in result)) throw new Error("The start was held back after it was admitted.");
+				onStarted?.(result.note);
+				return result.holder;
+			},
+		};
+		return backendFor(engine, project, { launch, call, confirmedSwitch, assign }).apply(project, action, id, by, args);
 	};
 
-	async function launchAssignment(tx: Tx, current: Project, start: Start, target: AgentProfile, agent: Awaited<ReturnType<typeof host.agentChange>>, options: { confirm?: string; callId?: string; card?: LimitReading[] }): Promise<Launched | { limit: LimitReading }> {
+	/** `admitted`: the admission check was made already, before a claim on GitHub, and is not made again. */
+	async function launchAssignment(tx: Tx, current: Project, start: Start, target: AgentProfile, agent: Awaited<ReturnType<typeof host.agentChange>>, options: { confirm?: string; callId?: string; card?: LimitReading[]; admitted?: { note?: string } }): Promise<Launched | { limit: LimitReading }> {
 			const parent = start.parent!;
 			const library = (await tx.doc(Library)).conversations;
 			const parentMeta = library[String(parent)];
@@ -376,7 +465,7 @@ export const work: Feature = (host, engine) => {
 			const saved = (await tx.doc(Agents)).agents[target.id];
 			if (saved?.projectId !== current.id || saved.removedAt !== undefined) throw new Error(`Unknown agent: ${target.id}`);
 			if (JSON.stringify(saved) !== JSON.stringify(target)) throw new Error(`${target.name}'s settings changed. Look at the agent and try again.`);
-			const admitted = await admit(start, options.confirm, { tx, model: agent.model, callId: options.callId, card: options.card });
+			const admitted = options.admitted === undefined ? await admit(start, options.confirm, { tx, model: agent.model, callId: options.callId, card: options.card }) : { ok: true as const, ...options.admitted };
 			if (!admitted.ok) return { limit: admitted.limit };
 			const budget = engine.overBudget();
 			if (budget !== undefined) throw new Error(`${budget} Raise it in Usage to carry on.`);
@@ -402,7 +491,33 @@ export const work: Feature = (host, engine) => {
 	onLimitAssignment(async (tx, need) => {
 		const { start, projectId } = need;
 		const current = liveProject((await tx.doc(Projects)).projects[projectId], projectId, true);
-		if (current.repository !== null) throw new Error("The project's work list changed. Look at it again.");
+		if (current.repository !== null) {
+			// On GitHub: the card's readings are checked in this commit; the claim and the start follow it (github.ts).
+			if (github === undefined) throw new Error("GitHub work is not available yet.");
+			const target = (await tx.doc(Agents)).agents[start.agentId];
+			if (target?.projectId !== projectId || target.removedAt !== undefined) throw new Error(`Unknown agent: ${start.agentId}`);
+			const here = (await tx.doc(AgentDoc, conversationId(start.parent!))).cwd ?? null;
+			const agent = retained({ ...await host.agentChange(retained(target), { subChat: true }), cwd: await subChatFolder(here, target.cwd) });
+			const admitted = await admit(start, undefined, { tx, model: agent.model, card: rememberReading(need.confirmed ?? [], need.limit) });
+			if (!admitted.ok) return { limit: admitted.limit };
+			// What the commit's documents gave is read again only through copies once it is made.
+			const saved = retained(target);
+			const held = retained(start);
+			const project = retained(current);
+			const hooks = github;
+			return {
+				child: null,
+				after: async () => {
+					const item = await hooks.assignHeld(project, held, async (later) => {
+						const now = liveProject((await later.doc(Projects)).projects[projectId], projectId, true);
+						const result = await launchAssignment(later, now, held, saved, agent, { admitted: { note: admitted.note } });
+						if (!("holder" in result)) throw new Error("The start was held back after it was admitted.");
+						return result.holder;
+					});
+					await followAssignment(item);
+				},
+			};
+		}
 		const list = (await tx.doc(Work)).projects[projectId];
 		const key = String(start.work);
 		const item = list?.items[key];
@@ -439,17 +554,19 @@ export const work: Feature = (host, engine) => {
 
 	const tool = defineTool({
 		name: "work",
-		description: "Keep this project's work list. Use list or show to read it; file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work.",
+		description: "Keep this project's work list. Use list or show to read it; file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it.",
 		parameters: obj({
-			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, or classify" }),
-			id: opt(int({ description: "Work item number" })),
-			text: opt(str({ description: "Note, reason for wait or block, result of finish, or the work's text for file or edit" })),
-			title: opt(str({ description: "Work title for file or edit; sub-chat title for assign" })),
+			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, classify, pull_request, review, merge, or send_back" }),
+			id: opt(int({ description: "Work item number (on GitHub, the issue's); for review, merge and send_back, the pull request's" })),
+			text: opt(str({ description: "Note, reason for wait or block, result of finish, the work's text for file or edit, the finding for review, or the reason for send_back" })),
+			title: opt(str({ description: "Work title for file or edit; sub-chat title for assign; pull request title for pull_request" })),
 			states: opt(arr(str(), { description: "States to list; defaults to open, in_progress, waiting and blocked" })),
 			class: opt(str({ description: "local or cloud, for file or classify" })),
 			agent: opt(str({ description: "Project agent to assign the work to" })),
 			task: opt(str({ description: "What to tell the assigned agent beyond the work's own text" })),
 			as: opt(str({ description: "done or dropped, for close" })),
+			base: opt(str({ description: "pull_request: the branch to merge into; defaults to the repository's default branch" })),
+			verdict: opt(str({ description: "review: approve, changes or comment" })),
 		}),
 		replay: "safe",
 		execute: async ({ action, id, ...args }, api, context) => {
@@ -460,13 +577,23 @@ export const work: Feature = (host, engine) => {
 				const agentId = runsAs(meta, engine.agents());
 				const receipt = await api.snapshot(WorkCall, api.taskId, context);
 				if (receipt?.call === api.callId && receipt.refused !== undefined) throw new Error(receipt.refused);
+				if (receipt?.call === api.callId && receipt.text !== undefined) return { output: toolText(receipt.text), ...(receipt.change === undefined ? {} : { details: { change: receipt.change } }) };
 				let item = receipt?.call === api.callId ? receipt.item : null;
 				if (item === null) {
 					requirePreview();
 					if (project === undefined || agentId === undefined || project.earlier.includes(number) || isPutAway(meta)) throw new Error("Use work from a current conversation in this project.");
-					if (pullActions.includes(action) && project.repository === null) throw new Error("This project's work is kept by pi², which has no pull requests.");
-					if (action === "list") return { output: toolText(JSON.stringify(await backendFor(engine, project).list(project, { states: filtered(args.states) ?? openStates }))) };
-					if (action === "show") return { output: toolText(JSON.stringify(await backendFor(engine, project).show(project, numberId(id)))) };
+					if (pullActions.includes(action)) {
+						if (project.repository === null) throw new Error("This project's work is kept by pi², which has no pull requests.");
+						if (github === undefined) throw new Error("GitHub work is not available yet.");
+						const by: Who = { kind: "agent", agentId, conversationId: number };
+						if (!canWrite(meta?.access)) throw new Error(writeRefusal);
+						if ((action === "merge" || action === "send_back") && !orchestrates(project, by)) throw new Error(`Only the orchestrator can ${action === "merge" ? "merge a pull request" : "send a pull request back"}. Tell it in your report.`);
+						const done = await github.pull(project, action as PullAction, by, { id, ...args }, { api, context });
+						return { output: toolText(done.text), ...(done.change === undefined ? {} : { details: { change: done.change } }) };
+					}
+					const listed = (value: unknown) => toolText(project.repository === null || github === undefined ? JSON.stringify(value) : `${JSON.stringify(value)}\n\n${github.listingNote(project)}`);
+					if (action === "list") return { output: listed(await backendFor(engine, project).list(project, { states: filtered(args.states) ?? openStates })) };
+					if (action === "show") return { output: listed(await backendFor(engine, project).show(project, numberId(id))) };
 					if (args.class !== undefined && args.class !== "local" && args.class !== "cloud") throw new Error("class must be local or cloud");
 					item = await mutate(project, { kind: "agent", agentId, conversationId: number }, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
 				}
@@ -514,7 +641,8 @@ export const work: Feature = (host, engine) => {
 			"work.list": async (params) => {
 				requirePreview();
 				const project = getProject(projectId(params.projectId));
-				return { items: await backendFor(engine, project).list(project, { states: filtered(params.states) }), readAt: null }; // #468 supplies the GitHub listing's readAt.
+				const items = await backendFor(engine, project).list(project, { states: filtered(params.states) });
+				return { items, readAt: project.repository === null || github === undefined ? null : github.readAt(project) };
 			},
 			"work.create": async ({ projectId: id, title, text, class: modelClass }) => {
 				requirePreview();
