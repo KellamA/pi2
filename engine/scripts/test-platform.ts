@@ -3,6 +3,14 @@
 // credentialsplatform alone runs on both: its Mac half proves the file store cannot be selected there.
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { installedState, STALE_MESSAGE } from "./installed.ts";
+
+// Before anything is chosen or started: an install older than the checkout fails tests in ways that name neither.
+if (installedState(join(import.meta.dirname, "..")) !== "current") {
+	console.error(STALE_MESSAGE);
+	process.exit(1);
+}
 
 const linux = new Set([
 	"addedmodels", "cache", "chat", "codemode", "credentialsplatform", "earlystop", "everything", "exec", "heed", "latepath", "limits", "limitwait",
