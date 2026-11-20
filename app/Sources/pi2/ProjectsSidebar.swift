@@ -318,7 +318,7 @@ private struct OtherConversations: View {
     }
 }
 
-/// The templates: the agents of no project, which projects' agents are made from.
+/// The templates: the agents of no project, which projects' agents are made from (#475's Agents tab names them).
 private struct TemplateRows: View {
     let model: AppModel
 
@@ -330,7 +330,7 @@ private struct TemplateRows: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "person.2").foregroundStyle(Theme.tx2).frame(width: 20)
-                Text("Agent templates").foregroundStyle(Theme.tx)
+                Text("Templates").foregroundStyle(Theme.tx)
                 Spacer(minLength: 4)
                 Text("\(templates.count)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
                 Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .bold)).foregroundStyle(Theme.tx3)

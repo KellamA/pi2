@@ -65,6 +65,9 @@ extension AgentSection {
 struct AgentEditor: View {
     @Bindable var model: AppModel
     let agentID: String
+    /// Called instead of leaving the page when the agent is deleted, when this page is shown inside another (the
+    /// Agents tab of a project's board, #475). Nil on the window's own pages, which move away as before.
+    var onDeleted: (() -> Void)? = nil
 
     @State private var draft: AgentProfile?
     /// The saved agent the draft was last brought up to date with: what the person's edits are measured from.
@@ -95,8 +98,9 @@ struct AgentEditor: View {
             }
         }
         .background(Theme.window)
+        // With the projects preview on, an agent of no project is a template (docs/projects.md, 3.3), and is titled so.
         .navigationTitle(saved?.name ?? "Agent")
-        .navigationSubtitle("Agent")
+        .navigationSubtitle(engine.projectsPreview && saved?.projectId == nil ? "Template" : "Agent")
         .toolbar {
             ToolbarItem {
                 Button("New Conversation", systemImage: "plus.bubble") { model.newConversation(agentId: agentID) }
@@ -110,7 +114,8 @@ struct AgentEditor: View {
         .confirmationDialog("Delete \(saved?.name ?? "this agent")?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) {
                 engine.perform("agents.delete", ["id": agentID])
-                model.selection = nil
+                // On the window's own pages the selection moves away; in the Agents tab, the way back is the tab's.
+                if let onDeleted { onDeleted() } else { model.selection = nil }
             }
         } message: {
             Text("Its conversations stay, and keep the setup they already have.")

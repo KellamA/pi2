@@ -376,6 +376,20 @@ struct AgentVariable: Codable, Equatable, Identifiable {
     var id: String { name }
 }
 
+/// The template a project agent was made from, when it was copied, and the template's `updatedAt` then
+/// (docs/projects.md, 3.3): what tells the board the template has changed since.
+struct TemplateMark: Codable, Equatable {
+    let id: String
+    let copiedAt: Double
+    let templateUpdatedAt: Double
+}
+
+/// Which agent made this one through a tool, and in which conversation (docs/projects.md, 3.3).
+struct MadeByMark: Codable, Equatable {
+    let agentId: String
+    let conversationId: Int
+}
+
 /// A saved setup that conversations start from.
 struct AgentProfile: Codable, Equatable, Identifiable {
     var id: String
@@ -422,6 +436,15 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     var projectId: String? = nil
     /// "orchestrator" for a project's orchestrator.
     var role: String? = nil
+    /// A copy: the template it was made from, when, and the template's `updatedAt` then. Kept as stored (3.3).
+    var template: TemplateMark? = nil
+    /// Made by an agent through a tool (the board's mark): which agent, in which conversation. Absent: made by the
+    /// person or by carrying over. Kept as stored.
+    var madeBy: MadeByMark? = nil
+    /// When it was last saved; read as `createdAt` when absent (3.3).
+    var updatedAt: Double? = nil
+    /// Removed through a tool (3.3): kept whole for Undo, offered to nobody, and put back by `agents.restore`.
+    var removedAt: Double? = nil
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
     var payload: [String: Any] {

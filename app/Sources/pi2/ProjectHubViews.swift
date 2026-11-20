@@ -332,7 +332,12 @@ private struct HubBoard: View {
                         .help("Fold the board, so the conversation takes the width (⌥⌘])")
                 }
             }
-            BoardTabEmpty(tab: tab)
+            switch tab {
+            case .agents:
+                ProjectAgentsTab(model: model, project: project)
+            default:
+                BoardTabEmpty(tab: tab)
+            }
         }
     }
 }
