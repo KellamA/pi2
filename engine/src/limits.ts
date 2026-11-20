@@ -23,7 +23,7 @@ import { join } from "node:path";
 import type { ModelAuth, Provider, ProviderResponse } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
 import type { Engine, Feature } from "./features.ts";
-import { duration, type EpisodeChange } from "./limitwait.ts";
+import { duration, type EpisodeChange, type Remembered } from "./limitwait.ts";
 import { plainMoment } from "./selfschedule.ts";
 import { agentOf } from "./state.ts";
 
@@ -677,12 +677,28 @@ export function nearlyUsedUp(view: ProviderLimits | undefined, now: number): str
 	return `Plan limits: ${subscriptionWords(view)}, which this sub-chat runs on, has ${full.map((window) => windowWords(window, now)).join("; ")}. ${REFUSED}`;
 }
 
+/** "15:30 (in 1 h 12 min)", "Friday 21 November at 09:00 (in 3 days)": for a sentence with its own "until". */
+function untilWords(at: number, now: number): string {
+	return resetWords(at, now).replace(/^(at|on) /, "");
+}
+
+/**
+ * The line `delegate`'s result ends with for a provider whose limit a refusal said is used up until a time it named
+ * (#556): the same kind of line a subscription gets, so that an agent starts no more work there. Undefined when nothing
+ * of the kind is known, as for a provider that named no time.
+ */
+export function usedUpUntil(window: Remembered | undefined, now: number): string | undefined {
+	if (window === undefined) return undefined;
+	return `Plan limits: ${window.providerName}'s limit is used up until ${untilWords(window.until, now)}, as its refusal said. ${REFUSED}`;
+}
+
 /**
  * How every signed-in subscription's windows stand, for `sub_chats`' list: `users` names, by provider id, who among the
- * caller and the agents it can hand work to runs on each.
+ * caller and the agents it can hand work to runs on each. `remembered` adds the providers whose limit a refusal said is
+ * used up until a time it named, which a subscription pi² reads the windows of says of itself (#556).
  */
-export function limitsReport(views: ProviderLimits[], users: ReadonlyMap<string, string[]>, now: number): string[] {
-	if (views.length === 0) return ["Plan limits: no subscription is signed in, so there are no plan windows to watch."];
+export function limitsReport(views: ProviderLimits[], users: ReadonlyMap<string, string[]>, now: number, remembered: readonly Remembered[] = []): string[] {
+	if (views.length === 0 && remembered.length === 0) return ["Plan limits: no subscription is signed in, so there are no plan windows to watch."];
 	const lines = [`Plan limits, as last read. ${REFUSED}`];
 	for (const view of views) {
 		const who = users.get(view.id) ?? [];
@@ -694,6 +710,13 @@ export function limitsReport(views: ProviderLimits[], users: ReadonlyMap<string,
 		else standing = view.reports === "responses" ? "not known until a request on it has been answered." : "not read yet.";
 		const failed = view.error === null ? "" : ` The last check failed: ${view.error.replace(/\.$/, "")}.`;
 		lines.push(`- ${name.charAt(0).toUpperCase()}${name.slice(1)}: ${standing}${failed}`);
+	}
+	for (const window of remembered) {
+		// A subscription pi² watches says its own windows, in its line above.
+		if (views.some((view) => view.id === window.provider)) continue;
+		const who = users.get(window.provider) ?? [];
+		const name = `${window.providerName}${who.length === 0 ? ", which none of your agents runs on" : `, which ${listWords(who)} run${who.length === 1 ? "s" : ""} on`}`;
+		lines.push(`- ${name}: its limit is used up until ${untilWords(window.until, now)}, as a refusal said. A run that asks it before then waits for that time.`);
 	}
 	return lines;
 }

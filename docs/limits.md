@@ -48,6 +48,10 @@ A run whose request a provider refuses for its limit does not end. It waits, and
 
 **The longest it waits by itself.** When the provider names no time, 6 hours from the first refusal; then the run ends, and its error says it stopped waiting and that continuing the conversation tries again. When it names a time, until that time, as long as it is within 8 days (a week's window and a day to spare); a time further off is not believed, and the run ends at once with the same kind of error. Six hours is long, but the other choice is work stopped with nobody watching, which is how this was met (#183): ten sub-chats ran at once on one subscription, four of them were refused and ended within half a minute, and they carried on only because someone typed "continue" in each.
 
+**A window the provider named is remembered for the provider** (#556). When a refusal names a reset more than a minute off, pi² keeps that time for the provider, and a conversation whose request is on that provider meanwhile does not ask: it waits for that time without sending, shown as waiting exactly as a run the provider refused (the conversation, its row and pane, Activity, the parent's line, `sub_chats`' list). One request is let through when the time comes, and the conversations behind it follow when that one is answered, because an answer is the provider saying its window has reset. A time a minute off or less is not remembered: that is the conversation's own business. Nothing is kept after the provider answers, nor when the request let through ends without an answer, so a time that was wrong holds nothing for long.
+
+**Ending a remembered wait.** Stop ends a held run as it ends any run. A conversation whose run was stopped is sent its next message at once, without waiting for the window, and an answer ends the window for every conversation. **Carry on with…** on a held run sends its request at once as well; that request goes to the model it was made for, and the model you chose is the conversation's from the next request.
+
 **What is not waited for.** A bad key, a refused request or a model that does not exist can end a run at once. So do refusals that waiting does not cure, even with HTTP 429: money or an allowance used up for good (`insufficient_quota`, billing, a monthly cap, "credit balance is too low", a plan that does not include the model), a workspace cap only its admin can raise, and a single request larger than the limit itself ("request too large"). One exception: a plan's short window used up, such as OpenCode Go's "usage limit reached (5-hour, resets in 2h 17m)", is waited out when it names a reset no more than twelve hours off, in words or otherwise; the same error for a month's allowance, or with no time named, still ends the run (#560). Other passing errors (such as HTTP 500) still use the ordinary three retries, 2, 4 and 8 seconds apart. Attempts spent waiting for a limit or for the network do not use those three up.
 
 **What is shown.** A run that waits for a limit is shown as waiting, not working, wherever a run is shown (#343):
@@ -90,6 +94,12 @@ An agent that hands out work to sub-chats ([architecture.md](architecture.md#sub
 > Plan limits: the Anthropic subscription (Max), which this sub-chat runs on, has 5-hour window 84% used, resets at 15:30 (in 1 h 12 min). A run the provider refuses for its limit waits for the reset and carries on by itself.
 
 Below 80%, and for a model that is not on a subscription, the result says nothing of the windows. A window whose reset has passed since it was read is not counted. The line comes with a sub-chat that finished and one that did not, new or continued. Separately, `delegate`'s answer, later answers and `sub_chats`' list and `wait` give the sub-chat's own [usage so far](architecture.md#sub-chats), regardless of its subscription.
+
+**For a provider pi² knows only from a refusal** (#556). An endpoint of your own, a key, a plan pi² does not read: they report no windows, so nothing of the above tells an agent they are used up. When a refusal said such a provider's limit is used up until a time it named, the result ends with the same kind of line, and `sub_chats`' list has one for it too:
+
+> Plan limits: OpenCode Go's limit is used up until 15:30 (in 1 h 12 min), as its refusal said. A run the provider refuses for its limit waits for the reset and carries on by itself.
+
+The line stays while the provider has not answered a request since, and while that time is ahead; a provider that named no time, or only a moment, gets none.
 
 **In `sub_chats`' list.** The line above only comes once a sub-chat has finished, so an agent can also ask before it starts any: `sub_chats` with `list` ends with every signed-in subscription's windows, how much of each is used and when it resets, when they were read, and which subscription the conversation itself and each agent it can hand work to runs on (an agent with no model of its own runs on the default one):
 
@@ -165,6 +175,8 @@ A provider that reports no cache writes (OpenAI's) shows a miss as input sent ag
 
 The last good reading of each signed-in subscription (plan, windows, when it was read) is kept in `limits.json` in the data folder, so it shows at once after a restart. It holds no token. Signing a subscription out removes its reading.
 
+The window a refusal named for a provider (#556) is kept in memory only, per provider: a restart forgets it, and the next refusal teaches it again. The engine does not tell one account of a provider from another, so a key and a subscription of the same provider share it.
+
 ## For developers
 
 The engine sends `{ event: "limits", providers: [...], notices: [...] }` to an app as it connects and whenever something changes. Each provider is:
@@ -191,6 +203,8 @@ The limits feature answers `planLimits()` ([features.ts](../engine/src/features.
 For tests, the usage addresses can be pointed elsewhere with `PI2_LIMITS_ANTHROPIC_URL`, `PI2_LIMITS_CODEX_URL` and `PI2_LIMITS_KIMI_URL`, and the minimum time between two requests to one provider set with `PI2_LIMITS_MIN_INTERVAL_MS`.
 
 A conversation's state has `limitWait` while its run sleeps for a limit, and its row in the `activity` event has `limit` while it waits; both are `{ kind: "rate_limit" | "overloaded", since, until, told, refusals, provider }`, with times in milliseconds since 1970, `told` saying whether the provider named `until`, and `provider` its name. `engine/test/limitwait.ts` checks the reading of refusals and the waits, and runs an engine against a stand-in provider on 127.0.0.1 that refuses with 429 and 529, with and without a time; `PI2_LIMIT_BACKOFF_MS` sets the first backoff step (15 seconds otherwise), `PI2_LIMIT_WAIT_MAX_MS` the longest wait when no time is named (6 hours otherwise), and `PI2_LIMIT_REACHED_MS` how long a run must wait for a limit to count as reached (5 minutes otherwise).
+
+A conversation held for a window another conversation learned (#556) has the same `limitWait` and `limit` with `told: true` and `refusals: 0`, and no generation retry behind it: the hold is a `beforeProviderRequest` hook that awaits the window's time (`held` on the wait), so it is not kept, and it ends with Stop by the hook's context's abort signal. `PI2_LIMIT_REMEMBER_MS` sets the least time off a named reset must be to be remembered (a minute otherwise). `Waits.remembered(provider)` and `rememberedAll()` answer what is known, which `rememberedLimits()` hands to `limits.ts` for `delegate`'s result and `sub_chats`' list.
 
 The wait payload also includes `model` (`{ provider, modelId }`, or null for a wait restored without the refusing model). The app sends `conversation.carryOn { id, model, since }` for the wait it shows, or `{ id, model, subChats: true }` for a parent's waiting sub-chats. The engine checks which generation retries are still asleep and changes the model, advances the sleep and adds a display-only transcript entry in the same commit. The retry places queued steers as usual, then prepares its first attempt on the selected model. The original submission and task ownership are unchanged. `engine/test/limitwait.ts` covers both requests.
 

@@ -256,6 +256,11 @@ export type Wait = {
 	providerName: string;
 	/** The model that refused, even if the toolbar has since changed the conversation's model. */
 	modelId?: string;
+	/**
+	 * Held before its request, for a window another conversation learned (#556), rather than by a refusal of this run. Shown
+	 * as any wait is, but not kept: the window it waits for is the engine's own, and a restart asks again.
+	 */
+	held?: true;
 };
 
 export type WaitSettings = {
@@ -265,6 +270,11 @@ export type WaitSettings = {
 	maxWaitMs: number;
 	/** The furthest time a provider may name that a run still waits for. */
 	maxNamedMs: number;
+	/**
+	 * A reset at most this far off is that provider's own business, between the conversations of one run: only a longer
+	 * one is remembered for the provider, so that the others on it wait rather than ask (#556).
+	 */
+	rememberAtLeastMs: number;
 	/**
 	 * A provider's limit counts as reached, for the person to be told (an Inbox notice, a notification), once a run waits
 	 * for it this long from its first refusal: a limit of a minute or less is not news, a used-up window is.
@@ -292,10 +302,24 @@ export type Episode = {
 /** What became of an episode: it was reached (or what is known of it changed), work carried on, or nothing waits any more. */
 export type EpisodeChange = { phase: "reached" | "carried_on" | "ended"; episode: Episode; at: number };
 
+/**
+ * A provider's limit that a refusal said is used up until a time it named (#556). One conversation on the provider learned
+ * it; the others on the same provider wait for the same time instead of asking and being refused, and an agent that hands
+ * out work is told. Kept while that time lasts, and forgotten as soon as the provider answers a request.
+ */
+export type Remembered = {
+	provider: string;
+	providerName: string;
+	/** The conversation whose refusal named the reset. */
+	from: number;
+	/** The reset the provider named, in milliseconds since 1970. */
+	until: number;
+};
+
 const HOUR = 3_600_000;
 /** The backoff grows to 40 times the first wait (10 minutes, by default) and stays there. */
 const BACKOFF_CAP = 40;
-export const DEFAULTS: WaitSettings = { backoffMs: 15_000, maxWaitMs: 6 * HOUR, maxNamedMs: 8 * 24 * HOUR, reachedAfterMs: 5 * 60_000 };
+export const DEFAULTS: WaitSettings = { backoffMs: 15_000, maxWaitMs: 6 * HOUR, maxNamedMs: 8 * 24 * HOUR, rememberAtLeastMs: 60_000, reachedAfterMs: 5 * 60_000 };
 
 /** What the engine's settings answer pi-durable (see the patch): how long to wait, and the attempts spent waiting. */
 export type Decision = { waitMs?: number | false; spent: number };
@@ -326,6 +350,16 @@ export class Waits {
 	 * and are no news, unless refused again.
 	 */
 	readonly #released = new Set<number>();
+	/** By provider: the window a refusal named, while it is still used up (#556). */
+	readonly #remembered = new Map<string, Remembered>();
+	/** By provider: the conversation whose request was let through at the window's time, which the others wait to see answered. */
+	readonly #let = new Map<string, number>();
+	/** Conversations whose next request is sent at once, because the person asked for it: a message after Stop, or Carry on. */
+	readonly #asked = new Set<number>();
+	/** Conversations the person stopped: a message they send one next asks for a request now, whatever a window says (#556). */
+	readonly #stopped = new Set<number>();
+	/** By provider: the conversations to wake when what is known of its window changes. */
+	readonly #woken = new Map<string, Set<() => void>>();
 
 	constructor(settings: WaitSettings, callbacks: Callbacks, saved: Record<string, Wait> = {}) {
 		this.#settings = settings;
@@ -364,6 +398,145 @@ export class Waits {
 
 	all(): ReadonlyMap<number, Wait> {
 		return this.#waits;
+	}
+
+	/** The window a provider's refusal named, while it is still used up: for what a delegating agent is told (#232). */
+	remembered(provider: string): Remembered | undefined {
+		const window = this.#remembered.get(provider);
+		return window === undefined || window.until <= this.#callbacks.now() ? undefined : window;
+	}
+
+	/** Every provider whose limit a refusal said is used up now. */
+	rememberedAll(): Remembered[] {
+		return [...this.#remembered.keys()].flatMap((provider) => {
+			const window = this.remembered(provider);
+			return window === undefined ? [] : [window];
+		});
+	}
+
+	/**
+	 * Before a request of `id` goes to `provider`: while a window a refusal named is still used up, wait for its time
+	 * without asking, shown as a wait for a limit. When the time comes one request goes, and the others wait for its
+	 * answer, which ends the window for all (#556). `abort`, which Stop ends, gives up the wait, as does the person's own
+	 * request (`ask`).
+	 */
+	async gate(id: number, provider: string, abort?: AbortSignal): Promise<void> {
+		if (this.#asked.delete(id)) {
+			const known = this.#remembered.get(provider);
+			if (known !== undefined) this.#callbacks.log(`conversation ${id} asks ${known.providerName} now, as the person asked it to, rather than waiting until ${iso(known.until)}`);
+			return;
+		}
+		let held: Wait | undefined;
+		let why = "the run ended (stopped)";
+		const stopped = new Promise<void>((resolve) => abort?.addEventListener("abort", () => resolve(), { once: true }));
+		/** Note the hold and show it: once, and again when the time it waits for moves. */
+		const note = (window: Remembered, now: number): void => {
+			if (held !== undefined && held.until === window.until) return;
+			const first = held === undefined;
+			held = { kind: "rate_limit", since: held?.since ?? now, until: window.until, told: true, refusals: 0, attempt: 0, provider, providerName: window.providerName, held: true };
+			this.#waits.set(id, held);
+			this.#callbacks.changed(id, held);
+			this.#callbacks.log(
+				first
+					? `conversation ${id} waits for ${window.providerName}'s rate limit until ${iso(window.until)}, the time conversation ${window.from} was told, without asking`
+					: `conversation ${id} waits for ${window.providerName}'s rate limit until ${iso(window.until)}, later than before`,
+			);
+		};
+		try {
+			for (;;) {
+				if (abort?.aborted === true) return;
+				// Read as it is kept, not as `remembered` answers: a time that has come still says who goes first.
+				const window = this.#remembered.get(provider);
+				if (window === undefined) {
+					why = "nothing is known of its limit any more";
+					return;
+				}
+				// Carry on, chosen while this run was already held.
+				if (this.#asked.delete(id)) {
+					why = "the person chose to carry on now";
+					return;
+				}
+				const now = this.#callbacks.now();
+				if (now >= window.until) {
+					// The time it named has come: one request goes, and the others follow when it is answered.
+					if (!this.#let.has(provider)) {
+						why = "the time it named has come, and its request goes now";
+						this.#let.set(provider, id);
+						if (held !== undefined) this.#callbacks.log(`conversation ${id} asks ${window.providerName} again at the time it named; the other conversations on ${window.providerName} follow when it answers one of them`);
+						return;
+					}
+					// Behind the one let through: shown as a wait too, until that one is answered.
+					note(window, now);
+					await Promise.race([stopped, this.#next(provider)]);
+					continue;
+				}
+				note(window, now);
+				await Promise.race([stopped, this.#next(provider), sleep(window.until - now)]);
+			}
+		} finally {
+			if (held !== undefined && this.#waits.get(id) === held) {
+				this.#waits.delete(id);
+				this.#callbacks.changed(id, undefined);
+				this.#callbacks.log(`conversation ${id} stopped waiting for ${held.providerName}'s rate limit: ${why}`);
+			}
+		}
+	}
+
+	/** The person stopped this conversation's run: their next message to it asks for a request now (#556). */
+	stopped(id: number): void {
+		this.#stopped.add(id);
+	}
+
+	/**
+	 * The person sent this conversation a message: after a stop, its next request is sent even if a window is remembered.
+	 * A message sent to a run that waits goes with the request after the wait (#324), so that asks for nothing.
+	 */
+	ask(id: number): void {
+		if (this.#stopped.delete(id)) this.#asked.add(id);
+	}
+
+	/** The person chose to carry on now, while a window holds this run: send its request rather than wait for the time. */
+	release(id: number): void {
+		const wait = this.#waits.get(id);
+		if (wait?.held !== true) return;
+		this.#asked.add(id);
+		this.#wake(wait.provider);
+	}
+
+	/** What a refusal named is kept for its provider, so that the conversations on it wait rather than ask (#556). */
+	#learn(provider: string, providerName: string, from: number, until: number, now: number): void {
+		if (until - now <= this.#settings.rememberAtLeastMs) return;
+		const kept = this.#remembered.get(provider);
+		if (kept !== undefined && kept.until >= until) return;
+		this.#remembered.set(provider, { provider, providerName, from, until });
+		this.#callbacks.log(
+			kept === undefined
+				? `conversation ${from} was told ${providerName}'s limit is used up until ${iso(until)}: the other conversations on ${providerName} wait for that time rather than ask`
+				: `conversation ${from} was told ${providerName}'s limit is used up until ${iso(until)}, later than the ${iso(kept.until)} known: the other conversations on ${providerName} wait for that time`,
+		);
+		this.#wake(provider);
+	}
+
+	/** Nothing holds the conversations on `provider` back any more: the window is over, or the one request let through ended. */
+	#forget(provider: string, why: string): void {
+		const window = this.#remembered.get(provider);
+		const let_ = this.#let.delete(provider);
+		if (window === undefined && !let_) return;
+		this.#remembered.delete(provider);
+		if (window !== undefined) this.#callbacks.log(`${window.providerName}'s limit: ${why}; a conversation on ${window.providerName} that asks now is not held back`);
+		this.#wake(provider);
+	}
+
+	/** A promise that settles when what is known of `provider`'s window changes, or its request let through ends. */
+	#next(provider: string): Promise<void> {
+		const promise = new Promise<void>((resolve) => this.#woken.set(provider, (this.#woken.get(provider) ?? new Set<() => void>()).add(resolve)));
+		return promise;
+	}
+
+	#wake(provider: string): void {
+		const waiting = this.#woken.get(provider);
+		this.#woken.delete(provider);
+		for (const wake of waiting ?? []) wake();
 	}
 
 	/**
@@ -408,6 +581,8 @@ export class Waits {
 				const end = new Date(limit.until).toISOString();
 				return this.#giveUp(message, id, current, `${providerName} named ${end} for asking again, later than pi² waits by itself (${duration(this.#settings.maxNamedMs)})`, spent);
 			}
+			// Another conversation on the provider need not ask and be refused too (#556).
+			if (limit.kind === "rate_limit") this.#learn(message.provider, providerName, id, limit.until, now);
 			// Spread a little, so that runs refused together do not all ask again in the same second.
 			const spread = Math.min(30_000, Math.max(Math.min(1000, this.#settings.backoffMs), wait * 0.1));
 			waitMs = wait + this.#callbacks.random() * spread;
@@ -448,8 +623,10 @@ export class Waits {
 		this.#review(provider);
 	}
 
-	/** A response that is not an error came for the conversation: a wait it had is over. */
-	answered(id: number): void {
+	/** A response that is not an error came for the conversation: a wait it had is over, and a window it was told of is too. */
+	answered(id: number, provider?: string): void {
+		// A request the provider answered says its window is over, whoever asked (#556).
+		if (provider !== undefined) this.#forget(provider, "it answered a request, so its limit has reset");
 		const wait = this.#waits.get(id);
 		if (wait === undefined) return;
 		const now = this.#callbacks.now();
@@ -476,6 +653,8 @@ export class Waits {
 		for (const [id, wait] of [...this.#waits]) {
 			if (!ids.has(id)) this.#end(id, `stopped waiting for ${wait.kind === "overloaded" ? `${wait.providerName} being overloaded` : `${wait.providerName}'s rate limit`}: the run ended (stopped) after ${duration(this.#callbacks.now() - wait.since)}`, true);
 		}
+		// A conversation let through that is not working any more answered nothing: nothing waits behind it.
+		for (const [provider, id] of [...this.#let]) if (!ids.has(id)) this.#forget(provider, "the request let through ended without an answer");
 	}
 
 	#giveUp(message: AssistantMessage, id: number, current: Wait | undefined, why: string, spent: number): Decision {
@@ -492,6 +671,8 @@ export class Waits {
 		this.#released.delete(id);
 		this.#callbacks.changed(id, undefined);
 		if (line !== undefined) this.#callbacks.log(plain ? `conversation ${id} ${line}` : `conversation ${id} stopped waiting: ${line}`);
+		// A request that was let through ended without an answer: the conversations held behind it need not wait for one.
+		if (this.#let.get(wait.provider) === id) this.#forget(wait.provider, "the request let through ended without an answer");
 		if (review) this.#review(wait.provider);
 	}
 
@@ -548,6 +729,16 @@ export class Waits {
 	}
 }
 
+/** A time as engine.log writes it: "2026-11-17T20:15:03Z". */
+function iso(at: number): string {
+	return new Date(at).toISOString().replace(/\.\d+Z$/, "Z");
+}
+
+/** A pause of this long, which does not keep the engine's process alive by itself. */
+function sleep(ms: number): Promise<void> {
+	return new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)).unref?.());
+}
+
 /** "42 s", "14 min", "2 h 5 min", "3 days". */
 export function duration(ms: number): string {
 	const seconds = Math.max(0, Math.round(ms / 1000));
@@ -588,6 +779,7 @@ export const limitWait: Feature = (host, engine: Engine) => {
 		backoffMs: setting("PI2_LIMIT_BACKOFF_MS", DEFAULTS.backoffMs),
 		maxWaitMs: setting("PI2_LIMIT_WAIT_MAX_MS", DEFAULTS.maxWaitMs),
 		maxNamedMs: DEFAULTS.maxNamedMs,
+		rememberAtLeastMs: setting("PI2_LIMIT_REMEMBER_MS", DEFAULTS.rememberAtLeastMs),
 		reachedAfterMs: setting("PI2_LIMIT_REACHED_MS", DEFAULTS.reachedAfterMs),
 	};
 	// Commit before pi-durable stores the sleep. Write only this wait, so a change to another run cannot restore
@@ -602,6 +794,13 @@ export const limitWait: Feature = (host, engine: Engine) => {
 		random: Math.random,
 		providerName: (id) => engine.providers().models.getProvider(id)?.name ?? id,
 		changed: (id, wait) => {
+			// A hold waits for a window the engine learned from another conversation's refusal, and is not kept: a restart
+			// asks again, and has no window to hold by (#556).
+			if (wait?.held === true) {
+				engine.stateChanged(id);
+				engine.activityChanged();
+				return;
+			}
 			// Shown once stored, so that what Activity shows has been kept (a test waits for it before it kills the engine).
 			void save(id, wait).then(() => {
 				engine.stateChanged(id);
@@ -652,7 +851,7 @@ export const limitWait: Feature = (host, engine: Engine) => {
 			const switched = await engine.harness().commit(async (tx) => {
 				const { conversations } = await tx.doc(Library);
 				const rootMeta = conversations[String(root)];
-				if (isPutAway(rootMeta) || (rootMeta?.parent !== undefined && isPutAway(conversations[String(rootMeta.parent)]))) return [];
+				if (isPutAway(rootMeta) || (rootMeta?.parent !== undefined && isPutAway(conversations[String(rootMeta.parent)]))) return { slept: [], held: [] };
 				const saved = await tx.doc(LimitWaits);
 				const candidates = [];
 				for (const [id, wait] of waitsOf().all()) {
@@ -682,14 +881,36 @@ export const limitWait: Feature = (host, engine: Engine) => {
 					await tx.appendEntry(chat, { kind: CARRY_ON_ENTRY, data: { text: `You changed the model from ${from} to ${to} and carried on.` } });
 					changed.push({ id, wait, from });
 				}
-				if ("subChats" in scope && changed.length > 0) {
-					const from = changed.map((change) => `#${change.id}: ${change.from}`).join(", ");
-					await tx.appendEntry(conversation, { kind: CARRY_ON_ENTRY, data: { text: `You changed the model for ${changed.length === 1 ? "1 sub-chat" : `${changed.length} sub-chats`} to ${to} and carried on (${from}).` } });
+				// A wait held for a window another conversation learned has no sleep to advance: the choice sends its request
+				// now, and the model chosen is the conversation's from the next request (#556).
+				const held = [];
+				for (const [id, wait] of waitsOf().all()) {
+					if (wait.held !== true) continue;
+					const meta = conversations[String(id)];
+					if ("subChats" in scope ? meta?.parent !== root || meta.version === true : id !== root || wait.since !== scope.since) continue;
+					if (isPutAway(meta)) continue;
+					held.push({ id, chat: id as unknown as ConversationId, wait });
 				}
-				return changed;
+				const moved = [];
+				for (const { id, chat, wait } of held) {
+					const agent = await tx.doc(AgentDoc, chat);
+					if (agent.model?.provider === model.provider && agent.model.modelId === model.modelId) continue;
+					agent.model = model;
+					const thinking = defaultThinking(model);
+					if (agent.thinkingLevel === undefined && thinking !== null) agent.thinkingLevel = thinking;
+					await tx.appendEntry(chat, { kind: CARRY_ON_ENTRY, data: { text: `You ended the wait for ${wait.providerName}'s limit and sent its request now; the conversation's model is ${to} from the next request.` } });
+					moved.push(id);
+				}
+				const every = [...changed.map((change) => change.id), ...moved];
+				if ("subChats" in scope && every.length > 0) {
+					const from = changed.map((change) => `#${change.id}: ${change.from}`).join(", ");
+					await tx.appendEntry(conversation, { kind: CARRY_ON_ENTRY, data: { text: `You changed the model for ${every.length === 1 ? "1 sub-chat" : `${every.length} sub-chats`} to ${to} and carried on${from === "" ? "" : ` (${from})`}.` } });
+				}
+				return { slept: changed, held: moved };
 			}, engine.context());
-			for (const { id, wait } of switched) waitsOf().switched(id, wait);
-			return switched.map(({ id }) => id);
+			for (const { id, wait } of switched.slept) waitsOf().switched(id, wait);
+			for (const id of switched.held) waitsOf().release(id);
+			return [...switched.slept.map(({ id }) => id), ...switched.held];
 		},
 		start: async () => {
 			const doc = await engine.harness().snapshot(LimitWaits, engine.context());
@@ -707,10 +928,21 @@ export const limitWait: Feature = (host, engine: Engine) => {
 				afterResponse: (message, api) => {
 					// An answer, not an error or a request stopped part way.
 					const stop = (message as { stopReason?: string }).stopReason;
-					if (stop === "stop" || stop === "length" || stop === "toolUse") waitsOf().answered(api.conversationId as unknown as number);
+					if (stop === "stop" || stop === "length" || stop === "toolUse") waitsOf().answered(api.conversationId as unknown as number, message.provider);
+				},
+			}),
+			// A request to a provider whose window another conversation learned waits for that time without being sent #556).
+			hook(GenerationTask, {
+				beforeProviderRequest: async (request, api, context) => {
+					await waitsOf().gate(api.conversationId as unknown as number, request.model.provider, context.abortSignal);
+					return undefined;
 				},
 			}),
 		],
+		// A message the person sends a conversation they stopped asks for a request now, whatever a window says (#556).
+		stopped: (id) => waitsOf().stopped(id),
+		messageSent: (id) => waitsOf().ask(id),
+		rememberedLimits: () => waitsOf().rememberedAll(),
 		runsChanged: (working) => {
 			waitsOf().working(working);
 			for (const id of previous) if (!working.has(id)) void logProviderError(id);
@@ -729,11 +961,13 @@ export const limitWait: Feature = (host, engine: Engine) => {
 		},
 		state: (view) => {
 			const wait = waitsOf().get(view.conversation.id as unknown as number);
-			// Only while the run sleeps: once it asks again, the request in flight shows as any other. The time is the
-			// sleep's own, which pi-durable took a moment after this file decided on it.
+			// Only while the run waits: once it asks again, the request in flight shows as any other. The time is the
+			// sleep's own, which pi-durable took a moment after this file decided on it; a hold has no sleep, and waits for
+			// the time another conversation was told (#556).
 			const sleep = (view.docs["pi.live"] as { generation?: { retry?: { at?: unknown } } } | undefined)?.generation?.retry;
-			if (wait === undefined || sleep === undefined) return { limitWait: null };
-			return { limitWait: { ...shown(wait), until: typeof sleep.at === "number" ? sleep.at : wait.until } };
+			if (wait === undefined || (sleep === undefined && wait.held !== true)) return { limitWait: null };
+			const until = sleep !== undefined && typeof sleep.at === "number" ? sleep.at : wait.until;
+			return { limitWait: { ...shown(wait), until } };
 		},
 		activity: (id) => {
 			const wait = waitsOf().get(id);

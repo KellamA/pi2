@@ -24,7 +24,7 @@ import { documents } from "./documents.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
-import { type EpisodeChange, limitWait, type Wait } from "./limitwait.ts";
+import { type EpisodeChange, limitWait, type Remembered, type Wait } from "./limitwait.ts";
 import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
@@ -151,6 +151,11 @@ export type FeatureParts = {
 	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
 	 */
 	planLimits?(): ProviderLimits[];
+	/**
+	 * The providers whose limit a refusal said is used up until a time it named, for what an agent that hands out work is
+	 * told (#556): `delegate`'s result and `sub_chats`' list (limits.ts). Only one feature answers it (limitwait.ts).
+	 */
+	rememberedLimits?(): Remembered[];
 	/** The wait for a provider's limit a conversation's run is in, if any: for `sub_chats`' list. Only one feature answers it (limitwait.ts). */
 	limitWaitOf?(id: number): Wait | undefined;
 	/** The person's choice to advance sleeping generation retries with a different model (limitwait.ts). */
