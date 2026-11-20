@@ -9,6 +9,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { installHash } from "./installed.ts";
 import { COMPACTION_PATCHES } from "./patch-compaction.ts";
 import { INPUT_PATCHES } from "./patch-inputs.ts";
 
@@ -388,3 +389,6 @@ for (const patch of PATCHES) {
 	console.log(`patch-dependencies: ${patch.file}: ${patch.why}`);
 }
 if (failed) process.exit(1);
+// The install now carries these patches, so the type-check and the tests may run against it (#521). No stamp after a
+// failure: the tree is patched in part, and that is what a stamp would report as current.
+writeFileSync(join(engine, "node_modules", ".pi2-installed.json"), `${JSON.stringify({ hash: installHash(engine) }, null, "\t")}\n`);

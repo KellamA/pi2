@@ -15,6 +15,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scratchRoot } from "../src/scratch.ts";
 import { socketPathFor } from "../src/socket.ts";
+import { installedState, STALE_MESSAGE } from "../scripts/installed.ts";
+
+// A test file run alone stops here too, at once and with the same line, rather than failing somewhere in the engine it
+// starts (#521). `npm test` checks this first; this is what a file run by hand meets.
+if (installedState(join(import.meta.dirname, "..")) !== "current") {
+	console.error(STALE_MESSAGE);
+	process.exit(1);
+}
 
 /** The data folders of the engines a test talked to, whose scratch folders (outside the data folder) go when it ends. */
 const homes = new Set<string>();
