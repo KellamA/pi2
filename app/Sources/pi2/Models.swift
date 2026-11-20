@@ -578,6 +578,11 @@ struct WakeItem: Codable, Equatable, Identifiable {
     let kind: String
     /// The sub-chat's number, or the command's id.
     let ref: String
+    /// The project of the conversation woken, and for a sub-chat of a project's orchestrator, when its report wakes it
+    /// and the batch it belongs to (docs/projects.md, 4.3). Absent from an engine older than these fields.
+    var projectId: String?
+    var wake: String?
+    var batch: String?
     /// "sub-chat 12 “Fix login”", "background command bg-3 (`npm test`)".
     let label: String
     let startedAt: Double
@@ -643,6 +648,9 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     /// The project its conversation belongs to, and the agent it runs as (docs/projects.md, 4.3).
     var projectId: String?
     var runsAs: String?
+    /// The last line of text its agent wrote, at most 140 characters, or nil from an engine older than this field
+    /// (docs/projects.md, 4.3): the Now tab's "working" row.
+    var lastLine: String?
     var id: Int { conversationId }
 }
 
@@ -993,13 +1001,20 @@ struct UsageSummary: Codable, Equatable {
         var unpriced: Bool? = nil
         /// Picture models are in a different catalog from the models that answer in a conversation.
         var pictureName: String? = nil
-        var id: String { pictureName == nil ? key : "picture:\(key)" }
+        /// A model that looked at pictures for one that cannot see them (#540): its own spend, apart from its answers.
+        var lookName: String? = nil
+        var id: String { pictureName == nil && lookName == nil ? key : "extra:\(pictureName ?? lookName ?? key)" }
     }
     struct AgentRow: Codable, Equatable, Identifiable {
         let agentId: String
         let cost: Double
         let tokens: Int
         var id: String { agentId }
+    }
+    /// Today's spending of one project (docs/projects.md, 4.3), as the board's Settings tab reads of its limits (#478).
+    struct ProjectSpend: Codable, Equatable, Identifiable {
+        let id: String
+        let today: Spend
     }
     struct ConversationRow: Codable, Equatable, Identifiable {
         let id: Int
@@ -1018,6 +1033,7 @@ struct UsageSummary: Codable, Equatable {
     }
     let models: [ModelRow]
     let agents: [AgentRow]
+    var projects: [ProjectSpend]? = nil
     let conversations: [ConversationRow]
     let total: Spend
     let today: Spend

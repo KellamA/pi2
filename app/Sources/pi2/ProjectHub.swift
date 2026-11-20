@@ -41,19 +41,28 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let folderMissing: Bool?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
-    /// The project's settings (docs/projects.md, section 8) as the event sends them. The Agents tab reads the switches
-    /// of 8.1; the rest are the Settings tab's (#478).
-    let settings: Settings?
+    /// The project's settings (docs/projects.md, section 8) as the `projects` event sends them. The Agents tab reads
+    /// the switches of 8.1; the Settings tab reads the rest: when reports wake the orchestrator, and the limits (#478).
+    var settings: Settings? = nil
 
-    /// A project's settings, as far as the Agents tab reads them (docs/projects.md, section 8). The parts other tabs
-    /// read (limits, `wakeOnReports`) are left out, so a change to them changes nothing here.
+    /// A project's settings: the switches of 8.1, which the Agents tab reads, and the rest, which the Settings tab
+    /// reads. A change to one part changes nothing in the tabs reading the other.
     struct Settings: Decodable, Equatable {
+        /// What the orchestrator may do without asking, by switch name (8.1).
         let withoutAsking: [String: Bool]?
+        /// The person's switch for reports waking the orchestrator.
+        let wakeOnReports: Bool
+        struct Limits: Decodable, Equatable {
+            /// Percent of a plan window, 1 to 100, or nil for none.
+            let planShare: Int?
+            /// Dollars a day, or nil for none.
+            let dailySpend: Double?
+        }
+        let limits: Limits
     }
 
     /// Whether the orchestrator may do what the switch of 8.1 named `name` governs without asking.
     func allows(_ name: String) -> Bool { settings?.withoutAsking?[name] ?? false }
-
     /// What the rules add to each request, for the Rules tab; nil when the engine sends none.
     let ruleTokens: RuleTokens?
 }
@@ -161,6 +170,55 @@ extension EngineClient {
     func project(_ id: String) -> ProjectRow? {
         guard projectsPreview else { return nil }
         return projects.first { $0.id == id && $0.deletedAt == nil }
+    }
+}
+
+/// What the app has told the engine it shows of a project, through `projects.watch` (docs/projects.md, 4.2, 10.3): the
+/// one place the board's tabs say so, the Now tab (#472) and the Work tab (#479) both. The engine keeps one watch for
+/// each connection, so every send names the project the person is looking at and all of that project's tabs on screen.
+/// A tab that comes can appear before the tab that goes disappears — switching tabs, switching projects, folding the
+/// board and closing the window alike — so a going tab tells the engine what is left rather than emptying the watch, and
+/// there is nothing for it to undo: whichever of the two arrives last, the engine is left watching the tabs that show.
+@MainActor
+final class ProjectTabWatch {
+    static let shared = ProjectTabWatch()
+    /// The tabs each project's board shows now, by project id, and the projects in the order they were last shown in.
+    private var shown: [String: Set<HubTab>] = [:]
+    private var order: [String] = []
+    /// The last send, so that the calls reach the engine in the order they were made.
+    private var sending: Task<Void, Never>?
+
+    func shows(_ project: String, tab: HubTab, engine: EngineClient) {
+        var tabs = shown[project] ?? []
+        guard !tabs.contains(tab) else { return }
+        tabs.insert(tab)
+        shown[project] = tabs
+        order.removeAll { $0 == project }
+        order.append(project)
+        send(engine)
+    }
+
+    func hides(_ project: String, tab: HubTab, engine: EngineClient) {
+        guard var tabs = shown[project], tabs.contains(tab) else { return }
+        tabs.remove(tab)
+        shown[project] = tabs
+        send(engine)
+    }
+
+    /// The newest project that still has a tab on screen, with every tab of it that does; the app shows none when there
+    /// is no such project.
+    private func send(_ engine: EngineClient) {
+        let params: [String: Any]
+        if let project = order.last(where: { !(shown[$0] ?? []).isEmpty }) {
+            params = ["projectId": project, "tabs": (shown[project] ?? []).map(\.rawValue)]
+        } else {
+            params = ["projectId": NSNull(), "tabs": [String]()]
+        }
+        let before = sending
+        sending = Task {
+            _ = await before?.value
+            _ = try? await engine.call("projects.watch", params)
+        }
     }
 }
 

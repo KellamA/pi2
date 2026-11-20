@@ -74,6 +74,8 @@ struct ChatSettingsView: View {
 
             PictureModelSection(engine: engine)
 
+            LookModelSection(engine: engine)
+
             ChatMemorySection(engine: engine, enabled: settings.memory, setEnabled: { on in change(["memory": on]) })
                 .id(SettingsSection.memory)
             AgentNotesSection(engine: engine, enabled: settings.memory)
@@ -196,6 +198,70 @@ private struct PictureModelSection: View {
         Task {
             do {
                 try await engine.call("pictures.setModel", ["model": model.map { ["provider": $0.provider, "modelId": $0.modelId] } ?? NSNull()])
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// The model that looks at pictures for a conversation's own model that cannot see them (#540, engine/src/picturelook.ts):
+/// the agent asks its question about a picture file and the answer comes back as text. None until the person picks one.
+private struct LookModelSection: View {
+    let engine: EngineClient
+    @State private var problem: String?
+    private let none = "None"
+
+    var body: some View {
+        let models = engine.look?.models ?? []
+        let choice = engine.look?.model
+        let chosen = models.first { $0.ref == choice }
+        Section {
+            Picker(selection: Binding(get: { chosen?.ref }, set: { choose($0) })) {
+                Text(none).tag(ModelRef?.none)
+                ForEach(models, id: \.ref) { model in
+                    Text("\(model.displayName) — \(price(model))").tag(ModelRef?.some(model.ref))
+                }
+            } label: {
+                Text("Model that looks at pictures")
+            } currentValueLabel: {
+                Text(chosen?.displayName ?? none)
+            }
+            if let chosen {
+                Text(price(chosen)).foregroundStyle(.secondary)
+            }
+            if choice != nil, chosen == nil {
+                HStack {
+                    Text("Your chosen model is no longer available. Nothing is offered until you choose another.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear Choice") { choose(nil) }
+                }
+            }
+            if models.isEmpty {
+                Text("None of your connected providers offers a model that takes pictures.").foregroundStyle(.secondary)
+            }
+            if let problem {
+                Text(problem).foregroundStyle(Theme.bad).font(.callout)
+            }
+        } header: {
+            Text("Looking at pictures")
+        } footer: {
+            Text("A conversation's own model may take only text. When it cannot see a picture, its agent can have this model look at one: it answers the agent's question about a picture file in words, and both the question and the picture are sent to this model's provider, which charges for it. Nothing is offered until you choose a model.").formFooter()
+        }
+    }
+
+    private func price(_ model: EngineClient.LookModels.Model) -> String {
+        guard let price = model.price else { return "Price unknown" }
+        let currency = FloatingPointFormatStyle<Double>.Currency(code: "USD").precision(.fractionLength(0...6))
+        return "\(price.input.formatted(currency)) in / \(price.output.formatted(currency)) out per 1M tokens"
+    }
+
+    private func choose(_ model: ModelRef?) {
+        Task {
+            do {
+                try await engine.call("look.setModel", ["model": model.map { ["provider": $0.provider, "modelId": $0.modelId] } ?? NSNull()])
                 problem = nil
             } catch {
                 problem = error.localizedDescription

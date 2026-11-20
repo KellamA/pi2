@@ -520,6 +520,18 @@
 				if (status === "done" && isObject(details) && str(details.modelName)) stats = str(details.modelName);
 				break;
 			}
+			case "look": {
+				// A model that can see answered the agent's question about a picture file (#540).
+				glyph = "picture";
+				const asked = str(args.question).replace(/\s+/g, " ").trim();
+				const several = Array.isArray(args.paths) && args.paths.length > 1 ? ` and ${args.paths.length - 1} more` : "";
+				const file = basename(args.path ?? (Array.isArray(args.paths) ? args.paths[0] : ""));
+				label = [t(active ? "Looking at " : "Looked at "), name(file ? file + several : "a picture")];
+				if (asked) label.push(t(", asking "), muted(quoted(asked.length > 120 ? asked.slice(0, 120) + ELLIPSIS : asked)));
+				label.push(t(dots));
+				if (status === "done" && isObject(details) && str(details.modelName)) stats = str(details.modelName);
+				break;
+			}
 			case "run_code":
 				// A program in the sandbox (#286): nothing on the Mac, so the row says what it is for, not where it ran.
 				glyph = "code";
@@ -784,6 +796,11 @@
 			case "make_picture":
 				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images, name: "Picture", label: "Picture made" + (isObject(details) && str(details.modelName) ? " by " + str(details.modelName) : "") });
 				if (failed || images === 0) outputSection("Result");
+				break;
+			case "look":
+				// What was asked, then the other model's answer (#540).
+				if (str(args.question).trim() !== "") sections.push({ kind: "text", label: "Question", text: str(args.question).trim() });
+				outputSection("Answer");
 				break;
 			case "run_code":
 				if (str(args.code)) sections.push({ kind: "text", label: "Program", text: str(args.code), language: "js" });
