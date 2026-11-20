@@ -363,7 +363,7 @@ async function checkOthersRefused(connection: Connection): Promise<void> {
 		() => undefined,
 		(error: Error) => error.message,
 	);
-	if (key !== "Unknown method: test-copy.answerer") fail("The release engine must not register the test-copy key exchange.");
+	if (!key?.includes('"Unknown method: test-copy.answerer"')) fail(`The release engine must not register the test-copy key exchange: ${key ?? "it answered"}.`);
 	step(`a connection from another program may not answer or change settings for the person: ${verdict.why}`);
 }
 
