@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable {
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
 enum SettingsSection: String {
     // General
-    case appearance, notifications, projects, summaries, background, updates
+    case appearance, notifications, projects, summaries, awake, background, updates
     // Chat
     case instructions, newChats = "new-chats", memory, agentNotes = "agent-notes"
     // Providers
@@ -214,6 +214,8 @@ struct GeneralSettings: View {
                 .id(SettingsSection.projects)
             CompactionDefaultSettings(engine: engine)
                 .id(SettingsSection.summaries)
+            AwakeSettings(engine: engine)
+                .id(SettingsSection.awake)
             BackgroundSettings(home: home)
                 .id(SettingsSection.background)
             UpdateSettings()

@@ -80,6 +80,9 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"projects.archive": () => true, // archiving, restoring and deleting are the person's
 	"projects.unarchive": () => true, // as above
 	"projects.delete": () => true, // as above
+	// Moving a conversation of a deleted project between projects is the person's act, like deleting the project (#531);
+	// the dry run, which changes nothing, stays open to scripts, as a first attempt does.
+	"projects.restoreConversation": (params) => params.dryRun !== true,
 	"projects.startFresh": () => true, // Start fresh
 	"projects.setOrchestrator": () => true, // the orchestrator's role carries its switches and tools
 	"projects.watch": () => true, // a repository attached to a project
@@ -117,6 +120,7 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"settings.finishOnboarding": () => true, // settings.json
 	"settings.setCompaction": () => true, // as above
 	"settings.setAutoArchive": () => true, // as above
+	"settings.setAwake": () => true, // as above: keeping the Mac awake while agents work
 	"backup.create": () => true, // copies the person's database to a chosen folder
 	"recovery.dismiss": () => true, // clears the notice for everyone
 	"limits.dismiss": () => true, // silences the person's provider-limit notice
