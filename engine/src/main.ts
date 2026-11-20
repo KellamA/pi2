@@ -1797,7 +1797,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const fence = "```";
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
-		// The changes made in this conversation (3.12), for each call's line, and the needs still waiting (3.9).
+		// The changes made in this conversation (3.12), for each call's line; a change the person allowed has no
+		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9).
 		const changes = new Map(linesOf(conv.id).map((line) => [line.id, line]));
 		const waiting = new Map(storedNeeds().map((need) => [need.id, need]));
 		/** A call's change, as one quiet line: its summary, and that it was undone (3.12). */
@@ -1805,6 +1806,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			if (typeof id !== "number") return null;
 			const change = changes.get(id);
 			return change === undefined ? null : `${change.summary}${change.undone ? " (undone)" : ""}`;
+		};
+		/** The line of the change allowing the request `id` made, where it made one. */
+		const allowedLine = (id: string): string | null => {
+			const made = [...changes.values()].find((change) => change.need === id);
+			return made === undefined ? null : `${made.summary}${made.undone ? " (undone)" : ""}`;
 		};
 		/** A call's reach request or proposed rule, as one line with its outcome (3.9, 7.2). */
 		const needLine = (id: unknown): string | null => {
@@ -1844,6 +1850,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if (changed !== null) lines.push(`*${changed}*`, "");
 					const asked = needLine(details?.need);
 					if (asked !== null) lines.push(`*${asked}*`, "");
+					// What allowing the request made, when it made something: its line, with its Undo's mark.
+					if (typeof details?.need === "string") {
+						const allowed = allowedLine(details.need);
+						if (allowed !== null) lines.push(`*${allowed}*`, "");
+					}
 				}
 			}
 		}

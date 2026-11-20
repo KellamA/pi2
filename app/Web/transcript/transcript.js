@@ -1207,15 +1207,22 @@
 
 	// MARK: A project's changes and needs (#474)
 
+	/** The change the person's allowing the need `id` made, where it made one: a change with no call of its own. */
+	function allowedChangeOf(need) {
+		for (const change of changes.values()) if (change.need === need) return change;
+		return null;
+	}
+
 	/** How the change line and the need card a call's row carries are built from, for the signature of the part. */
 	function projectKey(call) {
 		const result = results.get(call.callId);
 		const change = P.namedOf(result, "change");
 		const need = P.namedOf(result, "need");
+		const allowed = need !== null ? allowedChangeOf(need) : null;
 		return [
 			change !== null && changes.has(change) ? [rev(changes.get(change)), rev(refusals.get(change)) || 0, undoing.has(change) ? 1 : 0].join("/") : 0,
 			need !== null
-				? [rev(needs.get(need)) || 0, rev(knownNeeds.get(need)) || 0, answered.get(need) ? answered.get(need).ended + "/" + answered.get(need).label : "", rev(refusals.get(need)) || 0, answering.has(need) ? 1 : 0].join("/")
+				? [rev(needs.get(need)) || 0, rev(knownNeeds.get(need)) || 0, answered.get(need) ? answered.get(need).ended + "/" + answered.get(need).label : "", rev(refusals.get(need)) || 0, answering.has(need) ? 1 : 0, allowed !== null ? rev(allowed) + "/" + (undoing.has(allowed.id) ? 1 : 0) + "/" + (rev(refusals.get(allowed.id)) || 0) : 0].join("/")
 				: 0,
 		].join(":");
 	}
@@ -1229,7 +1236,12 @@
 			const change = P.namedOf(result, "change");
 			if (change !== null && changes.has(change)) specs.push(changeSpec(change));
 			const need = P.namedOf(result, "need");
-			if (need !== null) specs.push(needSpec(need));
+			if (need !== null) {
+				specs.push(needSpec(need));
+				// What allowing the request made, when it made something, has no call of its own: its line rides here.
+				const allowed = allowedChangeOf(need);
+				if (allowed !== null) specs.push(changeSpec(allowed.id));
+			}
 		}
 		return specs;
 	}

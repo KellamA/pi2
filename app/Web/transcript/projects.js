@@ -21,8 +21,9 @@
 
 	/**
 	 * The app's `changes` message (the conversation's `projectChanges`, docs/projects.md, 3.12), checked: each line
-	 * names a change, says what changed in the record's own words, and whether it was undone and can be. Anything
-	 * malformed is dropped rather than trusted.
+	 * names a change, says what changed in the record's own words, and whether it was undone and can be. `need` is the
+	 * request whose allowing made it, for a change with no call of its own. Anything malformed is dropped rather than
+	 * trusted.
 	 */
 	function readChanges(list) {
 		return (Array.isArray(list) ? list : [])
@@ -34,6 +35,7 @@
 				canUndo: change.canUndo === true,
 				noUndo: typeof change.noUndo === "string" ? change.noUndo : null,
 				undoneAt: typeof change.undoneAt === "number" ? change.undoneAt : null,
+				need: typeof change.need === "string" ? change.need : null,
 			}))
 			.filter((change) => Number.isInteger(change.id) && change.summary !== "");
 	}
@@ -92,12 +94,15 @@
 	/** A short time, "14:32"; "yesterday 14:32" the day before; "3 Mar 14:32" any earlier. */
 	function whenText(at, now) {
 		if (typeof at !== "number" || !Number.isFinite(at) || typeof now !== "number" || !Number.isFinite(now)) return "";
-		const time = new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+		const two = (value) => String(value).padStart(2, "0");
+		const when = new Date(at);
+		const time = `${two(when.getHours())}:${two(when.getMinutes())}`;
 		const day = (date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-		const days = Math.round((day(new Date(now)) - day(new Date(at))) / 86_400_000);
+		const days = Math.round((day(new Date(now)) - day(when)) / 86_400_000);
 		if (days <= 0) return time;
 		if (days === 1) return `yesterday ${time}`;
-		return `${new Date(at).toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+		return `${when.getDate()} ${MONTHS[when.getMonth()]} ${time}`;
 	}
 
 	/**

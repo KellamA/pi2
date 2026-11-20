@@ -333,6 +333,9 @@ struct ProjectChangeLine: Codable, Equatable, Identifiable {
     let noUndo: String?
     /// When it was undone, in ms since 1970; null while it was not.
     var undoneAt: Double? = nil
+    /// The request whose allowing made this change (docs/projects.md, 3.12), for a change with no call of its own;
+    /// null for any other.
+    var need: String? = nil
 }
 
 /// Whether an agent may use apps on this Mac: which ones, and whether it asks before acting.

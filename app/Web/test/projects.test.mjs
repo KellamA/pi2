@@ -12,9 +12,13 @@ test("the conversation's changes, checked as the app sends them", () => {
 	assert.deepEqual(P.readChanges([{ id: 3.5, summary: "Added a rule" }, "nonsense"]), [], "a fraction is no change's number");
 	assert.deepEqual(P.readChanges([{ id: 3, summary: "" }]), [], "a change says what it changed");
 	const [change] = P.readChanges([
-		{ id: 31, summary: "Added rule r1: “Ship on Fridays”", undone: false, canUndo: true, noUndo: null, undoneAt: null },
+		{ id: 31, summary: "Added rule r1: “Ship on Fridays”", undone: false, canUndo: true, noUndo: null, undoneAt: null, need: null },
+		// A change the person allowed has no call of its own: its line rides on the request that asked for it.
+		{ id: 32, summary: "Changed Forge: access Full access (now Ask first)", undone: false, canUndo: true, noUndo: null, undoneAt: null, need: "n2" },
 	]);
-	assert.deepEqual(change, { id: 31, summary: "Added rule r1: “Ship on Fridays”", undone: false, canUndo: true, noUndo: null, undoneAt: null });
+	assert.deepEqual(change, { id: 31, summary: "Added rule r1: “Ship on Fridays”", undone: false, canUndo: true, noUndo: null, undoneAt: null, need: null });
+	assert.equal(P.readChanges([{ id: 32, summary: "Changed Forge", need: "n2" }])[0].need, "n2");
+	assert.equal(P.readChanges([{ id: 33, summary: "Changed Forge", need: 7 }])[0].need, null, "a need's id is a string");
 });
 
 test("the needs waiting from the conversation, checked the same way", () => {
@@ -53,8 +57,8 @@ test("a change's line: what changed, in the record's own words, and how it reads
 
 test("when a change was undone, as a short time", () => {
 	assert.equal(P.whenText(at(15, 32).at, at(18, 0).now), "15:32");
-	assert.equal(P.whenText(at(23, 59, -1).at, at(0, 1).now), "23:59", "late last night is not yesterday until the day has turned");
 	assert.equal(P.whenText(at(9, 4, -1).at, at(18, 0).now), "yesterday 09:04");
+	assert.equal(P.whenText(at(23, 59, -1).at, at(0, 1).now), "yesterday 23:59");
 	assert.equal(P.whenText(at(9, 4, -9).at, at(18, 0).now), "3 Mar 09:04");
 	assert.equal(P.whenText(null, 0), "");
 });
