@@ -2,8 +2,8 @@ import SwiftUI
 
 /// One note of a project, as the engine's `memory` event sends it (docs/projects.md, 3.8): what an agent of the project
 /// keeps for itself, or a note the person wrote by hand.
-struct ProjectNote: Identifiable, Equatable {
-    struct CarriedFrom: Equatable {
+struct ProjectNote: Identifiable {
+    struct CarriedFrom {
         let agentId: String
         let agentName: String
         let id: String
@@ -12,8 +12,6 @@ struct ProjectNote: Identifiable, Equatable {
     let id: String
     let text: String
     let createdAt: Date
-    /// The conversation that wrote it; nil for a note the person wrote, or one carried over.
-    let conversation: Int?
     /// The agent that wrote it; nil for the person.
     let agentId: String?
     /// Who is given it: nil, every agent of the project; an agent's id, that agent alone (and the person, who shares it).
@@ -28,10 +26,8 @@ struct ProjectNote: Identifiable, Equatable {
 }
 
 /// A project's notes, from the `memory` event's `projects` (docs/projects.md, 4.3), newest first.
-struct ProjectNotes: Equatable {
-    var notes: [ProjectNote] = []
-
-    init() {}
+struct ProjectNotes {
+    let notes: [ProjectNote]
 
     init(_ value: JSONValue?) {
         notes = (value?["notes"]?.arrayValue ?? []).compactMap { item -> ProjectNote? in
@@ -47,11 +43,13 @@ struct ProjectNotes: Equatable {
             }
             return ProjectNote(
                 id: id, text: text, createdAt: Date(timeIntervalSince1970: written / 1000),
-                conversation: item["conversation"]?.intValue, agentId: item["agentId"]?.stringValue,
-                audience: item["audience"]?.stringValue, carriedFrom: carried
+                agentId: item["agentId"]?.stringValue, audience: item["audience"]?.stringValue, carriedFrom: carried
             )
         }
-        .sorted { $0.createdAt > $1.createdAt }
+        // Notes made in the same millisecond, as a batch of them is, keep a settled order rather than taking turns.
+        .sorted { left, right in
+            left.createdAt == right.createdAt ? left.id > right.id : left.createdAt > right.createdAt
+        }
     }
 }
 
@@ -61,8 +59,15 @@ struct ProjectNotesTab: View {
     let model: AppModel
     let project: ProjectRow
 
+    /// The one inset the search field, the notes and the add field share, as the conversation's own parts do.
+    private let inset: CGFloat = 12
+    /// A note is 400 characters at most, which is a dozen lines even in the narrowest board: the row grows to this, so
+    /// that all of one is shown.
+    private let shownLines = 40
+
     @State private var query = ""
     @State private var newNote = ""
+    @State private var adding = false
     @State private var addProblem: String?
     /// The engine's answer when a change to a note failed, by the note's id: shown under that note's field.
     @State private var problems: [String: String] = [:]
@@ -71,29 +76,27 @@ struct ProjectNotesTab: View {
 
     var body: some View {
         let notes = ProjectNotes(engine.extras["memory"]?["projects"]?[project.id]).notes
+        let matching = filtered(notes)
         VStack(spacing: 0) {
-            search
+            // A project with no notes has nothing to search.
+            if !notes.isEmpty { search }
             if notes.isEmpty {
                 empty
-            } else if filtered(notes).isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "note.text").font(.system(size: 22)).foregroundStyle(Theme.tx3)
-                    Text("No notes match “\(query)”.").font(.system(size: 12.5)).foregroundStyle(Theme.tx2)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if matching.isEmpty {
+                noMatch
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        ForEach(filtered(notes)) { note in
-                            row(note)
-                        }
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                list(matching)
             }
             Divider().overlay(Theme.line)
             addField
+        }
+        .onChange(of: notes.map(\.id)) { _, ids in
+            // A note that has gone takes its problem with it.
+            problems = problems.filter { ids.contains($0.key) }
+        }
+        .onChange(of: notes.isEmpty) { _, gone in
+            // The field is gone too, so the search goes with it: a note added later is not filtered by one nobody sees.
+            if gone { query = "" }
         }
     }
 
@@ -111,11 +114,19 @@ struct ProjectNotesTab: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 12))
                 .accessibilityLabel("Search notes")
+                .onExitCommand { query = "" }
+            if !query.isEmpty {
+                Button("Clear Search", systemImage: "xmark.circle.fill") { query = "" }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(Theme.tx3)
+                    .help("Clear the search")
+            }
         }
         .padding(.horizontal, 9).padding(.vertical, 6)
         .background(Theme.window.opacity(0.6), in: .rect(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line))
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.horizontal, inset).padding(.vertical, 8)
         .background(Theme.panel)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
@@ -135,12 +146,37 @@ struct ProjectNotesTab: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var noMatch: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "note.text").font(.system(size: 22)).foregroundStyle(Theme.tx3)
+            Text("No notes match “\(query.trimmingCharacters(in: .whitespacesAndNewlines))”.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.tx2)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func list(_ notes: [ProjectNote]) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(notes) { note in
+                    row(note)
+                }
+            }
+            .padding(inset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     @ViewBuilder
     private func row(_ note: ProjectNote) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             MemoryNoteRow(
                 note: note.memory,
                 writtenBy: writer(note),
+                maxLines: shownLines,
                 save: { text in change(note, "memory.edit", ["projectId": project.id, "id": note.id, "text": text]) },
                 remove: { change(note, "memory.delete", ["projectId": project.id, "id": note.id]) }
             )
@@ -149,7 +185,7 @@ struct ProjectNotesTab: View {
             }
             if let audience = note.audience {
                 HStack(spacing: 6) {
-                    Text("Only for \(name(audience, of: note))").font(.caption).foregroundStyle(Theme.tx2)
+                    Text("Only for \(name(audience, of: note))").font(.caption).foregroundStyle(.secondary)
                     Button("Share with the Project") {
                         change(note, "memory.edit", ["projectId": project.id, "id": note.id, "audience": NSNull()])
                     }
@@ -159,11 +195,15 @@ struct ProjectNotesTab: View {
                 }
             }
         }
+        // A note reads as a note that can be edited, not as an input box: the plain field of the message composer
+        // beside it, not the bezel a field is drawn with. Settings' notes keep theirs.
+        .textFieldStyle(.plain)
     }
 
-    /// The agent's name from the `agents` event, or the one the note kept when it was carried over, or the id itself.
+    /// The agent's name from the `agents` event, or the one the note kept when it was carried over, or what the app calls
+    /// an agent that has gone, as Activity does: never an id, which nobody reads.
     private func name(_ agentId: String, of note: ProjectNote) -> String {
-        engine.agent(agentId)?.name ?? note.carriedFrom?.agentName ?? agentId
+        engine.agent(agentId)?.name ?? note.carriedFrom?.agentName ?? "a deleted agent"
     }
 
     /// Who wrote it, as the row says it: the agent's name. A note the person wrote is "Added by you" in the row.
@@ -176,21 +216,22 @@ struct ProjectNotesTab: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 TextField("Add a note", text: $newNote, prompt: Text("Add a note of your own"), axis: .vertical)
+                    .textFieldStyle(.plain)
                     .labelsHidden()
                     .lineLimit(1...3)
                     .accessibilityLabel("New note")
                     .sendsOnReturn { add() }
                 Button("Add") { add() }
                     .buttonStyle(.piPrimary)
-                    .disabled(newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(adding || newNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .padding(.horizontal, 14).padding(.vertical, 10)
+            .padding(inset)
             .panel(radius: 12, border: Theme.line2)
             if let addProblem {
-                Text(addProblem).foregroundStyle(Theme.bad).font(.callout).padding(.horizontal, 14)
+                Text(addProblem).foregroundStyle(Theme.bad).font(.callout).padding(.horizontal, inset)
             }
         }
-        .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 12)
+        .padding(.horizontal, inset).padding(.top, 8).padding(.bottom, inset)
     }
 
     /// Sends one change of a note, and keeps the engine's answer for that note's row when it fails.
@@ -207,7 +248,9 @@ struct ProjectNotesTab: View {
 
     private func add() {
         let text = newNote.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        // One note at a time: a second Return or click must not add the same note twice.
+        guard !text.isEmpty, !adding else { return }
+        adding = true
         Task {
             do {
                 try await engine.call("memory.add", ["projectId": project.id, "text": text])
@@ -216,6 +259,7 @@ struct ProjectNotesTab: View {
             } catch {
                 addProblem = error.localizedDescription
             }
+            adding = false
         }
     }
 }
