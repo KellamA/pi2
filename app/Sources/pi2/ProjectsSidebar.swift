@@ -282,7 +282,8 @@ private struct RunRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(shown ? .isSelected : [])
-        .help("\(run.waiting ? "Waiting for you" : run.atLimit ? "Waiting for a provider’s limit" : "Working"). Open its conversation in place of the board.")
+        // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
+        .help("Open this agent’s conversation in place of the board")
     }
 }
 
