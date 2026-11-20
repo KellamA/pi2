@@ -22,6 +22,7 @@ Read only the sections that apply to your work. For more on one feature, see its
 | Storage and credentials | [Where things live](#where-things-live) |
 | Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
 | Projects (the preview of #450) | [projects.md](projects.md), the contract every issue of the epic is built against: read its sections 1, 2 and your issue's row in its section 12 |
+| A worker's question that does not hold it (#507, a proposal) | [design/worker-questions.md](design/worker-questions.md), with the proposal written into [projects.md](projects.md)'s sections marked **Proposed (#507, not agreed)**; nothing is built until the owner agrees |
 
 ## The two programs
 

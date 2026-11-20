@@ -437,6 +437,10 @@ type NeedAnswer =
 - **Allow everything answers none of them but approvals**, and not an approval with `projectSwitch` ([13](#13-decisions-this-contract-made), decision 17).
 - **Order**: oldest first, as the Inbox is.
 
+**Proposed (#507, not agreed):** A question or decision put in a sub-chat is served the same way, with one difference in where the answer goes. While the sub-chat's run is going, the answer wakes the sub-chat itself, queued while it answers and given as its next input, within the wakes' bounds. Once the run has ended — read from the report [3.10](#310-reports-and-waking-pi2reports-pi2wakes) keeps, which it does not change — the answer goes instead to the conversation that handed it the work (for the orchestrator's sub-chat, its current one), in the words any answer takes plus whose question it was, the sub-chat and the piece of work, and how to continue it: "The person answered Forge's question in sub-chat 14 “Fix login” (on #28): After the release. Continue the sub-chat with `delegate`'s `chat`." An answer is the person acting, so a project's limit does not hold it back, whichever conversation it wakes.
+
+**Proposed (#507, not agreed):** For a need put in a sub-chat, the card names the agent that asked, the sub-chat's title, and the piece of work when the run was assigned one; the stored need carries the work item's number for that, put with the question.
+
 The empty event, as an app with the preview off, or with nothing waiting, is sent it: `{ "event": "needs", "items": [] }`. An item, as sent:
 
 ```json
@@ -846,7 +850,7 @@ There are three kinds of conversation in a project:
 | `project_settings` | Yes | No | No |
 | `project_rules` | Yes | No | No |
 | `reports` | Yes | No | No |
-| `needs_you` | Yes | Yes | No: `ask_user`, which holds it ([5.5](#55-needs_you-the-orchestrators-and-agents-own-conversations)) |
+| `needs_you` | Yes | Yes | **Proposed (#507, not agreed):** Yes, for a question or decision; `ask_user` for what cannot wait ([5.5](#55-needs_you-the-orchestrators-and-agents-own-conversations)) |
 | `work` | Yes | Yes | Yes |
 | `remember`, `forget` | With memory on: the project's notes | The same | The same |
 | `delegate`, `sub_chats` | To every other agent of the project | To the agents its `delegates` name | Not offered, as today |
@@ -965,7 +969,8 @@ needs_you {
 
 - `ask` puts a question (or, with `choices`, a decision) under Needs you and returns at once: "Put to the person as n12. Carry on with what does not depend on it; their answer will come to you as a message." The answer wakes the conversation ([3.9](#39-needs-you-pi2needs-and-the-inbox)).
 - `withdraw` takes back one of this conversation's items that is still waiting. `list` gives this conversation's items still waiting.
-- **A sub-chat is not offered it.** A sub-chat is not woken ([wakes.md](wakes.md#what-wakes-an-agent)), so an answer could not reach it once it has stopped. It uses `ask_user`, which shows under Needs you as a question and holds it until answered. This is a known gap against the design, which says an agent asks without stopping ([14](#14-questions-for-the-owner), question 8).
+- **Proposed (#507, not agreed):** A sub-chat is offered it too, for a question or a decision. While its run is going, the answer wakes the sub-chat; once the run has ended, the answer goes to the conversation that handed it the work, with whose question it was and how to continue the sub-chat ([3.9](#39-needs-you-pi2needs-and-the-inbox)). `ask_user` stays for what cannot wait: a question whose answer the worker's next step needs, with no other work to do meanwhile. A reach request, a proposed rule or an approval is still not a sub-chat's to put ([5.1](#51-who-is-offered-what)).
+- **A sub-chat is not offered it** (as agreed until the proposal above is): a sub-chat is not woken ([wakes.md](wakes.md#what-wakes-an-agent)), so an answer could not reach it once it has stopped. It uses `ask_user`, which shows under Needs you as a question and holds it until answered. This is a known gap against the design, which says an agent asks without stopping ([14](#14-questions-for-the-owner), question 8).
 
 ### 5.6 `reports` (the orchestrator)
 
@@ -1021,6 +1026,7 @@ Only in a project, with the preview on:
 - `delegate` names only agents of the project; a new sub-chat, or a continued one, is a start, which passes the admission check ([8.3](#83-limits-and-the-one-admission-check)) and asks first when `startAgents` is off. With `wait: false` its result says how the report will come ([5.6](#56-reports-the-orchestrator)).
 - `sub_chats`, in the orchestrator's conversation, lists the sub-chats of its earlier conversations too, still working or not archived, and `delegate` with `chat` continues one of them: Start fresh loses no sub-chat ([6.5](#65-start-fresh)). Each line says whether its last report has been delivered.
 - `remember` and `forget` write the project's notes ([3.8](#38-notes-pi2memory)), each a change with a line and Undo.
+- **Proposed (#507, not agreed):** `ask_user`, in a sub-chat of a project, is told apart from `needs_you` in the `project` section: what does not stop the worker goes under Needs you with `needs_you`, and `ask_user` is for the question whose answer its next step needs, with no other work to do meanwhile. The tool's own definition and description change nowhere.
 
 With the preview off, a conversation of a project agent is offered what its agent's settings say, as any conversation is, and `delegate` hands work to the agents its `delegates` name, as today; its starts still pass the project's admission check ([section 2](#2-the-preview-switch)).
 
@@ -1139,6 +1145,7 @@ Both are in the transcript, after the cached prompt, so nothing before them is s
 | Another agent or the person filed, finished or closed work | "Scout filed #31 “…”."; "Forge finished #28." |
 | The person answered a limit card | "The person started Forge on “…” past the daily limit." |
 | Something came under Needs you from another agent | "Forge's sub-chat 14 asks the person: “…”" |
+| **Proposed (#507, not agreed):** the person answered a worker's question, the answer gone to the worker itself | "The person answered Forge's question in sub-chat 14: “…”" |
 
 The orchestrator's own doings are not news to it, and nor is what a wake already gives it.
 
@@ -1882,5 +1889,5 @@ The page is written as if each recommended answer were given. Each can be answer
 5. **Secrets when carrying over.** *Recommended:* a copy made by carrying over keeps its agent's variables and Allow everything, so the project works as before, and the report lists each such copy by name for the person to see before the run. Copying the Keychain values is a step that is retried until done and shown while incomplete, and the backup is described as what it is: the database and settings, without the Keychain.
 6. **Tools and Undo.** *Recommended:* the table in [5.9](#59-every-change-in-the-hub-its-tool-whether-it-asks-and-its-undo) is every change the hub offers, with its tool action, whether it asks first, and its inverse. The person's alone: archiving, restoring and deleting a project, Start fresh, waking for the whole project, answering Needs you, the preview and carrying over, templates and variables; with no Undo: changing the orchestrator (it starts a fresh conversation) and anything already done on GitHub.
 7. **Limits and the person.** *Recommended:* one check wherever an agent is started, by an agent or by the person, made at the moment it starts. The person starting one from the board past a limit is shown the limit and confirms that one start; Start Anyway on a limit card is the same confirmation.
-8. **A worker's question.** A sub-chat cannot be woken, so a worker's question to the person is `ask_user`, which holds it and shows under Needs you; only the orchestrator's and agents' own conversations ask without stopping. *Recommended:* accept this as a known gap against the design for now, and give the delivery of an answer to a stopped worker an issue of its own.
+8. **A worker's question.** **Proposed (#507, not agreed):** a worker's question goes under Needs you with `needs_you` and does not hold it: the person's answer wakes the worker while its run is going, and once the run has ended goes to the conversation that handed it the work, with whose question it was and how to continue the sub-chat ([5.5](#55-needs_you-the-orchestrators-and-agents-own-conversations)). `ask_user` stays for the question whose answer the worker's next step needs, with no other work to do meanwhile. *Recommended:* say yes to this. As the page stands until then: a sub-chat cannot be woken, so a worker's question to the person is `ask_user`, which holds it and shows under Needs you; only the orchestrator's and agents' own conversations ask without stopping.
 9. **Waking after carrying over.** *Recommended:* a carried-over project keeps waking on, since its work was set going on that footing and would otherwise stop overnight with nobody to review it; a new project starts with it off, as decided.
