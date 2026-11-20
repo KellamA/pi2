@@ -83,6 +83,10 @@ final class EngineClient {
     private(set) var branches: [Int: BranchStatus] = [:]
     /// Worktrees of conversations that were archived or deleted, newest first.
     private(set) var leftBehind: [LeftBehindWorktree] = []
+    /// Whether the projects preview is on, and the projects, as the `projects` event last said (docs/projects.md, 4.3).
+    /// With the preview off the app shows none of them (10.2).
+    private(set) var projectsPreview = false
+    private(set) var projects: [ProjectRow] = []
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -630,6 +634,14 @@ final class EngineClient {
                 let event = try decoder.decode(BranchesEvent.self, from: line)
                 update(\.branches, Dictionary(uniqueKeysWithValues: event.conversations.compactMap { key, value in Int(key).map { ($0, value) } }))
                 update(\.leftBehind, event.leftBehind ?? [])
+            case "projects":
+                // A preview: one the app cannot read is noted in app.log and leaves the window as it was.
+                guard let event = try? decoder.decode(ProjectsEvent.self, from: line) else {
+                    note("The engine's projects event could not be read; projects are not shown.")
+                    return
+                }
+                update(\.projectsPreview, event.preview)
+                update(\.projects, event.projects)
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 update(\.providers, event.providers)
