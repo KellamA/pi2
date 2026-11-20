@@ -1638,7 +1638,9 @@
 				choices.appendChild(allowRule);
 			}
 			// A schedule runs later with no one watching, so each one is a decision of its own: there is no "always".
-			if (!schedule) {
+			// Nor is there one for a request a project's switch asked, which asks each time until the project's Settings
+			// say otherwise, and the engine refuses an "always" for it (#553).
+			if (!schedule && !T.switchAsked(pending)) {
 				const always = button("btn", null, app ? `Always Allow in ${app}` : worktree ? "Always Allow Here" : `Always Allow ${str(pending.tool)} Here`);
 				always.title = app ? `Stop asking about ${app} for the rest of this conversation` : worktree ? "Stop asking about worktrees for sub-chats in this conversation" : `Stop asking about ${str(pending.tool)} in this conversation`;
 				always.addEventListener("click", () => decide("always"));

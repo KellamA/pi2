@@ -15,7 +15,15 @@ struct ProjectsSidebar: View {
         #if PI2_DEVELOPMENT
         let _ = PerfProbe.count("sidebar: projects list drawn")
         #endif
-        List(selection: $model.selection) {
+        // The arrow keys move the List's selection themselves, so a project chosen that way never reaches a row's button:
+        // it has to come through `showProject` here as a click does, or a project whose agent's conversation was opened
+        // earlier in this launch opens on that agent instead of its board (#553).
+        List(selection: Binding(
+            get: { model.selection },
+            set: { next in
+                if case .project(let id) = next { model.showProject(id) } else { model.selection = next }
+            }
+        )) {
             DashboardRow(store: store)
                 .tag(Selection.dashboard)
 
@@ -282,7 +290,8 @@ private struct RunRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(shown ? .isSelected : [])
-        .help("\(run.waiting ? "Waiting for you" : run.atLimit ? "Waiting for a provider’s limit" : "Working"). Open its conversation in place of the board.")
+        // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
+        .help("Open this agent’s conversation in place of the board")
     }
 }
 
@@ -296,7 +305,10 @@ private struct OtherConversations: View {
 
     var body: some View {
         let others = live.others
+        // Open while one of the group is the conversation in place of the board: an agent that stops working moves out of
+        // the working rows and into this group, and its marked row would be hidden until the person unfolded it (#553).
         let shown = model.projectsSidebar.othersShown.contains(project.id)
+            || agent.map { id in others.contains { $0.id == id } } ?? false
         if !others.isEmpty {
             Button {
                 withAnimation(.snappy(duration: 0.2)) {

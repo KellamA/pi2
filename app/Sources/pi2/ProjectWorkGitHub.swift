@@ -215,7 +215,8 @@ struct ProjectWorkGitHub: View {
     private var repositoryName: String {
         [project.repository?.owner, project.repository?.name].compactMap { $0 }.joined(separator: "/")
     }
-    private var agents: [AgentProfile] { engine.allAgents.filter { $0.projectId == project.id } }
+    /// The same workers the work list offers: an issue is given to an agent that can take it and is here to do so (#553).
+    private var agents: [AgentProfile] { workAgents(engine: engine, project: project) }
     private var openIssue: WorkPiece? {
         guard case .issue(let number)? = opened else { return nil }
         return work.issues.first { $0.id == number }
