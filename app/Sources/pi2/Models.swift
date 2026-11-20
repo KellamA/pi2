@@ -527,6 +527,9 @@ struct InboxItem: Codable, Equatable, Identifiable {
     var when: String? = nil
     /// For a command: the rule the engine offers to make of it. Answering "rule" makes this rule; nothing else is sent.
     var rule: RuleOffer? = nil
+    /// For an approval a project's switch asked for: the switch's name (docs/projects.md, 8.1). Only Allow Once and Deny
+    /// answer it: the asking is the project's setting, and the conversation cannot change it.
+    var projectSwitch: String? = nil
     /// For a command: it would be started and left running in the background, so the card says so.
     var background: Bool? = nil
     let title: String

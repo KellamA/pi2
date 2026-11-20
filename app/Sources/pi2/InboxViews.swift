@@ -47,6 +47,10 @@ struct InboxCard: View {
     }
     /// What the "always" button covers, and what it says when hovered. Nil when there is nothing it could cover.
     private var always: (title: String, help: String)? {
+        // A project's switch that is off asks each time on purpose, and only the project's Settings can turn it on: in a
+        // conversation the card offers Allow Once and Deny alone, as the Now tab's card does, and the engine refuses
+        // anything else (#553).
+        if item.projectSwitch != nil { return nil }
         // A schedule runs later with no one watching, so each one is a decision of its own.
         if isSchedule { return nil }
         if let targetApp { return ("Always Allow in \(targetApp)", "Stop asking about \(targetApp) for the rest of this conversation") }
@@ -202,7 +206,8 @@ struct InboxCard: View {
     /// in a repository, its worktrees pi² makes), from now on. The engine makes the rule it offered; only the choice is sent.
     @ViewBuilder
     private var ruleButton: some View {
-        if item.tool == "bash", let rule = item.rule, !rule.words.isEmpty {
+        // A project's switch asks about one action, so there is no rule to make of it either (#553).
+        if item.projectSwitch == nil, item.tool == "bash", let rule = item.rule, !rule.words.isEmpty {
             let who = item.agentName ?? "This agent"
             Button { decide("rule") } label: {
                 // A long command is cut in its middle, so the button still says where the rule holds.
