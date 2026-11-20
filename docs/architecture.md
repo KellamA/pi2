@@ -538,6 +538,6 @@ What reads the log goes by its wording, not by the start of a line: the app's "e
 - macOS ties the Accessibility and Screen Recording permissions to the exact build. After rebuilding a development build, remove pi² from those lists in System Settings and grant it again.
 - Anything running as you can talk to the engine's socket. With computer use on, that includes asking an agent to use the apps you allowed. Only the app can answer an approval or a question there, and only the app can change an agent's settings ([Who may answer for the person](#who-may-answer-for-the-person)).
 - The browser: pi² has to be open; a frame from another site is listed with its address rather than read in place; a page that is not showing in the Browser window counts as hidden to the site. See [browser.md](browser.md).
-- Builds are not signed with a Developer ID or notarized. The script has a path for it (`SIGN_IDENTITY`, `NOTARY_PROFILE`), which has not been exercised.
+- A release is signed with a Developer ID and notarized by the release workflow ([releasing.md](releasing.md)). A build made on a developer's Mac with `app/build.sh` is not, unless `SIGN_IDENTITY` and `NOTARY_PROFILE` are set.
 - Deleting a conversation stops pi² showing it; it does not erase its text from the session file, because pi durable cannot remove a conversation. See [archive.md](archive.md).
 - Not built: remote environments over SSH, MCP sign-in (OAuth), per-run budgets, automatic updates, loading very old messages in very long conversations.
