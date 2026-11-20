@@ -434,13 +434,14 @@ export class Waits {
 			if (held !== undefined && held.until === window.until) return;
 			const first = held === undefined;
 			held = { kind: "rate_limit", since: held?.since ?? now, until: window.until, told: true, refusals: 0, attempt: 0, provider, providerName: window.providerName, held: true };
-			this.#waits.set(id, held);
-			this.#callbacks.changed(id, held);
+			// Logged before it is shown, so that engine.log has the line by the time anything is told of it.
 			this.#callbacks.log(
 				first
 					? `conversation ${id} waits for ${window.providerName}'s rate limit until ${iso(window.until)}, the time conversation ${window.from} was told, without asking`
 					: `conversation ${id} waits for ${window.providerName}'s rate limit until ${iso(window.until)}, later than before`,
 			);
+			this.#waits.set(id, held);
+			this.#callbacks.changed(id, held);
 		};
 		try {
 			for (;;) {
@@ -475,9 +476,9 @@ export class Waits {
 			}
 		} finally {
 			if (held !== undefined && this.#waits.get(id) === held) {
+				this.#callbacks.log(`conversation ${id} stopped waiting for ${held.providerName}'s rate limit: ${why}`);
 				this.#waits.delete(id);
 				this.#callbacks.changed(id, undefined);
-				this.#callbacks.log(`conversation ${id} stopped waiting for ${held.providerName}'s rate limit: ${why}`);
 			}
 		}
 	}

@@ -986,6 +986,7 @@ try {
 	assert.equal(shown.provider, "Stand-in");
 	assert.equal(shown.told, true);
 	assert.equal(shown.refusals, 0, "it was refused nothing: it never asked");
+	await client.until("its hold logged", () => holds().find((line) => line.includes(`conversation ${behind} waits`)));
 	assert.match(holds().at(-1)!, new RegExp(`conversation ${behind} waits for Stand-in's rate limit until .*Z, the time conversation ${learner} was told, without asking$`));
 	assert.equal(requests["window second"], undefined, "the second sent no request while the first waits");
 	// At the time it named, one of them goes; the other follows when it is answered, so each is answered on its first
