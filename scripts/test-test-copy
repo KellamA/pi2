@@ -73,7 +73,7 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
-for command in show size choose answer fill; do
+for command in show size choose answer fill answer-of; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -81,6 +81,10 @@ done
 expect "use: scripts/test-copy show" show test-7
 expect "--hub needs both" show test-7 'project:Demo project#work' --hub folded
 expect "use: scripts/test-copy show" show test-7 8 --hub both
+expect "use: scripts/test-copy answer-of" answer-of test-7
+expect "use: scripts/test-copy answer-of" answer-of test-7 8
+expect "--timeout needs seconds" answer-of test-7 8 42 --timeout
+expect "unknown option --bogus" answer-of test-7 8 42 --bogus
 expect "--hub needs both" reopen test-7 --hub
 expect "use: scripts/test-copy size" size test-7 820
 expect "use: scripts/test-copy size" size test-7 smallest 532
@@ -162,6 +166,7 @@ rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 
 expect "no copy named test-7 was started from this checkout" send test-7 8 hello
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" send test-7 8 hello
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" answer-of test-7 8 42
 expect "no copy named test-7 was started from this checkout" reopen test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
 # Every page PI2_SHOW takes goes through the argument checks, not "conversation must be a positive integer" (#553).
@@ -330,6 +335,7 @@ printf '%s\n' 'app_pid=99999999' "app_exe=$saved/Contents/MacOS/pi2" >"$root/app
 HOME="$T/home" expect "has no recorded engine running" reopen test-7
 HOME="$T/home" expect "has no recorded engine running" answer test-7 8 allow
 HOME="$T/home" expect "has no recorded engine running" fill test-7 600
+HOME="$T/home" expect "has no recorded engine running" answer-of test-7 8 42
 HOME="$T/home" expect "has no recorded app running" show test-7 8
 HOME="$T/home" expect "has no recorded app running" size test-7 smallest
 HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
@@ -406,6 +412,7 @@ HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
 HOME="$T/home" expect "refusing a symlink" conversations test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
+HOME="$T/home" expect "refusing a symlink" answer-of test-7 8 42
 HOME="$T/home" expect "refusing a symlink" reopen test-7
 HOME="$T/home" expect "refusing a symlink" show test-7 8
 HOME="$T/home" expect "refusing a symlink" size test-7 820 532

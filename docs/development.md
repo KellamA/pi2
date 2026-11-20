@@ -298,6 +298,14 @@ scripts/test-copy call test-7 submit "{\"id\":$CHAT,\"text\":\"Hello from a test
 scripts/test-copy send test-7 "$CHAT" 'Hello again' --timeout 120
 ```
 
+An answer whose run was still going when that wait ended is read again by its submission id, without sending the message a second time:
+
+```bash
+scripts/test-copy answer-of test-7 "$CHAT" 42 --timeout 120
+```
+
+It subscribes and follows that submission exactly as `send` follows the one it made, and prints the same JSON, statuses, exit codes and limit; it submits nothing, answers nothing and stops nothing (#553).
+
 The JSON result has `status`, conversation/submission ids and the answer on success. Exit `0`: done; `1`: failed or connection/engine error; `2`: waiting on the person (approval/question items included); `124`: timeout. The hang guard defaults to 600 seconds, at most 600. No approval is answered and no work is stopped when waiting ends. Before acceptance a timeout may have no submission id; inspect before resending. Like `call`, it refuses an unowned copy, an unrecorded engine or a symlink for its data/socket; it also refuses invalid conversation numbers, empty text and invalid limits. The engine's read-only `submission.get { id, submissionId }` reports the durable record and whether that conversation is busy, and refuses a submission belonging to another conversation, including another chat version.
 
 After the answer finishes, archive it (this stops any work still running):
