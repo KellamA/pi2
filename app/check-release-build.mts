@@ -352,7 +352,19 @@ async function checkOthersRefused(connection: Connection): Promise<void> {
 	if (refused === undefined || !refused.includes("Only the person can answer this, in the pi² app")) {
 		fail(`The engine did not refuse an answer from this check's connection as it should: ${refused ?? "it took it"}.`);
 	}
-	step(`a connection from another program may not answer for the person: ${verdict.why}`);
+	const setting = await connection.call("settings.setCompaction", { defaultCompactionTokens: null }).then(
+		() => undefined,
+		(error: Error) => error.message,
+	);
+	if (!setting?.includes("Only the person can do this, in the pi² app")) {
+		fail(`The engine did not refuse a change to settings from this check's connection: ${setting ?? "it took it"}.`);
+	}
+	const key = await connection.call("test-copy.answerer").then(
+		() => undefined,
+		(error: Error) => error.message,
+	);
+	if (key !== "Unknown method: test-copy.answerer") fail("The release engine must not register the test-copy key exchange.");
+	step(`a connection from another program may not answer or change settings for the person: ${verdict.why}`);
 }
 
 /** Stops the engine as the app does when it quits, and checks it stopped cleanly. `exitCode` is for an engine this

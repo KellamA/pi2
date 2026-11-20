@@ -36,7 +36,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { type AttachmentNote, describeAttachments, readUserEntryData, USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { createBackup, restoreBackup } from "./backup.ts";
-import { appBundle, AppCheck, forThePerson, ONLY_IN_THE_APP, unclassified } from "./answers.ts";
+import { appBundle, AppCheck, checkRequestClasses, personOnly } from "./answers.ts";
 import { BACKGROUND_ENTRY, backgroundForSubChat, backgroundMarker, backgroundMarkerDetails, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
 import { BrowserHost, validateBrowser } from "./browser.ts";
@@ -1308,7 +1308,7 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 }
 
 /** Start a chat with pi²'s built-in assistant (chat.ts), on `model` if given, else on the model a new chat starts with. */
-async function createChat(given: unknown): Promise<{ id: ConversationId }> {
+async function createChat(given: unknown, client: Client): Promise<{ id: ConversationId }> {
 	let model: ModelRef;
 	if (given === undefined || given === null) model = await chatModel();
 	else {
@@ -1316,9 +1316,8 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
 		if (typeof ref.provider !== "string" || typeof ref.modelId !== "string") throw new Error("model must be { provider, modelId }");
 		if (providers.models.getModel(ref.provider, ref.modelId) === undefined) throw new Error(`Unknown model: ${ref.provider}/${ref.modelId}`);
 		model = { provider: ref.provider, modelId: ref.modelId };
-		// Chosen for this chat, so the next one starts with it too, as it would after choosing it in the chat.
-		settings.lastChatModel = model;
-		saveSettings();
+		// A script may choose this chat's model, but may not change which model the person's next chat starts with.
+		if ((await mayAnswer(client)).allowed) rememberModel(model, true);
 	}
 	const now = Date.now();
 	// The web starts as chat mode's setting says, and is the chat's own from then on.
@@ -1343,7 +1342,7 @@ async function createChat(given: unknown): Promise<{ id: ConversationId }> {
  * as it was; each is linked to the other on its record. The agent's access, approvals and Allow everything apply from
  * that first message, as in any conversation of its own.
  */
-async function continueChat(params: Params): Promise<{ id: ConversationId; note?: string }> {
+async function continueChat(params: Params, client: Client): Promise<{ id: ConversationId; note?: string }> {
 	const shown = await conversation(params.id);
 	const chatId = chatOf(shown.id);
 	const meta = library.conversations[String(chatId)];
@@ -1396,8 +1395,7 @@ async function continueChat(params: Params): Promise<{ id: ConversationId; note?
 		},
 		context,
 	);
-	settings.lastAgent = agent.id;
-	saveSettings();
+	await rememberAgent(agent.id, client);
 	for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 	const conv = (await harness.conversation(created.id, context))!;
@@ -1410,6 +1408,13 @@ async function continueChat(params: Params): Promise<{ id: ConversationId; note?
 }
 
 // ---- Requests
+
+/** A script may choose an agent for a new conversation, but not for the person's next one. */
+async function rememberAgent(id: string, client: Client): Promise<void> {
+	if (settings.lastAgent === id || !(await mayAnswer(client)).allowed) return;
+	settings.lastAgent = id;
+	saveSettings();
+}
 
 type Params = Record<string, unknown>;
 const text = (params: Params, key: string): string => {
@@ -1440,11 +1445,11 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	/** How late the engine's thread ran since the last time this was asked (lag.ts): for the load script. */
 	"engine.lag": async () => lag.take(),
-	"conversation.create": async (params) => {
+	"conversation.create": async (params, client) => {
 		if (params.chat !== undefined && typeof params.chat !== "boolean") throw new Error("chat must be true or false");
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
 		const confirm = startConfirmation(params);
-		if (params.chat === true) return createChat(params.model);
+		if (params.chat === true) return createChat(params.model, client);
 		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
 		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
@@ -1466,8 +1471,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
-		settings.lastAgent = agent.id;
-		saveSettings();
+		await rememberAgent(agent.id, client);
 		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id, ...(note === undefined ? {} : { note }) };
@@ -1536,6 +1540,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"conversation.fork": async (params) => {
 		const conv = await conversation(params.id);
 		const sourceId = chatOf(conv.id);
+		refuseIfPutAway(sourceId);
+		refuseInArchivedProject(sourceId);
 		const source = library.conversations[String(sourceId)];
 		if (projectOf(sourceId)?.deletedAt !== undefined) throw new Error(PROJECT_DELETED);
 		const now = Date.now();
@@ -1840,7 +1846,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return after;
 	},
 	/** Continue with an Agent (#289): `{ id, agentId, cwd?, text? }`, answered with the new conversation's `{ id }`. */
-	"chat.continueWithAgent": async (params) => continueChat(params),
+	"chat.continueWithAgent": continueChat,
 	"conversation.configure": async (params, client) => {
 		const conv = await conversation(params.id);
 		const id = chatOf(conv.id);
@@ -2791,6 +2797,7 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 		if (fillingProject) throw new Error("A demo project is already being filled in this copy");
 		fillingProject = true;
 		try {
+			// The fixture is itself app-only. These calls and all of their arguments come from the fixture, not the socket.
 			return await fillProject(home, async (method, params) => {
 				const handler = handlers[method];
 				if (handler === undefined) throw new Error(`Unknown method: ${method}`);
@@ -2826,12 +2833,9 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 
 // ---- Socket server
 
-// Every handler is in one of the three lists in answers.ts (#513): a request not classed is a deliberate decision no one
-// made, and from now on it would be taken from any connection, which is the very thing the lists refuse. Said here once,
-// with every handler registered — features' and test-copy's included — and engine/test/reachsettings.ts fails on the line.
-for (const method of Object.keys(handlers)) {
-	if (unclassified(method)) log("reach:", method, "is in none of the lists that say who may send it (answers.ts)");
-}
+// Check only once the features and any test-copy methods have registered, and fail before opening the socket.
+checkRequestClasses(Object.keys(handlers));
+Object.freeze(handlers);
 
 rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
 const server = createServer((socket) => {
@@ -2873,12 +2877,21 @@ const server = createServer((socket) => {
 				send(client, { id: null, error: "Invalid JSON" });
 				continue;
 			}
-			const handler = handlers[String(request.method)];
-			if (handler === undefined) {
-				send(client, { id: request.id, error: `Unknown method: ${String(request.method)}` });
+			if (request === null || typeof request !== "object" || Array.isArray(request) || typeof request.method !== "string") {
+				send(client, { id: request?.id ?? null, error: "A request must have a method name" });
 				continue;
 			}
+			const method = request.method;
+			if (!Object.hasOwn(handlers, method)) {
+				send(client, { id: request.id, error: `Unknown method: ${method}` });
+				continue;
+			}
+			const handler = handlers[method]!;
 			const params = request.params ?? {};
+			if (typeof params !== "object" || Array.isArray(params)) {
+				send(client, { id: request.id, error: "Request parameters must be an object" });
+				continue;
+			}
 			const handle = () =>
 				handler(params, client).then(
 					(result) => send(client, { id: request.id, result }),
@@ -2887,9 +2900,10 @@ const server = createServer((socket) => {
 				);
 			// A request that is the person's alone — an answer to what waits, or a change to what they set — is taken only
 			// from the app (#504, #513).
-			if (!forThePerson(String(request.method), params)) handle();
+			const refusal = personOnly(method, params);
+			if (refusal === undefined) handle();
 			else {
-				const refuse = () => send(client, { id: request.id, error: ONLY_IN_THE_APP });
+				const refuse = () => send(client, { id: request.id, error: refusal });
 				void mayAnswer(client).then(({ allowed }) => (allowed ? handle() : refuse()), refuse);
 			}
 		}

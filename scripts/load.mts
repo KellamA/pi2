@@ -22,7 +22,7 @@
 // checks `call` makes, and --socket is refused for the usual data folder's.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir, loadavg, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -105,26 +105,6 @@ const socket = await new Promise<Socket>((done, fail) => {
 	const s = connect(socketPath, () => done(s));
 	s.once("error", fail);
 }).catch((error: Error) => die(`could not connect to ${socketPath}: ${error.message}`));
-// The engine takes changes to what the person set only from its app (#513), and this script is not the app. A copy's
-// engine writes a key for test-copy at each start, which `call` gives too; giving it lets this set a conversation's
-// access and archive what it made. An engine started by hand (--socket) has no key, so it will refuse the access: drive
-// a copy (name one, as below) instead.
-let keyRefused: ((error: string) => void) | undefined;
-if (suffix !== undefined) {
-	let key: string;
-	try {
-		key = readFileSync(join(root, "app", "build", "test-copies", suffix, "answer-key"), "utf8").trim();
-	} catch {
-		die(`the copy ${suffix} has no answer key; start it again with scripts/test-copy (and again if it still lacks one)`);
-	}
-	// Given before any request, and the engine takes it before the next line it reads; no waiting on the answer, since
-	// the listener that would read it is attached after this, and the engine's answer to the next request proves the key.
-	socket.write(`${JSON.stringify({ id: 0, method: "test-copy.answerer", params: { key } })}\n`);
-	keyRefused = (error) => {
-		console.error(`load: the copy's engine did not take its key: ${error}`);
-		process.exit(1);
-	};
-}
 socket.on("close", () => {
 	for (const answer of waiting.values()) answer({ error: "the connection to the engine closed" });
 	waiting.clear();
@@ -146,11 +126,6 @@ socket.setEncoding("utf8").on("data", (chunk: string) => {
 	for (const line of lines) {
 		if (line === "") continue;
 		const message = JSON.parse(line) as Answer & { event?: string };
-		if (message.id === 0) {
-			// The answer to the key given on connect (#513); no request of this script's has id 0.
-			if ((message as Answer).error !== undefined) keyRefused?.((message as Answer).error!);
-			continue;
-		}
 		if (message.event !== undefined) {
 			if (message.event === "conversation") watching?.(message as never);
 			if (!counting) continue;
@@ -328,6 +303,14 @@ const load = { before: loadavg()[0]!, end: 0 };
 const timeline: { at: number; load: number; open: number; late: number }[] = [];
 const began = Date.now();
 try {
+	// Authenticate before creating any conversations, and report failure through the same cleanup path as a failed run.
+	if (suffix !== undefined) {
+		const file = join(root, "app", "build", "test-copies", suffix, "answer-key");
+		if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`the copy ${suffix} has no regular answer-key file; restart it with scripts/test-copy`);
+		await request("test-copy.answerer", { key: readFileSync(file, "utf8").trim() });
+	} else if (!(await request("connection.mayAnswer")).result?.mayAnswer) {
+		throw new Error("this connection cannot set the access the load script needs; name a test copy instead of --socket");
+	}
 	const idle = await conversation("idle");
 	let large: number | undefined;
 	if (LARGE > 0) {

@@ -13,7 +13,7 @@ import { mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { ONLY_IN_THE_APP } from "../src/answers.ts";
+import { checkRequestClasses, ONLY_IN_THE_APP, SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { socketPathFor } from "../src/socket.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
@@ -40,7 +40,7 @@ for pid in $(cat '${apps}'); do
 done
 echo '{"app":false,"why":"the process at the other end is not one this test named"}'
 `);
-// The engine's own log, piped to a file: the start-up check of the lists writes there, and the test reads it.
+// Keep start-up diagnostics so a failure before the socket opens can name the bad classification.
 const engineLog = join(work, "engine.log");
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_APP_BUNDLE: bundle };
 
@@ -122,9 +122,16 @@ class Client extends EngineClient {
 }
 
 const logFile = openSync(engineLog, "a");
+const classes = [new Set(["answer"]), new Set(["setting"]), new Set(["open"])];
+assert.doesNotThrow(() => checkRequestClasses(["answer", "setting", "open"], classes));
+assert.throws(() => checkRequestClasses(["new.feature"], classes), /new\.feature belongs to 0 request classes/);
+assert.throws(() => checkRequestClasses(["open"], [...classes, new Set(["open"])]), /open belongs to 2 request classes/);
+step("registration fails if a handler has zero or two request classes");
 const start = (environment: NodeJS.ProcessEnv = env) => spawn(process.execPath, [main], { env: environment, stdio: ["ignore", "ignore", logFile] });
 engine = start();
-let app = await Client.connect(engine, home);
+const app = await Client.connect(engine, home).catch((error) => {
+	throw new Error(`${error.message}\n${readFileSync(engineLog, "utf8")}`);
+});
 try {
 	await app.until("agents", () => app.agents.length > 0);
 	const { id: asked } = await app.call("conversation.create", { agentId: "forge" });
@@ -145,7 +152,7 @@ try {
 		["schedules.save", { schedule: { title: "Reach", agentId: "forge", prompt: "Run everything", repeat: { kind: "daily", hour: 9, minute: 0 } } }, "a schedule"],
 	] as const) {
 		const reply = await other.call(method, params as Record<string, unknown>);
-		assert.equal(reply.error, ONLY_IN_THE_APP, `${method}, which changes ${changed}: ${JSON.stringify(reply)}`);
+		assert.equal(reply.error, SETTINGS_ONLY_IN_THE_APP, `${method}, which changes ${changed}: ${JSON.stringify(reply)}`);
 	}
 	assert.notEqual(forge()?.access, "full", "the agent's access was not widened");
 	assert.deepEqual(forge()?.commandRules ?? [], [], "no allowed command was added");
@@ -154,7 +161,31 @@ try {
 	assert.deepEqual(app.events.mcp?.servers ?? [], [], "no MCP server was added");
 	assert.deepEqual(app.events.schedules?.schedules ?? [], [], "no schedule was added");
 	// Refused before the request is looked at, so it says nothing about whether the agent or folder exists.
-	assert.ok((await other.call("rules.add", { agentId: "no-such-agent", folder: "/no/such/folder", command: "x" })).error === ONLY_IN_THE_APP, "it is refused before the request is looked at");
+	assert.equal((await other.call("rules.add", { agentId: "no-such-agent" })).error, SETTINGS_ONLY_IN_THE_APP, "it is refused before the request is looked at");
+	for (const method of ["conversation.carryOn", "conversation.fork", "work.create", "work.act", "auth.cancel", "backup.create", "endpoints.probe", "mcp.reconnect", "recovery.dismiss", "limits.dismiss", "local.download.pause", "local.download.resume", "local.download.cancel"]) {
+		assert.equal((await other.call(method)).error, SETTINGS_ONLY_IN_THE_APP, method);
+	}
+	for (const method of ["test-copy.answerer", "test-copy.fill", "test-copy.fillProject", "not-a-request"]) {
+		assert.equal((await other.call(method)).error, `Unknown method: ${method}`);
+	}
+	const demo = { provider: "demo", modelId: "demo-1" };
+	assert.equal((await other.call("chat.continueWithAgent", { id: asked, cwd: work })).error, SETTINGS_ONLY_IN_THE_APP);
+	assert.equal((await other.call("chat.continueWithAgent", { id: asked, confirmLimit: "a-reading" })).error, ONLY_IN_THE_APP);
+	assert.equal((await other.call("conversation.retry", { id: asked, model: demo })).error, SETTINGS_ONLY_IN_THE_APP);
+	assert.match((await other.call("conversation.retry", { id: asked })).error ?? "", /for chats only/);
+
+	// Selectors for a new conversation are still open; they belong only to that conversation, not the app's defaults.
+	const readSettings = () => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
+	const before = readSettings();
+	const plain = await other.call("conversation.create", { agentId: "scout", model: demo });
+	assert.equal(typeof plain.result?.id, "number");
+	const chat = await other.call("conversation.create", { chat: true, model: demo });
+	assert.equal(typeof chat.result?.id, "number");
+	assert.equal(readSettings().lastAgent, before.lastAgent);
+	assert.deepEqual(readSettings().lastChatModel, before.lastChatModel);
+	await app.call("conversation.create", { chat: true, model: demo });
+	assert.deepEqual(readSettings().lastChatModel, demo);
+	assert.equal(typeof (await other.call("submit", { id: chat.result.id, text: "Hello from the test" })).result?.submissionId, "number");
 	// Reading and messaging still work from any connection.
 	assert.equal(typeof (await other.call("search", { query: "nothing at all" })).result?.results, "object", "everything else works as before");
 	step("a connection that is not the app's cannot widen an agent's reach, and everything else works");
@@ -176,11 +207,7 @@ try {
 	other.close();
 	step("the app's connection makes every one of those changes");
 
-	// ---- Every handler the engine has is named by one of the three lists in answers.ts
-	// The engine says so at start-up, once it has every handler, features' and test-copy's included; nothing may follow.
-	const said = readFileSync(engineLog, "utf8");
-	assert.ok(!said.includes("is in none of the lists"), `every request is classed in answers.ts; the engine said:\n${said}`);
-	step("every request the engine takes is classed: the person's, the person's, or open to any connection");
+	step("the engine listened after checking all of its registered request classes");
 } finally {
 	app.close();
 	await stop(engine);
