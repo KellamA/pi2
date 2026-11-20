@@ -1,4 +1,4 @@
-// Checks how a window's size follows its SwiftUI content (#400, #542).
+// Checks how a window's size follows its SwiftUI content (#400, #542, #589).
 //
 // The app crashed in the background when the main window's hosting view, working out its content's smallest size
 // from inside an Update Constraints pass, found its size changed and asked for another pass, again and again until
@@ -22,10 +22,10 @@
 //
 //   cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
 //
-// It also orders both real indicator panels off screen and exercises short and long names with and without Show,
-// across turns and in a single burst. The hosting view stays put, supplies no window size constraints, and the
-// pill resizes only when asked, stays on one line, and fits the screen. The small-panel watch names each pill.
-// The original exception did not reproduce here (#542).
+// It also counts what AppKit does to the pill's window, to one made as Quick Ask's is and to one made as the menu
+// bar's is, over a hundred changes of their content: at most one frame a turn, at most two layout and two Update
+// Constraints passes in a display cycle, and a quiet size watch. A hosting view is never one of those windows'
+// content view (#589), which is where SwiftUI sizes a window itself after each layout.
 // Exits 1 if anything failed.
 
 import AppKit
@@ -394,7 +394,7 @@ let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
-    await group("indicator panels keep one hosting view and size outside layout (#542)") { await indicatorCheck() }
+    await group("the pill, Quick Ask and the menu bar window size themselves outside AppKit's passes (#589)") { await indicatorCheck() }
     // The content as the app had it before: what to keep, and what to stop.
     let before = Made(fixed: false)
     await before.layOut()
