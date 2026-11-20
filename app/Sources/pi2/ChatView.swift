@@ -906,6 +906,10 @@ struct ToolCard: View {
     private var allowedBy: [String] {
         (result?.details?["allowedBy"]?.arrayValue ?? []).compactMap { $0.stringValue }
     }
+    /// The arguments the model sent as JSON strings, read as the values they encode (#572), as its result records them.
+    private var stringArguments: [String] {
+        (result?.details?["stringArguments"]?.arrayValue ?? []).compactMap { $0.stringValue }
+    }
 
     /// pi durable wraps the results it writes itself (refused, blocked, interrupted) in a tag meant for the model.
     private static func readable(_ text: String) -> String {
@@ -1028,6 +1032,12 @@ struct ToolCard: View {
                         Text(allowedBy.count == 1 ? "matched an allowed command" : "matched allowed commands")
                             .font(.system(size: 11)).foregroundStyle(Theme.tx3)
                             .help("Ran without asking: matched “\(allowedBy.joined(separator: "”, “"))”")
+                    }
+                    if !stringArguments.isEmpty {
+                        // So a call that ran anyway does not look as if the model had sent what it was asked for.
+                        Text(stringArguments.count == 1 ? "\(stringArguments[0]) sent as a string" : "arguments sent as strings")
+                            .font(.system(size: 11)).foregroundStyle(Theme.tx3)
+                            .help("The model sent \(stringArguments.joined(separator: ", ")) as a JSON string; it was read as the value it encodes and the model was told to send the value itself next time.")
                     }
                     if isRunning {
                         Spinner()

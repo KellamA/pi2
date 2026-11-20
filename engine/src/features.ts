@@ -45,6 +45,7 @@ import { reports } from "./reports.ts";
 import { runCode } from "./runcode.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
+import { stringArguments } from "./stringargs.ts";
 import { variables } from "./variables.ts";
 import { wakes } from "./wakes.ts";
 import { thinkingNotices } from "./thinkingretry.ts";
@@ -254,6 +255,8 @@ export const FEATURES: Feature[] = [
 	// Looking at pictures with a model that can see them (#540): after `reads`, whose wrap of `read` its own wrap follows.
 	pictureLook,
 	scratch,
+	// An argument sent as a JSON string read as the value it encodes (#572): after every feature's tools are made.
+	stringArguments,
 	variables,
 	coauthor,
 	priority,
