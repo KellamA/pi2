@@ -209,6 +209,7 @@ struct ActivityView: View {
                         Button("Last Run") { model.selection = .conversation(last) }.buttonStyle(.plain).foregroundStyle(Theme.acc)
                     }
                     Button("Run Now") { engine.perform("schedules.runNow", ["id": schedule.id]) }
+                        .disabled(schedule.holdReason != nil)
                     Button("Edit…") { editing = schedule }
                     Button("Delete", systemImage: "trash", role: .destructive) { engine.perform("schedules.delete", ["id": schedule.id]) }
                         .labelStyle(.iconOnly)
@@ -216,7 +217,7 @@ struct ActivityView: View {
                 }
                 .padding(10)
                 .panel()
-                .opacity(schedule.enabled ? 1 : 0.6)
+                .opacity(schedule.enabled && schedule.holdReason == nil ? 1 : 0.6)
             }
         }
     }
@@ -225,6 +226,7 @@ struct ActivityView: View {
         let agent = engine.agent(schedule.agentId)?.name ?? "Unknown agent"
         // The person approved an agent's schedule once, perhaps long ago; this tells it apart from the ones they made.
         let setBy = schedule.createdBy.map { " · set by \(engine.agent($0.agentId)?.name ?? "a deleted agent")" } ?? ""
+        if let reason = schedule.holdReason { return "\(agent) · Held: \(reason)\(setBy)" }
         guard schedule.enabled, let next = schedule.nextRunAt else { return "\(agent) · \(schedule.repeat.summary) · off\(setBy)" }
         let when = Date(timeIntervalSince1970: next / 1000).formatted(date: .abbreviated, time: .shortened)
         return "\(agent) · \(schedule.repeat.summary) · next \(when)\(setBy)"

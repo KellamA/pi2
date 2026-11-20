@@ -80,7 +80,7 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, projectDeleted, refuseInArchivedProject, refuseStartWith, requirePreview, type Start } from "./projects.ts";
+import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
 import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend, type SpendDoc } from "./projectspend.ts";
@@ -1412,6 +1412,7 @@ function startConfirmation(params: Params): string | undefined {
 
 /** The person's start, checked against its project's limits: its agent's, or `projectId`, the one it is carried into. */
 async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = "", projectId?: string): Promise<string | undefined> {
+	if (agent.projectId !== undefined) refuseStartWith(agent, (await tx.doc(Projects)).projects);
 	const result = await admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task, options }, confirm, { tx, model, ...(projectId === undefined ? {} : { projectId }) });
 	if (!result.ok) throw limitError(result.limit);
 	return result.note;
@@ -1521,7 +1522,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	},
 	"conversation.fork": async (params) => {
 		const conv = await conversation(params.id);
-		const source = library.conversations[String(chatOf(conv.id))];
+		const sourceId = chatOf(conv.id);
+		const source = library.conversations[String(sourceId)];
+		if (projectOf(sourceId)?.deletedAt !== undefined) throw new Error(PROJECT_DELETED);
 		const now = Date.now();
 		// The fork sees the conversation up to and including that entry, then goes its own way.
 		const fork = await conv.fork(
@@ -2045,12 +2048,18 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			nextRunAt: next,
 			lastRunAt: previous?.lastRunAt ?? null,
 			lastConversationId: previous?.lastConversationId ?? null,
-			pending: previous?.pending ?? null,
+			// A held prompt belongs to the old conversation, not to the agent the person is now choosing.
+			pending: previous?.holdReason === undefined ? previous?.pending ?? null : null,
 			createdAt: previous?.createdAt ?? now,
 			// Who made it is kept through the person's edits; the app cannot set it.
 			...(previous?.createdBy !== undefined ? { createdBy: previous.createdBy } : {}),
 		};
-		await harness.commit(async (tx) => void ((await tx.doc(Schedules)).schedules[id] = schedule), context);
+		await harness.commit(async (tx) => {
+			const agent = (await tx.doc(Agents)).agents[schedule.agentId];
+			if (agent === undefined) throw new Error("Choose an agent");
+			if (agent.projectId !== undefined && startWithRefusal(agent, (await tx.doc(Projects)).projects) === PROJECT_DELETED) throw new Error(PROJECT_DELETED);
+			(await tx.doc(Schedules)).schedules[id] = schedule;
+		}, context);
 		return { id };
 	},
 	"schedules.delete": async (params) => {
@@ -2588,24 +2597,51 @@ let scheduleTimer: ReturnType<typeof setTimeout> | undefined;
 const firing = new Set<string>();
 const scheduleRecheck = new Map<string, number>();
 
+/** Hold a schedule left by an earlier engine, unless the person has reassigned it since this attempt. */
+async function holdDeletedSchedule(schedule: Schedule): Promise<void> {
+	const held = await harness.commit(async (tx) => {
+		const current = (await tx.doc(Schedules)).schedules[schedule.id];
+		if (current?.agentId !== schedule.agentId || current.holdReason !== undefined) return false;
+		current.holdReason = PROJECT_DELETED;
+		return true;
+	}, context);
+	if (held) log("schedule", schedule.id, "held:", PROJECT_DELETED);
+}
+
 /** Submit the prompt of a run whose conversation exists. The request ID makes doing this twice harmless. */
 async function deliver(id: string): Promise<void> {
 	const schedule = schedules[id];
 	const pending = schedule?.pending;
-	if (schedule === undefined || pending == null) return;
+	if (schedule === undefined || schedule.holdReason !== undefined || pending == null) return;
 	const conv = await harness.conversation(pending.conversationId as unknown as ConversationId, context);
 	if (conv !== undefined) await takeSwitch(conv.id);
-	await conv?.submit({ type: "input", content: schedule.prompt, requestId: `schedule:${id}:${pending.runAt}` }, context);
-	await harness.commit(async (tx) => {
+	const held = await harness.commit(async (tx) => {
 		const current = (await tx.doc(Schedules)).schedules[id];
-		if (current?.pending?.runAt === pending.runAt) current.pending = null;
+		if (current?.pending?.runAt !== pending.runAt || current.holdReason !== undefined) return false;
+		const meta = (await tx.doc(Library)).conversations[String(pending.conversationId)];
+		const { agents } = await tx.doc(Agents);
+		const projects = (await tx.doc(Projects)).projects;
+		const own = meta?.agentId === undefined ? undefined : agents[meta.agentId];
+		const agent = agents[current.agentId];
+		if ((own !== undefined && startWithRefusal(own, projects) === PROJECT_DELETED) || (agent !== undefined && startWithRefusal(agent, projects) === PROJECT_DELETED)) {
+			current.holdReason = PROJECT_DELETED;
+			return true;
+		}
+		await conv?.submit(tx, { type: "input", content: current.prompt, requestId: `schedule:${id}:${pending.runAt}` });
+		current.pending = null;
+		return false;
 	}, context);
+	if (held) log("schedule", id, "held:", PROJECT_DELETED);
 }
 
 /** Start one run of a schedule: a new conversation with its agent, then its prompt. */
 async function fire(id: string, manual: boolean, confirm?: string): Promise<string | undefined> {
 	const schedule = schedules[id];
 	if (schedule === undefined || firing.has(id)) return;
+	if (schedule.holdReason !== undefined) {
+		if (manual) throw new Error(schedule.holdReason);
+		return;
+	}
 	firing.add(id);
 	try {
 		const agent = agents[schedule.agentId] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
@@ -2623,7 +2659,8 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 				// The conversation and the schedule's bookkeeping are one commit: a crash leaves both or neither.
 				init: async (tx, conversationId) => {
 					const current = (await tx.doc(Schedules)).schedules[id];
-					if (current === undefined || (!manual && current.nextRunAt !== due)) throw new Error("The schedule changed while it was starting");
+					if (current?.holdReason !== undefined) throw new Error(current.holdReason);
+					if (current === undefined || current.agentId !== schedule.agentId || (!manual && current.nextRunAt !== due)) throw new Error("The schedule changed while it was starting");
 					if (agent.projectId !== undefined || carriedInto !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { schedule: id }, current.prompt, carriedInto);
 					(await tx.doc(Library)).conversations[String(conversationId)] = { title: current.title, createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
 					current.pending = { conversationId: conversationId as unknown as number, runAt: now };
@@ -2644,6 +2681,11 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 		scheduleRecheck.delete(id);
 		return note;
 	} catch (error) {
+		if (error instanceof Error && error.message === PROJECT_DELETED) {
+			await holdDeletedSchedule(schedule);
+			if (manual) throw error;
+			return;
+		}
 		if (manual && error instanceof RequestError) throw error;
 		// An automatic run stays due until admitted; don't spin on a refusal with a past nextRunAt.
 		if (!manual && (agents[schedule.agentId]?.projectId !== undefined || error instanceof RequestError)) scheduleRecheck.set(id, Date.now() + 60_000);
@@ -2655,7 +2697,7 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 
 function armSchedules(): void {
 	clearTimeout(scheduleTimer);
-	const due = Object.values(schedules).filter((x) => x.enabled && x.nextRunAt !== null);
+	const due = Object.values(schedules).filter((x) => x.holdReason === undefined && x.enabled && x.nextRunAt !== null);
 	if (due.length === 0) return;
 	const next = Math.min(...due.map((x) => Math.max(x.nextRunAt!, scheduleRecheck.get(x.id) ?? 0)));
 	// setTimeout cannot wait longer than about 24 days; waking early and re-arming is harmless.
@@ -2667,7 +2709,11 @@ function armSchedules(): void {
 async function tickSchedules(): Promise<void> {
 	const now = Date.now();
 	for (const schedule of Object.values(schedules)) {
-		if (schedule.pending !== null) await deliver(schedule.id).catch((error) => log("schedule", schedule.id, "delivery failed:", error));
+		if (schedule.holdReason !== undefined) continue;
+		const agent = agents[schedule.agentId];
+		if (agent !== undefined && startWithRefusal(agent) === PROJECT_DELETED) {
+			await holdDeletedSchedule(schedule).catch((error) => log("schedule", schedule.id, "could not be held:", error));
+		} else if (schedule.pending !== null) await deliver(schedule.id).catch((error) => log("schedule", schedule.id, "delivery failed:", error));
 		else if (schedule.enabled && schedule.nextRunAt !== null && schedule.nextRunAt <= now && (scheduleRecheck.get(schedule.id) ?? 0) <= now) {
 			// Out of budget: the run stays due and starts once there is budget again.
 			if (overBudget()) log("schedule", schedule.id, "is waiting: today's budget is used up");

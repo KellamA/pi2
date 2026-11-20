@@ -25,6 +25,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { type CommitChange, defineDoc, type HookApi, type Tx } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Feature } from "./features.ts";
+import { Schedules } from "./schedules.ts";
 import { type AgentProfile, Agents, Library } from "./state.ts";
 
 // ---- Documents (contract, 3.2 and section 8)
@@ -162,7 +163,7 @@ export type CarryOverReport = {
 		/** Lines the person should read: a repository gone, a bare repository's worktrees each a project (9.2). */
 		notices: string[];
 	}[];
-	leftOut: { chats: number; deleted: number; notesLeft: number };
+	leftOut: { chats: number; deleted: number; deletedProject: number; notesLeft: number };
 	already: number;
 	ranAt: number | null;
 	backup: string | null;
@@ -199,6 +200,7 @@ export type LimitReading = { id: string; limit: "planShare" | "dailySpend"; reas
 export const PREVIEW_OFF = "Projects are a preview. Turn them on in Settings › General first.";
 /** A request that would change an archived project, or start something in it (4.1, 3.6). */
 export const PROJECT_ARCHIVED = "This project is archived. Restore it first.";
+export const PROJECT_DELETED = "This agent’s project was deleted. Choose another agent.";
 /** Archiving or deleting a project while something of it works or waits (3.6). */
 const STOP_FIRST = "Stop the project's agents first.";
 /** What a tool is told when the person denies what a switch that is off asked about. */
@@ -271,17 +273,18 @@ export function allProjects(): Record<string, Project> {
 
 /**
  * The project conversation `conversation` belongs to, whatever the preview and whether the project is archived: for what
- * holds with the preview off too, a project's limits and its `startAgents` switch (section 2). A conversation whose
- * project was deleted is in none (3.6): it runs as its own agent, hands work to templates and reads its agent's notes.
+ * holds with the preview off too. If the project was deleted, only a conversation whose own agent belongs to it
+ * still belongs to it. A carried conversation falls back to its template and is in no project (3.6).
  */
 export function projectOf(conversation: number): Project | undefined {
-	const projectId = wired?.conversations()[String(conversation)]?.projectId;
-	const project = projectId === undefined ? undefined : current.projects[projectId];
-	return project?.deletedAt === undefined ? project : undefined;
+	const meta = wired?.conversations()[String(conversation)];
+	const project = meta?.projectId === undefined ? undefined : current.projects[meta.projectId];
+	if (project?.deletedAt !== undefined && wired?.agent(meta?.agentId)?.projectId !== project.id) return undefined;
+	return project;
 }
 
 /**
- * Whether project `projectId` was deleted, as last stored: what was in it is in no project (3.6). False for undefined, and
+ * Whether project `projectId` was deleted, as last stored (3.6). False for undefined, and
  * for a project not stored (a stand-in engine's).
  */
 export function projectDeleted(projectId: string | undefined): boolean {
@@ -313,10 +316,17 @@ export function refuseInArchivedProject(conversation: number): void {
 	if (preview && project !== undefined && project.deletedAt === undefined && project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
 }
 
-/** Refuses a new conversation with `agent` when it is an agent of an archived project, with the preview on (3.6). */
-export function refuseStartWith(agent: AgentProfile): void {
-	const project = agent.projectId === undefined ? undefined : current.projects[agent.projectId];
-	if (preview && project !== undefined && project.deletedAt === undefined && project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
+/** No starts with agents of deleted projects, or archived projects with the preview on (3.6). */
+export function startWithRefusal(agent: AgentProfile, projects = current.projects): string | undefined {
+	const project = agent.projectId === undefined ? undefined : projects[agent.projectId];
+	if (project?.deletedAt !== undefined) return PROJECT_DELETED;
+	if (preview && project?.archivedAt !== undefined) return PROJECT_ARCHIVED;
+	return undefined;
+}
+
+export function refuseStartWith(agent: AgentProfile, projects = current.projects): void {
+	const reason = startWithRefusal(agent, projects);
+	if (reason !== undefined) throw new Error(reason);
 }
 
 /** A tool call that a switch governs, as `requireSwitch` asks about it: the same fields as any approval. */
@@ -408,7 +418,7 @@ export async function onPreviewOn(plan: string | null): Promise<CarryOverReport>
 
 /** The report of a run with nothing to do (9.8). */
 export function emptyReport(): CarryOverReport {
-	return { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, notesLeft: 0 }, already: 0, ranAt: current.carry.ranAt, backup: current.carry.backup, secretsPending: [] };
+	return { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, deletedProject: 0, notesLeft: 0 }, already: 0, ranAt: current.carry.ranAt, backup: current.carry.backup, secretsPending: [] };
 }
 
 /** The `projects` event's `carryOver`: null while nothing was ever carried over (carryover.ts). */
@@ -825,10 +835,23 @@ export const projects: Feature = (host, engine) => {
 				const id = projectId(params);
 				live(current, id);
 				if (busy(id)) throw new Error(STOP_FIRST);
-				await lifecycle(id, (project, now) => {
-					project.deletedAt = now;
-					project.updatedAt = now;
+				const held = await change(async (doc, tx) => {
+					const project = live(doc, id);
+					project.deletedAt = project.updatedAt = Date.now();
+					const { agents } = await tx.doc(Agents);
+					const { schedules } = await tx.doc(Schedules);
+					const held: string[] = [];
+					for (const schedule of Object.values(schedules)) {
+						if (agents[schedule.agentId]?.projectId !== id) continue;
+						schedule.holdReason = PROJECT_DELETED;
+						held.push(schedule.id);
+					}
+					return held;
 				});
+				for (const schedule of held) engine.log("schedule", schedule, "held:", PROJECT_DELETED);
+				// Carried conversations now run as their templates, without any change to the Library document.
+				engine.libraryChanged();
+				engine.activityChanged();
 				return {};
 			},
 		},
