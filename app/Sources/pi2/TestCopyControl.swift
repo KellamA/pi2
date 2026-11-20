@@ -1,3 +1,4 @@
+import ComputerKit
 import SwiftUI
 import WindowKit
 
@@ -272,6 +273,18 @@ struct TestCopyControl: NSViewRepresentable {
                 if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
                 waiting.append((dir, id, before ?? 0, Date().addingTimeInterval(Self.limit)))
                 return nil
+            case "expose":
+                // The computer tool cannot read a parked window: macOS leaves a window that has never been front out
+                // of the app's accessibility window list (#579). Raise this one within its own level, where it stays
+                // behind every ordinary window and nothing on screen changes, and put it back — after that it stays
+                // in the list wherever it is parked.
+                guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
+                if ParkedWindow.isListed(window) {
+                    return ["result": "The main window is already in the app's accessibility window list"]
+                }
+                return ParkedWindow.expose(window)
+                    ? ["result": "Exposed the parked main window; it is now in the app's accessibility window list"]
+                    : ["error": "the main window did not join the app's accessibility window list when raised"]
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size

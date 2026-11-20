@@ -36,7 +36,7 @@ public actor ComputerController {
     public static var screenRecordingGranted: Bool { WindowCapture.permitted }
 
     private static let needsAccessibility =
-        "pi² does not have Accessibility permission, which it needs to read and work other apps. The person can grant it in this agent's settings in pi², under Computer use. Until then, tell them that is what is missing."
+        "pi² does not have Accessibility permission, which it needs to read and work other apps. The person can grant it in this agent's settings in pi², under Computer use (System Settings › Privacy & Security › Accessibility), then reopen pi²; an update of pi² can cost it the permission until it is given again. Until then, tell them that is what is missing."
 
     public func forget(conversationId: Int) {
         views = views.filter { !$0.key.hasPrefix("\(conversationId)|") }
@@ -220,6 +220,67 @@ public actor ComputerController {
         running.bundleURL.map { TestCopy.isThrowaway(bundleURL: $0, bundleID: bundleID) } ?? false
     }
 
+    /// What came of asking a parked test copy to join its main window to the app's accessibility list (#579): a
+    /// window that was never front is absent from that list, wherever it is parked, so the tool asks the copy to
+    /// raise it once within its own level — nothing a person can see — and then reads it like any app's window.
+    package enum ExposedCopy {
+        /// The copy answered that its window is in the list now (or already was).
+        case listed
+        /// The copy's build predates the request: it answered with the unknown command.
+        case oldBuild
+        /// No answer within the wait: the copy may be busy, or its window is not shown.
+        case busy
+        /// The copy answered, but its window did not join the list.
+        case failed
+    }
+
+    /// Ask the copy running under `bundleID`, already verified a throwaway test copy, to expose its parked window
+    /// through the control folder its data folder holds — the same one `scripts/test-copy` drives. `pid` is the
+    /// copy's own process, which it checks before answering. The copy's poll answers within a second or two.
+    private static func exposeParkedCopy(_ running: NSRunningApplication, bundleID: String) async -> ExposedCopy {
+        guard let folder = TestCopy.controlFolder(bundleID: bundleID) else { return .failed }
+        return await exposeParkedCopy(pid: running.processIdentifier, folder: folder)
+    }
+
+    /// The request itself, for a check with a stand-in folder: writes `request.json` naming the copy's pid, then
+    /// waits for `response.json` and takes the copy's word for whether its window is in the list now.
+    package static func exposeParkedCopy(pid: pid_t, folder: URL) async -> ExposedCopy {
+        guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              values.isDirectory == true, values.isSymbolicLink == false,
+              let home = try? folder.deletingLastPathComponent().resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              home.isDirectory == true, home.isSymbolicLink == false else { return .failed }
+        let dir = folder.appendingPathComponent("request-expose-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let request = try JSONSerialization.data(withJSONObject: ["pid": Int(pid), "command": "expose"])
+            try request.write(to: dir.appendingPathComponent("request.json"), options: .atomic)
+        } catch { return .busy }
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let deadline = Date().addingTimeInterval(2.5)
+        while Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(100))
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent("response.json")),
+                  let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] else { continue }
+            if answer["error"]?.contains("unknown test-copy window command") == true { return .oldBuild }
+            return answer["error"] == nil ? .listed : .failed
+        }
+        return .busy
+    }
+
+    /// What to tell the agent after a click was sent to a window whose controls could not be read: an empty
+    /// fingerprint (no listed controls, before or after) says nothing, so it must not claim the click changed
+    /// nothing (#579). `atPoint` distinguishes a click at bare coordinates from one on a listed control. Nil when
+    /// the click verifiably changed something.
+    package static func clickOutcome(before: String, after: String, atPoint: Bool) -> String? {
+        if before.isEmpty && after.isEmpty {
+            return " pi² cannot read this window's controls, so it cannot say whether the click changed anything: check what the picture shows now, or the app's state another way."
+        }
+        if before != after { return nil }
+        return atPoint
+            ? " Nothing in the window appears to have changed: this app may ignore clicks at a point while it is in the background. Use a listed control, the menu, or keys instead."
+            : " It answers to no accessibility press, so it was sent a click, and nothing in the window appears to have changed: this app may ignore clicks while it is in the background. Try the menu, or keys."
+    }
+
     private static func hasParkedWindow(_ running: NSRunningApplication, bundleID: String) -> Bool {
         guard isParkedCopy(running, bundleID: bundleID) else { return false }
         let pid = running.processIdentifier
@@ -260,22 +321,37 @@ public actor ComputerController {
         AXUIElementSetMessagingTimeout(app, 2)
         let prefix = did.map { $0 + "\n\n" } ?? ""
         let previous = view(request, bundleID, running: running)
-        let candidates = Self.windowCandidates(of: app, includeStatusWindows: beforeStatusPress != nil || previous?.statusWindow != nil || previous?.statusWindowID != nil)
-        let ordered = WindowChoice.order(candidates, beforePress: beforeStatusPress?.windows, preferred: previous?.statusWindow)
-        let minimized = Self.minimizedWindow(in: candidates) != nil
         let parkedCopy = Self.isParkedCopy(running, bundleID: bundleID)
         let server = ServerWindow.all(of: pid)
+        var minimized = false
+        func search() -> (ordered: [AXUIElement], accessible: (AXUIElement, CGRect)?) {
+            let candidates = Self.windowCandidates(of: app, includeStatusWindows: beforeStatusPress != nil || previous?.statusWindow != nil || previous?.statusWindowID != nil)
+            let ordered = WindowChoice.order(candidates, beforePress: beforeStatusPress?.windows, preferred: previous?.statusWindow)
+            minimized = Self.minimizedWindow(in: candidates) != nil
+            let parked = parkedCopy && !minimized ? ServerWindow.parkedCopy(in: server, pid: pid) : nil
+            let accessible = WindowChoice.first(in: ordered, minimized: Self.isMinimized) { candidate in
+                guard let frame = AX.frame(candidate) else { return nil }
+                // A stale AXFocusedWindow can still have a frame after Settings closes. In a parked copy,
+                // prefer evidence from the window server over an AX frame that does not belong to a current window.
+                if parked != nil, !["AXPopover", "AXDialog", "AXSheet"].contains(AX.role(candidate)),
+                   ServerWindow.matching(frame, in: server, pid: pid) == nil { return nil }
+                return frame
+            }
+            return (ordered, accessible)
+        }
+        var found = search()
+        var exposed: ExposedCopy?
+        if found.accessible == nil, parkedCopy {
+            // A window that has never been front is never in a parked copy's accessibility list, wherever it is
+            // parked (#579). Ask the copy to raise it once within its own level — nothing a person can see — and
+            // search again; its answer is kept for the words that say why if it still could not be read.
+            exposed = await Self.exposeParkedCopy(running, bundleID: bundleID)
+            if exposed == .listed { found = search() }
+        }
+        let accessible = found.accessible
         let parked = parkedCopy && !minimized ? ServerWindow.parkedCopy(in: server, pid: pid) : nil
         let menus = Self.openMenus(of: app)
         let popup = menus.isEmpty ? ServerWindow.statusPopup(in: server, pid: pid, before: beforeStatusPress?.visibleIDs, preferred: previous?.statusWindowID) : nil
-        let accessible = WindowChoice.first(in: ordered, minimized: Self.isMinimized) { candidate in
-            guard let frame = AX.frame(candidate) else { return nil }
-            // A stale AXFocusedWindow can still have a frame after Settings closes. In a parked copy,
-            // prefer evidence from the window server over an AX frame that does not belong to a current window.
-            if parked != nil, !["AXPopover", "AXDialog", "AXSheet"].contains(AX.role(candidate)),
-               ServerWindow.matching(frame, in: server, pid: pid) == nil { return nil }
-            return frame
-        }
         let newAXWindow = accessible.map { current in
             beforeStatusPress.map { !$0.windows.contains(current.0) } ?? (current.0 == previous?.statusWindow)
         } ?? false
@@ -318,7 +394,23 @@ public actor ComputerController {
                                  : "No picture: pi² has no Screen Recording permission (the person can grant it in this agent's settings).")
                 }
             }
-            if window == nil { lines.append("The window is open, but the app did not expose it through Accessibility.") }
+            if window == nil {
+                if parked != nil {
+                    // The window is there (the window server found it) but not in the app's accessibility list:
+                    // a parked copy's window never is until the copy has raised it once (#579). Say what is wrong
+                    // and what still works, rather than blaming the app and leaving nothing to go on.
+                    switch exposed {
+                    case .oldBuild:
+                        lines.append("The copy's window is parked out of the way, so its controls are not readable, and this copy's build predates the request that exposes it: rebuild the app and run scripts/test-copy reopen <suffix>, then take another screenshot. A click at a point in a picture is still sent to the window.")
+                    case .busy:
+                        lines.append("The copy's window is parked out of the way, and the copy did not answer the request to expose it — it may be busy, or its window is not shown. Take another screenshot in a moment. A click at a point in a picture is still sent to the window.")
+                    case .listed, .failed, nil:
+                        lines.append("The copy's window is parked out of the way, and it did not join the accessibility list when the copy raised it. A click at a point in a picture is still sent to the window; the copy's own state can be read through its engine (scripts/test-copy call).")
+                    }
+                } else {
+                    lines.append("The window is open, but the app did not expose it through Accessibility.")
+                }
+            }
         }
         let scale = shot?.scale ?? 1
         views[key(request, bundleID)] = View(pid: pid, app: app, frame: frame, scale: scale, windowID: shot?.windowID ?? matched?.id,
@@ -474,8 +566,7 @@ public actor ComputerController {
                 did = "Clicked \(control.phrase)."
                 try? await Task.sleep(for: .milliseconds(450))
                 var reply = await look(request, running: running, bundleID: bundleID, did: did, summary: "Clicked \(what) in \(name)")
-                if reply.ok, signature(request, bundleID) == before {
-                    let note = " It answers to no accessibility press, so it was sent a click, and nothing in the window appears to have changed: this app may ignore clicks while it is in the background. Try the menu, or keys."
+                if reply.ok, let note = Self.clickOutcome(before: before, after: signature(request, bundleID), atPoint: false) {
                     reply.text = did + note + reply.text.dropFirst(did.count)
                 }
                 return reply
@@ -513,8 +604,8 @@ public actor ComputerController {
                 try? await Task.sleep(for: .milliseconds(450))
                 did = "\(count == 2 ? "Double-clicked" : "Clicked") at (\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))."
                 var reply = await look(request, running: running, bundleID: bundleID, did: did, summary: "\(count == 2 ? "Double-clicked" : "Clicked") \(what) in \(name)")
-                if reply.ok, signature(request, bundleID) == before {
-                    reply.text = did + " Nothing in the window appears to have changed: this app may ignore clicks at a point while it is in the background. Use a listed control, the menu, or keys instead.\n\n" + reply.text.dropFirst(did.count).trimmingCharacters(in: .whitespacesAndNewlines)
+                if reply.ok, let note = Self.clickOutcome(before: before, after: signature(request, bundleID), atPoint: true) {
+                    reply.text = did + note + "\n\n" + reply.text.dropFirst(did.count).trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 return reply
             }
