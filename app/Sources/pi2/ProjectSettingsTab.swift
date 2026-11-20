@@ -147,6 +147,7 @@ struct ProjectSettingsTab: View {
                     .help(project.folder == nil ? "A project with no folder cannot attach a repository" : "Attach a GitHub repository, whose issues and pull requests become the project’s work list")
                 }
             }
+            if let problem = problems["repository"] { Text(problem).problemText() }
         }
     }
 
@@ -190,7 +191,7 @@ struct ProjectSettingsTab: View {
     // MARK: Reports
 
     private var reportsSection: some View {
-        titled("Reports", footer: "A finished piece of work wakes the orchestrator, which reads the report and hands the work on; off, the report waits for the orchestrator’s next turn. The orchestrator can still choose, for each hand-off it makes, whether that run’s report wakes it. Past a limit, no report wakes it.") {
+        titled("Reports", footer: "A finished piece of work wakes the orchestrator, which reads the report and hands the work on; off, it waits for its next turn. A hand-off can ask for its own run to wake it. Past a limit, nothing wakes it.") {
             Toggle("Reports wake the orchestrator", isOn: Binding(
                 get: { project.settings?.wakeOnReports ?? false },
                 set: { on in setting(["wakeOnReports": on], "reports") }
@@ -203,7 +204,7 @@ struct ProjectSettingsTab: View {
     // MARK: Limits
 
     private var limitsSection: some View {
-        titled("Limits", footer: "pi² holds every start in the project to these limits, whatever an agent remembers or forgets. It cannot check a command that goes round pi² on purpose: an agent with a shell can still run its own git or gh, or change pi²’s own files.") {
+        titled("Limits", footer: "pi² holds every start in the project to these limits, whatever an agent remembers. It cannot check a command that goes round it: an agent with a shell can run its own git or gh, or change pi²’s files.") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Plan window used").font(.system(size: 13, weight: .semibold))
                 HStack(spacing: 8) {
@@ -224,7 +225,7 @@ struct ProjectSettingsTab: View {
                 if let value = project.settings?.limits.planShare {
                     Text(planShareLine(value)).foregroundStyle(Theme.tx2)
                 } else {
-                    Text("With a limit, no start in the project while a window of the plan the started agent would run on is this much used. Default for a new project: 90%.")
+                    Text("With a limit, no start while a window of the plan the started agent would run on is this much used. A new project starts at 90%.")
                         .foregroundStyle(Theme.tx2)
                 }
                 if let problem = problems["planShare"] { Text(problem).problemText() }
@@ -250,7 +251,7 @@ struct ProjectSettingsTab: View {
                     }
                 }
                 if let value = project.settings?.limits.dailySpend {
-                    Text("\(Formats.cost(spentToday)) of \(Formats.cost(value)) spent today. No start once the project’s conversations have cost this much today, sub-chats included. pi²’s own daily budget applies on top.")
+                    Text("\(Formats.cost(spentToday)) of \(Formats.cost(value)) spent today, sub-chats included. No start once it reaches this; pi²’s own daily budget applies on top.")
                         .foregroundStyle(Theme.tx2)
                 } else {
                     Text("With a limit, no start once the project’s conversations have cost this much today, sub-chats included. pi²’s own daily budget applies on top.")
@@ -265,11 +266,11 @@ struct ProjectSettingsTab: View {
 
     /// What the plan limit says now, with the most-used window of the plans Usage has read.
     private func planShareLine(_ value: Int) -> String {
-        var line = "No start in the project while a window of the plan the started agent would run on is \(value)% used or more. Default for a new project: 90%."
+        var line = "No start while a window of the plan the started agent would run on is \(value)% used or more. A new project starts at 90%."
         if let used = planWindowUsed {
             line += " Now: \(used)."
         } else {
-            line += " No plan’s windows have been read yet, so the limit holds nothing back until Usage reads one."
+            line += " No reading of a plan yet, so it holds nothing back until Usage reads one."
         }
         return line
     }
@@ -294,6 +295,9 @@ struct ProjectSettingsTab: View {
 
     private var bottomSection: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Apart from the form above, which is kept as it is changed: these two are the person’s own, and one of them
+            // cannot be undone.
+            Divider().overlay(Theme.line).padding(.bottom, 4)
             if project.archivedAt != nil {
                 Text("This project is archived: nothing new starts in it. Restore it to continue.")
                     .font(.callout)
@@ -312,7 +316,7 @@ struct ProjectSettingsTab: View {
             if let problem = problems["lifecycle"] { Text(problem).problemText() }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 6)
+        .padding(.top, 12)
     }
 
     // MARK: Asking and saving
@@ -452,11 +456,10 @@ struct ProjectSettingsTab: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .panel()
             Text(footer)
+                .formFooter()
                 .font(.callout)
                 .foregroundStyle(Theme.tx2)
                 .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

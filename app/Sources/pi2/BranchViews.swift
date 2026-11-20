@@ -570,7 +570,8 @@ struct BranchTracker: View {
                 Image(systemName: "tray").foregroundStyle(Theme.tx3)
                 Text("Left Behind").font(.headline)
                 Spacer()
-                let count = engine.leftBehind.count
+                // The rows listed here, which on a project's tab are fewer than every left-behind worktree (#478).
+                let count = leftBehind.count
                 Text("\(count) worktree\(count == 1 ? "" : "s")").font(.caption).foregroundStyle(Theme.tx3)
             }
             Text("Worktrees of conversations that were archived or deleted. They stay on disk, with any work in them, until you remove them. Removing one keeps its branch unless you choose otherwise.")
