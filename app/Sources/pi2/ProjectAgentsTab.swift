@@ -225,10 +225,12 @@ struct ProjectAgentsTab: View {
         }
     }
 
-    /// Opens the templates: the sidebar's list of them unfolds, and the first one's page opens. With no template yet,
-    /// the first one is made, as the sidebar's own button makes it.
+    /// Opens the templates: the sidebar's list of them unfolds, and the first one's page opens, unless a template's page
+    /// is already on screen, which is left as it is (#553). With no template yet, the first one is made, as the sidebar's
+    /// own button makes it.
     private func manageTemplates() {
         model.projectsSidebar.templatesShown = true
+        if case .agent(let id)? = model.selection, engine.agent(id)?.projectId == nil { return }
         if let first = engine.agents.first {
             model.selection = .agent(first.id)
         } else {

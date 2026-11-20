@@ -80,6 +80,64 @@ try {
 		if (mode === 'queued') assert.ok(gets >= 2);
 		console.log(`ok: send ${mode}`);
 	}
+
+	// answer-of follows a submission that is already running, and submits nothing (#553).
+	for (const mode of ['done', 'still-running', 'failed']) {
+		const path = join(folder, 'answer-of-' + mode + '.sock');
+		let submitted = false;
+		const server = createServer(socket => {
+			sockets.add(socket);
+			socket.on('close', () => sockets.delete(socket));
+			const send = message => socket.write(JSON.stringify(message) + '\n');
+			let buffer = '';
+			socket.setEncoding('utf8').on('data', chunk => {
+				buffer += chunk;
+				const lines = buffer.split('\n'); buffer = lines.pop();
+				for (const line of lines) {
+					const request = JSON.parse(line);
+					const reply = result => send({ id: request.id, result });
+					if (request.method === 'conversation.open') {
+						send({ event: 'conversation', id: 8, items: [{ id: 22, kind: 'assistant', text: 'long answer' }], state: { busy: true }, reset: false });
+						reply({});
+					} else if (request.method === 'submit') {
+						submitted = true;
+						reply({ submissionId: 99 });
+					} else if (request.method === 'submission.get') {
+						assert.deepEqual(request.params, { id: 8, submissionId: 10 });
+						if (mode === 'done') reply({ submission: { id: 10, status: 'done', answer: 22 }, busy: false });
+						else if (mode === 'failed') reply({ submission: { id: 10, status: 'unanswered', reason: 'model_error' }, busy: false });
+						// still-running: never answered, so the wait ends at its limit.
+					} else assert.fail('unexpected request ' + request.method);
+				}
+			});
+		});
+		await new Promise(resolve => server.listen(path, resolve));
+		const child = spawn(process.execPath, [join(import.meta.dirname, 'test-copy-send.mjs'), 'answer-of', path, '8', '10', mode === 'still-running' ? '0.1' : '600']);
+		children.add(child);
+		let out = '', err = '';
+		child.stdout.setEncoding('utf8').on('data', chunk => out += chunk);
+		child.stderr.setEncoding('utf8').on('data', chunk => err += chunk);
+		const code = await new Promise(resolve => child.once('close', resolve));
+		children.delete(child);
+		for (const socket of sockets) socket.destroy();
+		await new Promise(resolve => server.close(resolve));
+		const result = JSON.parse(out);
+		const expected = { done: ['done', 0], 'still-running': ['timeout', 124], failed: ['failed', 1] }[mode];
+		assert.deepEqual([result.status, code], expected, `answer-of ${mode}: ${out} ${err}`);
+		assert.equal(result.submissionId, 10, `answer-of ${mode}: ${out}`);
+		assert.equal(submitted, false, `answer-of ${mode} submitted a message`);
+		if (mode === 'done') assert.equal(result.answer, 'long answer');
+		console.log(`ok: answer-of ${mode}`);
+	}
+	// A submission id that is not a positive integer is refused before anything is asked of the engine.
+	const bad = spawn(process.execPath, [join(import.meta.dirname, 'test-copy-send.mjs'), 'answer-of', join(folder, 'none.sock'), '8', 'ten', '600']);
+	children.add(bad);
+	let badErr = '';
+	bad.stderr.setEncoding('utf8').on('data', chunk => badErr += chunk);
+	const badCode = await new Promise(resolve => bad.once('close', resolve));
+	children.delete(bad);
+	assert.deepEqual([badCode, badErr.trim()], [1, 'test-copy: submission must be a positive integer']);
+	console.log('ok: answer-of refuses a submission id that is not a positive integer');
 } finally {
 	clearTimeout(guard);
 	rmSync(folder, { recursive: true, force: true });

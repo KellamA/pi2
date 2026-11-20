@@ -140,8 +140,9 @@ struct ProjectWorkTab: View {
     private var engine: EngineClient { model.engine }
     private var work: ProjectWork { ProjectWork(engine.extras["work"]?["projects"]?[project.id]) }
     private var piece: WorkPiece? { opened.flatMap { id in work.items.first { $0.id == id } } }
-    /// The project's agents, as the engine lists them: who a piece of work can be given to.
-    private var agents: [AgentProfile] { engine.allAgents.filter { $0.projectId == project.id } }
+    /// The project's workers, not its orchestrator and none a tool removed: the same list the Agents tab of the board
+    /// shows, since work is given to an agent that can take it and is here to do so (#553).
+    private var agents: [AgentProfile] { workAgents(engine: engine, project: project) }
     private var edited: Bool {
         guard let base = draftBase else { return false }
         return draftTitle != base.title || draftText != base.text
@@ -370,6 +371,19 @@ struct ProjectWorkTab: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(Theme.panel)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+            // Where the piece is and what its state lets the person do, above the scrolling text rather than at the end
+            // of it: a piece's text can be any length, and these belong to the piece, so they stay to hand while its
+            // text and notes are read (#553).
+            VStack(alignment: .leading, spacing: 10) {
+                WorkStatusLine(engine: engine, piece: piece)
+                WorkActions(
+                    piece: piece, agents: agents,
+                    act: { action, extra in act(piece, action, extra) },
+                    assign: { assign(piece, to: $0) }
+                )
+            }
+            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 12)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     TextField("Title", text: $draftTitle, axis: .vertical)
@@ -392,12 +406,6 @@ struct ProjectWorkTab: View {
                                 .controlSize(.small)
                         }
                     }
-                    WorkStatusLine(engine: engine, piece: piece)
-                    WorkActions(
-                        piece: piece, agents: agents,
-                        act: { action, extra in act(piece, action, extra) },
-                        assign: { assign(piece, to: $0) }
-                    )
                     WorkNotes(engine: engine, piece: piece)
                     if let result = piece.result {
                         VStack(alignment: .leading, spacing: 4) {

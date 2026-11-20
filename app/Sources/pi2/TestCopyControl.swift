@@ -3,6 +3,20 @@ import SwiftUI
 import WindowKit
 
 #if PI2_DEVELOPMENT
+/// `PI2_APPEARANCE=light|dark`, which `scripts/test-copy start|reopen --appearance` sets on the copy's launch: the copy
+/// draws in that appearance whatever the Mac's own is, so that a page can be pictured in both (#553). It is the copy's
+/// own, under its own bundle id, and the Mac's setting is not touched. Only a development build reads it, as with every
+/// test-copy control.
+enum TestCopyAppearance {
+    static func apply() {
+        switch ProcessInfo.processInfo.environment["PI2_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
+    }
+}
+
 /// Like PI2_SHOW and the file-driven performance probe, this is part of development builds only.
 /// The launch switch isn't enough: require the bundle and data folder that scripts/test-copy makes.
 @MainActor
@@ -44,6 +58,7 @@ struct TestCopyControl: NSViewRepresentable {
             let id: Int?
             let show: String?
             let hub: String?
+            let page: String?
             let width: Int?
             let height: Int?
             let smallest: Bool?
@@ -56,8 +71,9 @@ struct TestCopyControl: NSViewRepresentable {
         /// `show` requests answered once the page has drawn the conversation, or after `limit`: the request's folder,
         /// the conversation, and how many drawings the page had made when it was asked.
         private var waiting: [(dir: URL, id: Int, after: Int, until: Date)] = []
-        /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`.
-        private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, until: Date)] = []
+        /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`, and
+        /// whether showing an agent's conversation unfolded a folded board (#553).
+        private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, unfolded: Bool, until: Date)] = []
         /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown, and how long to
         /// wait for an agent's conversation of it named there.
         private var launchProject: ProjectCopyView?
@@ -116,7 +132,7 @@ struct TestCopyControl: NSViewRepresentable {
                 return false
             }
             hubWaiting = hubWaiting.filter { wait in
-                if let drawn = hubDrawn(wait.asked, project: wait.project) {
+                if let drawn = hubDrawn(wait.asked, project: wait.project, unfolded: wait.unfolded) {
                     answer(wait.dir, ["result": drawn])
                 } else if Date() >= wait.until {
                     answer(wait.dir, ["result": "Showing the project, though the hub had not drawn it after \(Int(Self.limit)) seconds"])
@@ -209,15 +225,18 @@ struct TestCopyControl: NSViewRepresentable {
                 case .problem(let why): return ["error": why]
                 }
             }
+            // Showing an agent's conversation unfolds a board folded in the preferences, which is kept there: the answer
+            // says so (#553).
+            let unfolded = conversation != nil && (fold ?? model.hubs.fold(id)) == .boardFolded
             model.showProject(id, tab: view.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: fold)
             if let conversation { model.openAgent(conversation, in: id) }
-            hubWaiting.append((dir, view, id, Date().addingTimeInterval(Self.limit)))
+            hubWaiting.append((dir, view, id, unfolded, Date().addingTimeInterval(Self.limit)))
             return nil
         }
 
         /// What to answer once the hub has drawn the project, with its tab and fold, and the orchestrator's conversation
         /// when its panel shows it; nil until then.
-        private func hubDrawn(_ asked: ProjectCopyView, project: String) -> String? {
+        private func hubDrawn(_ asked: ProjectCopyView, project: String, unfolded: Bool) -> String? {
             let fold = model.hubs.fold(project)
             guard let drawn = HubDrawn.current, drawn.project == project, drawn.tab == model.hubs.tab(project),
                   drawn.fold == fold.shown(narrow: drawn.narrow, agent: drawn.agent != nil),
@@ -238,9 +257,69 @@ struct TestCopyControl: NSViewRepresentable {
                 let summary = model.engine.conversations.first { $0.id == conversation }
                 let who = model.engine.agent(summary?.agentId)?.name ?? "an agent"
                 let title = (summary?.title ?? "").isEmpty ? "" : " “\(summary?.title ?? "")”"
-                return "; the conversation with \(who)\(title) in place of the board"
+                // The board shows, so an unfolded one really is: a window too narrow to hold both panels keeps it folded,
+                // and `words` says so instead.
+                return "; the conversation with \(who)\(title) in place of the board\(unfolded && drawn.fold != .boardFolded ? ", which was unfolded" : "")"
             } ?? (asked.agent.map { "; no conversation of \($0) is in place of the board" } ?? "")
             return "Showing project “\(name)”, \(drawn.tab.title), \(words), drawn\(agent)"
+        }
+
+        /// Shows conversation `id`, or nil when the answer is to wait for its page to draw.
+        private func showConversation(_ id: Int, dir: URL) -> [String: String]? {
+            guard model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
+                return ["error": "no conversation #\(id) in the copy's library"]
+            }
+            // Moving focus to another visible pane does not redraw its transcript. A pane kept in the layout
+            // behind Inbox or Chat, on the other hand, needs to draw again when it comes back on screen.
+            let alreadyShown = model.mode == .chat ? model.chats.selection == id
+                : model.showsWorkspace && model.workspace.panes.contains { $0.conversation == id }
+            let before = TranscriptDrawn.drawings[id]
+            model.selection = .conversation(id)
+            if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
+            waiting.append((dir, id, before ?? 0, Date().addingTimeInterval(Self.limit)))
+            return nil
+        }
+
+        /// Shows the page a `PI2_SHOW` value names, as the copy's launch does, while the copy runs (#553). A
+        /// conversation's page is answered once it has drawn; of any other page it says plainly that it cannot wait.
+        private func showPage(_ page: String, dir: URL) -> [String: String]? {
+            if ChatLaunch.apply(page, to: model) {
+                return ["result": "Showing chat mode from \(page); test-copy cannot wait for its page to be drawn"]
+            }
+            if let asked = Selection(launch: page, conversations: model.engine.conversations, archived: model.engine.archived) {
+                switch asked {
+                case .conversation(let id): return showConversation(id, dir: dir)
+                case .agent(let id):
+                    model.selection = asked
+                    return ["result": "Showing the page of agent \(id); test-copy cannot wait for its page to be drawn"]
+                default:
+                    model.selection = asked
+                    return ["result": "Showing \(page); test-copy cannot wait for its page to be drawn"]
+                }
+            }
+            if page == "palette" || page.hasPrefix("palette:") {
+                let query = page == "palette" ? "" : String(page.dropFirst("palette:".count))
+                PaletteLaunch.live = query.isEmpty ? nil : query
+                model.showingPalette = true
+                return ["result": "Opened the command palette\(query.isEmpty ? "" : " with “\(query)” in its search field"); test-copy cannot wait for it to be drawn"]
+            }
+            if page == "settings" || page.hasPrefix("settings:") {
+                guard let asked = SettingsLaunch(page), let open = model.openSettingsWindow else {
+                    return ["error": "the copy's Settings window cannot be opened from here"]
+                }
+                model.settingsTabLive = asked.tab
+                open()
+                return ["result": "Opened Settings on \(asked.tab.rawValue.capitalized); test-copy cannot wait for it to be drawn"]
+            }
+            if page.hasPrefix("output:") {
+                let id = String(page.dropFirst("output:".count))
+                guard !id.isEmpty, let open = model.openOutputWindow else {
+                    return ["error": "output:<id> needs the id of a background command"]
+                }
+                open(id)
+                return ["result": "Opened the output window of \(id); test-copy cannot wait for it to be drawn"]
+            }
+            return ["error": "no page or conversation called \(page)"]
         }
 
         /// The answer to a request, or nil when it is to wait.
@@ -261,18 +340,9 @@ struct TestCopyControl: NSViewRepresentable {
                         return ["error": error.localizedDescription]
                     }
                 }
-                guard let id = request.id, model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
-                    return ["error": "no conversation #\(request.id ?? 0) in the copy's library"]
-                }
-                // Moving focus to another visible pane does not redraw its transcript. A pane kept in the layout
-                // behind Inbox or Chat, on the other hand, needs to draw again when it comes back on screen.
-                let alreadyShown = model.mode == .chat ? model.chats.selection == id
-                    : model.showsWorkspace && model.workspace.panes.contains { $0.conversation == id }
-                let before = TranscriptDrawn.drawings[id]
-                model.selection = .conversation(id)
-                if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
-                waiting.append((dir, id, before ?? 0, Date().addingTimeInterval(Self.limit)))
-                return nil
+                if let page = request.page { return showPage(page, dir: dir) }
+                guard let id = request.id else { return ["error": "missing what to show"] }
+                return showConversation(id, dir: dir)
             case "expose":
                 // The computer tool cannot read a parked window: macOS leaves a window that has never been front out
                 // of the app's accessibility window list (#579). Raise this one within its own level, where it stays

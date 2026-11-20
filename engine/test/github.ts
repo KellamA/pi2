@@ -139,7 +139,7 @@ try {
 	// ---- With the preview off
 	assert.deepEqual(await client.until("greetings", () => client.events.github), { event: "github", projects: {} });
 	assert.ok(client.order.indexOf("work") < client.order.indexOf("github"), "github comes after work (4.4)");
-	for (const method of ["github.attach", "github.detach", "github.refresh", "github.merge", "github.sendBack", "github.diff", "github.settle", "projects.watch"]) {
+	for (const method of ["github.attach", "github.detach", "github.refresh", "github.merge", "github.sendBack", "github.diff", "github.unknown", "github.settle", "projects.watch"]) {
 		await assert.rejects(client.call(method, {}), { message: PREVIEW_OFF });
 	}
 	step("with the preview off, the empty github event after work, and every github request refused");
@@ -236,11 +236,41 @@ try {
 	assert.equal(pulls.find((one: any) => one.number === 3).head, "someone:feature");
 	step("the holder opens a pull request that fixes it, one from a fork's branch, and none from a branch with no upstream");
 
+	// ---- The failing checks of the roll-up are named and counted (#573)
+	changeStandIn((whole) => {
+		// One of each shape GitHub answers, a check run and a commit status, beside one that passed.
+		whole.repos["example/widgets"].pulls[0].statusCheckRollup = [
+			{ name: "build", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://ci.example.invalid/build" },
+			{ name: "test", status: "COMPLETED", conclusion: "FAILURE", detailsUrl: "https://ci.example.invalid/test" },
+			{ context: "lint", state: "FAILURE", targetUrl: "https://ci.example.invalid/lint" },
+		];
+	});
+	// The listing is read at most once a minute, so the orchestrator's classify of #1 as what it already is changes
+	// nothing there and makes the read that brings the roll-up in.
+	value(await client.work(parent, "classify", { id: 1, class: "cloud" }));
+	const named = await client.until("the failing checks named", () => {
+		const failing = client.github(projectId)?.pulls?.find((one: any) => one.number === 2)?.failingChecks;
+		return Array.isArray(failing) && failing.length === 2 ? failing : undefined;
+	});
+	assert.deepEqual(named, [
+		{ name: "test", url: "https://ci.example.invalid/test" },
+		{ name: "lint", url: "https://ci.example.invalid/lint" },
+	]);
+	assert.deepEqual((client.github(projectId)?.pulls ?? []).map((one: any) => [one.number, one.checks, one.failingChecks]), [[3, "none", []], [2, "failing", named]]);
+	changeStandIn((whole) => void (whole.repos["example/widgets"].pulls[0].statusCheckRollup = []));
+	value(await client.work(parent, "classify", { id: 1, class: "cloud" }));
+	const calmed = await client.until("none failing", () => {
+		const pull = client.github(projectId)?.pulls?.find((one: any) => one.number === 2);
+		return pull?.checks === "none" && pull.failingChecks?.length === 0 ? pull : undefined;
+	});
+	assert.deepEqual([calmed.checks, calmed.failingChecks], ["none", []]);
+	step("the checks that failed are named and counted, and none failing is an empty list");
+
 	// ---- A second agent's finding, Send back, and merging under the switch
 	const found = await client.work(reviewer, "review", { id: 2, verdict: "changes", text: "Use a darker blue." });
 	assert.equal(found.isError, false, found.text);
 	const finding = await client.until("the finding", () => client.github(projectId)?.pulls?.find((one: any) => one.number === 2)?.findings?.[0]);
-	assert.deepEqual([finding.agentName, finding.verdict], ["Reviewer", "changes"]);
+	assert.deepEqual([finding.agentName, finding.verdict, finding.text], ["Reviewer", "changes", "Use a darker blue."]);
 	assert.match(widgets().pulls[0].comments[0].body, /^\*From Reviewer, an agent of the pi² project “Widgets”\.\*\n\n\*\*Changes requested\.\*\* Use a darker blue\./);
 	refusal(await client.work(worker, "send_back", { id: 2, text: "Not mine to send" }), /Only the orchestrator can send a pull request back/);
 	refusal(await client.work(worker, "merge", { id: 2 }), /Only the orchestrator can merge a pull request/);
@@ -369,8 +399,11 @@ try {
 	const unknown = await client.until("the unknown write", () => client.github(projectId)?.unknown?.[0]);
 	assert.equal(unknown.summary, "filing “Lost before the write”");
 	assert.equal(widgets().issues.filter((one) => one.title === "Lost before the write").length, 0);
+	// A script or a test copy asks for what only the event carried before (#573).
+	assert.deepEqual((await client.call("github.unknown", { projectId })).unknown, [unknown]);
 	await client.call("github.settle", { projectId, intent: unknown.intent, happened: false });
 	await client.until("settled", () => client.github(projectId)?.unknown?.length === 0);
+	assert.deepEqual((await client.call("github.unknown", { projectId })).unknown, []);
 	value(await client.work(worker, "file", { title: "Lost before the write" }));
 	assert.equal(widgets().issues.filter((one) => one.title === "Lost before the write").length, 1, "filed once, by hand, after it was settled");
 

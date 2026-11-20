@@ -3,20 +3,24 @@
 //
 //   node scripts/patch-dependencies.ts [engine folder]
 //
-// Each patch replaces an exact piece of a file. A file that already has the replacement is left alone, so running it
-// twice is harmless. If neither the original nor the replacement is there, the dependency changed: the script fails, so
+// Each patch replaces an exact piece of a file. It is run once on a freshly installed tree: later patches change what
+// earlier ones put in, so a second run cannot tell what is already there, and the script refuses a tree that carries
+// its stamp (#584): run `npm --prefix engine ci` to install and patch afresh. On a fresh tree, if neither the original
+// nor the replacement of a patch is there, the dependency changed: the script fails, so
 // whoever updated it checks whether the fix is still needed, and then updates or removes the patch here.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { installHash } from "./installed.ts";
 import { COMPACTION_PATCHES } from "./patch-compaction.ts";
+import { EDIT_PATCHES } from "./patch-edit.ts";
 import { INPUT_PATCHES } from "./patch-inputs.ts";
 
 type Patch = { why: string; file: string; find: string; replace: string };
 
 const PATCHES: Patch[] = [
 	...COMPACTION_PATCHES,
+	...EDIT_PATCHES,
 	...INPUT_PATCHES,
 	// These clients do not accept a custom fetch. Keep their original errors in memory, before pi-ai flattens them.
 	...(["google-generative-ai", "google-vertex"] as const).flatMap((api) => {
@@ -368,6 +372,11 @@ const PATCHES: Patch[] = [
 ];
 
 const engine = resolve(process.argv[2] ?? join(import.meta.dirname, ".."));
+// A tree this script finished patching carries its stamp; patching it again would apply some patches twice (#584).
+if (existsSync(join(engine, "node_modules", ".pi2-installed.json"))) {
+	console.error("patch-dependencies: this tree is already patched. Run `npm --prefix engine ci` to install and patch afresh.");
+	process.exit(1);
+}
 let failed = false;
 for (const patch of PATCHES) {
 	const path = join(engine, patch.file);

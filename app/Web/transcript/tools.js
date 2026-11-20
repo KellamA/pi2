@@ -685,11 +685,22 @@
 	 * repository's main checkout and its pi² worktrees, so the button says how wide the rule is without hovering.
 	 */
 	function ruleOffer(pending) {
+		// A project's switch asks about one action at a time: there is no rule to make of it (#553).
+		if (switchAsked(pending)) return null;
 		if (!isObject(pending) || pending.tool !== "bash" || !isObject(pending.rule) || !Array.isArray(pending.rule.words)) return null;
 		const words = pending.rule.words;
 		if (words.length === 0 || !words.every((word) => typeof word === "string" && word !== "")) return null;
 		const worktrees = pending.rule.worktrees === true;
 		return { words, command: words.join(" "), worktrees, place: worktrees ? "in This Repository" : "Here" };
+	}
+
+	/**
+	 * Whether this approval came from a project's switch that is off, which asks each time (docs/projects.md, 8.1). Such
+	 * a request is answered once or not at all: only the project's Settings can stop the asking, so a card for it offers
+	 * Allow Once and Deny alone, and the engine refuses anything else (#553).
+	 */
+	function switchAsked(pending) {
+		return isObject(pending) && typeof pending.projectSwitch === "string" && pending.projectSwitch !== "";
 	}
 
 	/**
@@ -1063,6 +1074,7 @@
 		describe,
 		approvalNote,
 		ruleOffer,
+		switchAsked,
 		backgroundCaption,
 		backgroundCommand,
 		documentWritten,
