@@ -11,12 +11,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { installHash } from "./installed.ts";
 import { COMPACTION_PATCHES } from "./patch-compaction.ts";
+import { EDIT_PATCHES } from "./patch-edit.ts";
 import { INPUT_PATCHES } from "./patch-inputs.ts";
 
 type Patch = { why: string; file: string; find: string; replace: string };
 
 const PATCHES: Patch[] = [
 	...COMPACTION_PATCHES,
+	...EDIT_PATCHES,
 	...INPUT_PATCHES,
 	// These clients do not accept a custom fetch. Keep their original errors in memory, before pi-ai flattens them.
 	...(["google-generative-ai", "google-vertex"] as const).flatMap((api) => {
