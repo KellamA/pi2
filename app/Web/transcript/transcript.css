@@ -1456,6 +1456,75 @@ pre.card-diff {
 	cursor: default;
 }
 
+/* MARK: - A project's changes and needs (#474) */
+
+/* The quiet line for what a tool call changed (docs/projects.md, 3.12), under the call's row: the record's own
+   words, with Undo at its end while it can be, and how it reads once undone. */
+.change-line {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 4px 8px;
+	margin: 1px 0 7px;
+	font-size: 11.5px;
+	color: var(--tx3);
+}
+
+.change-summary {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.change-line.undone .change-summary {
+	text-decoration: line-through;
+}
+
+.change-note {
+	white-space: nowrap;
+}
+
+/* Undo, at the end of the line, as the marker's Output is. */
+.change-line .link-button {
+	font-size: 11.5px;
+}
+
+/* A refusal the engine gave, under the line that asked. */
+.change-problem {
+	flex-basis: 100%;
+	color: var(--bad);
+}
+
+/* The line a card becomes once its need is answered (7.2). */
+.change-line.need-outcome {
+	margin: 1px 0 7px;
+}
+
+/* A reach request or a proposed rule at the call that asked (7.2), in the approval card's manner. */
+.card.need {
+	margin: 2px 0 8px;
+}
+
+.card.need .card-summary,
+.card.need .card-question {
+	margin-bottom: 8px;
+}
+
+.card.need .card-caption {
+	margin: -4px 0 8px;
+}
+
+.card.need .card-caption:last-of-type,
+.card.need .card-buttons {
+	margin-bottom: 0;
+}
+
+.card-problem {
+	margin: 8px 0 0;
+	font-size: 11.5px;
+	color: var(--bad);
+	overflow-wrap: anywhere;
+}
+
 /* MARK: - Pictures */
 
 .thumb {

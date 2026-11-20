@@ -75,6 +75,29 @@ struct TranscriptFeed {
         static let none = Older(more: false, loading: false)
     }
 
+    /// One reach request or proposed rule waiting under Needs you, as the `needs` event sends it (docs/projects.md,
+    /// 3.9) with the fields the conversation's card reads. Every kind shares the base fields, so the whole array
+    /// decodes whatever kinds are in it, and a kind this app knows nothing of cannot take the list down.
+    struct Need: Codable, Equatable, Identifiable {
+        /// A reach request's change, as the person reads it (7.2): what it would let agents do.
+        struct ReachChange: Codable, Equatable {
+            let summary: String
+        }
+
+        let id: String
+        /// "reach" or "rule".
+        let kind: String
+        let conversationId: Int
+        let agentName: String?
+        /// Milliseconds since 1970.
+        let createdAt: Double
+        let change: ReachChange?
+        /// A proposed rule: its text and whom it would bind, and why the agent proposes it.
+        let text: String?
+        let binds: String?
+        let why: String?
+    }
+
     struct Message: Encodable {
         var reset: Bool?
         /// Entries to put before the first the page has, oldest first (#380).
@@ -86,6 +109,14 @@ struct TranscriptFeed {
         var items: [Item]?
         var live: Live?
         var inbox: [InboxItem]?
+        /// The changes made in this conversation of a project (docs/projects.md, 3.12), each drawn where the tool call
+        /// that made it is, with its Undo.
+        var changes: [ProjectChangeLine]?
+        /// The reach requests and proposed rules waiting from this conversation (3.9), drawn as cards at the calls that
+        /// asked for them and answered in place.
+        var needs: [Need]?
+        /// Whether the projects preview is on: with it off the page draws none of a project's lines or cards (10.2).
+        var projects: Bool?
         var names: Names?
         var palette: [String: String]?
         var chat: Chat?
@@ -108,6 +139,9 @@ struct TranscriptFeed {
     private var history: Older?
     private var live: Live?
     private var inbox: [InboxItem]?
+    private var changes: [ProjectChangeLine]?
+    private var needs: [Need]?
+    private var projects: Bool?
     private var names: Names?
     private var palette: [String: String]?
     private var chat: Chat?
@@ -123,7 +157,7 @@ struct TranscriptFeed {
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
     /// `earlier` is how many older entries the engine is still to send the app; with `withOlder` false, older entries the
     /// app has wait (the page has not yet drawn the part before them).
-    mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
+    mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], projects: Bool = false, names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
         var message = Message()
         var changed = false
 
@@ -183,6 +217,22 @@ struct TranscriptFeed {
         if inbox != self.inbox {
             message.inbox = inbox
             self.inbox = inbox
+            changed = true
+        }
+        if changes != self.changes {
+            message.changes = changes
+            self.changes = changes
+            changed = true
+        }
+        if needs != self.needs {
+            message.needs = needs
+            self.needs = needs
+            changed = true
+        }
+        // The preview's own switch, so that with it off the page drops what it holds of a project (10.2).
+        if projects != self.projects {
+            message.projects = projects
+            self.projects = projects
             changed = true
         }
         if names != self.names {

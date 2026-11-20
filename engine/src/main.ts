@@ -66,7 +66,8 @@ import { messageSent } from "./heed.ts";
 import { preparedTool } from "./stringargs.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
-import { claim } from "./needs.ts";
+import { claim, storedNeeds } from "./needs.ts";
+import { linesOf } from "./changes.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
@@ -83,7 +84,7 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
+import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
@@ -743,7 +744,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string }; compaction?: CompactionMarker } }
+	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string }; answers?: { need: string; ended: string; label?: string }[]; compaction?: CompactionMarker } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -764,6 +765,28 @@ function detailsOf(entry: EntryRecord): unknown {
 	return data?.details ?? message?.details ?? null;
 }
 
+/**
+ * Which Needs you items a wake answered, and how (the wake kind `answer`, needs.ts): the item's id and a few words
+ * ("was allowed"), for the conversation's page to turn the card that asked into a line with its outcome (#474).
+ */
+function answeredNeeds(data: unknown): { need: string; ended: string; label?: string }[] {
+	return wakeAnswerItems(data)
+		.filter((item) => typeof item.ref === "string" && typeof item.ended === "string")
+		.map((item) => ({ need: item.ref as string, ended: item.ended as string, ...(typeof item.label === "string" ? { label: item.label } : {}) }));
+}
+
+/** A wake's data items of the answer kind, as stored (wakes.ts): unchecked apart from their kind. */
+function wakeAnswerItems(data: unknown): { ref: unknown; ended: unknown; label: unknown }[] {
+	const items = data !== null && typeof data === "object" && Array.isArray((data as { items?: unknown }).items) ? (data as { items: unknown[] }).items : [];
+	return items.filter((item): item is { ref: unknown; ended: unknown; label: unknown } => item !== null && typeof item === "object" && (item as { kind?: unknown }).kind === "answer");
+}
+
+/** The label a wake's data gives the Needs you item `need` ("the request “…”"), where it has one. */
+function wakeLabel(data: unknown, need: string): string | undefined {
+	const item = wakeAnswerItems(data).find((one) => one.ref === need);
+	return typeof item?.label === "string" ? item.label : undefined;
+}
+
 function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
@@ -780,7 +803,8 @@ function toItem(entry: EntryRecord): Item | undefined {
 	// Show the same model input behind the line, including wakes stored before the row could open (#318).
 	if (entry.kind === WAKE_ENTRY) {
 		const content = textOf((entry.model?.[0] as { content?: unknown } | undefined)?.content);
-		const details = { ...wakeMarkerDetails(entry.data), wake: { text: content } };
+		const answers = answeredNeeds(entry.data);
+		const details = { ...wakeMarkerDetails(entry.data), ...(answers.length > 0 ? { answers } : {}), wake: { text: content } };
 		return { id, kind: "marker", text: wakeMarker(entry.data), details };
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
@@ -1768,10 +1792,18 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const conv = await conversation(params.id);
 		const meta = library.conversations[String(chatOf(conv.id))];
 		const items: Item[] = [];
+		/** How each Needs you item this conversation put was ended (the wake kind `answer`), where a wake tells it. */
+		const answered = new Map<string, { label: string; ended: string }>();
 		let cursor: unknown;
 		for (;;) {
 			const batch = await conv.entries({ order: "ascending" }, 500, cursor as never, context);
 			for (const entry of batch.items) {
+				if (entry.kind === WAKE_ENTRY) {
+					for (const answer of answeredNeeds(entry.data)) {
+						const label = wakeLabel(entry.data, answer.need);
+						if (label !== undefined) answered.set(answer.need, { label, ended: answer.ended });
+					}
+				}
 				const item = toItem(entry);
 				if (item !== undefined) items.push(item);
 			}
@@ -1783,6 +1815,32 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const fence = "```";
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
+		// The changes made in this conversation (3.12), for each call's line; a change the person allowed has no
+		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9). With the
+		// preview off an export is exactly as it was (10.2), so it says none of this.
+		const changes = new Map(projectsOn() ? linesOf(conv.id).map((line) => [line.id, line]) : []);
+		const waiting = new Map(projectsOn() ? storedNeeds().map((need) => [need.id, need]) : []);
+		/** A call's change, as one quiet line: its summary, and that it was undone (3.12). */
+		const changeLine = (id: unknown): string | null => {
+			if (typeof id !== "number") return null;
+			const change = changes.get(id);
+			return change === undefined ? null : `${change.summary}${change.undone ? " (undone)" : ""}`;
+		};
+		/** The line of the change allowing the request `id` made, where it made one. */
+		const allowedLine = (id: string): string | null => {
+			const made = [...changes.values()].find((change) => change.need === id);
+			return made === undefined ? null : `${made.summary}${made.undone ? " (undone)" : ""}`;
+		};
+		/** A call's reach request or proposed rule, as one line with its outcome (3.9, 7.2). */
+		const needLine = (id: unknown): string | null => {
+			if (typeof id !== "string") return null;
+			const told = answered.get(id);
+			if (told !== undefined) return `${told.label} ${told.ended}`;
+			const need = waiting.get(id);
+			if (need === undefined) return "a request that no longer waits for you";
+			const label = need.kind === "rule" ? `the proposed rule “${need.text}”` : need.kind === "reach" ? `the request “${need.change.summary}”` : need.kind === "limit" ? "a start the project's limit stopped" : `the question “${need.question}”`;
+			return `${label} waits for you`;
+		};
 		const lines: string[] = [`# ${meta?.title || "Conversation"}`, ""];
 		for (const item of items) {
 			if (item.kind === "user") {
@@ -1805,6 +1863,20 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if ((result?.details as { allowedByEverything?: unknown } | null)?.allowedByEverything === true) lines.push("*Allowed by Allow everything.*", "");
 					lines.push(`${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
 					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
+					// The quiet line for what the call changed, and the one line for what it asked (3.12, 7.2) — none of it with
+					// the preview off, so an export is exactly as it was (10.2).
+					if (projectsOn()) {
+						const details = (result?.details ?? null) as { change?: unknown; need?: unknown } | null;
+						const changed = changeLine(details?.change);
+						if (changed !== null) lines.push(`*${changed}*`, "");
+						const asked = needLine(details?.need);
+						if (asked !== null) lines.push(`*${asked}*`, "");
+						// What allowing the request made, when it made something: its line, with its Undo's mark.
+						if (typeof details?.need === "string") {
+							const allowed = allowedLine(details.need);
+							if (allowed !== null) lines.push(`*${allowed}*`, "");
+						}
+					}
 				}
 			}
 		}

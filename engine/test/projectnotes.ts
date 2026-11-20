@@ -103,7 +103,7 @@ try {
 	assert.equal(typeof saved.details?.change, "number", JSON.stringify(saved.details));
 	const app = client;
 	const line = await app.until("the note's line", () => app.conversations.get(first)?.state.projectChanges?.find((one: any) => one.id === saved.details.change));
-	assert.deepEqual(line, { id: saved.details.change, summary: "Remembered project note n2", undone: false, canUndo: true, noUndo: null });
+	assert.deepEqual(line, { id: saved.details.change, summary: "Remembered project note n2", undone: false, canUndo: true, noUndo: null, undoneAt: null, need: null });
 	assert.deepEqual(client.notes(projectId)[1], { id: "n2", text: "Shared from the first conversation.", createdAt: client.notes(projectId)[1]!.createdAt, conversation: first, agentId: author, audience: null });
 	assert.match((await client.tool(first, "remember", { note: "SHARED from the first conversation." })).text, /already have that note \(n2\)/);
 	assert.equal((await client.call("memory.add", { projectId: otherId, text: "Only the other project reads this." })).id, "n1");
