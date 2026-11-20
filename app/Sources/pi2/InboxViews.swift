@@ -11,7 +11,7 @@ struct InboxCard: View {
     let showsSource: Bool
     @State private var answer = ""
 
-    private var agent: AgentProfile? { engine.agents.first { $0.name == item.agentName } }
+    private var agent: AgentProfile? { engine.allAgents.first { $0.name == item.agentName } }
     private var isApproval: Bool { item.kind == "approval" }
     /// For a computer action: the app it is for.
     private var targetApp: String? {

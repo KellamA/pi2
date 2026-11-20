@@ -382,7 +382,8 @@ struct AgentEditor: View {
                 .id(AgentSection.schedule)
 
                 Section {
-                    let others = engine.agents.filter { $0.id != agentID }
+                    // A template hands work to templates, a project's agent to its project's agents.
+                    let others = engine.allAgents.filter { $0.id != agentID && $0.projectId == agent.projectId }
                     if others.isEmpty { Text("There are no other agents yet.").foregroundStyle(.secondary) }
                     ForEach(others) { other in
                         Toggle(isOn: Binding(

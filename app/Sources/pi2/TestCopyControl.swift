@@ -124,7 +124,7 @@ struct TestCopyControl: NSViewRepresentable {
             let view: ProjectCopyView
         }
 
-        // Later issues can apply the same parsed view here, and acknowledge the selection after it draws.
+        // The record stays for a script that reads it; `ProjectLaunch` applies the same view to the window.
         private func recordProjectView(_ view: ProjectCopyView, source: String) -> [String: String] {
             let home = folder.deletingLastPathComponent()
             guard isDirectory(home) else { return ["error": "the copy's data folder is missing or a symlink"] }
@@ -148,7 +148,11 @@ struct TestCopyControl: NSViewRepresentable {
                     do {
                         let view = try ProjectCopyView(show: request.show, hub: request.hub)
                         guard view.show != nil || view.hub != nil else { return ["error": "not a project view"] }
-                        return recordProjectView(view, source: "show")
+                        let recorded = recordProjectView(view, source: "show")
+                        guard recorded["error"] == nil else { return recorded }
+                        // The sidebar shows it (#470); the hub, once it is built, reads the same state (#471).
+                        if let why = ProjectLaunch.apply(view, to: model) { return ["error": "recorded, but not shown: \(why)"] }
+                        return ["result": "Showing \(view.show ?? "hub fold")\(view.hub.map { " (\($0.rawValue))" } ?? "")"]
                     } catch {
                         return ["error": error.localizedDescription]
                     }

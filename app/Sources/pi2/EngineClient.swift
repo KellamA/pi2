@@ -43,7 +43,12 @@ final class EngineClient {
     private(set) var defaultModel: ModelRef?
     /// Whether the first-run welcome has been completed for this data folder. Nil until the engine has said.
     private(set) var onboarded: Bool?
+    /// The templates: agents that belong to no project, which is every agent made the old way. They are what the agents'
+    /// list, the New Conversation With menus and the palette offer, with the preview on or off; a project's own agents
+    /// are left out of them (docs/projects.md, 10.2).
     private(set) var agents: [AgentProfile] = []
+    /// Every agent, the projects' own included, for finding one by id: a conversation's agent can be a project's.
+    private(set) var allAgents: [AgentProfile] = []
     /// The built-in tools an agent's settings list, sent with the agents. Empty from an engine older than the list.
     private(set) var builtInTools: [BuiltInTool] = []
     /// The picture models the person's providers can use, for making pictures (engine/src/pictures.ts), and the providers
@@ -98,6 +103,8 @@ final class EngineClient {
     let computer = ComputerSession()
     /// Works pages in pi²'s own browser for agents; the app holds the web views.
     let browser = BrowserSession()
+    /// Projects, the preview switch and what the sidebar shows of each (Projects.swift).
+    let projects = ProjectsStore()
 
     let home: URL
     private var connection: NWConnection?
@@ -361,7 +368,7 @@ final class EngineClient {
     }
 
     func agent(_ id: String?) -> AgentProfile? {
-        agents.first { $0.id == id }
+        allAgents.first { $0.id == id }
     }
 
     /// A folder as the person reads it: abbreviated with ~, or named when it is the folder conversations work in when
@@ -586,12 +593,14 @@ final class EngineClient {
                     }
                 }
                 update(\.conversations, event.conversations)
+                projects.take(conversations: event.conversations)
                 update(\.archived, event.archived ?? [])
                 update(\.autoArchiveDays, event.autoArchiveDays)
                 update(\.hasLoadedLibrary, true)
             case "agents":
                 let event = try decoder.decode(AgentsEvent.self, from: line)
-                update(\.agents, event.agents)
+                update(\.allAgents, event.agents)
+                update(\.agents, event.agents.filter { $0.projectId == nil })
                 update(\.builtInTools, event.builtInTools ?? [])
             case "pictures":
                 update(\.pictures, try decoder.decode(PictureModels.self, from: line))
@@ -600,6 +609,7 @@ final class EngineClient {
             case "activity":
                 update(\.activity, try decoder.decode(ActivityEvent.self, from: line).runs)
                 update(\.runningCount, activity.count)
+                projects.take(activity: activity)
                 // By conversation, and by the conversation that handed the work out, for the rows and the line that show a
                 // run waiting for a provider's limit rather than working (#343). Set only when changed, so the views that
                 // read them are not drawn again for every clock tick of a command.
@@ -658,6 +668,10 @@ final class EngineClient {
                 guard let data = open[event.id] else { return }
                 data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
+            case "projects":
+                projects.take(projects: try decoder.decode(ProjectsEvent.self, from: line))
+            case "needs":
+                projects.take(needs: try decoder.decode(NeedsEvent.self, from: line).items)
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":
