@@ -81,7 +81,7 @@ const stored: ProjectsDoc = {
 	nextNews: 1,
 };
 const meta = (projectId?: string, parent?: number): Meta => ({ title: "", createdAt: 1, updatedAt: 1, access: "ask", agentId: "a", ...(projectId === undefined ? {} : { projectId }), ...(parent === undefined ? {} : { parent }) });
-const conversations: Record<string, Meta> = { 1: meta("p1"), 2: meta("p2"), 3: meta("p3"), 4: meta(), 5: meta("p1", 1) };
+const conversations: Record<string, Meta> = { 1: meta("p1"), 2: meta("p2"), 3: meta("p3"), 4: meta(), 5: meta("p1", 1), 6: { ...meta("p3"), agentId: "own" } };
 
 const saved: Record<string, unknown> = { projects: { preview: true } };
 const broadcasts: any[] = [];
@@ -96,7 +96,7 @@ const engine = {
 } as unknown as Engine;
 // Allow everything is on for every conversation: it answers ordinary approvals, never one a switch asks.
 const inbox = new Inbox(async () => true);
-const host = { inbox, conversations: () => conversations, working: () => false, features: [] } as unknown as Host;
+const host = { inbox, agent: (id: string | undefined) => id === "own" ? { projectId: "p3" } : undefined, conversations: () => conversations, working: () => false, features: [] } as unknown as Host;
 const feature = projects(host, engine);
 await feature.start!();
 const handlers = feature.handlers!;
@@ -111,8 +111,10 @@ assert.equal(inProject(3), undefined, "deleted");
 assert.equal(inProject(4), undefined, "in no project");
 assert.equal(inProject(99), undefined, "unknown");
 assert.equal(projectOf(2)?.id, "p2");
-// A conversation whose project was deleted is in none, for what holds with the preview off too (#458).
-assert.equal(projectOf(3), undefined, "deleted");
+// Only template-backed conversations fall back to no project when it is deleted.
+assert.equal(projectOf(3), undefined, "carried conversation of a deleted project");
+assert.equal(projectOf(6)?.id, "p3", "the deleted project's own conversation still belongs to it");
+assert.equal(inProject(6), undefined, "it does not get the deleted project's prompt or tools");
 step("projectsOn, inProject and projectOf with the preview on");
 
 assert.deepEqual(await handlers["projects.setPreview"]!({ on: false }), { preview: false, carryOver: null });
@@ -136,7 +138,7 @@ step("with the preview off: projectsOn false, inProject nothing, new requests re
 // ---- What later issues fill in, as it is until they land
 
 assert.deepEqual(await handlers["projects.setPreview"]!({ on: true, plan: null }), { preview: true, carryOver: emptyReport() });
-assert.deepEqual(await onPreviewOn("any plan"), { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, notesLeft: 0 }, already: 0, ranAt: null, backup: null, secretsPending: [] });
+assert.deepEqual(await onPreviewOn("any plan"), { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, deletedProject: 0, notesLeft: 0 }, already: 0, ranAt: null, backup: null, secretsPending: [] });
 assert.equal(carryOverState(), null);
 assert.deepEqual(ruleTokens("p1"), { orchestrator: 0, agents: 0 });
 assert.equal(lastWords("p1"), null);
@@ -154,7 +156,7 @@ const api = { memo: async () => undefined } as never;
 const ask = (conversationId: number, id: string, name: Parameters<typeof requireSwitch>[1]) =>
 	requireSwitch({ conversationId, id, callId: `call-${id}`, tool: "delegate", arguments: { agent: "B" }, api, context: BACKGROUND_CONTEXT }, name, `Start B on “${id}”.`);
 assert.deepEqual(await ask(4, "t1", "startAgents"), { ok: true }, "in no project, nothing is asked");
-assert.deepEqual(await ask(3, "t0", "startAgents"), { ok: true }, "nor in a deleted project's, which is in none (#458)");
+assert.deepEqual(await ask(3, "t0", "startAgents"), { ok: true }, "nor in a template conversation carried into a project since deleted");
 assert.deepEqual(await ask(1, "t2", "fileWork"), { ok: true }, "a switch that is on asks nothing");
 assert.equal(inbox.list().length, 0);
 const answered = async (conversationId: number, id: string, answer: string) => {

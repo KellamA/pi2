@@ -50,7 +50,7 @@ import { nearlyUsedUp } from "./limits.ts";
 import { unlessMessaged } from "./heed.ts";
 import { handOffWords, reportRun, waitForRun } from "./reports.ts";
 import { watch } from "./wakes.ts";
-import { projectOf, projectsOn, requireSwitch, type Start } from "./projects.ts";
+import { PROJECT_DELETED, projectDeleted, projectOf, projectsOn, requireSwitch, type Start, startWithRefusal } from "./projects.ts";
 import { admit, limitRefusal } from "./projectlimits.ts";
 import { createDelegateChild } from "./projectlimitstarts.ts";
 import { ownsSubChat } from "./orchestrator.ts";
@@ -285,6 +285,7 @@ export function pi2Extension(host: Host): Extension {
 		replay: "safe", // a rerun after a crash finds the same child conversation and submission
 		execute: async (args, api, context) => {
 			const parent = api.conversationId as unknown as number;
+			if (projectDeleted(host.agent(host.meta(api.conversationId)?.agentId)?.projectId)) return { output: text(PROJECT_DELETED), isError: true };
 			const footer = (id: number, name: string, title: string, note = "") => footerOf(api, id, name, title, note, context);
 			const usage = (id: number) => resultUsage(host, api, id, context);
 			const inProject = projectOf(parent) !== undefined;
@@ -357,6 +358,8 @@ export function pi2Extension(host: Host): Extension {
 				if (meta === undefined || !ownsSubChat(parent, meta.parent) || (isPutAway(meta) && !isArchived(meta)) || agent === undefined) {
 					return { output: text(`There is no sub-chat ${args.chat} in this conversation to continue. Leave \`chat\` out to start a new one.`), isError: true };
 				}
+				const refusal = startWithRefusal(agent);
+				if (refusal !== undefined) return { output: text(refusal), isError: true };
 				if (inProject) {
 					const chat = args.chat;
 					const start = { agentId: agent.id, agentName: agent.name, kind: "continue" as const, chat, title: title ?? null, task: args.task, options: { ...(args.wait === undefined ? {} : { wait: args.wait }) } };
@@ -418,6 +421,8 @@ export function pi2Extension(host: Host): Extension {
 				const names = allowed.map((a) => a.name).join(", ");
 				return { output: text(names === "" ? "This conversation has no agents to delegate to." : `Unknown agent "${args.agent}". Available: ${names}.`), isError: true };
 			}
+			const refusal = startWithRefusal(target);
+			if (refusal !== undefined) return { output: text(refusal), isError: true };
 			const profile = await host.agentChange(target, { subChat: true, projectId: host.meta(api.conversationId)?.projectId ?? null });
 			// The helper works where its parent works now (its worktree, say), unless it has a project of its own elsewhere.
 			const here = (await api.snapshot(AgentDoc, api.conversationId, context))?.cwd ?? null;
@@ -808,19 +813,23 @@ export function pi2Extension(host: Host): Extension {
 	 */
 	const approveStart = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> => {
 		const conversationId = api.conversationId as unknown as number;
-		if (projectOf(conversationId) === undefined) return undefined;
+		if (projectDeleted(host.agent(host.meta(api.conversationId)?.agentId)?.projectId)) return { block: PROJECT_DELETED };
 		const args = call.arguments as { agent?: unknown; chat?: unknown; title?: unknown };
 		const title = typeof args.title === "string" ? titleOf(args.title) : undefined;
 		let what: string | undefined;
 		if (typeof args.chat === "number") {
 			const meta = host.meta(args.chat as unknown as ConversationId);
 			const agent = host.agentOf(args.chat as unknown as ConversationId);
-			if (meta !== undefined && ownsSubChat(conversationId, meta.parent) && agent !== undefined) what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
+			if (meta !== undefined && ownsSubChat(conversationId, meta.parent) && agent !== undefined) {
+				const refusal = startWithRefusal(agent);
+				if (refusal !== undefined) return { block: refusal };
+				what = `Continue sub-chat ${args.chat}, “${meta.title}”, with ${agent.name}.`;
+			}
 		} else if (typeof args.agent === "string") {
 			const target = byName(delegatesOf(host, api.conversationId), args.agent);
 			if (target !== undefined) what = `Start a new sub-chat with ${target.name}${title === undefined ? "" : `, “${title}”`}.`;
 		}
-		if (what === undefined) return undefined;
+		if (what === undefined || projectOf(conversationId) === undefined) return undefined;
 		const answer = await requireSwitch({ conversationId, id: String(api.taskId), callId: call.id, tool: call.name, arguments: call.arguments, api, context }, "startAgents", what);
 		return answer.ok ? undefined : { block: answer.reason };
 	};

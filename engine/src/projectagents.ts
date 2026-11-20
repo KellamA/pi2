@@ -129,9 +129,9 @@ export function templateChanges(copy: AgentProfile, template: AgentProfile, memo
  */
 export function delegateTargets(own: AgentProfile | undefined, agents: Record<string, AgentProfile>, conversationId?: number): AgentProfile[] {
 	const named = (own?.delegates ?? []).map((id) => agents[id]).filter((agent): agent is AgentProfile => agent !== undefined && agent.removedAt === undefined);
-	if (!projectsOn()) return named;
-	// A deleted project's conversations, and its agents, are in no project (3.6).
-	const projectId = conversationId === undefined ? (projectDeleted(own?.projectId) ? undefined : own?.projectId) : projectOf(conversationId)?.id;
+	if (projectDeleted(own?.projectId)) return [];
+	if (!projectsOn()) return named.filter((agent) => !projectDeleted(agent.projectId));
+	const projectId = conversationId === undefined ? own?.projectId : projectOf(conversationId)?.id;
 	if (projectId === undefined) return named.filter((agent) => agent.projectId === undefined);
 	const project = conversationId === undefined ? undefined : inProject(conversationId);
 	if (project !== undefined && project.conversation === conversationId) {

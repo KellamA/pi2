@@ -253,7 +253,7 @@ for (const entry of report.projects) {
 const deletedCount = Object.keys(conversations)
 	.map(Number)
 	.filter((id) => meta(id).chat !== true && meta(id).version !== true && (meta(id).deleted === true || meta(rootOf(id)).deleted === true)).length;
-assert.deepEqual(report.leftOut, { chats: 1, deleted: deletedCount, notesLeft: 1 });
+assert.deepEqual(report.leftOut, { chats: 1, deleted: deletedCount, deletedProject: 0, notesLeft: 1 });
 assert.equal(report.already, 0);
 assert.ok(carried.length > 300, `${carried.length} conversations carried`);
 step(`the report: one project per key, every conversation counted once, ${report.leftOut.deleted} deleted and the chats left out`);
@@ -477,13 +477,54 @@ step("a second run with nothing new has an empty plan; what is new since goes wh
 	step("a note goes to each project with a copy, recorded per project: a copy made later, a template's first copy, and a project in the plan for another agent all get it");
 }
 
+{
+	const docs = structuredClone(settled);
+	const repoId = docs.projects.carry.folders[repo]!;
+	const atlasCopy = docs.projects.carry.copies[`${repoId} atlas`]!;
+	const existing = make({ agentId: "atlas" }, other);
+	const newFolder = join(work, "atlas-later");
+	const fresh = make({ agentId: "atlas" }, newFolder);
+	for (const [id, folder] of [[existing, other], [fresh, newFolder]] as const) {
+		docs.conversations[String(id)] = conversations[String(id)]!;
+		docs.folders[String(id)] = folder;
+	}
+	const notesAt = (plan: ReturnType<typeof planCarryOver>, folder: string) => plan.projects.find((entry) => entry.key === folder)!.notes.map((note) => note.note);
+	const check = () => {
+		const full = planCarryOver(docs);
+		for (const [id, folder, expected] of [[existing, other, []], [fresh, newFolder, ["m2", "m3"]]] as const) {
+			const one = notesAt(planCarryOver(docs, id), folder);
+			assert.deepEqual(one, expected);
+			assert.ok(one.every((note) => notesAt(full, folder).includes(note)), "a one-conversation plan sends no note the full plan would not");
+		}
+	};
+	// The regression with only one conversation left, and a home copy recorded by a prior run.
+	const freshMeta = docs.conversations[String(fresh)]!;
+	delete docs.conversations[String(fresh)];
+	assert.deepEqual(notesAt(planCarryOver(docs, existing), other), []);
+	docs.conversations[String(fresh)] = freshMeta;
+	check();
+	docs.agents[atlasCopy]!.removedAt = 2;
+	check();
+	delete docs.agents[atlasCopy];
+	check();
+	// A note with an uncarried home: only the full plan sees the other conversation and the copy it would adopt.
+	delete docs.projects.carry.copies[`${repoId} atlas`];
+	delete docs.conversations[String(latest)]!.projectId;
+	docs.folders[String(latest)] = repo;
+	check();
+	step("a later conversation cannot copy another project's notes, even into a new copy or from a removed copy or uncarried home");
+}
+
 // ---- Copies: a worktree where there is no repository, and one conversation with its sub-chats (9.5, 9.9)
 
 {
 	const docs = structuredClone(settled);
 	docs.agents.builder!.worktree = true;
-	const fresh = join(work, "plain-again");
-	mkdirSync(fresh);
+	docs.home = home;
+	const fresh = join(home, "Documents", "letters");
+	const homeGrouping = new Grouping(worktrees, home);
+	assert.equal(homeGrouping.inRepository(fresh), false, "a plain folder under a dotfiles repository");
+	assert.equal(homeGrouping.inRepository(home), true, "the home folder itself remains a repository");
 	const inPlain = make({ agentId: "builder" }, fresh);
 	const inRepoAgain = make({ agentId: "builder" }, repo);
 	const child = make({ agentId: "scout", parent: inPlain });
