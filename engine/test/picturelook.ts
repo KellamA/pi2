@@ -15,10 +15,13 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
+// The choice of a model that looks at pictures changes settings.json, so it is the person's alone (#513): this stand-in
+// app bundle takes the test's own connection for the app's, as pictures.ts's does for its model choice.
+process.env.PI2_APP_BUNDLE ??= standInApp();
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 const folders: string[] = [];
 const services: string[] = [];

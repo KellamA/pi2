@@ -989,7 +989,9 @@ struct UsageSummary: Codable, Equatable {
         var unpriced: Bool? = nil
         /// Picture models are in a different catalog from the models that answer in a conversation.
         var pictureName: String? = nil
-        var id: String { pictureName == nil ? key : "picture:\(key)" }
+        /// A model that looked at pictures for one that cannot see them (#540): its own spend, apart from its answers.
+        var lookName: String? = nil
+        var id: String { pictureName == nil && lookName == nil ? key : "extra:\(pictureName ?? lookName ?? key)" }
     }
     struct AgentRow: Codable, Equatable, Identifiable {
         let agentId: String
