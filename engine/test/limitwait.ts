@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { unfinished } from "../src/extensions.ts";
 import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRefusals, type Wait, Waits, wordedTime } from "../src/limitwait.ts";
+import { usedUpUntil } from "../src/limits.ts";
 import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
@@ -335,6 +336,91 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	step("a provider's limit counts as reached once a run waits five minutes for it, and its end is told once: carried on, or nothing waits");
 }
 
+// ---- A window one conversation learned, which the other conversations on the provider wait for (#556)
+{
+	const lines: string[] = [];
+	const shown: Wait[] = [];
+	// A hold sleeps with a timer that does not keep a process alive by itself, as the engine's must not; this keeps one.
+	const awake = setInterval(() => {}, 250);
+	const waits = new Waits({ ...DEFAULTS, rememberAtLeastMs: 50 }, {
+		now: Date.now,
+		random: () => 0,
+		providerName: (id) => (id === "anthropic" ? "Anthropic" : id),
+		changed: (_id, wait) => {
+			if (wait !== undefined) shown.push(wait);
+		},
+		log: (line) => lines.push(line),
+	});
+	/** A refusal that names a reset this far off. */
+	const windowed = (seconds: number) => `429 This request would exceed your account's rate limit. It resets in ${seconds} s.`;
+	// A time a moment off is the conversation's own business; a longer one is remembered for the provider.
+	waits.decide(message(windowed(0)), 1, 40);
+	assert.equal(waits.remembered("anthropic"), undefined, "a moment off is not worth the others waiting for");
+	waits.decide(message(windowed(1)), 1, 41);
+	const until = waits.remembered("anthropic")?.until;
+	assert.equal(typeof until, "number");
+	assert.ok(lines.some((line) => /^conversation 41 was told Anthropic's limit is used up until .*Z: the other conversations on Anthropic wait for that time rather than ask$/.test(line)), lines.join("\n"));
+
+	// A second conversation waits without asking, shown as a wait for a limit.
+	const second = waits.gate(42, "anthropic");
+	assert.equal(waits.get(42)?.held, true);
+	assert.equal(waits.get(42)?.until, until);
+	assert.equal(shown.at(-1)?.held, true, "the app is shown it as a wait");
+	assert.match(lines.at(-1)!, /^conversation 42 waits for Anthropic's rate limit until .*Z, the time conversation 41 was told, without asking$/);
+	// When the time comes one request goes, and a third conversation waits for its answer.
+	await second;
+	assert.equal(waits.get(42), undefined, "the hold ends with its request going");
+	assert.match(lines.at(-1)!, /^conversation 42 stopped waiting for Anthropic's rate limit: the time it named has come, and its request goes now$/);
+	const third = waits.gate(43, "anthropic");
+	assert.equal(waits.get(43)?.held, true, "held behind the one let through");
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(waits.get(43)?.held, true, "and still held until that one is answered");
+	// The provider answers the one let through: its window is over for every conversation.
+	waits.answered(42, "anthropic");
+	await third;
+	assert.equal(waits.get(43), undefined);
+	assert.equal(waits.remembered("anthropic"), undefined);
+	assert.match(lines.at(-1)!, /^conversation 43 stopped waiting for Anthropic's rate limit: nothing is known of its limit any more$/);
+
+	// A request the person asked for by hand goes at once, and its answer ends the window for all.
+	waits.decide(message(windowed(2)), 1, 44);
+	assert.equal(typeof waits.remembered("anthropic")?.until, "number");
+	const behind = waits.gate(45, "anthropic");
+	assert.equal(waits.get(45)?.held, true);
+	// A message to a conversation nobody stopped does not ask for its request now: it is held as any other.
+	waits.ask(47);
+	const alsoHeld = waits.gate(47, "anthropic");
+	assert.equal(waits.get(47)?.held, true);
+	waits.stopped(46);
+	waits.ask(46);
+	const started = Date.now();
+	await waits.gate(46, "anthropic");
+	assert.ok(Date.now() - started < 1000, "sent at once, not held");
+	assert.equal(waits.get(46), undefined);
+	assert.match(lines.at(-1)!, /^conversation 46 asks Anthropic now, as the person asked it to, rather than waiting until /);
+	waits.answered(46, "anthropic");
+	await behind;
+	await alsoHeld;
+	assert.equal(waits.remembered("anthropic"), undefined);
+	assert.equal(waits.get(45), undefined);
+	assert.equal(waits.get(47), undefined);
+
+	// A provider that named no time: nothing is remembered, so a conversation asks as it does now.
+	const plain = new Waits({ ...DEFAULTS, rememberAtLeastMs: 50 }, { now: Date.now, random: () => 0, providerName: (id) => id, changed: () => {}, log: () => {} });
+	plain.decide(message("429 rate_limit_error: slow down"), 1, 49);
+	assert.equal(plain.remembered("anthropic"), undefined);
+	await plain.gate(48, "anthropic");
+	assert.equal(plain.get(48), undefined, "no wait placed");
+	// What a delegating agent is told of it, in the kind of line a subscription gets (#232).
+	assert.equal(usedUpUntil(undefined, NOW), undefined);
+	assert.match(
+		usedUpUntil({ provider: "p", providerName: "OpenCode Go", from: 1, until: NOW + (2 * 60 + 17) * 60_000 }, NOW)!,
+		/^Plan limits: OpenCode Go's limit is used up until \d\d:\d\d \(in 2 h 17 min\), as its refusal said\. A run the provider refuses for its limit waits for the reset and carries on by itself\.$/,
+	);
+	clearInterval(awake);
+	step("a window one conversation was told of: the others wait for that time without asking, one request goes at the time, and an answer ends it for all");
+}
+
 // ---- What an agent and engine.log are told of a provider's error
 {
 	assert.equal(
@@ -394,6 +480,13 @@ const scripts: Record<string, Refuse[]> = {
 	overloaded: [OVERLOADED, OVERLOADED, OVERLOADED, OVERLOADED, OVERLOADED],
 	// Refused until a message from the person comes with it; at most 50 times, so that without it the run still ends.
 	"a message meanwhile": Array(50).fill({ ...RATE_LIMITED, headers: { "retry-after-ms": "300" } }),
+	// A window one conversation is told of, which the others on the provider wait for (#556).
+	window: [{ ...RATE_LIMITED, headers: { "retry-after-ms": "1500" } }],
+	"window later": [{ ...RATE_LIMITED, headers: { "retry-after-ms": "2500" } }],
+	"window again": [{ ...RATE_LIMITED, headers: { "retry-after-ms": "2500" } }],
+	"window told": [{ ...RATE_LIMITED, headers: { "retry-after-ms": "4000" } }],
+	"window carried": [{ ...RATE_LIMITED, headers: { "retry-after-ms": "2500" } }],
+	"window never named": [RATE_LIMITED],
 	"bad key": Array(100).fill(BAD_KEY),
 	"an hour": Array(100).fill({ ...RATE_LIMITED, headers: { "retry-after": "3600" } }),
 	"switch this run": [{ ...RATE_LIMITED, headers: { "retry-after": "3600" } }],
@@ -409,6 +502,9 @@ const requests: Record<string, number> = {};
 const seen: Record<string, string[]> = {};
 /** While true, a request for "held" is refused, naming a time a moment off; then it is answered. */
 let holding = true;
+/** When each prompt's request came, and when its answer was written: for what waits behind another (#556). */
+const came: Record<string, number> = {};
+const after: Record<string, number> = {};
 let networkDown = true;
 const wire: Record<string, string> = {};
 const standIn = createServer((request, response) => {
@@ -424,6 +520,7 @@ const standIn = createServer((request, response) => {
 		const prompt = typeof last === "string" ? last : (last as { text?: string }[]).map((part) => part.text ?? "").join("");
 		const n = requests[prompt] ?? 0;
 		requests[prompt] = n + 1;
+		came[prompt] = Date.now();
 		seen[prompt] = users.map((m) => (typeof m.content === "string" ? m.content : (m.content as { text?: string }[]).map((part) => part.text ?? "").join("")));
 		wire[prompt] = body;
 		const parentJob = prompt === "network parent";
@@ -438,28 +535,35 @@ const standIn = createServer((request, response) => {
 			response.writeHead(refusal.status, { "content-type": "application/json", ...refusal.headers }).end(refusal.body);
 			return;
 		}
-		response.writeHead(200, { "content-type": "text/event-stream" });
-		const chunk = (delta: object, finish: string | null) =>
-			response.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: "stand-in", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
-		if (firstParentRequest) {
-			chunk({ role: "assistant", tool_calls: [{ index: 0, id: "delegate-network", type: "function", function: { name: "delegate", arguments: JSON.stringify({ agent: "Scout", task: "network child", wait: false }) } }] }, null);
-			chunk({}, "tool_calls");
-		} else {
-			if (prompt === "stream closed before answer" && n === 0) {
-				// The headers arrive and the stream ends before any of the answer: what an HTTP/2 ENHANCE_YOUR_CALM looks
-				// like from here, whose code an HTTP/1.1 connection cannot send (#550).
-				response.write(": streamed\n\n", () => request.socket.destroy());
-				return;
+		const reply = () => {
+			after[prompt] = Date.now();
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			const chunk = (delta: object, finish: string | null) =>
+				response.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: "stand-in", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+			if (firstParentRequest) {
+				chunk({ role: "assistant", tool_calls: [{ index: 0, id: "delegate-network", type: "function", function: { name: "delegate", arguments: JSON.stringify({ agent: "Scout", task: "network child", wait: false }) } }] }, null);
+				chunk({}, "tool_calls");
+			} else {
+				if (prompt === "stream closed before answer" && n === 0) {
+					// The headers arrive and the stream ends before any of the answer: what an HTTP/2 ENHANCE_YOUR_CALM looks
+					// like from here, whose code an HTTP/1.1 connection cannot send (#550).
+					response.write(": streamed\n\n", () => request.socket.destroy());
+					return;
+				}
+				chunk({ role: "assistant", content: `Answered after ${n} refusals.` }, null);
+				if (prompt === "stream cut off" && n === 0) {
+					// Drop the socket only after headers and a piece of the answer have been sent.
+					response.write(": streamed\n\n", () => request.socket.destroy());
+					return;
+				}
+				chunk({}, "stop");
 			}
-			chunk({ role: "assistant", content: `Answered after ${n} refusals.` }, null);
-			if (prompt === "stream cut off" && n === 0) {
-				// Drop the socket only after headers and a piece of the answer have been sent.
-				response.write(": streamed\n\n", () => request.socket.destroy());
-				return;
-			}
-			chunk({}, "stop");
-		}
-		response.end("data: [DONE]\n\n");
+			response.end("data: [DONE]\n\n");
+		};
+		// Two conversations behind one window: the answer is held back a moment, so that the one waiting behind it is seen
+		// to wait, rather than send at the same moment (#556).
+		if (prompt === "window slow" || prompt === "window third") setTimeout(reply, 150);
+		else reply();
 	});
 });
 await new Promise<void>((resolve) => standIn.listen(0, "127.0.0.1", resolve));
@@ -650,7 +754,9 @@ try {
 	// it waits and until when, and when the provider answers again the notice says work carries on. Five minutes made
 	// nothing, so a refusal naming a moment counts.
 	await stop(engine);
-	engine = startEngine({ PI2_LIMIT_REACHED_MS: "0" });
+	// A reset an hour off is not remembered here, so that these runs are refused and wait, as the checks below expect: a
+	// window another conversation learned holds its conversations instead (#556).
+	engine = startEngine({ PI2_LIMIT_REACHED_MS: "0", PI2_LIMIT_REMEMBER_MS: "7200000" });
 	client = await Client.connect(engine, home);
 	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
 	const { id: parent } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-1" } });
@@ -861,6 +967,118 @@ try {
 	assert.equal(requests["network stop"], 1);
 	assert.equal(carriedOn(conv).length, 0);
 	step("a network sleep survives an engine restart and Stop ends it without another request");
+
+	// ---- A window one conversation is told of: the others on the provider wait for it (#556)
+	await stop(engine);
+	engine = startEngine({ PI2_LIMIT_REMEMBER_MS: "50" });
+	client = await Client.connect(engine, home);
+	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
+	/** The holds the engine has logged: conversations waiting for a time another was told of. */
+	const holds = () => log.split("\n").filter((line) => line.includes(", without asking"));
+	assert.equal(holds().length, 0);
+
+	// One conversation is refused and told until when. A second on the same provider does not send a request at all.
+	const learner = await client.ask(provider, "window");
+	await client.until("what the refusal said is remembered", () => new RegExp(`conversation ${learner} was told Stand-in's limit is used up until .*: the other conversations on Stand-in wait for that time rather than ask`).test(log) || undefined);
+	const behind = await client.ask(provider, "window second");
+	await client.until("the second waits, shown as a wait for a limit", () => client.conversations.get(behind)?.state.limitWait ?? undefined);
+	const shown = client.conversations.get(behind)!.state.limitWait!;
+	assert.equal(shown.provider, "Stand-in");
+	assert.equal(shown.told, true);
+	assert.equal(shown.refusals, 0, "it was refused nothing: it never asked");
+	await client.until("its hold logged", () => holds().find((line) => line.includes(`conversation ${behind} waits`)));
+	assert.match(holds().at(-1)!, new RegExp(`conversation ${behind} waits for Stand-in's rate limit until .*Z, the time conversation ${learner} was told, without asking$`));
+	assert.equal(requests["window second"], undefined, "the second sent no request while the first waits");
+	// At the time it named, one of them goes; the other follows when it is answered, so each is answered on its first
+	// request after the window, never refused.
+	for (const id of [learner, behind]) assert.equal((await client.ended(id)).state.failure, null, `conversation ${id} carried on`);
+	assert.equal(requests["window"], 2);
+	assert.equal(requests["window second"], 1);
+	step("a second conversation on a provider whose window another learned waits without asking, and is answered at the time it named");
+
+	// Two conversations behind one window: one is let through at the time, and the other only once that one is answered.
+	const keeper = await client.ask(provider, "window later");
+	await client.until("the window shown", () => client.conversations.get(keeper)?.state.limitWait ?? undefined);
+	await client.call("abort", { id: keeper });
+	await client.until("the one that named it stopped, the window still known", () => (client.conversations.get(keeper)?.state.busy === false ? true : undefined));
+	const slow = await client.ask(provider, "window slow");
+	await client.until("the first held", () => client.conversations.get(slow)?.state.limitWait ?? undefined);
+	const thirdChat = await client.ask(provider, "window third");
+	await client.until("the second held", () => client.conversations.get(thirdChat)?.state.limitWait ?? undefined);
+	assert.equal(requests["window slow"], undefined);
+	assert.equal(requests["window third"], undefined);
+	for (const id of [slow, thirdChat]) assert.equal((await client.ended(id)).state.failure, null, `conversation ${id} carried on`);
+	const [wentFirst, cameAfter] = (came["window slow"] ?? 0) <= (came["window third"] ?? 0) ? ["window slow", "window third"] : ["window third", "window slow"];
+	assert.ok(came[cameAfter]! >= after[wentFirst]!, `${cameAfter} was sent only after ${wentFirst} was answered`);
+	step("one request is let through at the time the window resets, and the conversations behind it follow when it is answered");
+
+	// A new message after Stop is sent at once, and its answer ends the window for all.
+	const againChat = await client.ask(provider, "window again");
+	await client.until("the window known again", () => client.conversations.get(againChat)?.state.limitWait ?? undefined);
+	const fourth = await client.ask(provider, "window fourth");
+	await client.until("held without asking", () => client.conversations.get(fourth)?.state.limitWait ?? undefined);
+	assert.equal(requests["window fourth"], undefined);
+	await client.call("abort", { id: fourth });
+	await client.until("the held one stopped", () => (client.conversations.get(fourth)?.state.busy === false ? true : undefined));
+	await client.call("submit", { id: fourth, text: "window by hand" });
+	conv = await client.until("the hand-asked request answered", () => {
+		const c = client.conversations.get(fourth);
+		return c !== undefined && c.state.busy === false && c.state.failure === null && c.items.some((i) => i.kind === "assistant" && i.stop === "stop") ? c : undefined;
+	});
+	assert.equal(answer(conv), "Answered after 0 refusals.");
+	assert.equal(requests["window by hand"], 1, "sent at once");
+	assert.match(log, new RegExp(`conversation ${fourth} asks Stand-in now, as the person asked it to, rather than waiting until`));
+	// Answered, so nothing is held back any more: a conversation asking now is not made to wait.
+	const nextUp = await client.ask(provider, "window after");
+	conv = await client.ended(nextUp);
+	assert.equal(conv.state.failure, null);
+	assert.equal(requests["window after"], 1);
+	await client.call("abort", { id: againChat });
+	step("a request the person asks for by hand is sent, and its answer ends the window for every conversation");
+
+	// Carry on, chosen while a run is held, sends its request now too, and its answer ends the window for all.
+	const learnedWindow = await client.ask(provider, "window carried");
+	await client.until("the window known once more", () => client.conversations.get(learnedWindow)?.state.limitWait ?? undefined);
+	const heldChat = await client.ask(provider, "window carried on");
+	const heldWait = await client.until("held, waiting for the time", () => client.conversations.get(heldChat)?.state.limitWait ?? undefined);
+	assert.equal(requests["window carried on"], undefined);
+	assert.deepEqual(await client.call("conversation.carryOn", { id: heldChat, since: heldWait.since, model: demo }), { switched: [heldChat] });
+	conv = await client.until("answered on the model its request was made for", () => {
+		const c = client.conversations.get(heldChat);
+		return c !== undefined && c.state.busy === false && c.state.failure === null && c.items.some((i) => i.kind === "assistant" && i.stop === "stop") ? c : undefined;
+	});
+	assert.equal(answer(conv), "Answered after 0 refusals.");
+	assert.equal(requests["window carried on"], 1);
+	assert.match(conv.items.find((item) => item.kind === "marker" && item.text.startsWith("You ended the wait"))!.text, /^You ended the wait for Stand-in's limit and sent its request now; the conversation's model is Demo model \(scripted\) \(demo\) from the next request\.$/);
+	const afterCarry = await client.ask(provider, "window after carry");
+	conv = await client.ended(afterCarry);
+	assert.equal(conv.state.failure, null);
+	assert.equal(requests["window after carry"], 1, "the answer ended the window for every conversation");
+	step("Carry on, chosen while a run is held for a window, sends its request at once, and its answer ends the wait for all");
+
+	// A provider that named no time: nothing is remembered, and the next conversation asks as it does now.
+	const backoff = await client.ask(provider, "window never named");
+	await client.until("the backoff shown", () => client.conversations.get(backoff)?.state.limitWait ?? undefined);
+	const nothing = await client.ask(provider, "window after nothing");
+	conv = await client.ended(nothing);
+	assert.equal(conv.state.failure, null);
+	assert.equal(requests["window after nothing"], 1, "asked at once, as before");
+	assert.ok(!log.split("\n").some((line) => line.includes(`conversation ${backoff} was told`)), "nothing is remembered for a provider that named no time");
+	assert.ok(!holds().some((line) => line.includes(`conversation ${nothing} waits`)), "no hold was placed for it");
+	conv = await client.ended(backoff);
+	assert.equal(answer(conv), "Answered after 1 refusals.");
+	step("a provider that named no time is not remembered, and the conversations on it ask as they did");
+
+	// What an agent that hands out work is told: the window, in the kind of line a subscription gets (#232).
+	const toldWindow = await client.ask(provider, "window told");
+	await client.until("the window remembered again", () => new RegExp(`conversation ${toldWindow} was told Stand-in's limit is used up until`).test(log) || undefined);
+	const { id: toldLead } = await client.call("conversation.create", { agentId: "atlas", model: demo });
+	await client.call("conversation.open", { id: toldLead });
+	await client.call("submit", { id: toldLead, text: '/tool sub_chats {"action":"list"}' });
+	const listedAgain = await client.until("sub_chats' list", () => client.conversations.get(toldLead)!.items.find((i) => i.kind === "tool"));
+	assert.match(listedAgain.text, /- Stand-in, which .*: its limit is used up until \d\d:\d\d \(in \d+ (?:s|min)\), as a refusal said\. A run that asks it before then waits for that time\./);
+	await client.until("the lead idle", () => (client.conversations.get(toldLead)?.state.busy === false ? true : undefined));
+	step("an agent that hands out work is told which provider's limit is used up, and until when");
 	console.log("PASS");
 } finally {
 	await stop(engine);
