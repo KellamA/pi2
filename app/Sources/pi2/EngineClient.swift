@@ -92,6 +92,11 @@ final class EngineClient {
     /// With the preview off the app shows none of them (10.2).
     private(set) var projectsPreview = false
     private(set) var projects: [ProjectRow] = []
+    /// Each project's rules, from the `projectRules` event (docs/projects.md, 4.3): the Rules tab reads it.
+    private(set) var projectRules: [String: [ProjectRule]] = [:]
+    /// Proposed rules waiting under Needs you, by project, from the `needs` event (docs/projects.md, 3.9); the Rules
+    /// tab shows their cards.
+    private(set) var ruleNeeds: [String: [NeedItem]] = [:]
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -684,7 +689,18 @@ final class EngineClient {
                 data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "needs":
-                projectStore.take(needs: try decoder.decode(NeedsEvent.self, from: line).items)
+                // One reading of the event for both: the sidebar's count of what waits, and a proposed rule waiting to
+                // be answered, which the Rules tab shows. The whole array decodes whatever kinds are in it, so a need of
+                // a kind this app knows nothing of cannot take either down.
+                let needs = try decoder.decode(NeedItemsEvent.self, from: line).items
+                projectStore.take(needs: needs.map { NeedRef(id: $0.id, projectId: $0.projectId) })
+                var proposals: [String: [NeedItem]] = [:]
+                for need in needs where need.kind == "rule" {
+                    if let projectId = need.projectId { proposals[projectId, default: []].append(need) }
+                }
+                update(\.ruleNeeds, proposals)
+            case "projectRules":
+                update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":
