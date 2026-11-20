@@ -169,6 +169,11 @@ struct ProjectWorkGitHub: View {
     @State private var draftText = ""
     @State private var draftBase: WorkPiece?
     @State private var noteText = ""
+    /// What the person asked for and the engine has not answered yet: while one of these is on its way, nothing else in
+    /// the tab is sent, so a second click while the first is on its way writes nothing twice.
+    @State private var working: String?
+    /// A start the project's limit refused, to confirm or leave (8.3).
+    @State private var heldStart: HeldStart?
 
     struct ShownDiff: Equatable {
         let number: Int
@@ -177,35 +182,15 @@ struct ProjectWorkGitHub: View {
 
     private var engine: EngineClient { model.engine }
 
-    /// For pictures of this tab: a development build's copy may name a row to open in its own preferences, as
-    /// `PI2_SHOW` names a page, since a copy parked behind other windows cannot be clicked. Nothing a release build
-    /// reads, and nothing the person sets.
-    ///
-    ///     defaults write dev.pi2.app.test-7 work-open -string 'pull:8'
-    ///
-    /// `merge:8` opens that pull request with the question to merge it showing, and `diff:8` with its diff.
+    /// The row a copy was asked to open for a picture, from `WorkRowLaunch.asked` (docs/development.md, "Choosing
+    /// what a copy shows"): a copy parked behind every other window cannot be clicked, so this is how a picture of an
+    /// opened issue, of the merge question or of a diff is taken.
     private static var openedInPreferences: Opened? {
-        #if PI2_DEVELOPMENT
-            guard let asked = UserDefaults.standard.string(forKey: "work-open") else { return nil }
-            let parts = asked.split(separator: ":")
-            guard parts.count == 2, let number = Int(parts[1]) else { return nil }
-            switch parts[0] {
-            case "issue": return .issue(number)
-            case "pull", "merge", "diff": return .pull(number)
-            default: return nil
-            }
-        #else
-            return nil
-        #endif
-    }
-
-    /// Whether the preference above asks for the merge question, or the diff, to show too.
-    private static func preference(names prefix: String) -> Bool {
-        #if PI2_DEVELOPMENT
-            return UserDefaults.standard.string(forKey: "work-open")?.hasPrefix(prefix) == true
-        #else
-            return false
-        #endif
+        guard let asked = WorkRowLaunch.asked else { return nil }
+        switch asked {
+        case .issue(let number): return .issue(number)
+        case .pull(let number), .merge(let number), .diff(let number): return .pull(number)
+        }
     }
     private var work: GitHubWork { GitHubWork(engine.extras["github"]?["projects"]?[project.id]) }
     private var repositoryName: String {
@@ -220,6 +205,7 @@ struct ProjectWorkGitHub: View {
         guard case .pull(let number)? = opened else { return nil }
         return work.pulls.first { $0.number == number }
     }
+    private var busy: Bool { working != nil }
     private var edited: Bool {
         guard let base = draftBase else { return false }
         return draftTitle != base.title || draftText != base.text
@@ -234,11 +220,18 @@ struct ProjectWorkGitHub: View {
             } else if let issue = openIssue {
                 issuePage(issue)
             } else if opened != nil {
-                gone
+                WorkGone(words: "This is no longer in the list.", back: { opened = nil })
             } else {
                 listPage
             }
-            if let pull = confirmingMerge {
+            if let held = heldStart {
+                HeldStartCard(
+                    held: held,
+                    enabled: !busy,
+                    start: { assign(held.piece, to: held.agent, confirming: held.limit) },
+                    leave: { heldStart = nil }
+                )
+            } else if let pull = confirmingMerge {
                 mergeCard(pull)
             } else if let problem {
                 Text(problem)
@@ -254,8 +247,8 @@ struct ProjectWorkGitHub: View {
         .onAppear {
             // A row the preference named is seeded here, as one the person clicked is seeded by the change below.
             if case .issue? = opened { seedDrafts(openIssue) }
-            if Self.preference(names: "merge:"), let pull = openPull { confirmingMerge = pull }
-            if Self.preference(names: "diff:"), openPull != nil { showDiff() }
+            if case .merge? = WorkRowLaunch.asked, let pull = openPull { confirmingMerge = pull }
+            if case .diff? = WorkRowLaunch.asked, openPull != nil { showDiff() }
         }
         .onChange(of: opened) { _, latest in
             problem = nil
@@ -280,7 +273,7 @@ struct ProjectWorkGitHub: View {
         VStack(spacing: 0) {
             bar
             banner
-            if work.issues.isEmpty && work.pulls.isEmpty {
+            if work.issues.isEmpty && work.pulls.isEmpty && work.unknown.isEmpty {
                 empty
             } else {
                 ScrollView {
@@ -315,7 +308,7 @@ struct ProjectWorkGitHub: View {
             Button("Refresh", action: refresh)
                 .buttonStyle(.piSecondary)
                 .controlSize(.small)
-                .disabled(work.state == "loading")
+                .disabled(work.state == "loading" || busy)
                 .help("Read the repository again")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -404,6 +397,8 @@ struct ProjectWorkGitHub: View {
             .menuStyle(.button)
             .controlSize(.small)
             .fixedSize()
+            // Nothing to settle while a write of the tab's is on its way, which could be the one this asks about.
+            .disabled(busy)
             .help("Say whether the write happened, after looking at the repository")
             .accessibilityLabel("Check again whether \(write.summary) happened")
         }
@@ -440,7 +435,7 @@ struct ProjectWorkGitHub: View {
                         Text("#\(issue.id)").font(Theme.mono).foregroundStyle(Theme.tx3)
                         classChip(issue)
                     }
-                    whoHas(issue)
+                    WorkHolderLine(engine: engine, piece: issue)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(.rect)
@@ -450,8 +445,8 @@ struct ProjectWorkGitHub: View {
             .accessibilityHint("Open this issue")
             // A menu inside the row's button is not a control of its own, so it sits beside it in the row.
             if issue.state == "open", !agents.isEmpty {
-                giveMenu(issue)
-                    .disabled(work.troubled)
+                WorkGiveMenu(agents: agents, piece: issue, onGitHub: true, give: { assign(issue, to: $0) })
+                    .disabled(work.troubled || busy)
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
@@ -469,42 +464,6 @@ struct ProjectWorkGitHub: View {
                 .padding(.horizontal, 5).padding(.vertical, 1)
                 .background(Theme.card2, in: .rect(cornerRadius: 4))
         }
-    }
-
-    /// "Forge · sub-chat 17 · 5 min ago", or "Nobody · 5 min ago": who has it and when it last changed.
-    private func whoHas(_ issue: WorkPiece) -> some View {
-        HStack(spacing: 5) {
-            if let agentId = issue.holderAgentId {
-                AgentAvatar(agent: engine.agent(agentId), size: 12)
-                Text(engine.agent(agentId)?.name ?? agentId).foregroundStyle(Theme.tx2)
-                if let chat = issue.holderConversation {
-                    Text("· sub-chat \(chat)").foregroundStyle(Theme.tx3)
-                }
-            } else {
-                Text("Nobody").foregroundStyle(Theme.tx3)
-            }
-            Text("·").foregroundStyle(Theme.tx3)
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                Text(LimitsFormat.ago(issue.updatedAt, now: context.date)).foregroundStyle(Theme.tx3)
-            }
-        }
-        .font(.system(size: 11.5))
-        .lineLimit(1)
-    }
-
-    private func giveMenu(_ issue: WorkPiece) -> some View {
-        Menu {
-            ForEach(agents) { agent in
-                Button(agent.name) { assign(issue, to: agent) }
-            }
-        } label: {
-            Text("Give to")
-        }
-        .menuStyle(.button)
-        .controlSize(.small)
-        .fixedSize()
-        .help("Give this issue to an agent, which starts it working on it")
-        .accessibilityLabel("Give issue #\(issue.id) to an agent")
     }
 
     private var pullGroup: some View {
@@ -533,6 +492,10 @@ struct ProjectWorkGitHub: View {
                         .foregroundStyle(Theme.tx)
                         .lineLimit(1)
                     Text("#\(pull.number)").font(Theme.mono).foregroundStyle(Theme.tx3)
+                    if pull.state != "open" {
+                        // GitHub lists one merged or closed in the last seven days (3.11), so the row says which.
+                        Text(pull.state).font(.system(size: 10.5)).foregroundStyle(Theme.tx3)
+                    }
                     if pull.draft {
                         Text("draft").font(.system(size: 10.5)).foregroundStyle(Theme.tx3)
                     }
@@ -579,6 +542,9 @@ struct ProjectWorkGitHub: View {
             header(back: { opened = nil }, trailing: "#\(issue.id)")
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    ForEach(work.unknown) { write in
+                        unknownCard(write)
+                    }
                     TextField("Title", text: $draftTitle, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14, weight: .semibold))
@@ -600,11 +566,15 @@ struct ProjectWorkGitHub: View {
                                 .buttonStyle(.piGhost)
                                 .controlSize(.small)
                         }
-                        .disabled(work.troubled)
+                        .disabled(work.troubled || busy)
                     }
-                    status(issue)
-                    issueActions(issue)
-                    comments(issue)
+                    WorkStatusLine(engine: engine, piece: issue)
+                    WorkActions(
+                        piece: issue, agents: agents, onGitHub: true, enabled: !work.troubled && !busy,
+                        act: { action, extra in act(issue, action, extra) },
+                        assign: { assign(issue, to: $0) }
+                    )
+                    WorkNotes(engine: engine, piece: issue, heading: "Comments")
                     if let result = issue.result {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("What finishing it said was done").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.tx3)
@@ -617,140 +587,15 @@ struct ProjectWorkGitHub: View {
                         .padding(10)
                         .panel(radius: 8, border: Theme.line)
                     }
-                    noteField(issue)
+                    WorkNoteField(
+                        piece: issue, text: $noteText, onGitHub: true, enabled: !work.troubled && !busy,
+                        add: { addNote(issue) }
+                    )
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-    }
-
-    /// Where it is, who holds it, and what class of model it needs.
-    private func status(_ issue: WorkPiece) -> some View {
-        HStack(spacing: 6) {
-            Text(ProjectWork.name(of: issue.state)).fontWeight(.medium).foregroundStyle(Theme.tx2)
-            Text("·").foregroundStyle(Theme.tx3)
-            if let agentId = issue.holderAgentId {
-                AgentAvatar(agent: engine.agent(agentId), size: 12)
-                Text(engine.agent(agentId)?.name ?? agentId).foregroundStyle(Theme.tx2)
-                if let chat = issue.holderConversation {
-                    Text("· sub-chat \(chat)").foregroundStyle(Theme.tx3)
-                }
-            } else {
-                Text("Nobody has this yet").foregroundStyle(Theme.tx3)
-            }
-            Text("·").foregroundStyle(Theme.tx3)
-            switch issue.modelClass {
-            case "local": Text("needs a local model").foregroundStyle(Theme.tx3)
-            case "cloud": Text("needs a cloud model").foregroundStyle(Theme.tx3)
-            default: Text("not classified").foregroundStyle(Theme.tx3)
-            }
-        }
-        .font(.system(size: 11.5))
-        .lineLimit(1)
-    }
-
-    /// The actions the state table allows the person from this issue's state (docs/projects.md, 3.11), each with the
-    /// table's own word for it. On GitHub they are all undone there, not by Undo (5.9).
-    @ViewBuilder
-    private func issueActions(_ issue: WorkPiece) -> some View {
-        let held = ["in_progress", "waiting", "blocked"].contains(issue.state)
-        HStack(spacing: 8) {
-            if issue.state == "open", !agents.isEmpty {
-                giveMenu(issue)
-            }
-            if held {
-                Button("Release") { act(issue, "release") }
-                    .buttonStyle(.piSecondary)
-                    .controlSize(.small)
-                    .help("Let go of this issue: it goes back to open, with nobody on it")
-            }
-            if ["waiting", "blocked"].contains(issue.state) {
-                Button("Resume") { act(issue, "resume") }
-                    .buttonStyle(.piSecondary)
-                    .controlSize(.small)
-                    .help("Carry on with this issue: it goes back to in progress")
-            }
-            Menu {
-                Button("Local model") { act(issue, "classify", ["class": "local"]) }
-                Button("Cloud model") { act(issue, "classify", ["class": "cloud"]) }
-                Button("Not classified") { act(issue, "classify", ["class": NSNull()]) }
-            } label: {
-                Text("Classify")
-            }
-            .menuStyle(.button)
-            .controlSize(.small)
-            .fixedSize()
-            .help("Say what class of model this issue needs")
-            .accessibilityLabel("Classify issue #\(issue.id)")
-            Spacer(minLength: 8)
-            if held || issue.state == "open" {
-                Menu {
-                    Button("Close as Done") { act(issue, "close", ["as": "done"]) }
-                    Button("Close as Dropped") { act(issue, "close", ["as": "dropped"]) }
-                } label: {
-                    Text("Close")
-                }
-                .menuStyle(.button)
-                .controlSize(.small)
-                .fixedSize()
-                .help("Close this issue on GitHub: done, or dropped as not worth doing")
-                .accessibilityLabel("Close issue #\(issue.id)")
-            }
-            if ["done", "dropped"].contains(issue.state) {
-                Button("Reopen") { act(issue, "reopen") }
-                    .buttonStyle(.piSecondary)
-                    .controlSize(.small)
-                    .help("Open this issue again on GitHub")
-            }
-        }
-        .disabled(work.troubled)
-    }
-
-    /// The issue's comments, oldest first, each with who wrote it and when.
-    private func comments(_ issue: WorkPiece) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !issue.notes.isEmpty {
-                Text("Comments").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.tx3)
-            }
-            ForEach(Array(issue.notes.enumerated()), id: \.offset) { _, note in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(note.text)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Theme.tx)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    commentLine(note)
-                }
-            }
-        }
-    }
-
-    private func commentLine(_ note: WorkPiece.Note) -> some View {
-        let who = note.agentId.map { engine.agent($0)?.name ?? $0 } ?? "You"
-        // The time is kept current as the row's is, since the page stays open while a comment ages.
-        return TimelineView(.periodic(from: .now, by: 30)) { context in
-            Text("\(who) · \(LimitsFormat.ago(note.at, now: context.date))")
-                .font(.caption)
-                .foregroundStyle(Theme.tx3)
-        }
-    }
-
-    private func noteField(_ issue: WorkPiece) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            TextField("Add a comment", text: $noteText, prompt: Text("Add a comment to this issue"), axis: .vertical)
-                .labelsHidden()
-                .lineLimit(1...3)
-                .disabled(work.troubled)
-                .accessibilityLabel("New comment on issue #\(issue.id)")
-                .sendsOnReturn { addNote(issue) }
-            Button("Add") { addNote(issue) }
-                .buttonStyle(.piPrimary)
-                .controlSize(.small)
-                .disabled(work.troubled || noteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .panel(radius: 12, border: Theme.line2)
     }
 
     // MARK: - One pull request, opened
@@ -760,6 +605,9 @@ struct ProjectWorkGitHub: View {
             header(back: { opened = nil }, trailing: "#\(pull.number)")
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    ForEach(work.unknown) { write in
+                        unknownCard(write)
+                    }
                     Text(pull.title)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Theme.tx)
@@ -780,6 +628,14 @@ struct ProjectWorkGitHub: View {
                     }
                     .font(.system(size: 11.5))
                     .lineLimit(1)
+                    if pull.state != "open" {
+                        Text(pull.state == "merged"
+                            ? "GitHub merged it into \(pull.base). Nothing here can merge or send it back again."
+                            : "GitHub closed it without merging. Nothing here can merge or send it back again.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.tx2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if pull.checks == "failing" {
                         Text("Its checks are failing. GitHub shows which of them under the pull request, and pi² only knows that they failed.")
                             .font(.system(size: 12))
@@ -800,8 +656,9 @@ struct ProjectWorkGitHub: View {
                         Button("Merge") { confirmingMerge = pull }
                             .buttonStyle(.piPrimary)
                             .controlSize(.small)
-                            .disabled(work.troubled)
-                            .help("Merge this pull request into \(pull.base)")
+                            .disabled(work.troubled || busy || pull.state != "open")
+                            .help(pull.state == "open" ? "Merge this pull request into \(pull.base)"
+                                : "It is \(pull.state), so there is nothing left to merge")
                         if let workItem = pull.work {
                             Text("Fixes #\(workItem)").font(Theme.mono).foregroundStyle(Theme.tx3)
                         }
@@ -857,13 +714,13 @@ struct ProjectWorkGitHub: View {
                 TextField("Send Back", text: $sendBackText, prompt: Text("What to put right"), axis: .vertical)
                     .labelsHidden()
                     .lineLimit(1...3)
-                    .disabled(work.troubled)
+                    .disabled(work.troubled || busy || pull.state != "open")
                     .accessibilityLabel("What to put right on pull request #\(pull.number)")
                     .sendsOnReturn { sendBack(pull) }
                 Button("Send Back") { sendBack(pull) }
                     .buttonStyle(.piSecondary)
                     .controlSize(.small)
-                    .disabled(work.troubled || sendBackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(work.troubled || busy || pull.state != "open" || sendBackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             Text(pull.openedBy.map { "The reason is posted on the pull request and given to sub-chat \($0), which opened it." }
                 ?? "The reason is posted on the pull request. Nobody opened it through pi², so no agent is told.")
@@ -892,6 +749,7 @@ struct ProjectWorkGitHub: View {
                 Button("Merge") { merge(pull) }
                     .buttonStyle(.piPrimary)
                     .controlSize(.small)
+                    .disabled(busy)
                 Button("Cancel") { confirmingMerge = nil }
                     .buttonStyle(.piSecondary)
                     .controlSize(.small)
@@ -953,19 +811,7 @@ struct ProjectWorkGitHub: View {
         return Theme.tx2
     }
 
-    // MARK: - A part that was open but is no longer in the list
-
-    private var gone: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "checklist").font(.system(size: 22)).foregroundStyle(Theme.tx3)
-            Text("This is no longer in the list.").font(.system(size: 12.5)).foregroundStyle(Theme.tx2)
-            Button("All Work") { opened = nil }
-                .buttonStyle(.piSecondary)
-                .controlSize(.small)
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
+    // MARK: - The bar of an opened issue or pull request
 
     /// The bar an opened issue or pull request has: the way back, and what is open.
     private func header(back: @escaping () -> Void, trailing: String) -> some View {
@@ -984,7 +830,7 @@ struct ProjectWorkGitHub: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
 
-    // MARK: - Changes
+    // MARK: - The drafts the person edits
 
     /// Brings the person's edits in step with the engine's issue. One just opened always seeds them, since what was
     /// typed on the last one is not this one's editing.
@@ -994,15 +840,10 @@ struct ProjectWorkGitHub: View {
         draftText = latest?.text ?? ""
     }
 
+    // MARK: - Changes
+
     private func refresh() {
-        Task {
-            do {
-                try await engine.call("github.refresh", ["projectId": project.id])
-                problem = nil
-            } catch {
-                problem = error.localizedDescription
-            }
-        }
+        send("refresh", "github.refresh", ["projectId": project.id])
     }
 
     private func save(_ issue: WorkPiece) {
@@ -1011,49 +852,43 @@ struct ProjectWorkGitHub: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         draftTitle = title
-        Task {
-            do {
-                try await engine.call("work.act", ["projectId": project.id, "id": issue.id, "action": "edit", "title": title, "text": draftText])
-                problem = nil
-            } catch {
-                problem = error.localizedDescription
-            }
-        }
+        send("edit", "work.act", ["projectId": project.id, "id": issue.id, "action": "edit", "title": title, "text": draftText])
     }
 
     private func addNote(_ issue: WorkPiece) {
         let text = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        Task {
-            do {
-                try await engine.call("work.act", ["projectId": project.id, "id": issue.id, "action": "note", "text": text])
-                noteText = ""
-                problem = nil
-            } catch {
-                problem = error.localizedDescription
-            }
+        send("note", "work.act", ["projectId": project.id, "id": issue.id, "action": "note", "text": text]) {
+            noteText = ""
         }
     }
 
     /// One action of the state table, as the person pressed its button.
     private func act(_ issue: WorkPiece, _ action: String, _ extra: [String: Any] = [:]) {
-        Task {
-            do {
-                try await engine.call("work.act", ["projectId": project.id, "id": issue.id, "action": action].merging(extra) { _, new in new })
-                problem = nil
-            } catch {
-                problem = error.localizedDescription
-            }
-        }
+        send(action, "work.act", ["projectId": project.id, "id": issue.id, "action": action].merging(extra) { _, new in new })
     }
 
     /// Gives the issue to an agent, which starts it: the engine claims it and starts a sub-chat of the orchestrator's
-    /// conversation in one step (3.11).
-    private func assign(_ issue: WorkPiece, to agent: AgentProfile) {
+    /// conversation in one step (3.11). Past a limit the engine refuses with its reading, and the person confirms that
+    /// one start (8.3), as in the list pi² keeps.
+    private func assign(_ issue: WorkPiece, to agent: AgentProfile, confirming: WorkLimit? = nil) {
+        guard working == nil else { return }
+        working = "assign"
+        var params: [String: Any] = ["projectId": project.id, "id": issue.id, "action": "assign", "agentId": agent.id]
+        if let confirming { params["confirmLimit"] = confirming.id }
         Task {
+            defer { working = nil }
             do {
-                try await engine.call("work.act", ["projectId": project.id, "id": issue.id, "action": "assign", "agentId": agent.id])
+                try await engine.call("work.act", params)
+                heldStart = nil
                 problem = nil
+            } catch let error as EngineError {
+                // The refusal of a start past a limit carries the reading (8.3); anything else is just shown.
+                if let limit = WorkLimit(error.data?["limit"]) {
+                    heldStart = HeldStart(piece: issue, agent: agent, limit: limit)
+                } else {
+                    problem = error.localizedDescription
+                }
             } catch {
                 problem = error.localizedDescription
             }
@@ -1061,14 +896,7 @@ struct ProjectWorkGitHub: View {
     }
 
     private func settle(_ write: GitHubUnknownWrite, happened: Bool) {
-        Task {
-            do {
-                try await engine.call("github.settle", ["projectId": project.id, "intent": write.intent, "happened": happened])
-                problem = nil
-            } catch {
-                problem = error.localizedDescription
-            }
-        }
+        send("settle", "github.settle", ["projectId": project.id, "intent": write.intent, "happened": happened])
     }
 
     /// The diff of the pull request open, or of the one the preference names.
@@ -1086,26 +914,30 @@ struct ProjectWorkGitHub: View {
     }
 
     private func merge(_ pull: GitHubPull) {
-        Task {
-            do {
-                try await engine.call("github.merge", ["projectId": project.id, "number": pull.number])
-                confirmingMerge = nil
-                problem = nil
-            } catch {
-                // The engine's words: GitHub's reason it would not merge, or why it cannot be merged.
-                confirmingMerge = nil
-                problem = error.localizedDescription
-            }
-        }
+        guard working == nil else { return }
+        // The card has had its answer; the engine's words show at the bottom of the tab if it refuses.
+        confirmingMerge = nil
+        send("merge", "github.merge", ["projectId": project.id, "number": pull.number])
     }
 
     private func sendBack(_ pull: GitHubPull) {
         let reason = sendBackText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !reason.isEmpty else { return }
+        send("sendBack", "github.sendBack", ["projectId": project.id, "number": pull.number, "reason": reason]) {
+            sendBackText = ""
+        }
+    }
+
+    /// Sends one request and keeps every other write of the tab off until the engine answers: a second click while the
+    /// first is on its way wrote nothing twice. What the engine says when it refuses shows at the bottom of the tab.
+    private func send(_ what: String, _ request: String, _ params: [String: Any], then done: @escaping () -> Void = {}) {
+        guard working == nil else { return }
+        working = what
         Task {
+            defer { working = nil }
             do {
-                try await engine.call("github.sendBack", ["projectId": project.id, "number": pull.number, "reason": reason])
-                sendBackText = ""
+                try await engine.call(request, params)
+                done()
                 problem = nil
             } catch {
                 problem = error.localizedDescription
