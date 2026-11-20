@@ -25,13 +25,13 @@ struct PaletteView: View {
         let matches = { (text: String) in needle.isEmpty || text.lowercased().contains(needle) }
         var result: [Entry] = []
         // With the Projects preview on, projects come first: they are what the sidebar lists. Archived ones only by typing.
-        if engine.projects.preview {
-            for project in engine.projects.listed where matches(project.name) || matches("project \(project.name)") {
+        if engine.projectsPreview {
+            for project in engine.projectStore.listed where matches(project.name) || matches("project \(project.name)") {
                 result.append(Entry(id: "p-\(project.id)", icon: "folder", title: project.name, detail: project.folder.map { "Project · \(engine.folderName($0))" } ?? "Project") {
-                    model.selection = .project(project.id)
+                    model.showProject(project.id)
                 })
             }
-            for project in engine.projects.archivedProjects where !needle.isEmpty && matches(project.name) {
+            for project in engine.projectStore.archivedProjects where !needle.isEmpty && matches(project.name) {
                 result.append(Entry(id: "p-\(project.id)", icon: "archivebox", title: project.name, detail: "Project · archived") { model.selection = .archive })
             }
             if matches("new project") { result.append(Entry(id: "new-project", icon: "folder.badge.plus", title: "New Project…", detail: "Action") {
@@ -54,7 +54,7 @@ struct PaletteView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.continueWithAgent(chat) }
             })
         }
-        for (name, mode) in [(engine.projects.preview ? "Projects" : "Agents", WindowMode.agents), ("Chat", WindowMode.chat)] where model.mode != mode && matches("switch to \(name)") {
+        for (name, mode) in [(engine.projectsPreview ? "Projects" : "Agents", WindowMode.agents), ("Chat", WindowMode.chat)] where model.mode != mode && matches("switch to \(name)") {
             result.append(Entry(id: "mode-\(name)", icon: mode == .chat ? "bubble.left.and.bubble.right" : "person.2", title: "Switch to \(name)", detail: "View") { model.mode = mode })
         }
         if matches("new agent") { result.append(Entry(id: "new-agent", icon: "person.badge.plus", title: "New Agent", detail: "Action") { model.newAgent() }) }

@@ -88,8 +88,8 @@ struct CarryOverReport: Codable, Equatable {
     }
 }
 
-struct ProjectsEvent: Decodable {
-    let preview: Bool
+/// The `projects` event as the sidebar and Settings read it. The hub reads it as `ProjectsEvent` (ProjectHub.swift).
+struct SidebarProjectsEvent: Decodable {
     let projects: [ProjectInfo]
     let carryOver: CarryOverState?
 }
@@ -149,8 +149,6 @@ final class RunLive {
 @MainActor
 @Observable
 final class ProjectsStore {
-    /// Whether the preview is on (docs/projects.md, section 2).
-    private(set) var preview = false
     /// Whether the engine has sent the `projects` event since the app connected.
     private(set) var loaded = false
     /// The projects the sidebar lists: neither archived nor deleted, in the engine's order.
@@ -171,11 +169,6 @@ final class ProjectsStore {
 
     func project(_ id: String) -> ProjectInfo? { byID[id] }
 
-    /// A project by its id, or else by its name, ignoring case: archived ones are found too, deleted ones not.
-    func find(_ nameOrID: String) -> ProjectInfo? {
-        byID[nameOrID] ?? byID.values.sorted { $0.createdAt < $1.createdAt }.first { $0.name.caseInsensitiveCompare(nameOrID) == .orderedSame }
-    }
-
     /// What the sidebar shows of a project that changes while agents work.
     func live(_ id: String) -> ProjectLive {
         if let live = lives[id] { return live }
@@ -190,9 +183,8 @@ final class ProjectsStore {
 
     // MARK: Taking events in
 
-    func take(projects event: ProjectsEvent) {
+    func take(projects event: SidebarProjectsEvent) {
         if !loaded { loaded = true }
-        if preview != event.preview { preview = event.preview }
         let kept = event.projects.filter { $0.deletedAt == nil }
         let ids = Dictionary(kept.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         if byID != ids { byID = ids }
@@ -264,62 +256,12 @@ final class ProjectsStore {
     }
 }
 
-// MARK: - Which project is shown
-
-/// The board's tabs (docs/design/projects.md, The hub), by the names `PI2_SHOW=project:<name>#<tab>` uses.
-enum HubTab: String, CaseIterable {
-    case now, work, agents, rules, notes, branches, settings
-}
-
-/// How a project's hub is folded (docs/projects.md, 10.1).
-enum HubFold: String, CaseIterable {
-    case both
-    case conversationFolded = "conversation-folded"
-    case boardFolded = "board-folded"
-}
-
-/// Which project the window has open, which tab of its board shows and how its hub is folded: the one piece of state
-/// the sidebar, the hub (#471) and a test copy's `show 'project:…'` all set and read. The tab and the fold are kept in
-/// the app's preferences by project, so each project opens as it was left (10.1).
-@MainActor
-@Observable
-final class HubState {
-    /// The project open in the sidebar, whose hub shows when it is selected. Nil: none.
-    private(set) var project: String?
-    var tab: HubTab = .now {
-        didSet { if !loading, let project, tab != oldValue { UserDefaults.standard.set(tab.rawValue, forKey: Self.tabKey(project)) } }
-    }
-    var fold: HubFold = .both {
-        didSet { if !loading, let project, fold != oldValue { UserDefaults.standard.set(fold.rawValue, forKey: Self.foldKey(project)) } }
-    }
-    /// An agent of the project whose conversation shows in place of the board, by name or id; nil shows the board.
-    var agent: String?
-    @ObservationIgnored private var loading = false
-
-    static func foldKey(_ project: String) -> String { "project.\(project).fold" }
-    static func tabKey(_ project: String) -> String { "project.\(project).tab" }
-
-    /// Opens a project, as it was left.
-    func open(_ id: String) {
-        guard id != project else { return }
-        loading = true
-        defer { loading = false }
-        project = id
-        tab = HubTab(rawValue: UserDefaults.standard.string(forKey: Self.tabKey(id)) ?? "") ?? .now
-        fold = HubFold(rawValue: UserDefaults.standard.string(forKey: Self.foldKey(id)) ?? "") ?? .both
-        agent = nil
-    }
-
-    func close() {
-        if project != nil { project = nil }
-        if agent != nil { agent = nil }
-    }
-}
-
 /// What the projects' sidebar keeps folded or unfolded while the app runs.
 @MainActor
 @Observable
 final class ProjectsSidebarState {
+    /// The project unfolded in the sidebar: the one whose hub, or one of whose conversations, was chosen last.
+    var open: String?
     /// Projects whose other conversations are unfolded.
     var othersShown: Set<String> = []
     /// Whether the templates are listed.
@@ -330,29 +272,6 @@ final class ProjectsSidebarState {
 }
 
 extension AppModel {
-    /// Opens a project: its rows unfold in the sidebar and, until the hub is built (#471), its orchestrator's conversation
-    /// shows as any conversation does. A project carrying over made with the default orchestrator has no conversation
-    /// with it yet, and gets one now (docs/projects.md, 9.6).
-    func openProject(_ id: String) {
-        hub.open(id)
-        guard let project = engine.projects.project(id) else { return }
-        if let conversation = project.conversation {
-            engine.openConversation(conversation)
-            workspace.show(conversation)
-            return
-        }
-        Task {
-            do {
-                let result = try await engine.call("projects.startFresh", ["id": id])
-                guard let conversation = result["conversation"]?.intValue else { return }
-                engine.openConversation(conversation)
-                if selection == .project(id) { workspace.show(conversation) }
-            } catch {
-                engine.lastError = error.localizedDescription
-            }
-        }
-    }
-
     /// Makes a project from a folder the person chooses, with its orchestrator and an empty conversation with it, and
     /// opens it.
     func newProject() {
@@ -362,8 +281,8 @@ extension AppModel {
                 let result = try await engine.call("projects.create", ["folder": folder])
                 if let id = result["id"]?.stringValue {
                     // The `projects` event that lists it may come after the answer.
-                    for _ in 0..<20 where engine.projects.project(id) == nil { try? await Task.sleep(for: .milliseconds(50)) }
-                    selection = .project(id)
+                    for _ in 0..<20 where engine.project(id) == nil { try? await Task.sleep(for: .milliseconds(50)) }
+                    showProject(id)
                 }
             } catch {
                 engine.lastError = error.localizedDescription
@@ -375,10 +294,8 @@ extension AppModel {
         Task {
             do {
                 _ = try await engine.call("projects.archive", ["id": id])
-                if hub.project == id {
-                    hub.close()
-                    if case .project = selection { selection = nil }
-                }
+                if projectsSidebar.open == id { projectsSidebar.open = nil }
+                if selection == .project(id) { selection = nil }
             } catch {
                 engine.lastError = error.localizedDescription
             }

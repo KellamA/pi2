@@ -541,8 +541,8 @@ struct ModelMenu: View {
 
 }
 
-/// The toolbar and limit-wait menus offer the same models, grouped by provider.
-private struct ModelChoices: View {
+/// The toolbar, limit-wait and project hub's menus offer the same models, grouped by provider.
+struct ModelChoices: View {
     let engine: EngineClient
     var selected: ModelRef? = nil
     var excluding: Set<ModelRef> = []

@@ -17,15 +17,15 @@ struct ProjectsPreviewSettings: View {
     }
 
     var body: some View {
-        let store = engine.projects
+        let store = engine.projectStore
         Section {
             Toggle("Show projects in place of agents and conversations", isOn: Binding(
-                get: { store.preview },
+                get: { engine.projectsPreview },
                 set: { on in if on { look() } else { turnOff() } }
             ))
             .disabled(working || engine.status != .connected)
             if let error { Text(error).font(.callout).foregroundStyle(Theme.bad) }
-            if store.preview, let pending = store.carryOver?.secretsPending, !pending.isEmpty {
+            if engine.projectsPreview, let pending = store.carryOver?.secretsPending, !pending.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(pending, id: \.copy) { item in
                         Text("\(item.variables.count == 1 ? "1 of \(item.name)’s variables has" : "\(item.variables.count) of \(item.name)’s variables have") not been copied from the agent it was made from, in \(item.project).\(item.error.map { " \($0)" } ?? "")")

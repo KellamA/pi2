@@ -11,9 +11,10 @@ enum Selection: Hashable {
     case branches
     case agent(String)
     case conversation(Int)
-    /// With the Projects preview on: the Dashboard, and a project's hub (Projects.swift).
-    case dashboard
+    /// A project's hub, by the project's id (ProjectHub.swift), with the projects preview on.
     case project(String)
+    /// The Dashboard's row in the sidebar of projects, with the preview on (ProjectsSidebar.swift; drawn by #481).
+    case dashboard
 }
 
 #if PI2_DEVELOPMENT
@@ -73,6 +74,8 @@ final class AppModel {
     let workspace = Workspace()
     /// Chat mode's side of the window, and which side shows (ChatMode.swift).
     let chats = ChatModeState()
+    /// How each project's hub was left (ProjectHub.swift).
+    let hubs = ProjectHubs()
     var selection: Selection? {
         didSet {
             if chats.redirecting { return }
@@ -89,14 +92,13 @@ final class AppModel {
             // A conversation chosen anywhere goes to the pane that has it, or else the focused pane.
             if case .conversation(let id) = selection, selection != oldValue {
                 workspace.show(id)
-                // With the Projects preview on, the sidebar opens the project the conversation belongs to.
-                if engine.projects.preview, let project = engine.conversations.first(where: { $0.id == id })?.projectId { hub.open(project) }
+                // With the projects preview on, the sidebar unfolds the project the conversation belongs to.
+                if engine.projectsPreview, let project = engine.conversations.first(where: { $0.id == id })?.projectId { projectsSidebar.open = project }
             }
-            if case .project(let id) = selection, selection != oldValue { openProject(id) }
+            if case .project(let id) = selection { projectsSidebar.open = id }
         }
     }
-    /// Which project is open, and how its hub shows (Projects.swift).
-    let hub = HubState()
+    /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
     /// Conversations whose sub-chats are folded away in the sidebar.
@@ -127,8 +129,7 @@ final class AppModel {
     var showsWorkspace: Bool {
         guard mode == .agents else { return false }
         switch selection {
-        // Until the hub is built (#471), a project shows its orchestrator's conversation in the panes.
-        case .conversation, .project: return true
+        case .conversation: return true
         case nil: return workspace.isSplit
         default: return false
         }
@@ -137,7 +138,7 @@ final class AppModel {
     /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
     /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
-        workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
+        workspace.shownConversations.union(chats.selection.map { [$0] } ?? []).union(hubConversation.map { [$0] } ?? [])
     }
 
     var selectedConversationID: Int? {
@@ -322,6 +323,7 @@ struct Pi2App: App {
                 Button("Show Archive") { model.selection = .archive }
                 Divider()
                 PaneCommands(model: model)
+                HubCommands(model: model)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -444,7 +446,7 @@ struct RootView: View {
             Group {
                 if model.mode == .chat {
                     ChatSidebar(model: model)
-                } else if engine.projects.preview {
+                } else if engine.projectsPreview {
                     ProjectsSidebar(model: model)
                 } else {
                     SidebarView(model: model)
@@ -475,9 +477,12 @@ struct RootView: View {
                     case .agent(let id):
                         AgentEditor(model: model, agentID: id)
                             .id(id)
+                    case .project(let id):
+                        ProjectHubView(model: model, projectID: id)
+                            .id(id)
                     case .dashboard:
                         DashboardPlaceholder(model: model)
-                    case .conversation, .project, nil:
+                    case .conversation, nil:
                         WelcomeView(model: model)
                     }
                 }

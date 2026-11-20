@@ -88,6 +88,10 @@ final class EngineClient {
     private(set) var branches: [Int: BranchStatus] = [:]
     /// Worktrees of conversations that were archived or deleted, newest first.
     private(set) var leftBehind: [LeftBehindWorktree] = []
+    /// Whether the projects preview is on, and the projects, as the `projects` event last said (docs/projects.md, 4.3).
+    /// With the preview off the app shows none of them (10.2).
+    private(set) var projectsPreview = false
+    private(set) var projects: [ProjectRow] = []
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -104,7 +108,7 @@ final class EngineClient {
     /// Works pages in pi²'s own browser for agents; the app holds the web views.
     let browser = BrowserSession()
     /// Projects, the preview switch and what the sidebar shows of each (Projects.swift).
-    let projects = ProjectsStore()
+    let projectStore = ProjectsStore()
 
     let home: URL
     private var connection: NWConnection?
@@ -593,7 +597,7 @@ final class EngineClient {
                     }
                 }
                 update(\.conversations, event.conversations)
-                projects.take(conversations: event.conversations)
+                projectStore.take(conversations: event.conversations)
                 update(\.archived, event.archived ?? [])
                 update(\.autoArchiveDays, event.autoArchiveDays)
                 update(\.hasLoadedLibrary, true)
@@ -609,7 +613,7 @@ final class EngineClient {
             case "activity":
                 update(\.activity, try decoder.decode(ActivityEvent.self, from: line).runs)
                 update(\.runningCount, activity.count)
-                projects.take(activity: activity)
+                projectStore.take(activity: activity)
                 // By conversation, and by the conversation that handed the work out, for the rows and the line that show a
                 // run waiting for a provider's limit rather than working (#343). Set only when changed, so the views that
                 // read them are not drawn again for every clock tick of a command.
@@ -640,6 +644,17 @@ final class EngineClient {
                 let event = try decoder.decode(BranchesEvent.self, from: line)
                 update(\.branches, Dictionary(uniqueKeysWithValues: event.conversations.compactMap { key, value in Int(key).map { ($0, value) } }))
                 update(\.leftBehind, event.leftBehind ?? [])
+            case "projects":
+                // A preview: one the app cannot read is noted in app.log and leaves the window as it was.
+                guard let event = try? decoder.decode(ProjectsEvent.self, from: line) else {
+                    note("The engine's projects event could not be read; projects are not shown.")
+                    return
+                }
+                update(\.projectsPreview, event.preview)
+                update(\.projects, event.projects)
+                // What the sidebar and Settings read of it (Projects.swift): without the orchestrator's last words, which
+                // change with every finished answer and would draw the list of projects again for nothing.
+                if let sidebar = try? decoder.decode(SidebarProjectsEvent.self, from: line) { projectStore.take(projects: sidebar) }
             case "providers":
                 let event = try decoder.decode(ProvidersEvent.self, from: line)
                 update(\.providers, event.providers)
@@ -668,10 +683,8 @@ final class EngineClient {
                 guard let data = open[event.id] else { return }
                 data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
-            case "projects":
-                projects.take(projects: try decoder.decode(ProjectsEvent.self, from: line))
             case "needs":
-                projects.take(needs: try decoder.decode(NeedsEvent.self, from: line).items)
+                projectStore.take(needs: try decoder.decode(NeedsEvent.self, from: line).items)
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":

@@ -1594,7 +1594,7 @@ This page decides only what the app reads, sends and keeps. What each screen loo
 
 ### 10.1 What the app keeps itself
 
-In the app's preferences, by project id, not in the engine: how each project's hub was left (`project.<id>.fold`: both shown, the conversation folded, or the board folded), the board's tab, and the projects ticked on the Dashboard (`dashboard.projects`). Two Macs do not share them, and the engine has no use for them. While the app runs, which project is open, its tab, its fold and an agent shown in place of the board are one piece of state, `HubState` in `app/Sources/pi2/Projects.swift`: the sidebar sets it when a project or one of its conversations is chosen, a development build's `PI2_SHOW=project:…` and `test-copy show` set it the same way, and the hub reads it (#470, #471).
+In the app's preferences, by project id, not in the engine: how each project's hub was left (`project.<id>.fold`: both shown, the conversation folded, or the board folded), the board's tab, and the projects ticked on the Dashboard (`dashboard.projects`). Two Macs do not share them, and the engine has no use for them. While the app runs, which project shows is the window's selection (`Selection.project`), and how its hub was left is `ProjectHubs` (`app/Sources/pi2/ProjectHub.swift`): `AppModel.showProject` sets them together, for the sidebar of projects (#470) and a test copy's `show` (#471).
 
 ### 10.2 With the preview off
 

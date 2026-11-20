@@ -9,7 +9,7 @@ import SwiftUI
 struct ProjectsSidebar: View {
     @Bindable var model: AppModel
     private var engine: EngineClient { model.engine }
-    private var store: ProjectsStore { engine.projects }
+    private var store: ProjectsStore { engine.projectStore }
 
     var body: some View {
         #if PI2_DEVELOPMENT
@@ -24,7 +24,7 @@ struct ProjectsSidebar: View {
                     Text("No projects yet. Make one from a folder with +.").font(.callout).foregroundStyle(Theme.tx3)
                 }
                 ForEach(store.listed) { project in
-                    ProjectBlock(model: model, project: project, live: store.live(project.id), open: model.hub.project == project.id)
+                    ProjectBlock(model: model, project: project, live: store.live(project.id), open: model.projectsSidebar.open == project.id)
                 }
             } header: {
                 HStack {
@@ -98,11 +98,16 @@ private struct DashboardRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "square.grid.2x2").foregroundStyle(Theme.tx2).frame(width: 20)
-            Text("Dashboard")
+            Text("Dashboard").lineLimit(1).layoutPriority(1)
             Spacer(minLength: 4)
             if store.needsCount > 0 {
-                Tag("\(store.needsCount) need you", .warn).fixedSize()
-                    .accessibilityLabel("\(store.needsCount) waiting on you")
+                // In a narrow sidebar the words give way to the count, and the row's name keeps its room.
+                ViewThatFits(in: .horizontal) {
+                    Tag("\(store.needsCount) need you", .warn).fixedSize()
+                    Tag("\(store.needsCount)", .warn).fixedSize()
+                }
+                .help(store.needsCount == 1 ? "1 thing waits for you" : "\(store.needsCount) things wait for you")
+                .accessibilityLabel("\(store.needsCount) waiting on you")
             }
         }
     }
@@ -112,7 +117,7 @@ private struct ArchiveCount: View {
     let engine: EngineClient
 
     var body: some View {
-        let count = engine.archived.count + engine.projects.archivedProjects.count
+        let count = engine.archived.count + engine.projectStore.archivedProjects.count
         if count > 0 {
             Text("\(count)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
                 .accessibilityLabel("\(count) archived")
@@ -132,7 +137,7 @@ private struct ProjectBlock: View {
         #if PI2_DEVELOPMENT
         let _ = PerfProbe.count("sidebar: project block drawn")
         #endif
-        ProjectRow(engine: engine, project: project, live: live)
+        ProjectSidebarRow(engine: engine, project: project, live: live)
             .tag(Selection.project(project.id))
             .contextMenu(previewAs: project.name, project.id) {
                 Button("Rename…") { model.beginRename(project) }
@@ -141,7 +146,7 @@ private struct ProjectBlock: View {
         if open {
             OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
-                if let run = engine.projects.run(id) {
+                if let run = engine.projectStore.run(id) {
                     RunRow(engine: engine, run: run)
                         .padding(.leading, 14)
                         .tag(Selection.conversation(id))
@@ -153,7 +158,7 @@ private struct ProjectBlock: View {
 }
 
 /// A project: its mark, its name, and its badge: what needs the person, else who is working, else idle.
-private struct ProjectRow: View {
+private struct ProjectSidebarRow: View {
     let engine: EngineClient
     let project: ProjectInfo
     let live: ProjectLive
@@ -227,8 +232,8 @@ private struct OrchestratorRow: View {
         } else {
             // Its conversation is made when the person first opens it (docs/projects.md, 9.6).
             row.contentShape(.rect)
-                .onTapGesture { model.selection = .project(project.id) }
-                .help("Start the conversation with the orchestrator")
+                .onTapGesture { model.showProject(project.id) }
+                .help("Open the project; its conversation with the orchestrator starts there")
         }
     }
 }
@@ -380,8 +385,8 @@ struct ArchivedProjects: View {
     private var engine: EngineClient { model.engine }
 
     var body: some View {
-        let projects = engine.projects.archivedProjects
-        if engine.projects.preview, !projects.isEmpty {
+        let projects = engine.projectStore.archivedProjects
+        if engine.projectsPreview, !projects.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Projects").font(.headline)
                 ForEach(projects) { project in
@@ -436,16 +441,16 @@ private struct ProjectsPreviewFollowing: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: model.engine.projects.preview) { _, on in
+            .onChange(of: model.engine.projectsPreview) { _, on in
                 if on {
                     if case .conversation(let id) = model.selection, let project = model.engine.conversations.first(where: { $0.id == id })?.projectId {
-                        model.hub.open(project)
+                        model.projectsSidebar.open = project
                     }
                     return
                 }
                 // The old sidebar has no Dashboard or project to select: show the orchestrator's conversation instead.
-                let project = model.hub.project.flatMap { model.engine.projects.project($0) }
-                model.hub.close()
+                let project = model.projectsSidebar.open.flatMap { model.engine.projectStore.project($0) }
+                model.projectsSidebar.open = nil
                 switch model.selection {
                 case .dashboard: model.selection = nil
                 case .project: model.selection = project?.conversation.map { .conversation($0) }
@@ -453,41 +458,13 @@ private struct ProjectsPreviewFollowing: ViewModifier {
                 }
             }
             #if PI2_DEVELOPMENT
-            .onChange(of: model.engine.projects.listed, initial: true) {
-                guard !launchTaken, model.engine.projects.loaded, let launch = ProjectCopyView.launch, launch.show != nil else { return }
-                if ProjectLaunch.apply(launch, to: model) == nil { launchTaken = true }
+            // `PI2_SHOW=dashboard` selects the Dashboard's row once the engine has said the preview is on. A project named
+            // there is opened by the test copy's hook as it comes (TestCopyControl.swift).
+            .onChange(of: model.engine.projectsPreview, initial: true) { _, on in
+                guard on, !launchTaken, ProjectCopyView.launch?.show == "dashboard" else { return }
+                launchTaken = true
+                model.selection = .dashboard
             }
             #endif
     }
 }
-
-#if PI2_DEVELOPMENT
-/// Applies a project view a development build was asked for (`PI2_SHOW=project:…` or `dashboard`, `PI2_HUB`, or a
-/// test copy's `show`) to the hub's state and the window's selection.
-@MainActor
-enum ProjectLaunch {
-    /// Nil when done, else why not.
-    static func apply(_ view: ProjectCopyView, to model: AppModel) -> String? {
-        let store = model.engine.projects
-        guard store.preview else { return "the Projects preview is off" }
-        if view.show == "dashboard" {
-            model.selection = .dashboard
-            return nil
-        }
-        if let name = view.project {
-            guard let project = store.find(name) else { return "no project \(name) in the copy" }
-            model.hub.open(project.id)
-            if let tab = view.tab.flatMap({ HubTab(rawValue: $0.rawValue) }) { model.hub.tab = tab }
-            model.hub.agent = view.agent
-            if let fold = view.hub.flatMap({ HubFold(rawValue: $0.rawValue) }) { model.hub.fold = fold }
-            if model.selection != .project(project.id) { model.selection = .project(project.id) }
-            return nil
-        }
-        if let fold = view.hub.flatMap({ HubFold(rawValue: $0.rawValue) }) {
-            guard model.hub.project != nil else { return "no project is open" }
-            model.hub.fold = fold
-        }
-        return nil
-    }
-}
-#endif

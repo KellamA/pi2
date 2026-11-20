@@ -1,4 +1,5 @@
 import SwiftUI
+import WindowKit
 
 #if PI2_DEVELOPMENT
 /// Like PI2_SHOW and the file-driven performance probe, this is part of development builds only.
@@ -54,6 +55,10 @@ struct TestCopyControl: NSViewRepresentable {
         /// `show` requests answered once the page has drawn the conversation, or after `limit`: the request's folder,
         /// the conversation, and how many drawings the page had made when it was asked.
         private var waiting: [(dir: URL, id: Int, after: Int, until: Date)] = []
+        /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`.
+        private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, until: Date)] = []
+        /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown.
+        private var launchProject: ProjectCopyView?
         /// Within test-copy's own thirty seconds, so it hears why rather than that nothing answered.
         private static let limit: TimeInterval = 20
 
@@ -71,6 +76,7 @@ struct TestCopyControl: NSViewRepresentable {
             guard window != nil else { return }
             if let launch = ProjectCopyView.launch, launch.show != nil || launch.hub != nil {
                 _ = recordProjectView(launch, source: "launch")
+                if launch.project != nil { launchProject = launch }
             }
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.poll() }
@@ -103,6 +109,21 @@ struct TestCopyControl: NSViewRepresentable {
                 }
                 return false
             }
+            hubWaiting = hubWaiting.filter { wait in
+                if let drawn = hubDrawn(wait.asked, project: wait.project) {
+                    answer(wait.dir, ["result": drawn])
+                } else if Date() >= wait.until {
+                    answer(wait.dir, ["result": "Showing the project, though the hub had not drawn it after \(Int(Self.limit)) seconds"])
+                } else {
+                    return isDirectory(wait.dir)
+                }
+                return false
+            }
+            // A project made after launch, such as by `fill --project`, opens when it comes, as a conversation does.
+            if let launch = launchProject, let project = launch.project, let id = projectID(project) {
+                launchProject = nil
+                model.showProject(id, tab: launch.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: launch.hub.flatMap { HubFold(rawValue: $0.rawValue) })
+            }
             for name in names.sorted() where name.hasPrefix("request-") {
                 let dir = folder.appendingPathComponent(name, isDirectory: true)
                 guard isDirectory(dir), !waiting.contains(where: { $0.dir == dir }) else { continue }
@@ -124,7 +145,6 @@ struct TestCopyControl: NSViewRepresentable {
             let view: ProjectCopyView
         }
 
-        // The record stays for a script that reads it; `ProjectLaunch` applies the same view to the window.
         private func recordProjectView(_ view: ProjectCopyView, source: String) -> [String: String] {
             let home = folder.deletingLastPathComponent()
             guard isDirectory(home) else { return ["error": "the copy's data folder is missing or a symlink"] }
@@ -135,6 +155,60 @@ struct TestCopyControl: NSViewRepresentable {
             } catch {
                 return ["error": "could not record the project view: \(error.localizedDescription)"]
             }
+        }
+
+        /// A project by its id, or by its name in any case, among those the copy shows.
+        private func projectID(_ asked: String) -> String? {
+            let engine = model.engine
+            guard engine.projectsPreview else { return nil }
+            let live = engine.projects.filter { $0.deletedAt == nil }
+            return (live.first { $0.id == asked } ?? live.first { $0.name.lowercased() == asked.lowercased() })?.id
+        }
+
+        /// Shows the hub `view` asks for: its project, its tab and its fold. Nil when the answer is to wait for the hub to
+        /// draw it. A fold alone applies to the project shown. The Dashboard and an agent's conversation in place of the
+        /// board are later issues', and are only recorded.
+        private func showProject(_ view: ProjectCopyView, dir: URL) -> [String: String]? {
+            if view.show == "dashboard" {
+                // The sidebar's row is selected (#470); what it opens is the Dashboard's issue (#481).
+                guard model.engine.projectsPreview else { return ["error": "the copy has the projects preview off; fill it with --project first"] }
+                model.selection = .dashboard
+                return ["result": "Selected the Dashboard's row; the Dashboard is not drawn yet"]
+            }
+            let fold = view.hub.flatMap { HubFold(rawValue: $0.rawValue) }
+            let id: String
+            if let project = view.project {
+                guard let found = projectID(project) else {
+                    return ["error": model.engine.projectsPreview ? "no project called \(project) in the copy" : "the copy has the projects preview off; fill it with --project first"]
+                }
+                id = found
+            } else if let shown = model.shownProject {
+                id = shown
+            } else {
+                return ["error": "no project is shown to fold; name one with project:<name>"]
+            }
+            model.showProject(id, tab: view.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: fold)
+            hubWaiting.append((dir, view, id, Date().addingTimeInterval(Self.limit)))
+            return nil
+        }
+
+        /// What to answer once the hub has drawn the project, with its tab and fold, and the orchestrator's conversation
+        /// when its panel shows it; nil until then.
+        private func hubDrawn(_ asked: ProjectCopyView, project: String) -> String? {
+            guard let drawn = HubDrawn.current, drawn.project == project, drawn.tab == model.hubs.tab(project),
+                  drawn.fold == model.hubs.fold(project).shown(narrow: drawn.narrow) else { return nil }
+            // The page draws a conversation with entries; an empty one shows the agent's introduction once it has come.
+            if let conversation = drawn.conversation, TranscriptDrawn.drawings[conversation] == nil {
+                guard let open = model.engine.open[conversation], open.state != nil, open.items.isEmpty else { return nil }
+            }
+            let name = model.engine.project(project)?.name ?? project
+            let fold = switch drawn.fold {
+            case .both: "both panels"
+            case .conversationFolded: "the conversation folded"
+            case .boardFolded: drawn.narrow && model.hubs.fold(project) == .both ? "the board folded, as the window is narrow" : "the board folded"
+            }
+            let agent = asked.agent.map { "; an agent's conversation in place of the board (\($0)) is not drawn yet" } ?? ""
+            return "Showing project “\(name)”, \(drawn.tab.title), \(fold), drawn\(agent)"
         }
 
         /// The answer to a request, or nil when it is to wait.
@@ -150,9 +224,7 @@ struct TestCopyControl: NSViewRepresentable {
                         guard view.show != nil || view.hub != nil else { return ["error": "not a project view"] }
                         let recorded = recordProjectView(view, source: "show")
                         guard recorded["error"] == nil else { return recorded }
-                        // The sidebar shows it (#470); the hub, once it is built, reads the same state (#471).
-                        if let why = ProjectLaunch.apply(view, to: model) { return ["error": "recorded, but not shown: \(why)"] }
-                        return ["result": "Showing \(view.show ?? "hub fold")\(view.hub.map { " (\($0.rawValue))" } ?? "")"]
+                        return showProject(view, dir: dir)
                     } catch {
                         return ["error": error.localizedDescription]
                     }
