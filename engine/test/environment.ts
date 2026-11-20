@@ -267,6 +267,37 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	assert.equal((await tool(id, `/bash cat "$PI2_SCRATCH/note"`)).text.trim(), "kept", "what one command leaves there the next finds");
 	rmSync(own, { recursive: true });
 	assert.equal((await tool(id, `/bash test -d "$PI2_SCRATCH" && echo there`)).text.trim(), "there", "a folder taken away (as macOS clears old ones in /tmp) is made again for the next command");
+
+	// The file tools read the same name (#564): a path that begins with it is this folder, made if need be, and what they
+	// write there is where the next command's $PI2_SCRATCH looks. Both spellings, and the answer names the real path.
+	for (const where of ["$PI2_SCRATCH/note2.txt", "${PI2_SCRATCH}/note2.txt"]) {
+		const wrote = await tool(id, `/tool write ${JSON.stringify({ path: where, content: "by the file tool\n" })}`);
+		assert.notEqual(wrote.isError, true, `${where}: ${JSON.stringify(wrote).slice(0, 300)}`);
+		assert.ok(JSON.stringify(wrote).includes(join(own, "note2.txt")), `${where}: the answer names the real path: ${JSON.stringify(wrote).slice(0, 300)}`);
+	}
+	assert.equal((await tool(id, `/bash cat "$PI2_SCRATCH/note2.txt"`)).text.trim(), "by the file tool", "a file written by name is where a command's variable finds it");
+	assert.ok((await tool(id, `/tool read ${JSON.stringify({ path: "$PI2_SCRATCH/note2.txt" })}`)).text.includes("by the file tool"), "read reaches it");
+	const edited = await tool(id, `/tool edit ${JSON.stringify({ path: "$PI2_SCRATCH/note2.txt", edits: [{ oldText: "file tool", newText: "shell" }] })}`);
+	assert.notEqual(edited.isError, true, JSON.stringify(edited).slice(0, 300));
+	assert.equal((await tool(id, `/bash sed -n '1p' "$PI2_SCRATCH/note2.txt"`)).text.trim(), "by the shell", "and so does edit");
+	const scratchListing = await tool(id, `/tool list_files ${JSON.stringify({ path: "$PI2_SCRATCH" })}`);
+	assert.ok(scratchListing.text.startsWith("$PI2_SCRATCH/") && scratchListing.text.includes("note2.txt"), scratchListing.text);
+	const scratchHit = await tool(id, `/tool search_files ${JSON.stringify({ query: "by the shell", path: "$PI2_SCRATCH" })}`);
+	assert.ok(scratchHit.text.includes("$PI2_SCRATCH/note2.txt"), scratchHit.text);
+	// Another variable is refused with one line, and nothing of its name is made anywhere.
+	for (const [name, args] of [
+		["write", { path: "$HOME/nope.txt", content: "x" }],
+		["read", { path: "$HOME/nope.txt" }],
+		["edit", { path: "$HOME/nope.txt", edits: [{ oldText: "a", newText: "b" }] }],
+		["list_files", { path: "$HOME" }],
+		["find_files", { pattern: "*", path: "$TMPDIR" }],
+		["search_files", { query: "x", path: "$TMPDIR" }],
+	] as const) {
+		const refused = await tool(id, `/tool ${name} ${JSON.stringify(args)}`);
+		assert.ok(refused.isError === true && /do not expand variables/.test(refused.text), `${name} ${JSON.stringify(args)}: ${refused.text}`);
+	}
+	assert.equal((await tool(id, `/bash test ! -e '$HOME' && test ! -e '$TMPDIR' && echo none`)).text.trim(), "none", "no folder of a variable's name was made in the working folder");
+	step("the file tools read $PI2_SCRATCH in a path as the folder a command's variable names, and refuse another variable");
 	const told = await tool(id, "/system scratch");
 	void told;
 	const system = client.conversations.get(id).items.filter((item: any) => item.kind === "assistant").at(-1).text as string;

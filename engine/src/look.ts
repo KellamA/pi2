@@ -1,7 +1,8 @@
 // Looking around without changing anything: listing and searching files, and reading web pages.
 //
 // Files: `list_files`, `find_files` and `search_files`, offered whenever the conversation has any tool access. They work
-// inside the conversation's folder only, never follow a link, never change anything, and never ask.
+// inside the conversation's folder, or its scratch folder for a path that begins with $PI2_SCRATCH (#564), never follow
+// a link, never change anything, and never ask.
 // The web: `web_fetch` and `web_search`, offered when the agent's browser is switched on. They need no app, so a
 // scheduled run with the app closed can read the web too. They follow the browser's address rules, and check the
 // address a name really resolves to before connecting to it.
@@ -22,6 +23,7 @@ import { AgentDoc, defineTool, section } from "@earendil-works/pi-durable";
 import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { checkAddress, isPrivateHost, searchAddress } from "./browser.ts";
 import type { Feature } from "./features.ts";
+import { conversationScratch, SCRATCH_VARIABLE, scratchPath } from "./scratch.ts";
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 const fail = (message: string) => ({ output: text(message), isError: true });
@@ -120,19 +122,51 @@ async function rootOf(api: { conversationId: unknown; snapshot: (...args: any[])
 	return realpath(doc?.cwd ?? scratch);
 }
 
-/** `path` (relative to the folder, or absolute) as a real path that is the folder or inside it, or why not. */
-export async function locate(root: string, path: string | undefined): Promise<{ real: string } | { refused: string }> {
+/**
+ * `path` as a real path these tools may use, and the folder it is under, or why not. Relative to `root` (the
+ * conversation's folder) or absolute inside it, as ever; and since #564 it may begin with `$PI2_SCRATCH`, which stands
+ * for the conversation's scratch folder, the one `conversationScratch` gives, allowed as the one folder besides `root`. A
+ * path that begins with another `$NAME` is refused by `scratchPath` unless `root` really holds something of that name.
+ *
+ * `base` is the folder the path is under, `prefix` how a path found in it is written back to the agent (nothing for the
+ * conversation's folder, `$PI2_SCRATCH/` for the scratch one) and `here` the path itself written that way, so that what
+ * the agent is shown it can write again.
+ */
+export async function locate(root: string, path: string | undefined, scratchOf?: () => string | undefined): Promise<{ real: string; base: string; prefix: string; here: string } | { refused: string }> {
 	const wanted = (path ?? "").trim();
+	// A path that does not begin with $ needs no scratch folder, and asking for one would make it.
+	const asks = wanted.startsWith("$");
+	const scratch = asks ? scratchOf?.() : undefined;
+	let asked = wanted;
+	if (asks) {
+		try {
+			asked = scratchPath(wanted, scratch, root);
+		} catch (error) {
+			return { refused: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	let real: string;
 	try {
-		real = await realpath(resolve(root, wanted === "" ? "." : wanted));
+		real = await realpath(resolve(root, asked === "" ? "." : asked));
 	} catch {
-		return { refused: `Not found: ${wanted === "" ? "." : wanted}` };
+		return { refused: `Not found: ${asked === "" ? "." : asked}` };
 	}
-	if (real !== root && !real.startsWith(root.endsWith(sep) ? root : root + sep)) {
-		return { refused: `"${wanted}" is outside this conversation's folder (${root}). These tools only look inside it.` };
+	const folders = [root];
+	if (scratch !== undefined) {
+		try {
+			folders.push(await realpath(scratch));
+		} catch {
+			// Its folder could not be made or read: nothing is under it, and the answer says it is outside the conversation's folder.
+		}
 	}
-	return { real };
+	const inside = (folder: string) => real === folder || real.startsWith(folder.endsWith(sep) ? folder : folder + sep);
+	const base = folders.find(inside);
+	if (base === undefined) {
+		return { refused: `"${wanted}" is outside this conversation's folder (${root}). These tools look inside it, or in its scratch folder under $PI2_SCRATCH.` };
+	}
+	const prefix = base === root ? "" : `$${SCRATCH_VARIABLE}/`;
+	const below = relative(base, real);
+	return { real, base, prefix, here: prefix === "" ? below : below === "." ? prefix.slice(0, -1) : prefix + below };
 }
 
 const relative = (root: string, full: string) => (full === root ? "." : full.slice(root.length + 1));
@@ -213,16 +247,17 @@ const stoppedBecause = (walked: Walked) =>
 				? "Stopped."
 				: undefined;
 
-export async function listFiles(root: string, path: string | undefined, cursor?: string): Promise<{ text: string; isError?: boolean }> {
+export async function listFiles(root: string, path: string | undefined, cursor?: string, scratchOf?: () => string | undefined): Promise<{ text: string; isError?: boolean }> {
 	if (!validCursor(cursor)) return { text: "Invalid cursor; start again without it.", isError: true };
-	const there = await locate(root, path);
+	const there = await locate(root, path, scratchOf);
 	if ("refused" in there) return { text: there.refused, isError: true };
 	let entries: import("node:fs").Dirent[];
 	try {
 		entries = await readdir(there.real, { withFileTypes: true });
 	} catch {
 		const info = await stat(there.real).catch(() => undefined);
-		return { text: info?.isFile() ? `${relative(root, there.real)} is a file (${size(info.size)}), not a folder. Use read to open it.` : `${relative(root, there.real)} cannot be read.`, isError: true };
+		const where = there.here;
+		return { text: info?.isFile() ? `${where} is a file (${size(info.size)}), not a folder. Use read to open it.` : `${where} cannot be read.`, isError: true };
 	}
 	const left = entries.filter((entry) => (entry.isDirectory() && SKIPPED_SET.has(entry.name)) || SKIPPED_FILES.has(entry.name));
 	const shown = entries.filter((entry) => !left.includes(entry));
@@ -238,7 +273,7 @@ export async function listFiles(root: string, path: string | undefined, cursor?:
 			return info === undefined ? entry.name : `${entry.name}  ${size(info.size)}`;
 		}),
 	);
-	const head = `${relative(root, there.real)}/ : ${shown.length} ${shown.length === 1 ? "entry" : "entries"}`;
+	const head = `${there.here}/ : ${shown.length} ${shown.length === 1 ? "entry" : "entries"}`;
 	const out = [head, ...lines];
 	if (remaining.length > LIST_CAP) out.push(`… and ${remaining.length - LIST_CAP} more not shown. ${continuation(key(batch.at(-1)!))}`);
 	const names = [...new Set(left.map((entry) => entry.name))];
@@ -247,21 +282,21 @@ export async function listFiles(root: string, path: string | undefined, cursor?:
 	return { text: out.join("\n") };
 }
 
-export async function findFiles(root: string, pattern: string, path: string | undefined, context: Pick<Context, "abortSignal">, limits?: WalkLimits, cursor?: string): Promise<{ text: string; isError?: boolean }> {
+export async function findFiles(root: string, pattern: string, path: string | undefined, context: Pick<Context, "abortSignal">, limits?: WalkLimits, cursor?: string, scratchOf?: () => string | undefined): Promise<{ text: string; isError?: boolean }> {
 	if (!validCursor(cursor)) return { text: "Invalid cursor; start again without it.", isError: true };
 	if (pattern.trim() === "") return { text: "find_files needs `pattern`, a glob such as **/*.ts.", isError: true };
-	const there = await locate(root, path);
+	const there = await locate(root, path, scratchOf);
 	if ("refused" in there) return { text: there.refused, isError: true };
 	const matcher = globToRegExp(pattern);
 	const found: { path: string; size: number; mtime: number }[] = [];
 	const walked = await walk(
 		there.real,
-		root,
+		there.base,
 		context,
 		async (full, below, inRoot) => {
 			if (!matcher.test(below)) return;
 			const info = await stat(full).catch(() => undefined);
-			if (info !== undefined) found.push({ path: inRoot, size: info.size, mtime: info.mtimeMs });
+			if (info !== undefined) found.push({ path: there.prefix + inRoot, size: info.size, mtime: info.mtimeMs });
 			if (found.length >= FIND_CAP) return false;
 		},
 		limits,
@@ -289,11 +324,12 @@ export async function searchFiles(
 	args: { query: string; path?: string; glob?: string; regex?: boolean; ignoreCase?: boolean; cursor?: string },
 	context: Pick<Context, "abortSignal">,
 	limits?: WalkLimits,
+	scratchOf?: () => string | undefined,
 ): Promise<{ text: string; isError?: boolean }> {
 	if (!validCursor(args.cursor)) return { text: "Invalid cursor; start again without it.", isError: true };
 	if (args.query === "") return { text: "search_files needs `query`.", isError: true };
 	if (args.query.length > 500) return { text: "The query is too long.", isError: true };
-	const there = await locate(root, args.path);
+	const there = await locate(root, args.path, scratchOf);
 	if ("refused" in there) return { text: there.refused, isError: true };
 	let find: (line: string) => number;
 	if (args.regex === true) {
@@ -318,7 +354,7 @@ export async function searchFiles(
 	let capped = false;
 	const walked = await walk(
 		there.real,
-		root,
+		there.base,
 		context,
 		async (full, below, inRoot) => {
 			if (filter !== undefined && !filter.test(below)) return;
@@ -340,7 +376,7 @@ export async function searchFiles(
 			for (let i = 0; i < lines.length; i++) {
 				const at = find(lines[i]!);
 				if (at < 0) continue;
-				group ??= { path: inRoot, lines: [], extra: 0 };
+				group ??= { path: there.prefix + inRoot, lines: [], extra: 0 };
 				if (group.lines.length >= SEARCH_PER_FILE) {
 					group.extra++;
 					continue;
@@ -741,18 +777,18 @@ export const look: Feature = (host) => {
 	const listTool = defineTool({
 		name: "list_files",
 		description:
-			"List what is in a folder: names, a / after folders, and file sizes. `path` is relative to the conversation's folder (default: the folder itself). Looks inside the folder only and changes nothing. Places like .git and node_modules are left out. Pass back `cursor` to continue.",
+			"List what is in a folder: names, a / after folders, and file sizes. `path` is relative to the conversation's folder (default: the folder itself), or begins with `$PI2_SCRATCH` for its scratch folder. Looks inside those two folders and changes nothing. Places like .git and node_modules are left out. Pass back `cursor` to continue.",
 		parameters: obj({ path: opt(str({ description: "Folder to list, relative to the conversation's folder" })), cursor: cursorParameter }),
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const result = await listFiles(await rootOf(api, host.scratchFolder(), context), args.path, args.cursor);
+			const result = await listFiles(await rootOf(api, host.scratchFolder(), context), args.path, args.cursor, () => conversationScratch(api.conversationId));
 			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
 		},
 	});
 	const findTool = defineTool({
 		name: "find_files",
 		description:
-			"Find files whose path matches a glob, each batch newest first. Pass back `cursor` to continue. `*` is anything within a name, `**` crosses folders, `?` is one character, `{a,b}` is either. A glob with no / (such as *.ts) matches names anywhere below; otherwise it matches the path below `path`, as in src/**/test_*.py. Looks inside the conversation's folder only; .git, node_modules and build output are left out. Use it rather than `find` in the shell.",
+			"Find files whose path matches a glob, each batch newest first. Pass back `cursor` to continue. `*` is anything within a name, `**` crosses folders, `?` is one character, `{a,b}` is either. A glob with no / (such as *.ts) matches names anywhere below; otherwise it matches the path below `path`, as in src/**/test_*.py. Looks inside the conversation's folder, or its scratch folder for a `path` beginning with `$PI2_SCRATCH`; .git, node_modules and build output are left out. Use it rather than `find` in the shell.",
 		parameters: obj({
 			pattern: str({ description: "Glob such as **/*.ts" }),
 			cursor: cursorParameter,
@@ -760,14 +796,14 @@ export const look: Feature = (host) => {
 		}),
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const result = await findFiles(await rootOf(api, host.scratchFolder(), context), args.pattern, args.path, context, undefined, args.cursor);
+			const result = await findFiles(await rootOf(api, host.scratchFolder(), context), args.pattern, args.path, context, undefined, args.cursor, () => conversationScratch(api.conversationId));
 			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
 		},
 	});
 	const searchTool = defineTool({
 		name: "search_files",
 		description:
-			"Search the text files below a folder for lines containing `query` (or matching it as a regular expression with `regex`). Answers with file, line number and line, grouped by file; pass back `cursor` to continue a cut-short search. `glob` limits which files (same form as find_files). Looks inside the conversation's folder only; binary files, .git, node_modules and build output are left out. Use it rather than `grep` in the shell.",
+			"Search the text files below a folder for lines containing `query` (or matching it as a regular expression with `regex`). Answers with file, line number and line, grouped by file; pass back `cursor` to continue a cut-short search. `glob` limits which files (same form as find_files). Looks inside the conversation's folder, or its scratch folder for a `path` beginning with `$PI2_SCRATCH`; binary files, .git, node_modules and build output are left out. Use it rather than `grep` in the shell.",
 		parameters: obj({
 			query: str({ description: "Text to look for" }),
 			cursor: cursorParameter,
@@ -778,7 +814,7 @@ export const look: Feature = (host) => {
 		}),
 		replay: "safe",
 		execute: async (args, api, context) => {
-			const result = await searchFiles(await rootOf(api, host.scratchFolder(), context), args, context);
+			const result = await searchFiles(await rootOf(api, host.scratchFolder(), context), args, context, undefined, () => conversationScratch(api.conversationId));
 			return { output: text(result.text), ...(result.isError ? { isError: true } : {}) };
 		},
 	});
