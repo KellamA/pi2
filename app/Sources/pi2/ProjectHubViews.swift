@@ -370,6 +370,7 @@ private struct HubBoard: View {
                 }
             }
             switch tab {
+            case .now: ProjectNowTab(model: model, project: project)
             case .notes: ProjectNotesTab(model: model, project: project)
             default: BoardTabEmpty(tab: tab)
             }

@@ -100,7 +100,7 @@ struct NeedRef: Decodable, Equatable {
     let projectId: String?
 }
 
-struct NeedsEvent: Decodable { let items: [NeedRef] }
+struct NeedsEvent: Decodable { let items: [ProjectNeed] }
 
 /// A conversation of a project that is not the orchestrator's, as the sidebar lists it under the project.
 struct ProjectConversation: Equatable, Identifiable {

@@ -19,6 +19,13 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
         let at: Double
     }
 
+    /// The parts of the project's settings the hub reads (docs/projects.md, section 8); the Settings tab (#478) reads
+    /// the rest.
+    struct Settings: Decodable, Equatable {
+        /// The person's switch: whether a report wakes the orchestrator rather than waiting to be read (8.2).
+        let wakeOnReports: Bool?
+    }
+
     let id: String
     let name: String
     /// The real path of its folder, or nil for a project with none.
@@ -32,6 +39,7 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
     let deletedAt: Double?
     /// Its folder has gone since it was set.
     let folderMissing: Bool?
+    let settings: Settings?
     /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
     let lastWords: LastWords?
 }

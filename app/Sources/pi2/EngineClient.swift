@@ -92,6 +92,9 @@ final class EngineClient {
     /// With the preview off the app shows none of them (10.2).
     private(set) var projectsPreview = false
     private(set) var projects: [ProjectRow] = []
+    /// Everything waiting for the person, of every project and none, as the `needs` event sends it (docs/projects.md,
+    /// 3.9): the Now tab's cards. The sidebar's counts come of the same items, through `projectStore`.
+    private(set) var needs: [ProjectNeed] = []
     /// Asked to show a conversation, for example a fork that was just made.
     var onNavigate: (Int) -> Void = { _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
@@ -684,14 +687,17 @@ final class EngineClient {
                 data.prepend(event.items, earlier: event.earlier, more: event.more)
                 if event.earlier == 0 { PerfProbe.opening(event.id, "all \(data.items.count) in") }
             case "needs":
-                projectStore.take(needs: try decoder.decode(NeedsEvent.self, from: line).items)
+                // Decoded once, whole: the sidebar's counts read the same items as the hub's cards.
+                let items = try decoder.decode(NeedsEvent.self, from: line).items
+                projectStore.take(needs: items.map { NeedRef(id: $0.id, projectId: $0.projectId) })
+                update(\.needs, items)
             case "auth":
                 handleAuth(try decoder.decode(AuthEventMessage.self, from: line))
             case "computer":
                 computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
             case "browser":
                 browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
-            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings":
+            case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "reports":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
                 extras[envelope.event ?? ""] = try decoder.decode(JSONValue.self, from: line)
                 if envelope.event == "limits" { Notifier.shared.limitNotices(PlanLimits(extras["limits"])?.notices ?? []) }
