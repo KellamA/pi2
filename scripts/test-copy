@@ -66,11 +66,11 @@ Usage: scripts/test-copy <command> [arguments]
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
-  can-click <suffix>              Say whether computer use can read and click this copy's window now, and which cause
-                                   if not: the pi² app not running (only the person can reopen it), no window in the
-                                   window server, or a copy whose build predates the request that exposes its parked
-                                   window (rebuild and reopen it). A yes also exposes the window, so the tool can
-                                   read it right after. Run this before planning checks that need clicks.
+  can-click <suffix>              Say whether computer use can reach this copy's window now, and which cause if
+                                   not: the pi² app not running (only the person can reopen it), no window in the
+                                   window server, or a copy whose build predates the request that raises its parked
+                                   window (rebuild and reopen it). A yes raises the window, which is what the tool
+                                   needs to read it. Run this before planning checks that need clicks.
   answer <suffix> <conversation> allow|deny
                                    Answer one waiting approval (allow once); refuses if more than one is waiting.
   answer <suffix> <need-id> '<json answer>'
@@ -675,7 +675,7 @@ case $cmd in
 		esac
 		fi
 		echo "$out"
-		echo "Computer use can read and click this copy's window (dev.pi2.app.$SUFFIX); take a screenshot to see its controls."
+		echo "The copy's parked window is raised, which is what computer use needs to read it; take a screenshot of dev.pi2.app.$SUFFIX to see its controls."
 		;;
 	answer|fill)
 		names "${1-}"; shift

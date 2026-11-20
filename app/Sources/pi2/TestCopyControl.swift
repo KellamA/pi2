@@ -344,16 +344,15 @@ struct TestCopyControl: NSViewRepresentable {
                 guard let id = request.id else { return ["error": "missing what to show"] }
                 return showConversation(id, dir: dir)
             case "expose":
-                // The computer tool cannot read a parked window: macOS leaves a window that has never been front out
-                // of the app's accessibility window list (#579). Raise this one within its own level, where it stays
-                // behind every ordinary window and nothing on screen changes, and put it back — after that it stays
-                // in the list wherever it is parked.
+                // The computer tool cannot read a parked window: it is joined to the app's accessibility windows
+                // only by an ordering event, which a copy's launch window never gets (#579). Raise this one within
+                // its own level, where it stays behind every ordinary window and nothing on screen changes, and put
+                // it back — as the Window menu's own command does for a window someone chose. The raise is what
+                // the tool needs; whether it can then be read is the tool's own answer to give.
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
-                if ParkedWindow.isListed(window) {
-                    return ["result": "The main window is already in the app's accessibility window list"]
-                }
-                return ParkedWindow.expose(window)
-                    ? ["result": "Exposed the parked main window; it is now in the app's accessibility window list"]
+                _ = ParkedWindow.expose(window)
+                return ParkedWindow.isListed(window)
+                    ? ["result": "Raised the parked main window within its own level"]
                     : ["error": "the main window did not join the app's accessibility window list when raised"]
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }

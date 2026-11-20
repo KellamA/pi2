@@ -505,11 +505,11 @@ respond() {
 	) &
 	RESPONDER_PID=$!
 }
-respond '{"result":"Exposed the parked main window"}'
+respond '{"result":"Raised the parked main window"}'
 out=$(PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" "$copy" can-click test-7 2>&1)
 status=$?
 kill "$RESPONDER_PID" 2>/dev/null
-if ((status == 0)) && [[ $out == *'Exposed the parked main window in test-7.'* && $out == *"Computer use can read and click this copy's window"* ]]; then
+if ((status == 0)) && [[ $out == *'Raised the parked main window in test-7.'* && $out == *'parked window is raised'* ]]; then
 	echo "ok: test-copy can-click exposes the copy's parked window and says the tool can click it"
 else
 	echo "FAIL: test-copy can-click did not expose and answer (exit $status): $out"

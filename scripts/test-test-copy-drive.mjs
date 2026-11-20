@@ -123,7 +123,7 @@ try {
 		['show', ['nosuchpage'], { page: 'nosuchpage' }, { error: 'no page or conversation called nosuchpage' }],
 		['size', ['820', '532'], { width: 820, height: 532 }, { result: 'Sized the main window to 820×532 points' }],
 		['size', ['smallest'], { smallest: true }, { error: 'no main window' }],
-		['expose', [], {}, { result: "Exposed the parked main window; it is now in the app's accessibility window list" }],
+		['expose', [], {}, { result: 'Raised the parked main window within its own level' }],
 		['expose', [], {}, { error: "the main window did not join the app's accessibility window list when raised" }],
 		['expose', [], {}, { error: 'unknown test-copy window command' }],
 		['choose', ['app/build/file with spaces', '/tmp/second'], { paths: [join(process.cwd(), 'app/build/file with spaces'), '/tmp/second'] },

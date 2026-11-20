@@ -389,6 +389,9 @@ Task { @MainActor in
         // title bar's corner kept on screen. macOS leaves a window that has never been ordered out of the app's
         // accessibility window list until an ordering event joins it (#579), which is why every parked copy read
         // as "did not expose it through Accessibility" with no controls and no text.
+        // A real app has a menu bar among the app element's children, which once hid the window behind a cast;
+        // give this one a menu so the listing is read the way a real copy's is.
+        NSApp.mainMenu = NSMenu(title: "Main")
         let parked = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 550), styleMask: [.titled], backing: .buffered, defer: false)
         parked.isReleasedWhenClosed = false
         parked.title = "Parked"

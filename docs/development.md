@@ -329,7 +329,7 @@ In a running copy, `scripts/test-copy show test-7 "$CHAT"` opens a conversation 
 scripts/test-copy answer test-7 n2 '{"kind":"decision","choice":"c1"}'
 ```
 
-`can-click test-7` answers whether computer use can read and click the copy's window now, and which cause if not (#579): the pi² app not running (only the person can reopen it), no window in the window server, or a copy whose build predates the request that exposes its parked window (rebuild and `reopen`). A parked copy's window is never in the app's accessibility list until the copy has raised it once — which `can-click` asks it to do, invisibly, so a yes leaves the window readable for the tool straight after; run it before planning checks that need clicks.
+`can-click test-7` answers whether computer use can reach the copy's window now, and which cause if not (#579): the pi² app not running (only the person can reopen it), no window in the window server, or a copy whose build predates the request that raises its parked window (rebuild and `reopen`). A parked copy's window is joined to the app's accessibility windows only by an ordering event, which its launch window never gets — `can-click` asks the copy to raise it once within its own level, which no one can see; if the tool still cannot read the copy after that, the tool's own answer says why.
 
 The copy's engine takes an answer, and a change to what the person set, only from its app or from a connection with the copy's key. `answer` and `call` give it the key from `app/build/test-copies/<suffix>/answer-key`; an ordinary connection to the copy's socket, including a command run by one of its agents, can neither answer nor change one ([architecture.md](architecture.md#who-may-answer-for-the-person)).
 
