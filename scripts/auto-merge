@@ -6,8 +6,10 @@
 # Run it as soon as the pull request is open, instead of `gh pr merge <number> --auto --merge`, and again whenever you
 # look at it, after pushing a fix or merging main into the branch too, until it says the pull request is merged:
 #
-# - auto-merge off (never turned on, or turned off by GitHub): turns it on, with a merge commit. gh merges at once if
-#   nothing is left to wait for;
+# - every required check passed already (GitHub says the pull request is in clean status): merges it now, with a merge
+#   commit, since gh refuses to turn auto-merge on for a pull request with nothing left to wait for (#553);
+#
+# - auto-merge off (never turned on, or turned off by GitHub): turns it on, with a merge commit;
 # - auto-merge on, every required check passed and nothing merged three minutes after the last one finished: turns
 #   auto-merge off and on again, which merges it. GitHub usually merges within a minute or two of the last check;
 # - a conflict with main, or a required check that failed: says what to do, and whether a check was only cancelled
@@ -32,6 +34,17 @@ case $(state) in
 MERGED) echo "Merged."; exit 0 ;;
 CLOSED) echo "Closed without merging."; exit 1 ;;
 esac
+
+# A pull request whose required checks all passed is in clean status, and gh answers `pr merge --auto` for one with
+# "Pull request is in clean status" and fails: there is nothing left to wait for, so merge it now instead (#553).
+if [[ $(jq -r .mergeStateStatus <<<"$pr") == CLEAN ]]; then
+	echo "Every required check has passed and nothing is left to wait for: merging it now."
+	gh pr merge "$n" --merge
+	pr=$(view)
+	[[ $(state) != MERGED ]] || { echo "Merged."; exit 0; }
+	echo "GitHub has not merged it yet ($(jq -r .mergeStateStatus <<<"$pr")): run this again in a minute."
+	exit 3
+fi
 
 if [[ $(jq -r .autoMergeRequest <<<"$pr") == null ]]; then
 	echo "Auto-merge is off: turning it on."
@@ -84,7 +97,7 @@ if [[ $status == BLOCKED ]] && ((since >= STALL_SECONDS)); then
 	echo "requires a check this branch's CI does not have yet, merge origin/main into the branch and push."
 	exit 1
 fi
-if [[ $status == CLEAN || $status == UNSTABLE || $status == HAS_HOOKS ]] && ((since >= STALL_SECONDS)); then
+if [[ $status == UNSTABLE || $status == HAS_HOOKS ]] && ((since >= STALL_SECONDS)); then
 	echo "Every required check passed ${since}s ago and it has not merged: turning auto-merge off and on again."
 	gh pr merge "$n" --disable-auto
 	gh pr merge "$n" --auto --merge
