@@ -529,10 +529,6 @@ struct InboxItem: Codable, Equatable, Identifiable {
     var rule: RuleOffer? = nil
     /// For a command: it would be started and left running in the background, so the card says so.
     var background: Bool? = nil
-    /// For an approval that carries a conversation over to another project, and which setting of that project's asked:
-    /// the engine answers it only with Once or Deny (`projectSwitch` in needs.ts), so the card offers nothing that would
-    /// allow it for later.
-    var projectSwitch: String? = nil
     let title: String
     let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.

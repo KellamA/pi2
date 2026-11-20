@@ -136,40 +136,30 @@ struct InboxCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 // Four choices do not fit a narrow card, such as the menu bar's, on one line; they wrap to two, or three.
-                if item.projectSwitch != nil {
-                    // A project's switch is the person's own newer choice about that project, so nothing here offers to
-                    // allow it for later: the engine refuses an answer other than Once or Deny, as the Now tab's card
-                    // knows (#553).
+                ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
                         onceButton
+                        ruleButton
+                        alwaysButton
                         denyButton
                     }
-                } else {
-                    ViewThatFits(in: .horizontal) {
+                    VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
                             onceButton
                             ruleButton
+                        }
+                        HStack(spacing: 8) {
                             alwaysButton
                             denyButton
                         }
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                onceButton
-                                ruleButton
-                            }
-                            HStack(spacing: 8) {
-                                alwaysButton
-                                denyButton
-                            }
-                        }
-                        // A rule's button that says "in This Repository" may need a line of its own.
-                        VStack(alignment: .leading, spacing: 8) {
-                            onceButton
-                            ruleButton
-                            HStack(spacing: 8) {
-                                alwaysButton
-                                denyButton
-                            }
+                    }
+                    // A rule's button that says "in This Repository" may need a line of its own.
+                    VStack(alignment: .leading, spacing: 8) {
+                        onceButton
+                        ruleButton
+                        HStack(spacing: 8) {
+                            alwaysButton
+                            denyButton
                         }
                     }
                 }
