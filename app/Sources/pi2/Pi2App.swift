@@ -367,6 +367,7 @@ struct Pi2App: App {
 
         MenuBarExtra {
             MenuBarView(model: model)
+                .watchWindowSize(name: "Menu Bar", threshold: SizeWatch.panelThreshold) { model.engine.note($0) }
                 .tint(.piAccent)
         } label: {
             MenuBarLabel(engine: model.engine)

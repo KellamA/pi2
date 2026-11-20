@@ -43,6 +43,7 @@ final class BrowserSession {
             indicator.show(
                 agent: event.agentName ?? "An agent", app: site.isEmpty ? "the web" : site, doing: "is browsing",
                 reveal: { [weak self] in self?.reveal(conversation) },
+                report: { [weak engine] in engine?.note($0) },
                 stop: { [weak engine] in engine?.perform("abort", ["id": root]) }
             )
         }

@@ -30,7 +30,12 @@ extension View {
         Color.clear
             .frame(minWidth: width, minHeight: height)
             .overlay { self }
-            .background(SizeWatcher(report: report))
+            .watchWindowSize(report: report)
+    }
+
+    /// A watch on content whose window is owned by SwiftUI. `name` can identify a window that has no title.
+    public func watchWindowSize(name: String? = nil, threshold: Int = SizeWatch.threshold, report: @escaping @MainActor (String) -> Void) -> some View {
+        background(SizeWatcher(name: name, threshold: threshold, report: report))
     }
 
     /// For the content of a split view's column: never asks the column for more height than the window gives it.
@@ -46,9 +51,11 @@ extension View {
 
 /// An empty view that keeps a `SizeWatch` on the window it is in.
 private struct SizeWatcher: NSViewRepresentable {
+    let name: String?
+    let threshold: Int
     let report: @MainActor (String) -> Void
 
-    func makeNSView(context: Context) -> Watcher { Watcher(report: report) }
+    func makeNSView(context: Context) -> Watcher { Watcher(name: name, threshold: threshold, report: report) }
     func updateNSView(_ view: Watcher, context: Context) {}
 
     static func dismantleNSView(_ view: Watcher, coordinator: ()) {
@@ -58,8 +65,8 @@ private struct SizeWatcher: NSViewRepresentable {
     final class Watcher: NSView {
         let watch: SizeWatch
 
-        init(report: @escaping @MainActor (String) -> Void) {
-            watch = SizeWatch(report: report)
+        init(name: String?, threshold: Int, report: @escaping @MainActor (String) -> Void) {
+            watch = SizeWatch(name: name, threshold: threshold, report: report)
             super.init(frame: .zero)
         }
 
@@ -84,15 +91,22 @@ public final class SizeWatch {
     /// Changes of size of one view in one turn of the run loop before it is reported. A window resized by hand changes
     /// it once or twice a turn; AppKit gives up after as many passes as the window has views, hundreds.
     public static let threshold = 40
+    /// A pill has only a few AppKit views, and AppKit can stop after fewer than 40 passes.
+    public static let panelThreshold = 4
 
+    private let name: String?
+    private let threshold: Int
     private let report: @MainActor (String) -> Void
     private weak var window: NSWindow?
     private var observer: NSObjectProtocol?
     private var counts: [ObjectIdentifier: (name: String, sizes: [CGSize])] = [:]
     private var resetScheduled = false
+    private var settingFrame = false
     public private(set) var reported = false
 
-    public init(report: @escaping @MainActor (String) -> Void) {
+    public init(name: String? = nil, threshold: Int = SizeWatch.threshold, report: @escaping @MainActor (String) -> Void) {
+        self.name = name
+        self.threshold = threshold
         self.report = report
     }
 
@@ -114,10 +128,23 @@ public final class SizeWatch {
     public func stop() {
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
+        window = nil
         counts = [:]
     }
 
+    /// Apply an explicit resize without counting it as unexpected layout churn. Do not display synchronously.
+    package func setFrame(_ frame: NSRect, of window: NSWindow) {
+        guard frame != window.frame else { return }
+        settingFrame = true
+        defer { settingFrame = false }
+        window.setFrame(frame, display: false)
+    }
+
     private func changed(_ view: NSView, in window: NSWindow) {
+        guard !reported, !settingFrame else { return }
+        let key = ObjectIdentifier(view)
+        let size = view.frame.size
+        guard counts[key]?.sizes.last != size else { return }
         if !resetScheduled {
             resetScheduled = true
             DispatchQueue.main.async { [weak self] in
@@ -127,14 +154,13 @@ public final class SizeWatch {
                 }
             }
         }
-        let key = ObjectIdentifier(view)
         var entry = counts[key] ?? (name: Self.name(of: view, in: window), sizes: [])
-        entry.sizes.append(view.frame.size)
+        entry.sizes.append(size)
         counts[key] = entry
-        guard !reported, entry.sizes.count >= Self.threshold else { return }
+        guard entry.sizes.count >= threshold else { return }
         reported = true
         let last = entry.sizes.suffix(6).map(Self.text).joined(separator: ", ")
-        report("The window “\(window.title)” did not settle on a size: \(entry.name) changed size \(entry.sizes.count) times without the run loop turning (last \(last)). The window is \(Self.text(window.frame.size)), its smallest content size \(Self.text(window.contentMinSize)).")
+        report("The window “\(name ?? window.title)” did not settle on a size: \(entry.name) changed size \(entry.sizes.count) times without the run loop turning (last \(last)). The window is \(Self.text(window.frame.size)), its smallest content size \(Self.text(window.contentMinSize)).")
     }
 
     /// The view's kind, with what it hosts cut short: SwiftUI's types run to thousands of characters.

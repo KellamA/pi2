@@ -3,6 +3,7 @@ import BrowserKit
 import ComputerKit
 import SwiftUI
 import UniformTypeIdentifiers
+import WindowKit
 
 /// A computer action as the engine sends it.
 struct ComputerEvent: Decodable {
@@ -47,7 +48,7 @@ final class ComputerSession {
         let acts = !["describe", "list_apps"].contains(event.action)
         if acts, let app = event.app {
             let root = engine.conversations.first { $0.id == event.conversationId }?.parent ?? event.conversationId
-            indicator.show(agent: event.agentName ?? "An agent", app: ComputerController.name(of: app)) { [weak engine] in
+            indicator.show(agent: event.agentName ?? "An agent", app: ComputerController.name(of: app), report: { [weak engine] in engine?.note($0) }) { [weak engine] in
                 engine?.perform("abort", ["id": root])
             }
         }
@@ -69,43 +70,21 @@ final class ComputerSession {
 /// Pressing Esc twice does the same from anywhere.
 @MainActor
 final class ComputerIndicator {
-    private var panel: NSPanel?
+    private let panel: IndicatorPanel
     private var hide: Task<Void, Never>?
     private var monitors: [Any] = []
     private var lastEscape = Date.distantPast
     private var stop: () -> Void = {}
-    /// Which line the pill sits on, so that two kinds of work at once do not cover each other.
-    private let row: Int
-
     init(row: Int = 0) {
-        self.row = row
+        panel = IndicatorPanel(row: row)
     }
 
     /// `doing` is what joins the agent to the thing it works ("Atlas is using Notes"); `reveal`, when given, puts a
     /// Show button on the pill.
-    func show(agent: String, app: String, doing: String = "is using", reveal: (() -> Void)? = nil, stop: @escaping () -> Void) {
+    func show(agent: String, app: String, doing: String = "is using", reveal: (() -> Void)? = nil, report: @escaping @MainActor (String) -> Void, stop: @escaping () -> Void) {
         hide?.cancel()
         self.stop = stop
-        let view = NSHostingView(rootView: IndicatorPill(agent: agent, app: app, doing: doing, reveal: reveal) { [weak self] in self?.stopNow() })
-        view.setFrameSize(view.fittingSize)
-        let panel = self.panel ?? {
-            let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-            panel.level = .statusBar
-            panel.isOpaque = false
-            panel.backgroundColor = .clear
-            panel.hasShadow = true
-            panel.hidesOnDeactivate = false
-            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-            self.panel = panel
-            return panel
-        }()
-        panel.contentView = view
-        if let screen = NSScreen.main {
-            let size = view.fittingSize
-            let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 8 - CGFloat(row) * (size.height - 6))
-            panel.setFrame(NSRect(origin: origin, size: size), display: true)
-        }
-        panel.orderFrontRegardless()
+        panel.show(agent: agent, app: app, doing: doing, reveal: reveal, report: report) { [weak self] in self?.stopNow() }
         watchEscape()
     }
 
@@ -120,7 +99,7 @@ final class ComputerIndicator {
     }
 
     private func dismiss() {
-        panel?.orderOut(nil)
+        panel.dismiss()
         for monitor in monitors { NSEvent.removeMonitor(monitor) }
         monitors = []
     }
@@ -143,36 +122,6 @@ final class ComputerIndicator {
         // Keys typed in other apps (needs the Accessibility permission the agent's actions need anyway), and in pi².
         if let global = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: pressed) { monitors.append(global) }
         if let local = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { pressed($0); return $0 }) { monitors.append(local) }
-    }
-}
-
-private struct IndicatorPill: View {
-    let agent: String
-    let app: String
-    let doing: String
-    let reveal: (() -> Void)?
-    let stop: () -> Void
-
-    var body: some View {
-        HStack(spacing: 9) {
-            Spinner(size: 11)
-            Text("\(agent) \(doing) \(app)").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.tx)
-            Text("Esc Esc").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.tx3)
-                .padding(.horizontal, 5).padding(.vertical, 1.5)
-                .background(Theme.card2, in: .rect(cornerRadius: 4))
-            if let reveal {
-                Button("Show") { reveal() }
-                    .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
-                    .help("Show the page in pi²’s browser")
-            }
-            Button("Stop", systemImage: "stop.fill", action: stop)
-                .buttonStyle(PiButtonStyle(kind: .danger, compact: true))
-        }
-        .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 7)
-        .background(Theme.panel, in: .capsule)
-        .overlay(Capsule().strokeBorder(Theme.acc.opacity(0.55)))
-        .padding(6)
-        .environment(\.colorScheme, .dark)
     }
 }
 
