@@ -785,7 +785,10 @@ struct ProjectWorkGitHub: View {
     private func sendBackField(_ pull: GitHubPull) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
+                // The plain field, as the Notes and Rules tabs' fields are: the panel is already a border, and a bezel
+                // inside it draws a second one (#553).
                 TextField("Send Back", text: $sendBackText, prompt: Text("What to put right"), axis: .vertical)
+                    .textFieldStyle(.plain)
                     .labelsHidden()
                     .lineLimit(1...3)
                     .disabled(work.troubled || busy || pull.state != "open")
