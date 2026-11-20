@@ -49,6 +49,25 @@ export function standInApp(script = `#!/bin/sh\necho '{"app":true,"why":"a stand
 /** How long a wait for something that will happen, unless what is tested is broken, may take: only a hang reaches it. */
 export const PATIENT_MS = 10 * 60_000;
 
+/**
+ * A stand-in for the program that keeps the Mac awake (#561), which the engine starts as `caffeinate -i -w <its pid>`:
+ * it ends when the engine's process does ($3), as `caffeinate -w` does, and asserts nothing, so no run of the suite keeps
+ * the real Mac awake or leaves a holder behind. `engine/test/keepawake.ts` names one of its own, which also says which
+ * pid held it; a test that wants another names PI2_AWAKE_PROGRAM itself, as that one does. Removed when the test ends.
+ */
+export function awakeStandIn(): string {
+	const folder = mkdtempSync(join(tmpdir(), "pi2-awake-stand-in-"));
+	process.on("exit", () => rmSync(folder, { recursive: true, force: true }));
+	const file = join(folder, "holder.sh");
+	writeFileSync(file, `#!/bin/sh\nwhile kill -0 "$3" 2>/dev/null; do sleep 1; done\n`, { mode: 0o755 });
+	return file;
+}
+
+// Every engine a test starts inherits these, so no run of the suite keeps the person's Mac awake and no check depends on
+// how it happens to be powered.
+process.env.PI2_AWAKE_PROGRAM ??= awakeStandIn();
+process.env.PI2_AWAKE_POWER ??= "ac";
+
 /** Whether the process is still running (it has not exited, nor been ended by a signal). */
 export function running(child: ChildProcess): boolean {
 	return child.exitCode === null && child.signalCode === null;
