@@ -67,6 +67,9 @@ final class Feed {
     var rows: [String] = ["Inbox", "Activity", "Usage", "Archive"]
     var sidebar = NavigationSplitViewVisibility.all
     var showLastRequest = false
+    /// The fold of a project's hub, when the detail shows one (#471), and whether it said it was too narrow for both panels.
+    var hubFold = HubFold.both
+    var hubNarrow = false
     @ObservationIgnored var frames: [String: CGRect] = [:]
 }
 
@@ -214,10 +217,59 @@ struct RequestDetail: View {
     }
 }
 
+/// A project's hub as the app shows it (#471): a bar, then `HubPanels` with stand-ins for the conversation with the
+/// orchestrator, the board and the strip, each holding long lines from outside and a field to type in.
+struct HubDetail: View {
+    let feed: Feed
+
+    var body: some View {
+        VStack(spacing: 0) {
+            probe("bar") { Text("Demo project · \(longLine)").lineLimit(1).frame(maxWidth: .infinity, minHeight: 50) }
+            HubPanels(fold: feed.hubFold, narrow: Binding(get: { feed.hubNarrow }, set: { feed.hubNarrow = $0 })) {
+                probe("conversation") {
+                    VStack(spacing: 0) {
+                        Color.gray.opacity(0.2).frame(minHeight: 0, maxHeight: .infinity)
+                        Text(unbroken).lineLimit(3)
+                        TextField("Message the orchestrator…", text: .constant("")).padding(12)
+                    }
+                }
+            } board: {
+                probe("board") {
+                    VStack(spacing: 8) {
+                        ScrollView(.horizontal) { HStack { ForEach(["Now", "Work", "Agents", "Rules", "Notes", "Branches", "Settings"], id: \.self) { Text($0) } } }
+                        ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                    }
+                }
+            } strip: {
+                probe("strip") {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text("“\(unbroken)”").lineLimit(2)
+                            TextField("Message the orchestrator…", text: .constant(""))
+                        }
+                        Button("Send") {}
+                    }
+                    .padding(12)
+                }
+            }
+        }
+        .navigationTitle("Demo project")
+        .toolbar { ToolbarItem { Button("Model") {} } }
+    }
+
+    /// Notes where a part is while it is shown, and forgets it once it is folded away.
+    private func probe<V: View>(_ name: String, @ViewBuilder view: () -> V) -> some View {
+        view()
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { feed.frames[name] = $0 }
+            .onDisappear { feed.frames[name] = nil }
+    }
+}
+
 struct Content: View {
     let feed: Feed
     let givesWay: Bool
     let boundedRequests: Bool
+    var hub = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: Binding(get: { feed.sidebar }, set: { feed.sidebar = $0 })) {
@@ -226,7 +278,8 @@ struct Content: View {
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
-            if boundedRequests { RequestDetail(feed: feed).columnGivesWay() }
+            if hub { HubDetail(feed: feed).columnGivesWay() }
+            else if boundedRequests { RequestDetail(feed: feed).columnGivesWay() }
             else if givesWay { Detail(feed: feed).columnGivesWay() }
             else { Detail(feed: feed) }
         }
@@ -255,7 +308,7 @@ final class Made {
     var resizes = 0
     private var observer: NSObjectProtocol?
 
-    init(fixed: Bool, boundedRequests: Bool = false) {
+    init(fixed: Bool, boundedRequests: Bool = false, hub: Bool = false) {
         window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1120, height: 740), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.toolbar = NSToolbar(identifier: "check")
@@ -263,7 +316,7 @@ final class Made {
         window.title = "pi²"
         let reported = reported
         let feed = feed
-        let measured = Measured(asked: asked) { Content(feed: feed, givesWay: fixed, boundedRequests: boundedRequests) }
+        let measured = Measured(asked: asked) { Content(feed: feed, givesWay: fixed, boundedRequests: boundedRequests, hub: hub) }
         let host = fixed
             ? NSHostingView(rootView: AnyView(measured.windowMinimum(width: content.width, height: content.height) { reported.lines.append($0) }))
             : NSHostingView(rootView: AnyView(measured.frame(minWidth: content.width, minHeight: content.height)))
@@ -412,6 +465,50 @@ Task { @MainActor in
             await requests.layOut()
         }
         requests.close()
+    }
+
+    await group("a project's hub at the smallest size, in each fold, with the sidebar and without (#471)") {
+        let hub = Made(fixed: true, hub: true)
+        await hub.layOut()
+        check("the smallest size is the same as without the hub", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+        check("the content is never asked for a size as small as that", hub.measuredFor.isEmpty, "asked for \(hub.measuredFor)")
+        hub.window.setContentSize(fixed)
+        await hub.layOut()
+        let smallest = hub.window.frame
+        let bounds = hub.host.frame
+        hub.resizes = 0
+        var widths: [CGFloat] = []
+        for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+            hub.feed.sidebar = sidebar
+            for fold in HubFold.allCases {
+                hub.feed.hubFold = fold
+                await hub.layOut()
+                let frames = hub.feed.frames
+                let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(fold.rawValue)"
+                let width = frames["bar"]?.width ?? 0
+                let narrow = width < HubFold.narrowWidth
+                if fold == .both { widths.append(width) }
+                let shown = fold.shown(narrow: narrow)
+                check("\(name): the window does not resize", hub.window.frame == smallest, "frame \(hub.window.frame), was \(smallest)")
+                check("\(name): smallest size", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+                check("\(name): the split view is no taller than the window", hub.tallestColumn <= hub.host.frame.height + 0.5, "a column is \(hub.tallestColumn) tall")
+                check("\(name): the hub says whether it is narrow, \(Int(width)) points wide", hub.feed.hubNarrow == narrow, "said \(hub.feed.hubNarrow)")
+                for (part, present) in [("conversation", shown != .conversationFolded), ("board", shown != .boardFolded), ("strip", shown == .conversationFolded)] {
+                    let frame = frames[part]
+                    check("\(name): the \(part) is \(present ? "shown" : "folded away")", (frame != nil) == present, "frames \(frames)")
+                    if let frame, present {
+                        check("\(name): the \(part) is inside the window", frame.minX >= -0.5 && frame.maxX <= bounds.width + 0.5 && frame.maxY <= bounds.height + 0.5 && frame.width >= 200, "\(part) \(frame) in \(bounds.size)")
+                    }
+                }
+                if shown == .both, let conversation = frames["conversation"], let board = frames["board"] {
+                    check("\(name): the panels share the width", abs(conversation.width - board.width) <= 2, "conversation \(conversation), board \(board)")
+                }
+            }
+        }
+        check("with the sidebar the hub is too narrow for both panels, and without it is not", widths.count == 2 && widths[0] < HubFold.narrowWidth && widths[1] >= HubFold.narrowWidth, "widths \(widths)")
+        check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
+        check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
+        hub.close()
     }
 
     await group("the watch names a view whose size does not settle, once") {

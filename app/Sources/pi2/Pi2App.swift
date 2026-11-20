@@ -11,6 +11,8 @@ enum Selection: Hashable {
     case branches
     case agent(String)
     case conversation(Int)
+    /// A project's hub, by the project's id (ProjectHub.swift), with the projects preview on.
+    case project(String)
 }
 
 #if PI2_DEVELOPMENT
@@ -70,6 +72,8 @@ final class AppModel {
     let workspace = Workspace()
     /// Chat mode's side of the window, and which side shows (ChatMode.swift).
     let chats = ChatModeState()
+    /// How each project's hub was left (ProjectHub.swift).
+    let hubs = ProjectHubs()
     var selection: Selection? {
         didSet {
             if chats.redirecting { return }
@@ -125,7 +129,7 @@ final class AppModel {
     /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
     /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
-        workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
+        workspace.shownConversations.union(chats.selection.map { [$0] } ?? []).union(hubConversation.map { [$0] } ?? [])
     }
 
     var selectedConversationID: Int? {
@@ -310,6 +314,7 @@ struct Pi2App: App {
                 Button("Show Archive") { model.selection = .archive }
                 Divider()
                 PaneCommands(model: model)
+                HubCommands(model: model)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -460,6 +465,9 @@ struct RootView: View {
                         BranchesView(model: model)
                     case .agent(let id):
                         AgentEditor(model: model, agentID: id)
+                            .id(id)
+                    case .project(let id):
+                        ProjectHubView(model: model, projectID: id)
                             .id(id)
                     case .conversation, nil:
                         WelcomeView(model: model)
