@@ -17,6 +17,7 @@ Read only the sections that apply to your work. For more on one feature, see its
 | Chat versions | [A chat's versions](#a-chats-versions) |
 | Provider thinking levels | [A thinking level refused by a provider](#a-thinking-level-refused-by-a-provider) |
 | Shell commands and worktrees | [What commands can find](#what-commands-can-find), [What an agent's commands get](#what-an-agents-commands-get), [An agent's own variables](#an-agents-own-variables), [A scratch folder](#a-scratch-folder) |
+| Keeping the Mac awake | [Keeping the Mac awake while agents work](#keeping-the-mac-awake-while-agents-work) |
 | Shell command results and limits | [How long a command may run](#how-long-a-command-may-run), [A running command's clock](#a-running-commands-clock), [A command's exit code](#a-commands-exit-code), [A long output](#a-long-output), [A command's input](#a-commands-input) |
 | MCP servers | [An MCP server changed while a call runs on it](#an-mcp-server-changed-while-a-call-runs-on-it), [What commands can find](#what-commands-can-find), [What an agent's commands get](#what-an-agents-commands-get) |
 | Storage and credentials | [Where things live](#where-things-live) |
@@ -56,7 +57,7 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 The engine listens on a Unix socket in the data folder (`engine.sock`). Messages are JSON, one object per line. macOS limits a socket's path to 103 bytes, so when the data folder's path is too long for that (only possible with `PI2_HOME`), the app and the engine both reach the socket through a short link to the data folder in `/tmp/pi2-<uid>/` (`engine/src/socket.ts` and `app/Sources/pi2/EngineSocket.swift` work it out the same way).
 
 - The app sends requests: `{"id": 1, "method": "submit", "params": {…}}`. The engine answers `{"id": 1, "result": {…}}` or `{"id": 1, "error": "…"}`. A refusal the app needs more than its message to act on also carries `data`, an object (`RequestError` in `src/requesterror.ts`), which `EngineClient` keeps on the error it throws: the new report of a carrying-over plan that changed since the person looked, or the reading a project's limit refused a start with ([projects.md](projects.md#41-conventions)).
-- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `projects`, `needs` and `reports` ([projects.md](projects.md#43-events)), `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation` (and `conversation.older`, the older entries of one opened newest first, and those before the engine's window of 300 when the app asks with the `conversation.older` request; [transcript.md](transcript.md#a-long-conversation-newest-first)), `auth`, `computer`, `browser`, `local.running`.
+- The engine sends events without being asked, whenever something changes: `library`, `agents`, `inbox`, `activity`, `projects`, `needs` and `reports` ([projects.md](projects.md#43-events)), `background`, `schedules`, `recovery`, `usage`, `mcp`, `providers`, `conversation` (and `conversation.older`, the older entries of one opened newest first, and those before the engine's window of 300 when the app asks with the `conversation.older` request; [transcript.md](transcript.md#a-long-conversation-newest-first)), `auth`, `computer`, `browser`, `local.running`, `awake` ([Keeping the Mac awake while agents work](#keeping-the-mac-awake-while-agents-work)).
 
 The app starts the engine if it is not running, and reconnects if it dies. A second engine on the same data folder exits at once.
 
@@ -145,6 +146,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/look.ts` | Listing and searching files, fetching pages and searching the web |
 | `src/limits.ts` | A subscription's own usage limits |
 | `src/limitwait.ts` | A run refused for a provider's rate limit, or because it is overloaded: how long it waits before it asks again by itself, and what is shown and logged meanwhile. See [limits.md](limits.md#when-a-limit-is-reached) |
+| `src/keepawake.ts` | Keeping this Mac awake while agents work: what holds the "no idle sleep" assertion, when, and what the app is told. See [Keeping the Mac awake while agents work](#keeping-the-mac-awake-while-agents-work) |
 | `src/cache.ts` | How long a provider keeps a conversation's prompt cache: the long cache for a conversation that hands out work, a refusal of it, and what `engine.log` says. See [limits.md](limits.md#the-prompt-cache) |
 | `src/providererror.ts` | A provider's error as `delegate` and `engine.log` give it: shortened, with keys, account identifiers and request ids taken out |
 | `src/schedules.ts` | Schedule rules and next-run times |
@@ -329,6 +331,14 @@ What was tried, with the load script and 20 runs each running a fixed piece of p
 | Background (the old login item) | 0.85 s | | |
 
 In the loaded case the two kinds ran side by side, half the runs each. `utility` costs five times as much with room to spare, as macOS keeps such work on the efficiency cores, and was not chosen; `nice` costs nothing with room and about a tenth when there is none. MCP servers are left at pi²'s own priority: they are programs the person chose, started once and shared by every conversation, mostly idle, and some put up windows of their own, which would answer the person late. So is a model running on this Mac, which the person waits on as on pi².
+
+### Keeping the Mac awake while agents work
+
+Work should not stop because the Mac went to sleep (#561). While any conversation is working — or waiting for a provider's limit or the network to carry on by itself, which is a run asleep in its own checkpoint and still in the task graph — the engine holds the assertion "no idle sleep" (`src/keepawake.ts`): the Mac does not sleep by itself, and the display may. A conversation waiting for the person, an approval or a question, does not keep it: nothing of pi²'s carries on then. The engine is the one that holds it because it is the one that knows when work is going on, and it outlives the app's window; **Settings › General › Power** has the switch, on by default, and "Also on battery" under it, off by default. Only on power, unless that is on; the power source is read with `pmset -g ps`, which changes nothing, and only while it matters.
+
+Node has no call for a power assertion, so the engine runs `/usr/bin/caffeinate -i -w <its own pid>` while it holds one, and stops it when it does not. `-w` makes caffeinate end by itself when the engine's process ends, however it ends — a clean stop, `kill -9`, a crash: nothing is left holding the Mac awake behind an engine that is gone. The engine stops it directly as well: at once on a clean stop and when the setting is turned off, and a minute after the last run ends otherwise, so that a run that ends and another that starts do not flap it. `pmset -g assertions` shows the assertion as `PreventUserIdleSystemSleep`, owned by the caffeinate pid and naming the engine's pid it asserts on behalf of. `engine.log` says when the engine starts keeping the Mac awake and when it lets it sleep again, and why; the sidebar's "Engine running" line says so while it does, and how many conversations it is kept awake for.
+
+What no app can prevent still happens, and the setting's caption says so: closing the lid of a Mac with no display attached puts it to sleep (`pmset disablesleep`, as an administrator, or an external display, is what changes that), and with the screen locked or the lid closed, agents cannot take pictures of windows or work other apps. After a sleep, what was running is carried on (#527 already waits for the network).
 
 ### How long a command may run
 

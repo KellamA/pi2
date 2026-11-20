@@ -847,8 +847,10 @@ struct SidebarFooter: View {
     var body: some View {
         HStack(spacing: 7) {
             Dot(color: statusColor)
-            // The status keeps its one line; in a narrow sidebar the day's spend gives way first.
+            // The status keeps its one line; in a narrow sidebar the day's spend gives way first. While the engine keeps
+            // the Mac awake (#561) the line says so, including how many conversations it is kept awake for.
             Text(statusText).foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
+                .help(awakeHelp)
             Spacer(minLength: 4)
             if let today = engine.usage?.today, today.cost > 0 {
                 // The longer wording when there is room for it, the bare amount when there is not.
@@ -884,6 +886,21 @@ struct SidebarFooter: View {
         case .connected: "Engine running"
         case .restarting: "Engine stopped — restarting…"
         }
+    }
+
+    /// What the "Engine running" line says when hovered: while the engine keeps the Mac awake, that it does and for how
+    /// many conversations (#561). The count is of the runs Activity shows as working, which are the ones the engine keeps
+    /// the Mac awake for; for the minute after the last one it says it is still kept, so a run that starts again does not
+    /// find the Mac asleep.
+    private var awakeHelp: Text {
+        guard case .bool(true)? = engine.extras["awake"]?["holding"] else {
+            return Text("The engine keeps running with pi²’s window closed")
+        }
+        let working = engine.activity.filter { $0.status == "working" }.count
+        if working > 0 {
+            return Text("Keeping this Mac awake: \(working) conversation\(working == 1 ? "" : "s") working")
+        }
+        return Text("Keeping this Mac awake, for now with no conversation working")
     }
 
     private var statusColor: Color {

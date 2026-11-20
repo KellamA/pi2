@@ -290,6 +290,7 @@ const engine: Engine = {
 		saveSettings();
 	},
 	providers: () => providers,
+	waitingOnThePerson: () => new Set(inbox.list().map((item) => item.conversationId)),
 	setting: (key) => settings[key],
 	saveSetting: (key, value) => {
 		(settings as Record<string, unknown>)[key] = value;
@@ -481,6 +482,8 @@ const settings: {
 	lastChatModel?: ModelRef;
 	/** The projects preview switch (projects.ts); read through `projectsOn()`. Absent means off. */
 	projects?: { preview: boolean };
+	/** Keeping this Mac awake while agents work (keepawake.ts); read through `awakeSettings`. Absent means on, and not on battery. */
+	awake?: { keep: boolean; battery: boolean };
 } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));

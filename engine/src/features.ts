@@ -23,6 +23,7 @@ import { compaction } from "./compaction.ts";
 import { documents } from "./documents.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
+import { keepAwake } from "./keepawake.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
 import { type EpisodeChange, limitWait, type Wait } from "./limitwait.ts";
 import { localRun } from "./localrun.ts";
@@ -83,12 +84,14 @@ export type Engine = {
 	libraryChanged(): void;
 	/** Why no new work may start now, in words, when today's budget is used up; undefined otherwise. */
 	overBudget(): string | undefined;
+	/** The conversations with an item in the Inbox waiting for the person (an approval or a question): the ones Activity shows as "waiting" rather than working. */
+	waitingOnThePerson(): ReadonlySet<number>;
 	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
 	providersChanged(): void;
 	/** A key of settings.json, as the engine read it at start or last saved it; undefined when absent. */
-	setting(key: "projects"): unknown;
+	setting(key: "projects" | "awake"): unknown;
 	/** Change a key of settings.json and save the file. The engine keeps the file, so a feature never writes it itself. */
-	saveSetting(key: "projects", value: unknown): void;
+	saveSetting(key: "projects" | "awake", value: unknown): void;
 	/**
 	 * Save an agent with `agents.save`'s checks and defaults (main.ts, `saveAgent`), and what only the engine sets: for a
 	 * new agent, the project it is made in; the marks of docs/projects.md, 3.3 it is given; the allowed commands a copy takes.
@@ -251,6 +254,7 @@ export const FEATURES: Feature[] = [
 	variables,
 	coauthor,
 	priority,
+	keepAwake,
 	thinkingNotices,
 	wakes,
 	background,
