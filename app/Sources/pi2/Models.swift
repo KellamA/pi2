@@ -210,7 +210,10 @@ struct LiveTool: Codable, Equatable {
 struct RetryInfo: Codable, Equatable {
     let at: Double
     let error: String
+    /// The network is away, rather than the provider closing the stream.
     let network: Bool?
+    /// The provider closed the stream before or during the answer (#550): the conversation says so instead.
+    let closed: Bool?
 }
 
 /// A run waiting for a provider's rate limit, or for it to stop being overloaded, before it asks again by itself.
