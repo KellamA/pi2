@@ -14,6 +14,7 @@ import type { Access, AgentProfile, Meta, ModelRef } from "./state.ts";
 import type { CommandRule } from "./rules.ts";
 
 import { background } from "./background.ts";
+import { carryOver } from "./carryover.ts";
 import { promptCache } from "./cache.ts";
 import { chat } from "./chat.ts";
 import { coauthor } from "./coauthor.ts";
@@ -122,8 +123,9 @@ export type FeatureParts = {
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
 	withheld?(): string[];
 	/**
-	 * Requests from the app, by method name. Throw an Error with a plain message to refuse. `connection` stands for the
-	 * connection that asked, the same object for each of its requests, for what is kept per app (`projects.watch`).
+	 * Requests from the app, by method name. Throw an Error with a plain message to refuse, or a `RequestError` (requesterror.ts)
+	 * to send data with the message. `connection` stands for the connection that asked, the same object for each of its
+	 * requests, for what is kept per app (`projects.watch`).
 	 */
 	handlers?: Record<string, (params: Record<string, unknown>, connection?: object) => Promise<unknown>>;
 	/** A connection closed: forget what was kept for it (the `connection` its requests were given). */
@@ -172,7 +174,18 @@ export type FeatureParts = {
 	providersChanged?(): void;
 	/** The person started a conversation from `agent` (not a chat, sub-chat, fork or scheduled run). */
 	created?(id: number, agent: AgentProfile): Promise<void>;
-	/** An agent was duplicated: copy person-set feature settings, never its history. */
+	/**
+	 * A top-level conversation of an agent was made, by the person (`conversation.create`, `conversation.fork`), a
+	 * schedule's run or Continue with an Agent: told before its first message, and before `created`. Carrying over puts it
+	 * in a project (carryover.ts).
+	 */
+	made?(id: number): Promise<void>;
+	/**
+	 * An agent was duplicated: copy person-set feature settings, never its history. Carrying over (carryover.ts,
+	 * `applyProject`) copies templates into projects inside its own commits and does not call this: it does there what
+	 * knowledge.ts's and variables.ts's hooks do (the memory switch, the variables' names). A feature that adds this hook
+	 * must add its part there too; carryplan.ts fails until it does.
+	 */
 	agentDuplicated?(sourceId: string, copyId: string): Promise<void>;
 	/**
 	 * The engine made an agent itself from settings of its own, not from another agent (a project's default orchestrator,
@@ -252,6 +265,8 @@ export const FEATURES: Feature[] = [
 	changes,
 	// One conversation with the orchestrator, and Start fresh (#466): no greeting of its own either.
 	orchestrator,
+	// Carrying over (#458): requests, and the `projects` event's `carryOver`, with no greeting of its own.
+	carryOver,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
 	// feature on its own line, in place of the comment that names it.
 	projects,

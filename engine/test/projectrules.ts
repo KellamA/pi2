@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProjectRule } from "../src/projectrules.ts";
 import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-rules-"));
 const gate = join(home, "summary");
@@ -70,7 +70,7 @@ try {
 	const plainBefore = await app.prompt(plain);
 	assert.equal(plainBefore.sections.has("project_rules"), false);
 
-	await app.call("projects.setPreview", { on: true });
+	await previewOnLeavingOut(app);
 	const { id: projectId, conversation: orchestrator } = await app.call("projects.create", { folder: home });
 	const { id: otherProject, conversation: unrelated } = await app.call("projects.create", { folder: null });
 	const project = app.events.projects.projects.find((row: any) => row.id === projectId);

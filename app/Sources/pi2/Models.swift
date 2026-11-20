@@ -1264,9 +1264,11 @@ struct SignInFlow: Equatable {
 
 struct EngineError: LocalizedError {
     let message: String
-    var data: [String: JSONValue]? = nil
     /// No answer came: the engine was not connected, or the connection went before it answered. A request that is safe to
     /// send again (a message with its request id) can be sent again once the engine is back.
     var unanswered = false
+    /// What a refusal carries beside its message (docs/projects.md, 4.1): the new report of a plan that changed since the
+    /// person looked, say. Nil for most refusals.
+    var data: [String: JSONValue]? = nil
     var errorDescription: String? { message }
 }

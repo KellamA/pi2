@@ -34,7 +34,7 @@ const project = (id: string, extra: Partial<Project> = {}): Project => ({
 	...extra,
 });
 const stored: ProjectsDoc = {
-	projects: { p1: project("p1", { conversation: 1 }), p2: project("p2", { archivedAt: 2 }) },
+	projects: { p1: project("p1", { conversation: 1 }), p2: project("p2", { archivedAt: 2 }), p3: project("p3", { conversation: 8, deletedAt: 3 }) },
 	carry: { ranAt: null, backup: null, folders: {}, copies: {}, notes: {}, secrets: [] },
 	news: {},
 	nextNews: 1,
@@ -64,6 +64,9 @@ const agents: Record<string, AgentProfile> = {
 	"atlas-1": agent("atlas-1", { name: "Atlas", projectId: "p1", delegates: ["scout", "scout-1", "forge-1", "x-2"] }),
 	atlas: agent("atlas", { delegates: ["scout", "scout-1", "forge-1", "gone"] }),
 	"x-2": agent("x-2", { projectId: "p2" }),
+	// The copies of a project carrying over made, deleted since (#458).
+	"scout-3": agent("scout-3", { name: "Scout", projectId: "p3", template: { id: "scout", copiedAt: 1, templateUpdatedAt: 1 } }),
+	"atlas-3": agent("atlas-3", { name: "Atlas", projectId: "p3", role: "orchestrator", delegates: ["scout-3"], template: { id: "atlas", copiedAt: 1, templateUpdatedAt: 1 } }),
 };
 const meta = (agentId: string | undefined, extra: Partial<Meta> = {}): Meta => ({ title: "", createdAt: 1, updatedAt: 1, access: "read", ...(agentId === undefined ? {} : { agentId }), ...extra });
 const conversations: Record<string, Meta> = {
@@ -73,6 +76,8 @@ const conversations: Record<string, Meta> = {
 	4: meta("scout", { projectId: "p1", projectAgentId: "scout-1" }),
 	5: meta("scout-1", { projectId: "p1", parent: 1 }),
 	6: meta("x-2", { projectId: "p2" }),
+	7: meta("scout", { projectId: "p3", projectAgentId: "scout-3" }),
+	8: meta("atlas", { projectId: "p3", projectAgentId: "atlas-3" }),
 };
 const working = new Set<number>();
 
@@ -114,9 +119,12 @@ assert.equal(agentOf(meta("deleted", { projectAgentId: "deleted-too" }), agents)
 assert.equal(runsAs(meta("forge-1"), agents), "forge-1");
 assert.equal(agentOf(meta("forge-1"), agents), undefined, "its own agent removed: none, as for a deleted agent");
 assert.equal(agentOf(meta("deleted"), agents), undefined);
+// A conversation whose project was deleted is in no project (3.6): it runs as its agentId, its copy still there.
+assert.equal(runsAs(conversations[7], agents), "scout", "its project deleted: its agentId");
+assert.equal(runsAs(conversations[8], agents), "atlas", "the deleted project's orchestrator's conversation too");
 await setPreview(false);
 assert.equal(agentOf(conversations[4], agents)?.id, "scout");
-step("runsAs: the project's copy for a conversation carried over, while the preview is on and the copy is there; else agentId");
+step("runsAs: the project's copy for a conversation carried over, while the preview is on and the copy and its project are there; else agentId");
 
 // ---- Whom a conversation may hand work to
 
@@ -139,7 +147,11 @@ assert.deepEqual(ids(delegateTargets(agents["atlas-1"], agents)), ["scout-1"]);
 assert.deepEqual(ids(delegateTargets(agents.atlas, agents)), ["scout"]);
 // An archived project's conversation keeps to its project's agents.
 assert.deepEqual(ids(delegateTargets(agents["atlas-1"], agents, 6)), ["x-2"]);
-step("delegateTargets: as before with the preview off; with it on, the project's agents, or templates outside any project");
+// A deleted project's conversation is in no project: its own agent's templates, as before projects (#458).
+assert.deepEqual(ids(delegateTargets(agentOf(conversations[8], agents), agents, 8)), ["scout"]);
+// And an agent of a deleted project, for a conversation not made yet, hands work to no project's agents.
+assert.deepEqual(ids(delegateTargets(agents["atlas-3"], agents)), []);
+step("delegateTargets: as before with the preview off; with it on, the project's agents, or templates outside any project, a deleted one's included");
 
 // ---- What Update from template compares
 

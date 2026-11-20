@@ -12,7 +12,7 @@ import { MAX_NOTES, Memory } from "../src/knowledge.ts";
 import { projectNotebook, type ProjectNote } from "../src/projectnotes.ts";
 import { PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
 import { Agents } from "../src/state.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-notes-"));
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.test-projectnotes-${process.pid}`, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp() };
@@ -69,7 +69,7 @@ try {
 	assert.equal(legacy.id, "m1");
 	await client.call("memory.setEnabled", { agentId: "forge", enabled: true });
 	await client.call("memory.add", { chat: true, text: "Only chat remembers this." });
-	await client.call("projects.setPreview", { on: true });
+	await previewOnLeavingOut(client);
 	for (const method of methods) {
 		await assert.rejects(client.call(method, { projectId: "constructor" }), { message: "Unknown project: constructor" });
 		await assert.rejects(client.call(method, { projectId: true }), /projectId must be/);
@@ -108,9 +108,18 @@ try {
 	assert.match((await client.tool(first, "remember", { note: "SHARED from the first conversation." })).text, /already have that note \(n2\)/);
 	assert.equal((await client.call("memory.add", { projectId: otherId, text: "Only the other project reads this." })).id, "n1");
 	assert.doesNotMatch(await client.memory(first), /Only the other/);
+	// With the preview on, a template's conversation goes into its folder's project as it is made, with a copy of its agent
+	// there (#458, docs/projects.md 9.9), which is given the template's notes, for it alone (9.7); not another project's.
 	const template = await client.create({ agentId: "forge" });
-	assert.match(await client.memory(template), /Only Forge/);
+	const carriedInto = await client.until("carried over", () => client!.events.library.conversations.find((row: any) => row.id === template)?.projectId ?? undefined);
+	assert.match(await client.memory(template), /\(for you alone\): Only Forge/);
 	assert.doesNotMatch(await client.memory(template), /Shared from/);
+	// Its project deleted, it is in no project (3.6): it reads its template's own notes again, as before projects.
+	await client.call("projects.delete", { id: carriedInto });
+	await client.until("deleted", () => client!.events.projects.projects.find((row: any) => row.id === carriedInto)?.deletedAt !== undefined);
+	const own = await client.memory(template);
+	assert.match(own, /These are your own notes/);
+	assert.match(own, /m1: Only Forge/);
 	const chat = await client.create({ chat: true });
 	assert.match(await client.memory(chat), /Only chat/);
 	const lookedUp = await client.tool(chat, "agent_notes", {});

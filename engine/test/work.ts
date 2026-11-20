@@ -11,7 +11,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { DEFAULT_ORCHESTRATOR, PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
 import { Agents } from "../src/state.ts";
 import { recordWork, Work, type WorkItem } from "../src/work.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-work-"));
 const service = `dev.pi2.credentials.test-work-${process.pid}`;
@@ -83,7 +83,10 @@ try {
 	assert.deepEqual(await client.until("greetings", () => client!.events.work), { event: "work", projects: {} });
 	assert.ok(client.order.indexOf("projects") < client.order.indexOf("work"));
 	for (const method of ["work.list", "work.create", "work.act"]) await assert.rejects(client.call(method), { message: PREVIEW_OFF });
-	await client.call("projects.setPreview", { on: true });
+	// A conversation in no project: with the preview on, one whose project was deleted, since carrying over puts every
+	// other in one (#458; `previewOnLeavingOut`).
+	const { id: plain } = await client.call("conversation.create", { agentId: "forge" });
+	await previewOnLeavingOut(client);
 	const { id: projectId, conversation: parent }: { id: string; conversation: number } = await client.call("projects.create", { folder: null, name: "Local" });
 	const { id: other } = await client.call("projects.create", { folder: null, name: "Other" });
 	const { id: github } = await client.call("projects.create", { folder: null, name: "GitHub" });
@@ -103,7 +106,6 @@ try {
 	const list = async (args?: Record<string, unknown>): Promise<WorkItem[]> => (await call("list", args)).items;
 	const show = async (id: number) => (await list()).find((item) => item.id === id)!;
 	const { id: worker } = await socket.call("conversation.create", { agentId: "worker" });
-	const { id: plain } = await socket.call("conversation.create", { agentId: "forge" });
 	await Promise.all([parent, worker, plain].map((id) => socket.call("conversation.open", { id })));
 	assert.equal(await socket.offered(parent), true);
 	assert.equal(await socket.offered(worker), true);

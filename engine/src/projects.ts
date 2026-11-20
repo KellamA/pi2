@@ -9,8 +9,8 @@
 // Several later issues are built on this file side by side. What each fills in later has a place here, marked with the
 // issue that fills it, and does what the contract's 12.1 says until then:
 //
-// - `onPreviewOn(plan)`: carrying over when the preview is turned on (#458). Until then it carries nothing over.
-// - `carryOverState()`: the `projects` event's `carryOver` (#458). Null until then.
+// - `onPreviewOn(plan)`, `carryOverState()`: carrying over (#458), which carryover.ts wires in through `wireCarryOver`.
+//   Without it (a stand-in engine in a test), turning on carries nothing over, and `carryOver` is null.
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard: orchestrator.ts (#466) supplies them
 //   through `wireLastWords`, and marks a new project's conversation for its state block through `wireFresh`.
 // - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by orchestrator.ts (#466).
@@ -56,7 +56,11 @@ export type Project = {
 	repository: { owner: string; name: string } | null;
 	/** The project agent that is its orchestrator: in `pi2.agents`, with this `projectId` and `role: "orchestrator"`. */
 	orchestratorId: string;
-	/** The orchestrator's conversation now. `projects.create` makes it, empty, with the project. Null only when it was deleted. */
+	/**
+	 * The orchestrator's conversation now. `projects.create` makes it, empty, with the project. Null when it was deleted, and
+	 * in a project carrying over made with the default orchestrator until the person first opens or writes to it (the app
+	 * makes it then with `projects.startFresh`, orchestrator.ts).
+	 */
 	conversation: number | null;
 	/** Earlier conversations with the orchestrator, oldest first (Start fresh, #466). */
 	earlier: number[];
@@ -139,21 +143,24 @@ export type CarryOverState = {
 	secretsPending: { copy: string; name: string; project: string; variables: string[]; error: string | null }[];
 };
 
-/** What carrying over would do, or did (9.8). Built by #458; until then, always the empty report. */
+/** What carrying over would do, or did (9.8, carryover.ts). Without carryover.ts, always the empty report. */
 export type CarryOverReport = {
 	plan: string | null;
 	projects: {
 		key: string;
 		name: string;
 		existing: string | null;
+		/** Found by its folder for a key the record does not send to it yet: recorded now (9.4). Not again once recorded. */
 		adopted: boolean;
 		archived: boolean;
 		orchestrator: { conversation: number | null; title: string | null; template: string | null } | null;
-		copies: { template: string; name: string; existing: string | null; allowEverything: boolean; variables: string[]; folder: string | null }[];
+		copies: { template: string; name: string; existing: string | null; allowEverything: boolean; variables: string[]; worktreeOff: boolean; folder: string | null }[];
 		conversations: number;
 		archivedConversations: number;
 		subChats: number;
 		notes: number;
+		/** Lines the person should read: a repository gone, a bare repository's worktrees each a project (9.2). */
+		notices: string[];
 	}[];
 	leftOut: { chats: number; deleted: number; notesLeft: number };
 	already: number;
@@ -263,12 +270,22 @@ export function allProjects(): Record<string, Project> {
 }
 
 /**
- * The project conversation `conversation` belongs to, whatever the preview and whether the project is archived or
- * deleted: for what holds with the preview off too, a project's limits and its `startAgents` switch (section 2).
+ * The project conversation `conversation` belongs to, whatever the preview and whether the project is archived: for what
+ * holds with the preview off too, a project's limits and its `startAgents` switch (section 2). A conversation whose
+ * project was deleted is in none (3.6): it runs as its own agent, hands work to templates and reads its agent's notes.
  */
 export function projectOf(conversation: number): Project | undefined {
 	const projectId = wired?.conversations()[String(conversation)]?.projectId;
-	return projectId === undefined ? undefined : current.projects[projectId];
+	const project = projectId === undefined ? undefined : current.projects[projectId];
+	return project?.deletedAt === undefined ? project : undefined;
+}
+
+/**
+ * Whether project `projectId` was deleted, as last stored: what was in it is in no project (3.6). False for undefined, and
+ * for a project not stored (a stand-in engine's).
+ */
+export function projectDeleted(projectId: string | undefined): boolean {
+	return projectId !== undefined && current.projects[projectId]?.deletedAt !== undefined;
 }
 
 /**
@@ -362,13 +379,31 @@ export async function addNews(tx: Tx, projectId: string, news: { kind: News["kin
 
 // ---- The places later issues fill in
 
+/** What carryover.ts (#458) gives this file: the run behind `setPreview`, and the event's `carryOver`. */
+export type CarryOverParts = {
+	previewOn(plan: string | null): Promise<CarryOverReport>;
+	state(): CarryOverState | null;
+};
+let carrying: CarryOverParts | undefined;
+
+/** carryover.ts wires carrying over in as its feature is made; answers what tells the apps the `projects` event again. */
+export function wireCarryOver(parts: CarryOverParts): () => void {
+	carrying = parts;
+	return () => announceProjects();
+}
+
+/** What carrying over has done, as last stored: a plain copy (carryover.ts). */
+export function carryRecord(): CarryRecord {
+	return structuredClone(current.carry);
+}
+
 /**
- * Carrying over, when the preview is turned on (9.8). #458 fills this in: work the plan out again, refuse when it is not
- * `plan` ("What would be carried over has changed since you looked. Look at it again."), run it, and answer its report.
- * Until then nothing is carried over, and the report is empty.
+ * Carrying over, when the preview is turned on (9.8): carryover.ts works the plan out again, refuses when it is not
+ * `plan` ("What would be carried over has changed since you looked. Look at it again."), runs it, and answers its
+ * report. Without carryover.ts (a stand-in engine), nothing is carried over, and the report is empty.
  */
-export async function onPreviewOn(_plan: string | null): Promise<CarryOverReport> {
-	return emptyReport();
+export async function onPreviewOn(plan: string | null): Promise<CarryOverReport> {
+	return carrying === undefined ? emptyReport() : carrying.previewOn(plan);
 }
 
 /** The report of a run with nothing to do (9.8). */
@@ -376,9 +411,9 @@ export function emptyReport(): CarryOverReport {
 	return { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, notesLeft: 0 }, already: 0, ranAt: current.carry.ranAt, backup: current.carry.backup, secretsPending: [] };
 }
 
-/** The `projects` event's `carryOver`: null while nothing was ever carried over. #458 fills it in. */
+/** The `projects` event's `carryOver`: null while nothing was ever carried over (carryover.ts). */
 export function carryOverState(): CarryOverState | null {
-	return null;
+	return carrying?.state() ?? null;
 }
 
 let countRuleTokens = (_projectId: string): ProjectRow["ruleTokens"] => ({ orchestrator: 0, agents: 0 });
@@ -434,7 +469,8 @@ export function checkFolder(value: unknown): string | null {
 	if (value === null) return null;
 	if (typeof value !== "string" || value.trim() === "") throw new Error("folder must be a folder's path, or null");
 	if (!isFolder(value)) throw new Error(`Not a folder: ${value}`);
-	return realpathSync(value);
+	// macOS's own real path, with the case the disk has, as carrying over keys folders (9.2).
+	return realpathSync.native(value);
 }
 
 /** A project's name, as given: trimmed, one line, 1 to 80 characters. */

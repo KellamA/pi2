@@ -487,6 +487,7 @@ final class EngineClient {
         let event: String?
         let id: Int?
         let error: String?
+        /// Beside `error`, what a refusal carries for the app to act on (docs/projects.md, 4.1).
         let data: [String: JSONValue]?
         let result: JSONValue?
     }

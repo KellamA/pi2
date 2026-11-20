@@ -10,7 +10,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PREVIEW_OFF, Projects } from "../src/projects.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOn, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-github-"));
 const ghFolder = mkdtempSync(join(tmpdir(), "pi2-github-gh-"));
@@ -145,7 +145,7 @@ try {
 	step("with the preview off, the empty github event after work, and every github request refused");
 
 	// ---- Attaching
-	await client.call("projects.setPreview", { on: true });
+	await previewOn(client);
 	const { id: projectId, conversation: parent }: { id: string; conversation: number } = await client.call("projects.create", { folder, name: "Widgets" });
 	const { id: local, conversation: localParent }: { id: string; conversation: number } = await client.call("projects.create", { folder: null, name: "Local" });
 	const demo = { provider: "demo", modelId: "demo-1" };
