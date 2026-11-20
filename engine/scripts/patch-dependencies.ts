@@ -180,7 +180,8 @@ const PATCHES: Patch[] = [
             await appendAssistant(tx, conversationId, message);
         if (failure === undefined) {
             const network = host?.network ?? request.network;
-            live.generation = { attempt, retry: { at: until, error: message.errorMessage ?? "", ...(host?.network === undefined ? {} : { network: true }) } };
+            // A closed stream is told apart from an outage by the conversation's own line (#550).
+            live.generation = { attempt, retry: { at: until, error: message.errorMessage ?? "", ...(host?.network === undefined ? {} : { network: true }), ...(host?.network?.closed === true ? { closed: true } : {}) } };
             const checkpoint = {
                 phase: "retry",
                 attempt,

@@ -8,7 +8,10 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 type Item = { id: number; kind: string; text?: string; model?: string | null; stop?: string; details?: any; toolCalls?: { callId: string; name: string }[] };
 type Point = { after: number | null; index: number; count: number };

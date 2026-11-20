@@ -14,7 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { McpServers } from "../src/mcp.ts";
 import { socketPathFor } from "../src/socket.ts";
-import { EngineClient, stop, until } from "./patience.ts";
+import { EngineClient, standInApp, stop, until } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-mcpreconnect-")));
 const main = join(import.meta.dirname, "..", "src", "main.ts");

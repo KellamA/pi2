@@ -15,7 +15,10 @@ import { dueForArchive } from "../src/archive.ts";
 import { CHAT_TOOLS } from "../src/builtins.ts";
 import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
 import { FILE_LINK_NOTE } from "../src/plan.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-chat-"));
 const outside = realpathSync(mkdtempSync(join(tmpdir(), "pi2-chat-out-")));
