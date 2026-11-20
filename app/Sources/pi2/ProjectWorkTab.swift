@@ -113,27 +113,6 @@ struct HeldStart: Equatable {
     let limit: WorkLimit
 }
 
-/// What the app has told the engine it shows of a project, through `projects.watch` (docs/projects.md, 4.2): per
-/// connection, the last word stands. A tab that comes can appear before the tab that goes disappears, so a going tab
-/// never undoes a newer one's word — the engine would otherwise be left watching nothing.
-@MainActor
-final class ProjectTabWatch {
-    static let shared = ProjectTabWatch()
-    /// The project whose Work tab the app last said it shows.
-    private var shown: String?
-
-    func shows(_ project: String, engine: EngineClient) {
-        shown = project
-        Task { try? await engine.call("projects.watch", ["projectId": project, "tabs": ["work"]]) }
-    }
-
-    func hides(_ project: String, engine: EngineClient) {
-        guard shown == project else { return }
-        shown = nil
-        Task { try? await engine.call("projects.watch", ["projectId": project, "tabs": []]) }
-    }
-}
-
 /// The board's Work tab (#479): the project's work, kept by pi² itself — grouped by state, a new piece of work, opening
 /// one for its text, notes and result, and giving one to an agent, which starts it. A project whose work is a GitHub
 /// repository's issues and pull requests gets one line saying so, until the view for them lands (#480).
@@ -195,8 +174,8 @@ struct ProjectWorkTab: View {
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
         // The engine reads a GitHub repository's issues for the tabs an app says it shows (docs/projects.md, 4.2), so
         // this one says it while it is on screen. Per connection: the last word stands, and a disconnect forgets it.
-        .onAppear { ProjectTabWatch.shared.shows(project.id, engine: engine) }
-        .onDisappear { ProjectTabWatch.shared.hides(project.id, engine: engine) }
+        .onAppear { ProjectTabWatch.shared.shows(project.id, tab: .work, engine: engine) }
+        .onDisappear { ProjectTabWatch.shared.hides(project.id, tab: .work, engine: engine) }
         .onChange(of: opened) { _, latest in seedDrafts(latest.flatMap { id in work.items.first { $0.id == id } }) }
         .onChange(of: piece) { _, latest in
             // Follow what the engine says, unless the person is in the middle of editing.

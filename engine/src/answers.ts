@@ -114,6 +114,7 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"endpoints.remove": () => true, // as above
 	"endpoints.probe": () => true, // makes a request from the engine to a URL chosen by the caller
 	"pictures.setModel": () => true, // the model that spends on pictures
+	"look.setModel": () => true, // as above, for the model that looks at pictures (#540)
 	"usage.setBudget": () => true, // raising the daily budget unbinds spending
 	// The app's own switches, and its role as the host of computer use and the browser.
 	"settings.finishOnboarding": () => true, // settings.json

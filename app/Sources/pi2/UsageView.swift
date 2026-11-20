@@ -55,6 +55,7 @@ struct UsageView: View {
     /// "Ollama · Llama 3.3" for the engine's "custom-ollama/llama3.3"; the key itself for a model no longer connected.
     private func modelName(_ row: UsageSummary.ModelRow) -> String {
         if let pictureName = row.pictureName { return pictureName }
+        if let lookName = row.lookName { return lookName }
         guard let model = engine.allModels.first(where: { "\($0.provider)/\($0.id)" == row.key }) else { return row.key }
         return "\(model.providerName) · \(model.name)"
     }
@@ -66,7 +67,7 @@ struct UsageView: View {
             if row.cost == 0 {
                 return row.tokens == 0 ? "price unknown" : "\(Formats.tokens(row.tokens)) · price unknown"
             }
-            if row.pictureName != nil { return "\(Formats.usage(tokens: row.tokens, cost: row.cost)) (partial)" }
+            if row.pictureName != nil || row.lookName != nil { return "\(Formats.usage(tokens: row.tokens, cost: row.cost)) (partial)" }
         }
         return Formats.usage(tokens: row.tokens, cost: row.cost)
     }

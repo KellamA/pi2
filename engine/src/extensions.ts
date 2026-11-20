@@ -95,6 +95,12 @@ export type Host = {
 	allowAlways(conversationId: ConversationId, tool: string): Promise<void>;
 	/** Keep a rule the person chose in an approval, after the same checks as one added by hand. Never throws. */
 	addRule(agentId: string, folder: string, words: string[]): Promise<void>;
+	/**
+	 * Whether the `look` tool is offered to a conversation on this model just now: the model cannot see pictures and the
+	 * person has named one that can (picturelook.ts, which sets this). For what the computer and browser tools say where
+	 * they would have given a picture to such a model.
+	 */
+	lookOffered?(conversationId: ConversationId, model: ModelRef | null | undefined): boolean;
 	/** How a conversation of `agent` is configured; a sub-chat goes without handing work on and scheduling. */
 	agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange>;
 	answerText(conversationId: ConversationId, submissionAnswer: unknown): Promise<string>;
@@ -617,7 +623,11 @@ export function pi2Extension(host: Host): Extension {
 			);
 			// The short line is what the person reads on the call's card.
 			if (reply.summary !== undefined) await api.details({ summary: reply.summary }, context);
-			const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: reply.text }];
+			// A model that cannot see images is told so where a screenshot would have been given to it, and where to have one looked at.
+			const blind = model !== undefined && !model.input.includes("image") && args.action.trim() === "screenshot";
+			const lookNote = blind && host.lookOffered?.(api.conversationId, ref) === true ? " If its looks matter, save a picture of it to a file with a command and ask about it with look." : "";
+			const said = blind ? `\nYour model cannot see pictures, so no screenshot was taken.${lookNote}` : "";
+			const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [{ type: "text", text: reply.text + said }];
 			if (reply.image !== undefined) content.push({ type: "image", data: reply.image.data, mimeType: reply.image.mimeType });
 			return { output: content, ...(reply.ok ? {} : { isError: true }) };
 		},
@@ -734,6 +744,8 @@ export function pi2Extension(host: Host): Extension {
 				if (model !== undefined && !model.input.includes("image")) {
 					request.action = "read";
 					note = "Your model cannot see pictures, so here is the page as text instead.\n\n";
+					// Where a picture of the page is saved to a file, look can have it looked at (picturelook.ts).
+					if (host.lookOffered?.(api.conversationId, ref) === true) note += "To have the page's looks judged, save a picture of it to a file and ask about it with look.\n\n";
 				}
 			}
 			const reply = await host.browser.perform(

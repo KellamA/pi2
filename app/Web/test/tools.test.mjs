@@ -44,6 +44,16 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("make_picture", { description: "A red  square" }, "done", { text: "Made", details: { modelName: "Gemini" } }), "Made a picture: “A red square” Gemini");
 	assert.equal(line("make_picture", { description: "Make it blue", change: true }, "running"), "Changing the picture: “Make it blue”…");
 	assert.equal(line("make_picture", {}, "preparing"), "Making a picture…");
+	assert.equal(line("look", { path: "shot.png", question: "Is any text cut off?" }, "done", { text: "No", details: { modelName: "Gemini" } }), "Looked at shot.png, asking “Is any text cut off?” Gemini");
+	assert.equal(line("look", { paths: ["a.png", "b.png", "c.png"], question: "What does the header show?" }, "running"), "Looking at a.png and 2 more, asking “What does the header show?”…");
+	assert.equal(line("look", {}, "preparing"), "Looking at a picture…");
+	assert.deepEqual(T.detailFor(call("look", { path: "shot.png", question: "Is any text cut off?" }), "done", { id: 9, text: "No text is cut off." }, null), [
+		{ kind: "text", label: "Question", text: "Is any text cut off?" },
+		{ kind: "text", label: "Answer", text: "No text is cut off.", failed: false },
+	]);
+	assert.deepEqual(T.detailFor(call("look", { path: "shot.png" }), "failed", { id: 9, text: "Gemini could not look" }, null), [
+		{ kind: "text", label: "Answer", text: "Gemini could not look", failed: true },
+	]);
 	assert.deepEqual(T.detailFor(call("make_picture", { description: "A cat" }), "done", { id: 9, text: "Made a picture", images: 1, details: { modelName: "Gemini" } }, null), [
 		{ kind: "images", entry: 9, count: 1, name: "Picture", label: "Picture made by Gemini" },
 	]);
