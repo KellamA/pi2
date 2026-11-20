@@ -62,15 +62,19 @@ enum HubTab: String, CaseIterable, Identifiable {
 }
 
 /// How each project's hub was left: its fold and its board's tab, kept in the app's preferences by project id
-/// (`project.<id>.fold`, `project.<id>.tab`; docs/projects.md, 10.1), and the conversations being made for projects that
-/// have none yet. Which project shows is the window's selection (`Selection.project`); `AppModel.showProject` sets the
-/// three together, for the sidebar of projects and for a test copy's `show`.
+/// (`project.<id>.fold`, `project.<id>.tab`; docs/projects.md, 10.1), the conversation an agent's row put in place of the
+/// board, which lasts this launch, and the conversations being made for projects that have none yet. Which project shows
+/// is the window's selection (`Selection.project`); `AppModel.showProject` sets them together, for the sidebar of projects
+/// and for a test copy's `show`.
 @MainActor
 @Observable
 final class ProjectHubs {
     /// Set this launch; before that, what the preferences say.
     private var folds: [String: HubFold] = [:]
     private var tabs: [String: HubTab] = [:]
+    /// The conversation shown in place of each project's board, while the person reads or writes to one of its agents
+    /// (#473). Kept for the launch only, as the design has it: a hub opens on its board.
+    private var agents: [String: Int] = [:]
     /// Projects whose conversation with the orchestrator is being made (`projects.startFresh`), and why it could not be.
     private(set) var starting: Set<String> = []
     private(set) var startProblems: [String: String] = [:]
@@ -103,6 +107,15 @@ final class ProjectHubs {
         setFold(current == panel ? .both : panel, for: id)
     }
 
+    /// The conversation shown in place of a project's board, if one is.
+    func agent(_ id: String) -> Int? { agents[id] }
+
+    /// Puts a conversation in place of the board, or, with nil, brings the board back.
+    func setAgent(_ conversation: Int?, for id: String) {
+        guard agents[id] != conversation else { return }
+        agents[id] = conversation
+    }
+
     /// Makes the conversation with the orchestrator of a project that has none yet: one carried over whose orchestrator
     /// has never been opened, or whose conversation was deleted (docs/projects.md, 3.2). Once at a time per project; the
     /// `projects` event then names it, and the hub shows it.
@@ -131,11 +144,21 @@ extension EngineClient {
 
 extension AppModel {
     /// Shows a project's hub, on a tab of its board and with a fold when they are given, or as it was left. The one way
-    /// in: the sidebar of projects (#470) and a test copy's `show` both come here.
+    /// in: the sidebar of projects (#470) and a test copy's `show` both come here. Choosing the project, or its
+    /// orchestrator, goes back to the board, from whichever agent's conversation was in its place (#473).
     func showProject(_ id: String, tab: HubTab? = nil, fold: HubFold? = nil) {
         if let tab { hubs.setTab(tab, for: id) }
         if let fold { hubs.setFold(fold, for: id) }
+        hubs.setAgent(nil, for: id)
         selection = .project(id)
+    }
+
+    /// Shows one of a project's agents in place of its board, with the conversation the person chose in the sidebar
+    /// (#473). The board's side has to show for the conversation to be there, so a folded board is shown again.
+    func openAgent(_ conversation: Int, in project: String) {
+        selection = .project(project)
+        if hubs.fold(project) == .boardFolded { hubs.setFold(.both, for: project) }
+        hubs.setAgent(conversation, for: project)
     }
 
     /// The project whose hub the window shows, if it does.
@@ -149,6 +172,13 @@ extension AppModel {
     var hubConversation: Int? {
         guard let id = shownProject, hubs.fold(id) != .conversationFolded else { return nil }
         return engine.project(id)?.conversation
+    }
+
+    /// The agent's conversation shown in place of the hub's board, when the board's side shows: told to the engine with
+    /// the rest, for the same reason.
+    var hubAgentConversation: Int? {
+        guard let id = shownProject, hubs.fold(id) != .boardFolded else { return nil }
+        return hubs.agent(id)
     }
 }
 
@@ -188,8 +218,35 @@ enum HubDrawn {
         let narrow: Bool
         /// The orchestrator's conversation in its panel, if the panel shows one.
         let conversation: Int?
+        /// The agent's conversation in place of the board, if the board's side shows one (#473).
+        let agent: Int?
     }
 
     static var current: Shown?
+}
+
+/// Which of a project's agents a test copy asked for, and the conversation to show in place of the board (#473).
+enum AgentChoice: Equatable {
+    case conversation(Int)
+    case problem(String)
+}
+
+extension AppModel {
+    /// The conversation of one of a project's agents, for a test copy's `project:<name>#agent:<name>`: the agent's
+    /// working conversation, else the newest of its conversations in the project. A name it does not know, or an agent
+    /// with no conversation yet, says so.
+    func agentChoice(_ asked: String, of project: String) -> AgentChoice {
+        let agents = engine.allAgents.filter { $0.projectId == project }
+        guard let agent = agents.first(where: { $0.name.lowercased() == asked.lowercased() }) ?? agents.first(where: { $0.id == asked }) else {
+            return .problem("no agent called \(asked) in the project")
+        }
+        let runs = engine.projectStore.live(project).runs.compactMap { id in engine.projectStore.run(id).map { (id, $0) } }
+            .filter { $0.1.agentId == agent.id }
+        if let working = runs.first(where: { !$0.1.waiting }) ?? runs.first { return .conversation(working.0) }
+        if let other = engine.projectStore.live(project).others.first(where: { $0.agentId == agent.id }) {
+            return .conversation(other.id)
+        }
+        return .problem("\(agent.name) has no conversation in the project")
+    }
 }
 #endif

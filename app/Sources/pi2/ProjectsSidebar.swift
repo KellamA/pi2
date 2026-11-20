@@ -137,7 +137,12 @@ private struct ProjectBlock: View {
         #if PI2_DEVELOPMENT
         let _ = PerfProbe.count("sidebar: project block drawn")
         #endif
-        ProjectSidebarRow(engine: engine, project: project, live: live)
+        // A button, as every row of the sidebar that goes somewhere is: a List row's tap gesture never arrives.
+        // Choosing the project itself is choosing its board, whatever agent's conversation took its place (#473).
+        Button { model.showProject(project.id) } label: {
+            ProjectSidebarRow(engine: engine, project: project, live: live).contentShape(.rect)
+        }
+            .buttonStyle(.plain)
             .tag(Selection.project(project.id))
             .contextMenu(previewAs: project.name, project.id) {
                 Button("Rename…") { model.beginRename(project) }
@@ -147,9 +152,8 @@ private struct ProjectBlock: View {
             OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
-                    RunRow(engine: engine, run: run)
+                    RunRow(engine: engine, run: run) { model.openAgent(id, in: project.id) }
                         .padding(.leading, 14)
-                        .tag(Selection.conversation(id))
                 }
             }
             OtherConversations(model: model, project: project, live: live)
@@ -217,24 +221,24 @@ private struct OrchestratorRow: View {
     let live: ProjectLive
 
     var body: some View {
-        let row = HStack(spacing: 8) {
-            if live.orchestratorWorking {
-                Spinner().frame(width: 16)
-            } else {
-                AgentAvatar(agent: model.engine.agent(project.orchestratorId), size: 16)
+        // The hub, on its board: its conversation is made when the person first opens it (docs/projects.md, 9.6), and
+        // choosing the orchestrator while another agent's conversation is shown goes back to the board (#473).
+        Button { model.showProject(project.id) } label: {
+            HStack(spacing: 8) {
+                if live.orchestratorWorking {
+                    Spinner().frame(width: 16)
+                } else {
+                    AgentAvatar(agent: model.engine.agent(project.orchestratorId), size: 16)
+                }
+                Text(model.engine.agent(project.orchestratorId)?.name ?? "Orchestrator").lineLimit(1)
+                Spacer(minLength: 0)
             }
-            Text(model.engine.agent(project.orchestratorId)?.name ?? "Orchestrator").lineLimit(1)
-            Spacer(minLength: 0)
+            .padding(.leading, 14)
+            .contentShape(.rect)
         }
-        .padding(.leading, 14)
-        if let conversation = project.conversation {
-            row.tag(Selection.conversation(conversation))
-        } else {
-            // Its conversation is made when the person first opens it (docs/projects.md, 9.6).
-            row.contentShape(.rect)
-                .onTapGesture { model.showProject(project.id) }
-                .help("Open the project; its conversation with the orchestrator starts there")
-        }
+        .buttonStyle(.plain)
+        .help(project.conversation == nil ? "Open the project; its conversation with the orchestrator starts there"
+                                          : "Show the project’s board, with the conversation with the orchestrator")
     }
 }
 
@@ -242,30 +246,36 @@ private struct OrchestratorRow: View {
 private struct RunRow: View {
     let engine: EngineClient
     let run: RunLive
+    /// Opens its conversation in place of the board, in the project's hub (#473).
+    let open: () -> Void
 
     var body: some View {
         #if PI2_DEVELOPMENT
         let _ = PerfProbe.count("sidebar: working agent row drawn")
         #endif
         let agent = engine.agent(run.agentId)
-        HStack(spacing: 8) {
-            if run.waiting {
-                Circle().fill(Theme.warn).frame(width: 7, height: 7).frame(width: 16)
-                    .accessibilityLabel("Needs you")
-            } else if run.atLimit {
-                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
-                    .accessibilityLabel("Waiting for a limit")
-            } else {
-                Spinner().frame(width: 16)
+        Button(action: open) {
+            HStack(spacing: 8) {
+                if run.waiting {
+                    Circle().fill(Theme.warn).frame(width: 7, height: 7).frame(width: 16)
+                        .accessibilityLabel("Needs you")
+                } else if run.atLimit {
+                    Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                        .accessibilityLabel("Waiting for a limit")
+                } else {
+                    Spinner().frame(width: 16)
+                }
+                Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1)
+                Spacer(minLength: 4)
+                if let agent, !run.title.isEmpty {
+                    // The agent's name is short and says who; the title gives way first.
+                    Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).fixedSize()
+                }
             }
-            Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1)
-            Spacer(minLength: 4)
-            if let agent, !run.title.isEmpty {
-                // The agent's name is short and says who; the title gives way first.
-                Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).fixedSize()
-            }
+            .contentShape(.rect)
         }
-        .help(run.waiting ? "Waiting for you" : run.atLimit ? "Waiting for a provider’s limit" : "Working")
+        .buttonStyle(.plain)
+        .help("\(run.waiting ? "Waiting for you" : run.atLimit ? "Waiting for a provider’s limit" : "Working"). Open its conversation in place of the board.")
     }
 }
 
@@ -300,15 +310,19 @@ private struct OtherConversations: View {
             .accessibilityLabel(shown ? "Hide \(others.count) other conversations" : "Show \(others.count) other conversations")
             if shown {
                 ForEach(others) { conversation in
-                    HStack(spacing: 8) {
-                        AgentAvatar(agent: model.engine.agent(conversation.agentId), size: 16)
-                        Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
-                            .lineLimit(1)
-                            .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
-                        Spacer(minLength: 0)
+                    Button { model.openAgent(conversation.id, in: project.id) } label: {
+                        HStack(spacing: 8) {
+                            AgentAvatar(agent: model.engine.agent(conversation.agentId), size: 16)
+                            Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
+                                .lineLimit(1)
+                                .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(.rect)
                     }
+                    .buttonStyle(.plain)
                     .padding(.leading, 28)
-                    .tag(Selection.conversation(conversation.id))
+                    .help("Open its conversation in place of the board")
                     .draggable(ConversationDrag(id: conversation.id)) {
                         Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left").padding(6)
                     }

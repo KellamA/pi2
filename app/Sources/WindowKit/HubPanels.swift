@@ -11,9 +11,11 @@ public enum HubFold: String, CaseIterable, Sendable {
     /// The least width that shows both panels side by side.
     public static let narrowWidth: CGFloat = 640
 
-    /// The fold shown: this one, unless the hub is too narrow for both panels.
-    public func shown(narrow: Bool) -> HubFold {
-        self == .both && narrow ? .boardFolded : self
+    /// The fold shown: this one, unless the hub is too narrow for both panels. Too narrow, one side takes the width: the
+    /// board, or, when an agent's conversation takes the board's place, that conversation (#473).
+    public func shown(narrow: Bool, agent: Bool = false) -> HubFold {
+        guard self == .both, narrow else { return self }
+        return agent ? .conversationFolded : .boardFolded
     }
 }
 
@@ -25,24 +27,27 @@ public enum HubFold: String, CaseIterable, Sendable {
 /// each fold. Nothing here asks the panels how big they would like to be: each panel takes the room it is given and no
 /// more (`minWidth: 0`), so what they show never decides the window's size, and the hub needs `narrowWidth` to show both
 /// side by side (`HubFold.narrowWidth`). Narrower than that, the board folds by itself, and `narrow` is told so that the hub can say it; the
-/// fold the person chose is kept, and comes back when the window is wide enough again.
+/// fold the person chose is kept, and comes back when the window is wide enough again. `agent` says that the board's
+/// place holds an agent's conversation (#473), which then takes the width when the window is narrow.
 public struct HubPanels<Conversation: View, Board: View, Strip: View>: View {
     private let fold: HubFold
     private let narrow: Binding<Bool>
+    private let agent: Bool
     private let conversation: Conversation
     private let board: Board
     private let strip: Strip
 
-    public init(fold: HubFold, narrow: Binding<Bool>, @ViewBuilder conversation: () -> Conversation, @ViewBuilder board: () -> Board, @ViewBuilder strip: () -> Strip) {
+    public init(fold: HubFold, narrow: Binding<Bool>, agent: Bool = false, @ViewBuilder conversation: () -> Conversation, @ViewBuilder board: () -> Board, @ViewBuilder strip: () -> Strip) {
         self.fold = fold
         self.narrow = narrow
+        self.agent = agent
         self.conversation = conversation()
         self.board = board()
         self.strip = strip()
     }
 
     public var body: some View {
-        let shown = fold.shown(narrow: narrow.wrappedValue)
+        let shown = fold.shown(narrow: narrow.wrappedValue, agent: agent)
         HStack(spacing: 0) {
             if shown != .conversationFolded {
                 conversation
