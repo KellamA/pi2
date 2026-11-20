@@ -8,7 +8,12 @@
 // last run is made short with PI2_AWAKE_GRACE_MS, and every wait is for the thing itself — the stand-in's process
 // appearing and being gone, the run ending, the event saying so — never for a time. The one exception is the second
 // the engine waits before starting a holder over again, which is a time of its own: a check that kills the holder
-// waits it out rather than racing it.
+// waits it out rather than racing it. A second exception is a check that something never happened (no holder begun when
+// it should not have been): that has no event to wait for, so it holds its own bounded look at the state and says so.
+//
+// What the engine printed reaches us over a pipe, so a line can arrive later than the holder process or the socket event
+// it reports. Every check on `log` is therefore held until the line arrives (`logSays` below), never read once: the line
+// saying the Mac may sleep again was missed in CI this way (#586, #588).
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -101,15 +106,32 @@ test("the switch as stored, and the power source as pmset words it", async () =>
 
 /** One engine on its own data folder, with the stand-in for the holder. What it printed is kept in `log`. */
 let log = "";
+/** Whether the engine's standard error has ended: after that no line of it can still be on its way. */
+let logEnded = false;
 function startEngine(home: string, extra: Record<string, string> = {}): ChildProcess {
 	log = "";
+	logEnded = false;
 	const child = spawn(process.execPath, [main], {
 		// The demo model types at one token a second, so a run works for as long as a check needs it to.
 		env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_DEMO_TOKENS_PER_SECOND: "1", PI2_AWAKE_PROGRAM: standIn, PI2_AWAKE_GRACE_MS: "10000", PI2_AWAKE_POWER: "ac", ...extra },
 		stdio: ["ignore", "ignore", "pipe"],
 	});
-	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => (log += chunk));
+	child.stderr!.setEncoding("utf8")
+		.on("data", (chunk: string) => (log += chunk))
+		.on("end", () => (logEnded = true));
 	return child;
+}
+
+/**
+ * The check that the engine logged a line, held until the line arrives. The engine writes to its standard error and we
+ * read the pipe, so a line can reach us after the holder process or the socket event it is about: reading `log` once
+ * misses it, which is what failed in CI (#586, #588). The wait gives up at once if the engine's standard error ended
+ * without it, since nothing more is coming; its limit is the usual guard against a hang, not a longer sleep.
+ */
+async function logSays(what: string, line: RegExp): Promise<void> {
+	await until(`the engine's log to say ${what}`, () => (line.test(log) ? true : undefined), {
+		over: () => (logEnded ? "the engine's standard error ended without it" : undefined),
+	});
 }
 
 /** A conversation on the demo model, opened as the app opens one. */
@@ -137,7 +159,7 @@ test("held while a run works, let go a short while after the last one ends, and 
 		await client.call("submit", { id, text: "awake one" });
 		const first = await client.until("the assertion held", () => holder());
 		await client.until("the awake event says so", () => (client.events.awake?.holding === true ? true : undefined));
-		assert.match(log, /keeping this Mac awake: 1 conversation working/);
+		await logSays("one conversation is working", /keeping this Mac awake: 1 conversation working/);
 
 		// The run ends, and within the grace another starts: the same holder, not let go and begun again.
 		await client.call("abort", { id });
@@ -149,7 +171,7 @@ test("held while a run works, let go a short while after the last one ends, and 
 
 		// Nothing works: let go (the grace here is ten seconds, a minute as the engine runs for the person).
 		await client.until("the assertion let go", () => (holder() === undefined ? true : undefined));
-		assert.match(log, /letting this Mac sleep again: no conversation is working any more/);
+		await logSays("no conversation is working any more", /letting this Mac sleep again: no conversation is working any more/);
 		await client.until("the awake event says so", () => (client.events.awake?.holding === false ? true : undefined));
 
 		// Turning the setting off ends it at once, with a run still working.
@@ -164,7 +186,7 @@ test("held while a run works, let go a short while after the last one ends, and 
 		await stop(engine);
 		engine = undefined;
 		await until("let go when the engine stopped", () => (holder() === undefined ? true : undefined));
-		assert.match(log, /letting this Mac sleep again: the engine is stopping/);
+		await logSays("the engine is stopping", /letting this Mac sleep again: the engine is stopping/);
 		client.close();
 	} finally {
 		if (engine !== undefined) await stop(engine).catch(() => {});
@@ -184,7 +206,7 @@ test("on battery, held only with “Also on battery” on; and let go however th
 		// On battery, held with the switch on, and the log says battery is allowed.
 		await client.call("submit", { id, text: "awake battery" });
 		await client.until("held on battery, as asked", () => (holder() !== undefined ? true : undefined));
-		assert.match(log, /keeping this Mac awake: 1 conversation working \(battery allowed\)/);
+		await logSays("one conversation is working with battery allowed", /keeping this Mac awake: 1 conversation working \(battery allowed\)/);
 
 		// Not asked: let go at once, with the run still working, and held again once it is asked for.
 		await client.call("settings.setAwake", { battery: false });
@@ -218,17 +240,19 @@ test("nothing is held while a conversation waits for the person, and a holder th
 		// the Mac awake again while the run still works — one holder, never two.
 		await sleep(1_200); // the second the engine waits before starting one that ended at once over again
 		process.kill(first, "SIGTERM");
-		await client.until("the holder started again", () => {
+		const restarted = await client.until("the holder started again", () => {
 			const pid = holder();
 			return pid !== undefined && pid !== first ? pid : undefined;
 		}, 60_000);
-		assert.match(log, /the program that keeps this Mac awake ended \(SIGTERM\); holding it again/);
-		assert.equal(live().length, 1, "no two holders at once");
+		await logSays("the holder ended and the Mac is held again", /the program that keeps this Mac awake ended \(SIGTERM\); holding it again/);
+		// One holder, never two — held rather than read once. The killed one is a zombie until the engine has reaped it,
+		// and `kill -0` counts a zombie as alive, so a single look can see two when the engine never ran two.
+		await until("one holder only, the new one", () => (live().length === 1 && holder() === restarted ? true : undefined));
 
 		// It asks the person: nothing of pi²'s carries on, so the Mac is let go and the Inbox has the question.
 		const item = await client.until("the question in the Inbox", () => client.events.inbox?.items?.[0], 120_000);
 		await client.until("let go, everything waits for the person", () => (holder() === undefined ? true : undefined));
-		assert.match(log, /letting this Mac sleep again: no conversation is working any more/);
+		await logSays("no conversation is working any more", /letting this Mac sleep again: no conversation is working any more/);
 
 		// The person answers: the work carries on, and so does the assertion.
 		await client.call("inbox.answer", { id: item.id, text: "Carry on, please" });
@@ -260,6 +284,10 @@ test("the power source is watched while work goes on, and read again when it nex
 		await client.call("abort", { id });
 		await client.until("the run ended", () => (client.conversations.get(id)?.state?.busy === false ? true : undefined));
 		await client.until("let go, no conversation is working", () => (holder() === undefined ? true : undefined));
+		// And the line saying so, which is the last thing the engine printed for that holder. Wait for it before marking
+		// where the log stands: what it printed reaches us over a pipe, and a mark taken while the holder's own
+		// "keeping this Mac awake" line is still on its way would count that line as the next run's.
+		await logSays("it let the Mac sleep again", /letting this Mac sleep again: no conversation is working any more/);
 
 		// Unplugged while nothing works: the next run reads the source again rather than trusting the old reading, so the
 		// Mac is not held on battery for half a minute before the poll finds out.
@@ -267,7 +295,9 @@ test("the power source is watched while work goes on, and read again when it nex
 		const seen = log.length;
 		await client.call("submit", { id, text: "awake unplugged again" });
 		await client.until("the run working again", () => working(client, id), 60_000);
-		await sleep(1_500); // nothing is held, so there is nothing to wait for; a stale reading held it at once
+		// A check that nothing happened has no event to wait for, so it holds its own bounded look: long enough for the
+		// engine's 300 ms poll and a holder to have appeared had the reading been stale, and never lengthened to pass.
+		await sleep(1_500);
 		assert.equal(holder(), undefined, "on battery, with “Also on battery” off, nothing should be held");
 		assert.doesNotMatch(log.slice(seen), /keeping this Mac awake/);
 	} finally {
