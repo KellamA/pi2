@@ -437,6 +437,15 @@ struct ProjectWorkTab: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(Theme.panel)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+            // Where the piece is and what its state lets the person do, above the scrolling text rather than at the end
+            // of it: a piece's text can be any length, and these belong to the piece, so they stay to hand while its
+            // text and notes are read (#553).
+            VStack(alignment: .leading, spacing: 10) {
+                status(piece)
+                actions(piece)
+            }
+            .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 12)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     TextField("Title", text: $draftTitle, axis: .vertical)
@@ -459,8 +468,6 @@ struct ProjectWorkTab: View {
                                 .controlSize(.small)
                         }
                     }
-                    status(piece)
-                    actions(piece)
                     notes(piece)
                     if let result = piece.result {
                         VStack(alignment: .leading, spacing: 4) {
