@@ -6,6 +6,19 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.5
+
+### Added
+- Part of the Projects preview: **Projects (preview)** in Settings › General. Turning it on first shows what would be carried over into projects (each project, what goes into it, every copy of an agent that takes its variables' values or Allow everything, by name, and anything to know), and does it only once you go ahead. With it on, the sidebar lists projects in place of agents and conversations: each with a badge for what needs you or how many agents are working, the open one with its orchestrator, the agents working now and its other conversations, then the agent templates and the Archive. Projects are made from a folder in one step, renamed and archived from the sidebar, restored from the Archive, and found with ⌘K. Turning it off shows everything as it was, and the agents' list leaves out the agents that belong to projects.
+- Part of the projects preview: a project's hub, with the conversation with its orchestrator on the left and the board on the right. Each panel folds with its own button and key (⌥⌘[ for the conversation, ⌥⌘] for the board), and each project opens as it was left. With the conversation folded, a strip along the bottom of the board keeps the orchestrator's last words and a field to answer it; a window too narrow for both panels folds the board by itself and says so. The bar above shows the project, its folder and branch, the orchestrator's model (choosing another changes the orchestrator's agent), and how much of the plan's week is used. The board's tabs (Now, Work, Agents, Rules, Notes, Branches, Settings) say what each will show. A project carried over whose orchestrator was never opened gets its conversation when its hub first opens.
+
+### Fixed
+- Summarising long conversations now gives the summary its own output budget with thinking off or at its lowest, and tries once more for a shorter summary if the model runs out of room. After a failed automatic summary, pi² waits for both time and context growth before trying again. The banner offers a retry with a note and can be dismissed.
+- Prevent the computer and browser activity pills from driving window layout, which could crash pi² while agents worked. Long names now shorten in the middle instead of making a pill wider than the screen.
+
+### For contributors
+- The engine's type-check and tests now stop at once, with one line saying what to do, when the installed dependencies were patched from an older checkout than the one they run in: a worktree that merged `main` without running `npm --prefix engine ci` again, where tests used to fail in ways that said nothing about the change being tested.
+
 ## 0.8.4
 
 ### Added
