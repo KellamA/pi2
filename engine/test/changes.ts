@@ -512,7 +512,12 @@ try {
 	await client.call("projects.setPreview", { on: false });
 	assert.equal((await client.offered(O)).some((name) => name.startsWith("project_")), false);
 	assert.equal(await client.answer(plain, "/system full"), plainBefore);
-	step("archived, no change can be undone; with the preview off the tools are not offered, and a conversation in no project is told exactly what it was");
+	// With the preview off, an export is exactly as it was: none of the project's lines (10.2).
+	const plainExport = (await client.call("conversation.export", { id: O, format: "markdown" })).text as string;
+	assert.equal(/\*Made the agent Reviewer/.test(plainExport), false);
+	assert.equal(/\*the (request|proposed rule)/.test(plainExport), false);
+	assert.equal(/\(undone\)/.test(plainExport), false);
+	step("archived, no change can be undone; with the preview off the tools are not offered, an export is as it was, and a conversation in no project is told exactly what it was");
 } finally {
 	client.close();
 	await stop(engine);

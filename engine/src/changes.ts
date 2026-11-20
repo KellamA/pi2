@@ -754,8 +754,9 @@ export const changes: Feature = (host, engine) => {
 			const project = allProjects()[agent.projectId];
 			return project !== undefined && project.deletedAt === undefined && project.archivedAt === undefined ? [...TOOL_NAMES] : [];
 		},
-		// The lines of the changes made in a conversation of a project (3.12); nothing for any other conversation.
-		state: (view, meta) => (meta?.projectId === undefined ? {} : { projectChanges: linesOf(view.conversation.id as unknown as number) }),
+		// The lines of the changes made in a conversation of a project (3.12); nothing for any other conversation, and
+		// nothing with the preview off (10.2: the old screens show none of the projects' doings).
+		state: (view, meta) => (meta?.projectId === undefined || !projectsOn() ? {} : { projectChanges: linesOf(view.conversation.id as unknown as number) }),
 		handlers: {
 			/** `{ projectId, before?, limit? }`: the project's changes, newest first, 50 by default. */
 			"changes.list": async (params) => {

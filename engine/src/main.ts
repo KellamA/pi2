@@ -82,7 +82,7 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
+import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
@@ -1798,8 +1798,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
 		// The changes made in this conversation (3.12), for each call's line; a change the person allowed has no
-		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9).
-		const changes = new Map(linesOf(conv.id).map((line) => [line.id, line]));
+		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9). With the
+		// preview off an export is exactly as it was (10.2), so it says none of this.
+		const changes = new Map(projectsOn() ? linesOf(conv.id).map((line) => [line.id, line]) : []);
 		const waiting = new Map(storedNeeds().map((need) => [need.id, need]));
 		/** A call's change, as one quiet line: its summary, and that it was undone (3.12). */
 		const changeLine = (id: unknown): string | null => {
@@ -1844,16 +1845,19 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if ((result?.details as { allowedByEverything?: unknown } | null)?.allowedByEverything === true) lines.push("*Allowed by Allow everything.*", "");
 					lines.push(`${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
 					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
-					// The quiet line for what the call changed, and the one line for what it asked (3.12, 7.2).
-					const details = (result?.details ?? null) as { change?: unknown; need?: unknown } | null;
-					const changed = changeLine(details?.change);
-					if (changed !== null) lines.push(`*${changed}*`, "");
-					const asked = needLine(details?.need);
-					if (asked !== null) lines.push(`*${asked}*`, "");
-					// What allowing the request made, when it made something: its line, with its Undo's mark.
-					if (typeof details?.need === "string") {
-						const allowed = allowedLine(details.need);
-						if (allowed !== null) lines.push(`*${allowed}*`, "");
+					// The quiet line for what the call changed, and the one line for what it asked (3.12, 7.2) — none of it with
+					// the preview off, so an export is exactly as it was (10.2).
+					if (projectsOn()) {
+						const details = (result?.details ?? null) as { change?: unknown; need?: unknown } | null;
+						const changed = changeLine(details?.change);
+						if (changed !== null) lines.push(`*${changed}*`, "");
+						const asked = needLine(details?.need);
+						if (asked !== null) lines.push(`*${asked}*`, "");
+						// What allowing the request made, when it made something: its line, with its Undo's mark.
+						if (typeof details?.need === "string") {
+							const allowed = allowedLine(details.need);
+							if (allowed !== null) lines.push(`*${allowed}*`, "");
+						}
 					}
 				}
 			}
