@@ -14,10 +14,11 @@
 //   how many refusals. That is what the conversation page and Activity show, and what engine.log's lines about a wait
 //   starting and ending come from, and it survives a restart with the sleep.
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { AgentDoc, type ConversationId, defineDoc, GenerationTask, hook, LiveDoc } from "@earendil-works/pi-durable";
 import { isPutAway } from "./archive.ts";
 import type { Engine, Feature } from "./features.ts";
+import { isNetworkError, networkFailure, noteNetworkFailure, SDK_TRANSPORT_ERROR } from "./networkwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { defaultThinking } from "./providers.ts";
 import { Library, type ModelRef } from "./state.ts";
@@ -117,12 +118,12 @@ const BODY_LIMIT = 16 * 1024;
 
 type Fetch = typeof globalThis.fetch;
 type Stream = { result(): Promise<AssistantMessage> };
-type StreamCall = (model: unknown, context: unknown, options?: { fetch?: Fetch }) => Stream;
+type StreamOptions = Pick<SimpleStreamOptions, "fetch" | "onResponse" | "signal">;
+type StreamCall = (model: unknown, context: unknown, options?: StreamOptions) => Stream;
 
 /**
- * The models, unchanged except that each request is made with a `fetch` that notes a refusal, and the message the request
- * ends with is matched to it. Providers that do not use `fetch` (a WebSocket, say) are left as they are: their refusals
- * are judged by the error's text alone.
+ * Match each terminal error to what happened at the transport: an HTTP refusal, a network failure, or neither.
+ * Limits without an observable HTTP response are still judged by the error's text alone.
  */
 export function noticingRefusals<T extends object>(models: T): T {
 	return new Proxy(models, {
@@ -130,20 +131,40 @@ export function noticingRefusals<T extends object>(models: T): T {
 			const value = Reflect.get(target, key, target);
 			if ((key === "stream" || key === "streamSimple") && typeof value === "function") {
 				const original = value as StreamCall;
-				return (model: unknown, context: unknown, options?: { fetch?: Fetch }) => {
+				return (model: unknown, context: unknown, options?: StreamOptions) => {
 					let refusal: Refusal | undefined;
+					let network = false;
+					let sdkAnswered = false;
 					const own = options?.fetch ?? globalThis.fetch;
 					const fetch: Fetch = async (input, init) => {
-						const response = await own(input, init);
-						if (!response.ok) refusal = await noted(response);
-						else refusal = undefined;
+						let response: Response;
+						try {
+							response = await own(input, init);
+						} catch (error) {
+							// The OpenAI and Anthropic SDKs abort their own fetch on a headers deadline; Stop aborts
+							// the generation's signal too, and the adapter returns an aborted message, not an error.
+							network = isNetworkError(error, true) || (error instanceof Error && error.name === "AbortError" && init?.signal?.aborted === true && options?.signal?.aborted === false);
+							throw error;
+						}
+						network = false;
+						refusal = response.ok ? undefined : await noted(response);
 						return response;
 					};
-					const stream = original.call(target, model, context, { ...options, fetch });
+					const stream = original.call(target, model, context, {
+						...options, fetch,
+						onResponse: (response, requestModel) => {
+							sdkAnswered = true;
+							return options?.onResponse?.(response, requestModel);
+						},
+					});
 					const result = stream.result.bind(stream);
 					stream.result = () =>
 						result().then((message) => {
-							if (message?.stopReason === "error" && refusal !== undefined) refusals.set(message, refusal);
+							if (message?.stopReason !== "error") return message;
+							const sdkError = (message as AssistantMessage & { [SDK_TRANSPORT_ERROR]?: unknown })[SDK_TRANSPORT_ERROR];
+							const google = message.api === "google-generative-ai" || message.api === "google-vertex";
+							if (message.content.length === 0 && (network || (!sdkAnswered && isNetworkError(sdkError, google)))) noteNetworkFailure(message);
+							if (refusal !== undefined) refusals.set(message, refusal);
 							return message;
 						});
 					return stream;
@@ -326,9 +347,9 @@ export class Waits {
 		const spent = current?.refusals ?? 0;
 		if (message === undefined) return { spent };
 		const now = this.#callbacks.now();
-		const limit = limitOf(message.errorMessage ?? "", refusals.get(message), now);
+		const limit = networkFailure(message) ? undefined : limitOf(message.errorMessage ?? "", refusals.get(message), now);
 		if (limit === undefined) {
-			if (current !== undefined) this.#end(id, `${current.providerName} answered with another error`, false, false);
+			if (current !== undefined) this.#end(id, networkFailure(message) ? "the network went away" : `${current.providerName} answered with another error`, false, false);
 			return { spent };
 		}
 		// Refused again: news again, whatever episode it slept for.
@@ -658,7 +679,7 @@ export const limitWait: Feature = (host, engine: Engine) => {
 				const conversation = id as unknown as ConversationId;
 				void (async () => {
 					const sleep = (await engine.harness().snapshot(LiveDoc, conversation, engine.context()))?.generation?.retry;
-					if (sleep === undefined) return;
+					if (sleep === undefined || (sleep as { network?: boolean }).network === true) return;
 					waitsOf().adopt(id, sleep, await providerOf(id));
 				})().catch(() => {});
 			}

@@ -202,6 +202,7 @@ struct LiveTool: Codable, Equatable {
 struct RetryInfo: Codable, Equatable {
     let at: Double
     let error: String
+    let network: Bool?
 }
 
 /// A run waiting for a provider's rate limit, or for it to stop being overloaded, before it asks again by itself.

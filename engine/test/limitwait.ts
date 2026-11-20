@@ -15,11 +15,42 @@ import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { unfinished } from "../src/extensions.ts";
 import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, type Wait, Waits } from "../src/limitwait.ts";
+import { isNetworkError, retryNetwork } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
 import { EngineClient, stop } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
+}
+
+// ---- Reading a transport failure, and its backoff
+
+{
+	const cause = (code: string) => Object.assign(new Error(`connect ${code}`), { code });
+	for (const code of ["ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_SOCKET"]) {
+		assert.ok(isNetworkError(new Error("Connection error.", { cause: new TypeError("fetch failed", { cause: cause(code) }) })));
+	}
+	assert.ok(isNetworkError(new TypeError("fetch failed", { cause: new AggregateError([cause("ECONNREFUSED"), cause("ENETUNREACH")]) }), true));
+	assert.ok(isNetworkError(new TypeError("fetch failed"), true));
+	assert.ok(isNetworkError(new Error("Connection error."), true));
+	assert.ok(isNetworkError(new DOMException("timed out", "TimeoutError"), true));
+	assert.ok(!isNetworkError(new Error("Connection error.")));
+	assert.ok(!isNetworkError(new Error("fetch failed: getaddrinfo ENOTFOUND example.invalid"), true), "not matched by substring");
+	assert.ok(!isNetworkError(new TypeError("fetch failed", { cause: cause("CERT_HAS_EXPIRED") }), true));
+	assert.ok(!isNetworkError(Object.assign(new Error("Connection error.", { cause: cause("ENOTFOUND") }), { status: 400 }), true));
+	assert.ok(!isNetworkError(new DOMException("stopped", "AbortError"), true));
+	let wait: ReturnType<typeof retryNetwork>["network"];
+	let now = 1000;
+	for (const delay of [2000, 5000, 15_000, 30_000, ...Array(9).fill(60_000), 8000]) {
+		const retry = retryNetwork(wait, now, 1);
+		assert.equal(retry.waitMs, delay);
+		wait = retry.network;
+		now += delay;
+	}
+	assert.equal(now - 1000, 600_000);
+	assert.deepEqual(retryNetwork(wait, now, 1), { waitMs: false });
+	assert.equal(retryNetwork(undefined, now, 1).waitMs, 2000);
+	step("transport failures are matched by code and cause, not provider text; retry delays grow and end at ten minutes");
 }
 
 // ---- Reading a refusal
@@ -296,12 +327,16 @@ const scripts: Record<string, Refuse[]> = {
 	"waiting child two": [{ ...RATE_LIMITED, headers: { "retry-after": "3600" } }],
 	"billing only": [{ status: 429, body: '{"error":{"type":"insufficient_quota","message":"Your credit balance is too low"}}' }],
 	"never answers": Array(1000).fill(RATE_LIMITED),
+	"network words in HTTP": [{ status: 400, body: '{"error":{"message":"Connection error.: getaddrinfo ENOTFOUND example.invalid"}}' }],
+	"network then limit": [RATE_LIMITED, RATE_LIMITED],
 };
 const requests: Record<string, number> = {};
 /** The person's messages in the last request for each prompt, by its last message. */
 const seen: Record<string, string[]> = {};
 /** While true, a request for "held" is refused, naming a time a moment off; then it is answered. */
 let holding = true;
+let networkDown = true;
+const wire: Record<string, string> = {};
 const standIn = createServer((request, response) => {
 	if (request.method === "GET" && request.url === "/v1/models") {
 		response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ object: "list", data: [{ id: "stand-in", object: "model" }] }));
@@ -316,6 +351,14 @@ const standIn = createServer((request, response) => {
 		const n = requests[prompt] ?? 0;
 		requests[prompt] = n + 1;
 		seen[prompt] = users.map((m) => (typeof m.content === "string" ? m.content : (m.content as { text?: string }[]).map((part) => part.text ?? "").join("")));
+		wire[prompt] = body;
+		const parentJob = prompt === "network parent";
+		const firstParentRequest = parentJob && n === 0;
+		const drops = prompt === "network once" || prompt === "network then limit" ? 1 : prompt === "network repeatedly" ? 8 : 0;
+		if (n < drops || prompt === "network steering" || prompt === "network never" || prompt === "network stop" || (networkDown && (prompt === "network child" || (parentJob && !firstParentRequest)))) {
+			request.socket.destroy();
+			return;
+		}
 		const refusal = prompt === "held" && holding ? { ...RATE_LIMITED, headers: { "retry-after-ms": "200" } } : scripts[prompt]?.[n];
 		if (refusal !== undefined) {
 			response.writeHead(refusal.status, { "content-type": "application/json", ...refusal.headers }).end(refusal.body);
@@ -324,8 +367,18 @@ const standIn = createServer((request, response) => {
 		response.writeHead(200, { "content-type": "text/event-stream" });
 		const chunk = (delta: object, finish: string | null) =>
 			response.write(`data: ${JSON.stringify({ id: "c1", object: "chat.completion.chunk", created: 1, model: "stand-in", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
-		chunk({ role: "assistant", content: `Answered after ${n} refusals.` }, null);
-		chunk({}, "stop");
+		if (firstParentRequest) {
+			chunk({ role: "assistant", tool_calls: [{ index: 0, id: "delegate-network", type: "function", function: { name: "delegate", arguments: JSON.stringify({ agent: "Scout", task: "network child", wait: false }) } }] }, null);
+			chunk({}, "tool_calls");
+		} else {
+			chunk({ role: "assistant", content: `Answered after ${n} refusals.` }, null);
+			if (prompt === "stream cut off" && n === 0) {
+				// Drop the socket only after headers and a piece of the answer have been sent.
+				response.write(": streamed\n\n", () => request.socket.destroy());
+				return;
+			}
+			chunk({}, "stop");
+		}
 		response.end("data: [DONE]\n\n");
 	});
 });
@@ -335,7 +388,7 @@ const standInUrl = `http://127.0.0.1:${(standIn.address() as { port: number }).p
 let log = "";
 function startEngine(extra: Record<string, string> = {}): ChildProcess {
 	const child = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "main.ts")], {
-		env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_LOGIN_SHELL: "off", PI2_LIMIT_BACKOFF_MS: "20", ...extra },
+		env: { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, PI2_LOGIN_SHELL: "off", PI2_LIMIT_BACKOFF_MS: "20", PI2_NETWORK_WAIT_SCALE: "0.02", ...extra },
 		stdio: ["ignore", "ignore", "pipe"],
 	});
 	child.stderr!.setEncoding("utf8").on("data", (chunk: string) => {
@@ -352,7 +405,7 @@ type State = {
 	busy: boolean;
 	agent: { model: Model };
 	failure: { reason: string; detail: string | null } | null;
-	retry: { at: number; error: string } | null;
+	retry: { at: number; error: string; network?: boolean } | null;
 	limitWait: Shown | null;
 	messageWaits?: { holds: string[]; ends: string[]; retryAt?: number } | null;
 };
@@ -361,15 +414,22 @@ class Client extends EngineClient {
 	activity: { conversationId: number; parent: number | null; status: string; limit: Shown | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	notices: { id: string; name: string; stage?: string; waiting?: number; until?: number; told?: boolean; runs: { conversationId: number; subChat: boolean }[] }[] = [];
+	networkSleeps = new Map<number, Set<number>>();
 	override receive(message: any): void {
+		if (message.event === "conversation" && message.state.retry?.network === true) {
+			const sleeps = this.networkSleeps.get(message.id) ?? new Set<number>();
+			sleeps.add(message.state.retry.at);
+			this.networkSleeps.set(message.id, sleeps);
+			assert.equal(message.state.limitWait, null);
+		}
 		if (message.event === "activity") this.activity = message.runs;
 		else if (message.event === "limits") this.notices = message.notices;
 		else if (message.event === "providers") this.models = message.models;
 		else super.receive(message);
 	}
 	/** A new conversation on the stand-in, sent `prompt`. */
-	async ask(provider: string, prompt: string): Promise<number> {
-		const { id } = await this.call("conversation.create", { model: { provider, modelId: "stand-in" } });
+	async ask(provider: string, prompt: string, chat = false): Promise<number> {
+		const { id } = await this.call("conversation.create", { ...(chat ? { chat } : {}), model: { provider, modelId: "stand-in" } });
 		await this.call("conversation.open", { id });
 		await this.call("submit", { id, text: prompt });
 		return id;
@@ -620,6 +680,83 @@ try {
 	assert.equal(requests["never answers"], 2, "asked once more, then gave up");
 	await client.until("giving up logged", () => new RegExp(`conversation ${never} gave up waiting: pi² waited .* for Stand-in's rate limit`).test(log));
 	step("a run that has waited as long as it waits by itself ends, and its error says why and how to carry on");
+	// A connection closed before even the headers. The next request gets the queued steer, not a failed assistant entry.
+	const networkSteer = await client.ask(provider, "network steering");
+	await client.until("network sleep began", () => client.networkSleeps.has(networkSteer));
+	await client.call("submit", { id: networkSteer, text: "Steer after the outage", mode: "steer" });
+	const recovered = (c: { items: Item[] }) => c.items.filter((i) => i.kind === "marker" && i.text.startsWith("The network is back."));
+	for (const [prompt, n] of [["network once", 1], ["network repeatedly", 8], ["network then limit", 2]] as const) {
+		const id = await client.ask(provider, prompt, prompt === "network once");
+		conv = await client.ended(id);
+		assert.equal(conv.state.failure, null);
+		assert.equal(answer(conv), `Answered after ${n} refusals.`);
+		assert.equal(recovered(conv).length, 1);
+		assert.match(recovered(conv)[0]!.text, /Carried on after waiting \d+ s\./);
+		assert.equal(conv.items.filter((i) => i.stop === "error").length, prompt === "network then limit" ? 1 : 0);
+		assert.ok(client.networkSleeps.has(id));
+		assert.doesNotMatch(wire[prompt]!, /getaddrinfo|No network just now|Carried on after waiting/);
+	}
+	assert.deepEqual(seen["Steer after the outage"], ["network steering", "Steer after the outage"]);
+	assert.equal(recovered(await client.ended(networkSteer)).length, 1);
+	step("a pre-answer disconnect, a scaled multi-minute outage, steering, and a 429 after a disconnect all carry on");
+
+	for (const prompt of ["network words in HTTP", "stream cut off"]) {
+		const id = await client.ask(provider, prompt);
+		conv = await client.ended(id);
+		assert.ok(!client.networkSleeps.has(id));
+		assert.ok(conv.items.some((i) => i.stop === "error"));
+		assert.equal(recovered(conv).length, 0);
+	}
+	step("an HTTP refusal with connection-error words and a cut-off answer do not get network waits");
+
+	const parentTogether = await client.ask(provider, "network parent");
+	const child = await client.until("the child running", () => client.activity.find((r) => r.parent === parentTogether)?.conversationId);
+	await client.call("conversation.open", { id: child });
+	await client.until("parent and child have both waited for the network", () => client.networkSleeps.has(parentTogether) && client.networkSleeps.has(child));
+	networkDown = false;
+	for (const id of [parentTogether, child]) {
+		conv = await client.ended(id);
+		assert.equal(conv.state.failure, null);
+		assert.equal(recovered(conv).length, 1);
+	}
+	assert.doesNotMatch(wire["network parent"]!, /No network just now|Carried on after waiting/);
+	step("parent and sub-chat can both wait and recover from the same outage");
+
+	await stop(engine);
+	engine = startEngine({ PI2_NETWORK_WAIT_SCALE: "0.002" });
+	client = await Client.connect(engine, home);
+	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
+	const { id: failedParent } = await client.call("conversation.create", { agentId: "atlas", model: demo });
+	await client.call("conversation.open", { id: failedParent });
+	await client.call("submit", { id: failedParent, text: "/delegate Scout: network never" });
+	const failedDelegate = await client.until("delegate reports the original connection failure", () => client.conversations.get(failedParent)?.items.find((i) => i.kind === "tool"));
+	assert.match(failedDelegate.text, /Scout did not finish the task: the model's provider answered with an error: “Connection error\..*UND_ERR_SOCKET.*”\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: \d+/s);
+	assert.ok(requests["network never"]! > 4);
+	step("giving up preserves the terminal provider error and delegation result");
+
+	// A deadline longer than test patience makes it impossible to pass because the sleep happened to end.
+	await stop(engine);
+	engine = startEngine({ PI2_NETWORK_WAIT_SCALE: "1000" });
+	client = await Client.connect(engine, home);
+	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
+	const networkStop = await client.ask(provider, "network stop");
+	const sleep = await client.until("a durable network sleep", () => {
+		const retry = client.conversations.get(networkStop)?.state.retry;
+		return retry?.network === true ? retry : undefined;
+	});
+	await stop(engine);
+	engine = startEngine({ PI2_NETWORK_WAIT_SCALE: "1000" });
+	client = await Client.connect(engine, home);
+	await client.call("conversation.open", { id: networkStop });
+	await client.until("the same network sleep after restart", () => client.conversations.get(networkStop)?.state.retry?.at === sleep.at && client.networkSleeps.has(networkStop));
+	await client.call("abort", { id: networkStop });
+	conv = await client.until("Stop ended the sleep", () => {
+		const c = client.conversations.get(networkStop);
+		return c?.state.busy === false && c.state.retry === null ? c : undefined;
+	});
+	assert.equal(requests["network stop"], 1);
+	assert.equal(recovered(conv).length, 0);
+	step("a network sleep survives an engine restart and Stop ends it without another request");
 	console.log("PASS");
 } finally {
 	await stop(engine);

@@ -82,6 +82,8 @@ export function promptCacheLifetimes<T extends object>(models: T): T {
 }
 
 function request(original: StreamCall, model: Model, context: unknown, options: Options | undefined): Stream {
+	// These SDKs own their HTTP transport and reject an injected fetch. Neither implements our long-cache option.
+	if (model.api === "google-generative-ai" || model.api === "google-vertex") return original(model, context, { ...options, fetch: undefined });
 	const session = options?.sessionId;
 	const conversation = session === undefined ? undefined : conversationOf.get(session);
 	// A request that is not a conversation's own (a compaction asks for no cache) is left as its caller made it.

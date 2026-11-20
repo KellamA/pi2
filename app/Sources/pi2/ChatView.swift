@@ -137,7 +137,8 @@ struct ChatView: View {
                 limitBanner(wait.sentence, excluding: Set([current].compactMap { $0 }), params: ["since": wait.since],
                             help: "Continue this run with a different model")
             } else if let retry = state?.retry {
-                banner("The request failed and will be retried: \(retry.error)", systemImage: "arrow.clockwise", color: Theme.warn)
+                banner(retry.network == true ? "No network just now. Trying again…" : "The request failed and will be retried: \(retry.error)",
+                       systemImage: "arrow.clockwise", color: Theme.warn)
             }
             if let failure = state?.failure, !busy {
                 let stopped = failure.reason == "aborted"

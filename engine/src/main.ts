@@ -51,8 +51,9 @@ import { type Host, pi2Extension } from "./extensions.ts";
 import { type AgentSaveOptions, type Engine, FEATURES } from "./features.ts";
 import { carriedProjectFor } from "./carryover.ts";
 import { inRepository, madeWorktrees, SETUP_ENTRY, setupItem, setupMarkdown } from "./worktrees.ts";
-import { CARRY_ON_ENTRY, noticingRefusals } from "./limitwait.ts";
+import { CARRY_ON_ENTRY, duration, noticingRefusals } from "./limitwait.ts";
 import { LOCAL_RETRY_ENTRY, retryLocalEngine } from "./localrun.ts";
+import { networkFailure, NETWORK_RESUMED_ENTRY, type NetworkWait, retryNetwork } from "./networkwait.ts";
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
@@ -67,7 +68,7 @@ import { claim } from "./needs.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
-import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, newestOnly, Providers } from "./providers.ts";
+import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, LOCAL_PROVIDER, newestOnly, Providers } from "./providers.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { nextRun, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
@@ -421,7 +422,7 @@ const harness = await Harness.open(
 				tool.name === "bash" ? bashForSubChat(tool) : tool.name === "background" ? backgroundForSubChat(tool) : tool;
 			return { ...agent, tools: agent.tools.map(forSubChat), callable: agent.callable.map(forSubChat) };
 		},
-		// A local engine stop or a provider limit uses pi-durable's stored retry sleep (see patch-dependencies.ts).
+		// Local engine stops, network outages and provider limits use pi-durable's stored retry sleep (see patch-dependencies.ts).
 		// The features are read at every use, so they are made by then.
 		settings: {
 			compaction: {
@@ -437,12 +438,16 @@ const harness = await Harness.open(
 			// durable, scripts/patch-inputs.ts). It does nothing anywhere else.
 			placeInput: (tx, id, now) => placeInput(tx, id as unknown as number, now),
 			retry: {
-				host: (message: Parameters<typeof retryLocalEngine>[0], attempt: number, id: unknown, localRetries = 0) => {
+				host: (message: Parameters<typeof retryLocalEngine>[0], attempt: number, id: unknown, localRetries = 0, network?: NetworkWait, now = Date.now()) => {
 					const local = retryLocalEngine(message, localRetries, home);
 					const feature = host.features.find((candidate) => candidate.retry !== undefined);
 					const limit = feature?.retry?.(message, attempt, id as number);
-					return local ?? limit ?? { spent: 0 };
+					if (local !== undefined) return local;
+					const spent = (limit?.spent ?? 0) + (network?.count ?? 0);
+					if (message?.provider !== LOCAL_PROVIDER && networkFailure(message)) return { ...retryNetwork(network, now), spent };
+					return { ...limit, spent };
 				},
+				recovered: (wait: NetworkWait, now: number) => ({ kind: NETWORK_RESUMED_ENTRY, data: { text: `The network is back. Carried on after waiting ${duration(now - wait.since)}.` } }),
 			} as never,
 		},
 		// A conversation without a chosen folder works in the app's own scratch folder, never the home folder.
@@ -740,7 +745,7 @@ function toItem(entry: EntryRecord): Item | undefined {
 	if (entry.kind === "pi.compaction") return { id, kind: "marker", ...compactionMarker(entry) };
 	if (entry.kind === "pi2.compactionTooShort") return { id, kind: "marker", text: "There is too little here to summarise yet." };
 	if (entry.kind === SETUP_ENTRY) return setupItem(id, entry.data);
-	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY || entry.kind === LOCAL_RETRY_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
+	if (entry.kind === THINKING_RETRY_ENTRY || entry.kind === CARRY_ON_ENTRY || entry.kind === LOCAL_RETRY_ENTRY || entry.kind === NETWORK_RESUMED_ENTRY) return { id, kind: "marker", text: (entry.data as { text: string }).text };
 	if (entry.kind === BACKGROUND_ENTRY) {
 		// With the command's id, so the line can open the window with its output.
 		const details = backgroundMarkerDetails(entry.data);

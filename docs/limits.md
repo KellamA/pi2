@@ -48,7 +48,7 @@ A run whose request a provider refuses for its limit does not end. It waits, and
 
 **The longest it waits by itself.** When the provider names no time, 6 hours from the first refusal; then the run ends, and its error says it stopped waiting and that continuing the conversation tries again. When it names a time, until that time, as long as it is within 8 days (a week's window and a day to spare); a time further off is not believed, and the run ends at once with the same kind of error. Six hours is long, but the other choice is work stopped with nobody watching, which is how this was met (#183): ten sub-chats ran at once on one subscription, four of them were refused and ended within half a minute, and they carried on only because someone typed "continue" in each.
 
-**What is not waited for.** An error that is not a limit ends the run at once, as before: a bad key, a refused request, a model that does not exist. So do refusals that waiting does not cure, even with HTTP 429: money or an allowance used up for good (`insufficient_quota`, billing, a monthly cap, "credit balance is too low", a plan that does not include the model), a workspace cap only its admin can raise, and a single request larger than the limit itself ("request too large"). Other passing errors (a dropped connection, a 500) are retried three times, 2, 4 and 8 seconds apart, as before; attempts spent waiting for a limit do not use those three up.
+**What is not waited for.** A bad key, a refused request or a model that does not exist can end a run at once. So do refusals that waiting does not cure, even with HTTP 429: money or an allowance used up for good (`insufficient_quota`, billing, a monthly cap, "credit balance is too low", a plan that does not include the model), a workspace cap only its admin can raise, and a single request larger than the limit itself ("request too large"). Other passing errors (such as HTTP 500) still use the ordinary three retries, 2, 4 and 8 seconds apart. Attempts spent waiting for a limit or for the network do not use those three up.
 
 **What is shown.** A run that waits for a limit is shown as waiting, not working, wherever a run is shown (#343):
 
@@ -72,6 +72,14 @@ All of it comes from Activity's `limit`, so it is shown as long as the run waits
 **engine.log** has a line when a wait starts (who refused, until when, and whether the provider named the time), and when it ends: the run carried on (after how long, and how many refusals), it was stopped, the provider answered with another error, or it gave up. The lines name the conversation, as in `conversation 12 is waiting for Anthropic's rate limit: until 2026-11-17T20:15:03Z, the time it named`. A refusal in between has no line of its own; the transcript has each. A run that ends on an error from the provider all the same, a limit or any other, has a line of its own too, with the provider's message (see [The logs](architecture.md#the-logs)).
 
 **A sub-chat.** A sub-chat that waits keeps the `delegate` call that started it waiting. One whose run ends on the provider's error all the same gives `delegate` a result that says so in the provider's words, and that the sub-chat can be carried on by passing its number as `chat` ([architecture.md](architecture.md#sub-chats)).
+
+## When the network drops
+
+If pi² cannot look up the provider's name or connect, or the connection is reset or times out before any response, the run asks again on its own. It waits about 2, 5, 15 and 30 seconds, then a minute at a time, up to about ten minutes from the first failure. A successful request resets the count, even if that request only asked to use a tool. A provider's error response is not a network outage, and an answer cut off part way through does not start this longer wait. [Models on this Mac](local-models-running.md#when-it-cannot-start-or-stops-unexpectedly) and provider limits keep their own retries.
+
+The conversation shows one line while it waits: **No network just now. Trying again…** When a request succeeds, the conversation says it carried on and how long it waited. Neither the notice nor the intervening failed attempts are sent to the model. A message sent to steer during a pause goes with the next request, just as it does during a limit wait. Stop ends the pause immediately. The pause survives an engine restart.
+
+This works in sub-chats too. A `delegate` call waiting on a sub-chat stays waiting while it tries again. If an outage outlasts the wait, the run ends on the original kind of error, without a new message about the wait. `delegate` still gives the provider error and tells the agent how to carry on the sub-chat.
 
 ## Telling an agent that hands out work, and the person
 
