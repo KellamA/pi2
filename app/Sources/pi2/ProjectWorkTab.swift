@@ -135,8 +135,8 @@ final class ProjectTabWatch {
 }
 
 /// The board's Work tab (#479): the project's work, kept by pi² itself — grouped by state, a new piece of work, opening
-/// one for its text, notes and result, and giving one to an agent, which starts it. A project whose work is a GitHub
-/// repository's issues and pull requests gets one line saying so, until the view for them lands (#480).
+/// one for its text, notes and result, and giving one to an agent, which starts it. A project whose work is an attached
+/// GitHub repository gets that repository's issues and pull requests instead, from `ProjectWorkGitHub` (#480).
 struct ProjectWorkTab: View {
     let model: AppModel
     let project: ProjectRow
@@ -171,7 +171,7 @@ struct ProjectWorkTab: View {
     var body: some View {
         VStack(spacing: 0) {
             if project.repository != nil {
-                repositoryNote
+                ProjectWorkGitHub(model: model, project: project)
             } else if let piece {
                 pieceView(piece)
             } else if opened != nil {
@@ -705,25 +705,6 @@ struct ProjectWorkTab: View {
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Theme.panel)
         .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
-    }
-
-    // MARK: - A project whose work is a GitHub repository
-
-    /// One line, until the view of a repository's issues and pull requests lands (#480).
-    private var repositoryNote: some View {
-        let name = [project.repository?.owner, project.repository?.name].compactMap { $0 }.joined(separator: "/")
-        return VStack(spacing: 8) {
-            Image(systemName: "checklist").font(.system(size: 22)).foregroundStyle(Theme.tx3)
-            Text("Work on GitHub").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.tx)
-            Text("This project's work is the issues and pull requests of its GitHub repository\(name.isEmpty ? "" : " (\(name))"). That view comes later in the projects preview; the agents still see it through their work tool.")
-                .font(.system(size: 12.5))
-                .foregroundStyle(Theme.tx2)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: 380)
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// A piece that was open but is no longer in the list.
