@@ -26,7 +26,7 @@
 //   what knowledge.ts's and variables.ts's do (the memory switch, the variables' names) is done here, in the same commit.
 
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { AgentDoc, type ConversationId, type Tx } from "@earendil-works/pi-durable";
@@ -49,12 +49,25 @@ import {
 	wireCarryOver,
 } from "./projects.ts";
 import { RequestError } from "./requesterror.ts";
+import { Schedules } from "./schedules.ts";
 import { type AgentProfile, Agents, Library, type Meta } from "./state.ts";
 import { copyAgentValues } from "./variables.ts";
 import { madeWorktrees } from "./worktrees.ts";
 
 /** The refusal of a run whose plan is not the one the person was shown (4.2, 9.8). */
 export const PLAN_CHANGED = "What would be carried over has changed since you looked. Look at it again.";
+
+// ---- Restoring one conversation of a deleted project (3.6, #531)
+
+/** The refusal of a restore whose plan is not the one the person was shown (3.6). */
+export const RESTORE_CHANGED = "What the restore would do has changed since you looked. Look at it again.";
+/** A conversation that cannot be restored: it is in no project, or in one that was not deleted (3.6). */
+export const NOT_OF_DELETED_PROJECT = "This conversation is not of a deleted project.";
+/** The family moves as one (3.6): a sub-chat is restored through the conversation it belongs to. */
+export const RESTORE_SUB_CHAT = "A sub-chat is restored with the conversation it belongs to. Restore that one.";
+/** Nothing may be working or waiting in the family (3.6), though deleting the project guaranteed none was. */
+export const STOP_RESTORE = "This conversation, or one of its sub-chats, is working or waiting on the person. Stop it first.";
+export const RESTORE_FOLDER_MISSING = "The folder of this conversation or one of its sub-chats is missing. Put it back before restoring.";
 
 // ---- Grouping by folder (9.2)
 
@@ -272,6 +285,8 @@ export type PlannedProject = {
 	notes: PlannedNote[];
 	/** Lines for the report: a repository gone, a bare repository's worktrees (9.2). */
 	notices: string[];
+	/** A restore of one conversation of a deleted project (3.6): that project, whose agents the plan may copy as it copies templates. */
+	from?: string;
 };
 
 export type CarryPlan = {
@@ -289,6 +304,13 @@ const byRecent = (a: { updatedAt: number; id: number | string }, b: { updatedAt:
 const byMade = (a: { createdAt: number; id: string }, b: { createdAt: number; id: string }) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 const isTemplate = (agent: AgentProfile | undefined): agent is AgentProfile => agent !== undefined && agent.projectId === undefined;
+
+/**
+ * An agent the plan may copy into a project: a template, and, for a restore (3.6, `from` the deleted project), an agent
+ * of that project too, since the conversation being restored ran as it and it cannot start work where it is.
+ */
+const copyable = (agent: AgentProfile | undefined, from: string | undefined): boolean =>
+	agent !== undefined && (agent.projectId === undefined || (from !== undefined && agent.projectId === from));
 
 /** A name made unique among `taken` (lower case), with " 2", " 3"…, within the 80 characters of a project's name. */
 function unique(base: string, taken: Set<string>, max = Number.POSITIVE_INFINITY): string {
@@ -318,10 +340,13 @@ export function lookUp(key: string, live: readonly Project[], keys: ReadonlyMap<
 /**
  * What carrying over would do, from the documents alone: every choice made by a rule of section 9, every tie broken by
  * 9.3's, so the same documents give the same plan. With `only`, the plan for that one top-level conversation, made later
- * or left in no project (9.9), with its sub-chats.
+ * or left in no project (9.9), with its sub-chats. With `from`, a deleted project's id, the plan is a restore of that one
+ * conversation (3.6): its family arrives stripped of its project, and the agents of the deleted project may be copied
+ * into the project of the family's folder as templates are.
  */
-export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan {
+export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: { from?: string }): CarryPlan {
 	const { conversations, agents, memory } = snapshot;
+	const from = options?.from;
 	const grouping = new Grouping(snapshot.worktrees, snapshot.home);
 	const doc = snapshot.projects;
 	const live = Object.values(doc.projects).filter((project) => project.deletedAt === undefined);
@@ -468,13 +493,14 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number): CarryPlan
 
 	// 9.5: the templates each project's conversations ran as, and those they may hand work to, followed through.
 	for (const entry of entries.values()) {
+		if (from !== undefined) entry.from = from;
 		const wanted = new Set<string>();
-		const queue = entry.conversations.map(({ id }) => meta(id)!.agentId).filter((id): id is string => id !== undefined && isTemplate(agents[id]));
+		const queue = entry.conversations.map(({ id }) => meta(id)!.agentId).filter((id): id is string => id !== undefined && copyable(agents[id], from));
 		while (queue.length > 0) {
 			const id = queue.shift()!;
 			if (wanted.has(id)) continue;
 			wanted.add(id);
-			for (const other of agents[id]!.delegates ?? []) if (isTemplate(agents[other]) && agents[other].removedAt === undefined) queue.push(other);
+			for (const other of agents[id]!.delegates ?? []) if (copyable(agents[other], from) && agents[other].removedAt === undefined) queue.push(other);
 		}
 		const taken = new Set(
 			Object.values(agents)
@@ -660,9 +686,10 @@ export function reportOf(plan: CarryPlan, carry: ProjectsDoc["carry"], agents: R
 /**
  * Tests hold a run at a point, to stop the engine there as a crash would: while the file the variable `name` names
  * exists, the run waits there, having written `<file>.started`. `PI2_CARRY_SECRETS_GATE` holds the Keychain step;
- * `PI2_CARRY_COMMIT_GATE` holds the run before each project's commit but the first.
+ * `PI2_CARRY_COMMIT_GATE` holds the run before each project's commit but the first; `PI2_RESTORE_COMMIT_GATE` holds
+ * a restore after it has checked the plan but before its transaction.
  */
-async function gate(name: "PI2_CARRY_SECRETS_GATE" | "PI2_CARRY_COMMIT_GATE"): Promise<void> {
+async function gate(name: "PI2_CARRY_SECRETS_GATE" | "PI2_CARRY_COMMIT_GATE" | "PI2_RESTORE_COMMIT_GATE"): Promise<void> {
 	const file = process.env[name];
 	if (file === undefined || !existsSync(file)) return;
 	writeFileSync(`${file}.started`, "");
@@ -743,7 +770,8 @@ export async function applyProject(tx: Tx, entry: PlannedProject, made: Made, gr
 			continue;
 		}
 		const template = agents[planned.template];
-		if (template === undefined || template.projectId !== undefined) throw new Error(CHANGED_DURING);
+		// A restore may copy an agent of the deleted project it comes from (3.6, `entry.from`); anything else with a project is not a template.
+		if (template === undefined || (template.projectId !== undefined && template.projectId !== entry.from)) throw new Error(CHANGED_DURING);
 		// The report listed what the copy takes beyond a copy made by hand. A template that has gained one of those since
 		// stops the run; one that has lost one gives the copy what is left of it.
 		const valuesNow = (template.variables ?? []).filter((variable) => variable.set).map((variable) => variable.name);
@@ -883,23 +911,32 @@ export const carryOver: Feature = (host, engine) => {
 	};
 
 	/** The documents, as stored now. Other uncarried conversations can determine where a note belongs (9.7). */
-	const snapshot = async (): Promise<CarrySnapshot> => {
+	const folderOf = async (id: number, tx?: Tx): Promise<string | null> => {
+		const conversation = id as unknown as ConversationId;
+		const agent = tx === undefined
+			? await engine.harness().snapshot(AgentDoc, conversation, engine.context())
+			: await tx.doc(AgentDoc, conversation);
+		return agent?.cwd ?? null;
+	};
+	const snapshot = async (tx?: Tx): Promise<CarrySnapshot> => {
 		const harness = engine.harness();
 		const context = engine.context();
-		const conversations = (await harness.snapshot(Library, context))?.conversations ?? {};
+		const library = tx === undefined ? await harness.snapshot(Library, context) : await tx.doc(Library);
+		const conversations = library?.conversations ?? {};
 		const folders: Record<string, string | null> = {};
 		for (const [id, meta] of Object.entries(conversations)) {
 			if (meta.parent !== undefined || meta.chat === true || meta.version === true || meta.deleted === true || meta.projectId !== undefined) continue;
-			const agent = (await harness.snapshot(AgentDoc, Number(id) as unknown as ConversationId, context)) as { cwd?: string | null } | undefined;
-			folders[id] = agent?.cwd ?? null;
+			folders[id] = await folderOf(Number(id), tx);
 		}
+		const agents = tx === undefined ? await harness.snapshot(Agents, context) : await tx.doc(Agents);
+		const memory = tx === undefined ? await harness.snapshot(Memory, context) : await tx.doc(Memory);
 		return {
 			conversations,
 			folders,
-			agents: (await harness.snapshot(Agents, context))?.agents ?? {},
-			memory: (await harness.snapshot(Memory, context)) ?? { agents: {} },
-			worktrees: await madeWorktrees(harness, context),
-			projects: await storedProjects(),
+			agents: agents?.agents ?? {},
+			memory: memory ?? { agents: {} },
+			worktrees: await madeWorktrees(harness, context, tx),
+			projects: tx === undefined ? await storedProjects() : await tx.doc(Projects),
 		};
 	};
 
@@ -910,23 +947,27 @@ export const carryOver: Feature = (host, engine) => {
 		return { plan, documents, report: reportOf(plan, documents.projects.carry, documents.agents) };
 	};
 
+	/** What one project's commit is given beyond its plan: the ids made for it, and the default orchestrator. */
+	const madeFor = (entry: PlannedProject, now: number): Made => {
+		const projectId = entry.existing ?? `p-${randomUUID()}`;
+		const copies = Object.fromEntries(entry.copies.filter((copy) => copy.existing === null).map((copy) => [copy.template, agentIdFor(copy.name)]));
+		let orchestrator: AgentProfile | undefined;
+		if (entry.existing === null && entry.orchestrator?.template === null) {
+			const { memory: _, ...settings } = DEFAULT_ORCHESTRATOR;
+			const taken = new Set(entry.copies.map((copy) => copy.name.toLowerCase()));
+			const name = unique(settings.name, taken);
+			orchestrator = { ...structuredClone(settings), name, id: agentIdFor(name), cwd: entry.folder, createdAt: now, projectId, role: "orchestrator", updatedAt: now };
+		}
+		return { projectId, copies, orchestrator, now, run: undefined };
+	};
+
 	/** Each project of `plan` in a commit of its own, in order. */
 	const apply = async (plan: CarryPlan, documents: CarrySnapshot, run: Made["run"]) => {
 		const grouping = new Grouping(documents.worktrees, documents.home);
 		const last = plan.projects.length - 1;
 		for (const [index, entry] of plan.projects.entries()) {
 			if (index > 0) await gate("PI2_CARRY_COMMIT_GATE");
-			const now = Date.now();
-			const projectId = entry.existing ?? `p-${randomUUID()}`;
-			const copies = Object.fromEntries(entry.copies.filter((copy) => copy.existing === null).map((copy) => [copy.template, agentIdFor(copy.name)]));
-			let orchestrator: AgentProfile | undefined;
-			if (entry.existing === null && entry.orchestrator?.template === null) {
-				const { memory: _, ...settings } = DEFAULT_ORCHESTRATOR;
-				const taken = new Set(entry.copies.map((copy) => copy.name.toLowerCase()));
-				const name = unique(settings.name, taken);
-				orchestrator = { ...structuredClone(settings), name, id: agentIdFor(name), cwd: entry.folder, createdAt: now, projectId, role: "orchestrator", updatedAt: now };
-			}
-			const made: Made = { projectId, copies, orchestrator, now, run: run === undefined ? undefined : { backup: run.backup, left: index === last ? run.left : [] } };
+			const made = { ...madeFor(entry, Date.now()), run: run === undefined ? undefined : { backup: run.backup, left: index === last ? run.left : [] } };
 			await engine.harness().commit(async (tx) => applyProject(tx, entry, made, grouping), engine.context());
 		}
 		// Nothing but notes left to record: one commit for them.
@@ -1004,6 +1045,124 @@ export const carryOver: Feature = (host, engine) => {
 			const stored = (await engine.harness().snapshot(Projects, engine.context()))?.carry ?? carryRecord();
 			const agents = (await engine.harness().snapshot(Agents, engine.context()))?.agents ?? {};
 			return { ...report, ranAt: stored.ranAt, backup: stored.backup, secretsPending: pending(stored, agents) };
+		});
+
+	const checkIdle = (family: ReadonlySet<number>) => {
+		if ([...family].some((member) => host.working(member)) || host.inbox.list().some((item) => family.has(item.conversationId))) {
+			throw new Error(STOP_RESTORE);
+		}
+	};
+
+	/** The family and its plan (3.6); in the move's transaction these are read from the documents it will write. */
+	const lookRestore = async (id: number, tx?: Tx) => {
+		requirePreview();
+		const documents = await snapshot(tx);
+		const root = documents.conversations[String(id)];
+		if (root === undefined || root.deleted === true) throw new Error(`Unknown conversation: ${id}`);
+		if (root.parent !== undefined) throw new Error(RESTORE_SUB_CHAT);
+		const from = root.projectId;
+		if (root.chat === true || root.version === true || from === undefined || documents.projects.projects[from]?.deletedAt === undefined) {
+			throw new Error(NOT_OF_DELETED_PROJECT);
+		}
+		const children = new Map<number, number[]>();
+		for (const [key, meta] of Object.entries(documents.conversations)) {
+			if (meta.version === true || meta.parent === undefined) continue;
+			if (!children.has(meta.parent)) children.set(meta.parent, []);
+			children.get(meta.parent)!.push(Number(key));
+		}
+		const family = new Set<number>([id]);
+		for (const member of family) for (const child of children.get(member) ?? []) family.add(child);
+		checkIdle(family);
+		const scheduleDoc = tx === undefined ? await engine.harness().snapshot(Schedules, engine.context()) : await tx.doc(Schedules);
+		if (Object.values(scheduleDoc?.schedules ?? {}).some((schedule) => schedule.pending !== null && family.has(schedule.pending.conversationId))) {
+			throw new Error(STOP_RESTORE);
+		}
+		// A restore is a carry of this family (9.9), stripped of the old project and the root's archived state.
+		const conversations: Record<string, Meta> = JSON.parse(JSON.stringify(documents.conversations));
+		const folders = { ...documents.folders };
+		for (const member of family) {
+			const meta = conversations[String(member)]!;
+			if (meta.deleted === true || meta.chat === true) continue;
+			const cwd = await folderOf(member, tx);
+			if (cwd !== null) {
+				let directory = false;
+				try { directory = statSync(cwd).isDirectory(); } catch { /* Gone or no longer reachable. */ }
+				if (!directory) throw new Error(RESTORE_FOLDER_MISSING);
+			}
+			if (member === id) folders[String(id)] = cwd;
+			delete meta.projectId;
+			delete meta.projectAgentId;
+		}
+		delete conversations[String(id)]!.archivedAt;
+		const plan = planCarryOver({ ...documents, conversations, folders }, id, { from });
+		const entry = plan.projects[0]!;
+		const rootTemplate = entry.conversations.find((one) => one.id === id)!.template;
+		const rootCopy = entry.copies.find((copy) => copy.template === rootTemplate);
+		const removed = rootCopy?.existing != null && documents.agents[rootCopy.existing]?.removedAt !== undefined;
+		const rootAgent = removed ? null : rootTemplate;
+		const original = root.agentId === undefined ? undefined : documents.agents[root.agentId];
+		// A removed or deleted copy stays that way. Tell the person what this means for the root (3.4).
+		if (rootAgent === null && original !== undefined) {
+			const reason = removed ? "This project’s copy was removed and will not be used." : "No copy will be made for this conversation.";
+			entry.notices.push(`${reason} It keeps ${original.name} as its agent.${original.projectId === from ? " That agent still belongs to the deleted project and is not available for new starts." : ""}`);
+		} else if (rootAgent === null && root.agentId !== undefined) {
+			entry.notices.push("Its original agent was deleted. This conversation keeps the setup it has.");
+		}
+		const report = { ...reportOf(plan, documents.projects.carry, documents.agents), rootAgent, restoresProject: entry.restore };
+		return { report, documents, from, family, entry };
+	};
+
+	const restore = (id: number, dryRun: boolean, given: string | null) =>
+		serially(async () => {
+			const preview = await lookRestore(id);
+			if (dryRun) return preview.report;
+			if (given !== preview.report.plan) throw new RequestError(RESTORE_CHANGED, preview.report);
+			let backup = preview.documents.projects.carry.backup;
+			let newBackup: string | undefined;
+			if (backup === null) {
+				const folder = join(engine.home, "backups");
+				mkdirSync(folder, { recursive: true });
+				newBackup = backup = await createBackup(engine.home, folder);
+				engine.log("restoring: backed up to", backup);
+			}
+			await gate("PI2_RESTORE_COMMIT_GATE");
+			const { report, entry, from, projectId } = await engine.harness().commit(async (tx) => {
+				// Other requests do not share the carry queue. Replan inside the write transaction, after the backup.
+				const { report, documents, entry, from, family } = await lookRestore(id, tx);
+				if (given !== report.plan) throw new RequestError(RESTORE_CHANGED, report);
+				const library = await tx.doc(Library);
+				for (const { id: member } of entry.conversations) {
+					const meta = library.conversations[String(member)]!;
+					delete meta.projectId;
+					delete meta.projectAgentId;
+					if (member === id) delete meta.archivedAt;
+				}
+				const made = madeFor(entry, Date.now());
+				await applyProject(tx, entry, made, new Grouping(documents.worktrees, documents.home));
+				const { projects, carry } = await tx.doc(Projects);
+				const source = projects[from]!;
+				if (source.conversation === id) source.conversation = null;
+				if (source.earlier.includes(id)) source.earlier = source.earlier.filter((other) => other !== id);
+				if (carry.backup === null) carry.backup = backup;
+				requirePreview();
+				checkIdle(family);
+				return { report, entry, from, projectId: made.projectId };
+			}, engine.context()).catch(async (error) => {
+				// A refused first restore must not leave an unrecorded backup in the way of retrying it.
+				if (newBackup !== undefined) {
+					try {
+						if ((await storedProjects()).carry.backup !== newBackup) rmSync(newBackup, { force: true, recursive: true });
+					} catch (cleanup) {
+						engine.log("restoring: could not clean up the unused backup", cleanup);
+					}
+				}
+				throw error;
+			});
+			engine.log(`restored conversation ${id} of the deleted project ${from} into ${projectId}`);
+			if (entry.copies.some((copy) => copy.existing === null && copy.variables.length > 0)) await retrySecrets().catch(() => {});
+			const stored = (await engine.harness().snapshot(Projects, engine.context()))?.carry ?? carryRecord();
+			const agents = (await engine.harness().snapshot(Agents, engine.context()))?.agents ?? {};
+			return { ...report, projectId, backup: stored.backup, secretsPending: pending(stored, agents) };
 		});
 
 	/** A top-level conversation not yet in a project, with the preview on: into the project of its folder (9.9). */
@@ -1088,6 +1247,18 @@ export const carryOver: Feature = (host, engine) => {
 				const carry = (await engine.harness().snapshot(Projects, engine.context()))?.carry;
 				const agents = (await engine.harness().snapshot(Agents, engine.context()))?.agents ?? {};
 				return { secrets: carry === undefined ? [] : pending(carry, agents) };
+			},
+			/**
+			 * `{ id, dryRun?, plan? }` (3.6, #531): the restore of one conversation of a deleted project, only with the
+			 * preview on. With `dryRun`, the report of what the restore would do, changing nothing; without, `plan` must be
+			 * the dry run's, and the move is one commit with a backup first, taken only from the app (answers.ts).
+			 */
+			"projects.restoreConversation": async (params) => {
+				if (typeof params.id !== "number") throw new Error("id must be a conversation's id");
+				if (params.dryRun !== undefined && typeof params.dryRun !== "boolean") throw new Error("dryRun must be true or false");
+				if (params.plan !== undefined && params.plan !== null && typeof params.plan !== "string") throw new Error("plan must be the plan of the report you were shown");
+				requirePreview();
+				return restore(params.id, params.dryRun === true, (params.plan as string | null | undefined) ?? null);
 			},
 		},
 	};
