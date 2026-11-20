@@ -15,7 +15,15 @@ struct ProjectsSidebar: View {
         #if PI2_DEVELOPMENT
         let _ = PerfProbe.count("sidebar: projects list drawn")
         #endif
-        List(selection: $model.selection) {
+        // The arrow keys move the List's selection themselves, so a project chosen that way never reaches a row's button:
+        // it has to come through `showProject` here as a click does, or a project whose agent's conversation was opened
+        // earlier in this launch opens on that agent instead of its board (#553).
+        List(selection: Binding(
+            get: { model.selection },
+            set: { next in
+                if case .project(let id) = next { model.showProject(id) } else { model.selection = next }
+            }
+        )) {
             DashboardRow(store: store)
                 .tag(Selection.dashboard)
 
