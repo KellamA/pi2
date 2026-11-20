@@ -60,6 +60,21 @@ struct ProjectAgentsTab: View {
         .sheet(item: $updating) { agent in
             if let mark = agent.template, let template = engine.agent(mark.id), template.projectId == nil {
                 UpdateFromTemplateSheet(engine: engine, agent: agent, template: template)
+            } else {
+                // The template went between the row being drawn and the click: say so, so the sheet is not a blank one.
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Update \(agent.name) from its template?")
+                        .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.tx)
+                    Text("The template this agent was made from has been deleted, so there is nothing to bring it up to date with.")
+                        .font(.system(size: 12.5)).foregroundStyle(Theme.tx2).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button("Done") { updating = nil }
+                            .buttonStyle(.piPrimary)
+                            .keyboardShortcut(.cancelAction)
+                    }
+                }
+                .padding(16).frame(width: 440)
             }
         }
     }
@@ -140,18 +155,44 @@ struct ProjectAgentsTab: View {
 
     /// The way to the templates, which are managed with today's agent pages, not here (docs/projects.md, 3.3).
     private var templatesNote: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(Theme.tx3)
-            Text("Agents of a project are made from templates: agents kept outside any project. Changing a copy here changes this project only.")
-                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button("Manage Templates…") { manageTemplates() }
-                .buttonStyle(.piGhost)
-                .controlSize(.small)
-                .disabled(engine.status != .connected)
-                .help("Open the templates, which are edited as agents are today")
+        // In a panel too narrow for one line the button goes below the sentence, rather than squeezing it into a column.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                noteIcon
+                noteText
+                Spacer(minLength: 8)
+                manageTemplatesButton
+            }
+            .frame(minWidth: 620)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    noteIcon
+                    noteText
+                }
+                HStack {
+                    Spacer(minLength: 0)
+                    manageTemplatesButton
+                }
+            }
         }
         .padding(12).panel()
+    }
+
+    private var noteIcon: some View {
+        Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(Theme.tx3)
+    }
+
+    private var noteText: some View {
+        Text("Agents of a project are made from templates: agents kept outside any project. Changing a copy here changes this project only.")
+            .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var manageTemplatesButton: some View {
+        Button("Manage Templates…") { manageTemplates() }
+            .buttonStyle(.piGhost)
+            .controlSize(.small)
+            .disabled(engine.status != .connected)
+            .help("Open the templates, which are edited as agents are today")
     }
 
     /// Makes an agent of the project by hand, and opens its page in the tab.
@@ -470,12 +511,10 @@ private struct UpdateFromTemplateSheet: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(words(change.setting, change.now))
                     .font(.system(size: 12)).foregroundStyle(Theme.tx2)
-                    .lineLimit(3).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.tx3)
                 Text(words(change.setting, change.template))
                     .font(.system(size: 12)).foregroundStyle(Theme.tx)
-                    .lineLimit(3).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -535,7 +574,8 @@ private struct UpdateFromTemplateSheet: View {
         }
     }
 
-    /// A setting's value as the person reads it on the agent's page. Long text is cut by the row, not here.
+    /// A setting's value as the person reads it on the agent's page. Shown whole, however long, so that a change to
+    /// a long text such as the instructions can be seen; the sheet scrolls when it does not fit.
     private func words(_ setting: String, _ value: JSONValue) -> String {
         switch value {
         case .null:

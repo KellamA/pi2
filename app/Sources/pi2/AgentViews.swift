@@ -416,29 +416,56 @@ struct AgentEditor: View {
             .scrollContentBackground(.hidden)
 
             Rectangle().fill(Theme.line).frame(height: 1)
-            HStack {
-                Button("Delete Agent…") { confirmingDelete = true }
-                    .buttonStyle(.piDanger)
-                    .disabled(engine.agents.count <= 1)
-                Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agentID) }
-                    .buttonStyle(.piSecondary)
-                    .disabled(changed)
-                    .help(changed ? "Save or revert your changes before duplicating" : "Duplicate this agent’s saved settings")
-                if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
-                Spacer()
-                Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(2).multilineTextAlignment(.trailing)
-                Button("Revert") { load(); error = nil }
-                    .buttonStyle(.piSecondary)
-                    .disabled(!changed)
-                Button("Save") { save() }
-                    .buttonStyle(.piPrimary)
-                    .keyboardShortcut("s")
-                    .disabled(!changed || agent.name.trimmingCharacters(in: .whitespaces).isEmpty)
+            // Two layouts: at the window's width the note sits between the buttons, as it always has; in a pane too
+            // narrow for that, such as the board's Agents tab (#475), it goes above them, so no label is cut off.
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    changes
+                    Spacer(minLength: 12)
+                    note.lineLimit(2).multilineTextAlignment(.trailing)
+                    actions
+                }
+                .frame(minWidth: 660)
+                VStack(alignment: .leading, spacing: 8) {
+                    note.fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        changes
+                        Spacer(minLength: 8)
+                        actions
+                    }
+                }
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
         }
+    }
+
+    /// Deleting and duplicating, and what went wrong if a save did.
+    @ViewBuilder
+    private var changes: some View {
+        Button("Delete Agent…") { confirmingDelete = true }
+            .buttonStyle(.piDanger)
+            .disabled(engine.agents.count <= 1)
+        Button("Duplicate", systemImage: "doc.on.doc") { model.duplicateAgent(agentID) }
+            .buttonStyle(.piSecondary)
+            .disabled(changed)
+            .help(changed ? "Save or revert your changes before duplicating" : "Duplicate this agent’s saved settings")
+        if let error { Text(error).font(.callout).foregroundStyle(.red).lineLimit(2) }
+    }
+
+    private var note: some View {
+        Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        Button("Revert") { load(); error = nil }
+            .buttonStyle(.piSecondary)
+            .disabled(!changed)
+        Button("Save") { save() }
+            .buttonStyle(.piPrimary)
+            .keyboardShortcut("s")
+            .disabled(!changed || (draft?.name.trimmingCharacters(in: .whitespaces) ?? "").isEmpty)
     }
 
     private func save() {
