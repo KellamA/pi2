@@ -57,8 +57,10 @@ struct TestCopyControl: NSViewRepresentable {
         private var waiting: [(dir: URL, id: Int, after: Int, until: Date)] = []
         /// `show` requests for a project's hub, answered once the hub has drawn what was asked, or after `limit`.
         private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, until: Date)] = []
-        /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown.
+        /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown, and how long to
+        /// wait for an agent's conversation of it named there.
         private var launchProject: ProjectCopyView?
+        private var launchUntil = Date.distantFuture
         /// Within test-copy's own thirty seconds, so it hears why rather than that nothing answered.
         private static let limit: TimeInterval = 20
 
@@ -76,7 +78,10 @@ struct TestCopyControl: NSViewRepresentable {
             guard window != nil else { return }
             if let launch = ProjectCopyView.launch, launch.show != nil || launch.hub != nil {
                 _ = recordProjectView(launch, source: "launch")
-                if launch.project != nil { launchProject = launch }
+                if launch.project != nil {
+                    launchProject = launch
+                    launchUntil = Date().addingTimeInterval(Self.limit)
+                }
             }
             let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.poll() }
@@ -119,10 +124,19 @@ struct TestCopyControl: NSViewRepresentable {
                 }
                 return false
             }
-            // A project made after launch, such as by `fill --project`, opens when it comes, as a conversation does.
+            // A project made after launch, such as by `fill --project`, opens when it comes, as a conversation does. An
+            // agent's conversation named there comes with the library and the activity, so it is waited for, but not for
+            // ever: past the limit the hub opens on its board.
             if let launch = launchProject, let project = launch.project, let id = projectID(project) {
-                launchProject = nil
-                model.showProject(id, tab: launch.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: launch.hub.flatMap { HubFold(rawValue: $0.rawValue) })
+                let conversation = launch.agent.flatMap { asked -> Int? in
+                    if case .conversation(let found) = model.agentChoice(asked, of: id) { return found }
+                    return nil
+                }
+                if conversation != nil || launch.agent == nil || Date() >= launchUntil {
+                    launchProject = nil
+                    model.showProject(id, tab: launch.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: launch.hub.flatMap { HubFold(rawValue: $0.rawValue) })
+                    if let conversation { model.openAgent(conversation, in: id) }
+                }
             }
             for name in names.sorted() where name.hasPrefix("request-") {
                 let dir = folder.appendingPathComponent(name, isDirectory: true)
@@ -165,9 +179,9 @@ struct TestCopyControl: NSViewRepresentable {
             return (live.first { $0.id == asked } ?? live.first { $0.name.lowercased() == asked.lowercased() })?.id
         }
 
-        /// Shows the hub `view` asks for: its project, its tab and its fold. Nil when the answer is to wait for the hub to
-        /// draw it. A fold alone applies to the project shown. The Dashboard and an agent's conversation in place of the
-        /// board are later issues', and are only recorded.
+        /// Shows the hub `view` asks for: its project, its tab, its fold and, when it names an agent, that agent's
+        /// conversation in place of the board (#473). Nil when the answer is to wait for the hub to draw it. A fold alone
+        /// applies to the project shown. The Dashboard is a later issue's, and is only recorded.
         private func showProject(_ view: ProjectCopyView, dir: URL) -> [String: String]? {
             if view.show == "dashboard" {
                 // The sidebar's row is selected (#470); what it opens is the Dashboard's issue (#481).
@@ -187,7 +201,15 @@ struct TestCopyControl: NSViewRepresentable {
             } else {
                 return ["error": "no project is shown to fold; name one with project:<name>"]
             }
+            var conversation: Int?
+            if let asked = view.agent {
+                switch model.agentChoice(asked, of: id) {
+                case .conversation(let found): conversation = found
+                case .problem(let why): return ["error": why]
+                }
+            }
             model.showProject(id, tab: view.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: fold)
+            if let conversation { model.openAgent(conversation, in: id) }
             hubWaiting.append((dir, view, id, Date().addingTimeInterval(Self.limit)))
             return nil
         }
@@ -195,20 +217,29 @@ struct TestCopyControl: NSViewRepresentable {
         /// What to answer once the hub has drawn the project, with its tab and fold, and the orchestrator's conversation
         /// when its panel shows it; nil until then.
         private func hubDrawn(_ asked: ProjectCopyView, project: String) -> String? {
+            let fold = model.hubs.fold(project)
             guard let drawn = HubDrawn.current, drawn.project == project, drawn.tab == model.hubs.tab(project),
-                  drawn.fold == model.hubs.fold(project).shown(narrow: drawn.narrow) else { return nil }
+                  drawn.fold == fold.shown(narrow: drawn.narrow, agent: drawn.agent != nil),
+                  drawn.agent == (fold == .boardFolded ? nil : model.hubs.agent(project)) else { return nil }
             // The page draws a conversation with entries; an empty one shows the agent's introduction once it has come.
-            if let conversation = drawn.conversation, TranscriptDrawn.drawings[conversation] == nil {
+            for conversation in [drawn.conversation, drawn.agent].compactMap({ $0 }) where TranscriptDrawn.drawings[conversation] == nil {
                 guard let open = model.engine.open[conversation], open.state != nil, open.items.isEmpty else { return nil }
             }
             let name = model.engine.project(project)?.name ?? project
-            let fold = switch drawn.fold {
+            let words = switch drawn.fold {
             case .both: "both panels"
-            case .conversationFolded: "the conversation folded"
-            case .boardFolded: drawn.narrow && model.hubs.fold(project) == .both ? "the board folded, as the window is narrow" : "the board folded"
+            case .conversationFolded:
+                // An agent's conversation folds the board by itself only when the window is too narrow for both panels.
+                fold == .both && drawn.narrow ? "the conversation folded, as the window is narrow" : "the conversation folded"
+            case .boardFolded: drawn.narrow && fold == .both ? "the board folded, as the window is narrow" : "the board folded"
             }
-            let agent = asked.agent.map { "; an agent's conversation in place of the board (\($0)) is not drawn yet" } ?? ""
-            return "Showing project “\(name)”, \(drawn.tab.title), \(fold), drawn\(agent)"
+            let agent = drawn.agent.map { conversation in
+                let summary = model.engine.conversations.first { $0.id == conversation }
+                let who = model.engine.agent(summary?.agentId)?.name ?? "an agent"
+                let title = (summary?.title ?? "").isEmpty ? "" : " “\(summary?.title ?? "")”"
+                return "; the conversation with \(who)\(title) in place of the board"
+            } ?? (asked.agent.map { "; no conversation of \($0) is in place of the board" } ?? "")
+            return "Showing project “\(name)”, \(drawn.tab.title), \(words), drawn\(agent)"
         }
 
         /// The answer to a request, or nil when it is to wait.

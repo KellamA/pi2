@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFauxCore } from "@earendil-works/pi-ai/providers/faux";
 import { automaticCompactionReady, SUMMARY_TOKENS, summaryThinking } from "../src/compaction.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-compact-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-compact-work-")));

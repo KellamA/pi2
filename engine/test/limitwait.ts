@@ -14,10 +14,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { unfinished } from "../src/extensions.ts";
-import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, type Wait, Waits } from "../src/limitwait.ts";
-import { isNetworkError, retryNetwork } from "../src/networkwait.ts";
+import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRefusals, type Wait, Waits } from "../src/limitwait.ts";
+import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
-import { EngineClient, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -51,6 +54,63 @@ function step(name: string): void {
 	assert.deepEqual(retryNetwork(wait, now, 1), { waitMs: false });
 	assert.equal(retryNetwork(undefined, now, 1).waitMs, 2000);
 	step("transport failures are matched by code and cause, not provider text; retry delays grow and end at ten minutes");
+}
+
+// ---- A stream the provider closed (#550)
+
+{
+	// Each shape as it arrives from fetch: HTTP/2 ending the stream with a code of its own before anything is answered,
+	// and undici's words for a connection that ended in flight, which an SDK wraps and pi-ai flattens into the message
+	// the run ends with ("Connection error.: <the deepest cause> (<its code>)").
+	const http2 = (code: string) => new TypeError("fetch failed", { cause: Object.assign(new Error(`Stream closed with error code ${code}`), { code: "ERR_HTTP2_STREAM_ERROR" }) });
+	assert.equal(closedStream(http2("NGHTTP2_ENHANCE_YOUR_CALM")), "calm");
+	assert.equal(closedStream(http2("NGHTTP2_REFUSED_STREAM")), "calm");
+	assert.equal(closedStream("Connection error.: Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM (ERR_HTTP2_STREAM_ERROR)"), "calm");
+	assert.equal(closedStream(new TypeError("fetch failed", { cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }) })), "closed");
+	assert.equal(closedStream("Connection error.: terminated (UND_ERR_SOCKET)"), "closed");
+	assert.equal(closedStream("Connection error.: other side closed (UND_ERR_SOCKET)"), "closed");
+	// Not a stream the provider closed: a certificate, a name that does not resolve, Stop, and a response that came.
+	assert.equal(closedStream(new TypeError("fetch failed", { cause: Object.assign(new Error("certificate has expired"), { code: "CERT_HAS_EXPIRED" }) })), undefined);
+	assert.equal(closedStream("Connection error.: getaddrinfo ENOTFOUND example.invalid"), undefined);
+	assert.equal(closedStream(new DOMException("stopped", "AbortError")), undefined);
+	assert.equal(closedStream(Object.assign(new Error("Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM"), { status: 400 })), undefined);
+	assert.equal(failureOf(new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) }), true), "network");
+	// A provider that asked for less begins at the longer waits, and goes on from there.
+	const calm = retryNetwork(undefined, 1000, 1, "calm");
+	assert.equal(calm.waitMs, 15_000);
+	assert.deepEqual(calm.network, { since: 1000, count: 1, closed: true, calm: true });
+	assert.equal(retryNetwork(calm.network, 16_000, 1).waitMs, 30_000);
+	assert.deepEqual(retryNetwork(undefined, 1000, 1, "closed").network, { since: 1000, count: 1, closed: true });
+	assert.equal(retryNetwork(undefined, 1000, 1, "closed").waitMs, 2_000);
+	assert.deepEqual(retryNetwork(undefined, 1000, 1, "network").network, { since: 1000, count: 1 });
+	step("a stream the provider closed is told apart from a network that is away, and one that asks for less waits longer first");
+}
+
+{
+	// What the run notes down of each: a stream closed before or during an answer is asked again whole, and a request the
+	// provider answered is not, whatever words came with it.
+	const noted = async (errorMessage: string, options: { content?: unknown; fetch?: typeof fetch } = {}): Promise<ReturnType<typeof transportFailureOf>> => {
+		const message = { role: "assistant", content: options.content ?? [], api: "openai-completions", provider: "stand-in", model: "m", usage: {}, stopReason: "error", errorMessage, timestamp: 1 } as unknown as AssistantMessage;
+		const models = noticingRefusals({
+			stream: (_model: unknown, _context: unknown, streamOptions?: { fetch?: typeof fetch }) => ({
+				result: async () => {
+					if (options.fetch !== undefined) await streamOptions!.fetch!("http://stand-in/v1/chat/completions", {});
+					return message;
+				},
+			}),
+		}) as unknown as { stream: (model: unknown, context: unknown, options?: { fetch?: typeof fetch }) => { result: () => Promise<AssistantMessage> } };
+		return transportFailureOf(await models.stream({}, {}, options.fetch === undefined ? {} : { fetch: options.fetch }).result());
+	};
+	const refused = async () => new Response('{"error":{"message":"Connection error.: terminated (UND_ERR_SOCKET)"}}', { status: 400 });
+	assert.equal(await noted("Connection error.: Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM (ERR_HTTP2_STREAM_ERROR)"), "calm");
+	assert.equal(await noted("Connection error.: other side closed (UND_ERR_SOCKET)"), "closed");
+	// Part way through an answer counts too: the whole request is asked again, so that part is dropped.
+	assert.equal(await noted("Connection error.: terminated (UND_ERR_SOCKET)", { content: [{ type: "text", text: "Half an ans" }] }), "closed");
+	// The request's own fault: a 4xx with a message, a content flag, and a limit's refusal.
+	assert.equal(await noted("Connection error.: terminated (UND_ERR_SOCKET)", { fetch: refused }), undefined);
+	assert.equal(await noted("Provider finish_reason: content_filter"), undefined);
+	assert.equal(await noted("429 This request would exceed your account's rate limit."), undefined);
+	step("a run notes a stream the provider closed, part way through an answer or not, but never an answer the provider refused");
 }
 
 // ---- Reading a refusal
@@ -371,6 +431,12 @@ const standIn = createServer((request, response) => {
 			chunk({ role: "assistant", tool_calls: [{ index: 0, id: "delegate-network", type: "function", function: { name: "delegate", arguments: JSON.stringify({ agent: "Scout", task: "network child", wait: false }) } }] }, null);
 			chunk({}, "tool_calls");
 		} else {
+			if (prompt === "stream closed before answer" && n === 0) {
+				// The headers arrive and the stream ends before any of the answer: what an HTTP/2 ENHANCE_YOUR_CALM looks
+				// like from here, whose code an HTTP/1.1 connection cannot send (#550).
+				response.write(": streamed\n\n", () => request.socket.destroy());
+				return;
+			}
 			chunk({ role: "assistant", content: `Answered after ${n} refusals.` }, null);
 			if (prompt === "stream cut off" && n === 0) {
 				// Drop the socket only after headers and a piece of the answer have been sent.
@@ -405,7 +471,7 @@ type State = {
 	busy: boolean;
 	agent: { model: Model };
 	failure: { reason: string; detail: string | null } | null;
-	retry: { at: number; error: string; network?: boolean } | null;
+	retry: { at: number; error: string; network?: boolean; closed?: boolean } | null;
 	limitWait: Shown | null;
 	messageWaits?: { holds: string[]; ends: string[]; retryAt?: number } | null;
 };
@@ -415,12 +481,19 @@ class Client extends EngineClient {
 	models: { provider: string; id: string }[] = [];
 	notices: { id: string; name: string; stage?: string; waiting?: number; until?: number; told?: boolean; runs: { conversationId: number; subChat: boolean }[] }[] = [];
 	networkSleeps = new Map<number, Set<number>>();
+	/** The sleeps of a run waiting for a stream the provider closed (#550), which are network sleeps too. */
+	closedSleeps = new Map<number, Set<number>>();
 	override receive(message: any): void {
 		if (message.event === "conversation" && message.state.retry?.network === true) {
 			const sleeps = this.networkSleeps.get(message.id) ?? new Set<number>();
 			sleeps.add(message.state.retry.at);
 			this.networkSleeps.set(message.id, sleeps);
 			assert.equal(message.state.limitWait, null);
+			if (message.state.retry.closed === true) {
+				const closed = this.closedSleeps.get(message.id) ?? new Set<number>();
+				closed.add(message.state.retry.at);
+				this.closedSleeps.set(message.id, closed);
+			}
 		}
 		if (message.event === "activity") this.activity = message.runs;
 		else if (message.event === "limits") this.notices = message.notices;
@@ -684,30 +757,47 @@ try {
 	const networkSteer = await client.ask(provider, "network steering");
 	await client.until("network sleep began", () => client.networkSleeps.has(networkSteer));
 	await client.call("submit", { id: networkSteer, text: "Steer after the outage", mode: "steer" });
-	const recovered = (c: { items: Item[] }) => c.items.filter((i) => i.kind === "marker" && i.text.startsWith("The network is back."));
+	// A connection the stand-in ends is one the provider closed, and the conversation says so (#550); the network being
+	// away has a line of its own, which a socket reset no longer uses.
+	const carriedOn = (c: { items: Item[] }) => c.items.filter((i) => i.kind === "marker" && /^The (?:network is back|provider answered again)\. Carried on after waiting \d+ s\.$/.test(i.text));
+	const answeredAgain = (c: { items: Item[] }) => carriedOn(c).filter((i) => i.text.startsWith("The provider answered again."));
 	for (const [prompt, n] of [["network once", 1], ["network repeatedly", 8], ["network then limit", 2]] as const) {
 		const id = await client.ask(provider, prompt, prompt === "network once");
 		conv = await client.ended(id);
 		assert.equal(conv.state.failure, null);
 		assert.equal(answer(conv), `Answered after ${n} refusals.`);
-		assert.equal(recovered(conv).length, 1);
-		assert.match(recovered(conv)[0]!.text, /Carried on after waiting \d+ s\./);
+		assert.equal(carriedOn(conv).length, 1);
+		assert.equal(answeredAgain(conv).length, 1);
+		assert.ok(client.closedSleeps.has(id));
 		assert.equal(conv.items.filter((i) => i.stop === "error").length, prompt === "network then limit" ? 1 : 0);
 		assert.ok(client.networkSleeps.has(id));
-		assert.doesNotMatch(wire[prompt]!, /getaddrinfo|No network just now|Carried on after waiting/);
+		assert.doesNotMatch(wire[prompt]!, /getaddrinfo|No network just now|The provider answered again|Carried on after waiting/);
 	}
 	assert.deepEqual(seen["Steer after the outage"], ["network steering", "Steer after the outage"]);
-	assert.equal(recovered(await client.ended(networkSteer)).length, 1);
-	step("a pre-answer disconnect, a scaled multi-minute outage, steering, and a 429 after a disconnect all carry on");
+	assert.equal(carriedOn(await client.ended(networkSteer)).length, 1);
+	step("a connection closed before its answer, a scaled multi-minute one, steering, and a 429 after one all carry on");
 
-	for (const prompt of ["network words in HTTP", "stream cut off"]) {
+	// A connection the provider ends part way through an answer is waited out and asked again whole (#550).
+	for (const prompt of ["stream cut off", "stream closed before answer"]) {
 		const id = await client.ask(provider, prompt);
 		conv = await client.ended(id);
-		assert.ok(!client.networkSleeps.has(id));
-		assert.ok(conv.items.some((i) => i.stop === "error"));
-		assert.equal(recovered(conv).length, 0);
+		assert.equal(conv.state.failure, null, "the run carried on");
+		assert.equal(answer(conv), "Answered after 1 refusals.");
+		assert.equal(requests[prompt], 2, "the whole request was asked again");
+		assert.ok(client.closedSleeps.has(id));
+		assert.equal(conv.items.filter((i) => i.kind === "assistant" && i.stop === "error").length, 0, "the failed attempt is not kept");
+		assert.ok(!conv.items.some((i) => i.text.includes("Answered after 0 refusals.")), "the part of the answer is not kept twice");
+		assert.match(answeredAgain(conv)[0]!.text, /^The provider answered again\. Carried on after waiting \d+ s\.$/);
 	}
-	step("an HTTP refusal with connection-error words and a cut-off answer do not get network waits");
+	step("a stream the provider closes before or during its answer is waited out and asked again whole, and the conversation says so");
+
+	const id = await client.ask(provider, "network words in HTTP");
+	conv = await client.ended(id);
+	assert.ok(!client.networkSleeps.has(id));
+	assert.ok(!client.closedSleeps.has(id));
+	assert.ok(conv.items.some((i) => i.stop === "error"));
+	assert.equal(carriedOn(conv).length, 0);
+	step("an HTTP refusal naming connection errors is not waited for, whatever its words");
 
 	const parentTogether = await client.ask(provider, "network parent");
 	const child = await client.until("the child running", () => client.activity.find((r) => r.parent === parentTogether)?.conversationId);
@@ -717,9 +807,9 @@ try {
 	for (const id of [parentTogether, child]) {
 		conv = await client.ended(id);
 		assert.equal(conv.state.failure, null);
-		assert.equal(recovered(conv).length, 1);
+		assert.equal(carriedOn(conv).length, 1);
 	}
-	assert.doesNotMatch(wire["network parent"]!, /No network just now|Carried on after waiting/);
+	assert.doesNotMatch(wire["network parent"]!, /No network just now|The provider answered again|Carried on after waiting/);
 	step("parent and sub-chat can both wait and recover from the same outage");
 
 	await stop(engine);
@@ -755,7 +845,7 @@ try {
 		return c?.state.busy === false && c.state.retry === null ? c : undefined;
 	});
 	assert.equal(requests["network stop"], 1);
-	assert.equal(recovered(conv).length, 0);
+	assert.equal(carriedOn(conv).length, 0);
 	step("a network sleep survives an engine restart and Stop ends it without another request");
 	console.log("PASS");
 } finally {

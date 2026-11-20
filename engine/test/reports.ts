@@ -21,7 +21,10 @@ import { defaultProjectSettings, PREVIEW_OFF, type Project, type ProjectsDoc, pr
 import { type Report, type ReportsDoc, type ReportWake, reports, settle } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
 import type { Watch, WakesDoc } from "../src/wakes.ts";
-import { EngineClient, exited, running, stop } from "./patience.ts";
+import { EngineClient, exited, running, standInApp, stop } from "./patience.ts";
+// The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
+// for the app's, as the tests that answer for the person already do (#504).
+process.env.PI2_APP_BUNDLE = standInApp();
 
 const home = mkdtempSync(join(tmpdir(), "pi2-rep-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-rep-work-")));
