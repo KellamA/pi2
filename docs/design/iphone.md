@@ -50,7 +50,7 @@ Work is a list in the states the Mac uses (open, in progress, waiting, blocked, 
 
 ### The Devices page on the Mac
 
-A new tab in Settings, **Devices**: the switch for **Reach from an iPhone**, **Reach through pi²'s relay** with the relay's address and whether it can be reached, and **Find on this network** (the direct path at home); each paired device with its name, model, when it was paired and last seen, and how (at home, through the relay, direct, from the mailbox); **Revoke** beside each; **What this device did**, a log of every answer and change it made, with the time, the route and whether Face ID was given; and **Pair an iPhone**.
+A new tab in Settings, **Devices**: the switch for **Reach from an iPhone**, **Reach through pi²'s relay** with the relay's address and whether it can be reached, and **Find on this network** (the direct path at home); each paired device with its name, model, when it was paired and last seen, and how (at home, through the relay, direct, from the mailbox); **Revoke** beside each; **What this device did**, a log of every answer and change it made, with the time, the path and whether Face ID was given; and **Pair an iPhone**.
 
 ### The phone when the Mac is asleep or out of reach
 

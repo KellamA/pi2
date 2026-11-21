@@ -496,7 +496,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
     <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="mtabs"><span>General</span><span>Chat</span><span>Providers</span><span>Tools</span><span>Storage</span><span class="on">Devices</span></div></div>
     <div class="mpane">
       <div class="mbox">
-        <div class="r"><div class="grow"><div class="b">Reach from an iPhone</div><div class="t3 sm">Listening on this Mac's network. 1 device paired.</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Reach from an iPhone</div><div class="t3 sm">1 device paired. Reachable while pi² runs on this Mac.</div></div><div class="sw on"></div></div>
         <div class="r"><div class="grow"><div class="b">Reach through pi²'s relay</div><div class="t3 sm">From any network, and notifications. Encrypted end to end; the relay cannot read what it passes. Connected · relay.pi2.example</div></div><div class="sw on"></div></div>
         <div class="r"><div class="grow"><div class="b">Find on this network</div><div class="t3 sm">Talks directly at home, which is faster. macOS asked once for Local Network.</div></div><div class="sw on"></div></div>
       </div>
@@ -506,7 +506,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
       </div>
       <div class="b" style="margin-top:4px">What Alex's iPhone did</div>
       <div class="mbox"><table>
-        <tr><th>When</th><th>What</th><th>Route</th><th>Face ID</th><th></th></tr>
+        <tr><th>When</th><th>What</th><th>Path</th><th>Face ID</th><th></th></tr>
         <tr><td>9:41</td><td>Allowed once: Forge, npm --prefix engine test (pi2)</td><td>home</td><td></td><td class="t3">done</td></tr>
         <tr><td>9:38</td><td>Merged #617 “Sidebar badges” (pi2)</td><td>home</td><td>✓</td><td class="t3">done</td></tr>
         <tr><td>Yesterday 22:05</td><td>Answered Scribe: “No, only live ones” (pi2)</td><td>mailbox</td><td></td><td class="t3">done</td></tr>
@@ -517,7 +517,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
   </div>
   <div class="notes">
     <div><b>Revoke</b>Takes effect at once: the device's keys are forgotten, its connection is closed, and the relay forgets it, its mailbox and its push token. The phone, when it next reaches the Mac, is told and wipes what it kept.</div>
-    <div><b>The log</b>Every answer, message, start, stop and change a device made, kept 90 days, with the route and whether Face ID was given. Reads are not logged.</div>
+    <div><b>The log</b>Every answer, message, start, stop and change a device made, kept 90 days, with the path and whether Face ID was given. Reads are not logged.</div>
     <div><b>Off</b>Turning “Reach from an iPhone” off closes the Mac's connection to the relay and its listener at home; paired devices stay paired and can do nothing until it is on again.</div>
   </div>
 </section>
