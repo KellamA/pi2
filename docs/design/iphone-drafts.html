@@ -135,7 +135,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
     <button data-s="agent">An agent's conversation</button>
     <button data-s="work">Work and a pull request</button>
     <button data-s="devices">Devices on the Mac</button>
-    <button data-s="asleep">Mac asleep or away</button>
+    <button data-s="asleep">Mac asleep, relay down</button>
     <button data-s="adds">What a phone adds</button>
     <button class="theme" id="theme">Light</button>
   </nav>
@@ -143,13 +143,13 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 
 <!-- ============================== Pairing ============================== -->
 <section class="screen" id="pair">
-  <p class="cap"><b>Pairing, once, with both devices in hand.</b> The Mac shows a code good for five minutes; the phone scans it and reaches the Mac on the home network; both show the same six digits; the person clicks Pair on the Mac. Only the Mac can pair a device.</p>
+  <p class="cap"><b>Pairing, once, with both devices in hand.</b> The Mac shows a code good for five minutes; the phone scans it and reaches the Mac through pi²'s relay, or directly if both are on the same network; both show the same six digits; the person clicks Pair on the Mac. Only the Mac can pair a device.</p>
   <div class="phones">
     <div class="fig" style="width:420px"><div class="lbl">1 · On the Mac: Settings › Devices › Pair an iPhone</div>
       <div class="mac" style="height:420px">
         <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="b">Pair an iPhone</div></div>
         <div class="mpane" style="align-items:center;text-align:center">
-          <div class="t2">Open pi² on your iPhone and scan this code.<br>The iPhone must be on the same network as this Mac.</div>
+          <div class="t2">Open pi² on your iPhone and scan this code.<br>The iPhone can be on any network.</div>
           <div class="qr"></div>
           <div class="t3 sm">Good for 4:52 more · <span style="color:var(--acc)">Make a new code</span></div>
           <div class="t3 xs">Once paired, the iPhone can answer for you and change what agents may do. You can revoke it here at any time.</div>
@@ -171,7 +171,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
       <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
         <div class="nav"><h3>Scan the code</h3></div>
         <div class="cam"><div class="qr"></div><div class="frame"></div></div>
-        <div class="t2 sm" style="text-align:center;padding:10px 20px">Found “Studio Mac”. Connecting on this network…</div>
+        <div class="t2 sm" style="text-align:center;padding:10px 20px">Connecting to “Studio Mac” through pi²'s relay…</div>
         <div class="home"></div></div>
     </div>
     <div class="fig"><div class="lbl">4 · The same digits on both; Pair is clicked on the Mac</div>
@@ -187,8 +187,8 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
     </div>
   </div>
   <div class="notes">
-    <div><b>What the code holds</b>The Mac's name, how to reach it on this network, the fingerprint of its key, and a one-time secret. No account, no password.</div>
-    <div><b>Why digits as well</b>The code could be photographed from across a room. The digits are worked out from the encrypted connection itself, so a second phone cannot pair in the person's place unnoticed.</div>
+    <div><b>What the code holds</b>The Mac's name, its public key, the relay's address, and a one-time secret. No account, no password. The relay is told only that a phone may join for the next five minutes.</div>
+    <div><b>Why digits as well</b>The code could be photographed from across a room. The digits are worked out from the encrypted connection itself, so a second phone cannot pair in the person's place unnoticed; and the relay lets only a genuine pi² for iPhone join.</div>
     <div><b>After pairing</b>The phone asks for notifications, then Face ID, each with a line on what it is for. Either can be refused; Face ID's answers then stay on the Mac.</div>
   </div>
 </section>
@@ -200,7 +200,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
     <div class="fig"><div class="lbl">The top of the list</div>
       <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
         <div class="nav"><div class="top"><span class="sp"></span><span>Search</span></div><h2>pi²</h2>
-          <div class="conn"><span class="dot ok"></span>Studio Mac · at home<span class="sp"></span><span class="t3">now</span></div></div>
+          <div class="conn"><span class="dot ok"></span>Studio Mac · through pi²'s relay<span class="sp"></span><span class="t3">now</span></div></div>
         <div class="body">
           <div class="sec">Needs you · 2</div>
           <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · pi2 · approval</div><div class="q mono" style="font-size:11px">npm --prefix engine test</div>
@@ -245,7 +245,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
   <div class="notes">
     <div><b>One list, not tabs</b>A project opens a hub with its own tab bar; a second tab bar at the top level would nest one in the other. The list keeps what needs the person one tap away from everywhere (it is also on every project's Now).</div>
     <div><b>Badges as on the Mac</b>A count when something needs the person, a spinner while the project's agents work, "idle" otherwise. The line under the name is the orchestrator's last words.</div>
-    <div><b>The connection bar</b>At home, away · direct, away · through iCloud, or Mac asleep since a time. Tapping it says what can be done from here.</div>
+    <div><b>The connection bar</b>Through pi²'s relay (the usual case, on any network), at home, direct, Mac asleep since a time, or relay unreachable · at home only. Tapping it says what can be done from here.</div>
   </div>
 </section>
 
@@ -497,7 +497,8 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
     <div class="mpane">
       <div class="mbox">
         <div class="r"><div class="grow"><div class="b">Reach from an iPhone</div><div class="t3 sm">Listening on this Mac's network. 1 device paired.</div></div><div class="sw on"></div></div>
-        <div class="r"><div class="grow"><div class="b">Notifications and answers through iCloud</div><div class="t3 sm">Encrypted for each device; iCloud cannot read them. Signed in as the same Apple Account on both.</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Reach through pi²'s relay</div><div class="t3 sm">From any network, and notifications. Encrypted end to end; the relay cannot read what it passes. Connected · relay.pi2.example</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Find on this network</div><div class="t3 sm">Talks directly at home, which is faster. macOS asked once for Local Network.</div></div><div class="sw on"></div></div>
       </div>
       <div class="mbox">
         <div class="r"><div class="av a4" style="border-radius:8px">📱</div><div class="grow"><div class="b">Alex's iPhone <span class="t3 sm" style="font-weight:400">iPhone 17 Pro · iOS 27.1</span></div><div class="t3 sm">Paired 26 Nov · last seen 2 min ago, at home · Face ID set up</div></div><span class="t2 sm" style="color:var(--acc)">What it did</span><span class="tag bad" style="padding:4px 9px">Revoke</span></div>
@@ -508,22 +509,22 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
         <tr><th>When</th><th>What</th><th>Route</th><th>Face ID</th><th></th></tr>
         <tr><td>9:41</td><td>Allowed once: Forge, npm --prefix engine test (pi2)</td><td>home</td><td></td><td class="t3">done</td></tr>
         <tr><td>9:38</td><td>Merged #617 “Sidebar badges” (pi2)</td><td>home</td><td>✓</td><td class="t3">done</td></tr>
-        <tr><td>Yesterday 22:05</td><td>Answered Scribe: “No, only live ones” (pi2)</td><td>iCloud</td><td></td><td class="t3">done</td></tr>
-        <tr><td>Yesterday 19:12</td><td>Sent to website's orchestrator: “Publish once the links check”</td><td>direct</td><td></td><td class="t3">done</td></tr>
-        <tr><td>Yesterday 19:10</td><td>Allow everything for Forge</td><td>direct</td><td></td><td class="t3" style="color:var(--bad)">refused: no Face ID</td></tr>
+        <tr><td>Yesterday 22:05</td><td>Answered Scribe: “No, only live ones” (pi2)</td><td>mailbox</td><td></td><td class="t3">done</td></tr>
+        <tr><td>Yesterday 19:12</td><td>Sent to website's orchestrator: “Publish once the links check”</td><td>relay</td><td></td><td class="t3">done</td></tr>
+        <tr><td>Yesterday 19:10</td><td>Allow everything for Forge</td><td>relay</td><td></td><td class="t3" style="color:var(--bad)">refused: no Face ID</td></tr>
       </table></div>
     </div>
   </div>
   <div class="notes">
-    <div><b>Revoke</b>Takes effect at once: the device's keys are forgotten, its connection is closed, and nothing more is written for it in iCloud. The phone, when it next reaches the Mac, is told and wipes what it kept.</div>
+    <div><b>Revoke</b>Takes effect at once: the device's keys are forgotten, its connection is closed, and the relay forgets it, its mailbox and its push token. The phone, when it next reaches the Mac, is told and wipes what it kept.</div>
     <div><b>The log</b>Every answer, message, start, stop and change a device made, kept 90 days, with the route and whether Face ID was given. Reads are not logged.</div>
-    <div><b>Off</b>Turning “Reach from an iPhone” off closes the listener and stops writing to iCloud; paired devices stay paired and can do nothing until it is on again.</div>
+    <div><b>Off</b>Turning “Reach from an iPhone” off closes the Mac's connection to the relay and its listener at home; paired devices stay paired and can do nothing until it is on again.</div>
   </div>
 </section>
 
 <!-- ============================== Asleep ============================== -->
 <section class="screen" id="asleep">
-  <p class="cap"><b>When the Mac is asleep or out of reach</b>: the last copy, dimmed and dated; answers and messages wait in an Outbox and say whether they went.</p>
+  <p class="cap"><b>When the Mac is asleep, or pi²'s relay is down</b>: the last copy, dimmed and dated; answers and messages wait in an Outbox, then in the relay's mailbox, and say whether they went. With the relay down, everything still works at home.</p>
   <div class="phones">
     <div class="fig"><div class="lbl">Mac asleep</div>
       <div class="ph"><div class="island"></div><div class="status"><span>7:02</span><span>●●●</span></div>
@@ -545,11 +546,26 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
         <div class="nav"><div class="top">‹ pi²</div><h2>Outbox</h2></div>
         <div class="body">
           <div class="list">
-            <div class="r"><div class="grow"><div class="sm">To pi2's orchestrator: “Start #621 first thing.”</div><div class="t3 xs">Written 6:58 · waiting in iCloud for Studio Mac</div></div><span class="tag warn">waiting</span></div>
+            <div class="r"><div class="grow"><div class="sm">To pi2's orchestrator: “Start #621 first thing.”</div><div class="t3 xs">Written 6:58 · waiting in the relay's mailbox for Studio Mac</div></div><span class="tag warn">waiting</span></div>
             <div class="r"><div class="grow"><div class="sm">Answered Scribe: “No, only live ones”</div><div class="t3 xs">Yesterday 22:05 · taken by Studio Mac at 22:06</div></div><span class="tag ok">sent</span></div>
             <div class="r"><div class="grow"><div class="sm">Allowed Forge: npm test</div><div class="t3 xs">Tue 18:40 · not sent: more than a day passed before the Mac saw it</div></div><span class="tag bad">not sent</span></div>
           </div>
-          <div class="t3 xs" style="padding:0 4px">Answers and short messages go through iCloud when the Mac cannot be reached directly. Everything else waits for a direct connection.</div>
+          <div class="t3 xs" style="padding:0 4px">While the Mac sleeps, answers and short messages wait for it in the relay's mailbox, sealed, for a day. Everything else waits until the Mac is awake.</div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">The relay down, at home</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:12</span><span>●●●</span></div>
+        <div class="nav"><h2>pi²</h2><div class="conn" style="border-color:#f0b24a66"><span class="dot warn"></span>Studio Mac · at home · relay unreachable<span class="sp"></span><span style="color:var(--acc)">Why</span></div></div>
+        <div class="body">
+          <div class="t2 sm" style="padding:2px 4px">Everything works here, on this network. Away from home, and for notifications while the app is closed, pi² needs its relay; it will be used again as soon as it answers.</div>
+          <div class="sec">Needs you · 1</div>
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · pi2 · approval</div><div class="mono" style="font-size:11px">npm --prefix engine test</div><div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="sec">Projects</div>
+          <div class="list">
+            <div class="r"><span class="av a1">π</span><div class="grow"><div class="b">pi2</div><div class="t3 sm ell">Forge is running the engine's tests.</div></div><div class="spin"></div></div>
+            <div class="r"><span class="av a3">W</span><div class="grow"><div class="b">website</div><div class="t3 sm ell">Links checked; none broken.</div></div></div>
+          </div>
         </div>
         <div class="home"></div></div>
     </div>
@@ -558,7 +574,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 
 <!-- ============================== Adds ============================== -->
 <section class="screen" id="adds">
-  <p class="cap"><b>What a phone adds</b>: a Live Activity and the Dynamic Island for a project the person follows, widgets, and the share sheet. Under the recommended answer a Live Activity is updated only while the app runs or has been woken, and says how old it is.</p>
+  <p class="cap"><b>What a phone adds</b>: a Live Activity and the Dynamic Island for a project the person follows, widgets, and the share sheet. A Live Activity is updated through the relay with numbers only (the relay can read those, so the person turns each one on), and says how old it is.</p>
   <div class="phones">
     <div class="fig"><div class="lbl">Live Activity and the Dynamic Island</div>
       <div class="ph lockbg"><div class="dyn"><span>π² pi2</span><span>3 ◐ · 1 !</span></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
@@ -589,7 +605,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
           <div class="list"><div class="r"><span class="t3 sm">To</span><span class="grow">pi2 · orchestrator</span><span class="t3">›</span></div></div>
           <div style="border:1px solid var(--line2);border-radius:10px;padding:8px 10px;min-height:56px;font-size:12.5px">Read this and say whether it changes how we deliver notifications.</div>
           <div class="list"><div class="r"><span class="tag">link</span><span class="grow ell sm">developer.apple.com/documentation/…</span></div></div>
-          <div class="t3 xs">Away from home this goes through iCloud; the answer comes later.</div></div></div>
+          <div class="t3 xs">Sent through pi²'s relay; if the Mac is asleep it waits in the mailbox.</div></div></div>
     </div>
   </div>
   <div class="notes">

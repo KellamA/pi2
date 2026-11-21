@@ -1,19 +1,19 @@
 # pi² for iPhone: the contract
 
-This is the contract for epic [#620](https://github.com/KellamA/pi2/issues/620), pi² for iPhone: how a phone is paired with a Mac, how the engine knows a paired phone speaks for the person, how the two reach each other at home and away, what a notification carries, what moves into a package both apps build on, and how all of it is tested with no phone in hand. Every later issue of the epic is built against it, several at once, by agents who read this page and not the conversation in which it was made. Where this page and an issue's text differ, this page has the last word on names and shapes; [section 12](#12-the-later-issues) says who owns each piece that several issues share.
+This is the contract for epic [#620](https://github.com/KellamA/pi2/issues/620), pi² for iPhone: how a phone is paired with a Mac, how the engine knows a paired phone speaks for the person, how the two reach each other on any two networks, what a notification carries, what moves into a package both apps build on, and how all of it is tested with no phone in hand. Every later issue of the epic is built against it, several at once, by agents who read this page and not the conversation in which it was made. Where this page and an issue's text differ, this page has the last word on names and shapes; [section 12](#12-the-later-issues) says who owns each piece that several issues share.
 
-The design it builds is [design/iphone.md](design/iphone.md), with its drawings in [design/iphone-drafts.html](design/iphone-drafts.html). This page does not repeat why the phone exists; it says exactly what. Where the design left something open, this page decides it, and [section 13](#13-decisions-this-contract-made) lists each decision. What only the owner can decide is in [section 2](#2-the-three-decisions-and-where-each-lives) (the three decisions already asked) and [section 14](#14-questions-for-the-owner) (the rest). Nothing in the epic starts until the owner has agreed this page and a second agent has read it for security.
+The design it builds is [design/iphone.md](design/iphone.md), with its drawings in [design/iphone-drafts.html](design/iphone-drafts.html). This page does not repeat why the phone exists; it says exactly what. Where the design left something open, this page decides it, and [section 13](#13-decisions-this-contract-made) lists each decision. What only the owner can decide is in [section 2](#2-the-decisions-and-where-each-lives) (the three decisions asked, one answered) and [section 14](#14-questions-for-the-owner) (the rest). Nothing in the epic starts until the owner has agreed this page and a second agent has read it for security.
 
-**How to read it.** Read [section 1](#1-words), [section 2](#2-the-three-decisions-and-where-each-lives) and [section 4](#4-who-is-speaking) whatever your issue, then [12.1](#121-who-owns-what-several-issues-share) and the sections your issue's row in [12.2](#122-each-issue) names. Types are written as TypeScript, as `engine/src/state.ts` writes them; times are milliseconds since 1970. Apple's limits are cited in the notes at the end, from Apple's own documentation; a number this page gives without a note is this page's own choice.
+**How to read it.** Read [section 1](#1-words), [section 2](#2-the-decisions-and-where-each-lives), [section 4](#4-who-is-speaking) and [5.1](#51-the-shape-one-channel-two-paths) whatever your issue, then [12.1](#121-who-owns-what-several-issues-share) and the sections your issue's row in [12.2](#122-each-issue) names. Types are written as TypeScript, as `engine/src/state.ts` writes them; times are milliseconds since 1970. Apple's and Cloudflare's limits and prices are cited in the notes at the end, from their own documentation; a number this page gives without a note is this page's own choice.
 
 ## Contents
 
 1. [Words](#1-words)
-2. [The three decisions, and where each lives](#2-the-three-decisions-and-where-each-lives)
+2. [The decisions, and where each lives](#2-the-decisions-and-where-each-lives)
 3. [Pairing](#3-pairing)
 4. [Who is speaking](#4-who-is-speaking)
-5. [Transport at home](#5-transport-at-home)
-6. [Away from home](#6-away-from-home)
+5. [Transport](#5-transport)
+6. [Across any two networks: the ways compared](#6-across-any-two-networks-the-ways-compared)
 7. [Notifications](#7-notifications)
 8. [The shared package](#8-the-shared-package)
 9. [Who it is for, and how it is given out](#9-who-it-is-for-and-how-it-is-given-out)
@@ -26,142 +26,152 @@ The design it builds is [design/iphone.md](design/iphone.md), with its drawings 
 ## 1. Words
 
 - **The phone**: pi² for iPhone, the app. What is said of it holds for any paired device; an iPad later is one more device.
-- **The Mac**: the Mac whose engine the phone is paired with. One phone may later be paired with several Macs; this contract builds one, and keeps a Mac's id in everything so that more can be added.
+- **The Mac**: the Mac whose engine the phone is paired with. One phone may later be paired with several Macs; this contract builds one, and keeps a pairing's id in everything so that more can be added.
 - **The app**: the Mac app, as everywhere in `docs/`.
-- **pi² Remote**: a helper program inside the app's bundle that holds the Mac's listener and talks to iCloud ([5.1](#51-which-program-listens)). The engine starts it and is its judge.
-- **Device**: a paired phone, as the engine records it ([3.2](#32-the-keys)).
-- **Device connection**: a connection to the engine's socket that pi² Remote opened for one device's session, after the device proved itself ([3.4](#34-what-each-side-proves-at-every-connection)).
+- **pi² Remote**: a helper program inside the app's bundle that holds the Mac's ends of both paths and its keys ([5.5](#55-which-program-holds-them)). The engine starts it and is its judge.
+- **The relay**: a small service pi² runs, on Cloudflare ([5.3](#53-the-relay)), that passes sealed bytes between a Mac and its paired phones, keeps a small mailbox of sealed items for an end that is away, and sends pushes. It can read none of what it passes.
+- **Pairing**: at the relay, a Mac and its paired devices, under a random id. In the engine, the record of [3.2](#32-the-keys).
+- **Device**: a paired phone, as the engine records it.
+- **Channel**: a Noise session between the phone and pi² Remote ([5.2](#52-the-secure-channel-noise)), over either path.
+- **Path**: what carries a channel: `relay` (the main path, on any two networks), `home` (TCP on the same network, found by Bonjour) or `direct` (TCP to another address of the Mac's, such as a private network's).
+- **Device connection**: a connection to the engine's socket that pi² Remote opened for one device's channel, after the device proved itself ([3.4](#34-what-each-side-proves-at-every-connection)).
 - **Presence signature**: a signature over one request, made by a key the phone can use only after Face ID ([4.3](#43-face-id-the-presence-signature)).
-- **Route**: how a request reached the engine: `home` (the same network, found by Bonjour), `direct` (another address of the Mac's, such as a private network's), or `icloud` (a record in the person's iCloud).
-- **Record**: a CloudKit record in the person's own private database, sealed for one reader ([6.2](#62-icloud-the-recommended-answer)).
+- **Sealed item**: a message encrypted for one reader with HPKE and signed by its writer, which can wait in the relay's mailbox ([5.3](#53-the-relay)).
 - **Outbox**: what the phone has written and not yet seen taken by the Mac.
 
-## 2. The three decisions, and where each lives
+## 2. The decisions, and where each lives
 
-The owner has three decisions open. This page is written for the recommended answer of each, and keeps each in one section, so that a different answer changes that section and the rows of [12.2](#122-each-issue) it names, not the rest.
-
-| Decision | Written for | Lives in | A different answer changes |
+| Decision | Status | Written for | Lives in |
 |---|---|---|---|
-| 1. How the phone reaches the Mac away from home | Direct wherever the two can reach each other; otherwise the person's own iCloud private database carries notifications, answers and short messages | [Section 6](#6-away-from-home) | 6.2 is replaced by 6.3 or 6.4; P15 to P17 and P19 change as those sections say |
-| 2. What the phone may do | The table of [4.2](#42-what-a-device-may-send): what the person does at the Mac, but what needs the Mac's hands or a secret; the riskiest with Face ID; the same at home and away | [4.2](#42-what-a-device-may-send) | The table's last column, and nothing else: the engine reads it as data |
-| 3. Who it is for at first | The owner alone, through TestFlight's internal testing, until the security reading of step 6 | [Section 9](#9-who-it-is-for-and-how-it-is-given-out) | Section 9, and P10 |
+| 1. How the phone reaches the Mac away from home | **Answered by the owner**: "it needs to work on separate networks or it defeats the purpose." Everything, the live conversation included, works with the phone on any network and the Mac on another, with nothing for the person to set up beyond pairing. | The way recommended in [section 6](#6-across-any-two-networks-the-ways-compared): **a relay pi² runs on Cloudflare** (Workers with Durable Objects), end-to-end encrypted, which also sends the pushes; the direct connection at home is an optimisation of the same channel. The owner agrees the way with question 1 of [section 14](#14-questions-for-the-owner). | [Section 5](#5-transport) and [section 6](#6-across-any-two-networks-the-ways-compared) |
+| 2. What the phone may do | Open | The table of [4.2](#42-what-a-device-may-send): what the person does at the Mac, but what needs the Mac's hands or a secret; the riskiest with Face ID; the same on every path | [4.2](#42-what-a-device-may-send); the engine reads it as data |
+| 3. Who it is for at first | Open | The owner alone, through TestFlight's internal testing, until the security reading of step 6 | [Section 9](#9-who-it-is-for-and-how-it-is-given-out) |
+
+The first draft of this page was written for "direct at home, the person's iCloud for a push and an answer away". The owner's answer rules that out as the main path, since a live conversation cannot travel through iCloud ([6.1](#61-the-three-ways)). iCloud is no longer used anywhere in the epic.
 
 ## 3. Pairing
 
 ### 3.1 What the Mac shows and the phone scans
 
-**Settings › Devices › Pair an iPhone** asks the engine for a pairing (`devices.pairStart`, the app's alone) and draws its payload as a QR code. The payload is a URL:
+**Settings › Devices › Pair an iPhone** asks the engine for a pairing (`devices.pairStart`, the app's alone). The engine has pi² Remote register the pairing with the relay if it has none ([5.3](#53-the-relay)) and open a **join window** there for five minutes, and the app draws the payload as a QR code. The payload is a URL:
 
 ```
-pi2://pair?v=1&m=<macId>&n=<Mac's name>&k=<pin>&r=<Mac's record key>&s=<secret>&a=<address:port,…>&e=<expiry>
+pi2://pair?v=2&p=<pairing>&n=<Mac's name>&c=<Mac's channel key>&r=<Mac's record key>&s=<secret>&u=<relay>&a=<address:port,…>&e=<expiry>
 ```
 
-- `macId`: 16 random bytes, base64url, made once when remote access is first turned on, kept in `pi2.devices`.
-- `pin`: the SHA-256 of the Mac's TLS key's SubjectPublicKeyInfo, base64url. The phone accepts a TLS connection only from a server whose key has this hash ([5.3](#53-tls-and-mutual-authentication)).
-- `r`: the Mac's record key, a P-256 public key (SPKI DER, base64url), which records for the Mac are sealed to ([6.2](#62-icloud-the-recommended-answer)).
-- `secret`: 16 random bytes, base64url, made for this pairing alone and never stored outside the engine's memory.
-- `a`: the addresses pi² Remote listens on now, so a phone whose Bonjour is slow can still connect.
-- `expiry`: seconds since 1970. A pairing is open for five minutes, for one phone, and closes after it pairs, after three wrong proofs, when the sheet closes, or when it expires.
+- `p`: the pairing's id at the relay, 16 random bytes the relay chose, base64url.
+- `c`: the Mac's channel key, a Curve25519 public key, base64url. The phone accepts a channel only with the holder of this key ([5.2](#52-the-secure-channel-noise)).
+- `r`: the Mac's record key, a P-256 public key (SPKI DER, base64url), to which sealed items for the Mac are sealed.
+- `s`: 32 random bytes, made for this pairing alone and kept only in the engine's memory and pi² Remote's until the window closes. It is the pre-shared key of the pairing handshake, and the relay is given only a hash of a value made from it ([3.3](#33-the-pairing-exchange)).
+- `u`: the relay's address, such as `wss://relay.example.dev/v1`.
+- `a`: the Mac's addresses on its network now, for the `home` path.
+- `e`: seconds since 1970. The window is open for five minutes, for one phone; it closes after a phone pairs, after three wrong tries, when the sheet closes, or when it expires.
 
-The QR code is shown only in the app's sheet, never written to disk or a log. The payload holds no account, password or long-lived secret: `secret` is good once, for five minutes, and only together with a phone on the Mac's network.
+The QR code is shown only in the app's sheet, never written to disk or a log. It holds no account, password or long-lived secret: `s` is good once, for five minutes, and only with a genuine pi² for iPhone and a click on the Mac.
 
 ### 3.2 The keys
 
-**On the phone**, made at pairing, in the Secure Enclave unless said otherwise. The Secure Enclave holds only P-256 keys and cannot import one,[^se] which is why every key here is P-256.
+**On the phone**, made at pairing. The Secure Enclave holds only P-256 keys and cannot import one;[^se] Noise's standard key agreement is Curve25519,[^noise] which the Secure Enclave cannot hold. So the key that proves the device is in the Secure Enclave, and the channel key, which is Curve25519, is bound to it by a signature at every connection ([3.4](#34-what-each-side-proves-at-every-connection)).
 
 | Key | What it does | Where and how it is kept |
 |---|---|---|
-| **Device key** (signing) | Proves at every connection that this is the paired phone ([3.4](#34-what-each-side-proves-at-every-connection)); signs every request sent through iCloud | Secure Enclave, `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` with `privateKeyUsage`: usable only while the phone is unlocked, never backed up or moved to another phone, and deleted if the passcode is turned off.[^passcode] |
-| **Presence key** (signing) | Signs one request after Face ID ([4.3](#43-face-id-the-presence-signature)) | Secure Enclave, as the device key, plus `biometryCurrentSet`: each use asks for Face ID, and the key is invalidated if Face ID is enrolled again.[^biocurrent] None if the person refused Face ID; the requests that need it are then the Mac's alone. |
-| **Record key** (key agreement) | Opens records sealed to this phone, in the app and in its notification service extension | P-256 key agreement, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, in a Keychain access group the extension shares, so a notification that arrives while the phone is locked can be opened. In the Secure Enclave if CryptoKit's HPKE takes a Secure Enclave key on the iOS version P8 targets; otherwise a Keychain key. P8 says which. |
-| **What the phone keeps of the Mac** | `macId`, the name, `pin`, the Mac's record key, its last addresses | Keychain, `AfterFirstUnlockThisDeviceOnly`, the same access group |
+| **Device key** (P-256, signing) | Proves the device to the relay and, over the channel's handshake hash, to the Mac; signs every sealed item the phone writes | Secure Enclave, `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` with `privateKeyUsage`: usable only while the phone is unlocked, never backed up or moved, deleted if the passcode is turned off.[^passcode] |
+| **Presence key** (P-256, signing) | Signs one request after Face ID ([4.3](#43-face-id-the-presence-signature)) | Secure Enclave, as the device key, plus `biometryCurrentSet`: each use asks for Face ID, and the key is invalidated if Face ID is enrolled again.[^biocurrent] None if the person refused Face ID; the requests that need it are then the Mac's alone. |
+| **Channel key** (Curve25519) | The phone's static key in Noise ([5.2](#52-the-secure-channel-noise)) | Keychain, `WhenPasscodeSetThisDeviceOnly`: as the device key, but not in the Secure Enclave |
+| **Record key** (P-256, key agreement) | Opens what is sealed to the phone: a push's content and the mailbox's items, in the app and in its notification service extension | Keychain, `AfterFirstUnlockThisDeviceOnly`, in an access group the extension shares, so a notification that arrives while the phone is locked can be opened; in the Secure Enclave if CryptoKit's HPKE takes a Secure Enclave key on the iOS version P14 targets, which P6 finds out |
+| **App Attest key** | Proves to the relay, once, that the phone runs a genuine pi² for iPhone signed by pi²'s team[^attest] | Made and held by `DCAppAttestService`, in the Secure Enclave |
+| **What the phone keeps of the Mac** | The pairing's id, the Mac's name, channel key, record key, the relay's address, the Mac's last addresses | Keychain, `AfterFirstUnlockThisDeviceOnly`, the same access group |
 
 A new presence key (Face ID enrolled again, or Face ID turned on later) is sent to the Mac and used only once the person accepts it on the Mac's Devices page (`devices.acceptPresenceKey`, the app's alone): otherwise whoever knows the passcode could enrol a face and gain Face ID's answers.
 
-**On the Mac**, made by pi² Remote when remote access is first turned on:
+**On the Mac**, made by pi² Remote when remote access is first turned on, kept in the data-protection Keychain in an access group only pi²'s signed code has, so `/usr/bin/security` and an agent's commands cannot read them:
 
-| Key | What it does | Where |
-|---|---|---|
-| **TLS key** | The Mac's identity in TLS; its hash is the `pin` | Keychain, data-protection keychain, in an access group only pi²'s signed code has, so `/usr/bin/security` and an agent's commands cannot read it; with a self-signed certificate made for it ([13](#13-decisions-this-contract-made), decision 6) |
-| **Record key** | Opens records the phone seals to the Mac; seals records for the phone, in HPKE's auth mode | The same |
+| Key | What it does |
+|---|---|
+| **Channel key** (Curve25519) | The Mac's static key in Noise; its public half is `c` |
+| **Record key** (P-256, key agreement) | Opens items sealed to the Mac; seals items and push contents for a device, in HPKE's authenticated mode |
+| **Relay key** (P-256, signing) | Proves to the relay that this Mac owns the pairing |
 
-A development build or throwaway copy, which is signed ad hoc and has no access group, keeps both in a file in its own data folder, readable only by the person ([10](#10-testing-with-no-phone-in-hand)); a release build never does.
+A development build or throwaway copy, which is signed ad hoc and has no access group, keeps them in a file in its own data folder, readable only by the person, and talks only to a relay on this Mac ([10](#10-testing-with-no-phone-in-hand)); a release build never does either.
 
-**The Mac's record of a device**, kept by the engine in a document of its own:
+**The Mac's record of a device**, kept by the engine:
 
 ```ts
 type Device = {
-	id: string; // "dev_" and 16 random bytes, base64url
+	id: string; // "dev_" and 16 random bytes, base64url; also the device's slot at the relay
 	name: string; // as the phone gave it ("Alex's iPhone"); the person can rename it on the Mac
 	model: string; // "iPhone 17 Pro"
 	system: string; // "iOS 27.1", updated at each connection
-	signingKey: string; // the device key's public half, SPKI DER, base64
-	presenceKey: string | null; // the presence key's public half, or null
+	deviceKey: string; // public halves, SPKI DER or raw, base64
+	presenceKey: string | null;
 	pendingPresenceKey: string | null; // a new one, until the person accepts it on the Mac
-	recordKey: string; // the record key's public half
-	iCloudUser: string | null; // the CloudKit user record name the phone saw, compared with the Mac's (6.2)
+	channelKey: string;
+	recordKey: string;
 	pairedAt: number;
 	lastSeenAt: number | null;
-	lastRoute: "home" | "direct" | "icloud" | null;
+	lastPath: "relay" | "home" | "direct" | "mailbox" | null;
 	revokedAt: number | null; // kept 90 days for the log, then removed
 };
 
 type Devices = {
 	// the document `pi2.devices`
-	macId: string;
-	macName: string; // the Mac's computer name when remote access was turned on; the person can change it
-	remote: { on: boolean; iCloud: boolean; preview: boolean };
-	macKeys: { tls: string; record: string } | null; // public halves, as pi² Remote reported them (remote.hello)
+	pairing: string | null; // the pairing's id at the relay
+	relay: string; // the relay's address; the release build's own unless the person changed it
+	macName: string;
+	remote: { on: boolean; relay: boolean; preview: boolean }; // relay: false is "home and private networks only" (6.4)
+	macKeys: { channel: string; record: string; relay: string } | null; // public halves, as pi² Remote reported them
 	devices: Device[];
 };
 ```
 
 ### 3.3 The pairing exchange
 
-1. The phone scans the code, browses for `_pi2._tcp` with `m=<macId>` ([5.2](#52-finding-the-mac)) and tries the payload's addresses, and opens TLS 1.3 to the first that answers, accepting only the pinned key.
-2. Its first line is `{"pair":{"v":1,"proof":…,"device":{…},"signed":…,"signature":…}}`:
-   - `device`: name, model, system, the three public keys, and the CloudKit user record name it sees (null without iCloud);
-   - `proof`: HMAC-SHA256 of the TLS exporter value with the label `EXPORTER-pi2-pair-v1` (32 bytes)[^exporter], keyed with `secret`: proof that the phone read this code, bound to this very connection;
-   - `signed` and `signature`: the JSON text `{"v":1,"kind":"pair","mac":…,"device":…,"binding":<the exporter value>}` and the device key's signature over it, proof that it holds the device key.
-3. pi² Remote passes it to the engine (`remote.pairClaim`, with the exporter value it saw). The engine checks that a pairing is open and unexpired, the proof, the signature, and that fewer than five devices are paired; a wrong proof counts against the pairing's three tries.
-4. The engine shows the claim in the `devices` event, with six digits worked out from the secret and the exporter value (HMAC-SHA256 with the label `pi2-digits`, the first 32 bits modulo a million). The phone shows the same six digits. The app shows them with the phone's name and **Pair** and **Cancel**.
-5. **Pair** sends `devices.pairConfirm { accept: true }`, the app's alone. The engine stores the device and answers the phone through pi² Remote: `{"paired":{"device":…,"mac":…,"name":…,"iCloudUser":<the Mac's>,"addresses":[…]}}`. The pairing closes.
-6. The phone keeps what [3.2](#32-the-keys) says, asks for notifications and then for Face ID (each with a line on what it is for), and connects as any paired phone does ([3.4](#34-what-each-side-proves-at-every-connection)). If the two iCloud users differ, the phone and the Devices page both say that iCloud cannot carry anything between them, and why.
+1. The phone scans the code, and at once tries both paths: the relay at `u`, and `home` (Bonjour `_pi2._tcp` with `p=<pairing>`, and the addresses in `a`). Pairing works with the phone on any network.
+2. **On the relay path**, the phone first joins: it sends the relay `join { pairing, deviceKey, attestation, keyId, token }`, where `attestation` is App Attest's for its key with the relay's challenge as client data,[^attest] and `token` is HMAC-SHA256 keyed with `s` of the text `pi2-join` and the pairing's id. The relay checks the window is open, the token against the hash the Mac gave it, and the attestation against Apple's root and pi²'s app id; it gives the phone a slot and connects it to the Mac's socket. A wrong token counts against the window's three tries. On the `home` path nothing is asked of the relay.
+3. Over the first path to connect, the phone runs **Noise_IKpsk2_25519_ChaChaPoly_SHA256**:[^noise] it knows the Mac's static key `c`, the pre-shared key is `s`, and the prologue is `pi2-pair-v2` and the pairing's id. Only the holder of the Mac's channel key and of `s` can complete it.
+4. Its first transport message is `{"pair":{"v":2,"device":{…},"signed":…,"signature":…}}`: `device` holds the name, model, system and the four public keys (device, presence, channel, record); `signed` is the JSON text `{"v":2,"kind":"pair","pairing":…,"binding":<the handshake hash>}` and `signature` the device key's over it, proof that the phone holds the device key, bound to this very channel (Noise's channel binding is the handshake hash[^noise]).
+5. pi² Remote passes it to the engine (`remote.pairClaim`, with the handshake hash). The engine checks the window, the signature and that fewer than five devices are paired, and shows the claim in the `devices` event with six digits worked out from `s` and the handshake hash (HMAC-SHA256 with the label `pi2-digits`, the first 32 bits modulo a million). The phone shows the same six digits. The app shows them with the phone's name and **Pair** and **Cancel**.
+6. **Pair** sends `devices.pairConfirm { accept: true }`, the app's alone. The engine stores the device; pi² Remote tells the relay to add the device's slot with its device key and closes the window; the phone is answered `{"paired":{"device":…,"pairing":…,"name":…,"addresses":[…]}}`.
+7. The phone keeps what [3.2](#32-the-keys) says, asks for notifications and then for Face ID (each with a line on what it is for), sends the relay its push token ([7](#7-notifications)), and connects as any paired phone does.
 
 Pairing is only ever started and confirmed on the Mac, in the app. No request a device can send starts, confirms or widens a pairing ([4.2](#42-what-a-device-may-send)).
 
 ### 3.4 What each side proves at every connection
 
-- **The Mac** proves it holds the TLS key whose hash the phone pinned: TLS 1.3 does that in its handshake, and the phone accepts no other key and no certificate authority.
-- **The phone** proves it holds the device key of a paired, unrevoked device, over this connection: pi² Remote opens a new connection to the engine's socket for the session and asks `remote.attachBegin`, which answers a 32-byte challenge; it passes the challenge to the phone, which answers `{"attach":{"signed":…,"signature":…}}` with `signed` the JSON text `{"v":1,"kind":"attach","mac":…,"device":…,"binding":<exporter, label EXPORTER-pi2-attach-v1>,"challenge":…,"at":…}`; pi² Remote sends it with the exporter value it saw as `remote.attach`. The engine checks the device, the signature, the challenge, the binding and that `at` is within two minutes, and from then on that engine connection is the device's ([4.1](#41-from-the-app-or-from-a-paired-device)). pi² Remote then only passes lines both ways.
-- **pi² Remote** proves to the engine that it is pi² Remote: the engine asks PeerKit (`pi2-peer`, [architecture.md](architecture.md#who-may-answer-for-the-person)) of every connection that sends a `remote.*` request, against the designated requirement of the helper inside the app's bundle, as it does for the app. Only such a connection may send `remote.*` requests ([4.1](#41-from-the-app-or-from-a-paired-device)).
+**To the relay** (the relay path only): the Mac signs the relay's challenge with its relay key; the phone signs it with its device key and names its slot. The relay connects a phone only to its own pairing's Mac, and only while its slot is listed.
 
-A connection that has neither paired nor attached within ten seconds of TLS is closed; so is one whose first line is not `pair` or `attach`. Outside an open pairing, `pair` is answered "Pairing is not open on this Mac" and the connection closed.
+**To each other**, on either path, **Noise_KK_25519_ChaChaPoly_SHA256**:[^noise] both static keys are known from pairing, so the handshake proves to each that the other holds its channel key, with forward secrecy, in one round trip. The prologue is `pi2-v2`, the pairing's id and the device's id, so a handshake cannot be moved to another pairing or device.
+
+**The device to the engine**: pi² Remote opens a new connection to the engine's socket for the channel and asks `remote.attachBegin`, which answers a 32-byte challenge; it passes it to the phone, which answers `{"attach":{"signed":…,"signature":…}}`, with `signed` the JSON text `{"v":2,"kind":"attach","pairing":…,"device":…,"binding":<handshake hash>,"challenge":…,"at":…}` signed by the device key; pi² Remote sends it with the handshake hash it saw as `remote.attach`. The engine checks the device, the signature, the challenge, the binding and that `at` is within two minutes, and from then on that engine connection is the device's ([4.1](#41-from-the-app-or-from-a-paired-device)). The device key is in the Secure Enclave, so the channel key, which is not, cannot be used to attach without it.
+
+**pi² Remote to the engine**: the engine asks PeerKit (`pi2-peer`, [architecture.md](architecture.md#who-may-answer-for-the-person)) of every connection that sends a `remote.*` request, against the designated requirement of the helper inside the app's bundle. Only such a connection may send them ([4.1](#41-from-the-app-or-from-a-paired-device)).
+
+A channel that has not attached within ten seconds of its handshake is closed.
 
 ### 3.5 How many devices
 
-At most five devices are paired at once (question 7 in [section 14](#14-questions-for-the-owner)). Each has its own keys, record, zone in iCloud and log; nothing one device does is visible to another but through the engine's state, as for two app windows.
+At most five devices are paired at once (question 8 in [section 14](#14-questions-for-the-owner)). Each has its own keys, slot at the relay, mailbox, push token and log; nothing one device does is visible to another but through the engine's state.
 
 ### 3.6 Revoking, and a lost phone
 
 **Revoke** on the Devices page (`devices.revoke`, the app's alone):
 
-1. sets `revokedAt` and forgets the device's keys in the same commit: from then on no attach, presence signature or record of it is taken;
-2. closes its device connections at once;
-3. has pi² Remote delete the device's zone in iCloud, with every record sealed to it, and write nothing more for it;
+1. sets `revokedAt` and forgets the device's keys in the same commit: from then on no attach, presence signature or sealed item of it is taken;
+2. closes its device connections and channels at once;
+3. has pi² Remote remove its slot at the relay, which closes its socket there, refuses it from then on, deletes its push token and its mailbox;
 4. keeps its log for 90 days.
 
-Turning **Reach from an iPhone** off closes the listener and stops writing to iCloud; devices stay paired and can do nothing until it is on again.
+Turning **Reach from an iPhone** off closes the channels and pi² Remote's socket at the relay; devices stay paired and can do nothing until it is on again. **Forget this Mac at the relay** (on the Devices page, with every device revoked) deletes the pairing there.
 
-**What a revoked or lost phone can still read from its own storage**, and how little that is:
+**What a revoked or lost phone can still read from its own storage**:
 
-- **Its cache**: the last state the phone saw (projects, the Dashboard, Needs you, the board's lists) and the last 300 entries of at most 20 conversations opened in the last seven days, with no attachments but those shown in them. It is kept with `NSFileProtectionComplete`, readable only while the phone is unlocked. It is wiped when the phone learns it was revoked (any answer from the Mac says so), after 30 days without hearing from the Mac, and when the app is deleted.
-- **The widget's file**: counts and names only (how many need the person, who is working where, today's spending), readable while locked, so a widget can be drawn.
-- **Notifications already delivered**: iOS keeps them in Notification Center until they are cleared; each holds at most what [section 7](#7-notifications) allows.
-- **Its own Outbox**: what the person wrote and had not seen taken.
-- **Nothing in iCloud**: records for it are deleted at revocation, and records sealed for another device cannot be opened with its keys.
+- **Its cache**: the last state the phone saw (projects, the Dashboard, Needs you, the board's lists) and the last 300 entries of at most 20 conversations opened in the last seven days, with no attachments but those shown in them. It is kept with `NSFileProtectionComplete`, readable only while the phone is unlocked. It is wiped when the phone learns it was revoked (the relay or the Mac says so), after 30 days without hearing from the Mac, and when the app is deleted.
+- **The widgets' file**: counts and names only, readable while locked, so a widget can be drawn.
+- **Notifications already delivered**, each holding at most what [section 7](#7-notifications) allows.
+- **Its own Outbox**.
+- **Nothing at the relay**: its slot, mailbox and push token are deleted at revocation, and items sealed for another device cannot be opened with its keys.
 
-A lost phone that is not yet revoked can do what the table of [4.2](#42-what-a-device-may-send) allows to whoever holds it unlocked; its Face ID answers need its owner's face. Revoking is the remedy, and the Devices page shows when each device was last seen and from where, to tell.
+A lost phone that is not yet revoked can do what the table of [4.2](#42-what-a-device-may-send) allows to whoever holds it unlocked, on any network, within the relay's limits for its pairing ([6.6](#66-abuse-and-cost)); its Face ID answers need its owner's face. Revoking is the remedy, and the Devices page shows when and by which path each device was last seen.
 
 ## 4. Who is speaking
 
@@ -171,15 +181,16 @@ Today the engine takes an answer, or a change to what the person set, only from 
 
 - Every connection has, besides `testCopy`, an optional `device: string` (the `Client` type in `main.ts`), set only by `remote.attach` on a connection PeerKit took for pi² Remote. A device connection is never the app's: `connection.mayAnswer` answers `false` on it, with why.
 - **Every request on a device connection is checked against the device's table, whatever its class**: `deviceMay(method, params)` in `answers.ts` answers `"yes"`, `"face"` or `"no"`. `"no"` is refused ("This can be done only on the Mac, in the pi² app."); `"face"` is refused without a valid presence signature for that request ([4.3](#43-face-id-the-presence-signature)) ("This needs Face ID on your iPhone."); `"yes"` is handled as from the app. The refusal comes before the handler runs, as today's does.
+- A sealed item from the mailbox (`remote.mailboxIn`, [5.3](#53-the-relay)) is checked the same way, with the path `mailbox`, and refused unless its row allows the mailbox.
 - A fourth list, `FOR_THE_HELPER`, holds the `remote.*` requests, taken only from a connection PeerKit took for pi² Remote.
 - The check at start-up widens: every handler belongs to exactly one of the three request classes as today, and to exactly one of the device lists (`FROM_A_DEVICE`, `WITH_FACE_ID`, `MAC_ONLY`), or to `FOR_THE_HELPER`; the engine will not open its socket otherwise. A request added later is placed by the issue that adds it, which tests its refusal from a device as `engine/test/answers.ts` tests the app's.
 - Requests that are partly a device's, like `inbox.decide` (once or deny, yes; always or a rule, Face ID), have a function in the list, as `FOR_THE_PERSON` has.
 
 ### 4.2 What a device may send
 
-This table is decision 2's one place. It is the content of the three device lists in `answers.ts` (P5). "Face ID" means a presence signature is required ([4.3](#43-face-id-the-presence-signature)). "iCloud" marks the requests that may also travel as a record ([6.2](#62-icloud-the-recommended-answer)); every other request needs a direct connection.
+This table is decision 2's one place. It is the content of the three device lists in `answers.ts` (P5). It holds on every path alike. "Face ID" means a presence signature is required ([4.3](#43-face-id-the-presence-signature)). "Mailbox" marks the requests that may also wait in the relay's mailbox as a sealed item while the Mac is not connected; every other request needs a channel.
 
-| Requests | From a device | iCloud |
+| Requests | From a device | Mailbox |
 |---|---|---|
 | **Reading**: `engine.info`, `engine.lag`, `conversation.open`, `.older`, `.close`, `conversations.shown`, `search`, `submission.get`, `background.output`, `changes.list`, `github.refresh`, `github.diff`, `github.unknown`, `needs.list`, `projects.list`, `work.list`, `worktree.suggest`, `branches.refresh`, `limits.refresh`, `settings.getCompaction`, `local.status`, `conversation.image`, `conversation.export` | yes | |
 | **Messages, starts and stops**: `submit`, `continue`, `abort`, `withdraw`, `conversation.create` and `chat.continueWithAgent` without `confirmLimit` or an explicit folder, `conversation.compact`, `.reset`, `.edit`, `.version`, `.retry` without a model, `background.stop`, `wakes.cancel`, `wakes.resume`, `reports.wake`, `schedules.runNow` without `confirmLimit` | yes | `submit` (text only, at most 4,000 characters) and `abort` |
@@ -190,9 +201,9 @@ This table is decision 2's one place. It is the content of the three device list
 | **Changes that narrow, or are the person's ordinary acts**: `agents.allowEverything` off, `conversation.carryOn`, `.fork`, `.retry` with a model, `.archive`, `.unarchive`, `chat.set`, `rules.remove`, `schedules.delete`, `coauthor.set`, `projects.create` (with a folder the Mac offers), `.archive`, `.unarchive`, `.restoreConversation`, `.startFresh`, `.watch`, `projects.rules.add`, `work.create`, `work.act` without `confirmLimit`, `worktree.create`, `github.detach`, `github.sendBack`, `github.settle`, `settings.setCompaction`, `settings.setAutoArchive`, `settings.setAwake`, `recovery.dismiss`, `limits.dismiss` | yes | |
 | **The Mac's alone**: secrets and sign-ins (`variables.*`, `providers.*`, `auth.*`, `endpoints.*`), the models that spend on pictures (`pictures.setModel`, `look.setModel`), programs started on the Mac (`mcp.*`, and `local.*` but `local.status`), the app's host roles (`computer.*`, `browser.*`), the Mac's upkeep (`backup.create`, `priority.set`, `settings.finishOnboarding`, `projects.setPreview`, `projects.carryOver`, `projects.retrySecrets`), `chat.continueWithAgent` with an explicit folder, `test-copy.*`, and every `devices.*` request but `devices.self` | no | |
 
-A handler the engine has that this table does not name is placed by P5 in `MAC_ONLY`, and P5's pull request lists it for the owner. New requests this epic adds that a device may send: `devices.self` (its own record and log, yes), `projects.folders` (the folders the Mac offers for a new project, yes, P24), `files.preview` (a text file under a conversation's folder, at most 256 KB, yes, P24).
+A handler the engine has that this table does not name is placed by P5 in `MAC_ONLY`, and P5's pull request lists it for the owner. New requests this epic adds that a device may send: `devices.self` (its own record and log, yes), `projects.folders` (the folders the Mac offers for a new project, yes, P29), `files.preview` (a text file under a conversation's folder, at most 256 KB, yes, P29).
 
-Under a different answer to decision 2, only the middle column changes. For example "answers only, away from the Mac": every row but Reading and Answers becomes "no" when the route is not `home`, which the engine knows from the connection.
+Under a different answer to decision 2, only the middle and last columns change. For example "answers only, away from home": every row but Reading and Answers becomes "no" when the path is not `home`, which the engine knows from pi² Remote.
 
 ### 4.3 Face ID: the presence signature
 
@@ -200,13 +211,13 @@ A request that needs Face ID carries, beside `id`, `method` and `params`, a `pre
 
 ```json
 {"id": 41, "method": "github.merge", "params": {"projectId": "p_…", "number": 619},
- "presence": {"signed": "{\"v\":1,\"kind\":\"presence\",\"mac\":\"…\",\"device\":\"dev_…\",\"method\":\"github.merge\",\"params\":{…},\"nonce\":\"…\",\"at\":1764150000000}",
+ "presence": {"signed": "{\"v\":2,\"kind\":\"presence\",\"pairing\":\"…\",\"device\":\"dev_…\",\"method\":\"github.merge\",\"params\":{…},\"nonce\":\"…\",\"at\":1764150000000}",
               "signature": "<base64 DER ECDSA P-256 SHA-256>"}}
 ```
 
 - The phone makes it only after Face ID: signing with the presence key is what asks for Face ID ([3.2](#32-the-keys)), so there is no "Face ID passed" flag to forge; the signature is the proof.
-- `signed` is the exact JSON text that was signed, so neither side has to put JSON in a canonical form. The engine parses it and checks that its `method` and `params` are deep-equal to the request's, its `device` is the connection's, `mac` is this Mac's, and the signature verifies with the device's presence key (`node:crypto`).
-- **Freshness.** On a device connection, `nonce` is `<the attach challenge>:<n>`, with `n` rising with each presence signature in the session, and `at` within two minutes. Through iCloud, `nonce` is the record's name and `at` within 24 hours ([6.2](#62-icloud-the-recommended-answer)). The engine keeps the nonces it took for 48 hours and takes none twice, after a restart too (in `pi2.devices`' companion document, `pi2.deviceNonces`).
+- `signed` is the exact JSON text that was signed, so neither side has to put JSON in a canonical form. The engine parses it and checks that its `method` and `params` are deep-equal to the request's, its `device` is the connection's, `pairing` is this Mac's, and the signature verifies with the device's presence key (`node:crypto`).
+- **Freshness.** On a channel, `nonce` is `<the attach challenge>:<n>`, with `n` rising with each presence signature in the session, and `at` within two minutes. In a sealed item, `nonce` is the item's id and `at` within 24 hours. The engine keeps the nonces it took for 48 hours and takes none twice, after a restart too (`pi2.deviceNonces`).
 - A request with a presence signature it does not need is taken as it is; the signature is logged.
 
 ### 4.4 The devices' log
@@ -217,7 +228,7 @@ Every request a device sends that is not in the Reading row of [4.2](#42-what-a-
 type DeviceLogEntry = {
 	at: number;
 	device: string;
-	route: "home" | "direct" | "icloud";
+	path: "relay" | "home" | "direct" | "mailbox";
 	method: string;
 	summary: string; // "Merged #617 “Sidebar badges” (pi2)"; made by `summarize(method, params)` in devices.ts
 	presence: boolean; // a valid presence signature came with it
@@ -228,149 +239,223 @@ type DeviceLogEntry = {
 
 Entries are kept 90 days, at most 10,000 (the oldest go first). The Devices page shows them by device (`devices.log { device, before? }`, the app's), and the phone its own (`devices.self`). A method with no line in `summarize` is logged with its name and the project or conversation its parameters name; the issue that lets a device send a new request adds its line.
 
-## 5. Transport at home
+## 5. Transport
 
-### 5.1 Which program listens
+### 5.1 The shape: one channel, two paths
 
-The listener is held by **pi² Remote**, a small app bundle inside the app's (`Contents/Helpers/pi² Remote.app`, bundle id `dev.pi2.app.remote`, no Dock icon), written in Swift (P6). **The engine starts it**, as it starts `pi2-peer`, whenever remote access is on and a device is paired or a pairing is open; it starts it again if it dies (waiting twice as long after each failure, up to a minute), and stops it when remote access goes off or the engine stops. So the listener lives exactly as long as the engine, which outlives the app's window (the login item starts the engine with no app at all).
+The phone and the Mac talk through **one secure channel**, a Noise session between the phone and pi² Remote ([5.2](#52-the-secure-channel-noise)), which carries the engine's own requests and events ([5.6](#56-the-messages)). The channel runs over either of two paths, and nothing above it knows which:
+
+- **The relay**, the main path: both ends connect *out* to the relay over a WebSocket with TLS, which passes the channel's bytes between them. Any two networks that allow a web page to load allow it: a phone on a mobile network and a Mac at home, behind any NATs and firewalls, with nothing set up by the person.
+- **Direct**, an optimisation: when the two can see each other (the same network, found by Bonjour; or an address of the Mac's that the phone can reach, such as a private network's), the same channel runs over TCP between them, which is faster and costs the relay nothing.
+
+The same keys, the same handshake, the same messages and the same checks hold on both. The phone tries both when it connects and keeps whichever comes first, and moves a session from one to the other as the networks change ([5.8](#58-resuming-and-moving-between-paths)). The relay is the only path that must always work; direct is tried because it is cheaper, never because something needs it.
+
+### 5.2 The secure channel: Noise
+
+**The Noise Protocol Framework**,[^noise] with the handshakes `Noise_IKpsk2_25519_ChaChaPoly_SHA256` to pair ([3.3](#33-the-pairing-exchange)) and `Noise_KK_25519_ChaChaPoly_SHA256` for every connection after ([3.4](#34-what-each-side-proves-at-every-connection)). Noise is what WireGuard is built on.[^wireguard] It is chosen over TLS because the channel must run inside the relay's WebSocket as well as over TCP, with either end in either role, and Apple's TLS (Network framework) runs only directly over TCP or UDP, with the connecting side always the client; and because both ends already know each other's keys from pairing, which Noise is built for and TLS would need certificates for.
+
+- **Implemented once**, in `RemoteKit` ([section 8](#8-the-shared-package)), from the specification, on CryptoKit's Curve25519, ChaChaPoly and SHA-256, used by both pi² Remote and the phone. It is checked against the published Noise test vectors for these two protocols, and read in the step 0 and step 6 security readings (P1, P34). Nothing else of the cryptography is pi²'s own: Noise, HPKE (RFC 9180) and ECDSA P-256 are specified elsewhere, and CryptoKit implements their primitives.
+- **Framing.** Each Noise message is at most 65,535 bytes.[^noise] On TCP, each is preceded by its length in two bytes; on the relay, each is one binary WebSocket message. Inside the channel, a frame is one byte of kind (`data`, `more`, `ack`, `ping`, `bye`) and its body; an engine line longer than a frame is split into `more` frames ending in a `data` frame.
+- **Channel binding**: the handshake hash, which the device key signs at `pair` and `attach` ([3.4](#34-what-each-side-proves-at-every-connection)).
+- A channel lasts at most 24 hours, then is made again; it is never rekeyed.
+
+### 5.3 The relay
+
+**What it is.** A Cloudflare Worker with one Durable Object for each pairing (P8), in this repository, in `relay/`. Each end holds one WebSocket to it; the pairing's object passes binary messages between the Mac's socket and each device's, keeps the pairing's small state, and sends pushes. It uses Durable Objects' WebSocket Hibernation, so a pairing whose sockets are idle costs nothing while they stay connected.[^dows]
+
+**The relay's protocol**, inside `wss://<relay>/v1` (the address carries no id, since a platform's request logs keep URLs[^cflogs]):
+
+- **Hello.** The first text message names the role and the pairing: `{ hello: { v: 1, role: "mac" | "device", pairing, device? } }`, or `register` for a Mac with no pairing yet. The relay answers a 32-byte challenge, which the end signs with its relay key (the Mac) or device key (a phone); a phone's slot must be listed. A Mac's `register` gives its relay public key and signs the challenge; the relay answers the new pairing's id.
+- **Data.** Binary messages: from a device, the channel's bytes; to the Mac, the same with the device's 16-byte id in front; from the Mac, with the id of the device it is for in front. The relay reads nothing past that id.
+- **Control** (text messages, the Mac's alone but `token` and `take`): `openJoin { tokenHash, expires }`, `closeJoin`, `addDevice { device, deviceKey, attestKeyId }`, `removeDevice { device }`, `deletePairing`, `push { device, kind, … }` ([section 7](#7-notifications)), `put { to, id, item }` and `state { device, item }` (the mailbox), `take` (an end asks for its mailbox), and `token { apns, environment }` (a device's push token).
+
+**What it keeps**, per pairing, in its object's storage:
+
+| What | Why | How long |
+|---|---|---|
+| The pairing's id, the Mac's relay public key | To know the Mac | Until deleted, or 60 days with no connection |
+| Each device's id, device public key, App Attest key id | To know a device | Until removed |
+| Each device's push token and its environment | To send pushes | Until removed or replaced |
+| The join window's token hash and expiry | Pairing | Five minutes |
+| **The mailbox**: for the Mac, up to 200 sealed items, 1 MB in all, each at most 16 KB; for each device, the latest sealed state and up to 100 sealed items | So that what one end writes while the other is away is not lost: the phone's answers while the Mac sleeps; needs, receipts and the last state while the phone is unreachable | 24 hours each, then deleted; an item is deleted once taken |
+| Counters for the limits ([6.6](#66-abuse-and-cost)) | Limits | One day |
+
+**Sealed items.** A mailbox item is sealed for its one reader with HPKE (RFC 9180) in its authenticated mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM, as CryptoKit provides it:[^hpke] the Mac seals to the device's record key and authenticates with its own; the phone the other way. HPKE's `info` is `pi2-item-v2`, the pairing, the reader and the item's id, so an item cannot be moved and still open. An item from the phone carries, inside, a request signed by the device key, as `{ v, request: { method, params }, signed, signature, presence? }` with `signed` = `{ v, kind: "request", pairing, device, method, params, nonce: <item id>, at }`. The Mac takes such an item only if `at` is at most 24 hours old, its nonce is new, its row of [4.2](#42-what-a-device-may-send) allows the mailbox, and (for an answer) the item still waits; it writes back a sealed receipt either way ("This is no longer waiting: it was answered or withdrawn." or "Not sent: more than a day passed before your Mac saw it.").
+
+**What the relay knows**: a pairing's id, the public keys it checks, its devices' ids and push tokens, when each end connects and from which address (while connected; it stores none), and the size and time of every message, item and push. **What it cannot know**: anything inside a channel or a sealed item. The one exception, which the person turns on for each Live Activity, is a Live Activity's counts ([7](#7-notifications)). Cloudflare, which runs it, sees the same, and terminates the outer TLS; it cannot read inside Noise or HPKE.
+
+**What it must never log**: a message's or an item's bytes, a push's payload, a push token, a pairing's or a device's id with an address, or any key. Workers Logs and invocation logs are off in its configuration,[^cflogs] it writes nothing to the console, and a check in CI fails if either changes (P15). The only numbers it keeps are the counters of its limits and the per-hour totals its operator's bill needs.
+
+### 5.4 Direct, at home
+
+- pi² Remote listens on TCP while remote access is on, in a release build, and advertises `_pi2._tcp` with the Mac's name and a TXT record `v=2`, `p=<pairing>`. A development build or throwaway copy listens only on the loopback interface and advertises nothing ([10](#10-testing-with-no-phone-in-hand)).
+- The phone lists `_pi2._tcp` in `NSBonjourServices` and has an `NSLocalNetworkUsageDescription`; browsing asks the phone's owner once for Local Network.[^lnp] It asks while in the foreground, during pairing, since an app in the background with the privilege undetermined is denied without being asked.[^lnp]
+- The channel on this path is the same Noise channel as on the relay, on TCP, with the length framing of [5.2](#52-the-secure-channel-noise). A listener reached from anywhere answers only a Noise handshake with a paired device's static key, and closes anything else after ten seconds.
+- The Mac sends its current addresses inside the channel whenever they change (the `device` event, [5.6](#56-the-messages)), so the phone can try them from any network: `home` when found by Bonjour, `direct` otherwise. A private network of the person's (Tailscale and the like) is used this way if they have one, with nothing set up in pi²; nothing relies on it.
+
+### 5.5 Which program holds them
+
+The Mac's ends of both paths, its keys, and the channels are held by **pi² Remote**, a small app bundle inside the app's (`Contents/Helpers/pi² Remote.app`, bundle id `dev.pi2.app.remote`, no Dock icon), written in Swift (P7, P10). **The engine starts it**, as it starts `pi2-peer`, whenever remote access is on and a device is paired or a pairing is open; it starts it again if it dies (waiting twice as long after each failure, up to a minute), and stops it when remote access goes off or the engine stops. So the Mac is reachable exactly while the engine runs, which outlives the app's window (the login item starts the engine with no app at all).
 
 Why a helper, and not the engine itself:
 
-- **Node cannot do what is needed.** Bonjour advertising, TLS with a key in the data-protection Keychain, the TLS exporter, CloudKit and Apple's push service are Apple frameworks; the engine would need a helper for half of it anyway.
-- **iCloud needs a bundle.** CloudKit and push notifications need entitlements given by a provisioning profile, which a Developer ID-signed Mac app may have[^devid] but a bare executable or a Node process cannot carry.
-- **macOS's Local Network privilege follows code signing.** Bonjour on macOS needs it, and a launchd agent (the engine's login item) is not exempt; macOS asks once, naming the responsible app.[^lnp] A signed bundle of pi²'s with its own usage description is asked for once, by name, and the person's answer stays.
-- **The Mac's private keys stay out of agents' reach.** Items the engine reads go through `/usr/bin/security`, which any command of the person's can run ([architecture.md](architecture.md#who-may-answer-for-the-person)); the data-protection keychain's access group admits only code signed with pi²'s entitlement.
+- **The cryptography is Apple's.** Noise on CryptoKit's primitives, HPKE, the Secure Enclave and the data-protection Keychain are Swift-only; the engine (Node) would have to implement HPKE itself, and could keep its keys only where any command of the person's can read them (`/usr/bin/security`, [architecture.md](architecture.md#who-may-answer-for-the-person)).
+- **macOS's Local Network privilege follows code signing.** Bonjour on macOS needs it, and a launchd agent (the engine's login item) is not exempt; macOS asks once, naming the responsible app.[^lnp] A signed bundle of pi²'s with its own usage description is asked once, by name, and the answer stays. The relay path asks for nothing: it is an outgoing connection to the internet.
+- **One implementation of the channel**, shared with the phone through `RemoteKit`.
 
-And not the app: the app may be quit while the engine works. **The engine stays the judge**: pi² Remote holds keys and passes lines, and every rule of [section 4](#4-who-is-speaking) is checked in the engine. A fault in pi² Remote can drop or delay a line; it cannot make the engine take a request the device's table refuses, nor a Face ID request without the device's own signature.
+And not the app: the app may be quit while the engine works. **The engine stays the judge**: pi² Remote holds keys and passes lines, and every rule of [section 4](#4-who-is-speaking) is checked in the engine. A fault in pi² Remote can drop or delay a line; it cannot make the engine take a request the device's table refuses, nor a Face ID request without the device's own signature. pi² Remote talks to the engine on a control connection of its own (`remote.*` requests, and the `remote` event the engine sends only to it, which carries pushes to send and items to seal) and opens one more connection for each attached channel.
 
-**When it asks macOS for anything.** Turning **Reach from an iPhone** on in a release build makes pi² Remote advertise on Bonjour, which asks for the Local Network privilege once; the Devices page says so before the switch is turned on. A development build or throwaway copy never advertises and listens on the loopback interface only ([10](#10-testing-with-no-phone-in-hand)), so it never asks. If the macOS firewall is on, it may also ask whether pi² Remote may accept incoming connections: P6 finds out, on the owner's Mac and with the owner's word, what a Developer ID-signed helper is asked, and writes it here.
+**When it asks macOS for anything.** Only the `home` path's Bonjour advertising, in a release build, once, when the person first turns remote access on; the Devices page says so first. If the macOS firewall is on, it may also ask whether pi² Remote may accept incoming connections: P7 finds out, on the owner's Mac and with the owner's word, what a Developer ID-signed helper is asked, and writes it here. With the home path off (a switch on the Devices page), nothing is asked at all and the relay carries everything.
 
-### 5.2 Finding the Mac
+### 5.6 The messages
 
-- pi² Remote advertises `_pi2._tcp` with the Mac's name as the instance name and a TXT record `v=1`, `m=<macId>`. The port is chosen by the system and advertised; it is also kept in `pi2.devices`' companion state for the phone's address list.
-- The phone lists `_pi2._tcp` in `NSBonjourServices` and has an `NSLocalNetworkUsageDescription`; browsing asks the phone's owner once for Local Network.[^lnp] An app in the background with the privilege undetermined is denied without being asked,[^lnp] so the phone asks while in the foreground, during pairing.
-- The phone connects to the instance whose `m` is its Mac's, and also tries the addresses it last heard of ([6.1](#61-direct-where-the-two-can-reach-each-other)), at the same time; the first to complete TLS with the pinned key wins.
-
-### 5.3 TLS and mutual authentication
-
-**TLS 1.3, with the Mac's key pinned and the phone's key proven inside the session by a signature over the TLS exporter value**, which binds the proof to that one connection (the channel binding of RFC 9266, with TLS 1.3's exporter[^exporter]). Both ends use Network framework. There is no certificate authority, no password and no home-made cryptography: the parts are TLS 1.3, ECDSA P-256 with SHA-256, HMAC-SHA256 and, for records, HPKE (RFC 9180).
-
-- The Mac's certificate is a self-signed one for its TLS key, made once by pi² Remote. The phone checks only the key's hash against the `pin`, never the certificate's names or dates.
-- The phone does not present a certificate: its proof is the attach signature of [3.4](#34-what-each-side-proves-at-every-connection), so its key never has to leave the Secure Enclave in a certificate.
-- TLS 1.2 and earlier are refused; session resumption is allowed (it resumes the pinned server's session), and every resumed session attaches again with a new challenge.
-
-### 5.4 The messages
-
-**The engine's own requests and events, carried as they are**: one JSON object per line, in both directions, as on the socket ([architecture.md](architecture.md#how-they-talk)). The reason: the shared package's client already speaks them ([section 8](#8-the-shared-package)), so the phone gets every request and event as the Mac app has it, and nothing has to be kept in step with a second protocol, which is the drift the epic warns of. What a phone may send is limited where it counts, in the engine ([4.2](#42-what-a-device-may-send)); what it is sent, in the engine too ([5.5](#55-what-is-never-sent-to-a-phone)).
+**The engine's own requests and events, carried as they are**: one JSON line each, inside the channel, in both directions, as on the socket ([architecture.md](architecture.md#how-they-talk)). The shared package's client already speaks them ([section 8](#8-the-shared-package)), so the phone gets every request and event as the Mac app has them, and nothing has to be kept in step with a second protocol. What a phone may send is limited in the engine ([4.2](#42-what-a-device-may-send)); what it is sent, in the engine too ([5.7](#57-what-is-never-sent-to-a-phone)).
 
 On top of them, only:
 
-- the first lines of a session, before the engine's: `pair` or `challenge` and `attach`, answered by `paired` or `attached` ([3.3](#33-the-pairing-exchange), [3.4](#34-what-each-side-proves-at-every-connection));
+- the first lines of a channel: `pair`, or `challenge` and `attach`, answered by `paired` or `attached`, and `resume` ([5.8](#58-resuming-and-moving-between-paths));
 - `presence` beside a request ([4.3](#43-face-id-the-presence-signature));
-- a `device` event, sent to a device connection after the greeting and whenever its record changes: `{ event: "device", id, name, mac: { id, name }, routes: { iCloud: boolean, addresses: string[] }, revoked: boolean }`. A revoked device is sent `revoked: true` and closed.
+- a `device` event, sent to a device connection after the greeting and whenever its record changes: `{ event: "device", id, name, pairing, mac: { name }, addresses: string[], relay: boolean, revoked: boolean }`. A revoked device is sent `revoked: true` and closed.
 
-The greeting on a device connection is the app's ([projects.md](projects.md#44-what-an-app-is-sent-on-connecting)), less [5.5](#55-what-is-never-sent-to-a-phone)'s events, then `device`.
+The greeting on a device connection is the app's ([projects.md](projects.md#44-what-an-app-is-sent-on-connecting)), less [5.7](#57-what-is-never-sent-to-a-phone)'s events, then `device`.
 
-### 5.5 What is never sent to a phone
+### 5.7 What is never sent to a phone
 
 - **Events**: `computer`, `browser`, `auth`, `local`, `local.progress` and `mcp` are not sent on a device connection (they are the app's host roles, sign-ins and the Mac's upkeep).
 - **Secrets**: no event or answer carries a provider's key, a sign-in's token, an agent's variable's value or an MCP server's variables today, and none may. P5 adds a test that runs a demo session with known secrets set and fails if any of their values appears in a line sent to a device connection.
 - **The test copy's key**, and anything from `test-copy.*`.
-- **Files outside what a conversation shows**, but through `files.preview`: a text file under the conversation's own folder, at most 256 KB, refused for anything that is not UTF-8 text or that lies outside the folder after links are followed (P24).
+- **Files outside what a conversation shows**, but through `files.preview`: a text file under the conversation's own folder, at most 256 KB, refused for anything that is not UTF-8 text or that lies outside the folder after links are followed (P29).
 
-What *is* sent: conversations as their transcripts hold them, which include what agents read and ran. That is the product. It travels only inside the TLS session ([5.3](#53-tls-and-mutual-authentication)) and is never written to iCloud.
+What *is* sent: conversations as their transcripts hold them, which include what agents read and ran. That is the product. It travels only inside the channel.
 
-### 5.6 Resuming after the phone slept
+### 5.8 Resuming, and moving between paths
 
-The phone holds a connection only while it is in the foreground, and for the short time iOS gives it after.[^bgtime] Coming back:
+- **A session** is the phone's attachment to the engine. pi² Remote keeps a device's engine connection for 60 seconds after its channel drops, and keeps the engine lines it sent that the phone has not acknowledged (the phone sends `ack` with the count it has, every second or 64 KB), up to 4 MB.
+- **Resuming**: on a new channel, by either path, the phone's first line after the handshake may be `resume { session, received }` with the attach signature; pi² Remote sends what the phone has not had and carries on, without a new greeting. If the session is gone or its buffer was passed, it answers `resume: false` and the phone attaches afresh: the engine sends the greeting, as to an app that reconnects after the engine restarted, the phone asks again for the conversations it has open (`conversation.open` with `newestFirst`), and a message whose answer never came is sent again with the same request id, which the engine already takes without doubling it ([architecture.md](architecture.md#keeping-the-app-quick-while-agents-work)).
+- **Moving**: on a relay channel, the phone tries the addresses of the `device` event in the background; once a direct channel attaches with `resume`, the session moves to it and the relay channel is closed. When a direct channel drops (the phone left home), the phone resumes over the relay at once. A streamed answer goes on across the move with at most the lines in flight sent twice, which the phone drops by their count.
+- **After the phone slept**: it holds no channel in the background beyond the short time iOS gives it,[^bgtime] and on coming back resumes if it can, or attaches afresh. The Outbox is sent before anything new.
 
-1. it connects and attaches again ([3.4](#34-what-each-side-proves-at-every-connection)), with a new challenge;
-2. the engine sends the greeting, as to an app that reconnects after the engine restarted, and the phone's client replaces its state with it;
-3. the phone asks again for the conversations it has open (`conversation.open` with `newestFirst`), as the Mac app does on reconnecting;
-4. a message whose answer never came is sent again with the same request id, and the engine finds the submission it may already have taken, as the Mac app's `outgoing` does ([architecture.md](architecture.md#keeping-the-app-quick-while-agents-work)).
+### 5.9 Battery and data
 
-The Outbox ([section 6](#6-away-from-home)) is sent before anything new.
-
-### 5.7 Battery and data
-
-- No connection is kept in the background, and the phone never polls. It runs in the background only when iOS wakes it: for a notification's action, a push, or a background refresh iOS schedules.
+- The phone holds a channel only while in the foreground, and for the short times iOS wakes it (a notification's action, a background push). It never polls.
+- The Mac holds one WebSocket to the relay at all times while remote access is on, with a ping every 30 seconds to keep its network's NAT open; the relay's object hibernates between messages.[^dows]
 - The engine sends `activity` to a device connection at most once a second (to the app, four times), and `conversation` events only for conversations the phone has open, as for the app.
-- A greeting is the size of the person's library and projects; P30 measures it, and a request for only what changed since a version is left to an issue of its own if it matters.
-- P30 measures a day's battery and data for an ordinary day (ten notifications an hour answered from the notification, the app open half an hour); this page promises no number.
+- A greeting is the size of the person's library and projects; P35 measures it, and a request for only what changed since a version is left to an issue of its own if it matters.
+- P35 measures a day's battery and data for an ordinary day (the app open two hours, sixty notifications); this page promises no number.
 
-## 6. Away from home
+## 6. Across any two networks: the ways compared
 
-This section is decision 1's one place. 6.1 and 6.2 are the recommended answer; 6.3 and 6.4 say what changes for the other two.
+### 6.1 The three ways
 
-### 6.1 Direct, where the two can reach each other
-
-pi² Remote listens on every interface while remote access is on (in a release build). The phone tries, at once: the Bonjour instance on the network it is on; the addresses the Mac last gave it (in `paired`, the `device` event and the `State` record), ordered local network first, then the rest, such as a private network's (Tailscale and the like, which needs nothing from pi²). Each try has four seconds; the first to finish TLS with the pinned key wins, and its route is `home` (found by Bonjour) or `direct`. Being reachable from the internet at large is not a goal: a listener reached from anywhere only ever answers a pinned TLS handshake and an attach it can check, and closes anything else after ten seconds.
-
-### 6.2 iCloud, the recommended answer
-
-When no direct route works, **the person's own iCloud private database** carries what matters, and only that: notifications of what needs the person, their answers, short messages and stops, and a small summary of how things stand. Nothing passes through a server of pi²'s.
-
-**Which program.** pi² Remote, the only program with the CloudKit and push entitlements ([5.1](#51-which-program-listens)). The engine tells it what to write (`remote.cloudOut` events, sent only to pi² Remote's control connection) and hands it nothing to decide; pi² Remote hands each request it reads back to the engine as `remote.cloudIn`, which the engine checks as it checks a device connection's, with the route `icloud`. The Mac must be signed in to iCloud with the same Apple Account as the phone; pairing compares the two CloudKit user record names ([3.3](#33-the-pairing-exchange)), and the route is shown as unavailable, saying why, when they differ or the Mac is signed out.
-
-**Where.** A container `iCloud.dev.pi2.remote` (P10), its private database, one custom zone for each pair of Mac and device, `pi2-<macId>-<deviceId>`. Custom zones because a database subscription does not see the private database's default zone,[^dbsub] and one zone per device so that revoking deletes everything for that device at once and a phone subscribes only to its own. Each phone saves record zone subscriptions on its zone,[^zonesub] one for each record type that should show a notification, with its category; the Mac saves a silent one for `Answer` and `Message`. Subscriptions are made in CloudKit's development environment and promoted to production (P10).[^sub]
-
-**What a record holds.** Every record has exactly two fields, `box` (the sealed content) and `enc` (HPKE's encapsulated key), both written through CloudKit's `encryptedValues`, so iCloud's own encryption applies to them as well;[^ckenc] the record's type, zone and name are all iCloud's own fields show, and they say only that something of that type was written for that device at that time.
-
-| Type | Written by | Content once opened (JSON) | Notification |
+| | (a) A relay pi² runs | (b) Peer to peer (STUN, TURN when needed) | (c) The person's iCloud only |
 |---|---|---|---|
-| `NeedApproval`, `NeedQuestion`, `NeedDecision`, `NeedReach`, `NeedRule`, `NeedLimit` | the Mac, one per device, as the need appears | `{ v, mac, need, kind, projectId, project, agent, title, body, createdAt, expires }`, the text of [section 7](#7-notifications) | Yes, its kind's category |
-| `Notice` | the Mac | `{ v, mac, kind: "limit" \| "answered", title, body, ref }`: a limit reached or carried on (as the Mac notifies today), and an orchestrator's answer the person asked to be told of | Yes, no buttons |
-| `Gone` | the Mac | `{ v, needs: [ids] }`: answered or withdrawn, so the phone takes those notifications away | Silent |
-| `State` | the Mac, at most every five minutes while anything in it changes, and as the Mac goes to sleep | `{ v, at, asleep, addresses, projects: [{ id, name, needs, working, idle }], needs: number, spendToday, planWeek }`: counts and names, nothing an agent wrote | None (read when the app opens, by widgets, and after any push) |
-| `Receipt` | the Mac | `{ v, record, outcome: "done" \| "refused", why? }`: what became of an `Answer` or a `Message` | Silent; one that refused shows as a `Notice` |
-| `Answer`, `Message` | the phone | `{ v, request: { method, params }, signed, signature, presence? }`, where `signed` is `{ v, kind: "request", mac, device, method, params, nonce: <record name>, at }` signed by the device key, and `presence` as [4.3](#43-face-id-the-presence-signature) with the same nonce | None |
+| **Any two networks** | Yes: both ends connect out over HTTPS, which every network allows | Mostly: a direct path through both NATs when they allow one, a TURN relay when not | Yes |
+| **The live conversation** | Yes, a few tens of milliseconds behind the Mac | Yes; lower latency when direct | **No.** Each change is a record saved and fetched in a round trip; pushes about changes are merged and may drop data;[^dbsub] silent pushes are not guaranteed and are throttled past two or three an hour;[^bgpush] saving too often is refused with a time to wait.[^cklimit] A streamed answer would arrive in lumps, seconds apart at best, with no guarantee |
+| **Pushes** | The relay sends them with pi²'s push key | Need a sender anyway: a relay, or iCloud | iCloud sends them for the Mac's records |
+| **What else it needs** | Nothing more | Signalling, to exchange addresses before the first packet: the small relay of (a), or iCloud. Apple's frameworks have no ICE, so it needs Google's WebRTC library or an ICE of pi²'s own | Both devices on the same Apple Account; CloudKit and push entitlements on the Mac |
+| **How often the fallback is needed** | — | Published measurements: about 70% of hole-punching attempts succeed;[^libp2p] 17.7% of one service's peer-to-peer calls needed TURN, with no figures published since 2017;[^turnpct] mobile networks put phones behind carrier-grade NAT, through which a direct path often cannot be made.[^tsnat] Plan for a third of phone sessions relayed, and for ICE to run again on every change of network | — |
+| **What it costs to run** | Cloudflare: see [6.2](#62-what-the-relay-costs) | TURN at Cloudflare costs $0.05 a GB past 1,000 GB a month, shared;[^turn] a thousand people's relayed third is about 130 GB a month, so nothing; plus the signalling relay of (a) | Nothing to pi²: the private database is the person's own iCloud storage[^ck] |
+| **What the owner sets up** | A Cloudflare account and a push key ([6.4](#64-what-the-owner-sets-up-once)) | The same, and TURN credentials | A CloudKit container |
+| **Upkeep** | None to patch; deploys from CI | All of (a), plus a peer-to-peer stack on both ends to keep working as networks and NATs change | None |
 
-`Answer` carries only the "iCloud" rows of [4.2](#42-what-a-device-may-send) that answer something; `Message` only `submit` (text, at most 4,000 characters) and `abort`. The engine refuses anything else that arrives this way, and logs it.
+**(a) on Fly.io instead**, a small container running the same relay: the smallest machine that stays on costs $2.19 a month, data out $0.02 a GB in North America and Europe, and there is no free tier;[^fly] for a thousand people about $16 a month (two machines in two regions, and about 400 GB of data out). It is a server to keep: its runtime to update, a restart that drops every socket, and, once there is more than one machine, a way to route a phone to the machine its Mac is on.
 
-**How it is sealed, beyond iCloud's own.** HPKE (RFC 9180), in its authenticated mode, with the suite DHKEM(P-256, HKDF-SHA256), HKDF-SHA256 and AES-256-GCM, as CryptoKit provides it:[^hpke] the Mac seals to the device's record key and authenticates with its own; the phone seals to the Mac's and authenticates with its own. The HPKE `info` is `pi2-record-v1`, the record's type, its zone and its name, so a record cannot be moved to another place or type and still open. A request in an `Answer` or `Message` is signed by the device key besides, which only an unlocked phone can use ([3.2](#32-the-keys)), and by the presence key where the table asks for Face ID. Neither Apple, nor anyone who gets into the iCloud account, nor another device of the person's, can read a record or make one the Mac would take.
+### 6.2 What the relay costs
 
-**How old a record may be.**
+On Cloudflare's Workers Paid plan, $5 a month with its included use, or the Free plan:[^cfworkers][^dopricing]
 
-- A `Need…` record expires 24 hours after it is written: after that the phone shows it as stale and its buttons open the app. The Mac deletes it, and writes `Gone`, as soon as the need is answered or withdrawn.
-- An `Answer` or `Message` is taken if its `at` is no more than 24 hours old when the engine reads it, its nonce is new, and (for an answer) the item still waits. Otherwise a `Receipt` says why ("This is no longer waiting: it was answered or withdrawn." or "Not sent: more than a day passed before your Mac saw it.") and the Outbox shows it.
-- The Mac deletes each `Answer` and `Message` once it has written its `Receipt`; the phone deletes `Receipt`s and `Gone`s once read. A zone holds a few dozen small records at most.
-- Clocks: the engine compares `at` with its own clock, and allows five minutes of difference besides.
+- A Durable Object is billed per request (1 million a month included, then $0.15 a million), where each WebSocket message it *receives* counts as one twentieth of a request and messages it sends count nothing; and per GB-second it is awake (400,000 included, then $12.50 a million), where an object waiting with hibernating sockets counts nothing. Data out costs nothing.[^dopricing][^cfworkers]
+- The Free plan includes 100,000 requests a day and 13,000 GB-seconds a day, and fails operations past them.[^dopricing]
 
-**When the Mac is asleep.** Nothing runs on a sleeping Mac: no agent works, so no new need appears, and nothing is read from iCloud. As it goes to sleep, pi² Remote writes a last `State` with `asleep: true`, if macOS gives it the time. The phone shows that state, dated ("Mac asleep · last seen 23:10"), and its Outbox records wait in iCloud. When the Mac wakes and the engine is running, pi² Remote fetches every change since its last token (a push to it may have been missed or merged), hands the requests to the engine in the order of their `at`, and writes their receipts. pi² does not try to wake a sleeping Mac.
+For one person on an ordinary day (the app open two hours, receiving about three engine lines a second while open; sixty pushes; thirty-five connections): about 23,000 messages received, so about 1,190 billed requests a day and 7 GB-seconds a day (2 ms awake for each message, 200 ms for each push's call to Apple). So:
 
-**What iCloud does not promise.** iCloud merges pushes and may leave data out of them,[^dbsub] and silent pushes are low priority, not guaranteed, and throttled past two or three an hour.[^bgpush] So: every push, of any kind, makes its receiver fetch all changes since its last token; the notification service extension shows what is new ("Forge needs approval, and 2 more"); the Mac also fetches every minute while a device is paired, any need waits, and no direct connection is open; and the phone fetches whenever it comes to the foreground. A notification is a hint to look, never the only copy.
+| | Requests a month | GB-seconds a month | Cost a month |
+|---|---|---|---|
+| One person | 36,000 | 220 | **$0** on the Free plan; **$5** on the Paid plan (all within what it includes) |
+| A thousand people | 36 million | 220,000 | **about $10** ($5, and $5.25 of requests) |
+| A thousand, ten times as busy | 357 million | 2.2 million | **about $84** |
 
-**Notifications always come this way**, at home too: with the app closed there is no connection, and only a push from Apple wakes a phone.
+These are estimates from the price pages with the assumptions above; P35 measures the real numbers. A spending limit on the account bounds them ([6.6](#66-abuse-and-cost)).
 
-### 6.3 If the answer is "direct only"
+### 6.3 The recommendation
 
-- Nothing is written to iCloud; pi² Remote has no CloudKit or push entitlement; P15 and P16 are not built, and the `remote.cloud*` requests and events not added.
-- **No notifications while the app is closed**: the Mac has no way to wake the phone. The app shows local notifications only while iOS lets it run in the background, which is seconds.
-- Away from home the phone works only over a private network that reaches the Mac (6.1); otherwise it shows its last copy and keeps the Outbox until it is back.
-- Widgets and the Live Activity change only while the app runs.
+**(a), a relay pi² runs, on Cloudflare Workers with Durable Objects**, which also sends the pushes.
 
-### 6.4 If the answer is "a relay pi² runs"
+- Only a relay carries a live conversation across any two networks with nothing for the person to set up, and (b) needs one anyway, for signalling and for the third of sessions it cannot connect.
+- (b)'s gain, lower latency on a direct path, matters for voice and video, not for text events a few times a second; its cost is a peer-to-peer stack (Google's WebRTC library, or ICE of pi²'s own) on both ends, and a phone that must redo ICE whenever it changes network.
+- (c) cannot stream ([6.1](#61-the-three-ways)).
+- Cloudflare over Fly.io: no server to keep, sockets that cost nothing while idle, nothing to pay for one person and about $10 a month for a thousand, its network near both ends, and tests that run it locally (`wrangler`, the Workers Vitest integration[^cfvitest]). The relay's protocol is plain WebSockets, so it can move to a container later without changing either end.
 
-- A server pi² operates holds the developer's push key and a rendezvous: the Mac's pi² Remote and the phone each connect out to it over TLS, and it passes frames between them, sealed end to end with the HPKE keys of [3.2](#32-the-keys) (the relay sees which device, how much and when, never what). Pushes go from it through Apple's push service, with `mutable-content` and a sealed payload, opened by the same notification service extension.
-- It can update a Live Activity while the app is closed, which only a holder of the push key can,[^lapush] and it works when the two use different Apple Accounts.
-- It costs a server, its upkeep and someone answerable for it, and a privacy policy that says what the relay sees. A new issue builds the relay; P15 and P16 become its two ends in place of iCloud; P25 gains push updates.
+**Pushes come from the relay**, not from iCloud, now that the relay is there anyway: a push is sent at once with Apple's high priority rather than merged with others;[^apns] it needs no shared Apple Account and no CloudKit on the Mac; and only a holder of the push key can update a Live Activity while the app is closed,[^lapush] which the relay can. Its content is sealed for the phone and opened by the phone's notification service extension ([section 7](#7-notifications)).
+
+### 6.4 What the owner sets up once
+
+1. **A Cloudflare account**, on the Workers Paid plan ($5 a month) with a spending limit and an e-mail alert, or the Free plan while the owner is the only one using it.[^cfworkers][^cfspend]
+2. **An API token** for deploying Workers, kept as a secret of this repository's CI (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`), or the owner deploys by hand with `wrangler deploy`.
+3. **An APNs authentication key** (a `.p8` file) from the Apple developer account, with its key id and the team id, given to the relay as Workers secrets (`APNS_KEY`, `APNS_KEY_ID`, `APNS_TEAM_ID`) with `wrangler secret put`; never in the repository.[^apnskey][^cfsecrets] One for the sandbox environment (development builds) and one for production (TestFlight and later).
+4. **The app's records**: the App IDs of pi² for iPhone and its extensions with Push Notifications and App Attest, pi² Remote's with Keychain sharing, and the app in App Store Connect for TestFlight (P14).
+5. **Optionally**, a domain for the relay (`relay.<domain>`); otherwise the address Cloudflare gives (`<name>.<account>.workers.dev`).
+
+pi² does the rest: the relay's code and its configuration in `relay/`; a workflow that tests it on every pull request and deploys it, to a development relay and to the production one, when the owner runs it; the relay's address built into release builds (and a field on the Devices page for another); every key, made at pairing; registering each pairing; and nothing for the person to set up on the Mac or the phone beyond pairing. `docs/relay.md` (P9) is the owner's page for the list above.
+
+### 6.5 When the relay is down, or the person wants none
+
+- **At home it still works**, directly: the whole of pi² over the `home` path, with the same channel.
+- **Away, over a private network** the person has (Tailscale and the like), it works directly too, at the Mac's addresses.
+- **Otherwise, away**: the phone shows "pi²'s relay can't be reached", with its last state dated, and keeps what is written in the Outbox until a path returns.
+- **No pushes** while the relay is down. When it returns, the Mac sends pushes only for what still waits, not the ones it missed.
+- **The person who wants none** turns **Reach through pi²'s relay** off on the Devices page: home and private networks only, and no notifications while the app is closed.
+- **The person's own relay**: the code in `relay/` deploys to anyone's Cloudflare account, and the Devices page takes its address. It passes channels and keeps mailboxes as pi²'s does. It can send pushes only to a build of the app signed by the same team as its push key, so a TestFlight or App Store build gets notifications only through pi²'s relay.
+- Not built in this epic: a fallback that carries notifications through the person's iCloud when the relay is down (the first draft of this page describes one); it can be filed once the relay has run for a while, if it is wanted.
+
+### 6.6 Abuse and cost
+
+**Who can use the relay.**
+
+- A Mac registers a pairing by proving its relay key. A pairing stays **pending** and is deleted after 15 minutes unless a phone joins it, and a phone joins only with an App Attest attestation of pi² for iPhone, signed by pi²'s team, checked by the relay against Apple's root,[^attest] together with the join token from the Mac's QR code. So the relay carries traffic only between a Mac and a genuine pi² for iPhone paired with it; anyone else can at most make pending pairings, which cost a row for 15 minutes.
+- Registering is limited per address: 5 an hour, 20 a day. The address is held only as a keyed hash, with a key that changes daily, for the day.
+- Under decision 3's recommended answer, only the owner's TestFlight builds exist, so only the owner's phone can join anything.
+
+**Limits for each pairing**, after which its messages are held, and past twice the limit its sockets are closed for an hour and the Mac's Devices page says why:
+
+| | Limit |
+|---|---|
+| Sockets | 6 (the Mac and five devices) |
+| A message | 70 KB (a Noise message and its header) |
+| Messages | 100 a second; 300,000 a day |
+| Data | 2 MB a second; 500 MB a day |
+| Mailbox | As [5.3](#53-the-relay) |
+| Pushes | 120 alerts an hour per device, 60 background pushes, 60 Live Activity updates |
+
+**Bounding the bill**: a spending limit on the Cloudflare account and an e-mail alert;[^cfspend] the relay answers "busy" rather than failing when a limit is reached.
+
+**What a lost phone can do through the relay before it is revoked**: what [4.2](#42-what-a-device-may-send) allows, if unlocked (the device key works only then), on any network, within its pairing's limits; Face ID's answers need its owner's face. It can reach no other pairing, read no other device's mailbox, and send pushes to nobody (only the Mac can ask for a push). Revoking removes it from the relay at once ([3.6](#36-revoking-and-a-lost-phone)).
+
+**A photographed QR code** is not enough to pair: it also takes a genuine pi² for iPhone, within five minutes, and a click on the Mac with matching digits.
 
 ## 7. Notifications
 
+**Who sends them**: the engine decides, pi² Remote seals, the relay sends. The engine sends pi² Remote a `remote` event `{ push: { device, kind, title, body, need?, projectId? } }`; pi² Remote seals it to the device's record key and asks the relay to `push`; the relay signs a token with its APNs key and posts it to Apple's push service.[^apns][^apnskey]
+
 **What triggers one.**
 
-- A new item in Needs you (with the projects preview on; the Inbox's items with it off), one notification per item, for each paired device with iCloud on.
+- A new item in Needs you (with the projects preview on; the Inbox's items with it off), one notification per item, for each paired device.
 - A provider's limit reached, or work carrying on past it, as the Mac notifies today (`Notifier.limitNotices`).
 - An orchestrator's finished answer, only for a message the person sent from the phone with **Tell me when it answers** on.
+- When an item is answered or withdrawn, a background push so the phone takes its notification away (best effort; Apple may hold or drop these[^bgpush]), and the item's removal in the device's mailbox.
 
-Nothing else in this epic. The phone's own setting turns each of the three off.
+The phone's own settings turn each of the first three off.
 
-**What its text may contain.**
+**What the push carries.** An alert push with a generic alert ("pi²", "Something needs you"), `mutable-content` set, a `collapse-id` of the item's id, and one custom key, `sealed`: the notification's content sealed with HPKE for the device ([5.3](#53-the-relay)), within Apple's 4 KB.[^payload] No category, no thread, no project and no kind are visible outside the seal: the notification service extension sets them when it opens it.[^nse] The relay sees that an alert of so many bytes went to a device at a time, and nothing else.
+
+**What the text may contain** (inside the seal):
 
 - Title: the agent's name and the kind ("Forge needs approval", "Scribe has a question", "The orchestrator asks for more reach", "Forge proposes a rule", "Forge is held back by a limit"), as the Mac's `Notifier.needsYou` says it.
 - Body: the project's name and the card's short line (`NeedItem.short`, the tool and its call's summary for an approval), at most 180 characters, after the engine has replaced every secret it knows that appears in it (agents' variables' values, providers' keys and tokens, MCP servers' variables) with "•••".
 - Never: a command's output, a file's contents, a diff, an attachment, or any transcript text beyond the card's own short line.
 - iOS shows the body on the Lock Screen only as the person's notification previews setting allows; the phone suggests "When Unlocked" during pairing, and does not require it.
+
+**The notification service extension** (P21) opens `sealed` with the record key, which is usable after the first unlock, within the thirty seconds or so iOS allows it,[^nse] and sets the title, the body, the category of the item's kind and its thread (the project). If it cannot open it in time, the generic text stays. It also writes the item to the app's store, so the app and the widgets have it. While the phone is offline, Apple keeps only the last notification for the app;[^apns] the phone takes its mailbox whenever it next connects, so nothing is lost but the banner.
 
 **Its actions, by kind.** Every action is `authenticationRequired`, which makes iOS ask for the phone to be unlocked first:[^auth] the device key, which signs every answer, is usable only then ([3.2](#32-the-keys)). Actions marked *opens* are `foreground`: Face ID cannot be asked for in the background, so they open the app on the card, which asks for it there.[^fg]
 
@@ -386,15 +471,13 @@ Nothing else in this epic. The phone's own setting turns each of the three off.
 
 **What the phone does in the background to deliver an answer.** iOS starts the app in the background with the action;[^actions] the app:
 
-1. makes the request and signs it with the device key, and puts it in the Outbox;
+1. makes the request, signs it with the device key, and puts it in the Outbox;
 2. asks iOS for more time to finish (`beginBackgroundTask`);[^bgtime]
-3. tries a direct connection for four seconds; if one attaches, sends the request over it and waits for the answer;
-4. otherwise saves it as an `Answer` record and stops there: the `Receipt` comes later;
-5. takes the notification away, and leaves the Outbox entry until the Mac's answer or receipt says what became of it. If the request could not even be saved before iOS ended the app's time, the next time the app runs it sends it, and a local notification tells the person once: "Your answer to Forge is not sent yet. pi² will send it when it can reach your Mac."
+3. connects (relay and home at once, four seconds), attaches, sends the request and waits for the answer;
+4. if the Mac is not connected to the relay, puts it in the Mac's mailbox as a sealed item instead, and stops there: the receipt comes later;
+5. takes the notification away, and leaves the Outbox entry until the Mac's answer or receipt says what became of it. If even step 4 could not be done before iOS ended the app's time, the app sends it the next time it runs, and a local notification tells the person once: "Your answer to Forge is not sent yet. pi² will send it when it can reach your Mac."
 
-A notification whose need was answered elsewhere is taken away when the phone reads the `Gone` record (or the `needs` event on a live connection); a button pressed on one not yet taken away is answered "This is no longer waiting".
-
-**The notification service extension** (P16) opens the record a push points to, within the thirty seconds or so iOS allows it,[^nse] and replaces the push's generic text ("pi² needs you", which CloudKit sends with `mutable-content` set) with the title and body, and the category with its kind's. If it cannot open the record in time, the generic text stays.
+**A Live Activity** ([design](design/iphone.md#what-a-phone-adds)) is started on the phone, which sets its static part (the project's name) there; the relay updates it while the app is closed with Live Activity pushes,[^lapush] whose content Apple's system reads directly, so it cannot be sealed. So a Live Activity's pushes carry **numbers only**: `{ working, needs, finished, at }`. The relay can read those numbers. The person turns on each Live Activity, and the switch says so.
 
 ## 8. The shared package
 
@@ -405,7 +488,7 @@ What the Mac app knows of the engine moves into targets of `app/Package.swift` t
 | 1 | `PiModels` | `Models.swift`'s types (`JSONValue`, `ConversationSummary`, `Item`, `AgentProfile`, `InboxItem`, `ActivityRun`, `UsageSummary`, `OpenConversation`, `EngineError` and the rest), the projects' models (`ProjectRow`, `NeedItem` and the types beside them), `Formats`, and `TranscriptFeed`, which depends on the models alone | P2 |
 | 2 | `EngineKit` | The client without AppKit: requests and answers, `call`, events read into observable stores (`update`, the per-event decoding of `EngineClient.handle`), `OpenConversation` handling, `outgoing` and its retry, and an `EngineTransport` protocol with the Unix socket as the Mac's transport (`EngineSocket.swift`) | P3 |
 | 3 | `TranscriptKit` | Split: the page's loading and its messages (shared), the AppKit view and the page loaded ahead (Mac), a UIKit view (iPhone); `app/Web/transcript` gains rules for a narrow screen and touch, with nothing changed at the Mac's widths | P4 |
-| 4 | `RemoteKit` | The wire formats both pi² Remote and the phone use: the pairing payload, `pair`, `attach`, `presence`, the records' content and sealing, the notification kinds and categories | P6 |
+| 4 | `RemoteKit` (new) | What pi² Remote and the phone share: Noise (the two handshakes, transport, framing), HPKE sealing of items and pushes, the pairing payload, `pair`, `attach`, `resume`, `presence`, the relay's protocol as a client, the notification kinds and categories | P6 (the channel and sealing), P10 (the relay client) |
 
 **Stays Mac-only**: starting and watching the engine (`EngineSpawn`, `EngineTrouble`, `LoginItemKit`), the app's host roles (`ComputerKit`, `BrowserKit` and their sessions), `PaneKit`, `WindowKit`, `FileLinkKit`, `ComposeKit`, `PeerKit`, `Notifier`, Sparkle, and every view. `EngineClient` stays as the Mac's object, holding an `EngineKit` session and what only the Mac does with it.
 
@@ -421,45 +504,51 @@ What the Mac app knows of the engine moves into targets of `app/Package.swift` t
 This section is decision 3's one place. Under the recommended answer:
 
 - **The owner alone**, through TestFlight's internal testing, until step 6's security reading is done and the owner says otherwise.
-- **Identifiers** (P10): the iPhone app `dev.pi2.ios`, its notification service extension `dev.pi2.ios.notifications`, widgets `dev.pi2.ios.widgets`, share extension `dev.pi2.ios.share`; pi² Remote `dev.pi2.app.remote`; the CloudKit container `iCloud.dev.pi2.remote`. Release builds of the Mac app carry pi² Remote with its provisioning profile from P10 on.
+- **Identifiers** (P14): the iPhone app `dev.pi2.ios`, its notification service extension `dev.pi2.ios.notifications`, widgets `dev.pi2.ios.widgets`, share extension `dev.pi2.ios.share`; pi² Remote `dev.pi2.app.remote`. Release builds of the Mac app carry pi² Remote with its provisioning profile from P14 on.
+- **Two relays** (P9): a development relay, for development builds and the sandbox push environment, and the production relay, for TestFlight builds and later. Throwaway copies use neither ([10](#10-testing-with-no-phone-in-hand)).
 - **Behind a preview switch on the Mac**: Settings › Devices shows only **iPhone (preview)** until the owner turns it on (`remote.preview` in `pi2.devices`); with it off, the engine starts no helper and refuses every `devices.*` request but turning it on.
-- **Builds**: a script (`scripts/iphone-release`, P10) archives and uploads to TestFlight with `xcodebuild` and Apple's own tools; no third-party build tools.
+- **Builds**: a script (`scripts/iphone-release`, P14) archives and uploads to TestFlight with `xcodebuild` and Apple's own tools; no third-party build tools.
 
-If the answer is a wider TestFlight group, P10 adds Beta App Review's requirements (a description, a contact, how to try it with no Mac, which reviewers do not have). If it is the App Store, P10 adds the privacy details (no data collected by pi²; iCloud is the person's), App Review's notes on a companion app, and the preview switch goes.
+If the answer is a wider TestFlight group, P14 adds Beta App Review's requirements (a description, a contact, how to try it with no Mac, which reviewers do not have), and the relay's limits of [6.6](#66-abuse-and-cost) matter from then on. If it is the App Store, P14 adds the privacy details (what the relay sees, [5.3](#53-the-relay); no content), App Review's notes on a companion app, and the preview switch goes.
 
 ## 10. Testing with no phone in hand
 
+**A relay on this Mac.** `relay/` runs locally under Cloudflare's own local runtime (`wrangler dev`, Miniflare[^cfvitest]) on the loopback interface, with a stand-in for Apple's push service that records the pushes it is given instead of sending them. It needs no Cloudflare account and touches neither of pi²'s relays.
+
 **The simulator against a throwaway copy's engine.**
 
-- `scripts/test-copy start <suffix> --remote` (P9) starts a copy whose engine starts pi² Remote in its **loopback mode**: it listens on 127.0.0.1 only, on a port it writes into the copy's data folder, advertises nothing on Bonjour, uses no iCloud and registers for no push, and keeps its keys in a file in the copy's data folder. Loopback is not a local network, so nothing asks macOS for the Local Network privilege,[^lnp] and the copy's own rules ([CONTRIBUTING.md](../CONTRIBUTING.md#testing-safely)) hold: no permission prompt, nothing of the installed pi² touched. A development build's pi² Remote has no other mode.
-- `scripts/test-copy pair <suffix>` opens a pairing through the copy's engine with the test copy's key, confirms it itself, and prints the `pi2://pair?…` URL with the loopback address; `xcrun simctl openurl booted '<url>'` hands it to the simulator's app, which pairs without scanning.
-- The simulator has no Secure Enclave: a debug build of the phone makes its keys in software when `SecureEnclave.isAvailable` is false, and says so on screen; a release build has no such path and refuses to pair. Face ID is the simulator's own (Features › Face ID). Notifications are tried with `xcrun simctl push` and a payload file, which runs the notification service extension against records a stand-in store holds.
-- **A stand-in for iCloud.** pi² Remote and the phone reach iCloud through a `RecordStore` protocol in RemoteKit; its stand-in is a folder (`remote-records/` in the copy's data folder), which both use in loopback mode and in tests. Sealing, expiry, receipts and the order of answers are all tested through it.
+- `scripts/test-copy start <suffix> --remote` (P13) starts a local relay for the copy, then a copy whose engine starts pi² Remote in its **loopback mode**: it connects to that relay only, listens on 127.0.0.1 only for the `home` path, advertises nothing on Bonjour, registers for no push, and keeps its keys in a file in the copy's data folder. Loopback is not a local network, so nothing asks macOS for the Local Network privilege,[^lnp] and the copy's own rules ([CONTRIBUTING.md](../CONTRIBUTING.md#testing-safely)) hold: no permission prompt, nothing of the installed pi² touched. `stop` stops the local relay too. A development build's pi² Remote has no other mode.
+- `scripts/test-copy pair <suffix>` opens a pairing through the copy's engine with the test copy's key, confirms it itself, and prints the `pi2://pair?…` URL; `xcrun simctl openurl booted '<url>'` hands it to the simulator's app, which pairs without scanning, over the local relay.
+- The simulator has no Secure Enclave and no App Attest: a debug build of the phone makes its keys in software when `SecureEnclave.isAvailable` is false, and says so on screen; the local relay, and only it, takes a join without an attestation when started for tests. A release build of the phone has no such path, and neither of pi²'s relays takes one. Face ID is the simulator's own (Features › Face ID). Pushes are tried with `xcrun simctl push` and a payload the local relay's stand-in recorded, which runs the notification service extension.
+- `scripts/test-copy relay-down <suffix>` and `relay-up` stop and start the local relay, to try [6.5](#65-when-the-relay-is-down-or-the-person-wants-none).
 
-**What CI builds and runs** (the iPhone workflow, P9, on the macOS runner):
+**What CI builds and runs**:
 
-- the shared targets' tests on macOS (`swift test`), and on the iOS simulator;
+- the relay's tests (the Workers Vitest integration, locally, on Linux): the protocol, hello and challenges, register, join with a stand-in attestation checker, the routing, the mailbox and its expiry, the limits, pushes to the stand-in, revocation (P8); and that its configuration keeps logs off and its code writes nothing to the console (P15);
+- **the check that the relay sees only sealed bytes** (P15): a session between pi² Remote in loopback mode and a RemoteKit test client, through a local relay built with a recorder that keeps every message, item and push it handles; the session sends known marker strings in every place content can be (a message, a transcript, a notification's text, a secret's value, a file preview, a sealed item); the check fails if any marker appears in what the relay recorded, in any encoding the test tries (UTF-8, UTF-16, base64), and if any data message is not a valid Noise message of that session;
+- the shared targets' tests on macOS, and on the iOS simulator; RemoteKit's Noise against the published test vectors (P6);
 - the iPhone app and its extensions built for the simulator, with its unit tests;
-- the engine's tests for devices (`engine/test/devices.ts`, P5): pairing, attach, the device table for every handler, presence signatures (good, stale, replayed, wrong method or params, wrong key), the log, revocation, the events never sent, and secrets never sent, with a stand-in for pi² Remote written in the test;
-- a protocol test (P6): pi² Remote built in loopback mode against an engine started as the engine's tests start one, with a RemoteKit client in a test program that pairs, attaches, sends a request of each device class with software keys, and reads records through the folder stand-in.
+- the engine's tests for devices (`engine/test/devices.ts`, P5): pairing, attach, the device table for every handler, presence signatures (good, stale, replayed, wrong method or params, wrong key), sealed items from the mailbox, the log, revocation, the events never sent, and secrets never sent, with a stand-in for pi² Remote written in the test;
+- a protocol test (P10): pi² Remote in loopback mode against an engine started as the engine's tests start one, a local relay, and a RemoteKit client in a test program that pairs, attaches, sends a request of each device class, moves from the relay path to the home path and back mid-answer, and takes its mailbox.
 
-**What only a real phone can show**: the Secure Enclave and Face ID; real pushes, how late they come, and the notification service extension's time; the Local Network prompts (the simulator does not have local network privacy[^lnp]); Bonjour on a real network; how much time iOS gives a notification's action; a Live Activity's look and updates; how often widgets are redrawn; battery and data; cellular and a private network away from home; iCloud's delays; what the Lock Screen shows. P29 and P30 try these on the owner's phone, with the owner, and write what they found here.
+**What only a real phone can show**: the Secure Enclave, Face ID and App Attest; real pushes, how late they come, and the notification service extension's time; the Local Network prompts (the simulator does not have local network privacy[^lnp]); Bonjour on a real network; a mobile network, and moving between it and Wi-Fi mid-answer; how much time iOS gives a notification's action; a Live Activity's look and updates; how often widgets are redrawn; battery and data; what the Lock Screen shows. P34 and P35 try these on the owner's phone, with the owner, and write what they found here.
 
 ## 11. What the Mac cannot check
 
-The engine checks what reaches it. About a phone, these lie outside, and nothing in the epic may claim otherwise:
+The engine checks what reaches it. About a phone and the relay, these lie outside, and nothing in the epic may claim otherwise:
 
-- **That a device's keys are where they should be.** The Mac takes the public keys the phone sends at pairing. It cannot tell a key in the Secure Enclave from one in software, or a genuine pi² for iPhone from another program that paired with the code; the code and the six digits prove only that someone on the Mac's network had the code in front of them and the person clicked Pair. (Apple's App Attest could prove more; it is left to the step 6 reading.)
+- **That a device's keys are where they should be.** The Mac takes the public keys the phone sends at pairing. App Attest, checked by the relay, says a genuine pi² for iPhone joined; the Mac takes the relay's word for it, and cannot tell a key in the Secure Enclave from one in software.
 - **Whose face.** A presence signature proves that the phone's enrolled Face ID passed. It cannot prove whose face is enrolled, or that the passcode that guards enrolling is strong.
-- **What the phone keeps, and shows.** The Mac cannot see the phone's cache, its screenshots, its delivered notifications, its Lock Screen setting, or whether it is jailbroken. [3.6](#36-revoking-and-a-lost-phone) says what pi² keeps there; nothing stops a person or a broken phone keeping more.
+- **What the phone keeps, and shows.** The Mac cannot see the phone's cache, its screenshots, its delivered notifications, its Lock Screen setting, or whether it is jailbroken.
 - **Who holds an unlocked phone.** Every request but Face ID's is taken from whoever has the paired phone unlocked.
-- **That iCloud delivers.** The Mac cannot tell whether a notification reached the phone, or when; a need answered nowhere stays under Needs you on the Mac, as it does today.
-- **When something was written.** `at` in a request is the phone's clock; the engine bounds it with its own, as [6.2](#62-icloud-the-recommended-answer) says, and the order of answers in iCloud is the order of those clocks.
+- **What the relay does with what it sees.** The channel and every sealed item are end to end, so the relay cannot read or change them unnoticed; but it can delay or drop them, see their sizes and times, and learn from those when the person works. The Mac and the phone cannot tell a relay that drops nothing from one that drops a little, beyond the acknowledgements of [5.8](#58-resuming-and-moving-between-paths). The same holds for Cloudflare.
+- **That a push arrived.** Apple's push service is best effort;[^apns] a need answered nowhere stays under Needs you on the Mac, as today.
+- **When something was written.** `at` in a sealed item is the phone's clock; the engine bounds it with its own (24 hours, and five minutes of difference besides).
 - **What [projects.md section 11](projects.md#11-what-the-engine-cannot-check) already says** stays true: an agent's command can still write the data folder or start an engine of its own; the device rules do not sandbox commands.
 
 ## 12. The later issues
 
-Thirty issues, in the roadmap's steps. "Waits for" is what must be merged first; "owns" is what no other issue changes while it is open, so issues built side by side do not collide. Each issue updates the part of this page it built if the build had to differ, in the same pull request.
+Thirty-five issues, in the roadmap's steps; the relay adds five to the first draft's thirty. "Waits for" is what must be merged first; "owns" is what no other issue changes while it is open, so issues built side by side do not collide. Each issue updates the part of this page it built if the build had to differ, in the same pull request.
 
 ### 12.1 Who owns what several issues share
 
@@ -467,17 +556,20 @@ Thirty issues, in the roadmap's steps. "Waits for" is what must be merged first;
 |---|---|---|
 | The device lists in `answers.ts`, `deviceMay`, `FOR_THE_HELPER`, and the start-up check | P5 | Every later issue that adds a request places it in the lists and tests its refusal from a device |
 | `pi2.devices`, `pi2.deviceNonces`, `pi2.deviceLog`, `summarize`, the `devices` and `device` events | P5 | An issue that lets a device send a new request adds its `summarize` line |
-| Presence verification in the engine | P5 | P12 signs; P17 signs from a notification |
-| `remote.*` requests and the `remote.cloudOut` event | P5 (control, pairing, attach), P15 (cloud) | P5 leaves `remote.cloudIn`/`cloudOut` out; P15 adds them in `engine/src/remote.ts` |
-| `RemoteKit` (wire formats, `RecordStore`, notification kinds) | P6 | P8, P15, P16, P17, P19 use it; a change they need is made in P6's place by the issue that needs it, alone in its pull request |
+| Presence verification in the engine | P5 | P17 signs; P22 signs from a notification |
+| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`; P20 adds the event's `push` |
+| `RemoteKit`'s channel and sealing (Noise, HPKE, framing, the pairing payload, `pair`, `attach`, `resume`, `presence`) | P6 | Others use it; a change they need is made in its own pull request by the issue that needs it |
+| `RemoteKit`'s relay client | P10 | P12, P22, P23 use it |
+| The relay: `relay/` (code, its tests, its configuration) | P8 | P20 adds the APNs client in `relay/src/apns.ts`; P15 adds the recorder in `relay/test/` |
+| The relay's deployment: `.github/workflows/relay.yml`, the environments, `docs/relay.md` | P9 | — |
 | `PiModels` | P2 | Other issues add types beside their own feature's |
-| `EngineKit` and `EngineTransport` | P3 | P8 adds the TLS transport in `iphone/`, not in EngineKit |
-| `TranscriptKit` and `app/Web/transcript`'s narrow layout | P4 | P13 and P24 use it |
+| `EngineKit` and `EngineTransport` | P3 | P12 adds the channel's transport in `iphone/`, not in EngineKit |
+| `TranscriptKit` and `app/Web/transcript`'s narrow layout | P4 | P18 and P29 use it |
 | `app/Package.swift` | each target's issue adds its own lines | Conflicts there are lines added side by side; keep both |
-| The `iphone/` Xcode project, its targets and signing | P8 | P8 makes the project with folders Xcode keeps in step by itself, so a source file added in a folder never changes `project.pbxproj`. A new target changes it: P16 (notification service), P26 (widgets), P28 (share); they land one at a time |
-| Identifiers, the CloudKit container, provisioning profiles | P10 | Until P10, CloudKit work runs against the `RecordStore` folder stand-in |
-| `scripts/test-copy --remote` and `pair`, the iPhone CI workflow | P9 | Until P9, protocol tests run from P6's test program |
-| The phone's store (cache, Outbox, protection, wiping) | P18 | Earlier screens keep state in memory only |
+| The `iphone/` Xcode project, its targets and signing | P12 | P12 makes the project with folders Xcode keeps in step by itself, so a source file added in a folder never changes `project.pbxproj`. A new target changes it: P21 (notification service), P31 (widgets, with the Live Activity), P33 (share); they land one at a time |
+| Identifiers, capabilities, provisioning profiles | P14 | Until P14, everything runs against the local relay with software keys |
+| `scripts/test-copy --remote`, `pair`, `relay-down`, `relay-up`; the iPhone CI workflow | P13 | Until P13, protocol tests run from P10's test program |
+| The phone's store (cache, Outbox, protection, wiping) | P23 | Earlier screens keep state in memory only |
 
 ### 12.2 Each issue
 
@@ -485,122 +577,142 @@ Thirty issues, in the roadmap's steps. "Waits for" is what must be merged first;
 
 | Issue | Builds | Waits for | Owns | Done when |
 |---|---|---|---|---|
-| P1 A security reading of this contract | A second agent's reading: pairing, keys, attach, presence, the device table, records and sealing, what a lost phone keeps; findings as review comments, and changes to this page agreed by the owner | The owner's agreement of this page | Nothing outside its findings | Every finding is answered on the pull request that makes this page, or filed |
+| P1 A security reading of this contract | A second agent's reading: pairing, keys, Noise and its use, attach, presence, the device table, sealed items, the relay's knowledge and limits, what a lost phone keeps; findings as review comments, and changes to this page agreed by the owner | The owner's agreement of this page | Nothing outside its findings | Every finding is answered on the pull request that makes this page, or filed |
 
 **Step 1: foundations, side by side**
 
 | Issue | Builds | Waits for | Owns | Done when |
 |---|---|---|---|---|
-| P2 Shared models | `PiModels` ([8](#8-the-shared-package)); `pi2-client-check` and its recorded session | P1 | `app/Sources/PiModels`, `app/Sources/pi2-client-check`, its fixture | The Mac app builds on `PiModels`, the check passes, nothing else changed |
-| P3 The engine's client in a package | `EngineKit`, `EngineTransport` and the Unix socket transport; `EngineClient` on top of it | P2 | `app/Sources/EngineKit`, `EngineClient.swift`, `EngineSocket.swift` | `pi2-client-check` passes unchanged; a copy's pictures match |
+| P2 Shared models | `PiModels`; `pi2-client-check` and its recorded session | P1 | `app/Sources/PiModels`, `app/Sources/pi2-client-check`, its fixture | The Mac app builds on `PiModels`, the check passes, nothing else changed |
+| P3 The engine's client in a package | `EngineKit`, `EngineTransport` and the Unix socket transport; `EngineClient` on top | P2 | `app/Sources/EngineKit`, `EngineClient.swift`, `EngineSocket.swift` | `pi2-client-check` passes unchanged; a copy's pictures match |
 | P4 The conversation page for both | `TranscriptKit` split; the UIKit view; the page's narrow layout | P2 | `app/Sources/TranscriptKit`, `app/Web/transcript` (narrow rules), `pi2-transcript-check` | The Mac's check and pictures unchanged; the page drawn at 390 points in a test |
-| P5 Devices in the engine | [Section 3](#3-pairing)'s engine side, [section 4](#4-who-is-speaking) whole, [5.4](#54-the-messages) and [5.5](#55-what-is-never-sent-to-a-phone) in the engine, starting pi² Remote | P1 | `engine/src/devices.ts`, `engine/src/remote.ts` (but its cloud part), the device lists in `answers.ts`, `engine/test/devices.ts` | The tests of [10](#10-testing-with-no-phone-in-hand) pass with a stand-in helper |
-| P6 pi² Remote | The helper ([5.1](#51-which-program-listens) to [5.3](#53-tls-and-mutual-authentication)): TLS with the pinned key, Bonjour, loopback mode, attach, passing lines; its PeerKit requirement; `RemoteKit`; embedding it in the app's bundle | P5 for attach (it may start against a stand-in) | `app/Sources/pi2-remote`, `app/Sources/RemoteKit`, the helper's requirement in `PeerKit`, `app/build.sh`'s lines for it | The protocol test passes in CI; a copy's helper never asks macOS for anything |
-| P7 The Devices page on the Mac | Settings › Devices: the preview switch, Reach from an iPhone, iCloud's line, pairing with the QR code and the digits, the list, rename, revoke, accept a new Face ID key, the log | P5 | `app/Sources/pi2/DevicesSettings.swift`, its tab in `SettingsView.swift` | Every state drawn in a copy; pairing confirmed through it with a stand-in phone |
-| P8 The iPhone app's shell | `iphone/`: the project, its signing for development, the first screen, scanning, pairing, the keys ([3.2](#32-the-keys)), the TLS transport, attach, the connection's states, an empty list | P3, P6 | `iphone/` (project, `App/`, `Pairing/`, `Connection/`, `Keys/`) | Pairs with a copy from the simulator and shows "At home" |
-| P9 Testing with no phone | [Section 10](#10-testing-with-no-phone-in-hand): `--remote`, `pair`, the simulator script, the CI workflow, `docs/development.md`'s section | P6, P8 | `scripts/test-copy`'s remote commands and `scripts/test-test-copy`'s cases for them, `scripts/iphone-sim`, `.github/workflows/iphone.yml` | CI builds and tests the phone on every pull request that touches it |
-| P10 Signing, iCloud and TestFlight | [Section 9](#9-who-it-is-for-and-how-it-is-given-out): identifiers, the container, profiles, the upload script, `docs/releasing.md`'s section | P8 | `scripts/iphone-release`, the entitlements files, `docs/releasing.md`'s iPhone section | A build reaches the owner's TestFlight; a release Mac build carries pi² Remote signed with its profile |
+| P5 Devices in the engine | [Section 3](#3-pairing)'s engine side, [section 4](#4-who-is-speaking) whole, [5.6](#56-the-messages) and [5.7](#57-what-is-never-sent-to-a-phone), starting pi² Remote | P1 | `engine/src/devices.ts`, `engine/src/remote.ts`, the device lists in `answers.ts`, `engine/test/devices.ts` | Its tests of [10](#10-testing-with-no-phone-in-hand) pass with a stand-in helper |
+| P6 The channel and sealing | `RemoteKit`: Noise (IKpsk2 and KK, 25519, ChaChaPoly, SHA-256), framing, HPKE items, the pairing payload, `pair`, `attach`, `resume`, `presence` | P1 | `app/Sources/RemoteKit` (but `Relay/`), its tests and the Noise test vectors | The published vectors pass; a pair and a KK session run between two test ends |
+| P7 pi² Remote | The helper ([5.5](#55-which-program-holds-them)): the `home` path (TCP, Bonjour), loopback mode, its keys, the engine connections, attach, passing lines; its PeerKit requirement; embedding it in the app's bundle | P5, P6 | `app/Sources/pi2-remote` (but `Relay/`), the helper's requirement in `PeerKit`, `app/build.sh`'s lines for it | A test client attaches over loopback; a copy's helper never asks macOS for anything |
+| P8 The relay | `relay/`: the Worker and the pairing's Durable Object with hibernating sockets ([5.3](#53-the-relay)): hello and challenges, register, join with App Attest, routing, the mailbox, limits ([6.6](#66-abuse-and-cost)), revocation; logs off; tests with the Workers Vitest integration | P1 | `relay/` (but `src/apns.ts`) | Its tests pass locally and in CI |
+| P9 The relay's deployment | `relay/wrangler.jsonc`'s two environments, `.github/workflows/relay.yml` (test on every pull request; deploy when the owner runs it), the spending limit's instructions, `docs/relay.md` with the owner's list of [6.4](#64-what-the-owner-sets-up-once) | P8 | `relay/wrangler.jsonc`, `.github/workflows/relay.yml`, `docs/relay.md` | The owner, following `docs/relay.md`, deploys the development relay, and a test client registers there |
+| P10 pi² Remote's relay end | `RemoteKit/Relay` (the client) and pi² Remote's use of it: register, join windows, the device list, the mailbox both ways (`remote.mailboxIn`), reconnecting; the protocol test | P7, P8 | `app/Sources/RemoteKit/Relay`, `app/Sources/pi2-remote/Relay`, the protocol test | The protocol test of [10](#10-testing-with-no-phone-in-hand) passes in CI |
+| P11 The Devices page on the Mac | Settings › Devices: the preview switch, Reach from an iPhone, Reach through pi²'s relay, the home path, the relay's address and state, pairing with the QR code and the digits, the list, rename, revoke, accept a new Face ID key, the log, Forget this Mac at the relay | P5 | `app/Sources/pi2/DevicesSettings.swift`, its tab in `SettingsView.swift` | Every state drawn in a copy; pairing confirmed through it with a test client |
+| P12 The iPhone app's shell | `iphone/`: the project, development signing, the first screen, scanning, pairing over the relay or home, the keys ([3.2](#32-the-keys)), App Attest, both paths, attach, the connection's states, an empty list | P3, P6, P10 | `iphone/` (project, `App/`, `Pairing/`, `Connection/`, `Keys/`) | Pairs with a copy from the simulator through the local relay and shows "Connected" |
+| P13 Testing with no phone | [Section 10](#10-testing-with-no-phone-in-hand): `--remote` with a local relay, `pair`, `relay-down`, `relay-up`, the simulator script, the iPhone CI workflow, `docs/development.md`'s section | P10, P12 | `scripts/test-copy`'s remote commands and `scripts/test-test-copy`'s cases for them, `scripts/iphone-sim`, `.github/workflows/iphone.yml` | CI builds and tests the phone on every pull request that touches it |
+| P14 Signing and TestFlight | [Section 9](#9-who-it-is-for-and-how-it-is-given-out): identifiers, capabilities (push, App Attest, Keychain sharing), profiles, the upload script, `docs/releasing.md`'s section | P12 | `scripts/iphone-release`, the entitlements files, `docs/releasing.md`'s iPhone section | A build reaches the owner's TestFlight; a release Mac build carries pi² Remote signed with its profile |
+| P15 The relay sees only sealed bytes | The recorder, the marker session and its check, the logs-off and no-console checks ([10](#10-testing-with-no-phone-in-hand)) | P10 | `relay/test/sealed.test.ts`, the recorder, the marker session's client | The check runs in CI and fails when a marker is planted in clear |
 
-**Step 2: the first useful release, at home**
-
-| Issue | Builds | Waits for | Owns | Done when |
-|---|---|---|---|---|
-| P11 The projects list | The list with Needs you on top, the connection bar, chats, More, search | P8 | `iphone/Sources/Home/` | Drawn against a copy's demo projects in both appearances |
-| P12 Needs you, answered | Every kind of card, answered; Face ID and the presence signature where [4.2](#42-what-a-device-may-send) asks | P5, P8 | `iphone/Sources/Needs/`, `iphone/Sources/Presence/` | Each kind answered from the simulator against a copy; the engine refuses a Face ID one without it |
-| P13 The orchestrator's conversation | The transcript page, sending, dictation, photos and the camera, stop, queued messages, the outgoing chips | P4, P8 | `iphone/Sources/Conversation/` | A conversation read live and written to from the simulator |
-| P14 The hub, Now and the Dashboard | The tab bar, Now, the Dashboard's pages | P11 | `iphone/Sources/Hub/`, `iphone/Sources/Dashboard/` | Drawn against a copy's demo hub |
-
-**Step 3: away, and with the app closed**
+**Step 2: the first useful release, on any network**
 
 | Issue | Builds | Waits for | Owns | Done when |
 |---|---|---|---|---|
-| P15 iCloud on the Mac | [6.2](#62-icloud-the-recommended-answer)'s Mac side: zones, records, sealing, subscriptions, fetching, `remote.cloudIn` and `cloudOut` | P5, P6, P10 | `app/Sources/pi2-remote/Cloud/`, `RemoteKit/Records/`, the cloud part of `engine/src/remote.ts` | Records written and read through the stand-in in CI, and through the owner's iCloud once |
-| P16 iCloud and notifications on the phone | Subscriptions, the notification service extension, `Gone`, `State`, receipts | P15 | `iphone/NotificationService/`, `iphone/Sources/Cloud/` | A push from the simulator's tool opens a record and shows its text |
-| P17 Notification actions | [Section 7](#7-notifications)'s categories and actions, delivering in the background, Face ID by opening the app | P12, P16 | `iphone/Sources/Notifications/` | Each kind's buttons answer a copy's need, directly and through the stand-in |
-| P18 The Mac out of reach | The phone's store, dated; the Outbox; file protection; what is kept and wiped ([3.6](#36-revoking-and-a-lost-phone)) | P8 | `iphone/Sources/Store/`, `iphone/Sources/Outbox/` | A copy stopped and started again: the phone shows the last state, then sends its Outbox |
-| P19 Direct from anywhere | [6.1](#61-direct-where-the-two-can-reach-each-other): addresses in `paired`, `device` and `State`, trying them at once, `direct` | P6, P8 | `iphone/Sources/Connection/Routes.swift`, the address list in `RemoteKit` | Reached by a non-Bonjour address in a test; "Away · direct" shown |
+| P16 The projects list | The list with Needs you on top, the connection bar, chats, More, search | P12 | `iphone/Sources/Home/` | Drawn against a copy's demo projects in both appearances |
+| P17 Needs you, answered | Every kind of card, answered; Face ID and the presence signature where [4.2](#42-what-a-device-may-send) asks | P5, P12 | `iphone/Sources/Needs/`, `iphone/Sources/Presence/` | Each kind answered from the simulator against a copy; the engine refuses a Face ID one without it |
+| P18 The orchestrator's conversation | The transcript page, sending, dictation, photos and the camera, stop, queued messages, the outgoing chips | P4, P12 | `iphone/Sources/Conversation/` | A conversation read live and written to from the simulator through the local relay |
+| P19 The hub, Now and the Dashboard | The tab bar, Now, the Dashboard's pages | P16 | `iphone/Sources/Hub/`, `iphone/Sources/Dashboard/` | Drawn against a copy's demo hub |
+
+**Step 3: with the app closed, and the Mac out of reach**
+
+| Issue | Builds | Waits for | Owns | Done when |
+|---|---|---|---|---|
+| P20 Pushes through the relay | The relay's APNs client (the token, HTTP/2, sandbox and production, the push limits); the engine's choice of what to push ([section 7](#7-notifications)); pi² Remote's sealing of it; push tokens | P8, P10 | `relay/src/apns.ts`, the push part of `engine/src/remote.ts`, `app/Sources/pi2-remote/Push` | A copy's need reaches the local relay's stand-in sealed; one real push reaches the owner's phone from the development relay |
+| P21 The notification service extension | Opening `sealed`, the category and thread, the store, background pushes that take notifications away | P20 | `iphone/NotificationService/`, `iphone/Sources/Push/` | A recorded push, given to the simulator, shows its text and buttons |
+| P22 Notification actions | [Section 7](#7-notifications)'s categories and actions, delivering in the background, the mailbox when the Mac is away, Face ID by opening the app | P17, P21 | `iphone/Sources/Notifications/` | Each kind's buttons answer a copy's need, over the local relay and, with the copy's relay end stopped, through the mailbox |
+| P23 The Mac out of reach | The phone's store, dated; the Outbox; the mailbox's state and items; file protection; what is kept and wiped ([3.6](#36-revoking-and-a-lost-phone)) | P10, P12 | `iphone/Sources/Store/`, `iphone/Sources/Outbox/` | A copy stopped and started again: the phone shows the last state, then sends its Outbox |
+| P24 Moving between paths | Trying the Mac's addresses, `resume`, moving a session from relay to direct and back mid-answer ([5.8](#58-resuming-and-moving-between-paths)) | P7, P10, P12 | `iphone/Sources/Connection/Paths.swift`, the session buffer in `app/Sources/pi2-remote/Session` | The protocol test moves mid-answer and loses no line |
 
 **Step 4: the rest of the board**
 
 | Issue | Builds | Waits for | Owns | Done when |
 |---|---|---|---|---|
-| P20 Work | The list, a piece of work, giving it to an agent, filing | P14 | `iphone/Sources/Work/` | Against a copy's demo work, kept by pi² and with `PI2_GH` |
-| P21 A pull request | Checks, findings, files, one file's diff, merge with Face ID, send back | P20 | `iphone/Sources/PullRequest/` | Against `PI2_GH`'s stand-in |
-| P22 Agents, Rules, Notes, Branches | The board's other tabs and templates, with Face ID where asked | P14 | `iphone/Sources/Board/` | Each drawn and changed against a copy |
-| P23 Settings, limits, usage, schedules | A project's settings and limits, the plan's windows, today's spending, schedules, the app's settings a phone may change | P14 | `iphone/Sources/Settings/`, `iphone/Sources/Usage/` | Each drawn and changed against a copy |
-| P24 Agents' conversations, and the rest | An agent's own conversation, other conversations, chats, the archive, background commands; a new project from a folder the Mac offers; `projects.folders` and `files.preview` in the engine | P13 | `iphone/Sources/Conversations/`, `engine/src/folders.ts` | Each opened from the simulator; `files.preview` refuses outside the folder |
+| P25 Work | The list, a piece of work, giving it to an agent, filing | P19 | `iphone/Sources/Work/` | Against a copy's demo work, kept by pi² and with `PI2_GH` |
+| P26 A pull request | Checks, findings, files, one file's diff, merge with Face ID, send back | P25 | `iphone/Sources/PullRequest/` | Against `PI2_GH`'s stand-in |
+| P27 Agents, Rules, Notes, Branches | The board's other tabs and templates, with Face ID where asked | P19 | `iphone/Sources/Board/` | Each drawn and changed against a copy |
+| P28 Settings, limits, usage, schedules | A project's settings and limits, the plan's windows, today's spending, schedules, the app's settings a phone may change | P19 | `iphone/Sources/Settings/`, `iphone/Sources/Usage/` | Each drawn and changed against a copy |
+| P29 Agents' conversations, and the rest | An agent's own conversation, other conversations, chats, the archive, background commands; a new project from a folder the Mac offers; `projects.folders` and `files.preview` in the engine | P18 | `iphone/Sources/Conversations/`, `engine/src/folders.ts` | Each opened from the simulator; `files.preview` refuses outside the folder |
 
 **Step 5: what only a phone can do**
 
 | Issue | Builds | Waits for | Owns | Done when |
 |---|---|---|---|---|
-| P25 Live Activity and the Dynamic Island | For a followed project, updated while the app runs or is woken, dated | P26 | `iphone/Widgets/LiveActivity/` | Started, updated and ended against a copy, in the simulator |
-| P26 Widgets | Needs you, Who is working, Today's spending, from `State` and the app's store | P16, P18 | `iphone/Widgets/` (the extension) | Drawn from a stand-in `State` in every size |
-| P27 Shortcuts and Siri | App Intents: ask an orchestrator, what needs me, stop a project | P13 | `iphone/Sources/Intents/` | Each run from the Shortcuts app in the simulator |
-| P28 The share sheet | Sending a link, text, photo or file to an orchestrator or agent | P13 | `iphone/ShareExtension/` | A link and a photo sent from the simulator's Safari and Photos |
+| P30 Live Activity and the Dynamic Island | For a followed project: started on the phone, updated by the relay with numbers only ([7](#7-notifications)), dated | P20, P31 | `iphone/Widgets/LiveActivity/`, the Live Activity part of `relay/src/apns.ts` | Started, updated from the local relay's stand-in and ended, in the simulator |
+| P31 Widgets | Needs you, Who is working, Today's spending, from the app's store | P21, P23 | `iphone/Widgets/` (the extension) | Drawn from a stand-in store in every size |
+| P32 Shortcuts and Siri | App Intents: ask an orchestrator, what needs me, stop a project | P18 | `iphone/Sources/Intents/` | Each run from the Shortcuts app in the simulator |
+| P33 The share sheet | Sending a link, text, photo or file to an orchestrator or agent | P18 | `iphone/ShareExtension/` | A link and a photo sent from the simulator's Safari and Photos |
 
 **Step 6: before others use it**
 
 | Issue | Builds | Waits for | Owns | Done when |
 |---|---|---|---|---|
-| P29 A second security reading, and a lost phone tried | The whole read again as built; App Attest weighed; a revoked and a lost phone tried on the owner's phone | P1 to P28 | Its findings, and [section 11](#11-what-the-mac-cannot-check) | Findings fixed or filed; [3.6](#36-revoking-and-a-lost-phone) shown true on a real phone |
-| P30 Battery and data measured | A day's battery and data on the owner's phone; the greeting's size; the pushes' delays | P17, P19 | Its measurements, in [5.7](#57-battery-and-data) | Numbers written here, and issues filed for what costs too much |
+| P34 A second security reading, and a lost phone tried | The whole read again as built, the Noise implementation and the relay above all; a revoked and a lost phone tried on the owner's phone, on a mobile network | P1 to P33 | Its findings, and [section 11](#11-what-the-mac-cannot-check) | Findings fixed or filed; [3.6](#36-revoking-and-a-lost-phone) shown true on a real phone |
+| P35 Battery, data and the relay's cost measured | A day's battery and data on the owner's phone; the greeting's size; the pushes' delays; the relay's requests and GB-seconds for a week, against [6.2](#62-what-the-relay-costs) | P22, P24 | Its measurements, in [5.9](#59-battery-and-data) and [6.2](#62-what-the-relay-costs) | Numbers written here, and issues filed for what costs too much |
 
 An Apple Watch glance and an iPad layout are not issues of this epic; if wanted, each is filed as an idea once step 2 is in use.
 
 ## 13. Decisions this contract made
 
-1. **One table decides what a device may send** ([4.2](#42-what-a-device-may-send)), checked on every request of a device connection whatever its class; every handler is placed in it, or the engine will not start.
+1. **One table decides what a device may send** ([4.2](#42-what-a-device-may-send)), checked on every request of a device connection whatever its class, and on every sealed item; every handler is placed in it, or the engine will not start.
 2. **Face ID is a signature, not a flag**: the key that signs asks for Face ID, so the engine checks a signature over that one request, fresh and used once.
-3. **The listener and iCloud are held by a helper in the app's bundle**, started by the engine and living as long as it; the engine stays the judge ([5.1](#51-which-program-listens)).
-4. **The engine's own requests and events are carried as they are**, filtered in the engine both ways, rather than a narrower protocol kept in step by hand ([5.4](#54-the-messages)).
-5. **TLS 1.3 with a pinned server key, and the phone's key proven over the TLS exporter**, so the phone's key never leaves the Secure Enclave and needs no certificate.
-6. **The Mac's certificate is self-signed and only its key's hash is checked**; making it needs code that writes a certificate, which Apple's frameworks lack (question 6).
-7. **Three keys on the phone**: one to prove the device (unlocked only), one for Face ID, one to open records (after first unlock, so a locked phone can show a notification).
-8. **Pairing only on the Mac**, with a five-minute code and six digits worked out from the connection, confirmed by a click in the app.
-9. **A new Face ID key must be accepted on the Mac**, so whoever knows the passcode cannot take Face ID's answers by enrolling a face.
-10. **One iCloud zone per device**, every record sealed with HPKE to one reader and bound to its place, on top of iCloud's own encryption.
-11. **Only answers, short messages and stops travel through iCloud**; everything else waits for a direct connection.
-12. **Records are good for a day**: a need's buttons stop working after 24 hours, and an answer older than that is refused, with a receipt.
-13. **Notifications always come through iCloud**, at home too, and a notification is only ever a hint to look.
+3. **One channel over two paths**: the relay is the path that must always work; direct is an optimisation with the same keys, handshake and messages, chosen when the two can see each other, and a session moves between them.
+4. **Noise, not TLS**, because the channel must run inside a WebSocket as well as over TCP, either end in either role, between ends that already know each other's keys; implemented once, in RemoteKit, against the published test vectors.
+5. **The device key in the Secure Enclave binds the channel key, which cannot be there**, by signing the handshake hash at every connection.
+6. **pi² Remote holds both paths, the keys and the channels**, started by the engine and living as long as it; the engine stays the judge ([5.5](#55-which-program-holds-them)).
+7. **The engine's own requests and events are carried as they are**, filtered in the engine both ways.
+8. **The relay can read nothing**: channels are end to end, mailbox items and pushes are sealed with HPKE for one reader, no category or kind is visible on a push, and the relay logs nothing of them; the one exception is a Live Activity's numbers, which the person turns on.
+9. **The relay serves only genuine pi² for iPhone**: a pairing is pending until a phone with an App Attest attestation and the QR code's token joins it.
+10. **The relay keeps a small mailbox**, 24 hours, so that an answer written while the Mac sleeps, or a need while the phone is away, is not lost.
+11. **Pushes come from the relay**, with pi²'s push key, not from iCloud.
+12. **Pairing only on the Mac**, with a five-minute code and six digits worked out from the channel, confirmed by a click in the app; on any network.
+13. **A new Face ID key must be accepted on the Mac.**
 14. **Every notification button asks for the phone to be unlocked**; the Face ID ones open the app.
-15. **A notification says who, what kind, which project and the card's short line**, secrets replaced; never output, files or transcript.
-16. **The phone's cache is small, protected and wiped**: 20 conversations of the last seven days, `NSFileProtectionComplete`, wiped on revocation and after 30 days without the Mac.
-17. **Moves before changes** in the shared package, proven by a recorded session replayed against the client before and after.
-18. **Throwaway copies listen on loopback only** and never advertise, so testing asks macOS for nothing.
+15. **A notification says who, what kind, which project and the card's short line**, secrets replaced, all inside the seal.
+16. **The phone's cache is small, protected and wiped.**
+17. **Moves before changes** in the shared package, proven by a recorded session replayed against the client.
+18. **Throwaway copies use a relay on the same Mac and listen on loopback only**, so testing asks macOS for nothing and touches neither of pi²'s relays.
 19. **Behind a preview switch on the Mac**, as projects were, until the owner says otherwise.
 
 ## 14. Questions for the owner
 
-Beyond the three decisions of [section 2](#2-the-three-decisions-and-where-each-lives). The page is written as if each recommended answer were given; each can be answered yes, or changed.
+Beyond decisions 2 and 3, still open in [section 2](#2-the-decisions-and-where-each-lives). The page is written as if each recommended answer were given; each can be answered yes, or changed.
 
-1. **The helper.** *Recommended:* pi² Remote, a helper app inside pi²'s bundle, started by the engine, holds the listener and iCloud; turning remote access on asks macOS for the Local Network privilege once, by pi²'s name ([5.1](#51-which-program-listens)).
-2. **What asks for Face ID.** *Recommended:* the rows marked Face ID in [4.2](#42-what-a-device-may-send): answers that widen reach, Allow everything, starting past a limit, a merge, changes to agents' and projects' settings, Undo, deleting. Everything else is taken from an unlocked paired phone.
-3. **Face ID enrolled again.** *Recommended:* the phone's Face ID key is invalidated when faces change, and the new one works only once the person accepts it on the Mac ([3.2](#32-the-keys)).
-4. **What the phone keeps.** *Recommended:* the last state and the last 300 entries of at most 20 conversations opened in the last seven days, readable only while unlocked, wiped on revocation and after 30 days without the Mac ([3.6](#36-revoking-and-a-lost-phone)).
-5. **What a notification says.** *Recommended:* the agent, the kind, the project and the card's short line (for an approval, the command's summary), with every secret the Mac knows replaced; the Lock Screen follows the phone's own preview setting ([section 7](#7-notifications)).
-6. **A package for certificates.** The Mac's TLS key needs a self-signed certificate, which Apple's frameworks cannot write. *Recommended:* allow Apple's own open-source `swift-certificates` (and the `swift-asn1` it needs) in pi² Remote alone; the other way is to run `/usr/bin/openssl` once at set-up, which leaves a key outside the Keychain for a moment.
-7. **How many devices.** *Recommended:* up to five, each with its own keys and log; an iPad later counts as one.
-8. **The oldest iPhone.** *Recommended:* iOS 18 or later, on an iPhone with Face ID; the owner's phone is the one that matters first.
-9. **An Xcode project in the repository.** The Mac app has none and builds with SwiftPM and `app/build.sh`; an iPhone app with extensions needs one. *Recommended:* one Xcode project in `iphone/`, holding only the app's shell and its extensions, with all shared code in `app/Package.swift`'s targets, and folders Xcode keeps in step by itself so that adding a file never touches the project file.
+1. **The way across networks.** *Recommended:* (a), a relay pi² runs on Cloudflare Workers with Durable Objects, end-to-end encrypted, on the Paid plan ($5 a month, with a spending limit), about $10 a month for a thousand people ([section 6](#6-across-any-two-networks-the-ways-compared)). The owner sets up once what [6.4](#64-what-the-owner-sets-up-once) lists.
+2. **Pushes.** *Recommended:* from the relay, with the content sealed for the phone; iCloud is not used.
+3. **The channel's protocol.** *Recommended:* Noise, implemented once in RemoteKit on CryptoKit's primitives and checked against the published test vectors. The other way is TLS 1.3 through Apple's open-source SwiftNIO and its TLS package, which can run TLS inside a WebSocket but adds two packages and BoringSSL to both apps.
+4. **The helper.** *Recommended:* pi² Remote, a helper app inside pi²'s bundle, started by the engine, holds both paths and the keys; the home path asks macOS for Local Network once, by pi²'s name, and can be turned off so that nothing is asked.
+5. **What asks for Face ID.** *Recommended:* the rows marked Face ID in [4.2](#42-what-a-device-may-send); and a Face ID key enrolled again works only once accepted on the Mac.
+6. **What the phone keeps, and what a notification says.** *Recommended:* the last state and the last 300 entries of at most 20 conversations of the last seven days, readable only while unlocked and wiped on revocation or after 30 days without the Mac; a notification names the agent, the kind, the project and the card's short line, with every secret the Mac knows replaced.
+7. **A Live Activity's numbers.** *Recommended:* allow a Live Activity, which the person turns on for a project, to be updated by the relay with counts only (working, needing the person, finished), which the relay and Apple can read; without it, a Live Activity changes only while the app runs.
+8. **How many devices, and the oldest iPhone.** *Recommended:* up to five devices; iOS 18 or later on an iPhone with Face ID.
+9. **An Xcode project in the repository.** *Recommended:* one, in `iphone/`, holding only the app's shell and its extensions, with all shared code in `app/Package.swift`'s targets, and folders Xcode keeps in step by itself so that adding a file never touches the project file.
 
 ## Notes
 
 [^se]: Apple, [Protecting keys with the Secure Enclave](https://developer.apple.com/documentation/security/protecting-keys-with-the-secure-enclave): it "works only with NIST P-256 elliptic curve keys" and "can't encode preexisting keys".
 [^passcode]: Apple, [kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly](https://developer.apple.com/documentation/security/ksecattraccessiblewhenpasscodesetthisdeviceonly): accessible only while unlocked, "never migrate to a new device", and "Disabling the device passcode causes all items in this class to be deleted."
 [^biocurrent]: Apple, [SecAccessControlCreateFlags.biometryCurrentSet](https://developer.apple.com/documentation/security/secaccesscontrolcreateflags/biometrycurrentset): "The item is invalidated if … the user re-enrolls for Face ID."
-[^exporter]: The TLS 1.3 exporter is RFC 8446, section 7.5; channel binding with it is RFC 9266. Network framework gives it as [sec_protocol_metadata_create_secret](https://developer.apple.com/documentation/security/sec_protocol_metadata_create_secret(_:_:_:_:)): "Export a secret … derived from the protocol metadata using a label string."
-[^devid]: Apple, [Supported capabilities (macOS)](https://developer.apple.com/help/account/reference/supported-capabilities-macos): iCloud (CloudKit) and Push notifications are both available to apps signed with a Developer ID certificate, through a provisioning profile.
+[^attest]: Apple, [Establishing your app's integrity](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity): App Attest makes a key in the Secure Enclave and has "Apple servers … certify that the key belongs to a valid instance of your app"; the attestation embeds the hash of a one-time challenge from the server. [DCAppAttestService](https://developer.apple.com/documentation/devicecheck/dcappattestservice) is available from iOS 14.
+[^noise]: Trevor Perrin, [The Noise Protocol Framework](https://noiseprotocol.org/noise.html), revision 34: the handshake patterns IK and KK and the `psk2` modifier (sections 7.5, 9.4), the 25519 DH functions, ChaChaPoly and SHA256 (section 12), a maximum message length of 65,535 bytes (section 3), and channel binding by the handshake hash (section 11.2).
+[^wireguard]: WireGuard, [Protocol & Cryptography](https://www.wireguard.com/protocol/): built on Noise_IKpsk2.
 [^lnp]: Apple, [TN3179: Understanding local network privacy](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy): "All Bonjour operations require local network access"; on macOS "The exception for launchd daemons doesn't apply to launchd agents", and macOS asks for the responsible app; an iOS app in the background with the privilege undetermined is denied without the alert; a local network is one on a broadcast-capable interface, "but not cellular (WWAN) or VPN"; "The simulator doesn't support local network privacy."
-[^dbsub]: Apple, [CKDatabaseSubscription](https://developer.apple.com/documentation/cloudkit/ckdatabasesubscription): the default zone of the private database "doesn't participate in database subscriptions"; "Because the system coalesces notifications, don't rely on them for specific changes. CloudKit can omit data to keep the payload size under the APNs size limit."
-[^zonesub]: Apple, [CKRecordZoneSubscription](https://developer.apple.com/documentation/cloudkit/ckrecordzonesubscription): "Only the private database supports record zone subscriptions", and a subscription can be limited to one record type.
-[^sub]: Apple, [CKSubscription](https://developer.apple.com/documentation/cloudkit/cksubscription): "Create subscriptions in the development environment first and then promote them to production"; the server notifies "all devices with that subscription except for the one that makes the original changes". Its [NotificationInfo](https://developer.apple.com/documentation/cloudkit/cksubscription/notificationinfo-swift.class) carries an alert's text, a `category` and `shouldSendMutableContent`.
-[^ckenc]: Apple, [Encrypting user data](https://developer.apple.com/documentation/cloudkit/encrypting-user-data): fields set through `encryptedValues` are encrypted with key material in the person's iCloud Keychain.
 [^hpke]: Apple, [HPKE](https://developer.apple.com/documentation/cryptokit/hpke): hybrid public key encryption as RFC 9180 describes it, which "optionally incorporates sender authentication".
+[^dows]: Cloudflare, [Use WebSockets](https://developers.cloudflare.com/durable-objects/best-practices/websockets/): with the Hibernation WebSocket API "Clients remain connected while the Durable Object is not in memory" and "Billable Duration (GB-s) charges do not accrue during hibernation"; and [Lifecycle of a Durable Object](https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).
+[^cflogs]: Cloudflare, [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/): observability is on by default for new Workers; a fetch's invocation log records its method and URL, and invocation logs can be turned off.
+[^dopricing]: Cloudflare, [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/): Free plan 100,000 requests and 13,000 GB-s a day, failing past them; Paid plan 1 million requests a month then $0.15 a million, 400,000 GB-s then $12.50 a million; "a 20:1 ratio is applied to incoming WebSocket messages"; "no charge for outgoing WebSocket messages"; objects "idle and eligible for hibernation are not billed for duration".
+[^cfworkers]: Cloudflare, [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/): the Paid plan is "a minimum charge of $5 USD per month", including Durable Objects use; "There are no additional charges for data transfer (egress)"; a WebSocket connection to a Worker is charged as one request, and "WebSocket messages routed through a Worker do not count as requests".
+[^cfspend]: Cloudflare, the spending limits and e-mail alerts named on the [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/) and [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/) pages.
+[^cfsecrets]: Cloudflare, [Secrets](https://developers.cloudflare.com/workers/configuration/secrets/): "encrypted text values" attached to a Worker, for "API keys and auth tokens".
+[^cfvitest]: Cloudflare, [Vitest integration](https://developers.cloudflare.com/workers/testing/vitest-integration/): runs tests "inside the Workers runtime", "fully-locally using Miniflare".
+[^turn]: Cloudflare, [TURN Service](https://developers.cloudflare.com/realtime/turn/) and [Realtime pricing](https://developers.cloudflare.com/realtime/pricing/): $0.05 a GB of egress, "The first 1,000 GB each month is free", shared with the SFU.
+[^fly]: Fly.io, [Resource pricing](https://fly.io/docs/about/pricing/): "The smallest always-on app costs $2.19 per 30 days"; outbound data $0.02 a GB in North America and Europe; "New organizations don't have a free tier".
+[^libp2p]: Protocol Labs, [NAT hole punching measurement campaign](https://github.com/probe-lab/network-measurements/blob/main/results/rfm15-nat-hole-punching.md): "The hole punching success rate is around 70%".
+[^turnpct]: LUMND, [The "20% of calls need a relay" number](https://www.lumnd.com/insights/webrtc-turn-relay-percentage/), tracing the figures to their sources: 17.7% of peer-to-peer calls through TURN in ten million appear.in records (2017), 22% of conferences at callstats.io (2016), and nothing comparable published since.
+[^tsnat]: Tailscale, [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works): "hard" (endpoint-dependent) NATs need a relay or heavy probing, and carrier-grade NAT puts a second NAT the user cannot configure in the path.
+[^ck]: Apple, [CloudKit](https://developer.apple.com/icloud/cloudkit/): "Store private data securely in your users' iCloud accounts".
+[^dbsub]: Apple, [CKDatabaseSubscription](https://developer.apple.com/documentation/cloudkit/ckdatabasesubscription): "Because the system coalesces notifications, don't rely on them for specific changes. CloudKit can omit data to keep the payload size under the APNs size limit."
+[^cklimit]: Apple, [CKError.Code.requestRateLimited](https://developer.apple.com/documentation/cloudkit/ckerror/code/requestratelimited): CloudKit rate-limits requests and says how many seconds to wait; it publishes no rate.
 [^bgpush]: Apple, [Pushing background updates to your app](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app): "the system doesn't guarantee their delivery … don't try to send more than two or three per hour"; the app then has 30 seconds.
-[^bgtime]: Apple, [Extending your app's background execution time](https://developer.apple.com/documentation/uikit/extending-your-app-s-background-execution-time): five seconds after moving to the background, more on asking with `beginBackgroundTask`, up to what `backgroundTimeRemaining` says.
+[^apns]: Apple, [Sending notification requests to APNs](https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns): APNs is "a best-effort service"; it "stores only one notification per bundle ID" for a device that is offline; `apns-priority` 10 sends "immediately", 5 and 1 may be grouped; `apns-collapse-id` merges notifications.
+[^apnskey]: Apple, [Establishing a token-based connection to APNs](https://developer.apple.com/documentation/usernotifications/establishing-a-token-based-connection-to-apns): a `.p8` signing key from the developer account, a key id and the team id; tokens are ES256 JSON Web Tokens refreshed at least once an hour; keys can be limited to the sandbox or production environment.
+[^payload]: Apple, [Generating a remote notification](https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification): "the maximum payload size is 4 KB (4096 bytes)".
+[^nse]: Apple, [Modifying content in newly delivered notifications](https://developer.apple.com/documentation/usernotifications/modifying-content-in-newly-delivered-notifications): the extension "has only about 30 seconds", runs only for pushes with `mutable-content` and an alert, and is meant among other things to "Decrypt data sent in an encrypted format".
+[^bgtime]: Apple, [Extending your app's background execution time](https://developer.apple.com/documentation/uikit/extending-your-app-s-background-execution-time): five seconds after moving to the background, more on asking with `beginBackgroundTask`.
 [^auth]: Apple, [UNNotificationActionOptions.authenticationRequired](https://developer.apple.com/documentation/usernotifications/unnotificationactionoptions/authenticationrequired): "The action can be performed only on an unlocked device."
 [^fg]: Apple, [UNNotificationActionOptions.foreground](https://developer.apple.com/documentation/usernotifications/unnotificationactionoptions/foreground): "The action causes the app to launch in the foreground."
 [^actions]: Apple, [Declaring your actionable notification types](https://developer.apple.com/documentation/usernotifications/declaring-your-actionable-notification-types): categories and their actions are declared when the app launches; on a choice "the system launches your app in the background"; users "can respond to actions while the device is locked".
-[^nse]: Apple, [Modifying content in newly delivered notifications](https://developer.apple.com/documentation/usernotifications/modifying-content-in-newly-delivered-notifications): the extension "has only about 30 seconds", runs only for pushes with `mutable-content` and an alert, and is meant among other things to "Decrypt data sent in an encrypted format".
 [^lapush]: Apple, [Starting and updating Live Activities with ActivityKit push notifications](https://developer.apple.com/documentation/activitykit/starting-and-updating-live-activities-with-activitykit-push-notifications): remote updates come from the developer's server over a token-based connection to APNs; and [Displaying live data with Live Activities](https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities): a Live Activity "can't access the network", lasts up to eight hours, and its data is at most 4 KB.
