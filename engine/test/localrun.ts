@@ -243,7 +243,7 @@ try {
 	// ---- Start on first use; a message sent while it loads waits and is answered
 	const a = await client.conversation("alpha");
 	assert.equal(client.state(a).local.status, "stopped", "a conversation with the model, not shown and not working, does not start it");
-	assert.equal(client.state(a).agent.thinkingLevel, "low", "a new conversation with a model on this Mac thinks at Low");
+	assert.equal(client.state(a).agent.thinkingLevel, "medium", "a new conversation with a model on this Mac thinks at Medium");
 	assert.equal(client.server("alpha"), undefined);
 	await client.show(a);
 	const loading = await client.until("alpha starting", () => client.server("alpha"));
