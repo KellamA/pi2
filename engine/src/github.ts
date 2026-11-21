@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { AgentDoc, type ConversationId, defineDoc, type EntryRecord, type JsonObject, type Tx } from "@earendil-works/pi-durable";
 import { defineOp, record, wireRepository } from "./changes.ts";
@@ -196,6 +197,8 @@ const CLASS_LABELS: Record<string, { color: string; description: string }> = {
 	"local model": { color: "0e8a16", description: "A model on this Mac can do it" },
 	"cloud model": { color: "1d76db", description: "It needs a cloud model" },
 };
+/** The label scripts/issue puts on the issues agents open, file and take: the tool does the same (#604). */
+const AGENT_LABEL: Record<string, { color: string; description: string }> = { agent: { color: "5319e7", description: "Opened by an agent session" } };
 const STATUS_OF: Partial<Record<WorkState, string>> = { open: "backlog", in_progress: "in progress", waiting: "waiting", blocked: "blocked" };
 const classLabel = (value: WorkItem["class"]) => (value === "local" ? "local model" : value === "cloud" ? "cloud model" : null);
 
@@ -247,11 +250,19 @@ const MARKER = /<!-- pi2:([0-9a-f]{16}) -->/;
 const marker = (id: string) => `<!-- pi2:${id} -->`;
 const AGENT_LINE = /^\*From .*?, an agent of the pi² project “[^”]*”\.\*\s*\n?/;
 
+/**
+ * A text as it may be posted: the repository is public, so the home folder is turned into `~`, as scripts/issue turns
+ * it (#604). Every title and text pi² posts goes through this.
+ */
+export function publicText(text: string, home = process.env.HOME || homedir()): string {
+	return home.length > 1 ? text.split(home.replace(/\/+$/, "")).join("~") : text;
+}
+
 /** The text pi² posts: for an agent, a line naming it first (3.11); the marker last, which GitHub does not show. */
 function compose(project: Project, by: Who, text: string, id: string): string {
 	const name = by.kind === "agent" ? agentName(by.agentId) : null;
 	const head = name === null ? "" : `*From ${name}, an agent of the pi² project “${project.name}”.*\n\n`;
-	return `${head}${text}${text === "" ? "" : "\n\n"}${marker(id)}`;
+	return publicText(`${head}${text}${text === "" ? "" : "\n\n"}${marker(id)}`);
 }
 
 /** What a person reads of a text pi² posted: without the agent's line and the marker. */
@@ -367,7 +378,20 @@ const holderOf = (take: Parsed | undefined): WorkItem["takenBy"] => {
 	return { agentId: take.holder.agentId, conversationId: take.holder.conversationId ?? parent };
 };
 
-const BOOKKEEPING = new Set(["take", "release", "done", "dropped"]);
+const BOOKKEEPING = new Set(["take", "release", "resume", "done", "dropped"]);
+
+/**
+ * Who held an issue closed as completed outside pi², as a merged pull request's "Fixes #N" closes it: the take that
+ * stood when it closed, with no summary ("**Done.**", the tool's or the script's) posted after it (#604). The tool
+ * cannot tell a merge from a close by hand on GitHub; either way the holder may still post its summary.
+ */
+function heldAtClose(comments: Parsed[]): WorkItem["takenBy"] {
+	const take = standing(comments).at(-1);
+	if (take === undefined) return null;
+	const after = comments.slice(comments.indexOf(take) + 1);
+	if (after.some((comment) => comment.text.startsWith("**Done.**"))) return null;
+	return holderOf(take);
+}
 
 /** An issue as a work item (3.11). */
 export function issueItem(issue: GhIssue, intents: Record<string, Intent>): WorkItem {
@@ -382,6 +406,7 @@ export function issueItem(issue: GhIssue, intents: Record<string, Intent>): Work
 	const done = [...comments].reverse().find((comment) => comment.role === "done" || comment.text.startsWith("**Done.**"));
 	const filed = MARKER.exec(issue.body ?? "")?.[1];
 	const createdAt = time(issue.createdAt) ?? 0;
+	const closedHolder = state === "done" ? heldAtClose(comments) : null;
 	return {
 		id: issue.number,
 		title: issue.title,
@@ -398,6 +423,7 @@ export function issueItem(issue: GhIssue, intents: Record<string, Intent>): Work
 		updatedAt: time(issue.updatedAt) ?? createdAt,
 		closedAt: closed ? (time(issue.closedAt) ?? null) : null,
 		url: issue.url,
+		...(closedHolder === null ? {} : { heldAtClose: closedHolder }),
 	};
 }
 
@@ -816,7 +842,7 @@ async function ensureLabels(project: Project): Promise<void> {
 	if (labelled.has(name)) return;
 	const cwd = folderOf(project);
 	const have = new Set(json<{ name: string }[]>(await gh(["label", "list", "--repo", name, "--limit", "200", "--json", "name"], cwd)).map((label) => label.name));
-	for (const [label, { color, description }] of Object.entries({ ...STATUS_LABELS, ...CLASS_LABELS })) {
+	for (const [label, { color, description }] of Object.entries({ ...AGENT_LABEL, ...STATUS_LABELS, ...CLASS_LABELS })) {
 		if (!have.has(label)) await gh(["label", "create", label, "--repo", name, "--color", color, "--description", description, "--force"], cwd);
 	}
 	labelled.add(name);
@@ -857,9 +883,12 @@ async function recordGithub(tx: Tx, project: Project, by: Who, call: Call | unde
 	return change.id;
 }
 
-/** The labels to add and take off for an issue to read as `state` and `cls`, from those it has. */
-function labelChange(have: string[], state: WorkState | null, cls: WorkItem["class"] | undefined): { add: string[]; remove: string[] } {
-	const want = new Set<string>();
+/**
+ * The labels to add and take off for an issue to read as `state` and `cls`, from those it has, and `extra` added. A
+ * closed state has no status label, so finishing or closing takes it off (#604).
+ */
+function labelChange(have: string[], state: WorkState | null, cls: WorkItem["class"] | undefined, extra: string[] = []): { add: string[]; remove: string[] } {
+	const want = new Set<string>(extra);
 	const drop = new Set<string>();
 	if (state !== null) {
 		const status = STATUS_OF[state];
@@ -923,19 +952,22 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 	const text = typeof args.text === "string" ? args.text : undefined;
 	const comment = async (key: string, role: string, said: string, extra: Record<string, unknown> = {}) =>
 		write(project, step(key), "issue.comment", { ...base, number, role, body: compose(project, by, said, step(key)), summary: `commenting on #${number}`, ...extra });
-	const labels = async (state: WorkState | null, cls?: WorkItem["class"]) => {
+	const labels = async (state: WorkState | null, cls?: WorkItem["class"], extra: string[] = []) => {
 		const now = await viewIssue(project, number!);
-		const change = labelChange((now.labels ?? []).map((label) => label.name), state, cls);
+		const change = labelChange((now.labels ?? []).map((label) => label.name), state, cls, extra);
 		if (change.add.length === 0 && change.remove.length === 0) return;
 		await write(project, step(`labels:${state}:${cls}`), "issue.labels", { ...base, number, ...change, summary: `labelling #${number}` });
 	};
+	/** "Worker, in conversation 146", or "the person": who did it, as the tool's one-line comments say. */
+	const whoDid = by.kind === "agent" ? `${names(by.agentId)}, in conversation ${by.conversationId}` : "the person";
 	let admittedNote: string | undefined;
 	const holderName = (holder: WorkItem["takenBy"]) => (holder === null ? "nobody" : names(holder.agentId));
 
 	switch (action) {
 		case "file": {
-			const labelsOf = ["backlog", ...(after.class === null ? [] : [classLabel(after.class)!])];
-			const made = (await write(project, step("create"), "issue.create", { ...base, title: after.title, body: compose(project, by, after.text, step("create")), labels: labelsOf, summary: `filing “${short(after.title)}”` })) as { number: number };
+			// An agent's issue carries the `agent` label, as scripts/issue's do (#604).
+			const labelsOf = ["backlog", ...(by.kind === "agent" ? ["agent"] : []), ...(after.class === null ? [] : [classLabel(after.class)!])];
+			const made = (await write(project, step("create"), "issue.create", { ...base, title: publicText(after.title), body: compose(project, by, after.text, step("create")), labels: labelsOf, summary: `filing “${short(after.title)}”` })) as { number: number };
 			number = made.number;
 			break;
 		}
@@ -994,19 +1026,25 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 				await readMirror();
 				admittedNote = (intentsOf(project)[claimKey]?.args.admitted as string | undefined) ?? admittedNote;
 			}
-			await labels("in_progress");
+			// An agent works on it now: the `agent` label, as scripts/issue's take puts on (#604).
+			await labels("in_progress", undefined, ["agent"]);
 			break;
 		}
-		case "release":
-			await comment("release", "release", `Released: ${holderName(before!.takenBy)} no longer works on it.`, { holder: before!.takenBy ?? undefined });
+		case "release": {
+			// One taken outside the tool has no holder it knows (#604).
+			const said = before!.takenBy === null ? "Released: it was taken outside the work tool, and is open again." : `Released: ${holderName(before!.takenBy)} no longer works on it.`;
+			await comment("release", "release", said, { holder: before!.takenBy ?? undefined });
 			await labels("open");
 			break;
+		}
 		case "wait":
 		case "block":
 			if (text?.trim()) await comment("note", action, `**${action === "wait" ? "Waiting" : "Blocked"}:** ${text}`);
 			await labels(after.state);
 			break;
 		case "resume":
+			// One line, as take posts one (#604).
+			await comment("resume", "resume", `Resumed by ${whoDid}.`);
 			await labels("in_progress");
 			break;
 		case "finish":
@@ -1014,7 +1052,8 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 			// Always a comment: it ends every hold, so a "Taken by" before it never counts again.
 			const done = after.state === "done";
 			await comment("done", done ? "done" : "dropped", `**${done ? "Done" : "Dropped"}.**${text?.trim() ? ` ${text}` : ""}`);
-			await labels(null);
+			// A closed issue has no status label (#604). One a merge closed already is not closed again.
+			await labels(after.state);
 			const now = await viewIssue(project, number!);
 			if (now.state.toUpperCase() !== "CLOSED") await write(project, step("close"), "issue.close", { ...base, number, reason: done ? "completed" : "not planned", summary: `closing #${number}` });
 			break;
@@ -1033,8 +1072,9 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 			const body = issue?.body ?? "";
 			const head = AGENT_LINE.exec(body)?.[0] ?? "";
 			const tail = MARKER.exec(body)?.[0];
-			const edited = `${head}${after.text}${tail === undefined ? "" : `\n\n${tail}`}`;
-			if (after.title !== before!.title || edited !== body) await write(project, step("edit"), "issue.edit", { ...base, number, title: after.title, body: edited, summary: `editing #${number}` });
+			const edited = publicText(`${head}${after.text}${tail === undefined ? "" : `\n\n${tail}`}`);
+			const title = publicText(after.title);
+			if (title !== before!.title || edited !== body) await write(project, step("edit"), "issue.edit", { ...base, number, title, body: edited, summary: `editing #${number}` });
 			break;
 		}
 		case "classify":
@@ -1174,7 +1214,7 @@ async function pull(project: Project, action: PullAction, by: Who, args: Record<
 		const baseBranch = typeof args.base === "string" && args.base.trim() !== "" ? args.base.trim() : await defaultBranch(project);
 		let said = typeof args.text === "string" ? args.text : "";
 		if (fixes !== null && !new RegExp(`\\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\\s+#${fixes}\\b`, "i").test(said)) said = said.trim() === "" ? `Fixes #${fixes}` : `${said}\n\nFixes #${fixes}`;
-		const made = (await write(project, key, "pr.create", { call: keys.call, by, role: "pull_request", head, base: baseBranch, title, body: compose(project, by, said, key), openedBy: by.conversationId, summary: `opening the pull request “${short(title)}”` })) as { number: number; url: string };
+		const made = (await write(project, key, "pr.create", { call: keys.call, by, role: "pull_request", head, base: baseBranch, title: publicText(title), body: compose(project, by, said, key), openedBy: by.conversationId, summary: `opening the pull request “${short(title)}”` })) as { number: number; url: string };
 		text = `Opened pull request #${made.number} from ${head} into ${baseBranch}: ${made.url}`;
 		summary = `Opened pull request #${made.number} “${short(title)}” on GitHub`;
 	} else if (action === "review") {

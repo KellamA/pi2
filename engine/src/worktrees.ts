@@ -298,6 +298,19 @@ export async function subChatFolder(parent: string | null, own: string | null): 
 	return a !== undefined && b !== undefined && realish(a.commonDir) === realish(b.commonDir) ? parent : own;
 }
 
+/**
+ * The branch a new sub-chat's worktree is made on: as the call gave it; for an agent whose own setting gives each of its
+ * conversations a worktree, "" for the branch pi² names (#604), since the `created` hook that gives a conversation made
+ * by a request its worktree never runs for a sub-chat; undefined for none. In a `folder` that is in no repository there
+ * is none to make, as for a conversation the agent starts itself. `delegate` and a held start use it; `approveWorktree`
+ * asks nobody for that agent's worktree, since it is made.
+ */
+export async function subChatBranch(given: unknown, target: Pick<AgentProfile, "worktree">, folder: string | null): Promise<string | undefined> {
+	if (typeof given === "string") return given.trim();
+	if (target.worktree !== true) return undefined;
+	return folder !== null && (await repoOf(folder)) !== undefined ? "" : undefined;
+}
+
 /** The repository's default branch: what origin/HEAD points at, else a local main or master. */
 async function defaultBranch(root: string): Promise<string | null> {
 	const remote = await tryGit(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], root);

@@ -472,6 +472,15 @@ try {
 		const byAuto = await delegate(asking, { agent: "Auto", task: "x", worktree: "auto-sub" });
 		assert.equal(byAuto.isError, false, byAuto.text);
 		assert.equal(inboxFor(asking), undefined, "not asked for an agent whose conversations get worktrees anyway");
+		const autoSub = byAuto.details.conversationId as number;
+		assert.equal((await client.until("Auto's sub-chat in its worktree", () => client.branch(autoSub)?.managed === true && client.branch(autoSub))).branch, "auto-sub");
+		// With no `worktree`, such an agent's sub-chat still gets one, on the branch pi² names, and nobody is asked (#604).
+		const byAutoAlone = await delegate(asking, { agent: "Auto", task: "x", title: "Its own worktree" });
+		assert.equal(byAutoAlone.isError, false, byAutoAlone.text);
+		assert.equal(inboxFor(asking), undefined);
+		const autoAlone = byAutoAlone.details.conversationId as number;
+		assert.match((await client.until("its worktree made", () => client.branch(autoAlone)?.managed === true && client.branch(autoAlone))).branch, /^pi2\/its-own-worktree/);
+		assert.ok(byAutoAlone.text.includes("working in a worktree of its own at "), byAutoAlone.text);
 		step("delegate with worktree: asked first without full access, unless the receiving agent gets worktrees anyway");
 
 		// sub_chats says how each worktree stands, and removes one with nothing to lose when archiving, keeping its branch.

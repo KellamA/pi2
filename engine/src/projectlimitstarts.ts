@@ -10,12 +10,13 @@ import { addNews, PROJECT_ARCHIVED, Projects, type Start } from "./projects.ts";
 import { reportRun } from "./reports.ts";
 import { Agents, Library, type AgentProfile, type ModelRef, type Meta, runsAs } from "./state.ts";
 import { watch } from "./wakes.ts";
-import { makeWorktree, subChatFolder, worktreeOf } from "./worktrees.ts";
+import { makeWorktree, subChatBranch, subChatFolder, worktreeOf } from "./worktrees.ts";
 
 const conversation = (id: number) => id as unknown as ConversationId;
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
-type Pending = { projectId: string; start: Start; child: number; model: ModelRef | null; title: string };
+/** `branch`: the worktree a new sub-chat gets from its agent's own setting, with no `worktree` given (#604). */
+type Pending = { projectId: string; start: Start; child: number; model: ModelRef | null; title: string; branch?: string };
 type PendingDoc = { starts: Record<string, Pending> };
 const AllowedStarts = defineDoc<JsonObject>({
 	kind: "pi2.allowedStarts", version: 1, scope: "session", initial: () => ({ starts: {} }), checkpointWhen: () => true,
@@ -82,9 +83,10 @@ export function installLimitAnswers(host: Host, engine: Engine): FeatureParts {
 			const { start, child, projectId } = pending;
 			const parent = start.parent!;
 			const key = `limit:${id}`;
-			if (typeof start.options.worktree === "string") {
+			const branch = typeof start.options.worktree === "string" ? start.options.worktree.trim() : pending.branch;
+			if (branch !== undefined) {
 				try {
-					if ((await worktreeOf(harness(), child, context())) === undefined) await makeWorktree(child, start.options.worktree.trim(), typeof start.options.from === "string" ? start.options.from : undefined);
+					if ((await worktreeOf(harness(), child, context())) === undefined) await makeWorktree(child, branch, typeof start.options.from === "string" ? start.options.from : undefined);
 				} catch (error) {
 					await finish(id, pending, error instanceof Error ? error.message : String(error));
 					throw error;
@@ -172,7 +174,9 @@ export function installLimitAnswers(host: Host, engine: Engine): FeatureParts {
 		if (over !== undefined) throw new Error(`${over} Raise it in Usage to carry on.`);
 		const title = existing?.renamed === true ? existing.title : start.title ?? existing?.title ?? (typeof start.options.worktree === "string" ? `${target.name}: ${start.options.worktree.trim()}` : `${target.name}: ${start.task.trim().split("\n")[0]!.slice(0, 60)}`);
 		const child = start.chat ?? Number(await createDelegateChild(tx, { parent, target, change: change!, title, key: `limit:${id}` }));
-		const pending = { projectId, start, child, model: copy(model ?? null), title };
+		// A new sub-chat of an agent whose own setting gives it a worktree gets one, as `delegate`'s does (#604).
+		const branch = start.kind === "new" && typeof start.options.worktree !== "string" ? await subChatBranch(undefined, target, change?.cwd ?? null) : undefined;
+		const pending: Pending = { projectId, start, child, model: copy(model ?? null), title, ...(branch === undefined ? {} : { branch }) };
 		(await allowedIn(tx)).starts[id] = pending;
 		return { after: () => run(id, pending) };
 	});
