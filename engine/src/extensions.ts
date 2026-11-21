@@ -43,7 +43,7 @@ import { judgeCommand, proposeRule, ruleFolder } from "./rules.ts";
 import { isArchived, isPutAway } from "./archive.ts";
 import { noteSubChats, subChatsTool } from "./subchats.ts";
 import { ALLOWED_BY_EVERYTHING, type AgentProfile, type Inbox, type InboxItem, Library, type Meta, type ModelRef } from "./state.ts";
-import { madeWorktrees, makeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
+import { madeWorktrees, makeWorktree, repoOf, subChatBranch, subChatFolder, worktreeOf } from "./worktrees.ts";
 import { limitOf } from "./limitwait.ts";
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { nearlyUsedUp, usedUpUntil } from "./limits.ts";
@@ -311,7 +311,7 @@ export function pi2Extension(host: Host): Extension {
 			"Once a sub-chat's work is done and you will not continue it, archive it with sub_chats.\n" +
 			"With `wait: false` the call returns at once with the sub-chat's number, and its answer comes to you later as a message, waking you if you are not answering: use it to keep several going and stay reachable meanwhile.\n" +
 			"Give each new sub-chat a short `title` that tells it apart from the others in the person's sidebar, such as \"Fix login timeout\"; without one it is named after the agent and the first words of the task, or the worktree's branch. Passing `title` with `chat` renames that sub-chat, unless the person renamed it themselves.\n" +
-			"A new sub-chat works in this conversation's folder. To give it a git worktree of its own instead, pass `worktree` with a branch name: use it when several sub-chats change the same repository at once, so each works on its own branch in its own checkout and none disturbs the others or this folder. " +
+			"A new sub-chat works in this conversation's folder, or in a worktree of its own when its agent's settings give every conversation one. To give it a git worktree of its own instead, pass `worktree` with a branch name: use it when several sub-chats change the same repository at once, so each works on its own branch in its own checkout and none disturbs the others or this folder. " +
 			"pi² makes the worktree from the repository the sub-chat would work in, as New Worktree… does: the sub-chat works there and is told so, the agent's set-up command runs in it, and the person sees its branch. " +
 			"The new branch starts from the commit this conversation's folder is on, or from `from`: a branch, tag or commit as the repository has it now (it is not fetched first, so fetch first if you need the latest). A branch that already exists is checked out as it is, unless `from` is given. " +
 			"If the worktree cannot be made, the call fails with the reason and nothing is handed over. Continuing a sub-chat keeps the folder it has. Depending on the person's settings, they may be asked before the worktree is made.\n" +
@@ -491,8 +491,9 @@ export function pi2Extension(host: Host): Extension {
 				return createDelegateChild(tx, { parent, target, change, title: named, key: String(api.taskId) });
 			}, context);
 			if (child === undefined) return { output: text(held ?? "Not started."), isError: true };
-			if (args.worktree !== undefined) {
-				const failed = await giveWorktree(api, child as unknown as number, args.worktree, args.from, context);
+			const branch = await subChatBranch(args.worktree, target, change.cwd ?? null);
+			if (branch !== undefined) {
+				const failed = await giveWorktree(api, child as unknown as number, branch, args.from, context);
 				if (failed !== undefined) return { output: text(`No worktree could be made for the sub-chat, so nothing was handed over: ${failed}`), isError: true };
 			}
 			// Lets the app open the subagent's transcript from the call's card.
@@ -863,7 +864,8 @@ export function pi2Extension(host: Host): Extension {
 	/**
 	 * A worktree for a new sub-chat makes a branch in the repository and runs the other agent's set-up command. That is
 	 * done without asking only where the person has already let it happen: the calling conversation has full access (it
-	 * could run `git worktree add` itself), or the agent handed the work has its conversations given worktrees anyway.
+	 * could run `git worktree add` itself), or the agent handed the work has its conversations given worktrees anyway, which
+	 * a sub-chat of it then really gets, whichever tool starts it (`subChatBranch`, #604).
 	 * Otherwise the person is asked, whatever the file access, since an agent without full access could not do it at all.
 	 */
 	const approveWorktree = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> => {
