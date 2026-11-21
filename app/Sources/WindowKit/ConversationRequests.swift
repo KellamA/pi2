@@ -30,6 +30,7 @@ public struct ConversationRequests<Item: Identifiable, Card: View>: View {
                 contentHeight = height
             }
             .onScrollTargetVisibilityChange(idType: Item.ID.self, threshold: 0.99) { visible = $0 }
+            .frame(maxWidth: .infinity)
             .frame(height: overflowing ? limit - captionHeight : contentHeight)
             if overflowing {
                 let hidden = items.count - items.count { visible.contains($0.id) }

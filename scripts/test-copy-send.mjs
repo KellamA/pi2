@@ -1,13 +1,22 @@
-// The socket half of test-copy send. The shell checks ownership and the socket before invoking this file.
+// The socket half of test-copy send and answer-of. The shell checks ownership and the socket before invoking this file.
 import { connect } from 'node:net';
 
-const [path, idText, text, seconds = '600'] = process.argv.slice(2);
-const id = Number(idText), timeout = Number(seconds);
+// `answer-of` follows a submission that is already running instead of submitting one, so the answer of a run whose
+// wait ended is read without sending the message again (#553). Everything after that is the same.
+const argv = process.argv.slice(2);
+const answering = argv[0] === 'answer-of';
+if (answering) argv.shift();
+const [path, idText, third, seconds = '600'] = argv;
+const id = Number(idText), timeout = Number(seconds), submittedId = answering ? Number(third) : undefined;
 if (!/^[1-9][0-9]*$/.test(idText ?? '') || !Number.isSafeInteger(id)) {
 	console.error('test-copy: conversation must be a positive integer');
 	process.exit(1);
 }
-if (typeof text !== 'string' || text.trim() === '') {
+if (answering && (!/^[1-9][0-9]*$/.test(third ?? '') || !Number.isSafeInteger(submittedId))) {
+	console.error('test-copy: submission must be a positive integer');
+	process.exit(1);
+}
+if (!answering && (typeof third !== 'string' || third.trim() === '')) {
 	console.error('test-copy: the message is empty');
 	process.exit(1);
 }
@@ -64,10 +73,13 @@ async function check() {
 socket.once('connect', async () => {
 	try {
 		await call('conversation.open', { id });
-		// The subscription is installed before this request. Even a run finished before submit answers is found.
-		const accepted = await call('submit', { id, text });
-		submissionId = accepted.submissionId;
-		if (!Number.isSafeInteger(submissionId)) throw new Error('the engine returned no submission id');
+		if (answering) submissionId = submittedId;
+		else {
+			// The subscription is installed before this request. Even a run finished before submit answers is found.
+			const accepted = await call('submit', { id, text: third });
+			submissionId = accepted.submissionId;
+			if (!Number.isSafeInteger(submissionId)) throw new Error('the engine returned no submission id');
+		}
 		void check();
 	} catch (error) { end('error', 1, error.message); }
 });

@@ -225,6 +225,16 @@ try {
 	// ---- A restart of the engine, with the app still open
 	await app.call("submit", { id: asked, text: "/bash echo third" });
 	const before = await app.approval(asked);
+	// What the approval waits on is the conversation's call, and the next engine is asked about it from what this one
+	// stored. The approval itself lives only in memory, and the announcement that it is waiting is in memory too, so it
+	// can be given out before the record of the call it waits on has been written down with the conversation (the same
+	// rule as anywhere an engine is killed to see what outlives it: docs/development.md, "Waiting in tests"). Killing at
+	// once can therefore end the run before the call is on record, and the engine after it has nothing to ask about
+	// again. So wait for the stored conversation to show the call, which is the conversation event's own state and what
+	// the engine after reads, and only then kill.
+	await app.until("the conversation's own record of the call its approval waits on", () =>
+		(app.conversations.get(asked)?.state?.tools ?? []).some((slot: { callId?: string }) => slot.callId === before.callId) ? true : undefined,
+	);
 	await stop(engine, "SIGKILL");
 	other.close();
 	engine = start();

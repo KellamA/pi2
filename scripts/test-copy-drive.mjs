@@ -92,8 +92,13 @@ try {
 	switch (command) {
 		case 'show': {
 			const [pid, selection, , hub] = args;
-			const view = selection === 'dashboard' || selection?.startsWith('project:')
-				? { show: selection, hub } : { id: integer(selection, 'conversation') };
+			// A project, the Dashboard and a conversation number as they were, and every other page PI2_SHOW takes by
+			// name (usage, archive, settings:<tab>, …), which the app reads as it reads PI2_SHOW (#553).
+			let view;
+			if (selection === 'dashboard' || selection?.startsWith('project:')) view = { show: selection, hub };
+			else if (/^\d+$/.test(selection ?? '')) view = { id: integer(selection, 'conversation') };
+			else if (selection) view = { page: selection };
+			else throw new Error('conversation must be a positive integer');
 			summary = await windowCommand(target, { pid: Number(pid), command, ...view });
 			break;
 		}
@@ -101,6 +106,11 @@ try {
 			const [pid, width, height] = args;
 			const size = width === 'smallest' ? { smallest: true } : { width: integer(width, 'width', 10_000), height: integer(height, 'height', 10_000) };
 			summary = await windowCommand(target, { pid: Number(pid), command, ...size });
+			break;
+		}
+		case 'expose': {
+			const [pid] = args;
+			summary = await windowCommand(target, { pid: Number(pid), command });
 			break;
 		}
 		case 'choose': {
@@ -149,9 +159,14 @@ try {
 		}
 		case 'fill': {
 			if (args[0] === '--project' || args[0] === 'project') {
-				const project = await engineCommand(() => ({ method: 'test-copy.fillProject', params: {}, summary: result => result }), 150);
-				console.log(JSON.stringify(project));
-				console.error(`Not seeded: ${project.omitted.join('; ')}.`);
+				// A name for one project of that name, or a count of them; neither makes one as before (#481).
+				const given = args[1] ?? '';
+				if (given.includes('\n')) throw new Error('a project name takes one line');
+				const params = given === '' ? {} : /^\d+$/.test(given) ? { count: integer(given, 'count', 8) } : { name: given };
+				const project = await engineCommand(() => ({ method: 'test-copy.fillProject', params, summary: result => result }), 150 * (params.count ?? 1));
+				const made = Array.isArray(project) ? project : [project];
+				for (const one of made) console.log(JSON.stringify(one));
+				console.error(`Not seeded: ${made[0].omitted.join('; ')}.`);
 				break;
 			}
 			const entries = integer(args[0], 'entries', 10_000);

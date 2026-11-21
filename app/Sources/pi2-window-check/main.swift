@@ -1,4 +1,4 @@
-// Checks how a window's size follows its SwiftUI content (#400, #542).
+// Checks how a window's size follows its SwiftUI content (#400, #542, #589).
 //
 // The app crashed in the background when the main window's hosting view, working out its content's smallest size
 // from inside an Update Constraints pass, found its size changed and asked for another pass, again and again until
@@ -14,6 +14,8 @@
 //   size nor the size of the window, which sits at its smallest the whole time;
 // - that a stack of requests cannot make the split view taller than the window, as it did before, and four or twelve
 //   requests leave the transcript, the message field and Stop visible at the smallest size (#489);
+// - that the Dashboard's columns, five where two fit, scroll sideways at the smallest size without resizing the window
+//   or changing its smallest size, with the sidebar and without (#481);
 // - that the watch which names a view whose size does not settle reports one that changes size again and again in one
 //   turn of the run loop, once, and stays quiet for a window resized a step a turn as a person does;
 // - that the watch on the app's scene body (#436) reports a body that reads something that then changes, once, and
@@ -22,10 +24,10 @@
 //
 //   cd app && swift build --product pi2-window-check && .build/debug/pi2-window-check
 //
-// It also orders both real indicator panels off screen and exercises short and long names with and without Show,
-// across turns and in a single burst. The hosting view stays put, supplies no window size constraints, and the
-// pill resizes only when asked, stays on one line, and fits the screen. The small-panel watch names each pill.
-// The original exception did not reproduce here (#542).
+// It also counts what AppKit does to the pill's window, to one made as Quick Ask's is and to one made as the menu
+// bar's is, over a hundred changes of their content: at most one frame a turn, at most two layout and two Update
+// Constraints passes in a display cycle, and a quiet size watch. A hosting view is never one of those windows'
+// content view (#589), which is where SwiftUI sizes a window itself after each layout.
 // Exits 1 if anything failed.
 
 import AppKit
@@ -75,6 +77,8 @@ final class Feed {
     var hubNarrow = false
     /// Whether an agent's conversation takes the board's place in the hub (#473).
     var hubAgent = false
+    /// Whether the detail shows the Dashboard (#481).
+    var dashboard = false
     @ObservationIgnored var frames: [String: CGRect] = [:]
 }
 
@@ -294,11 +298,92 @@ struct HubDetail: View {
     }
 }
 
+/// The Dashboard as the app shows it (#481): a bar with the projects to tick, then a column per project, each with
+/// long lines from outside and a field to type in, and a strip at its foot. Five columns are shown, more than fit, so
+/// the check covers the columns scrolling sideways. The width is the app's own column width.
+struct DashboardDetail: View {
+    let feed: Feed
+
+    var body: some View {
+        VStack(spacing: 0) {
+            probe("bar") {
+                HStack {
+                    Text("Projects…").fixedSize()
+                    Text("· \(longLine)").lineLimit(1)
+                    Spacer(minLength: 8)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(0..<5, id: \.self) { index in
+                        column(index)
+                            .frame(width: 300)
+                            .frame(minHeight: 0, maxHeight: .infinity)
+                    }
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        }
+        .navigationTitle("Dashboard")
+        .toolbar { ToolbarItem { Button("Projects") {} } }
+    }
+
+    /// One project's column: its header, a need that holds a long line, the working rows, and the strip.
+    private func column(_ index: Int) -> some View {
+        VStack(spacing: 0) {
+            probe("head-\(index)") {
+                HStack {
+                    Text("Demo project \(index)").fixedSize()
+                    Text("· \(longLine)").lineLimit(1)
+                    Spacer(minLength: 6)
+                    Button("Open") {}
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+            }
+            probe("need-\(index)") {
+                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true).padding(12) }
+            }
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Working").font(.system(size: 12, weight: .semibold))
+                    Text(unbroken).lineLimit(3)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            probe("strip-\(index)") {
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("“\(unbroken)”").lineLimit(2)
+                        TextField("Message the orchestrator…", text: .constant(""))
+                    }
+                    Button("Send") {}
+                }
+                .padding(12)
+            }
+        }
+        .overlay(alignment: .trailing) { Rectangle().fill(.separator).frame(width: 1) }
+    }
+
+    /// Notes where a part is while it is shown, and forgets it once it is folded away.
+    private func probe<V: View>(_ name: String, @ViewBuilder view: () -> V) -> some View {
+        view()
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { feed.frames[name] = $0 }
+            .onDisappear { feed.frames[name] = nil }
+    }
+}
+
 struct Content: View {
     let feed: Feed
     let givesWay: Bool
     let boundedRequests: Bool
     var hub = false
+    var dashboard = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: Binding(get: { feed.sidebar }, set: { feed.sidebar = $0 })) {
@@ -307,7 +392,8 @@ struct Content: View {
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
-            if hub { HubDetail(feed: feed).columnGivesWay() }
+            if dashboard { DashboardDetail(feed: feed).columnGivesWay() }
+            else if hub { HubDetail(feed: feed).columnGivesWay() }
             else if boundedRequests { RequestDetail(feed: feed).columnGivesWay() }
             else if givesWay { Detail(feed: feed).columnGivesWay() }
             else { Detail(feed: feed) }
@@ -337,7 +423,7 @@ final class Made {
     var resizes = 0
     private var observer: NSObjectProtocol?
 
-    init(fixed: Bool, boundedRequests: Bool = false, hub: Bool = false) {
+    init(fixed: Bool, boundedRequests: Bool = false, hub: Bool = false, dashboard: Bool = false) {
         window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 1120, height: 740), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.toolbar = NSToolbar(identifier: "check")
@@ -345,7 +431,7 @@ final class Made {
         window.title = "pi²"
         let reported = reported
         let feed = feed
-        let measured = Measured(asked: asked) { Content(feed: feed, givesWay: fixed, boundedRequests: boundedRequests, hub: hub) }
+        let measured = Measured(asked: asked) { Content(feed: feed, givesWay: fixed, boundedRequests: boundedRequests, hub: hub, dashboard: dashboard) }
         let host = fixed
             ? NSHostingView(rootView: AnyView(measured.windowMinimum(width: content.width, height: content.height) { reported.lines.append($0) }))
             : NSHostingView(rootView: AnyView(measured.frame(minWidth: content.width, minHeight: content.height)))
@@ -394,7 +480,7 @@ let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
-    await group("indicator panels keep one hosting view and size outside layout (#542)") { await indicatorCheck() }
+    await group("the pill, Quick Ask and the menu bar window size themselves outside AppKit's passes (#589)") { await indicatorCheck() }
     // The content as the app had it before: what to keep, and what to stop.
     let before = Made(fixed: false)
     await before.layOut()
@@ -590,6 +676,37 @@ Task { @MainActor in
         check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
         check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
         hub.close()
+    }
+
+    await group("the Dashboard with five columns at the smallest size, with the sidebar and without (#481)") {
+        let dash = Made(fixed: true, dashboard: true)
+        await dash.layOut()
+        check("the smallest size is the same as without the Dashboard", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
+        check("the content is never asked for a size as small as that", dash.measuredFor.isEmpty, "asked for \(dash.measuredFor)")
+        dash.window.setContentSize(fixed)
+        await dash.layOut()
+        let smallest = dash.window.frame
+        let bounds = dash.host.frame
+        dash.resizes = 0
+        for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+            dash.feed.sidebar = sidebar
+            await dash.layOut()
+            let frames = dash.feed.frames
+            let name = sidebar == .all ? "with the sidebar" : "without it"
+            check("\(name): the window does not resize", dash.window.frame == smallest, "frame \(dash.window.frame), was \(smallest)")
+            check("\(name): smallest size", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
+            check("\(name): the split view is no taller than the window", dash.tallestColumn <= dash.host.frame.height + 0.5, "a column is \(dash.tallestColumn) tall")
+            if let bar = frames["bar"], let head = frames["head-0"], let strip = frames["strip-0"], let last = frames["head-4"] {
+                check("\(name): the bar spans the detail column", abs(bar.minX - head.minX) <= 0.5 && abs(bar.maxX - bounds.maxX) <= 2, "bar \(bar), window \(bounds.size)")
+                check("\(name): the first column is inside the window", head.minX >= -0.5 && head.maxX <= bounds.width + 0.5 && strip.maxY <= bounds.height + 0.5, "head \(head), strip \(strip) in \(bounds.size)")
+                check("\(name): the fifth column is beyond the window, so the columns scroll sideways", last.minX > bounds.width, "fifth column at \(last.minX) in \(bounds.size)")
+            } else {
+                check("\(name): the bar, a column and its strip are shown", false, "frames \(frames)")
+            }
+        }
+        check("the window was never resized", dash.resizes == 0, "\(dash.resizes) resizes")
+        check("nothing was reported as not settling", dash.reports.isEmpty, dash.reports.joined(separator: "\n      "))
+        dash.close()
     }
 
     await group("the watch names a view whose size does not settle, once") {

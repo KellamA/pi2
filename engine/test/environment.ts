@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { type Dirent, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandEnvironment, passedOn } from "../src/environment.ts";
@@ -47,8 +47,20 @@ function parse(text: string): Record<string, string> {
 	}
 	return env;
 }
-/** The environment a command wrote to `file`, once it has (it writes to another file first, then moves it there). */
-const written = (file: string): Promise<Record<string, string>> => until(`${file} to be written`, () => existsSync(file) && parse(readFileSync(file, "utf8")));
+/**
+ * The environment a command wrote to `file`, once it has (it writes to another file first, then moves it there). The
+ * file is asked for directly rather than through `existsSync` first: a file can answer to that and be gone by the read,
+ * and "not yet" is the honest answer then.
+ */
+const written = (file: string): Promise<Record<string, string>> =>
+	until(`${file} to be written`, () => {
+		try {
+			return parse(readFileSync(file, "utf8"));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
+	});
 /** A command that writes its environment to `file`, whole or not at all. */
 const writeEnv = (file: string) => `/usr/bin/env > '${file}.part' && mv '${file}.part' '${file}'`;
 
@@ -221,11 +233,44 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	// ---- Where the values are, and are not
 
 	const { path: backupPath } = await client.call("backup.create", { directory: scratch });
-	/** Every file under `folder` that holds `text`. An empty one holds nothing, and a run's file (processes.ts) is empty and cannot be read. */
-	const holding = (folder: string, text: string): string[] =>
-		readdirSync(folder, { recursive: true, withFileTypes: true })
-			.filter((entry) => entry.isFile() && statSync(join(entry.parentPath, entry.name)).size > 0 && readFileSync(join(entry.parentPath, entry.name)).includes(text))
-			.map((entry) => join(entry.parentPath, entry.name));
+	/**
+	 * Every file under `folder` that holds `text`. An empty one holds nothing, and a run's file (processes.ts) is empty
+	 * and cannot be read.
+	 *
+	 * The engine works in this folder while the walk goes on and tidies after itself there: SQLite moves the write-ahead
+	 * files beside its database, a finished run's file is removed, and a settings file is written through a temporary one
+	 * that is then renamed. So an entry can be in a listing and gone by the moment it is read, and a walk that trusts the
+	 * listing to stay put falls over with ENOENT part way through - which is how this failed under load (#577, #588). The
+	 * walk goes down the folder itself and passes over an entry that has just gone: a file that is no longer there holds no
+	 * value now, and what a temporary file was replaced with stands in its place and is read. Nothing is waited for: the
+	 * question is where a value is kept, and the answer is what the folder holds as it stands.
+	 */
+	const holding = (folder: string, text: string): string[] => {
+		const found: string[] = [];
+		const walk = (under: string): void => {
+			let entries: Dirent[];
+			try {
+				entries = readdirSync(under, { withFileTypes: true });
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				return;
+			}
+			for (const entry of entries) {
+				const path = join(under, entry.name);
+				if (entry.isDirectory()) walk(path);
+				else if (!entry.isFile()) continue;
+				else {
+					try {
+						if (statSync(path).size > 0 && readFileSync(path, "utf8").includes(text)) found.push(path);
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					}
+				}
+			}
+		};
+		walk(folder);
+		return found;
+	};
 	assert.deepEqual(holding(home, TOKEN), [], "no file in the data folder holds a value: not the database, not a settings file");
 	assert.deepEqual(holding(backupPath, TOKEN), [], "nor does a backup");
 	assert.ok(holding(home, "AGENT_TOKEN").length > 0, "the database does hold the name");

@@ -44,6 +44,16 @@ test("one-line summaries, past and present", () => {
 	assert.equal(line("make_picture", { description: "A red  square" }, "done", { text: "Made", details: { modelName: "Gemini" } }), "Made a picture: “A red square” Gemini");
 	assert.equal(line("make_picture", { description: "Make it blue", change: true }, "running"), "Changing the picture: “Make it blue”…");
 	assert.equal(line("make_picture", {}, "preparing"), "Making a picture…");
+	assert.equal(line("look", { path: "shot.png", question: "Is any text cut off?" }, "done", { text: "No", details: { modelName: "Gemini" } }), "Looked at shot.png, asking “Is any text cut off?” Gemini");
+	assert.equal(line("look", { paths: ["a.png", "b.png", "c.png"], question: "What does the header show?" }, "running"), "Looking at a.png and 2 more, asking “What does the header show?”…");
+	assert.equal(line("look", {}, "preparing"), "Looking at a picture…");
+	assert.deepEqual(T.detailFor(call("look", { path: "shot.png", question: "Is any text cut off?" }), "done", { id: 9, text: "No text is cut off." }, null), [
+		{ kind: "text", label: "Question", text: "Is any text cut off?" },
+		{ kind: "text", label: "Answer", text: "No text is cut off.", failed: false },
+	]);
+	assert.deepEqual(T.detailFor(call("look", { path: "shot.png" }), "failed", { id: 9, text: "Gemini could not look" }, null), [
+		{ kind: "text", label: "Answer", text: "Gemini could not look", failed: true },
+	]);
 	assert.deepEqual(T.detailFor(call("make_picture", { description: "A cat" }), "done", { id: 9, text: "Made a picture", images: 1, details: { modelName: "Gemini" } }, null), [
 		{ kind: "images", entry: 9, count: 1, name: "Picture", label: "Picture made by Gemini" },
 	]);
@@ -458,6 +468,20 @@ test("an approval for a command offers the engine's rule, and nothing else does"
 		assert.equal(T.ruleOffer(pending(rule)), null, JSON.stringify(rule));
 	}
 	assert.equal(T.ruleOffer(null), null);
+});
+
+test("a request a project's switch asked is answered once or not at all", () => {
+	// The card offers Allow Once and Deny alone: only the project's Settings can stop the asking, and the engine
+	// refuses anything else (#553).
+	const asked = { id: "1", kind: "approval", tool: "work", arguments: { action: "file" }, question: "File work?", projectSwitch: "fileWork" };
+	assert.equal(T.switchAsked(asked), true);
+	for (const item of [{ ...asked, projectSwitch: null }, { ...asked, projectSwitch: "" }, { ...asked, projectSwitch: undefined }, {}, null, undefined]) {
+		assert.equal(T.switchAsked(item), false, JSON.stringify(item));
+	}
+	// A command whose switch ask happens to offer a rule makes no rule out of it; the same request without the ask does.
+	const command = { id: "1", kind: "approval", tool: "bash", arguments: { command: "npm test" }, rule: { words: ["npm", "test"], folder: "/w" } };
+	assert.notEqual(T.ruleOffer(command), null);
+	assert.equal(T.ruleOffer({ ...command, projectSwitch: "commands" }), null);
 });
 
 test("the rule's button says how far the rule reaches", () => {

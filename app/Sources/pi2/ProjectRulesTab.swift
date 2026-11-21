@@ -71,23 +71,121 @@ struct ProjectRulesEvent: Decodable {
     let projects: [String: [ProjectRule]]
 }
 
-/// One thing waiting under Needs you, as the `needs` event sends it (docs/projects.md, 3.9), with the fields this app
-/// reads: a proposed rule's card, and the project the sidebar counts it under. Every kind of need shares these base
-/// fields, so the whole array decodes whatever kinds are in it, and a kind this app knows nothing of cannot take the
-/// list or the tab down.
+/// One thing waiting under Needs you, as the `needs` event sends it (docs/projects.md, 3.9): a discriminated union, with
+/// the fields of the kinds that do not use them left out. The Rules tab reads a proposed rule from it, and the Now tab
+/// the card of every kind; the sidebar counts what it holds by `projectId`. The whole array decodes whatever kinds are
+/// in it, so a kind this app knows nothing of cannot take the list, a tab or the cards down.
 struct NeedItem: Decodable, Equatable, Identifiable {
+    struct Choice: Decodable, Equatable {
+        let id: String
+        let label: String
+    }
+
+    /// A reach request's change, as the person reads it (7.2): what it would let agents do.
+    struct ReachChange: Decodable, Equatable {
+        let summary: String
+    }
+
+    /// The start the project's limit stopped (8.3), as the person reads it.
+    struct Start: Decodable, Equatable {
+        let agentName: String?
+        let title: String?
+        let task: String?
+    }
+
+    /// What was over when the start was refused: `reason` is the sentence the person reads.
+    struct LimitReading: Decodable, Equatable {
+        let reason: String
+    }
+
     let id: String
+    /// Null for an approval or question of a conversation in no project.
     let projectId: String?
     let kind: String
+    /// The conversation that asks, its root, and their titles, for "in …".
+    let conversationId: Int
+    let rootConversationId: Int
+    let title: String
+    let rootTitle: String
     /// The agent the conversation that asks runs as, and its name.
     let agentId: String?
     let agentName: String?
+    /// Whether the agent is held until it is answered: true for approvals and ask_user questions only.
+    let blocking: Bool
     /// Milliseconds since 1970.
     let createdAt: Double
     /// A proposed rule's text and whom it would bind, and why the agent proposes it.
     let text: String?
     let binds: ProjectRule.Binds?
     let why: String?
+    /// A question's or a decision's words, its choices, and whether it takes an answer in the person's own words.
+    let question: String?
+    let choices: [Choice]?
+    let words: Bool?
+    /// An approval's call, and the switch of the project that asked when it is off (8.1): then `answers` is `once` and
+    /// `deny` only.
+    let tool: String?
+    let arguments: JSONValue?
+    let projectSwitch: String?
+    let answers: [String]?
+    /// More reach, and a start the project's limit stopped.
+    let change: ReachChange?
+    let start: Start?
+    let limit: LimitReading?
+
+    /// Which switch asked, in words the person reads, or the switch's own name when the app does not know it.
+    var switchWords: String? {
+        projectSwitch.map {
+            switch $0 {
+            case "startAgents": "starting agents without asking"
+            case "fileWork": "filing work without asking"
+            case "closeWork": "closing work without asking"
+            case "makeAgents": "making agents without asking"
+            case "addRules": "adding rules without asking"
+            case "merge": "merging without asking"
+            case "release": "releasing work without asking"
+            case "passLimits": "going past the project's limits"
+            default: $0
+            }
+        }
+    }
+
+    /// The line that says what it is, as the engine names the kinds to a person who answers the wrong one.
+    var named: String {
+        switch kind {
+        case "approval": "a request for approval"
+        case "question": "a question"
+        case "decision": "a decision"
+        case "reach": "a request for more reach"
+        case "rule": "a proposed rule"
+        case "limit": "a start held back by the project's limit"
+        default: "something that waits for you"
+        }
+    }
+
+    /// What it asks, in one short line: the menu bar item's list of what waits and its notifications (#481).
+    var short: String {
+        switch kind {
+        case "approval":
+            question ?? ToolCall(callId: "", name: tool ?? "", arguments: arguments ?? .null).summary
+        case "question", "decision":
+            question ?? ""
+        case "reach":
+            change?.summary ?? "Asks for more reach"
+        case "rule":
+            text.map { "Proposes a rule: \($0)" } ?? "Proposes a rule"
+        case "limit":
+            limitShort
+        default:
+            question ?? text ?? named
+        }
+    }
+
+    /// A start held back by the limit, in one line: what it wanted to start, when the need says.
+    private var limitShort: String {
+        let what = [start?.title, start?.task].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ": ")
+        return what.isEmpty ? "A start is held back by the project's limit" : "Held back by the limit: \(what)"
+    }
 }
 
 struct NeedItemsEvent: Decodable {
@@ -117,7 +215,7 @@ struct ProjectRulesTab: View {
                 ScrollView(.vertical) {
                     VStack(alignment: .leading, spacing: 12) {
                         ForEach(proposals) { need in
-                            RuleProposalCard(engine: engine, projectId: project.id, need: need)
+                            RuleProposalCard(engine: engine, need: need)
                         }
                         if !rules.isEmpty {
                             RuleCost(tokens: project.ruleTokens)
@@ -424,10 +522,11 @@ private struct AddRuleField: View {
 // MARK: - A proposed rule
 
 /// A rule an agent proposes (docs/projects.md, 3.9): who proposes it, the text, whom it would bind, and the answer.
-/// Accepting with the text or the binding changed is an answer in its own right, so Edit… answers, too.
-private struct RuleProposalCard: View {
+/// Accepting with the text or the binding changed is an answer in its own right, so Edit… answers, too. The Rules tab
+/// shows it under the list, and the Now tab under Needs you (#472), so that a proposal is answered in the same words
+/// and with the same buttons in both places.
+struct RuleProposalCard: View {
     let engine: EngineClient
-    let projectId: String
     let need: NeedItem
 
     @State private var editing = false

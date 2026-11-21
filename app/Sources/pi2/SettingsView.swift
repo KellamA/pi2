@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable {
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
 enum SettingsSection: String {
     // General
-    case appearance, notifications, projects, summaries, background, updates
+    case appearance, notifications, projects, summaries, awake, background, updates
     // Chat
     case instructions, newChats = "new-chats", memory, agentNotes = "agent-notes"
     // Providers
@@ -132,6 +132,7 @@ extension View {
 
 struct SettingsView: View {
     let engine: EngineClient
+    let model: AppModel
     @State private var tab: SettingsTab = {
         #if PI2_DEVELOPMENT
         if let asked = SettingsLaunch.asked { return asked.tab }
@@ -158,6 +159,12 @@ struct SettingsView: View {
                 .tag(SettingsTab.storage)
         }
         .frame(width: 660, height: 600)
+        #if PI2_DEVELOPMENT
+        // The tab `scripts/test-copy show <suffix> settings:<tab>` asked for while the app runs (#553): taken when the
+        // window opens, and moved to when it is already open.
+        .onAppear { if let live = model.settingsTabLive { tab = live } }
+        .onChange(of: model.settingsTabLive) { _, live in if let live { tab = live } }
+        #endif
     }
 }
 
@@ -214,6 +221,8 @@ struct GeneralSettings: View {
                 .id(SettingsSection.projects)
             CompactionDefaultSettings(engine: engine)
                 .id(SettingsSection.summaries)
+            AwakeSettings(engine: engine)
+                .id(SettingsSection.awake)
             BackgroundSettings(home: home)
                 .id(SettingsSection.background)
             UpdateSettings()

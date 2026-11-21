@@ -520,6 +520,18 @@
 				if (status === "done" && isObject(details) && str(details.modelName)) stats = str(details.modelName);
 				break;
 			}
+			case "look": {
+				// A model that can see answered the agent's question about a picture file (#540).
+				glyph = "picture";
+				const asked = str(args.question).replace(/\s+/g, " ").trim();
+				const several = Array.isArray(args.paths) && args.paths.length > 1 ? ` and ${args.paths.length - 1} more` : "";
+				const file = basename(args.path ?? (Array.isArray(args.paths) ? args.paths[0] : ""));
+				label = [t(active ? "Looking at " : "Looked at "), name(file ? file + several : "a picture")];
+				if (asked) label.push(t(", asking "), muted(quoted(asked.length > 120 ? asked.slice(0, 120) + ELLIPSIS : asked)));
+				label.push(t(dots));
+				if (status === "done" && isObject(details) && str(details.modelName)) stats = str(details.modelName);
+				break;
+			}
 			case "run_code":
 				// A program in the sandbox (#286): nothing on the Mac, so the row says what it is for, not where it ran.
 				glyph = "code";
@@ -673,11 +685,22 @@
 	 * repository's main checkout and its pi² worktrees, so the button says how wide the rule is without hovering.
 	 */
 	function ruleOffer(pending) {
+		// A project's switch asks about one action at a time: there is no rule to make of it (#553).
+		if (switchAsked(pending)) return null;
 		if (!isObject(pending) || pending.tool !== "bash" || !isObject(pending.rule) || !Array.isArray(pending.rule.words)) return null;
 		const words = pending.rule.words;
 		if (words.length === 0 || !words.every((word) => typeof word === "string" && word !== "")) return null;
 		const worktrees = pending.rule.worktrees === true;
 		return { words, command: words.join(" "), worktrees, place: worktrees ? "in This Repository" : "Here" };
+	}
+
+	/**
+	 * Whether this approval came from a project's switch that is off, which asks each time (docs/projects.md, 8.1). Such
+	 * a request is answered once or not at all: only the project's Settings can stop the asking, so a card for it offers
+	 * Allow Once and Deny alone, and the engine refuses anything else (#553).
+	 */
+	function switchAsked(pending) {
+		return isObject(pending) && typeof pending.projectSwitch === "string" && pending.projectSwitch !== "";
 	}
 
 	/**
@@ -784,6 +807,11 @@
 			case "make_picture":
 				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images, name: "Picture", label: "Picture made" + (isObject(details) && str(details.modelName) ? " by " + str(details.modelName) : "") });
 				if (failed || images === 0) outputSection("Result");
+				break;
+			case "look":
+				// What was asked, then the other model's answer (#540).
+				if (str(args.question).trim() !== "") sections.push({ kind: "text", label: "Question", text: str(args.question).trim() });
+				outputSection("Answer");
 				break;
 			case "run_code":
 				if (str(args.code)) sections.push({ kind: "text", label: "Program", text: str(args.code), language: "js" });
@@ -1046,6 +1074,7 @@
 		describe,
 		approvalNote,
 		ruleOffer,
+		switchAsked,
 		backgroundCaption,
 		backgroundCommand,
 		documentWritten,

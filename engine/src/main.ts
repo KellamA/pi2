@@ -57,14 +57,17 @@ import { NETWORK_RESUMED_ENTRY, type NetworkWait, retryNetwork, transportFailure
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
+import { lookUsageModel, pictureLook } from "./picturelook.ts";
 import { pictureUsageModel } from "./pictures.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";
 import { subChatUsage } from "./subchatusage.ts";
 import { messageSent } from "./heed.ts";
+import { preparedTool } from "./stringargs.ts";
 import { WAKE_ENTRY, WAKE_NOTE, wakeMarker, wakeMarkerDetails, wakeNoteMarker } from "./wakes.ts";
 import { McpServers } from "./mcp.ts";
-import { claim } from "./needs.ts";
+import { claim, storedNeeds } from "./needs.ts";
+import { linesOf } from "./changes.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
@@ -81,7 +84,7 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
+import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
@@ -289,7 +292,13 @@ const engine: Engine = {
 		settings.pictureModel = model;
 		saveSettings();
 	},
+	lookModel: () => settings.lookModel ?? null,
+	setLookModel: (model) => {
+		settings.lookModel = model;
+		saveSettings();
+	},
 	providers: () => providers,
+	waitingOnThePerson: () => new Set(inbox.list().map((item) => item.conversationId)),
 	setting: (key) => settings[key],
 	saveSetting: (key, value) => {
 		(settings as Record<string, unknown>)[key] = value;
@@ -334,7 +343,7 @@ const tool = (name: string) => [...CodingTools.tools!, ...pi2.tools!, ...codemod
  * `conversation` is the conversation's id, undefined for one not made yet: in a project, whom it may hand work to
  * depends on which conversation it is (projectagents.ts, `delegateTargets`).
  */
-function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null } = {}) {
+function toolsFor(access: Access, agent: AgentProfile | undefined, subChat: boolean, where: { conversationId?: number; projectId?: string | null; model?: ModelRef | null } = {}) {
 	const files = access === "none" ? [] : access === "read" ? ["read"] : ["read", "write", "edit", "bash"];
 	const extras = [...(agent?.codeMode ? ["codemode"] : []), ...mcp.toolNames(agent?.mcpServers ?? [])];
 	// Reference files can be read whatever the access level: the person chose them for this agent.
@@ -391,13 +400,14 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 }
 
 /** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
-async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null }): Promise<AgentChange> {
-	const model = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel();
+async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null; model?: ModelRef }): Promise<AgentChange> {
+	// The model the conversation starts with: the person's choice where `conversation.create` was given one.
+	const model = options.model ?? (agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel());
 	return {
 		model,
 		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
-		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId }),
+		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId, model }),
 		cwd: agent.cwd,
 		maxTurns: agent.maxTurns,
 	};
@@ -415,12 +425,17 @@ const harness = await Harness.open(
 		models: noticingRefusals(retryThinking(providers, promptCacheLifetimes(providers.models), engine.providersChanged)),
 		registry,
 		conversationAgent: async (agent, id, read, context) => {
+			// An argument sent as a JSON string where its tool's schema says an array or an object is read as the value it
+			// encodes (#572, src/stringargs.ts), for every tool alike: this is the one place every resolved tool passes
+			// through, before pi durable checks the call's arguments, and it changes no declaration the model is sent.
+			const readStrings = (tool: (typeof agent.tools)[number]) => preparedTool(id, tool);
+			const withStringsRead = { ...agent, tools: agent.tools.map(readStrings), callable: agent.callable.map(readStrings) };
 			// A sub-chat is one from its first request. Read committed metadata even during crash recovery, before the
 			// library watch has caught up; choosing by anything transient would resend tool definitions mid-conversation.
-			if (!isSubChat((await read.snapshot(Library, context))?.conversations[String(id)])) return agent;
+			if (!isSubChat((await read.snapshot(Library, context))?.conversations[String(id)])) return withStringsRead;
 			const forSubChat = (tool: (typeof agent.tools)[number]) =>
 				tool.name === "bash" ? bashForSubChat(tool) : tool.name === "background" ? backgroundForSubChat(tool) : tool;
-			return { ...agent, tools: agent.tools.map(forSubChat), callable: agent.callable.map(forSubChat) };
+			return { ...withStringsRead, tools: withStringsRead.tools.map(forSubChat), callable: withStringsRead.callable.map(forSubChat) };
 		},
 		// Local engine stops, network outages and provider limits use pi-durable's stored retry sleep (see patch-dependencies.ts).
 		// The features are read at every use, so they are made by then.
@@ -477,10 +492,14 @@ const settings: {
 	/** Chat mode's settings (chat.ts); read through `chatSettings`, which gives the defaults for what is missing. */
 	chat?: ChatSettings;
 	pictureModel?: ModelRef | null;
+	/** The model that looks at pictures for one that cannot see them (#540, picturelook.ts); null until the person picks. */
+	lookModel?: ModelRef | null;
 	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
 	lastChatModel?: ModelRef;
 	/** The projects preview switch (projects.ts); read through `projectsOn()`. Absent means off. */
 	projects?: { preview: boolean };
+	/** Keeping this Mac awake while agents work (keepawake.ts); read through `awakeSettings`. Absent means on, and not on battery. */
+	awake?: { keep: boolean; battery: boolean };
 } = (() => {
 	try {
 		return JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -536,8 +555,9 @@ async function syncTools(conv: Conversation): Promise<void> {
 		if (meta.projectId !== undefined) await harness.commit((tx) => syncWorkForInput(tx, conv.id, meta), context);
 		return;
 	}
-	const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id }));
+	const agent = await harness.snapshot(AgentDoc, conv.id, context);
+	const current = agent?.tools;
+	const wanted = keepingOrder(current, isChat(meta) ? chatTools(chatWeb(id)) : toolsFor(meta.access, own, isSubChat(meta), { conversationId: id, model: agent?.model }));
 	const names = wanted.map((t) => t!.name);
 	if (Array.isArray(current) && current.length === names.length && current.every((name, index) => name === names[index])) return;
 	await conv.configure({ tools: wanted }, context);
@@ -724,7 +744,7 @@ type Item =
 	| { id: number; kind: "user"; text: string; attachments: AttachmentNote[]; images: number }
 	| { id: number; kind: "assistant"; text: string; thinking: string; toolCalls: ToolCall[]; stop: string; error: string | null; model: string | null }
 	| { id: number; kind: "tool"; callId: string; name: string; text: string; isError: boolean; details: unknown; images: number }
-	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string }; compaction?: CompactionMarker } }
+	| { id: number; kind: "marker"; text: string; details?: { background?: { id: string }; wake?: { text: string }; answers?: { need: string; ended: string; label?: string }[]; compaction?: CompactionMarker } }
 	| ReturnType<typeof setupItem>;
 
 type AssistantLike = { content?: unknown; stopReason?: string; errorMessage?: string; model?: string };
@@ -745,6 +765,28 @@ function detailsOf(entry: EntryRecord): unknown {
 	return data?.details ?? message?.details ?? null;
 }
 
+/**
+ * Which Needs you items a wake answered, and how (the wake kind `answer`, needs.ts): the item's id and a few words
+ * ("was allowed"), for the conversation's page to turn the card that asked into a line with its outcome (#474).
+ */
+function answeredNeeds(data: unknown): { need: string; ended: string; label?: string }[] {
+	return wakeAnswerItems(data)
+		.filter((item) => typeof item.ref === "string" && typeof item.ended === "string")
+		.map((item) => ({ need: item.ref as string, ended: item.ended as string, ...(typeof item.label === "string" ? { label: item.label } : {}) }));
+}
+
+/** A wake's data items of the answer kind, as stored (wakes.ts): unchecked apart from their kind. */
+function wakeAnswerItems(data: unknown): { ref: unknown; ended: unknown; label: unknown }[] {
+	const items = data !== null && typeof data === "object" && Array.isArray((data as { items?: unknown }).items) ? (data as { items: unknown[] }).items : [];
+	return items.filter((item): item is { ref: unknown; ended: unknown; label: unknown } => item !== null && typeof item === "object" && (item as { kind?: unknown }).kind === "answer");
+}
+
+/** The label a wake's data gives the Needs you item `need` ("the request “…”"), where it has one. */
+function wakeLabel(data: unknown, need: string): string | undefined {
+	const item = wakeAnswerItems(data).find((one) => one.ref === need);
+	return typeof item?.label === "string" ? item.label : undefined;
+}
+
 function toItem(entry: EntryRecord): Item | undefined {
 	const id = entry.id as unknown as number;
 	if (entry.kind === "pi.reset") return { id, kind: "marker", text: "Context reset" };
@@ -761,7 +803,8 @@ function toItem(entry: EntryRecord): Item | undefined {
 	// Show the same model input behind the line, including wakes stored before the row could open (#318).
 	if (entry.kind === WAKE_ENTRY) {
 		const content = textOf((entry.model?.[0] as { content?: unknown } | undefined)?.content);
-		const details = { ...wakeMarkerDetails(entry.data), wake: { text: content } };
+		const answers = answeredNeeds(entry.data);
+		const details = { ...wakeMarkerDetails(entry.data), ...(answers.length > 0 ? { answers } : {}), wake: { text: content } };
 		return { id, kind: "marker", text: wakeMarker(entry.data), details };
 	}
 	if (entry.kind === WAKE_NOTE) return { id, kind: "marker", text: wakeNoteMarker(entry.data) };
@@ -1455,8 +1498,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
 		if (agent.removedAt !== undefined) throw new Error(`Unknown agent: ${agent.id}`);
 		if (agent.projectId !== undefined) refuseStartWith(agent);
-		const profile = await agentChange(agent, { subChat: false });
-		const change = params.model !== undefined ? { ...profile, model: params.model as ModelRef, thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(params.model as ModelRef) } : profile;
+		const change = await agentChange(agent, { subChat: false, ...(params.model !== undefined ? { model: params.model as ModelRef } : {}) });
 		const carriedInto = await carriedProjectFor(agent, change.cwd ?? null);
 		const now = Date.now();
 		let note: string | undefined;
@@ -1750,10 +1792,18 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const conv = await conversation(params.id);
 		const meta = library.conversations[String(chatOf(conv.id))];
 		const items: Item[] = [];
+		/** How each Needs you item this conversation put was ended (the wake kind `answer`), where a wake tells it. */
+		const answered = new Map<string, { label: string; ended: string }>();
 		let cursor: unknown;
 		for (;;) {
 			const batch = await conv.entries({ order: "ascending" }, 500, cursor as never, context);
 			for (const entry of batch.items) {
+				if (entry.kind === WAKE_ENTRY) {
+					for (const answer of answeredNeeds(entry.data)) {
+						const label = wakeLabel(entry.data, answer.need);
+						if (label !== undefined) answered.set(answer.need, { label, ended: answer.ended });
+					}
+				}
 				const item = toItem(entry);
 				if (item !== undefined) items.push(item);
 			}
@@ -1765,6 +1815,32 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const fence = "```";
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
+		// The changes made in this conversation (3.12), for each call's line; a change the person allowed has no
+		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9). With the
+		// preview off an export is exactly as it was (10.2), so it says none of this.
+		const changes = new Map(projectsOn() ? linesOf(conv.id).map((line) => [line.id, line]) : []);
+		const waiting = new Map(projectsOn() ? storedNeeds().map((need) => [need.id, need]) : []);
+		/** A call's change, as one quiet line: its summary, and that it was undone (3.12). */
+		const changeLine = (id: unknown): string | null => {
+			if (typeof id !== "number") return null;
+			const change = changes.get(id);
+			return change === undefined ? null : `${change.summary}${change.undone ? " (undone)" : ""}`;
+		};
+		/** The line of the change allowing the request `id` made, where it made one. */
+		const allowedLine = (id: string): string | null => {
+			const made = [...changes.values()].find((change) => change.need === id);
+			return made === undefined ? null : `${made.summary}${made.undone ? " (undone)" : ""}`;
+		};
+		/** A call's reach request or proposed rule, as one line with its outcome (3.9, 7.2). */
+		const needLine = (id: unknown): string | null => {
+			if (typeof id !== "string") return null;
+			const told = answered.get(id);
+			if (told !== undefined) return `${told.label} ${told.ended}`;
+			const need = waiting.get(id);
+			if (need === undefined) return "a request that no longer waits for you";
+			const label = need.kind === "rule" ? `the proposed rule “${need.text}”` : need.kind === "reach" ? `the request “${need.change.summary}”` : need.kind === "limit" ? "a start the project's limit stopped" : `the question “${need.question}”`;
+			return `${label} waits for you`;
+		};
 		const lines: string[] = [`# ${meta?.title || "Conversation"}`, ""];
 		for (const item of items) {
 			if (item.kind === "user") {
@@ -1787,6 +1863,20 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if ((result?.details as { allowedByEverything?: unknown } | null)?.allowedByEverything === true) lines.push("*Allowed by Allow everything.*", "");
 					lines.push(`${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
 					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
+					// The quiet line for what the call changed, and the one line for what it asked (3.12, 7.2) — none of it with
+					// the preview off, so an export is exactly as it was (10.2).
+					if (projectsOn()) {
+						const details = (result?.details ?? null) as { change?: unknown; need?: unknown } | null;
+						const changed = changeLine(details?.change);
+						if (changed !== null) lines.push(`*${changed}*`, "");
+						const asked = needLine(details?.need);
+						if (asked !== null) lines.push(`*${asked}*`, "");
+						// What allowing the request made, when it made something: its line, with its Undo's mark.
+						if (typeof details?.need === "string") {
+							const allowed = allowedLine(details.need);
+							if (allowed !== null) lines.push(`*${allowed}*`, "");
+						}
+					}
 				}
 			}
 		}
@@ -1873,6 +1963,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
 			rememberModel({ provider: model.provider, modelId: model.modelId }, chat);
 			for (const feature of host.features) feature.modelChanged?.(id);
+			// What the conversation is offered can follow its model: `look`, for one that cannot see pictures (picturelook.ts).
+			await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
 		}
 		if (params.thinkingLevel !== undefined) await conv.configure({ thinkingLevel: params.thinkingLevel as never }, context);
 		if (params.cwd !== undefined) {
@@ -1886,8 +1978,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			if (!ACCESS_LEVELS.includes(access)) throw new Error(`Unknown access level: ${String(access)}`);
 			const meta = library.conversations[String(id)];
 			const own = agentOf(meta, agents);
-			const current = (await harness.snapshot(AgentDoc, conv.id, context))?.tools;
-			await conv.configure({ tools: keepingOrder(current, toolsFor(access, own, isSubChat(meta), { conversationId: id })) }, context);
+			const agent = await harness.snapshot(AgentDoc, conv.id, context);
+			await conv.configure({ tools: keepingOrder(agent?.tools, toolsFor(access, own, isSubChat(meta), { conversationId: id, model: agent?.model })) }, context);
 			await editMeta(conv.id, (meta) => void (meta.access = access));
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
@@ -2471,6 +2563,30 @@ function pictureRows(tools: UsageDocShape["tools"]) {
 	});
 }
 
+/** The rows of models that looked at pictures for models that cannot see them (#540), from the same tool ledger. */
+function lookRows(tools: UsageDocShape["tools"]) {
+	const rows = new Map<string, { usage: UsageCounters; unpriced: boolean }>();
+	for (const [bucket, usage] of Object.entries(tools ?? {})) {
+		const model = lookUsageModel(bucket);
+		if (model === undefined) continue;
+		const row = rows.get(model.key) ?? { usage: emptyUsage(), unpriced: false };
+		addUsageCounters(row.usage, usage);
+		row.unpriced ||= model.unpriced;
+		rows.set(model.key, row);
+	}
+	return [...rows].map(([key, { usage, unpriced }]) => {
+		const slash = key.indexOf("/");
+		const provider = key.slice(0, slash);
+		const model = providers.models.getModel(provider, key.slice(slash + 1));
+		const providerName = providers.models.getProvider(provider)?.name ?? provider;
+		// Such a model can also answer conversations of its own, which have a row of their own: say what this one is for.
+		return {
+			key, input: usage.input, output: usage.output, tokens: usage.totalTokens, cost: usage.cost.total, unpriced,
+			lookName: model === undefined ? `${key} · looking at pictures` : `${providerName} · ${model.name} · looking at pictures`,
+		};
+	});
+}
+
 let session: UsageDocShape = {};
 async function updateUsage(): Promise<void> {
 	const repriced = usagePricingChanged;
@@ -2557,6 +2673,7 @@ async function updateUsage(): Promise<void> {
 		models: [
 			...Object.entries(session.models ?? {}).map(([key, usage]) => ({ key, input: usage.input ?? 0, output: usage.output ?? 0, tokens: usage.totalTokens ?? 0, cost: costOf(key, usage), subscription: onSubscription(key), unpriced: unpriced(key) })),
 			...pictureRows(session.tools),
+			...lookRows(session.tools),
 		].sort((x, y) => y.tokens - x.tokens),
 		agents: [...byAgent].map(([agentId, usage]) => ({ agentId, ...usage })).sort((x, y) => y.tokens - x.tokens),
 		chats,
@@ -2793,22 +2910,32 @@ if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z
 	const { fillProject } = await import("../scripts/test-copy-project.ts");
 	const { Reports } = await import("./reports.ts");
 	let fillingProject = false;
-	handlers["test-copy.fillProject"] = async (_params, client) => {
+	handlers["test-copy.fillProject"] = async (params, client) => {
 		if (fillingProject) throw new Error("A demo project is already being filled in this copy");
+		const name = typeof params.name === "string" ? params.name.trim() : undefined;
+		if ("name" in params && typeof params.name !== "string") throw new Error("A demo project's name is a string");
+		if (name !== undefined && (name.length === 0 || name.length > 60)) throw new Error("A demo project's name is 1 to 60 characters, trimmed");
+		const count = "count" in params ? params.count : 1;
+		if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 8) throw new Error("A count of demo projects is a whole number from 1 to 8");
 		fillingProject = true;
 		try {
 			// The fixture is itself app-only. These calls and all of their arguments come from the fixture, not the socket.
-			return await fillProject(home, async (method, params) => {
+			const call = async (method: string, callParams: Record<string, unknown>) => {
 				const handler = handlers[method];
 				if (handler === undefined) throw new Error(`Unknown method: ${method}`);
-				return handler(params, client);
-			}, async ({ projectId, working, waiting, finished }) => {
+				return handler(callParams, client);
+			};
+			const ready = async ({ projectId, working, waiting, finished }: { projectId: string; working: number[]; waiting: number; finished: number }) => {
 				const runs = activityEvent().runs;
 				const active = working.every((id) => runs.some((run) => run.conversationId === id && run.status === "working" && run.commands.length > 0));
 				if (!active || !runs.some((run) => run.conversationId === waiting && run.status === "waiting")) return false;
 				const reports = await harness.snapshot(Reports, context);
 				return reports?.projects[projectId]?.some((report) => report.conversationId === finished && report.ended?.outcome === "answered" && report.delivered === null) ?? false;
-			});
+			};
+			// `--project <count>` fills that many, one after another, so a copy can hold several for the Dashboard (#481).
+			const filled: unknown[] = [];
+			for (let made = 0; made < count; made++) filled.push(await fillProject(home, call, ready, name));
+			return count === 1 ? filled[0] : filled;
 		} finally {
 			fillingProject = false;
 		}

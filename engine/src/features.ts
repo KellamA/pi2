@@ -23,12 +23,14 @@ import { compaction } from "./compaction.ts";
 import { documents } from "./documents.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
+import { keepAwake } from "./keepawake.ts";
 import { limits, type ProviderLimits } from "./limits.ts";
-import { type EpisodeChange, limitWait, type Wait } from "./limitwait.ts";
+import { type EpisodeChange, limitWait, type Remembered, type Wait } from "./limitwait.ts";
 import { localRun } from "./localrun.ts";
 import { localModels } from "./localmodels.ts";
 import { look } from "./look.ts";
 import { order } from "./order.ts";
+import { pictureLook } from "./picturelook.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
 import { priority } from "./priority.ts";
@@ -44,6 +46,7 @@ import { reports } from "./reports.ts";
 import { runCode } from "./runcode.ts";
 import { scratch } from "./scratch.ts";
 import { selfSchedule } from "./selfschedule.ts";
+import { stringArguments } from "./stringargs.ts";
 import { variables } from "./variables.ts";
 import { wakes } from "./wakes.ts";
 import { thinkingNotices } from "./thinkingretry.ts";
@@ -67,6 +70,9 @@ export type Engine = {
 	/** The person's choice for Make pictures, across chats and agents. Null lets pi² choose. */
 	pictureModel(): ModelRef | null;
 	setPictureModel(model: ModelRef | null): void;
+	/** The person's choice for which model looks at pictures for one that cannot see them (picturelook.ts). None until they pick. */
+	lookModel(): ModelRef | null;
+	setLookModel(model: ModelRef | null): void;
 	/** The providers. Ask `providers().models.getAuth()` for a token: it renews and stores one that is about to expire. */
 	providers(): Providers;
 	/** Whether a conversation (or one of its sub-chats' runs) is working right now. */
@@ -83,12 +89,14 @@ export type Engine = {
 	libraryChanged(): void;
 	/** Why no new work may start now, in words, when today's budget is used up; undefined otherwise. */
 	overBudget(): string | undefined;
+	/** The conversations with an item in the Inbox waiting for the person (an approval or a question): the ones Activity shows as "waiting" rather than working. */
+	waitingOnThePerson(): ReadonlySet<number>;
 	/** Send the providers and their models again to every app, as after a sign-in: for a change to what they offer. */
 	providersChanged(): void;
 	/** A key of settings.json, as the engine read it at start or last saved it; undefined when absent. */
-	setting(key: "projects"): unknown;
+	setting(key: "projects" | "awake"): unknown;
 	/** Change a key of settings.json and save the file. The engine keeps the file, so a feature never writes it itself. */
-	saveSetting(key: "projects", value: unknown): void;
+	saveSetting(key: "projects" | "awake", value: unknown): void;
 	/**
 	 * Save an agent with `agents.save`'s checks and defaults (main.ts, `saveAgent`), and what only the engine sets: for a
 	 * new agent, the project it is made in; the marks of docs/projects.md, 3.3 it is given; the allowed commands a copy takes.
@@ -116,8 +124,8 @@ export type FeatureParts = {
 	/** Changes to tools from elsewhere (pi durable's coding tools, say), applied wherever they are offered. */
 	// biome-ignore lint/suspicious/noExplicitAny: tools of any parameter shape
 	wraps?: Wrap<any>[];
-	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. */
-	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string | null }): string[];
+	/** Which of this feature's tools a conversation with this access and agent is given, in a sub-chat or not. `model` is the conversation's own, where it is known. */
+	toolNames?(access: Access, agent: AgentProfile | undefined, where: { subChat: boolean; conversationId?: number; projectId?: string | null; model?: ModelRef | null }): string[];
 	/** Which of this feature's tools a chat (chat.ts) is given, with chat mode's settings as they are now. */
 	chatToolNames?(): string[];
 	/** Which of this feature's tools could do nothing right now, so are offered to no conversation, a chat included. */
@@ -147,6 +155,11 @@ export type FeatureParts = {
 	 * which tell an agent that hands out work how much of the allowance is left. Only one feature answers it (limits.ts).
 	 */
 	planLimits?(): ProviderLimits[];
+	/**
+	 * The providers whose limit a refusal said is used up until a time it named, for what an agent that hands out work is
+	 * told (#556): `delegate`'s result and `sub_chats`' list (limits.ts). Only one feature answers it (limitwait.ts).
+	 */
+	rememberedLimits?(): Remembered[];
 	/** The wait for a provider's limit a conversation's run is in, if any: for `sub_chats`' list. Only one feature answers it (limitwait.ts). */
 	limitWaitOf?(id: number): Wait | undefined;
 	/** The person's choice to advance sleeping generation retries with a different model (limitwait.ts). */
@@ -247,10 +260,15 @@ export const FEATURES: Feature[] = [
 	worktrees,
 	commands,
 	reads,
+	// Looking at pictures with a model that can see them (#540): after `reads`, whose wrap of `read` its own wrap follows.
+	pictureLook,
 	scratch,
+	// An argument sent as a JSON string read as the value it encodes (#572): after every feature's tools are made.
+	stringArguments,
 	variables,
 	coauthor,
 	priority,
+	keepAwake,
 	thinkingNotices,
 	wakes,
 	background,

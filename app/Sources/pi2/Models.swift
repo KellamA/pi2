@@ -321,6 +321,23 @@ struct AgentInfo: Codable, Equatable {
     let parent: Int?
 }
 
+/// One change made in a conversation of a project, as the conversation's state carries it (docs/projects.md, 3.12):
+/// what changed, in the record's own words, whether it was undone and whether the person can undo it. Nil from an
+/// engine without the projects preview, and for any conversation in no project.
+struct ProjectChangeLine: Codable, Equatable, Identifiable {
+    let id: Int
+    let summary: String
+    let undone: Bool
+    let canUndo: Bool
+    /// Why it has no Undo, in a few words; null for a change that has one.
+    let noUndo: String?
+    /// When it was undone, in ms since 1970; null while it was not.
+    var undoneAt: Double? = nil
+    /// The request whose allowing made this change (docs/projects.md, 3.12), for a change with no call of its own;
+    /// null for any other.
+    var need: String? = nil
+}
+
 /// Whether an agent may use apps on this Mac: which ones, and whether it asks before acting.
 struct ComputerSettings: Codable, Equatable {
     var enabled = false
@@ -527,6 +544,9 @@ struct InboxItem: Codable, Equatable, Identifiable {
     var when: String? = nil
     /// For a command: the rule the engine offers to make of it. Answering "rule" makes this rule; nothing else is sent.
     var rule: RuleOffer? = nil
+    /// For an approval a project's switch asked for: the switch's name (docs/projects.md, 8.1). Only Allow Once and Deny
+    /// answer it: the asking is the project's setting, and the conversation cannot change it.
+    var projectSwitch: String? = nil
     /// For a command: it would be started and left running in the background, so the card says so.
     var background: Bool? = nil
     let title: String
@@ -574,6 +594,11 @@ struct WakeItem: Codable, Equatable, Identifiable {
     let kind: String
     /// The sub-chat's number, or the command's id.
     let ref: String
+    /// The project of the conversation woken, and for a sub-chat of a project's orchestrator, when its report wakes it
+    /// and the batch it belongs to (docs/projects.md, 4.3). Absent from an engine older than these fields.
+    var projectId: String?
+    var wake: String?
+    var batch: String?
     /// "sub-chat 12 “Fix login”", "background command bg-3 (`npm test`)".
     let label: String
     let startedAt: Double
@@ -639,6 +664,9 @@ struct ActivityRun: Codable, Equatable, Identifiable {
     /// The project its conversation belongs to, and the agent it runs as (docs/projects.md, 4.3).
     var projectId: String?
     var runsAs: String?
+    /// The last line of text its agent wrote, at most 140 characters, or nil from an engine older than this field
+    /// (docs/projects.md, 4.3): the Now tab's "working" row.
+    var lastLine: String?
     var id: Int { conversationId }
 }
 
@@ -824,6 +852,9 @@ struct ConversationState: Codable, Equatable {
     /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
     /// offered: an agent's conversation, or an engine older than this field.
     var versions: [VersionPoint]? = nil
+    /// The changes made in this conversation by its project's agents, oldest first (docs/projects.md, 3.12), each drawn
+    /// where the tool call that made it is. Nil in no project, and from an engine older than this field.
+    var projectChanges: [ProjectChangeLine]? = nil
 }
 
 /// What a message sent to steer a working agent waits for (engine/src/heed.ts): `holds`, the calls it comes after, such
@@ -989,7 +1020,9 @@ struct UsageSummary: Codable, Equatable {
         var unpriced: Bool? = nil
         /// Picture models are in a different catalog from the models that answer in a conversation.
         var pictureName: String? = nil
-        var id: String { pictureName == nil ? key : "picture:\(key)" }
+        /// A model that looked at pictures for one that cannot see them (#540): its own spend, apart from its answers.
+        var lookName: String? = nil
+        var id: String { pictureName == nil && lookName == nil ? key : "extra:\(pictureName ?? lookName ?? key)" }
     }
     struct AgentRow: Codable, Equatable, Identifiable {
         let agentId: String

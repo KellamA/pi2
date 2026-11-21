@@ -192,6 +192,9 @@ struct OrchestratorModelMenu: View {
             SettingsLink { Text("Connect More Providers…") }
         } label: {
             Text("\(agent?.name ?? "Orchestrator") · \(current?.name ?? ref?.modelId ?? "No model")")
+                // The bar's own text colour, named: left to the system button the label can come
+                // out its own white-on-white, which reads as an empty pill in light appearance (#553).
+                .foregroundStyle(Theme.tx)
                 .lineLimit(1)
         }
         .menuStyle(.button)
@@ -370,13 +373,13 @@ private struct HubBoard: View {
                 }
             }
             switch tab {
+            case .now: ProjectNowTab(model: model, project: project)
             case .work: ProjectWorkTab(model: model, project: project)
             case .agents: ProjectAgentsTab(model: model, project: project)
             case .rules: ProjectRulesTab(model: model, project: project)
             case .notes: ProjectNotesTab(model: model, project: project)
             case .branches: ProjectBranchesTab(model: model, project: project)
             case .settings: ProjectSettingsTab(model: model, project: project)
-            default: BoardTabEmpty(tab: tab)
             }
         }
     }
@@ -499,9 +502,9 @@ private struct HubAgentPanel: View {
 
 // MARK: - The strip
 
-/// Along the bottom of the board while the conversation is folded: the orchestrator's last words, and a field that
-/// sends it a message.
-private struct HubStrip: View {
+/// Along the bottom of the board while the conversation is folded, and along the bottom of a Dashboard column (#481):
+/// the orchestrator's last words, and a field that sends it a message.
+struct HubStrip: View {
     let engine: EngineClient
     let hubs: ProjectHubs
     let project: ProjectRow

@@ -24,6 +24,19 @@ public enum TestCopy {
         bundleID.lowercased().hasPrefix(prefix + "test")
     }
 
+    /// The folder a test copy's app polls for window requests (`TestCopyControl`), in the data folder its bundle id
+    /// names — the same derivation `DevelopmentBuild` in the app makes of it. Nil for an id that is not a test
+    /// copy's or whose suffix is not one. The folder itself need not exist; `exposeParkedCopy` checks it.
+    public static func controlFolder(bundleID: String) -> URL? {
+        let id = bundleID.lowercased()
+        guard hasTestCopyID(id) else { return nil }
+        let suffix = String(id.dropFirst(prefix.count))
+        guard suffix.range(of: #"^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$"#, options: .regularExpression) != nil else { return nil }
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
+        return support.appendingPathComponent("pi2-\(suffix)", isDirectory: true).appendingPathComponent("test-copy-control", isDirectory: true)
+    }
+
     /// Whether the bundle at `bundleURL`, running as `bundleID`, is a throwaway test copy of a development build.
     public static func isThrowaway(bundleURL: URL, bundleID: String) -> Bool {
         let id = bundleID.lowercased()

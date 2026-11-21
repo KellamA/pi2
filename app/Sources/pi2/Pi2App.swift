@@ -101,6 +101,14 @@ final class AppModel {
     /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
+    #if PI2_DEVELOPMENT
+    /// Opens the Settings window and a background command's output window, for `scripts/test-copy show` while the copy
+    /// runs (#553); set once the main window is up, so nil before that.
+    var openSettingsWindow: (() -> Void)?
+    var openOutputWindow: ((String) -> Void)?
+    /// The Settings tab the running copy was asked for, for a Settings window that is already open to move to (#553).
+    var settingsTabLive: SettingsTab?
+    #endif
     /// Conversations whose sub-chats are folded away in the sidebar.
     var collapsed: Set<Int> = []
 
@@ -376,7 +384,7 @@ struct Pi2App: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(engine: model.engine)
+            SettingsView(engine: model.engine, model: model)
                 .tint(.piAccent)
                 .launchWindow()
         }
@@ -390,8 +398,8 @@ struct MenuBarLabel: View {
     let engine: EngineClient
 
     var body: some View {
-        Image(systemName: engine.inbox.isEmpty ? "circle.hexagongrid" : "circle.hexagongrid.fill")
-        if !engine.inbox.isEmpty { Text("\(engine.inbox.count)") }
+        Image(systemName: engine.waitingCount == 0 ? "circle.hexagongrid" : "circle.hexagongrid.fill")
+        if engine.waitingCount > 0 { Text("\(engine.waitingCount)") }
     }
 }
 
@@ -423,6 +431,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         AppAppearance.apply()
+        #if PI2_DEVELOPMENT
+        // A test copy's own appearance comes after the preference every build draws with, so that
+        // `scripts/test-copy start|reopen --appearance` wins (#553).
+        TestCopyAppearance.apply()
+        #endif
         NSApp.activate()
     }
 
@@ -483,7 +496,7 @@ struct RootView: View {
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
                     case .dashboard:
-                        DashboardPlaceholder(model: model)
+                        DashboardView(model: model)
                     case .conversation, nil:
                         WelcomeView(model: model)
                     }
@@ -847,8 +860,10 @@ struct SidebarFooter: View {
     var body: some View {
         HStack(spacing: 7) {
             Dot(color: statusColor)
-            // The status keeps its one line; in a narrow sidebar the day's spend gives way first.
+            // The status keeps its one line; in a narrow sidebar the day's spend gives way first. While the engine keeps
+            // the Mac awake (#561) the line says so, including how many conversations it is kept awake for.
             Text(statusText).foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
+                .help(awakeHelp)
             Spacer(minLength: 4)
             if let today = engine.usage?.today, today.cost > 0 {
                 // The longer wording when there is room for it, the bare amount when there is not.
@@ -884,6 +899,21 @@ struct SidebarFooter: View {
         case .connected: "Engine running"
         case .restarting: "Engine stopped — restarting…"
         }
+    }
+
+    /// What the "Engine running" line says when hovered: while the engine keeps the Mac awake, that it does and for how
+    /// many conversations (#561). The count is of the runs Activity shows as working, which are the ones the engine keeps
+    /// the Mac awake for; for the minute after the last one it says it is still kept, so a run that starts again does not
+    /// find the Mac asleep.
+    private var awakeHelp: Text {
+        guard case .bool(true)? = engine.extras["awake"]?["holding"] else {
+            return Text("The engine keeps running with pi²’s window closed")
+        }
+        let working = engine.activity.filter { $0.status == "working" }.count
+        if working > 0 {
+            return Text("Keeping this Mac awake: \(working) conversation\(working == 1 ? "" : "s") working")
+        }
+        return Text("Keeping this Mac awake, for now with no conversation working")
     }
 
     private var statusColor: Color {
@@ -1091,6 +1121,10 @@ private struct WindowOpener: View {
         Color.clear.onAppear {
             model.showMainWindow = { openWindow(id: "main") }
             model.engine.browser.showWindow = { openWindow(id: "browser") }
+            #if PI2_DEVELOPMENT
+            model.openSettingsWindow = { openSettings() }
+            model.openOutputWindow = { openWindow(id: BackgroundOutputScene.id, value: $0) }
+            #endif
         }
         #if PI2_DEVELOPMENT
         // `PI2_SHOW=settings…` opens the Settings window, but not while the app is launching: a development build once

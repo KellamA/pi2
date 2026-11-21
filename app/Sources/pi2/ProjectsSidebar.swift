@@ -15,7 +15,15 @@ struct ProjectsSidebar: View {
         #if PI2_DEVELOPMENT
         let _ = PerfProbe.count("sidebar: projects list drawn")
         #endif
-        List(selection: $model.selection) {
+        // The arrow keys move the List's selection themselves, so a project chosen that way never reaches a row's button:
+        // it has to come through `showProject` here as a click does, or a project whose agent's conversation was opened
+        // earlier in this launch opens on that agent instead of its board (#553).
+        List(selection: Binding(
+            get: { model.selection },
+            set: { next in
+                if case .project(let id) = next { model.showProject(id) } else { model.selection = next }
+            }
+        )) {
             DashboardRow(store: store)
                 .tag(Selection.dashboard)
 
@@ -151,6 +159,9 @@ private struct ProjectBlock: View {
         if open {
             // The conversation in place of the board is not the List's selection, which stays on the project: its row is
             // marked here instead, so that the person can see which of the agents they are reading (#473).
+            // The arrow keys cannot reach the rows below: the List's selection is the window's own, and giving one of
+            // them a tag would take the selection off the hub, which is what marks the row shown (#473); reaching them
+            // would need a selection of the List's own, which is a view of its own rather than a small change (#553).
             let agent = model.hubs.agent(project.id)
             OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
@@ -282,7 +293,8 @@ private struct RunRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(shown ? .isSelected : [])
-        .help("\(run.waiting ? "Waiting for you" : run.atLimit ? "Waiting for a provider’s limit" : "Working"). Open its conversation in place of the board.")
+        // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
+        .help("Open this agent’s conversation in place of the board")
     }
 }
 
@@ -296,7 +308,10 @@ private struct OtherConversations: View {
 
     var body: some View {
         let others = live.others
+        // Open while one of the group is the conversation in place of the board: an agent that stops working moves out of
+        // the working rows and into this group, and its marked row would be hidden until the person unfolded it (#553).
         let shown = model.projectsSidebar.othersShown.contains(project.id)
+            || agent.map { id in others.contains { $0.id == id } } ?? false
         if !others.isEmpty {
             Button {
                 withAnimation(.snappy(duration: 0.2)) {
@@ -380,27 +395,6 @@ private struct TemplateRows: View {
             .buttonStyle(.plain)
             .padding(.leading, 14)
         }
-    }
-}
-
-/// What the Dashboard's row shows until the Dashboard is built (#481).
-struct DashboardPlaceholder: View {
-    let model: AppModel
-
-    var body: some View {
-        VStack(spacing: 14) {
-            ContentUnavailableView {
-                Label("The Dashboard is not built yet", systemImage: "square.grid.2x2")
-            } description: {
-                Text("It will show the projects you choose to watch side by side: what needs you, who is working, and each orchestrator’s last words. Until then, approvals and questions wait in the Inbox.")
-            } actions: {
-                Button("Open Inbox") { model.selection = .inbox }
-                    .buttonStyle(.piSecondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.window)
-        .navigationTitle("Dashboard")
     }
 }
 

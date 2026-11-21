@@ -81,6 +81,12 @@ enum TranscriptAction: Equatable {
     /// A right-click: on a file link or a path written as code (`code`), whose items go at the top of the menu WebKit
     /// is about to show; or, with no path, on anything else.
     case fileMenu(path: String?, code: Bool)
+    /// The person's Undo of a change a tool call made in this conversation (docs/projects.md, 3.12), by the change's
+    /// number as the page was sent it.
+    case undo(change: Int)
+    /// The person's answer to a reach request or a proposed rule at the call that asked (7.2), by the need's id as
+    /// the page was sent it: the same `needs.answer` the board's card answers it with.
+    case answerNeed(id: String, answer: NeedAnswer)
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
@@ -162,8 +168,36 @@ enum TranscriptAction: Equatable {
                 guard let path = Self.fileTarget(body["path"]) else { return nil }
                 self = .fileMenu(path: path, code: body["code"] as? Bool == true)
             }
+        case "undo":
+            guard let change = Self.integer(body["change"]) else { return nil }
+            self = .undo(change: change)
+        case "answerNeed":
+            guard let id = Self.identifier(body["need"]), let answer = body["answer"] as? [String: Any],
+                  let kind = answer["kind"] as? String else { return nil }
+            if kind == "reach", let allow = answer["allow"] as? Bool {
+                self = .answerNeed(id: id, answer: .reach(allow: allow))
+            } else if kind == "rule", let accept = answer["accept"] as? Bool {
+                self = .answerNeed(id: id, answer: .rule(accept: accept))
+            } else {
+                return nil
+            }
         default:
             return nil
+        }
+    }
+
+    /// An answer to a reach request or a proposed rule, as the contract's `NeedAnswer` gives that kind (docs/projects.md,
+    /// 3.9): what `needs.answer` is sent for the card's button.
+    enum NeedAnswer: Equatable {
+        case reach(allow: Bool)
+        case rule(accept: Bool)
+
+        /// The answer as the request takes it.
+        var params: [String: Any] {
+            switch self {
+            case .reach(let allow): ["kind": "reach", "allow": allow]
+            case .rule(let accept): ["kind": "rule", "accept": accept]
+            }
         }
     }
 
