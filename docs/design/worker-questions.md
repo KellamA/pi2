@@ -1,6 +1,6 @@
 # A worker's question that does not hold it
 
-A design for #507, a proposal and nothing more. What it recommends is written into [projects.md](../projects.md) in the sections it touches, each passage marked **Proposed (#507, not agreed):**, so nobody takes it for agreed. Nothing is built until the owner says yes.
+A design for #507. **Agreed and built:** the owner agreed it on 2026-11-20, as proposed in #570, with all five suggested answers below, and #507 built it. What it recommends is now the contract's text in [projects.md](../projects.md), in the sections it touches, each marked "(#507)", and decision 32 in its section 13 records the answers. The rest of this page is the proposal as the owner read it.
 
 ## The gap
 
@@ -22,7 +22,7 @@ Left out deliberately: approvals, reach requests and rule proposals stay as they
 
 ## What it changes
 
-- **The contract** ([projects.md](../projects.md)): 3.9 (where the answer goes, and the card's line); 5.1 (the row: a sub-chat is offered `needs_you`); 5.5 (the bullet that refuses it); 5.8 (how a worker is told `ask_user` apart from `needs_you`); 6.4 (one row of news); 14, question 8 (the recommendation). Each passage marked **Proposed (#507, not agreed):**. Nothing in 3.10 changes: whether the run has ended is read from the report `settle` keeps, not changed by it.
+- **The contract** ([projects.md](../projects.md)): 3.9 (where the answer goes, and the card's line); 5.1 (the row: a sub-chat is offered `needs_you`); 5.5 (the bullet that refuses it); 5.8 (how a worker is told `ask_user` apart from `needs_you`); 6.4 (one row of news); 14, question 8 (the recommendation). Each passage was marked **Proposed (#507, not agreed)** until the owner agreed it. Nothing in 3.10 changes: whether the run has ended is read from the report `settle` keeps, not changed by it.
 - **The engine**: `needs.ts` (offer `needs_you` in a sub-chat; store the piece of work with the need; route the answer — the sub-chat while its run goes, the conversation that handed it the work once ended); `wakes.ts` (a sub-chat may have an arrived wake of the kind `answer`); `orchestrator.ts` (`answerGoesTo` for a sub-chat whose run has ended; the news line); the `project` section (a worker is told which tool to use when). `reports.ts` and `settle` untouched.
 - **The app**: the one card in its three places — the hub, the Dashboard and the menu bar — gains its line: which agent asks, in which sub-chat, on which piece of work. No other screen.
 - **Stays as it is**: `ask_user`, for a question that truly cannot wait — when the worker's next step needs the answer and there is no other work to do meanwhile, so holding the run is the honest thing and it would otherwise end with nothing else done. An approval always holds, whatever asked it.
