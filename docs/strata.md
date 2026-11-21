@@ -337,6 +337,8 @@ Measured on the same M5 Max on 2026-11-20, with the installed model's files: fir
 | Context 65,536 or 262,144 instead of 131,072 | the same at a 25K prompt | the same | 2.6 GB less, 5.3 GB more |
 | Pictures off | 13% quicker in one start, the same in two others | the same | not shown; the idle picture reader keeps the GPU no busier |
 
+**With four requests at once** (`--parallel 4`, which pi² gives a new model since #605), on 0.1.63, 400 tokens each, three runs: one request alone wrote about as fast as with one slot (code 100 to 103 tokens/s against 99 to 122 for one slot in the starts before and after); two at once made 82 to 84 tokens/s together against 90 to 98 with one slot taking them in turn, and four at once 96 to 100 against 90 to 97. The batch windows run the slots one after another and take no drafts (every batched request showed none accepted), with or without `--batch-mtp`. So more slots let each conversation wait less, not finish more.
+
 Writing does slow somewhat deep into a conversation: after a 55K-token prompt, code 63 to 66 tokens/s, prose 49 to 52 and copying 69 to 77, against 72 to 75, 60 to 62 and 88 to 95 after a short one (0.1.63, the same session, three runs each).
 
 ## What this changed in the design (#173)
