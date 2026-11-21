@@ -77,6 +77,8 @@ struct AgentEditor: View {
     @State private var confirmingDelete = false
     private var engine: EngineClient { model.engine }
     private var saved: AgentProfile? { engine.agent(agentID) }
+    /// "App default (Anthropic · Opus 5.5)": the default model for agents (#617), by the model it starts on now.
+    private var appDefault: String { engine.defaultModelName.map { "App default (\($0))" } ?? "App default" }
     private var changed: Bool {
         guard let draft else { return false }
         // Compared as they would be stored, so a setting the engine fills in or tidies on Save is not a change.
@@ -186,9 +188,9 @@ struct AgentEditor: View {
                 }
                 .id(AgentSection.profile)
 
-                Section("Model") {
+                Section {
                     Picker(selection: draft.model) {
-                        Text("App default").tag(ModelRef?.none)
+                        Text(appDefault).tag(ModelRef?.none)
                         if let ref = agent.model, chosenModel == nil {
                             Text("\(ref.modelId) (not connected)").tag(ModelRef?.some(ref))
                         } else if let chosenModel, chosenModel.hidden == true {
@@ -211,7 +213,7 @@ struct AgentEditor: View {
                         } else if let ref = agent.model {
                             Text("\(ref.modelId) (not connected)")
                         } else {
-                            Text("App default")
+                            Text(appDefault)
                         }
                     }
                     if let levels = chosenModel?.thinkingLevels, !levels.isEmpty {
@@ -219,6 +221,12 @@ struct AgentEditor: View {
                             Text("Default").tag(String?.none)
                             ForEach(levels, id: \.self) { Text($0.capitalized).tag(String?.some($0)) }
                         }
+                    }
+                } header: {
+                    Text("Model")
+                } footer: {
+                    if agent.model == nil {
+                        Text("With App default, it starts each new conversation on the default model for agents, chosen in Settings › General, and follows it when it changes.").formFooter()
                     }
                 }
                 .id(AgentSection.model)

@@ -120,6 +120,7 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"settings.finishOnboarding": () => true, // settings.json
 	"settings.setCompaction": () => true, // as above
 	"settings.setAutoArchive": () => true, // as above
+	"settings.setAgentDefault": () => true, // as above: the model every agent with none of its own starts on (#617)
 	"settings.setAwake": () => true, // as above: keeping the Mac awake while agents work
 	"backup.create": () => true, // copies the person's database to a chosen folder
 	"recovery.dismiss": () => true, // clears the notice for everyone

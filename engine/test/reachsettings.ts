@@ -173,6 +173,9 @@ try {
 	assert.equal((await other.call("chat.continueWithAgent", { id: asked, confirmLimit: "a-reading" })).error, ONLY_IN_THE_APP);
 	assert.equal((await other.call("conversation.retry", { id: asked, model: demo })).error, SETTINGS_ONLY_IN_THE_APP);
 	assert.match((await other.call("conversation.retry", { id: asked })).error ?? "", /for chats only/);
+	// The default model for agents (#617): every agent with none of its own starts on it, so it is the person's alone.
+	assert.equal((await other.call("settings.setAgentDefault", { model: demo })).error, SETTINGS_ONLY_IN_THE_APP);
+	assert.equal(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).agentDefault, undefined, "no default for agents was chosen");
 
 	// Selectors for a new conversation are still open; they belong only to that conversation, not the app's defaults.
 	const readSettings = () => JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
@@ -202,6 +205,7 @@ try {
 	await app.until("a variable was added", () => (forge()?.variables ?? []).some((variable: any) => variable.name === "TOKEN"));
 	const server = await app.call("mcp.save", { name: "Reach", transport: "http", url: "http://127.0.0.1:1/" });
 	await app.until("an MCP server was added", () => (app.events.mcp?.servers ?? []).some((listed: any) => listed.id === server.id));
+	assert.deepEqual((await app.call("settings.setAgentDefault", { model: demo })).model, demo);
 	const schedule = await app.call("schedules.save", { schedule: { title: "Reach", agentId: "forge", prompt: "Run everything", repeat: { kind: "daily", hour: 9, minute: 0 } } });
 	await app.until("a schedule was added", () => (app.events.schedules?.schedules ?? []).some((listed: any) => listed.id === schedule.id));
 	other.close();
