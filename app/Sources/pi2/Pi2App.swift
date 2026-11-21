@@ -115,6 +115,9 @@ final class AppModel {
     #endif
     /// Conversations whose sub-chats are folded away in the sidebar.
     var collapsed: Set<Int> = []
+    /// The orchestrators' conversations the Dashboard's columns show the end of, while they are on screen and not
+    /// folded away (#618). Set by the Dashboard, and empty while it is not shown.
+    var dashboardConversations: Set<Int> = []
 
     init() {
         #if PI2_DEVELOPMENT
@@ -152,6 +155,7 @@ final class AppModel {
     var shownConversations: Set<Int> {
         workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
             .union(hubConversation.map { [$0] } ?? []).union(hubAgentConversation.map { [$0] } ?? [])
+            .union(dashboardConversations)
     }
 
     var selectedConversationID: Int? {

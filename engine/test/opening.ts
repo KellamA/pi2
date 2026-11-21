@@ -245,6 +245,25 @@ try {
 	await assert.rejects(plain.call("conversation.older", { id: id + 1000 }), /not open/);
 	step(`entries older than the window come when asked, in ${requests} parts, until there are none`);
 
+	// With `tail`, only the newest part comes, and nothing older follows by itself; asked for, the rest comes a part at
+	// a time, from just before it to the first entry, as entries older than the window do (#618).
+	const tailer = await connect();
+	await tailer.call("conversation.open", { id, tail: true });
+	await new Promise((resolve) => setTimeout(resolve, 300));
+	assert.equal(tailer.log.length, 1, "one event, and no older parts after it");
+	const newest = tailer.log[0]! as Event & { more?: boolean };
+	assert.equal(newest.event, "conversation");
+	assert.ok(newest.reset);
+	assert.deepEqual(newest.items.map((item) => item.id), first!.items.map((item) => item.id), "the same first part as newestFirst");
+	assert.equal(newest.earlier, 0, "nothing is said to be on its way");
+	assert.equal(newest.more, true, "there is more, to ask for");
+	let tailMore = true;
+	while (tailMore) ({ more: tailMore } = await tailer.call("conversation.older", { id }));
+	assert.deepEqual(tailer.list.map((item) => item.id), everything, "asked for, the rest comes, in order, once");
+	await tailer.call("conversation.close", { id });
+	await assert.rejects(tailer.call("conversation.open", { id, tail: "yes" }), /tail must be true or false/);
+	step(`with tail, only the newest ${newest.items.length} entries come, and the rest when asked`);
+
 	// A message sent while the older parts come arrives at the end as usual, and the parts still go before.
 	await app.call("conversation.close", { id });
 	const busy = await connect();

@@ -196,10 +196,22 @@ final class EngineClient {
         }
     }
 
-    func openConversation(_ id: Int) {
-        PerfProbe.opening(id, "asked")
+    /// Opens a conversation, or keeps one open a while longer. With `tail`, only its newest entries are asked for, and
+    /// nothing older comes unless asked (#618): the Dashboard's window onto each orchestrator shows only the end of the
+    /// conversation. A conversation opened so and then shown whole, in a pane or a hub, is asked for again from the start.
+    func openConversation(_ id: Int, tail: Bool = false) {
+        if !tail { PerfProbe.opening(id, "asked") }
         lastWanted[id] = Date()
-        guard open[id] == nil else { return }
+        if open[id] != nil {
+            if !tail, tailOnly.remove(id) != nil, status == .connected {
+                Task {
+                    _ = try? await call("conversation.close", ["id": id])
+                    requestOpen(id)
+                }
+            }
+            return
+        }
+        if tail { tailOnly.insert(id) }
         open[id] = OpenConversation(draft: parkedDrafts.removeValue(forKey: id) ?? ConversationDraft())
         // Panes restored at launch appear before the app has connected. Connecting asks for every open conversation,
         // so one opened before then waits for that rather than failing.
@@ -213,15 +225,18 @@ final class EngineClient {
     /// does not know the conversation and the library does not list it, the request is let go quietly: the window empties
     /// that pane once the library is in. A conversation the library lists that fails to open is still reported.
     private func requestOpen(_ id: Int) {
-        PerfProbe.opening(id, "sent")
+        let tail = tailOnly.contains(id)
+        if !tail { PerfProbe.opening(id, "sent") }
         Task {
             do {
                 // A long conversation comes newest first, and the rest just after (#380); an older engine sends it whole.
-                try await call("conversation.open", ["id": id, "newestFirst": true])
+                // Only the newest part, for the Dashboard (#618); an engine from before that sends the rest too.
+                try await call("conversation.open", tail ? ["id": id, "newestFirst": true, "tail": true] : ["id": id, "newestFirst": true])
                 PerfProbe.opening(id, "answered")
             } catch {
                 if hasLoadedLibrary, !conversations.contains(where: { $0.id == id }), !archived.contains(where: { $0.id == id }) {
                     open[id] = nil
+                    tailOnly.remove(id)
                     return
                 }
                 lastError = error.localizedDescription
@@ -259,6 +274,8 @@ final class EngineClient {
 
     /// When each open conversation was last on screen or asked for.
     @ObservationIgnored private var lastWanted: [Int: Date] = [:]
+    /// The open conversations asked for with only their newest entries, for the Dashboard (#618).
+    @ObservationIgnored private var tailOnly: Set<Int> = []
     /// The conversation Quick Ask shows, which no pane may: it is kept open while the panel has it.
     @ObservationIgnored var quickAskConversation: Int?
     /// How long a conversation no longer on screen keeps coming from the engine, so that going back to it is instant.
@@ -274,6 +291,7 @@ final class EngineClient {
             if let draft = open[id]?.draft, draft.hasInput { parkedDrafts[id] = draft }
             open[id] = nil
             lastWanted[id] = nil
+            tailOnly.remove(id)
             Task { _ = try? await call("conversation.close", ["id": id]) }
         }
     }

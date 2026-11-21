@@ -515,11 +515,16 @@ private struct HubAgentPanel: View {
 // MARK: - The strip
 
 /// Along the bottom of the board while the conversation is folded, and along the bottom of a Dashboard column (#481):
-/// the orchestrator's last words, and a field that sends it a message.
+/// the orchestrator's last words, and a field that sends it a message. Under the Dashboard's window onto the
+/// orchestrator, which shows what it said, it is the field alone (#618).
 struct HubStrip: View {
     let engine: EngineClient
     let hubs: ProjectHubs
     let project: ProjectRow
+    /// Whether the orchestrator's last words show above the field.
+    var showsLastWords = true
+    /// Goes up when the person asks for this field with the keyboard (the Dashboard's ⌥⌘1 to ⌥⌘9, #618).
+    var focusRequest = 0
     @State private var text = ""
     @FocusState private var focused: Bool
 
@@ -535,7 +540,7 @@ struct HubStrip: View {
             }
             .frame(width: 12)
             VStack(alignment: .leading, spacing: 6) {
-                lastWords
+                if showsLastWords { lastWords }
                 TextField(project.conversation == nil ? "Starting the conversation with the orchestrator…" : "Message the orchestrator…", text: $text)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
@@ -548,9 +553,10 @@ struct HubStrip: View {
                 .disabled(!canSend)
                 .help("Send to the orchestrator (Return)")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, 14).padding(.vertical, showsLastWords ? 10 : 7)
         .panel(radius: 12, border: focused ? Theme.acc.opacity(0.55) : Theme.line2)
-        .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 6)
+        .padding(.horizontal, 12).padding(.bottom, showsLastWords ? 12 : 10).padding(.top, showsLastWords ? 6 : 8)
+        .onChange(of: focusRequest) { focused = true }
     }
 
     @ViewBuilder
