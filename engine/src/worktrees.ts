@@ -467,14 +467,19 @@ export function whyKeepWorktree(info: BranchInfo | undefined): string | undefine
 
 /** A branch name made from a conversation's title: "pi2/fix-the-login-page". */
 export function suggestBranch(title: string, fallback: string): string {
-	const slug = title
+	const slug = branchSlug(title);
+	return `pi2/${slug === "" ? fallback : slug}`;
+}
+
+/** The words of a title as a branch name holds them: lower case, hyphens between words, at most 40 characters. */
+export function branchSlug(title: string): string {
+	return title
 		.toLowerCase()
 		.normalize("NFKD")
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 40)
 		.replace(/-+$/, "");
-	return `pi2/${slug === "" ? fallback : slug}`;
 }
 
 /** A folder name for a branch: its slashes and anything odd turned into dashes. */

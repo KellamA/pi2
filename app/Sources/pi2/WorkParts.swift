@@ -27,6 +27,11 @@ struct WorkHolderLine: View {
                 Text(engine.agent(agentId)?.name ?? agentId).foregroundStyle(Theme.tx2)
                 if let chat = piece.holderConversation {
                     Text("· sub-chat \(chat)").foregroundStyle(Theme.tx3)
+                    // The branch its sub-chat works on, as Branches shows it (#596): the tracker already knows it.
+                    if let branch = engine.branches[chat]?.branch {
+                        Text("·").foregroundStyle(Theme.tx3)
+                        Text(branch).foregroundStyle(Theme.tx3)
+                    }
                 }
             } else {
                 Text("Nobody").foregroundStyle(Theme.tx3)
@@ -56,6 +61,9 @@ struct WorkStatusLine: View {
                 Text(engine.agent(agentId)?.name ?? agentId).foregroundStyle(Theme.tx2)
                 if let chat = piece.holderConversation {
                     Text("· sub-chat \(chat)").foregroundStyle(Theme.tx3)
+                    if let branch = engine.branches[chat]?.branch {
+                        Text("· \(branch)").foregroundStyle(Theme.tx3).help("The branch its sub-chat works on")
+                    }
                 }
             } else {
                 Text("Nobody has this yet").foregroundStyle(Theme.tx3)

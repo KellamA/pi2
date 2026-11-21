@@ -1,7 +1,7 @@
 // The built-in work list, driven through a real engine with a throwaway home and the scripted demo model.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -19,6 +19,8 @@ const service = `dev.pi2.credentials.test-work-${process.pid}`;
 const ghFolder = mkdtempSync(join(tmpdir(), "pi2-work-gh-"));
 writeFileSync(join(ghFolder, "state.json"), JSON.stringify({ repos: {} }));
 writeFileSync(join(ghFolder, "gh"), `#!/bin/sh\nGH_STAND_IN_STATE='${join(ghFolder, "state.json")}' exec '${process.execPath}' '${join(import.meta.dirname, "gh-stand-in.mjs")}' "$@"\n`, { mode: 0o755 });
+// A folder of its own for the git repositories assignments are given worktrees of (#596).
+const repos = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-repos-")));
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp(), PI2_GH: join(ghFolder, "gh") };
 const start = () => spawn(process.execPath, [join(import.meta.dirname, "../src/main.ts")], { env, stdio: ["ignore", "ignore", "inherit"] });
 let engine = start();
@@ -26,6 +28,7 @@ process.on("exit", () => {
 	if (engine.exitCode === null && engine.signalCode === null) engine.kill("SIGKILL");
 	rmSync(home, { recursive: true, force: true });
 	rmSync(ghFolder, { recursive: true, force: true });
+	rmSync(repos, { recursive: true, force: true });
 	try {
 		while (true) execFileSync("/usr/bin/security", ["delete-generic-password", "-s", service], { stdio: "ignore" });
 	} catch { /* None left. */ }
@@ -276,6 +279,84 @@ try {
 	await act(longNote, "note", { text: "x".repeat(2_000) });
 	assert.match((await socket.tool(worker, "show", { id: longNote })).text, /\[\+\d+ characters\]/, "a long note is cut and says so");
 	step("a list of six long items stays a few hundred characters a line, and show gives one item's text and cut notes");
+
+	// ---- An assignment in a project whose folder is a git repository gives its sub-chat a worktree (#596)
+	const repo = join(repos, "widgets");
+	mkdirSync(repo);
+	const gitIn = (...args: string[]) =>
+		execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdio: "pipe" }).toString().trim();
+	gitIn("init", "-q", "-b", "main");
+	gitIn("commit", "-q", "--allow-empty", "-m", "first");
+	const demo = { provider: "demo", modelId: "demo-1" };
+	const { id: repoProject, conversation: repoParent }: { id: string; conversation: number } = await socket.call("projects.create", { folder: repo, name: "Repository" });
+	const { id: handId } = await socket.call("projects.addAgent", { projectId: repoProject, agent: { name: "Hand", access: "full", model: demo } });
+	// An agent whose own setting gives every conversation a worktree: it gets its one, never a second.
+	const { id: ownId } = await socket.call("projects.addAgent", { projectId: repoProject, agent: { name: "Own", access: "full", model: demo, worktree: true } });
+	await socket.call("conversation.open", { id: repoParent });
+	await socket.call("conversation.configure", { id: repoParent, access: "full" });
+	const repoCall = (name: string, params: Record<string, unknown> = {}) => socket.call(`work.${name}`, { projectId: repoProject, ...params });
+	const repoItem = async (title: string, text = "") => (await repoCall("create", { title, text })).id;
+	/** The worktree an assignment's answer says its sub-chat works in, checked as the checkout git made. */
+	const worktreeIn = (said: string) => {
+		const found = /working in a worktree of its own at (.+), on the branch (\S+)\./.exec(said) ?? /worktree of its own at (.+), on the branch (\S+)\./.exec(said);
+		assert.ok(found, said);
+		return { path: found![1]!, branch: found![2]! };
+	};
+
+	// With no `worktree`: a branch named for the work, and the answer says so.
+	const login = await repoItem("Tidy the login form");
+	const said = await socket.tool(repoParent, "assign", { id: login, agent: "Hand" });
+	assert.equal(said.isError, false, said.text);
+	const made = worktreeIn(said.text);
+	assert.equal(made.branch, `work-${login}-tidy-the-login-form`);
+	assert.ok(existsSync(made.path), made.path);
+	assert.equal(gitIn("-C", made.path, "rev-parse", "--abbrev-ref", "HEAD"), made.branch);
+	assert.match(said.text, /, with Hand, is working on it/);
+
+	// `worktree` names its branch, as `delegate`'s does.
+	const second = await repoItem("Fix the logout button");
+	const chosen = await socket.tool(repoParent, "assign", { id: second, agent: "Hand", worktree: "logout-fix" });
+	assert.equal(chosen.isError, false, chosen.text);
+	assert.equal(worktreeIn(chosen.text).branch, "logout-fix");
+	assert.equal(gitIn("-C", worktreeIn(chosen.text).path, "rev-parse", "--abbrev-ref", "HEAD"), "logout-fix");
+
+	// `worktree: false` asks for the project's folder itself.
+	const third = await repoItem("Read the docs");
+	const here = await socket.tool(repoParent, "assign", { id: third, agent: "Hand", worktree: false });
+	assert.equal(here.isError, false, here.text);
+	assert.ok(!/worktree of its own/.test(here.text), here.text);
+	const thirdChild = here.details.conversationId;
+	await socket.until("the third sub-chat in the project's own folder", () => {
+		const status = socket.events.branches?.conversations?.[String(thirdChild)];
+		return status !== undefined && status.branch === "main" && status.worktree === false && status;
+	});
+
+	// An agent whose own setting is on gets its one worktree, on the branch pi² suggests, and not a second one.
+	const fourth = await repoItem("Change the footer");
+	const theirs = await socket.tool(repoParent, "assign", { id: fourth, agent: "Own" });
+	assert.equal(theirs.isError, false, theirs.text);
+	assert.match(worktreeIn(theirs.text).branch, /^pi2\//, theirs.text);
+
+	// A worktree that cannot be made refuses the assignment, with the reason, and nothing is claimed.
+	const fifth = await repoItem("Try the same branch twice");
+	const twice = await socket.tool(repoParent, "assign", { id: fifth, agent: "Hand", worktree: "logout-fix" });
+	assert.equal(twice.isError, true, twice.text);
+	assert.match(twice.text, /^No worktree could be made for the sub-chat, so nothing was handed over: /);
+	const left = (await repoCall("list")).items.find((item: any) => item.id === fifth);
+	assert.deepEqual([left.state, left.takenBy], ["open", null]);
+
+	// A folder that is not a git repository gets no worktree and no error.
+	const plainFolder = join(repos, "plain");
+	mkdirSync(plainFolder);
+	const { id: plainProject, conversation: plainParent }: { id: string; conversation: number } = await socket.call("projects.create", { folder: plainFolder, name: "Plain" });
+	const { id: plainWorker } = await socket.call("projects.addAgent", { projectId: plainProject, agent: { name: "Plain hand", access: "full", model: demo } });
+	await socket.call("conversation.open", { id: plainParent });
+	const plainItem = (await socket.call("work.create", { projectId: plainProject, title: "No repository here" })).id;
+	const noRepo = await socket.tool(plainParent, "assign", { id: plainItem, agent: "Plain hand" });
+	assert.equal(noRepo.isError, false, noRepo.text);
+	assert.ok(!/worktree of its own/.test(noRepo.text), noRepo.text);
+	assert.equal((await socket.call("work.list", { projectId: plainProject })).items[0].takenBy.agentId, plainWorker);
+	step("assign gives its sub-chat a worktree named for the work, as asked, or none, and refuses when it cannot be made");
 
 	// The orchestrator is told of the person's assignment at its next turn (#466), in a catch-up in front of the wake; its
 	// own assignment is not news to it (#468).

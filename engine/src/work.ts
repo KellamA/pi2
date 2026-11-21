@@ -1,10 +1,10 @@
 // One work list per project (docs/projects.md, 3.11). Only the backend knows where the items are kept.
 
 import type { Context } from "@earendil-works/chord/context";
-import { AgentDoc, configure, type ConversationId, defineDoc, defineTool, GenerationTask, LiveDoc, type ToolExecutionApi, type Tx, UserEntry } from "@earendil-works/pi-durable";
-import { arr, int, obj, opt, str } from "@earendil-works/pi-schema";
+import { AgentDoc, type AgentChange, configure, type ConversationId, defineDoc, type DocumentReader, defineTool, GenerationTask, LiveDoc, type ToolExecutionApi, type Tx, UserEntry } from "@earendil-works/pi-durable";
+import { arr, int, lit, obj, opt, str, union } from "@earendil-works/pi-schema";
 import { isPutAway } from "./archive.ts";
-import { startedWords, titleOf } from "./extensions.ts";
+import { giveWorktree, startedWords, titleOf } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { addNews, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
 import { admit, limitError, limitRefusal, rememberReading } from "./projectlimits.ts";
@@ -13,7 +13,7 @@ import { recordWorkChange } from "./changes.ts";
 import { handOffWords, reportRun, stageReportRun } from "./reports.ts";
 import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
-import { subChatFolder } from "./worktrees.ts";
+import { branchSlug, removeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
 
 export type WorkState = "open" | "in_progress" | "waiting" | "blocked" | "done" | "dropped";
 export type WorkAction = "file" | "take" | "assign" | "release" | "wait" | "block" | "resume" | "finish" | "close" | "reopen" | "note" | "edit" | "classify";
@@ -481,6 +481,55 @@ function localWorkBackend(engine: Engine, { call, launch, confirmedSwitch }: Wri
 	};
 }
 
+/**
+ * The sub-chat of an assignment, made empty: `launchAssignment` gives it its task and starts it, inside the commit that
+ * claims the work. Made on its own first so that a worktree can be made for it before the work is claimed (#596), as
+ * `delegate` makes its sub-chat before handing it anything.
+ */
+async function newSubChat(tx: Tx, project: Project, target: AgentProfile, agent: AgentChange, title: string, parent: number): Promise<number> {
+	const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
+	const id = child.id as unknown as number;
+	await configure(tx, child.id, agent);
+	const now = Date.now();
+	(await tx.doc(Library)).conversations[String(id)] = { title, parent, projectId: project.id, createdAt: now, updatedAt: now, access: target.access, agentId: target.id, ...(target.allowEverything ? { allowEverything: true as const } : {}) };
+	return id;
+}
+
+/** The branch named for a piece of work (#596): `work-12-tidy-the-login`, or `work-12` when its title has no words. */
+export function branchForWork(item: Pick<WorkItem, "id" | "title">): string {
+	const slug = branchSlug(item.title);
+	return slug === "" ? `work-${item.id}` : `work-${item.id}-${slug}`;
+}
+
+/** `worktree` and `from` of an assignment, checked as `delegate` checks them (#596). */
+function checkWorktreeArgs(args: Record<string, unknown>): void {
+	const given = args.worktree;
+	if (given !== undefined && given !== false && (typeof given !== "string" || given.trim() === "")) {
+		throw new Error('`worktree` needs a branch name, such as "fix-login-timeout", or false for the project\'s folder.');
+	}
+	if (args.from !== undefined && typeof args.from !== "string") throw new Error("`from` must be a branch, a tag or a commit");
+	if (args.from !== undefined && (given === undefined || given === false)) throw new Error("`from` says where a sub-chat's worktree starts; pass it with `worktree`.");
+}
+
+/**
+ * The worktree an assignment's sub-chat should get (#596), or undefined for none: `worktree: false` asks for the
+ * project's folder itself, a branch name is as given, and with neither one named for the work is made when the project's
+ * folder is a git repository and the agent's own setting is off. An agent whose setting is on already gets its one
+ * worktree, which is not made twice.
+ */
+async function plannedWorktree(project: Project, item: Pick<WorkItem, "id" | "title">, target: AgentProfile, options: { worktree?: unknown; from?: unknown }): Promise<{ branch: string; from?: string } | undefined> {
+	const from = typeof options.from === "string" && options.from.trim() !== "" ? options.from.trim() : undefined;
+	const given = options.worktree;
+	if (given === false) return undefined;
+	if (typeof given === "string") return { branch: given.trim(), ...(from === undefined ? {} : { from }) };
+	// An agent whose own setting gives every conversation a worktree: its one, on the branch pi² names for the sub-chat.
+	if (target.worktree === true) return { branch: "" };
+	if (project.folder === null || (await repoOf(project.folder)) === undefined) return undefined;
+	return { branch: branchForWork(item), ...(from === undefined ? {} : { from }) };
+}
+
+type Reader = DocumentReader & { commit<T>(edit: (tx: Tx) => Promise<T>, context: Context): Promise<T> };
+
 const whoPerson: Who = { kind: "person" };
 const toolText = (text: string) => [{ type: "text" as const, text }];
 const NO_SUBMIT = "This project has no current orchestrator conversation. Start one before assigning work.";
@@ -527,6 +576,7 @@ export const work: Feature = (host, engine) => {
 		const extra = action === "assign" ? stringOf(args, "task") : undefined;
 		const title = action === "assign" ? titleOf(stringOf(args, "title")) : undefined;
 		const confirm = action === "assign" ? stringOf(args, "confirmLimit") : undefined;
+		if (action === "assign") checkWorktreeArgs(args);
 		let confirmedSwitch: SwitchName | undefined;
 		if (by.kind === "agent" && call !== undefined && row.switch !== undefined) {
 			const what = action === "assign" ? `Start ${target!.name} on work #${id} “${before!.title}”?` : action === "file" ? `File work “${workTitle(stringOf(args, "title"))}”?` : `${action === "finish" ? "Finish" : "Close"} work #${id} “${before!.title}”?`;
@@ -544,10 +594,23 @@ export const work: Feature = (host, engine) => {
 		const agent = { ...await host.agentChange(target, { subChat: true }), cwd: await subChatFolder(parentFolder, target.cwd) };
 		const startOf = (item: WorkItem): Start => {
 			const task = [`Work #${item.id}: ${item.title}`, item.text, extra].filter(Boolean).join("\n\n");
-			return { by, agentId: target.id, agentName: target.name, kind: "assign", parent, chat: null, work: item.id, title: title ?? titleOf(item.title)!, task, options: {} };
+			const options = { ...(args.worktree === undefined ? {} : { worktree: args.worktree }), ...(args.from === undefined ? {} : { from: args.from }) };
+			return { by, agentId: target.id, agentName: target.name, kind: "assign", parent, chat: null, work: item.id, title: title ?? titleOf(item.title)!, task, options };
 		};
+		// The sub-chat is made before the work is claimed, so that its worktree can be made before anything is handed over
+		// (#596): a worktree that cannot be made then refuses the start with nothing claimed and no run begun.
+		const plan = await plannedWorktree(project, before!, target, { worktree: args.worktree, from: args.from });
+		const named = title ?? titleOf(before!.title)!;
+		const child = plan === undefined ? undefined : await (call === undefined ? engine.harness() : call.api).commit((tx: Tx) => newSubChat(tx, project, target, agent, named, parent), context);
+		if (plan !== undefined && child !== undefined) {
+			const reason = await giveWorktree(reader as Reader, child, plan.branch, plan.from, context);
+			if (reason !== undefined) {
+				await dropSubChat(reader as Reader, child, context);
+				throw new Error(`No worktree could be made for the sub-chat, so nothing was handed over: ${reason}`);
+			}
+		}
 		const launch: Runner = async (tx, current, item) => {
-			const result = await launchAssignment(tx, current, startOf(item), target, agent, { confirm, callId: call?.api.callId });
+			const result = await launchAssignment(tx, current, startOf(item), target, agent, { confirm, callId: call?.api.callId, ...(child === undefined ? {} : { child }) });
 			if ("holder" in result) onStarted?.(result.note);
 			return result;
 		};
@@ -556,17 +619,43 @@ export const work: Feature = (host, engine) => {
 			agentId: target.id,
 			admit: (tx, _current, item) => admit(startOf(item), confirm, { tx, model: agent.model, callId: call?.api.callId }),
 			start: async (tx, current, item, admitted) => {
-				const result = await launchAssignment(tx, current, startOf(item), target, agent, { admitted });
+				const result = await launchAssignment(tx, current, startOf(item), target, agent, { admitted, ...(child === undefined ? {} : { child }) });
 				if (!("holder" in result)) throw new Error("The start was held back after it was admitted.");
 				onStarted?.(result.note);
 				return result.holder;
 			},
 		};
-		return backendFor(engine, project, { launch, call, confirmedSwitch, assign }).apply(project, action, id, by, args);
+		try {
+			return await backendFor(engine, project, { launch, call, confirmedSwitch, assign }).apply(project, action, id, by, args);
+		} catch (error) {
+			// The claim was refused, or the item was taken meanwhile: the sub-chat made for it is put away again (#596).
+			if (child !== undefined) await dropSubChat(reader as Reader, child, context);
+			throw error;
+		}
 	};
 
+	/**
+	 * Put away a sub-chat made for an assignment that never started: it has no message in it worth keeping, and neither
+	 * has its worktree, so the branch goes too and the item is as it was (#596).
+	 */
+	async function dropSubChat(reader: Reader, child: number, context: Context): Promise<void> {
+		try {
+			const meta = (await reader.snapshot(Library, context))?.conversations[String(child)];
+			if (meta === undefined || meta.subChatTask !== undefined) return;
+			if ((await worktreeOf(reader, child, context)) !== undefined) {
+				await removeWorktree(child, { force: true, deleteBranch: true }).catch((error) => engine.log("could not remove the worktree of a sub-chat that did not start:", error instanceof Error ? error.message : error));
+			}
+			await reader.commit(async (tx) => {
+				const stored = (await tx.doc(Library)).conversations[String(child)];
+				if (stored !== undefined && stored.subChatTask === undefined) stored.deleted = true;
+			}, context);
+		} catch (error) {
+			engine.log("could not put away a sub-chat of an assignment that did not start:", error instanceof Error ? error.message : error);
+		}
+	}
+
 	/** `admitted`: the admission check was made already, before a claim on GitHub, and is not made again. */
-	async function launchAssignment(tx: Tx, current: Project, start: Start, target: AgentProfile, agent: Awaited<ReturnType<typeof host.agentChange>>, options: { confirm?: string; callId?: string; card?: LimitReading[]; admitted?: { note?: string } }): Promise<Launched | { limit: LimitReading }> {
+	async function launchAssignment(tx: Tx, current: Project, start: Start, target: AgentProfile, agent: AgentChange, options: { confirm?: string; callId?: string; card?: LimitReading[]; admitted?: { note?: string }; child?: number }): Promise<Launched | { limit: LimitReading }> {
 			const parent = start.parent!;
 			const library = (await tx.doc(Library)).conversations;
 			const parentMeta = library[String(parent)];
@@ -581,16 +670,16 @@ export const work: Feature = (host, engine) => {
 			const named = start.title!;
 			const task = start.task;
 			const now = Date.now();
-			const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
-			const id = child.id as unknown as number;
-			await configure(tx, child.id, agent);
+			// Made already, when a worktree was made for it before the claim (#596).
+			const id = options.child ?? (await newSubChat(tx, current, target, agent, named, parent));
+			const child = conversationId(id);
 			// A normal submit(tx, ...) needs a committed conversation handle and must precede all table writes.
 			// This child is brand new: no inbox, run, or prior request to check. Place its first input and start its
 			// conversation-owned generation exactly as an idle submit would, without a gap after the claim.
-			const entry = await tx.appendEntry(UserEntry, child.id, { model: [{ role: "user", content: task, timestamp: now }] });
-			const submission = await tx.createSubmission({ conversationId: child.id, type: "input", status: "placed", entry: entry.id });
-			const taskId = await tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId: child.id });
-			(await tx.doc(LiveDoc, child.id)).run = { taskId, inputs: [submission.id], first: entry.id, turns: 0 };
+			const entry = await tx.appendEntry(UserEntry, child, { model: [{ role: "user", content: task, timestamp: now }] });
+			const submission = await tx.createSubmission({ conversationId: child, type: "input", status: "placed", entry: entry.id });
+			const taskId = await tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId: child });
+			(await tx.doc(LiveDoc, child)).run = { taskId, inputs: [submission.id], first: entry.id, turns: 0 };
 			library[String(id)] = { title: named, parent, projectId: current.id, createdAt: now, updatedAt: now, access: target.access, agentId: target.id, subChatTask: submission.id as number, ...(saved.allowEverything ? { allowEverything: true as const } : {}) };
 			await stageReportRun(tx, current.id, { submissionId: submission.id as number, conversationId: id, agentId: target.id, title: named, work: start.work! });
 			(await tx.doc(Wakes)).watching[watchKey(id)] = { key: watchKey(id), conversationId: parent, kind: "subchat", ref: String(id), label: `sub-chat ${id} “${named}”`, startedAt: now, submissionId: submission.id as number, agent: target.name };
@@ -614,6 +703,7 @@ export const work: Feature = (host, engine) => {
 			const held = retained(start);
 			const project = retained(current);
 			const hooks = github;
+			const plan = await plannedWorktree(project, { id: held.work!, title: held.title ?? "" }, saved, held.options);
 			return {
 				child: null,
 				after: async () => {
@@ -623,6 +713,7 @@ export const work: Feature = (host, engine) => {
 						if (!("holder" in result)) throw new Error("The start was held back after it was admitted.");
 						return result.holder;
 					});
+					await placeWorktreeLater(projectId, item.takenBy!.conversationId, plan);
 					await followAssignment(item);
 				},
 			};
@@ -636,13 +727,28 @@ export const work: Feature = (host, engine) => {
 		if (target?.projectId !== projectId || target.removedAt !== undefined) throw new Error(`Unknown agent: ${start.agentId}`);
 		const here = (await tx.doc(AgentDoc, conversationId(start.parent!))).cwd ?? null;
 		const agent = { ...await host.agentChange(target, { subChat: true }), cwd: await subChatFolder(here, target.cwd) };
+		const plan = await plannedWorktree(current, item, target, start.options);
 		const result = await launchAssignment(tx, current, start, target, agent, { card: rememberReading(need.confirmed ?? [], need.limit) });
 		if ("limit" in result) return result;
 		const assigned = workTransition(item, item.id, "assign", whoPerson, {}, Date.now(), result.holder);
 		await recordWork(tx, { projectId, action: "assign", by: whoPerson, before: retained(item), after: assigned });
 		list!.items[key] = assigned;
-		return { child: result.holder.conversationId, after: () => followAssignment(assigned) };
+		// The sub-chat was made in this commit, so its worktree comes after it (#596).
+		return { child: result.holder.conversationId, after: async () => { await placeWorktreeLater(projectId, result.holder.conversationId, plan); await followAssignment(assigned); } };
 	});
+
+	/**
+	 * A worktree for an assignment the person allowed from a limit card (#596). Its sub-chat is made in the card's commit,
+	 * so the worktree comes after it; one that cannot be made leaves the sub-chat in the project's folder, and the
+	 * orchestrator is told, since the person's answer has already started it.
+	 */
+	async function placeWorktreeLater(projectId: string, child: number, plan: { branch: string; from?: string } | undefined): Promise<void> {
+		if (plan === undefined) return;
+		const reason = await giveWorktree(engine.harness() as Reader, child, plan.branch, plan.from, engine.context());
+		if (reason === undefined) return;
+		engine.log("could not give sub-chat", child, "its worktree:", reason);
+		await engine.harness().commit((tx) => addNews(tx, projectId, { kind: "work", ref: String(child), text: `Sub-chat ${child} was started without its worktree: ${reason}`, at: Date.now() }), engine.context());
+	}
 
 	/** The watch was stored with the child. Attach its live waiter; recovery attaches it again if we stopped first. */
 	const followAssignment = async (item: WorkItem) => {
@@ -674,6 +780,12 @@ export const work: Feature = (host, engine) => {
 			agent: opt(str({ description: "Project agent to assign the work to" })),
 			task: opt(str({ description: "What to tell the assigned agent beyond the work's own text" })),
 			as: opt(str({ description: "done or dropped, for close" })),
+			worktree: opt(
+				union([str(), lit(false)], {
+					description: "assign: the branch for a git worktree of the sub-chat, as `delegate`'s `worktree`; false to keep it in the project's folder; without it a worktree named for the work is made when the project's folder is a git repository and the agent's own setting is off",
+				}),
+			),
+			from: opt(str({ description: "With `worktree`: what the new branch starts from, as `delegate`'s `from`" })),
 			base: opt(str({ description: "pull_request: the branch to merge into; defaults to the repository's default branch" })),
 			verdict: opt(str({ description: "review: approve, changes or comment" })),
 		}),
@@ -718,7 +830,9 @@ export const work: Feature = (host, engine) => {
 				const name = host.agent(holder.agentId)?.name ?? holder.agentId;
 				const title = host.meta(conversationId(holder.conversationId))?.title ?? titleOf(args.title) ?? titleOf(item.title)!;
 				const note = (await api.snapshot(WorkCall, api.taskId, context))?.note;
-				return { output: toolText([startedWords(holder.conversationId, name, title, handOffWords(number)), note].filter(Boolean).join("\n\n")), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name, ...recorded } };
+				const own = await worktreeOf(api, holder.conversationId, context);
+				const place = own === undefined ? undefined : `The sub-chat works in a worktree of its own at ${own.path}, on the branch ${own.branch}.`;
+				return { output: toolText([startedWords(holder.conversationId, name, title, handOffWords(number)), place, note].filter(Boolean).join("\n\n")), details: { conversationId: holder.conversationId, agentId: holder.agentId, agentName: name, ...recorded } };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { output: toolText(message), isError: true };
@@ -761,12 +875,13 @@ export const work: Feature = (host, engine) => {
 				const item = await mutate(getProject(projectId(id), true), whoPerson, "file", null, { title, text, class: modelClass });
 				return { id: item.id };
 			},
-			"work.act": async ({ projectId: project, id, action: given, text, title, class: modelClass, agentId, task, as, confirmLimit }) => {
+			"work.act": async ({ projectId: project, id, action: given, text, title, class: modelClass, agentId, task, as, confirmLimit, worktree, from }) => {
 				requirePreview();
 				const action = actionOf(given);
 				if (action === "file") throw new Error("Use work.create to file work.");
 				let note: string | undefined;
-				const item = await mutate(getProject(projectId(project), true), whoPerson, action, numberId(id), { text, title, class: modelClass, agentId, task, as, confirmLimit }, undefined, (value) => { note = value; });
+				// No `worktree` from the app's Give to: the same default an agent's `assign` gets (#596).
+				const item = await mutate(getProject(projectId(project), true), whoPerson, action, numberId(id), { text, title, class: modelClass, agentId, task, as, confirmLimit, ...(worktree === undefined ? {} : { worktree }), ...(from === undefined ? {} : { from }) }, undefined, (value) => { note = value; });
 				if (action !== "assign") return { item };
 				await followAssignment(item);
 				return { item, conversation: item.takenBy!.conversationId, ...(note === undefined ? {} : { note }) };
