@@ -49,6 +49,8 @@ One list for everything that waits for the person: an agent's request to run som
 
 The person ticks the projects to watch. Each gets a column: what needs the person, who is working, the orchestrator's last words, and a field to message it, with a button to the project's own hub. Cards are answered there. With every project ticked it does what the Inbox does today.
 
+Under each column's header, one quiet line of the project's vitals: what needs the person, who is working and how many wait for a provider's limit until when, what finished today and how much of it the orchestrator has not read, and what the project spent today against its limit; each part opens the hub where it is shown (#618). At the column's foot, a small window onto the conversation with the orchestrator: its last few turns as the app's own text, Markdown drawn simply and each run of tool calls one quiet line, following as it writes, with what the orchestrator is doing in its header. The field under it messages the orchestrator, so a short exchange needs no hub. The window can be made taller by its top edge or folded away, for each column, and its header opens the hub. Only the end of the conversation is asked for, and a column out of sight or folded asks for nothing.
+
 ## Agents and templates
 
 - Agents are made per project, with everything an agent has today as far as it makes sense for an agent in a project.
