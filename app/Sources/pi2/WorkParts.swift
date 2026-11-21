@@ -422,35 +422,57 @@ struct WorkSectionHeading: View {
     }
 }
 
-/// A group's heading in the list: its name and how many, light. A group that folds (what is closed) says so with a
-/// chevron, and the heading folds and unfolds it.
+/// Which sections of the Work tab's list are folded before the person says (#599): Done, as the owner asked, and the
+/// pull requests merged or closed, which are the pull requests' Done and as long. Every other section starts open. Both kinds of list name their sections the same way: a state of the
+/// table in docs/projects.md, 3.11, or `pulls` and `closedPulls`. What the person chooses is kept by project
+/// (`ProjectHubs.workFolded`).
+enum WorkFolds {
+    static let foldedAtFirst: Set<String> = ["done", "closedPulls"]
+}
+
+/// A section's heading in the list: a small chevron, its name and how many it holds, light. A click on it folds the
+/// section or unfolds it, and so do Space and Return when it has the keyboard's focus, and the Left and Right arrows, as
+/// a disclosure does; folded, the heading stays with its count, which follows what the section gains.
 struct WorkGroupHeading: View {
     let name: String
     let count: Int
-    /// Nil for a group that does not fold.
-    var folded: Bool?
-    var toggle: () -> Void = {}
+    let folded: Bool
+    let toggle: () -> Void
+
+    @FocusState private var focused: Bool
 
     var body: some View {
-        if let folded {
-            Button(action: toggle) {
-                HStack(spacing: 5) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(folded ? 0 : 90))
-                        .foregroundStyle(Theme.tx3)
-                    WorkSectionHeading(text: name, count: count)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8)
-            .accessibilityLabel("\(name), \(count)")
-            .accessibilityHint(folded ? "Show them" : "Hide them")
-        } else {
-            WorkSectionHeading(text: name, count: count).padding(.horizontal, 8)
+        HStack(spacing: 5) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .rotationEffect(.degrees(folded ? 0 : 90))
+                .foregroundStyle(Theme.tx3)
+                .frame(width: 10)
+            WorkSectionHeading(text: name, count: count)
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .contentShape(.rect)
+        .background(focused ? Theme.card : Color.clear, in: .rect(cornerRadius: 6))
+        .onTapGesture(perform: toggle)
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.space, .return, .leftArrow, .rightArrow]) { press in
+            switch press.key {
+            case .leftArrow: if !folded { toggle() }
+            case .rightArrow: if folded { toggle() }
+            default: toggle()
+            }
+            return .handled
+        }
+        .help(folded ? "Show this section" : "Fold this section")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(name), \(count)")
+        .accessibilityValue(folded ? "folded" : "open")
+        .accessibilityAddTraits([.isHeader, .isButton])
+        .accessibilityHint(folded ? "Shows this section" : "Folds this section")
+        .accessibilityAction(.default, toggle)
     }
 }
 
