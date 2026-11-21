@@ -345,8 +345,14 @@ private struct OldAvatar: View {
 
 /// Agents named as the owner's were when the fault was seen, all beginning alike, and one that does not.
 let checkedAgents = ["Pi Squared Worker", "Pi Squared Worker (Sonnet)", "Pi Squared Worker 2", "Pi Squared Worker 3", "Pi Squared Worker 4", "Atlas"]
-private let agentColors: [NSColor] = [0xB9A6FF, 0x9FC5FF, 0x7FD8C4, 0xA8E39A, 0xF5D77A, 0xFFB37A].map {
-    NSColor(srgbRed: CGFloat(($0 >> 16) & 0xFF) / 255, green: CGFloat(($0 >> 8) & 0xFF) / 255, blue: CGFloat($0 & 0xFF) / 255, alpha: 1)
+private let agentHexes: [UInt32] = [0xB9A6FF, 0x9FC5FF, 0x7FD8C4, 0xA8E39A, 0xF5D77A, 0xFFB37A]
+private let agentColors: [NSColor] = agentHexes.map(color)
+
+private func color(_ hex: UInt32) -> NSColor {
+    let red = CGFloat((hex >> 16) & 0xFF) / 255
+    let green = CGFloat((hex >> 8) & 0xFF) / 255
+    let blue = CGFloat(hex & 0xFF) / 255
+    return NSColor(srgbRed: red, green: green, blue: blue, alpha: 1)
 }
 
 /// An agent as the app's menus make one (`MenuChoice(agent:)` in the app): its name and its avatar drawn for a menu.
