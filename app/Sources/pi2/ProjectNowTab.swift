@@ -298,12 +298,45 @@ struct NeedCard: View {
             // width and the conversation's title gives way, rather than the name folding down a letter at a time.
             Text(need.agentName ?? "Someone").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
                 .lineLimit(1).layoutPriority(1)
-            Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
-                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+            place
             Spacer(minLength: 6)
             Text("asked \(LimitsFormat.ago(LimitsFormat.date(need.createdAt), now: .now))")
                 .font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
         }
+    }
+
+    /// Where it was asked: "in" a conversation's title or, for a worker's question (#507), "in sub-chat “Fix login”",
+    /// which opens the sub-chat in place of the board, and "on #28 Fix login" when its run was handed a piece of work.
+    @ViewBuilder
+    private var place: some View {
+        if need.fromSubChat, let project = need.projectId {
+            HStack(spacing: 4) {
+                Text("in").foregroundStyle(Theme.tx3).fixedSize()
+                Button(need.placeWords) { model.openAgent(need.conversationId, in: project) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.acc)
+                    .lineLimit(1).truncationMode(.middle)
+                    .layoutPriority(1)
+                    .help("Open the sub-chat in place of the board")
+                if let work = workWords {
+                    Text("on \(work)").foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.tail)
+                }
+            }
+            .font(.system(size: 11.5))
+        } else {
+            Text("in \(need.placeWords)")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    /// The piece of work a worker's run was handed, with its title when the app has the project's list (#507).
+    private var workWords: String? {
+        guard let id = need.work else { return nil }
+        let project = need.projectId ?? ""
+        let pieces = ProjectWork(engine.extras["work"]?["projects"]?[project]).items
+            + GitHubWork(engine.extras["github"]?["projects"]?[project]).issues
+        guard let title = pieces.first(where: { $0.id == id })?.title, !title.isEmpty else { return "#\(id)" }
+        return "#\(id) \(title)"
     }
 
     /// A card of one's own, in the Inbox card's manner.
@@ -326,8 +359,7 @@ struct NeedCard: View {
                         Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
                     }
                     HStack(spacing: 6) {
-                        Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
-                            .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+                        place
                         Spacer(minLength: 6)
                         Text("asked \(LimitsFormat.ago(LimitsFormat.date(need.createdAt), now: .now))")
                             .font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
