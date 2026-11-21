@@ -315,6 +315,8 @@ enum WorkShown: CaseIterable {
     case loading
     /// The list: one line a row, the title first and cut where it must be, its facts at their own size, in a lazy stack.
     case list
+    /// The list with two of its sections folded to their headings (#599), which keep their counts.
+    case folded
     /// An opened issue: its top and its line of where it is (which says less when it does not fit), the bar of its
     /// actions, its text, and the field at its foot.
     case page
@@ -353,10 +355,20 @@ struct WorkTab: View {
                     }
                 }
                 Spacer(minLength: 0)
-            case .list:
+            case .list, .folded:
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(0..<200, id: \.self) { index in
+                        if shown == .folded {
+                            ForEach(["Open 6", "Done 179"], id: \.self) { heading in
+                                HStack(spacing: 5) {
+                                    Image(systemName: "chevron.right").frame(width: 10)
+                                    Text(heading).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .focusable()
+                            }
+                        }
+                        ForEach(0..<(shown == .folded ? 20 : 200), id: \.self) { index in
                             HStack(spacing: 8) {
                                 Text(index.isMultiple(of: 2) ? longLine : unbroken).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                                 Text("#\(index) · 5 min ago").lineLimit(1).fixedSize()
@@ -724,7 +736,7 @@ Task { @MainActor in
         hub.close()
     }
 
-    await group("a project's hub on the Work tab, loading for the first time, its list and an opened issue, at the smallest size, in each fold (#599)") {
+    await group("a project's hub on the Work tab, loading for the first time, its list with sections open and folded, and an opened issue, at the smallest size, in each fold (#599)") {
         let hub = Made(fixed: true, hub: true)
         hub.feed.work = .loading
         await hub.layOut()
@@ -741,7 +753,7 @@ Task { @MainActor in
                 hub.feed.hubFold = fold
                 // The tab goes from its first read to the list, and the list to an opened issue and back, as it does
                 // when a read lands and the person clicks a row.
-                for work in WorkShown.allCases + [.list, .loading] {
+                for work in WorkShown.allCases + [.list, .folded, .loading] {
                     hub.feed.work = work
                     await hub.layOut()
                     let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(fold.rawValue), \(work)"

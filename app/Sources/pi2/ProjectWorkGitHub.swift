@@ -216,7 +216,7 @@ struct ProjectWorkGitHub: View {
     /// One row of the list as it is laid out: a group's heading, a row, or the space between groups. The list is one lazy
     /// stack of these, so a repository with hundreds of issues draws only the rows in view.
     private enum Entry: Identifiable {
-        case heading(id: String, name: String, count: Int, folds: Bool)
+        case heading(id: String, name: String, count: Int, folded: Bool)
         case issue(WorkPiece)
         case pull(GitHubPull)
         case gap(String)
@@ -248,8 +248,6 @@ struct ProjectWorkGitHub: View {
     @State private var sending: [Int: String] = [:]
     /// The findings whose words are shown in full, by the finding's id (#573).
     @State private var unfoldedFindings: Set<String> = []
-    /// The groups of what is closed that the person unfolded: they are folded at first, being the long part of the list.
-    @State private var unfolded: Set<String> = []
     /// What the person asked for and the engine has not answered yet, by what it is for (`Opened.key`, or a write of
     /// the unknown): shown at once where it is for. While one is on its way, nothing else is sent for the same thing, so
     /// a second click writes nothing twice; the rest of the tab stays usable.
@@ -395,29 +393,31 @@ struct ProjectWorkGitHub: View {
     }
 
     /// The list as it is laid out: the open pull requests first, as a section of their own, then the issues by state,
-    /// then what was merged or closed in the last seven days; the closed groups folded until the person unfolds them.
+    /// then what was merged or closed in the last seven days. Each folds by its heading, as the person left it in this
+    /// project (`ProjectHubs.workFolded`, #599); folded, its heading keeps its count.
     private func entries(_ work: GitHubWork) -> [Entry] {
         var entries: [Entry] = []
-        func group(_ id: String, _ name: String, _ rows: [Entry], folds: Bool) {
+        func group(_ id: String, _ name: String, _ rows: [Entry]) {
             guard !rows.isEmpty else { return }
+            let folded = model.hubs.workFolded(project.id, section: id)
             if !entries.isEmpty { entries.append(.gap(id)) }
-            entries.append(.heading(id: id, name: name, count: rows.count, folds: folds))
-            if !folds || unfolded.contains(id) { entries += rows }
+            entries.append(.heading(id: id, name: name, count: rows.count, folded: folded))
+            if !folded { entries += rows }
         }
-        group("pulls", "Pull requests", work.openPulls.map(Entry.pull), folds: false)
+        group("pulls", "Pull requests", work.openPulls.map(Entry.pull))
         for (state, name, items) in work.grouped {
-            group(state, name, items.map(Entry.issue), folds: state == "done" || state == "dropped")
+            group(state, name, items.map(Entry.issue))
         }
-        group("closedPulls", "Pull requests merged or closed", work.closedPulls.map(Entry.pull), folds: true)
+        group("closedPulls", "Pull requests merged or closed", work.closedPulls.map(Entry.pull))
         return entries
     }
 
     @ViewBuilder
     private func entryView(_ entry: Entry, _ work: GitHubWork) -> some View {
         switch entry {
-        case .heading(let id, let name, let count, let folds):
-            WorkGroupHeading(name: name, count: count, folded: folds ? !unfolded.contains(id) : nil) {
-                if unfolded.contains(id) { unfolded.remove(id) } else { unfolded.insert(id) }
+        case .heading(let id, let name, let count, let folded):
+            WorkGroupHeading(name: name, count: count, folded: folded) {
+                model.hubs.setWorkFolded(!folded, section: id, for: project.id)
             }
             .padding(.bottom, 4)
         case .issue(let issue):

@@ -175,7 +175,7 @@ struct ProjectWorkTab: View {
 
     /// One row of the list as it is laid out, in one lazy stack: a group's heading, a piece, or the space between groups.
     private enum Entry: Identifiable {
-        case heading(id: String, name: String, count: Int, folds: Bool)
+        case heading(id: String, name: String, count: Int, folded: Bool)
         case piece(WorkPiece)
         case gap(String)
 
@@ -203,8 +203,6 @@ struct ProjectWorkTab: View {
     @State private var noteText = ""
     /// A note sent and not yet answered for, by the piece it is on.
     @State private var sending: [Int: String] = [:]
-    /// The closed groups the person unfolded: they are folded at first, being the long part of the list.
-    @State private var unfolded: Set<String> = []
     /// Changes the engine has not answered for yet, by piece: shown at once where the piece is.
     @State private var pending: [Int: WorkPending] = [:]
     @State private var problem: String?
@@ -292,14 +290,15 @@ struct ProjectWorkTab: View {
         }
     }
 
-    /// The groups in the state table's order, the closed ones folded until the person unfolds them.
+    /// The groups in the state table's order, each folded by its heading as the person left it in this project
+    /// (`ProjectHubs.workFolded`, #599); folded, its heading keeps its count.
     private func entries(_ work: ProjectWork) -> [Entry] {
         var entries: [Entry] = []
         for (state, name, items) in work.grouped {
-            let folds = state == "done" || state == "dropped"
+            let folded = model.hubs.workFolded(project.id, section: state)
             if !entries.isEmpty { entries.append(.gap(state)) }
-            entries.append(.heading(id: state, name: name, count: items.count, folds: folds))
-            if !folds || unfolded.contains(state) { entries += items.map(Entry.piece) }
+            entries.append(.heading(id: state, name: name, count: items.count, folded: folded))
+            if !folded { entries += items.map(Entry.piece) }
         }
         return entries
     }
@@ -307,9 +306,9 @@ struct ProjectWorkTab: View {
     @ViewBuilder
     private func entryView(_ entry: Entry) -> some View {
         switch entry {
-        case .heading(let id, let name, let count, let folds):
-            WorkGroupHeading(name: name, count: count, folded: folds ? !unfolded.contains(id) : nil) {
-                if unfolded.contains(id) { unfolded.remove(id) } else { unfolded.insert(id) }
+        case .heading(let id, let name, let count, let folded):
+            WorkGroupHeading(name: name, count: count, folded: folded) {
+                model.hubs.setWorkFolded(!folded, section: id, for: project.id)
             }
             .padding(.bottom, 4)
         case .piece(let piece):
