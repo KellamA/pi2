@@ -169,6 +169,14 @@ final class ProjectHubs {
         agents[id] = conversation
     }
 
+    /// A pull request to open on a project's Work tab as it next shows, asked for from a Dashboard column (#618).
+    @ObservationIgnored private var pullsToOpen: [String: Int] = [:]
+
+    func openPull(_ number: Int, for id: String) { pullsToOpen[id] = number }
+
+    /// The pull request asked for, once: the Work tab opens it as it appears.
+    func takePull(for id: String) -> Int? { pullsToOpen.removeValue(forKey: id) }
+
     /// Makes the conversation with the orchestrator of a project that has none yet: one carried over whose orchestrator
     /// has never been opened, or whose conversation was deleted (docs/projects.md, 3.2). Once at a time per project; the
     /// `projects` event then names it, and the hub shows it.

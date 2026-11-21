@@ -118,6 +118,8 @@ final class AppModel {
     /// The orchestrators' conversations the Dashboard's columns show the end of, while they are on screen and not
     /// folded away (#618). Set by the Dashboard, and empty while it is not shown.
     var dashboardConversations: Set<Int> = []
+    /// What the View menu's Dashboard keys ask of it (#618).
+    let dashboardKeys = DashboardKeys()
 
     init() {
         #if PI2_DEVELOPMENT
@@ -341,6 +343,7 @@ struct Pi2App: App {
                 Divider()
                 PaneCommands(model: model)
                 HubCommands(model: model)
+                DashboardCommands(model: model)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)

@@ -16,7 +16,8 @@
 //   requests leave the transcript, the message field and Stop visible at the smallest size (#489);
 // - that the Dashboard's columns, five where two fit, scroll sideways at the smallest size without resizing the window
 //   or changing its smallest size, with the sidebar and without (#481), and that each column's vitals and its window
-//   onto the orchestrator, shown or folded away, stay inside it with the field in view (#618);
+//   onto the orchestrator, shown or folded away, stay inside it with the field in view, that a column folds to a strip
+//   40 points wide, and that the line across all projects at the top says less rather than widen anything (#618);
 // - that the watch which names a view whose size does not settle reports one that changes size again and again in one
 //   turn of the run loop, once, and stays quiet for a window resized a step a turn as a person does;
 // - that the watch on the app's scene body (#436) reports a body that reads something that then changes, once, and
@@ -84,8 +85,9 @@ final class Feed {
     var hubAgent = false
     /// Whether the detail shows the Dashboard (#481).
     var dashboard = false
-    /// The Dashboard's columns whose window onto the orchestrator is folded away (#618).
+    /// The Dashboard's columns whose window onto the orchestrator is folded away, and those folded to a strip (#618).
     var paneFolded: Set<Int> = []
+    var columnFolded: Set<Int> = []
     /// What the board's Work tab shows, when the board shows it (#599): nil for the plain board.
     var work: WorkShown?
     @ObservationIgnored var frames: [String: CGRect] = [:]
@@ -413,8 +415,13 @@ struct DashboardDetail: View {
             probe("bar") {
                 HStack {
                     Text("Projects…").fixedSize()
-                    Text("· \(longLine)").lineLimit(1)
-                    Spacer(minLength: 8)
+                    // The line across all projects, which says less when it does not fit.
+                    ViewThatFits(in: .horizontal) {
+                        Text("15 need you · 5 working · $4.20 today · Anthropic Max 5-hour 42%, week 61% · OpenAI refuses until 14:05 · \(longLine)").fixedSize()
+                        Text("15 need you · 5 working · $4.20 today · Anthropic 61% · OpenAI until 14:05").fixedSize()
+                        Text("15 need you · 5 working · \(unbroken)").lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 38)
@@ -422,9 +429,25 @@ struct DashboardDetail: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(0..<5, id: \.self) { index in
-                        Column(feed: feed, index: index)
-                            .frame(width: 290)
-                            .frame(minHeight: 0, maxHeight: .infinity)
+                        if feed.columnFolded.contains(index) {
+                            probe("folded-\(index)") {
+                                VStack(spacing: 10) {
+                                    Text("D").frame(width: 18, height: 18)
+                                    Text("3").fixedSize()
+                                    Text("Demo project \(index) · \(longLine)").lineLimit(1).fixedSize()
+                                        .rotationEffect(.degrees(90))
+                                        .frame(width: 18, height: 160)
+                                        .clipped()
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(width: 40)
+                                .frame(minHeight: 0, maxHeight: .infinity)
+                            }
+                        } else {
+                            Column(feed: feed, index: index)
+                                .frame(width: 290)
+                                .frame(minHeight: 0, maxHeight: .infinity)
+                        }
                     }
                 }
             }
@@ -882,7 +905,7 @@ Task { @MainActor in
         hub.close()
     }
 
-    await group("the Dashboard with five columns at the smallest size, with the sidebar and without, their windows onto the orchestrator shown and folded (#481, #618)") {
+    await group("the Dashboard with five columns at the smallest size, with the sidebar and without, their windows onto the orchestrator shown and folded, columns folded to strips, and a long line across all projects (#481, #618)") {
         let dash = Made(fixed: true, dashboard: true)
         await dash.layOut()
         check("the smallest size is the same as without the Dashboard", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
@@ -892,13 +915,14 @@ Task { @MainActor in
         let smallest = dash.window.frame
         let bounds = dash.host.frame
         dash.resizes = 0
-        for folded in [Set<Int>(), [0], [0, 1, 2, 3, 4], []] {
+        for (folded, columns) in [(Set<Int>(), Set<Int>()), ([0], []), ([0, 1, 2, 3, 4], []), ([], [1]), ([], [1, 2, 3, 4]), ([], [])] {
             dash.feed.paneFolded = folded
+            dash.feed.columnFolded = columns
             for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
                 dash.feed.sidebar = sidebar
                 await dash.layOut()
                 let frames = dash.feed.frames
-                let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(folded.isEmpty ? "no window folded" : "\(folded.count) folded")"
+                let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(folded.isEmpty ? "no window folded" : folded.count == 1 ? "a window folded" : "\(folded.count) windows folded"), \(columns.isEmpty ? "no column folded" : columns.count == 1 ? "a column folded" : "\(columns.count) columns folded")"
                 check("\(name): the window does not resize", dash.window.frame == smallest, "frame \(dash.window.frame), was \(smallest)")
                 check("\(name): smallest size", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
                 check("\(name): the split view is no taller than the window", dash.tallestColumn <= dash.host.frame.height + 0.5, "a column is \(dash.tallestColumn) tall")
@@ -906,11 +930,27 @@ Task { @MainActor in
                     check("\(name): the bar spans the detail column", abs(bar.minX - head.minX) <= 0.5 && abs(bar.maxX - bounds.maxX) <= 2, "bar \(bar), window \(bounds.size)")
                     check("\(name): the first column is inside the window", head.minX >= -0.5 && head.maxX <= bounds.width + 0.5 && strip.maxY <= bounds.height + 0.5, "head \(head), strip \(strip) in \(bounds.size)")
                     check("\(name): the vitals are one line under the header, the column's width", abs(vitals.minY - head.maxY) <= 0.5 && abs(vitals.height - 24) <= 0.5 && abs(vitals.width - head.width) <= 0.5, "vitals \(vitals), head \(head)")
-                    check("\(name): the fifth column is beyond the window, so the columns scroll sideways", last.minX > bounds.width, "fifth column at \(last.minX) in \(bounds.size)")
+                    if columns.isEmpty {
+                        check("\(name): the fifth column is beyond the window, so the columns scroll sideways", last.minX > bounds.width, "fifth column at \(last.minX) in \(bounds.size)")
+                    }
+                } else if columns.contains(4), let bar = frames["bar"], let head = frames["head-0"], let last = frames["folded-4"] {
+                    check("\(name): the bar spans the detail column", abs(bar.minX - head.minX) <= 0.5 && abs(bar.maxX - bounds.maxX) <= 2, "bar \(bar), window \(bounds.size)")
+                    check("\(name): with four columns folded, every column is inside the window", last.maxX <= bounds.width + 0.5, "last strip \(last) in \(bounds.size)")
                 } else {
                     check("\(name): the bar, a column, its vitals and its strip are shown", false, "frames \(frames)")
                 }
-                for index in 0..<2 {
+                for index in columns.sorted() {
+                    if let strip = frames["folded-\(index)"], let head = frames["head-0"] {
+                        check("\(name): column \(index) is a strip 40 points wide, as tall as the others", abs(strip.width - 40) <= 0.5 && abs(strip.minY - head.minY) <= 0.5 && strip.maxY <= bounds.height + 0.5, "strip \(strip), first head \(head)")
+                        if let next = frames["head-\(index + 1)"] ?? frames["folded-\(index + 1)"] {
+                            check("\(name): the column after the strip starts where it ends", abs(next.minX - strip.maxX) <= 0.5, "strip \(strip), next \(next)")
+                        }
+                    } else {
+                        check("\(name): column \(index) is folded to a strip", false, "frames \(frames)")
+                    }
+                    check("\(name): a folded column draws nothing of its own", frames["pane-\(index)"] == nil && frames["vitals-\(index)"] == nil, "frames \(frames)")
+                }
+                for index in 0..<2 where !columns.contains(index) {
                     let header = frames["paneHeader-\(index)"], pane = frames["pane-\(index)"], strip = frames["strip-\(index)"], need = frames["need-\(index)"]
                     if folded.contains(index) {
                         check("\(name): column \(index)'s window is folded away, its header and field kept", pane == nil && header != nil && strip != nil, "pane \(String(describing: pane)), header \(String(describing: header)), strip \(String(describing: strip))")
