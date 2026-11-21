@@ -590,7 +590,7 @@ async function readWhole(project: Project, name: string, began: number): Promise
 
 /**
  * Only what changed since the last read (#599), into the listing as it is when the answers come: which issues are
- * open now (their numbers only), the issues and closed pull requests changed since, and the open pull requests whole,
+ * open now (their numbers only), the issues and closed pull requests changed since, whole, and the open pull requests,
  * since their checks and whether they can be merged change without GitHub counting it as a change. Asked together.
  * Undefined when only a whole read can tell: more changed than one answer holds, GitHub would not take the question,
  * or an issue opened or closed that the question for changes has not seen yet.
@@ -604,7 +604,8 @@ async function readChanges(project: Project, name: string, since: number, began:
 			listJson<{ number: number }[]>(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", "number"], cwd),
 			listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "all", "--search", changed, "--limit", String(LIST_LIMIT), "--json", ISSUE_FIELDS], cwd),
 			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "open", "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
-			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "closed", "--search", changed, "--limit", String(LIST_LIMIT), "--json", PULL_BRIEF], cwd),
+			// Whole, as the changed issues are: few change between two reads, and one merged a moment ago may be open on the page.
+			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "closed", "--search", changed, "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
 		]);
 	} catch (error) {
 		if (error instanceof GhError && error.kind === "refused") return undefined;
@@ -634,7 +635,7 @@ async function readChanges(project: Project, name: string, since: number, began:
 	const closedPull = new Set(closedPulls.map((pull) => pull.number));
 	for (const pull of current.pulls) if (pull.state === "open" && !openPull.has(pull.number) && !closedPull.has(pull.number)) return undefined;
 	for (const pull of openPulls) pulls.set(pull.number, pullOf(pull, intents, openedBy));
-	for (const pull of closedPulls) pulls.set(pull.number, { ...pullOf(pull, intents, openedBy), partial: true });
+	for (const pull of closedPulls) pulls.set(pull.number, pullOf(pull, intents, openedBy));
 	return { issues: [...issues.values()].sort(byNumber.issues), pulls: [...pulls.values()].sort(byNumber.pulls) };
 }
 

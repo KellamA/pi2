@@ -632,6 +632,8 @@ type PullRequest = {
 	openedBy: { conversationId: number } | null;
 	/** The work item it fixes, from "Fixes #N" in its text. */
 	work: number | null;
+	/** Only what its row shows was read: no text, comments or checks; `github.show` reads the rest. (#599) */
+	partial?: true;
 };
 ```
 
@@ -639,7 +641,7 @@ type PullRequest = {
 
 **Send back** posts the reason on the pull request, and gives it to the conversation that opened it (from `openedBy`) as an input of its own kind, `pi2.sentBack { by: Who, number, reason }`, which the model reads as "<The person | Orchestrator> sent back pull request #12: <reason>" and the page shows as such, not as a message the person typed. The orchestrator is told in its catch-up when the person sent it.
 
-**The listing** (`github.json` in the data folder) is a cache, kept by project and repository (`{ "<projectId>": { "<owner>/<name>": { readAt, issues, pulls } } }`), so a listing never shows under another repository after one is changed. It holds the open issues and pull requests, and those closed in the last seven days. It is read at most once a minute per project, only while an app has said it shows that project's Work or Now tab (`projects.watch`, [4.2](#42-requests)) or an agent asks (`work` `list` or `show`), and at once after any write pi² makes. A `gh` that fails, is not signed in, or answers that the rate limit is reached leaves the last listing in place, with what went wrong (`state` in the `github` event: `ok`, `loading`, `signed_out`, `unreachable`, `rate_limited`, with `error` and `readAt`). An agent's `work` call then answers with the cached listing and says when it was read and why it is not newer.
+**The listing** (`github.json` in the data folder) is a cache, kept by project and repository (`{ "<projectId>": { "<owner>/<name>": { readAt, issues, pulls } } }`), so a listing never shows under another repository after one is changed. It holds the open issues and pull requests, and those closed in the last seven days. (#599: what is closed is held brief, without its text, comments and checks, and marked `partial: true`, until it is opened, which reads it whole with `github.show`; and a read asks `gh` its questions together, and between whole reads, one each half hour, only for what changed since the last read, so it takes about as long as the slowest single call.) It is read at most once a minute per project, only while an app has said it shows that project's Work or Now tab (`projects.watch`, [4.2](#42-requests)) or an agent asks (`work` `list` or `show`), and at once after any write pi² makes. A `gh` that fails, is not signed in, or answers that the rate limit is reached leaves the last listing in place, with what went wrong (`state` in the `github` event: `ok`, `loading`, `signed_out`, `unreachable`, `rate_limited`, with `error` and `readAt`). While a read runs, the listing stays as it was and the event says so with `reading: true` (#599). An agent's `work` call then answers with the cached listing and says when it was read and why it is not newer.
 
 ### 3.12 The record of changes (`pi2.changes`)
 
@@ -775,6 +777,7 @@ Errors every new request can give, besides its own:
 | `github.refresh { projectId }` | `{}` | Reads again now, within the once-a-minute limit |
 | `github.merge { projectId, number }` | `{}` | Merges with `gh pr merge --merge --repo …`; refuses one that cannot be merged, with GitHub's reason |
 | `github.sendBack { projectId, number, reason }` | `{}` | [3.11](#311-work-pi2work-pi2github-githubjson) |
+| `github.show { projectId, number, pull? }` | `{ item }`, or with `pull: true` `{ pull }` | Reads one issue or pull request whole now, into the listing, as the app does when the person opens one; what is closed is held brief until then (#599) |
 | `github.diff { projectId, number }` | `{ diff }` | As `gh pr diff --repo …` gives it, cut at 2 MB with a line saying so |
 | `github.settle { projectId, intent, happened }` | `{}` | The person says whether a write whose outcome pi² could not tell happened (`true`) or not (`false`) |
 | `github.unknown { projectId }` | `{ unknown }` | The project's writes of unknown outcome (the event's `unknown`), with the id each is settled by, for a script or a test copy (#573) |
@@ -807,7 +810,7 @@ type CarryOverState = { ranAt: number | null; backup: string | null; secretsPend
 { event: "projectRules"; projects: Record<string, ProjectRule[]> }
 { event: "reports"; projects: Record<string, Report[]> }               // undelivered, and the last seven days'
 { event: "work"; projects: Record<string, WorkItem[]> }                // lists kept by pi²
-{ event: "github"; projects: Record<string, { state: "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited"; error: string | null; readAt: number | null; repository: { owner: string; name: string }; issues: WorkItem[]; pulls: PullRequest[]; unknown: { intent: string; summary: string; at: number }[] }> }
+{ event: "github"; projects: Record<string, { state: "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited"; error: string | null; reading: boolean; readAt: number | null; repository: { owner: string; name: string }; issues: WorkItem[]; pulls: PullRequest[]; unknown: { intent: string; summary: string; at: number }[] }> }
 ```
 
 With the preview off, or on with nothing made yet, an app is sent exactly:
@@ -1639,7 +1642,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | The menu bar item's count, the Dock's badge, notifications of what waits | `needs`, in place of the Inbox | #481 |
 | Carrying over's report sheet; **Projects (preview)** | `projects.carryOver` `dryRun`; `projects.setPreview` | #470 |
 
-The app sends `projects.watch` when it shows a project's Now or Work tab, and again when it stops (#472, #479); the engine forgets it when the app disconnects. Nothing about who is working is in the `projects` event, so it is not sent again whenever a run starts or ends (#446).
+The app sends `projects.watch` when it shows a project's Now or Work tab, and again when it stops (#472, #479); the engine forgets it when the app disconnects. The Work tab never waits for its answer or for `gh`: it draws the last `work` or `github` event at once, which the app keeps whatever tab or project is shown, shows a small spinner while `reading` is true, and changes its rows in place when the read lands (#599). Nothing about who is working is in the `projects` event, so it is not sent again whenever a run starts or ends (#446).
 
 In a conversation of a project, the page shows the catch-up's and the state block's entries (6.4), lines with Undo, the reach and rule cards for the needs a tool call made, and, in another agent's conversation the person wrote to, a line "The orchestrator will be told" (an entry `pi2.toldOrchestrator`, written by the engine as the message is taken, #466).
 

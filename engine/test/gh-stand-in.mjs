@@ -16,7 +16,7 @@
 //
 // For measuring (#599), GH_STAND_IN_DELAY makes each command take as long as the real gh does: `400-900` waits a random
 // time in that many milliseconds, and `400-900+6.5` adds 6.5 ms for each kilobyte it prints, as a list with bodies and
-// comments costs GitHub more to answer. `delay` in the file, in the same form, does the same for a test.
+// comments costs GitHub more to answer. `delay` in the file, in the same form, does the same for a test, and wins over the variable.
 // A search with a qualifier it cannot read (`closed:` or `updated:` without a date it takes) fails as GitHub refuses it.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
@@ -31,7 +31,7 @@ const began = Date.now();
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 /** How long this command waits before it answers, as the real gh would, for `bytes` printed. */
 const wait = (bytes) => {
-	const delay = /^(\d+)-(\d+)(?:\+([\d.]+))?$/.exec(process.env.GH_STAND_IN_DELAY ?? peek().delay ?? "");
+	const delay = /^(\d+)-(\d+)(?:\+([\d.]+))?$/.exec(peek().delay ?? process.env.GH_STAND_IN_DELAY ?? "");
 	if (delay === null) return;
 	const [low, high, perKb] = [Number(delay[1]), Number(delay[2]), Number(delay[3] ?? 0)];
 	sleep(low + Math.random() * (high - low) + (perKb * bytes) / 1024);
