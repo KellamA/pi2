@@ -1141,6 +1141,9 @@ final class OpenConversation {
     init(draft: ConversationDraft) { self.draft = draft }
     /// Nil until the engine has sent the conversation.
     private(set) var state: ConversationState?
+    /// Whether the engine has sent the conversation: set once, for a view that needs to know only that and should not be
+    /// drawn again whenever the state changes, as the Dashboard's window onto an orchestrator (#618).
+    private(set) var arrived = false
     /// How many entries older than `items` the engine is still to send: it sends a long conversation newest first (#380).
     private(set) var earlier = 0
     /// Whether the conversation has entries older than all of those, which come when asked for (#440): the engine's view
@@ -1155,6 +1158,7 @@ final class OpenConversation {
         if reset, !items.isEmpty { items = [] }
         if !new.isEmpty { items.append(contentsOf: new) }
         if self.state != state { self.state = state }
+        if !arrived { arrived = true }
         if reset, self.earlier != (earlier ?? 0) { self.earlier = earlier ?? 0 }
         if reset, self.more != (more ?? false) { self.more = more ?? false }
     }

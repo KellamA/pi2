@@ -1226,8 +1226,12 @@ const chatEvent = () => ({ event: "chat", ...chatSettings(settings.chat) });
  * engine's thread is never held for long. Entries committed meanwhile go as usual, and a new start drops what of the
  * old list was still to come. Each list sent from the start says whether the conversation has entries before it
  * (`more`), and those come a part at a time when the app asks (`older`, #440).
+ *
+ * With `tail` (#618), only that newest part is sent: what is older comes when the app asks, as entries older than the
+ * window do. The Dashboard's window onto each orchestrator shows only the end of the conversation, and five of them
+ * should not each take in the engine's whole window.
  */
-async function subscribe(client: Client, id: number, newestFirst = false): Promise<void> {
+async function subscribe(client: Client, id: number, newestFirst = false, tail = false): Promise<void> {
 	if (client.subscriptions.has(id)) return;
 	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
 	let view: ConversationView | undefined;
@@ -1279,7 +1283,11 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 		}
 		olderJSON = new ItemJSON<Item>();
 		const start = partStart(items, olderJSON.size, FIRST_BYTES, FIRST_COUNT);
-		older = items.slice(0, start);
+		if (tail) {
+			// The rest is read from the store when asked, from the newest entry not sent (`readOlder`).
+			older = [];
+			if (start > 0) below = items[start - 1]!.id as unknown as EntryRecord["id"];
+		} else older = items.slice(0, start);
 		const more = below !== undefined;
 		if (!client.socket.destroyed) client.socket.write(`${olderJSON.line({ event: "conversation", id, reset, state, earlier: older.length, more }, items.slice(start))}\n`);
 		sendOlder();
@@ -1532,13 +1540,15 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 	/**
-	 * `{ id, newestFirst? }`: send the app the conversation, and keep sending it as it changes. With `newestFirst`, a
-	 * long one comes in parts, the newest first (`subscribe`); an app that does not ask gets it in one event.
+	 * `{ id, newestFirst?, tail? }`: send the app the conversation, and keep sending it as it changes. With `newestFirst`,
+	 * a long one comes in parts, the newest first (`subscribe`); an app that does not ask gets it in one event. With
+	 * `tail`, only the newest part comes, and the rest when asked (#618).
 	 */
 	"conversation.open": async (params, client) => {
 		await conversation(params.id);
 		if (params.newestFirst !== undefined && typeof params.newestFirst !== "boolean") throw new Error("newestFirst must be true or false");
-		await subscribe(client, params.id as number, params.newestFirst === true);
+		if (params.tail !== undefined && typeof params.tail !== "boolean") throw new Error("tail must be true or false");
+		await subscribe(client, params.id as number, params.newestFirst === true || params.tail === true, params.tail === true);
 		return {};
 	},
 	/**
