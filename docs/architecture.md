@@ -40,7 +40,8 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/ComposeKit    what Return does in a field that sends a message: send, start a new line, or leave it to an input method
           Sources/pi2-compose-check   checks ComposeKit, with a real text field in a window of its own; not part of the app
           Sources/WindowKit     a window's smallest size, worked out without measuring its content, and a watch for a size that does not settle
-          Sources/pi2-window-check    checks WindowKit, in windows of its own that never come on screen; not part of the app
+          Sources/MenuKit       the rows of the app's pop-up menus, and an agent's avatar drawn as a picture for one (#597)
+          Sources/pi2-window-check    checks WindowKit, in windows of its own that never come on screen, and what MenuKit's rows come out as in a native menu; not part of the app
           Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
           Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
           Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app

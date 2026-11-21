@@ -28,6 +28,10 @@
 // bar's is, over a hundred changes of their content: at most one frame a turn, at most two layout and two Update
 // Constraints passes in a display cycle, and a quiet size watch. A hosting view is never one of those windows'
 // content view (#589), which is where SwiftUI sizes a window itself after each layout.
+//
+// Last, it reads what the projects screens' pop-up menus come out as in a native menu, without showing one (#597,
+// MenuCheck.swift): each row must be the whole name it stands for, never empty or a letter, and an agent's row has its
+// avatar. `--menu-pictures <folder>` also draws the rows as read, dark and light, into that folder.
 // Exits 1 if anything failed.
 
 import AppKit
@@ -480,6 +484,15 @@ let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
+    let arguments = CommandLine.arguments
+    let pictures = arguments.firstIndex(of: "--menu-pictures").flatMap { arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1]) : nil }
+    if let pictures { try? FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true) }
+    // The menus alone, for a quick look at them.
+    if arguments.contains("--menus") {
+        await menuCheck(pictures: pictures)
+        print(failures == 0 ? "all checks passed" : "\(failures) checks failed")
+        exit(failures == 0 ? 0 : 1)
+    }
     await group("the pill, Quick Ask and the menu bar window size themselves outside AppKit's passes (#589)") { await indicatorCheck() }
     // The content as the app had it before: what to keep, and what to stop.
     let before = Made(fixed: false)
@@ -776,6 +789,8 @@ Task { @MainActor in
             window.close()
         }
     }
+
+    await menuCheck(pictures: pictures)
 
     print(failures == 0 ? "all checks passed" : "\(failures) checks failed")
     exit(failures == 0 ? 0 : 1)

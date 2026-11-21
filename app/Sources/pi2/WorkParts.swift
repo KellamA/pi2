@@ -1,3 +1,4 @@
+import MenuKit
 import SwiftUI
 
 /// The parts of a piece of work the Work tab draws the same way for both kinds of list (docs/projects.md, 3.11): who has
@@ -85,15 +86,10 @@ struct WorkGiveMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(agents) { agent in
-                Button { give(agent) } label: {
-                    // The agent's own face, as the row and the state line show it, so the person picks the worker they
-                    // mean rather than read a name (#553).
-                    HStack(spacing: 6) {
-                        AgentAvatar(agent: agent, size: 16)
-                        Text(agent.name)
-                    }
-                }
+            // Each agent's whole name, with its face before it as the row and the state line show it (#553). A native
+            // menu draws a row as a text and one picture, so the avatar is drawn into a picture first (#597).
+            MenuChoices(agents.map(MenuChoice.init(agent:))) { choice in
+                if let agent = agents.first(where: { $0.id == choice.id }) { give(agent) }
             }
         } label: {
             Text("Give to")
