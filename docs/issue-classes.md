@@ -11,11 +11,13 @@ The class is the least that will do. A cloud model may be given a `local model` 
 
 The agent that hands out the work classifies every issue: when it files one, and when it looks over one a worker filed, before that issue becomes work. It is the most capable model at work and the only one trusted with this.
 
-A worker never classifies an issue, its own or anyone else's, and `scripts/issue` refuses to in a worker's worktree. A worker that thinks an issue is in the wrong class says so in its report.
+A worker never classifies an issue, its own or anyone else's, and `scripts/issue` refuses to in a worker's worktree. In a pi² project the `work` tool's `classify` is the orchestrator's alone, but its `file` takes a `class` from any agent: a worker files with none. A worker that thinks an issue is in the wrong class says so in its report.
 
     scripts/issue classify 123 local
     scripts/issue classify 123 cloud
     scripts/issue idea "Title" --model local --body-file body.md
+
+In a project, the orchestrator uses `work` with `classify`, or `file` with a `class`, instead.
 
 `scripts/issue list` shows each issue's class, and `scripts/issue audit` reports an open issue that has none.
 

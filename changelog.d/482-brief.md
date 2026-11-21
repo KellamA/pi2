@@ -1,0 +1,2 @@
+### For contributors
+- An agent working on pi² in a pi² project keeps its issue with the project's `work` tool, and every other agent with `scripts/issue` as before: `CLAUDE.md` has a table of the two side by side, and `docs/agents.md` follows it. Once a merge has closed an issue, the tool's `finish` refuses it, so the summary goes on as a note beginning `**Done.**`. `scripts/issue audit` now counts the tool's summary, which begins with a line naming the agent, as a `**Done.**` summary.
