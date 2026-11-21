@@ -26,7 +26,7 @@ A new worktree has none of the files git ignores, installed packages among them.
 - Do not cut a command's output with `head`, `tail` or `grep` to keep it short: what you cut is gone, and you end up running the command again. Let the tool shorten it (it keeps the whole output in a file and says where), or send a long run's output to a file in your conversation's scratch folder (`$PI2_SCRATCH`, which the system prompt names; see [architecture.md](architecture.md#a-scratch-folder)) and read the part you need.
 - A command in the foreground is stopped after two minutes unless you pass `timeout` (ten minutes at most). A long run, such as the whole test suite or a build, goes in the background with `background: true`; read it with the `background` tool and `wait`. Keep each `wait` to 240 seconds or less and ask again: a longer pause loses the prompt cache, and the whole conversation is paid for again.
 - When you need several files, or several lookups that do not depend on each other, send the calls together in one answer instead of one a turn. Each turn reads the whole conversation again.
-- `$PI2_SCRATCH`, which the system prompt names, works in a path given to a file tool as well as in a shell command: `read`, `write`, `edit`, `list_files`, `find_files` and `search_files` read a path beginning with `$PI2_SCRATCH` or `${PI2_SCRATCH}` as your conversation's scratch folder (see [architecture.md](architecture.md#a-scratch-folder)), and answer with the real path, which you can then use again. No other variable is expanded: a path beginning with `$HOME` is refused, so a folder of that name is never made, and a `$` anywhere but at the start is part of the name — a folder really called `$odd` stays reachable.
+- `$PI2_SCRATCH`, which the system prompt names, works in a path given to a file tool as well as in a shell command: `read`, `write`, `edit`, `list_files`, `find_files` and `search_files` read a path beginning with `$PI2_SCRATCH` or `${PI2_SCRATCH}` as your conversation's scratch folder (see [architecture.md](architecture.md#a-scratch-folder)), and answer with the real path, which you can then use again. No other variable is expanded: a path beginning with `$HOME` is refused, and a `$` anywhere else is part of the name.
 - A picture from `scripts/test-copy shot` goes inside your checkout. Put the ones worth keeping in `app/build/shots/<issue>/`, which git ignores: they stay after the copy is stopped, and a reviewer can read them from your worktree.
 - If your model cannot look at pictures, say so in the first line of your report, do not read picture files, and check each state from what the copy and the engine answer and from the controls the computer tool lists.
 - `scripts/test-copy reopen` puts the copy's window back at its smallest size: run `scripts/test-copy size` again after it.
@@ -45,13 +45,13 @@ Plain `gh issue view N --comments` prints only the comments when it is not run i
 
 ## Issues
 
-Keep each issue's record as [CLAUDE.md](../CLAUDE.md#issues-one-for-every-piece-of-work) says, from your worktree. For an issue you were given, that means:
+Keep each issue's record as [CLAUDE.md](../CLAUDE.md#issues-one-for-every-piece-of-work) says, from your worktree: its table gives each step with the `work` tool of a pi² project and with `scripts/issue`. For an issue you were given, that means:
 
-- `scripts/issue take N` before you change any file;
-- `scripts/issue note N "..."` for each decision or dead end worth keeping, since nobody saw you make it;
-- `scripts/issue done N "..."` once the pull request is merged, and then `gh issue view N` to check it ended closed with no "in progress" label;
-- `scripts/issue idea "Title" -b "..."` for anything worth doing outside your issue, and leave it.
-- Do not classify issues (the labels `local model` and `cloud model`): the agent that handed out the work does that ([issue-classes.md](issue-classes.md)). If you think an issue is in the wrong class, say so in your report.
+- taking it before you change any file, unless your task begins "Work #N:" (the orchestrator's `work` `assign` made it yours);
+- a note for each decision or dead end worth keeping, since nobody saw you make it;
+- once the pull request is merged, the summary (`scripts/issue done`; with the tool, a `note` beginning `**Done.**`), then a check that the issue ended closed with no "in progress" label;
+- an idea filed for anything worth doing outside your issue, and leave it.
+- Do not classify issues (the labels `local model` and `cloud model`, the tool's `class`): the agent that handed out the work does that ([issue-classes.md](issue-classes.md)). If you think an issue is in the wrong class, say so in your report.
 
 ## Doing the work
 
@@ -67,14 +67,14 @@ Keep each issue's record as [CLAUDE.md](../CLAUDE.md#issues-one-for-every-piece-
    - For Projects, `test-copy fill <suffix> --project` seeds a demo hub; repeat for the Dashboard. Use `--show 'project:Demo project#now' --hub both` at launch or `show <suffix> 'project:Demo project#work' --hub board-folded` live. The hub is drawn, an agent's conversation in place of the board too, and `show` answers once it is; the Dashboard is not drawn yet, so for that check `project-view.json` in the copy's data folder. `answer <suffix> <need-id> '<json answer>'` takes a contract `NeedAnswer`; see [Choosing what a copy shows](development.md#choosing-what-a-copy-shows).
 5. Commit in your worktree, staging files by name and checking that nothing personal is in the commit ([Testing safely](../CONTRIBUTING.md#rules)). Mention the issue in the message. Do not use `git stash`: a repository has one list of stashes for all its worktrees, so your `git stash pop` can apply another agent's work, and theirs yours. To set work aside, commit it on a branch of its own, as [Several issues](#several-issues) says.
 6. If the change is worth an entry, add a file for it to `changelog.d`, named after your issue (`changelog.d/N.md`), as [Changelog entries](../CONTRIBUTING.md#changelog-entries) says, and run `node app/changelog.mjs check`. Never add it to `CHANGELOG.md` itself: a file of its own is what keeps your entry from conflicting with other agents' entries.
-7. Push the branch and open a pull request with `gh pr create`. Its body says what changed and why, has `Fixes #N`, and says plainly what was and was not tested. **Write the body with the write tool into a file in your scratch folder, then pass `--body-file`.** For example, after writing `pr-body.md` there:
+7. Push the branch and open a pull request. Its body says what changed and why, has `Fixes #N`, and says plainly what was and was not tested. In a pi² project, open it with `work` `pull_request` and the issue's number as `id`, which adds `Fixes #N`. Anywhere else, use `gh pr create`. **Write the body with the write tool into a file in your scratch folder, then pass `--body-file`.** For example, after writing `pr-body.md` there:
 
    ```bash
    gh pr create --title 'Short title' --body-file "$PI2_SCRATCH/pr-body.md"
    ```
 
-   Do the same for pull request and issue comments (`gh pr comment N --body-file "$PI2_SCRATCH/comment.md"`, `gh issue comment N --body-file "$PI2_SCRATCH/comment.md"`). Keep using `scripts/issue` for task tracking, with short literal summaries, not text assembled by command substitution; a longer text goes in a file, passed with `--body-file`. Do not build these bodies in a shell argument, command substitution or here-document. On macOS's Bash 3.2, even a quoted here-document inside `$(...)` can be misparsed when the body contains an apostrophe: words inside Markdown backticks may then run as commands. This has started a test copy while merely creating a pull request (#330). A file written by the write tool keeps the body out of shell parsing entirely; do not create that file with a shell here-document instead.
-8. Merge it as step 7 of [Making a change](../CONTRIBUTING.md#making-a-change) says: run `scripts/auto-merge <number>` as soon as it is open, do something useful while the checks run, and run it again until it says `Merged.` before you call the work done. Run it again after every push too; it exits 0 once merged, 3 while it waits for checks, and 1 when something needs you, and says what. If `main` has moved and your branch conflicts, merge `origin/main` into your branch, keeping the other agents' work and their changelog entries, check again, and push; after merging `main`, run `npm --prefix engine ci` again if the type-check or a test says the installed dependencies are older than the checkout. A check that shows as failed may only have been cancelled because no runner took the job in time: its annotation says "The job was not acquired by Runner of type hosted even after multiple attempts" (`gh run view <run-id>` shows it). That is not a failure of your change. CI runs such a job again by itself, three times at most ([CI](development.md#ci)); if it is still not running a few minutes later, run it again yourself with `gh run rerun <run-id> --failed`, then `scripts/auto-merge <number>`. Do not pass `--delete-branch` to `gh pr merge` (it tries to switch a checkout). GitHub deletes the remote branch once the pull request is merged; never delete the remote branch of one that is not, which closes it.
+   Do the same for pull request and issue comments (`gh pr comment N --body-file "$PI2_SCRATCH/comment.md"`, `gh issue comment N --body-file "$PI2_SCRATCH/comment.md"`). Give `scripts/issue` short literal summaries, not text assembled by command substitution; a longer text goes in a file, passed with `--body-file`. Never build a body in a shell argument, command substitution or here-document, nor write its file with one: on macOS's Bash 3.2, even a quoted here-document inside `$(...)` can be misparsed when the body holds an apostrophe, and words in Markdown backticks then run as commands, which once started a test copy while opening a pull request (#330).
+8. Merge it as step 7 of [Making a change](../CONTRIBUTING.md#making-a-change) says, in a project too (the tool's `merge` is the orchestrator's): run `scripts/auto-merge <number>` as soon as it is open, do something useful while the checks run, and run it again until it says `Merged.` before you call the work done. Run it again after every push too; it exits 0 once merged, 3 while it waits for checks, and 1 when something needs you, and says what. If `main` has moved and your branch conflicts, merge `origin/main` into your branch, keeping the other agents' work and their changelog entries, check again, and push; after merging `main`, run `npm --prefix engine ci` again if the type-check or a test says the installed dependencies are older than the checkout. A check cancelled because no runner took the job in time (`gh run view <run-id>` shows "The job was not acquired by Runner of type hosted even after multiple attempts") is not a failure of your change: CI runs it again by itself, three times at most ([CI](development.md#ci)); if it is still not running a few minutes later, run `gh run rerun <run-id> --failed`, then `scripts/auto-merge <number>`. Do not pass `--delete-branch` to `gh pr merge` (it tries to switch a checkout). GitHub deletes the remote branch once the pull request is merged; never delete the remote branch of one that is not, which closes it.
 9. Clean up as [Testing safely](../CONTRIBUTING.md#testing-safely) says: the throwaway copy, its data folder, preferences and Keychain items, and any process you started. Leave your worktree and your branch as they are, for the agent that gave you the work to remove once it has your report.
 
 ### Several issues
@@ -91,19 +91,19 @@ While a pull request is open, every commit you push to its branch joins it. So d
 
 ## When to stop
 
-Make ordinary design choices yourself and record them with `scripts/issue note`. Stop, without merging, only if:
+Make ordinary design choices yourself and record them in a note on the issue. Stop, without merging, only if:
 
 - the fix would widen what an agent can do without asking, or change what a person is asked to approve, beyond what the issue describes;
 - it needs something only the person can do: a macOS permission, their sign-in, their running pi²;
 - the issue turns out to be much larger than it reads, or wrong.
 
-Then run `scripts/issue wait N "what you need"` (or `block`), leave the branch pushed, and say so in your report.
+Then mark the issue waiting on what you need (or blocked), leave the branch pushed, and say so in your report.
 
 ## The harness itself
 
-pi² is developed with pi². If a tool you were given got in your way, was missing, misled you, or made you work around it (a limit, a refusal, something slow, something you could not see), that is worth knowing. Do not fix it as part of your issue. File it with `scripts/issue idea` if it is clear enough to act on, and list it in your report either way.
+pi² is developed with pi². If a tool you were given got in your way, was missing, misled you, or made you work around it (a limit, a refusal, something slow, something you could not see), that is worth knowing. Do not fix it as part of your issue. File it as an idea if it is clear enough to act on, and list it in your report either way.
 
-Before you file, check three things. Is the cause outside pi²: the pi² you run in was closed, the Mac restarted, or the screen was locked? Then it is not a fault in the harness; say it in your report instead. Does an open issue already cover it (`scripts/issue list`)? Then add a note there. Is it clear enough for someone else to act on? If you are unsure of any of these, put it in your report and do not file: the agent that handed out the work decides.
+Before you file, check three things. Is the cause outside pi²: the pi² you run in was closed, the Mac restarted, or the screen was locked? Then it is not a fault in the harness; say it in your report instead. Does an open issue already cover it (`list`)? Then add a note there. Is it clear enough for someone else to act on? If you are unsure of any of these, put it in your report and do not file: the agent that handed out the work decides.
 
 ## Your report
 

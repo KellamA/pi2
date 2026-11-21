@@ -339,7 +339,9 @@ case $cmd in
 				else empty end )
 			end' <<<"$issues")
 		# Closed as completed by agent work since $since: it should carry the
-		# summary that "done" posts. Comments are fetched only for these.
+		# summary that "done" posts, or that the work tool of a pi² project posts
+		# after a line naming the agent (docs/projects.md, 3.11). Comments are
+		# fetched only for these.
 		candidates=$(jq -r --arg since "$since" '
 			.[] | select(.state == "CLOSED" and .stateReason == "COMPLETED"
 				and any(.labels[]; .name == "agent")
@@ -347,7 +349,7 @@ case $cmd in
 			.number' <<<"$issues" | sort -n)
 		for n in $candidates; do
 			summaries=$(gh issue view "$n" --json comments \
-				-q '[.comments[] | select(.body | startswith("**Done.**"))] | length')
+				-q '[.comments[] | select(.body | test("^(\\*From [^\\n]*, an agent of the pi² project “[^\\n]*”\\.\\*\\s*)?\\*\\*Done\\.\\*\\*"))] | length')
 			if [[ $summaries == 0 ]]; then
 				problems+="${problems:+$'\n'}$n"$'\t'"closed as completed, but has no **Done.** summary"
 			fi
