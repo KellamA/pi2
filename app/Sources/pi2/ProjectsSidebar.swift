@@ -17,11 +17,18 @@ struct ProjectsSidebar: View {
         #endif
         // The arrow keys move the List's selection themselves, so a project chosen that way never reaches a row's button:
         // it has to come through `showProject` here as a click does, or a project whose agent's conversation was opened
-        // earlier in this launch opens on that agent instead of its board (#553).
+        // earlier in this launch opens on that agent instead of its board (#553). An agent's row under it comes through
+        // `openAgent`, as its click does; while one is shown in place of the board, the list's selection is that row, so
+        // that the keys move on from it (#600).
+        let listed = listSelection
         List(selection: Binding(
-            get: { model.selection },
+            get: { listed },
             set: { next in
-                if case .project(let id) = next { model.showProject(id) } else { model.selection = next }
+                switch next {
+                case .project(let id): model.showProject(id)
+                case .projectAgent(let project, let conversation): model.openAgent(conversation, in: project)
+                default: model.selection = next
+                }
             }
         )) {
             DashboardRow(store: store)
@@ -99,6 +106,17 @@ struct ProjectsSidebar: View {
     }
 }
 
+extension ProjectsSidebar {
+    /// What the list marks as chosen: the window's selection, or, while an agent's conversation is shown in place of the
+    /// project's board, that agent's row, when the sidebar lists one for it.
+    fileprivate var listSelection: Selection? {
+        guard case .project(let id) = model.selection, let agent = model.hubs.agent(id) else { return model.selection }
+        let live = store.live(id)
+        guard live.runs.contains(agent) || live.others.contains(where: { $0.id == agent }) else { return model.selection }
+        return .projectAgent(project: id, conversation: agent)
+    }
+}
+
 /// The Dashboard's row, with how many things wait for the person in every project.
 private struct DashboardRow: View {
     let store: ProjectsStore
@@ -146,28 +164,34 @@ private struct ProjectBlock: View {
         let _ = PerfProbe.count("sidebar: project block drawn")
         #endif
         // A button, as every row of the sidebar that goes somewhere is: a List row's tap gesture never arrives.
-        // Choosing the project itself is choosing its board, whatever agent's conversation took its place (#473).
+        // Choosing the project itself is choosing its board, whatever agent's conversation took its place (#473). The
+        // project's row is its orchestrator's too (#600): the hub opens on the conversation with it, and the row says
+        // how the orchestrator is and offers what can be done to its conversation.
         Button { model.showProject(project.id) } label: {
             ProjectSidebarRow(engine: engine, project: project, live: live).contentShape(.rect)
         }
             .buttonStyle(.plain)
             .tag(Selection.project(project.id))
             .contextMenu(previewAs: project.name, project.id) {
+                // The orchestrator's row had no menu of its own: what can be done to its conversation from here is stopping
+                // it, offered while it runs, as Activity offers it for every run.
+                if let conversation = project.conversation, live.orchestratorWorking {
+                    Button("Stop the Orchestrator") { engine.perform("abort", ["id": conversation]) }
+                    Divider()
+                }
                 Button("Rename…") { model.beginRename(project) }
                 Button("Archive") { model.archiveProject(project.id) }
             }
         if open {
-            // The conversation in place of the board is not the List's selection, which stays on the project: its row is
-            // marked here instead, so that the person can see which of the agents they are reading (#473).
-            // The arrow keys cannot reach the rows below: the List's selection is the window's own, and giving one of
-            // them a tag would take the selection off the hub, which is what marks the row shown (#473); reaching them
-            // would need a selection of the List's own, which is a view of its own rather than a small change (#553).
+            // The rows below carry a tag of their own, so that the arrow keys go from the project to its first working
+            // agent and on (#600). Choosing one opens its conversation in place of the board, and the window's selection
+            // stays the project's; while it shows, the list marks its row (`listSelection`).
             let agent = model.hubs.agent(project.id)
-            OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
-                    RunRow(engine: engine, run: run, shown: agent == id) { model.openAgent(id, in: project.id) }
+                    RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
                         .padding(.leading, 14)
+                        .tag(Selection.projectAgent(project: project.id, conversation: id))
                 }
             }
             OtherConversations(model: model, project: project, live: live, agent: agent)
@@ -186,7 +210,21 @@ private struct ProjectSidebarRow: View {
         let _ = PerfProbe.count("sidebar: project row drawn")
         #endif
         HStack(spacing: 8) {
-            ProjectMark(name: project.name, color: engine.agent(project.orchestratorId)?.color)
+            // How the orchestrator is, in the mark's place, as an agent's row shows it in place of its avatar (#600).
+            Group {
+                if live.orchestratorAtLimit {
+                    Image(systemName: "hourglass").foregroundStyle(Theme.warn)
+                        .accessibilityLabel("The orchestrator waits for a limit")
+                } else if live.orchestratorWaiting {
+                    Circle().fill(Theme.warn).frame(width: 7, height: 7)
+                        .accessibilityLabel("The orchestrator waits for you")
+                } else if live.orchestratorWorking {
+                    Spinner().accessibilityLabel("The orchestrator is working")
+                } else {
+                    ProjectMark(name: project.name, color: engine.agent(project.orchestratorId)?.color)
+                }
+            }
+            .frame(width: 20, height: 20)
             Text(project.name).lineLimit(1).layoutPriority(1)
             if project.folderMissing == true {
                 Image(systemName: "exclamationmark.triangle").font(.system(size: 10)).foregroundStyle(Theme.warn)
@@ -205,7 +243,23 @@ private struct ProjectSidebarRow: View {
                 Tag("idle").fixedSize()
             }
         }
-        .help(project.folder.map(engine.folderName) ?? "No folder")
+        .help(help)
+    }
+
+    /// The folder, the orchestrator with its model, and how it is: what the row stands for (#600).
+    private var help: String {
+        let orchestrator = engine.agent(project.orchestratorId)
+        let ref = orchestrator?.model ?? engine.defaultModel
+        let model = ref.flatMap { ref in engine.allModels.first { $0.ref == ref }?.name ?? ref.modelId }
+        let state = live.orchestratorAtLimit ? "It waits for a provider’s limit."
+            : live.orchestratorWaiting ? "It waits for you."
+            : live.orchestratorWorking ? "It is working."
+            : nil
+        return [
+            project.folder.map(engine.folderName) ?? "No folder",
+            "Orchestrator: \(orchestrator?.name ?? "none")\(model.map { " · \($0)" } ?? "")",
+            state,
+        ].compactMap { $0 }.joined(separator: "\n")
     }
 }
 
@@ -228,40 +282,12 @@ struct ProjectMark: View {
     }
 }
 
-/// The orchestrator, first under the open project: its conversation, or, before it has one, the way to start it.
-private struct OrchestratorRow: View {
-    let model: AppModel
-    let project: ProjectInfo
-    let live: ProjectLive
-
-    var body: some View {
-        // The hub, on its board: its conversation is made when the person first opens it (docs/projects.md, 9.6), and
-        // choosing the orchestrator while another agent's conversation is shown goes back to the board (#473).
-        Button { model.showProject(project.id) } label: {
-            HStack(spacing: 8) {
-                if live.orchestratorWorking {
-                    Spinner().frame(width: 16)
-                } else {
-                    AgentAvatar(agent: model.engine.agent(project.orchestratorId), size: 16)
-                }
-                Text(model.engine.agent(project.orchestratorId)?.name ?? "Orchestrator").lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.leading, 14)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .help(project.conversation == nil ? "Open the project; its conversation with the orchestrator starts there"
-                                          : "Show the project’s board, with the conversation with the orchestrator")
-    }
-}
-
 /// One agent working now in the open project.
 private struct RunRow: View {
     let engine: EngineClient
+    /// Its conversation.
+    let id: Int
     let run: RunLive
-    /// Whether its conversation is the one in place of the project's board (#473).
-    let shown: Bool
     /// Opens its conversation in place of the board, in the project's hub (#473).
     let open: () -> Void
 
@@ -271,30 +297,45 @@ private struct RunRow: View {
         #endif
         let agent = engine.agent(run.agentId)
         Button(action: open) {
-            HStack(spacing: 8) {
-                if run.waiting {
-                    Circle().fill(Theme.warn).frame(width: 7, height: 7).frame(width: 16)
-                        .accessibilityLabel("Needs you")
-                } else if run.atLimit {
-                    Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
-                        .accessibilityLabel("Waiting for a limit")
-                } else {
-                    Spinner().frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 8) {
+                    if run.waiting {
+                        Circle().fill(Theme.warn).frame(width: 7, height: 7).frame(width: 16)
+                            .accessibilityLabel("Needs you")
+                    } else if run.atLimit {
+                        Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                            .accessibilityLabel("Waiting for a limit")
+                    } else {
+                        Spinner().frame(width: 16)
+                    }
+                    // The title has the room: the agent's name gives way first (#598).
+                    Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 4)
+                    if let agent, !run.title.isEmpty { AgentNameGivingWay(agent: agent) }
                 }
-                Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1)
-                Spacer(minLength: 4)
-                if let agent, !run.title.isEmpty {
-                    // The agent's name is short and says who; the title gives way first.
-                    Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).fixedSize()
-                }
+                BranchLine(engine: engine, conversationID: id, working: true).padding(.leading, 24)
             }
-            .background(shown ? Theme.card2 : .clear, in: .rect(cornerRadius: 6))
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(shown ? .isSelected : [])
         // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
         .help("Open this agent’s conversation in place of the board")
+    }
+}
+
+/// The agent's name beside a working agent's title, which gives way to it (#598): whole, then cut in the middle, then only
+/// the agent's avatar, with the name in its help.
+private struct AgentNameGivingWay: View {
+    let agent: AgentProfile
+
+    var body: some View {
+        let name = Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
+        ViewThatFits(in: .horizontal) {
+            name.fixedSize()
+            name.truncationMode(.middle).frame(maxWidth: 72, alignment: .trailing)
+            AgentAvatar(agent: agent, size: 14)
+        }
+        .help(agent.name)
     }
 }
 
@@ -303,7 +344,7 @@ private struct OtherConversations: View {
     let model: AppModel
     let project: ProjectInfo
     let live: ProjectLive
-    /// The conversation in place of the board, whose row is marked (#473).
+    /// The conversation in place of the board, whose row the list marks (#473, #600).
     let agent: Int?
 
     var body: some View {
@@ -335,19 +376,21 @@ private struct OtherConversations: View {
             if shown {
                 ForEach(others) { conversation in
                     Button { model.openAgent(conversation.id, in: project.id) } label: {
-                        HStack(spacing: 8) {
-                            AgentAvatar(agent: model.engine.agent(conversation.agentId), size: 16)
-                            Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
-                                .lineLimit(1)
-                                .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
-                            Spacer(minLength: 0)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 8) {
+                                AgentAvatar(agent: model.engine.agent(conversation.agentId), size: 16)
+                                Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
+                                    .lineLimit(1)
+                                    .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
+                                Spacer(minLength: 0)
+                            }
+                            BranchLine(engine: model.engine, conversationID: conversation.id).padding(.leading, 24)
                         }
-                        .background(agent == conversation.id ? Theme.card2 : .clear, in: .rect(cornerRadius: 6))
                         .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityAddTraits(agent == conversation.id ? .isSelected : [])
                     .padding(.leading, 28)
+                    .tag(Selection.projectAgent(project: project.id, conversation: conversation.id))
                     .help("Open its conversation in place of the board")
                     .draggable(ConversationDrag(id: conversation.id)) {
                         Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left").padding(6)

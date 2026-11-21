@@ -1,3 +1,4 @@
+import MenuKit
 import SwiftUI
 
 // The board's Rules tab (#476): the project's rules, read and changed, and a proposal waiting to be answered.
@@ -132,6 +133,17 @@ struct NeedItem: Decodable, Equatable, Identifiable {
     let change: ReachChange?
     let start: Start?
     let limit: LimitReading?
+    /// A worker's question or decision: the work item its run was handed, when it was handed one (#507).
+    let work: Int?
+
+    /// Whether a worker asks, in a sub-chat, rather than an agent in a conversation of its own (#507).
+    var fromSubChat: Bool { conversationId != rootConversationId }
+
+    /// Where it was asked, as a line names it: "sub-chat “Fix login”", or a conversation's title.
+    var placeWords: String {
+        guard fromSubChat else { return title.isEmpty ? rootTitle : title }
+        return title.isEmpty ? "sub-chat \(conversationId)" : "sub-chat “\(title)”"
+    }
 
     /// Which switch asked, in words the person reads, or the switch's own name when the app does not know it.
     var switchWords: String? {
@@ -429,8 +441,9 @@ private struct BindsMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(ProjectRule.Binds.allCases) { value in
-                Button(value == binds ? "✓ \(value.title)" : value.title) { choose(value) }
+            // The one it binds now ticked as the model menus tick theirs, so each row says only whom it stands for (#597).
+            MenuChoices(ProjectRule.Binds.allCases.map { MenuChoice(id: $0.rawValue, title: $0.title, ticked: $0 == binds) }) { choice in
+                if let value = ProjectRule.Binds(rawValue: choice.id) { choose(value) }
             }
         } label: {
             Text(binds.title)

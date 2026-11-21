@@ -298,12 +298,45 @@ struct NeedCard: View {
             // width and the conversation's title gives way, rather than the name folding down a letter at a time.
             Text(need.agentName ?? "Someone").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
                 .lineLimit(1).layoutPriority(1)
-            Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
-                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+            place
             Spacer(minLength: 6)
             Text("asked \(LimitsFormat.ago(LimitsFormat.date(need.createdAt), now: .now))")
                 .font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
         }
+    }
+
+    /// Where it was asked: "in" a conversation's title or, for a worker's question (#507), "in sub-chat “Fix login”",
+    /// which opens the sub-chat in place of the board, and "on #28 Fix login" when its run was handed a piece of work.
+    @ViewBuilder
+    private var place: some View {
+        if need.fromSubChat, let project = need.projectId {
+            HStack(spacing: 4) {
+                Text("in").foregroundStyle(Theme.tx3).fixedSize()
+                Button(need.placeWords) { model.openAgent(need.conversationId, in: project) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.acc)
+                    .lineLimit(1).truncationMode(.middle)
+                    .layoutPriority(1)
+                    .help("Open the sub-chat in place of the board")
+                if let work = workWords {
+                    Text("on \(work)").foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.tail)
+                }
+            }
+            .font(.system(size: 11.5))
+        } else {
+            Text("in \(need.placeWords)")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    /// The piece of work a worker's run was handed, with its title when the app has the project's list (#507).
+    private var workWords: String? {
+        guard let id = need.work else { return nil }
+        let project = need.projectId ?? ""
+        let pieces = ProjectWork(engine.extras["work"]?["projects"]?[project]).items
+            + GitHubWork(engine.extras["github"]?["projects"]?[project]).issues
+        guard let title = pieces.first(where: { $0.id == id })?.title, !title.isEmpty else { return "#\(id)" }
+        return "#\(id) \(title)"
     }
 
     /// A card of one's own, in the Inbox card's manner.
@@ -326,8 +359,7 @@ struct NeedCard: View {
                         Text(label).font(.system(size: 11)).foregroundStyle(Theme.acc).fixedSize()
                     }
                     HStack(spacing: 6) {
-                        Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
-                            .font(.system(size: 11.5)).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+                        place
                         Spacer(minLength: 6)
                         Text("asked \(LimitsFormat.ago(LimitsFormat.date(need.createdAt), now: .now))")
                             .font(.system(size: 11)).foregroundStyle(Theme.tx3).fixedSize()
@@ -528,7 +560,9 @@ struct WorkingRow: View {
             AgentAvatar(agent: agent, size: 18)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
+                    // On one line: a long name is cut in the middle rather than making the row taller (#598).
                     Text(agent?.name ?? "An agent").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
+                        .lineLimit(1).truncationMode(.middle)
                     if let modelName {
                         Text("· \(modelName)").font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
                     }
@@ -538,14 +572,40 @@ struct WorkingRow: View {
                     Spacer(minLength: 6)
                     clock
                 }
+                // Its branch and the size of its change (#598) at the end of the line under the name, which is mostly empty:
+                // the line with the name has its model and title to show already.
+                let status = engine.branches[run.conversationId]
                 if let line = run.lastLine, !line.isEmpty {
-                    Text(line).font(.system(size: 12)).foregroundStyle(Theme.tx2).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(line).font(.system(size: 12)).foregroundStyle(Theme.tx2).lineLimit(1)
+                        if let status {
+                            Spacer(minLength: 6)
+                            branch(status)
+                        }
+                    }
+                } else if let status {
+                    HStack(spacing: 6) {
+                        Spacer(minLength: 0)
+                        branch(status)
+                    }
                 }
                 if let waking = watchWords, !compact {
                     Text(waking).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(2)
                 }
             }
         }
+    }
+
+    /// The branch's mark and name, the name giving way first, and the size of the change.
+    private func branch(_ status: BranchStatus) -> some View {
+        let sharing = engine.sharing(of: run.conversationId)
+        return HStack(spacing: 4) {
+            BranchIcon(status: status, size: 10, shared: sharing != nil)
+            Text(status.name).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.tx3)
+                .lineLimit(1).truncationMode(.middle)
+            ChangeSize(status: status, size: 11)
+        }
+        .help(status.help(sharing: sharing))
     }
 
     @ViewBuilder

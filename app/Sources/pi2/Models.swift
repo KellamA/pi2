@@ -116,6 +116,10 @@ struct BranchStatus: Codable, Equatable {
     let conflicts: Int
     /// A merge, rebase, cherry-pick or revert that stopped half way.
     let operation: String?
+    /// The size of the change in lines: what is committed beyond where the branch left `base`, plus what is not committed
+    /// yet, new files included. Nil when it could not be measured, or from an engine older than #598.
+    var added: Int? = nil
+    var removed: Int? = nil
     /// "conflict", "changes", "detached", "merged", "ahead", "behind", "clean" or "missing".
     let state: String
 
@@ -1109,6 +1113,11 @@ final class ExtraEvents {
     }
 
     private var slots: [String: Slot] = [:]
+    /// How many times each kind has changed, for a reading of it worked out once per change rather than at every look
+    /// (`WorkListings`, #599). Not observed: what reads it reads the value too.
+    private var generations: [String: Int] = [:]
+
+    func generation(_ kind: String) -> Int { generations[kind] ?? 0 }
 
     private func slot(_ kind: String) -> Slot {
         if let slot = slots[kind] { return slot }
@@ -1121,7 +1130,10 @@ final class ExtraEvents {
         get { slot(kind).value }
         set {
             let slot = slot(kind)
-            if slot.value != newValue { slot.value = newValue }
+            if slot.value != newValue {
+                slot.value = newValue
+                generations[kind, default: 0] += 1
+            }
         }
     }
 }
