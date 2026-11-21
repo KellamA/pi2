@@ -12,9 +12,14 @@
 // - `block: { match, when: "before" | "after" }` makes the first command whose arguments contain `match` stop before
 //   or after it changes anything, write its process id to `<state>.blocked`, and wait until it is killed or
 //   `<state>.release` appears.
-// Every command is logged, one JSON line each, to `<state>.log`.
+// Every command is logged, one JSON line each, to `<state>.log`, with when it began and ended (`at`, `ended`).
+//
+// For measuring (#599), GH_STAND_IN_DELAY makes each command take as long as the real gh does: `400-900` waits a random
+// time in that many milliseconds, and `400-900+6.5` adds 6.5 ms for each kilobyte it prints, as a list with bodies and
+// comments costs GitHub more to answer. `delay` in the file, in the same form, does the same for a test.
+// A search with a qualifier it cannot read (`closed:` or `updated:` without a date it takes) fails as GitHub refuses it.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 
 const file = process.env.GH_STAND_IN_STATE;
 if (!file) {
@@ -22,9 +27,16 @@ if (!file) {
 	process.exit(2);
 }
 const args = process.argv.slice(2);
-appendFileSync(`${file}.log`, `${JSON.stringify({ args, cwd: process.cwd() })}\n`);
-
+const began = Date.now();
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** How long this command waits before it answers, as the real gh would, for `bytes` printed. */
+const wait = (bytes) => {
+	const delay = /^(\d+)-(\d+)(?:\+([\d.]+))?$/.exec(process.env.GH_STAND_IN_DELAY ?? peek().delay ?? "");
+	if (delay === null) return;
+	const [low, high, perKb] = [Number(delay[1]), Number(delay[2]), Number(delay[3] ?? 0)];
+	sleep(low + Math.random() * (high - low) + (perKb * bytes) / 1024);
+};
+process.on("exit", () => appendFileSync(`${file}.log`, `${JSON.stringify({ args, cwd: process.cwd(), at: began, ended: Date.now() })}\n`));
 const lock = `${file}.lock`;
 function withState(change) {
 	for (let tries = 0; ; tries++) {
@@ -94,24 +106,44 @@ const repoName = Object.keys(state0.repos).find((name) => name.toLowerCase() ===
 const now = () => new Date().toISOString();
 const urlOf = (name, kind, number) => `https://github.com/${name}/${kind}/${number}`;
 const pick = (object, fields) => (fields ? Object.fromEntries(String(fields).split(",").map((field) => [field, object[field] ?? null])) : object);
-const printJson = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
+const printJson = (value) => {
+	const text = `${JSON.stringify(value)}\n`;
+	const bytes = Buffer.from(text);
+	wait(bytes.length);
+	// Written to its end before the process exits: a long listing to a pipe would otherwise be cut short.
+	for (let at = 0; at < bytes.length; ) {
+		try {
+			at += writeSync(1, bytes, at);
+		} catch (error) {
+			if (error.code !== "EAGAIN") throw error;
+			sleep(1);
+		}
+	}
+};
 function repoIn(state) {
 	const repo = state.repos[repoName];
 	if (!repo) fail(`GraphQL: Could not resolve to a Repository with the name '${asked}'. (repository)`);
 	return repo;
 }
-const since = () => {
-	const match = /closed:>=(\d{4}-\d{2}-\d{2})/.exec(flags.search ?? "");
+// The two qualifiers of GitHub's search the engine asks with: `closed:>=` a day, and `updated:>=` a time to the second
+// (`2026-11-20T10:00:00+00:00`), as GitHub takes them.
+const since = (qualifier) => {
+	const match = new RegExp(`${qualifier}:>=(\\d{4}-\\d{2}-\\d{2}(?:T\\d{2}:\\d{2}:\\d{2}(?:Z|[+-]\\d{2}:\\d{2}))?)(?:\\s|$)`).exec(flags.search ?? "");
 	return match ? Date.parse(match[1]) : null;
 };
+if (flags.search !== undefined && /\b(closed|updated):/.test(flags.search) && since("closed") === null && since("updated") === null) {
+	fail(`Invalid search query "${flags.search}".`);
+}
 function filterState(items, kind) {
 	const wanted = flags.state ?? "open";
-	const from = since();
+	const from = since("closed");
+	const changed = since("updated");
 	return items.filter((item) => {
 		if (wanted === "open" && item.state !== "OPEN") return false;
 		if (wanted === "closed" && item.state === "OPEN") return false;
 		if (wanted === "merged" && item.state !== "MERGED") return false;
 		if (from !== null && (item.closedAt === null || Date.parse(item.closedAt) < from)) return false;
+		if (changed !== null && Date.parse(item.updatedAt ?? item.createdAt ?? 0) < changed) return false;
 		if (kind === "pr" && flags.head !== undefined && item.headRefName !== flags.head) return false;
 		return true;
 	});
@@ -135,6 +167,7 @@ function checkLabels(repo, names) {
 }
 function done(output) {
 	if (block?.when === "after") hold();
+	wait(0);
 	if (output !== undefined) process.stdout.write(`${output}\n`);
 	process.exit(0);
 }
@@ -248,7 +281,7 @@ switch (key) {
 			const pull = {
 				number, title: flags.title, url: urlOf(repoName, "pull", number), headRefName: branch, headRepositoryOwner: { login: owner }, isCrossRepository: cross,
 				baseRefName: flags.base, author: { login: "stand-in" }, state: "OPEN", isDraft: false, statusCheckRollup: [], mergeable: "MERGEABLE",
-				body: flags.body ?? "", comments: [], createdAt: now(), closedAt: null, mergedAt: null,
+				body: flags.body ?? "", comments: [], createdAt: now(), updatedAt: now(), closedAt: null, mergedAt: null,
 			};
 			repo.pulls.push(pull);
 			return pull.url;
@@ -265,6 +298,7 @@ switch (key) {
 			pull.state = "MERGED";
 			pull.mergedAt = now();
 			pull.closedAt = now();
+			pull.updatedAt = now();
 			// As GitHub does: "Fixes #N" closes the issue as completed.
 			for (const match of String(pull.body).matchAll(/\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)\b/gi)) {
 				const issue = repo.issues.find((one) => one.number === Number(match[1]));

@@ -180,6 +180,24 @@ enum PerfProbe {
         }
     }
 
+    /// The Work tab coming on screen (#599): "asked" when the person chooses it, or a project whose board shows it;
+    /// then the tab's frame drawn, its first row drawn, and the read behind it landing. Each step is a line of its own,
+    /// once, in milliseconds since it was asked for.
+    private static var workTab: (started: Double, steps: Set<String>)?
+
+    static func workTab(_ step: String) {
+        guard active else { return }
+        if step == "asked" {
+            workTab = (now(), [])
+            return
+        }
+        // Each step once: the frame and the first row are drawn again with every change.
+        guard var tab = workTab, !tab.steps.contains(step) else { return }
+        tab.steps.insert(step)
+        workTab = tab
+        write("work tab: \(step) \(Int(((now() - tab.started) * 1000).rounded()))ms after it was asked for")
+    }
+
     /// Something worth a line of its own, such as how long a message took to be accepted.
     static func note(_ text: String) {
         guard active else { return }
