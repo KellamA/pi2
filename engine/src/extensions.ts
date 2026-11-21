@@ -132,6 +132,36 @@ export function titleOf(given: string | undefined): string | undefined {
 }
 
 /**
+ * Give a sub-chat its own worktree, through the code New Worktree… uses. Returns why it could not, having put the empty
+ * sub-chat away for good, or undefined once it has one (a call run again after a crash finds it). `delegate` gives its
+ * new sub-chat one with this, and `work` `assign` the sub-chat it starts (#596).
+ */
+export async function giveWorktree(
+	read: DocumentReader & { commit<T>(edit: (tx: Tx) => Promise<T>, context: Context): Promise<T> },
+	child: number,
+	branch: string,
+	from: string | undefined,
+	context: Context,
+): Promise<string | undefined> {
+	const meta = (await read.snapshot(Library, context))?.conversations[String(child)];
+	if (meta?.deleted === true) return "it failed before, and the sub-chat was removed.";
+	if ((await worktreeOf(read, child, context)) !== undefined) return undefined;
+	try {
+		await makeWorktree(child, branch.trim(), from);
+		return undefined;
+	} catch (error) {
+		// The sub-chat never had a message: nothing in it is worth keeping, so it is not left in the sidebar.
+		await read.commit(async (tx) => {
+			const stored = (await tx.doc(Library)).conversations[String(child)];
+			if (stored !== undefined) stored.deleted = true;
+		}, context);
+		// The reasons are worded for the person making a worktree for the conversation in front of them.
+		const reason = (error instanceof Error ? error.message : String(error)).replace(/^This conversation/, "The sub-chat");
+		return /[.!?]$/.test(reason) ? reason : `${reason}.`;
+	}
+}
+
+/**
  * What `delegate` answers when a sub-chat's run ended without an answer: why, in the provider's own words when it was
  * the provider's error (shortened, with no keys or account identifiers), and how to carry on unless `advise` is false.
  */
@@ -482,29 +512,6 @@ export function pi2Extension(host: Host): Extension {
 			return withLimit(await answer(child as unknown as number, target, named, submission.id as number));
 		},
 	});
-
-	/**
-	 * Give a sub-chat just made by `delegate` its own worktree, through the code New Worktree… uses. Returns why it could not,
-	 * having put the empty sub-chat away for good, or undefined once it has one (a call run again after a crash finds it).
-	 */
-	async function giveWorktree(api: ToolExecutionApi, child: number, branch: string, from: string | undefined, context: Context): Promise<string | undefined> {
-		const meta = (await api.snapshot(Library, context))?.conversations[String(child)];
-		if (meta?.deleted === true) return "it failed before, and the sub-chat was removed.";
-		if ((await worktreeOf(api, child, context)) !== undefined) return undefined;
-		try {
-			await makeWorktree(child, branch.trim(), from);
-			return undefined;
-		} catch (error) {
-			// The sub-chat never had a message: nothing in it is worth keeping, so it is not left in the sidebar.
-			await api.commit(async (tx) => {
-				const stored = (await tx.doc(Library)).conversations[String(child)];
-				if (stored !== undefined) stored.deleted = true;
-			}, context);
-			// The reasons are worded for the person making a worktree for the conversation in front of them.
-			const reason = (error instanceof Error ? error.message : String(error)).replace(/^This conversation/, "The sub-chat");
-			return /[.!?]$/.test(reason) ? reason : `${reason}.`;
-		}
-	}
 
 	/** The reference files of the agent a conversation belongs to, as they are listed now. */
 	const filesOf = (conversationId: ConversationId) => host.agentOf(conversationId)?.files ?? [];
@@ -864,7 +871,7 @@ export function pi2Extension(host: Host): Extension {
 		// A call that cannot run anyway is not worth a question; the tool explains why itself.
 		if (typeof args.worktree !== "string" || args.worktree.trim() === "" || args.chat !== undefined || typeof args.agent !== "string") return undefined;
 		const meta = host.meta(api.conversationId);
-		if (meta?.access === "full" || meta?.autoApprove?.includes("delegate")) return undefined;
+		if (meta?.access === "full" || meta?.autoApprove?.includes(call.name)) return undefined;
 		const name = args.agent.trim().toLowerCase();
 		const target = delegatesOf(host, api.conversationId).find((a) => a.name.toLowerCase() === name || a.id === args.agent);
 		if (target === undefined || target.worktree === true) return undefined;
@@ -883,7 +890,7 @@ export function pi2Extension(host: Host): Extension {
 			api,
 			context,
 		);
-		if (decision === "always") await host.allowAlways(api.conversationId, "delegate");
+		if (decision === "always") await host.allowAlways(api.conversationId, call.name);
 		return decision === "deny" ? { block: DECLINED } : undefined;
 	};
 
@@ -957,6 +964,8 @@ export function pi2Extension(host: Host): Extension {
 					await awaitWithContext(host.ready, context);
 					if (call.name === "browser") return approveBrowser(call, api, context);
 					if (call.name === "delegate") return (await approveStart(call, api, context)) ?? approveWorktree(call, api, context);
+					// `work` `assign` gives its sub-chat a worktree the same way, so the person is asked the same way (#596).
+					if (call.name === "work") return approveWorktree(call, api, context);
 					const meta = host.meta(api.conversationId);
 					const isComputer = call.name === "computer";
 					const args = isComputer ? asGiven(api.conversationId, call.arguments as ComputerArgs) : (call.arguments as ComputerArgs);
