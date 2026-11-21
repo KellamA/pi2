@@ -7,14 +7,15 @@
 // and nothing from it is run. So a newer engine reaches the person only with a pi² update that pins it.
 //
 // Sources, read on 2026-11-17, and confirmed by #290, which downloaded and ran them on a Mac (see #173):
-// - The engine: Strata's release v0.2.14 on GitHub, asset strata-engine-0.1.60-macos-arm64-metal.tar.gz (the Metal
-//   engine alone, without the desktop app), size and SHA-256 as GitHub lists them for that asset. The newest Metal
-//   engine is in that release, not the latest one.
-// - The control package (the server): release v0.2.15, asset strata-control-0.1.61-macos-arm64.tar.gz.
+// - The engine: Strata's release v0.2.17 on GitHub, asset strata-engine-0.1.63-macos-arm64-metal.tar.gz (the Metal
+//   engine alone, without the desktop app), size and SHA-256 as the release's SHA256SUMS.txt and its signed
+//   strata-feed.json list them (read on 2026-11-20, #605). 0.1.62 is the first whose watchdog does not end a Mac's
+//   engine for two answers written side by side for a minute; 0.1.60, pinned before, did (#605).
+// - The control package (the server): the same release, asset strata-control-0.1.63-macos-arm64.tar.gz.
 // - The packs: Hugging Face's listing of each repository's files (size, and the SHA-256 of each large file) at the commit
-//   Strata 0.2.15's setup pins (its HF_REVISIONS), read again on 2026-11-18 (#342). Downloads ask for that commit, not
-//   `main`: a repository that replaces a file on `main` would otherwise fail every download until pi² was updated, as
-//   Unsloth's had by then.
+//   Strata 0.2.15's setup pins (its HF_REVISIONS), read again on 2026-11-18 (#342); 0.2.17's setup pins the same commits
+//   and checksums. Downloads ask for that commit, not `main`: a repository that replaces a file on `main` would otherwise
+//   fail every download until pi² was updated, as Unsloth's had by then.
 // - Memory: Strata's docs/MAC.md, "What you need" (the M5 Max with 128 GB they were measured on), checked against what
 //   IQ3_S held when pi² ran it (#293).
 
@@ -133,21 +134,21 @@ const istaLicences: Licence[] = [
 
 export const CATALOG: Catalog = {
 	engine: {
-		version: "0.1.60",
+		version: "0.1.63",
 		archive: {
-			url: `${GITHUB}/releases/download/v0.2.14/strata-engine-0.1.60-macos-arm64-metal.tar.gz`,
-			name: "strata-engine-0.1.60-macos-arm64-metal.tar.gz",
-			size: 5_754_720,
-			sha256: "31ce1cd98bef83938434c15fcc94c1768340037b8fe7f292ee82836db0ca074d",
+			url: `${GITHUB}/releases/download/v0.2.17/strata-engine-0.1.63-macos-arm64-metal.tar.gz`,
+			name: "strata-engine-0.1.63-macos-arm64-metal.tar.gz",
+			size: 2_696_028,
+			sha256: "92a3e6440da49e98d0493b59418c501fd9744ade1bee3ac192abf4e3b7a9c2fd",
 		},
 		executable: "strata",
 		control: {
-			version: "0.1.61",
+			version: "0.1.63",
 			archive: {
-				url: `${GITHUB}/releases/download/v0.2.15/strata-control-0.1.61-macos-arm64.tar.gz`,
-				name: "strata-control-0.1.61-macos-arm64.tar.gz",
-				size: 48_715_939,
-				sha256: "b5fcda16daee894260efc9726d19b526b70df869c46ed73f22e5345833c92a86",
+				url: `${GITHUB}/releases/download/v0.2.17/strata-control-0.1.63-macos-arm64.tar.gz`,
+				name: "strata-control-0.1.63-macos-arm64.tar.gz",
+				size: 45_613_317,
+				sha256: "f7ca382b30010772135f6f9ebfdd9cf4fd5046a5f3ba6bb8476cdc6264ebac4a",
 			},
 		},
 		licences: [{ name: "MIT License", url: `${GITHUB}/blob/main/LICENSE`, summary: "Strata is free to use, copy and change, with no warranty." }],
@@ -226,6 +227,23 @@ export const CATALOG: Catalog = {
 
 /** Memory the engine's key-value cache takes for each token of context, for each request run at once (MAC.md: 0.65 GB at 36,864 tokens). */
 export const KV_BYTES_PER_TOKEN = 0.65e9 / 36_864;
+
+/**
+ * What each request run at once takes as well, for each token of context, once there is more than one: Strata then keeps
+ * a session of its own for each (#605, IQ3_S at 131,072 tokens: `--batch 4: 4 slot sessions (3.34 GiB each)`, and the
+ * engine's footprint 37 GB at four against 23 GB at one).
+ */
+export const SLOT_BYTES_PER_TOKEN = (3.34 * 2 ** 30) / 131_072;
+
+/**
+ * Requests at once for a model newly set up (#605). With Strata 0.1.63 on the M5 Max, four agents at once got as much
+ * done together as one at a time (the Mac's engine runs the requests one after another, without its draft layer, so the
+ * total does not grow), and each waited for its turn a third as long; up to ten minutes of answers written side by side
+ * never stopped the engine.
+ */
+export const REQUESTS_AT_ONCE = 4;
+/** The most Settings offers. */
+export const MOST_REQUESTS_AT_ONCE = 4;
 
 /** The context sizes offered. Strata measured up to 32K on a Mac, and the model takes up to 262K. */
 export const CONTEXT_SIZES = [16_384, 32_768, 65_536, 131_072, 262_144];
