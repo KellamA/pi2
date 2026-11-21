@@ -17,11 +17,14 @@ struct ConversationTranscript: View {
     /// Whether there are entries older than those, to ask for, and whether they are being asked for (#440).
     var older = TranscriptFeed.Older.none
     let state: ConversationState?
+    /// Called once the page has come into view and drawn the conversation (#502).
+    var onShown: () -> Void = {}
 
     var body: some View {
         if let folder = TranscriptPage.folder {
             TranscriptWebView(
                 folder: folder, engine: engine, conversationID: conversationID, items: items, earlier: earlier, older: older, state: state,
+                onShown: onShown,
                 changes: state?.projectChanges ?? [],
                 needs: engine.conversationNeeds.filter { $0.conversationId == conversationID },
                 projects: engine.projectsPreview,
@@ -83,6 +86,7 @@ struct TranscriptWebView: NSViewRepresentable {
     let earlier: Int
     let older: TranscriptFeed.Older
     let state: ConversationState?
+    let onShown: () -> Void
     /// The changes made in this conversation of a project, and the needs waiting from it, for their rows and cards, and
     /// whether the preview is on: with it off the page draws none of them (10.2).
     let changes: [ProjectChangeLine]
@@ -103,6 +107,7 @@ struct TranscriptWebView: NSViewRepresentable {
     func updateNSView(_ view: TranscriptPane, context: Context) {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
+        context.coordinator.onShown = onShown
         context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, older: older, state: state, changes: changes, needs: needs, projects: projects, inbox: inbox, names: names, chat: chat)
     }
 
@@ -134,6 +139,8 @@ final class TranscriptBridge {
     private var chat = TranscriptFeed.Chat.none
     /// Opens the window with a background command's output, as Activity's Output does.
     var showOutput: (String) -> Void = { _ in }
+    /// Told once the page has come into view and drawn the conversation.
+    var onShown: () -> Void = {}
 
     init(engine: EngineClient, conversationID: Int) {
         self.engine = engine
@@ -209,6 +216,12 @@ final class TranscriptBridge {
         hidden = false
         view?.alphaValue = 1
         drawn()
+        // Told once the page has drawn what it was sent, in its next frame: what that sets off (the message field taking
+        // the keyboard, the toolbar's controls for the conversation) then waits for the main thread after that frame,
+        // rather than holding up the main thread before it (#502).
+        view?.callAsyncJavaScript(Self.nextFrame, arguments: [:], in: nil, in: .page) { [weak self] _ in
+            MainActor.assumeIsolated { self?.onShown() }
+        }
     }
 
     /// Sends the page what changed. `drawn` is called once the page has drawn it, or at once when nothing changed.
@@ -259,16 +272,18 @@ final class TranscriptBridge {
     /// Whether a part of the older entries is on its way to the page, which sends the next once it has drawn it.
     private var olderOnTheWay = false
 
+    /// Waits for the page's next animation frame, and a turn after it. A window nobody can see has no animation frames,
+    /// and the page then draws on a timer of its own, so this does not wait longer than that.
+    private static let nextFrame = "await new Promise((done) => { requestAnimationFrame(() => setTimeout(done, 0)); setTimeout(done, 200); });"
+
     private func send(_ json: String, then done: (@MainActor () -> Void)? = nil) {
         // The JSON goes in as an argument and is parsed by the page, so nothing in it is ever run as script.
         guard let done else {
             view?.callAsyncJavaScript("window.pi2.receive(message)", arguments: ["message": json], in: nil, in: .page, completionHandler: nil)
             return
         }
-        // The page draws in its next animation frame: wait for that, and a turn after it. A window nobody can see has
-        // no animation frames, and the page then draws on a timer of its own, so this does not wait longer than that.
-        let script = "window.pi2.receive(message); await new Promise((done) => { requestAnimationFrame(() => setTimeout(done, 0)); setTimeout(done, 200); });"
-        view?.callAsyncJavaScript(script, arguments: ["message": json], in: nil, in: .page) { _ in
+        // The page draws in its next animation frame: wait for that, and a turn after it.
+        view?.callAsyncJavaScript("window.pi2.receive(message); " + Self.nextFrame, arguments: ["message": json], in: nil, in: .page) { _ in
             MainActor.assumeIsolated { done() }
         }
     }

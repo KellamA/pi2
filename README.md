@@ -35,6 +35,8 @@ It works with the models you already have: sign in with a subscription, paste an
 
 An agent is a saved setup: a model, instructions, tools, a folder, and limits. Pick one to start a conversation. To start from an existing setup, choose **Duplicate** in the agent's sidebar context menu or its settings, or **Duplicate agent: …** in the command palette (⌘K). Its settings open with “copy” added to the name, numbered if needed. All settings are copied, including allowed commands and who it can hand work to; memory notes, conversations, schedules and worktrees stay with the original. Other agents cannot hand work to the copy until you allow it in their settings. Built-in agents can be copied too.
 
+A new agent has no model of its own until you choose one in its settings: it shows **App default** and runs on the **Default model for new agents**, in **Settings › General**, with the thinking level chosen there. It follows that setting, so changing it changes what every such agent starts its next conversation, or its next piece of work, on; a conversation already started keeps its model. Left at **The model used last**, the default is the model you last picked in a conversation, as before. If the chosen model is switched off or its provider signed out, agents start on the model used last (else the demo model) until it is back, and Settings says so.
+
 <p align="center"><img src="docs/images/welcome.png" alt="The welcome screen with four agents to choose from" width="820"></p>
 
 Agents can hand work to each other. Each handoff opens a sub-chat under the conversation that started it, so you can watch an orchestrator's helpers work, open any of them, and talk to them directly. The orchestrator names each sub-chat for what it is doing, can give each one a git worktree and branch of its own, and archives the finished ones itself, so the sidebar shows the work still going.
@@ -175,7 +177,7 @@ That is a development build, "pi² dev": it runs the engine from the `engine` fo
 
 1. pi² opens with a scripted demo model, so you can click around before connecting anything.
 2. Open **Settings › Providers** and sign in, add a key, or add an endpoint. If Ollama or LM Studio is running, the welcome screen offers to add it for you.
-3. Pick a model from the toolbar of a conversation, or set one per agent.
+3. Pick a model from the toolbar of a conversation, set one per agent, or choose the default for every agent with none of its own in **Settings › General**.
 4. To let an agent touch files, set **tool access** in the conversation's toolbar and choose a folder. Start with "Ask first".
 
 ## Status

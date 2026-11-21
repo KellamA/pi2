@@ -15,6 +15,10 @@ enum Selection: Hashable {
     case project(String)
     /// The Dashboard's row in the sidebar of projects, with the preview on (ProjectsSidebar.swift; drawn by #481).
     case dashboard
+    /// A row under the open project in the sidebar of projects: one of its agents' conversations, shown in place of the
+    /// board (#473). Only the sidebar's list holds it, so that the arrow keys reach those rows (#600); choosing it opens the
+    /// conversation with `AppModel.openAgent`, and the window's selection stays `.project`.
+    case projectAgent(project: String, conversation: Int)
 }
 
 #if PI2_DEVELOPMENT
@@ -111,6 +115,11 @@ final class AppModel {
     #endif
     /// Conversations whose sub-chats are folded away in the sidebar.
     var collapsed: Set<Int> = []
+    /// The orchestrators' conversations the Dashboard's columns show the end of, while they are on screen and not
+    /// folded away (#618). Set by the Dashboard, and empty while it is not shown.
+    var dashboardConversations: Set<Int> = []
+    /// What the View menu's Dashboard keys ask of it (#618).
+    let dashboardKeys = DashboardKeys()
 
     init() {
         #if PI2_DEVELOPMENT
@@ -148,6 +157,7 @@ final class AppModel {
     var shownConversations: Set<Int> {
         workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
             .union(hubConversation.map { [$0] } ?? []).union(hubAgentConversation.map { [$0] } ?? [])
+            .union(dashboardConversations)
     }
 
     var selectedConversationID: Int? {
@@ -333,6 +343,7 @@ struct Pi2App: App {
                 Divider()
                 PaneCommands(model: model)
                 HubCommands(model: model)
+                DashboardCommands(model: model)
             }
             CommandMenu("Conversation") {
                 ConversationCommands(model: model)
@@ -492,7 +503,7 @@ struct RootView: View {
                     case .agent(let id):
                         AgentEditor(model: model, agentID: id)
                             .id(id)
-                    case .project(let id):
+                    case .project(let id), .projectAgent(let id, _):
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
                     case .dashboard:

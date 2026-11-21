@@ -49,7 +49,7 @@ step("how far loading has got is read from what the engine prints");
 	try {
 		const written = join(data, "strata-m.json");
 		writeFileSync(written, JSON.stringify({ exe: "component:strata-engine", args: ["--pack", "/p", "--max-context", "32768", "--mmap-experts", "--vision"], vision: { mmproj: "/m/v.gguf" }, log: "/c/strata-m.log", port: 8080 }));
-		const engine = { version: "0.1.60", path: "/e/strata", folder: "/e", control: { version: "0.1.61", folder: "/c" } };
+		const engine = { version: "0.1.63", path: "/e/strata", folder: "/e", control: { version: "0.1.63", folder: "/c" } };
 		const model = { id: "m", name: "M", pack: "IQ3_S", path: "/m/1.gguf", contextSize: 65_536, options: { parallel: 2 } };
 		const served = STRATA.command(engine, { ...model, config: written }, 4321, data);
 		const run = join(data, "local", "run", "m.json");
@@ -67,6 +67,22 @@ step("how far loading has got is read from what the engine prints");
 		assert.match(STRATA.missing?.(engine, model) ?? "", /^M is not prepared for Strata yet/, "a model not yet prepared cannot be started");
 		assert.match(STRATA.missing?.({ version: "0.1.60", path: "/e/strata" }, { ...model, config: written }) ?? "", /from an earlier pi² and has no server/);
 		assert.ok(!JSON.stringify(served).includes("key"), "no key on the command line");
+		// Several requests at once only with an engine whose watchdog counts a batch window on a Mac as progress (#605).
+		const parallel = (version: string, options: Record<string, unknown> = model.options) => {
+			const args = STRATA.command({ ...engine, version }, { ...model, config: written, options }, 4321, data).args;
+			return args[args.indexOf("--parallel") + 1];
+		};
+		assert.equal(parallel("0.1.60"), "1", "Strata 0.1.60 would stop itself with two answers written side by side for a minute");
+		assert.equal(parallel("0.1.61"), "1");
+		assert.equal(parallel("0.0.9"), "1");
+		assert.equal(parallel("0.1.62"), "2");
+		assert.equal(parallel("0.1.63"), "2");
+		assert.equal(parallel("0.2.0"), "2");
+		assert.equal(parallel("1.0.0"), "2");
+		assert.equal(parallel("0.1.63", { parallel: 4 }), "4");
+		assert.equal(parallel("0.1.63", {}), "1", "one when the setting is not there");
+		assert.equal(parallel("0.1.63", { parallel: 0 }), "1");
+		assert.equal(parallel("unknown"), "2", "an engine whose version does not read as numbers is taken at its word");
 	} finally {
 		rmSync(data, { recursive: true, force: true });
 	}
@@ -140,8 +156,8 @@ const broken = model("broken", { fail: "not enough memory to load this model" })
 writeFileSync(
 	join(home, "local-models.json"),
 	JSON.stringify({
-		// The downloads piece drops an engine whose folders are gone; these are there.
-		engine: { version: "0.0.0-test", path: standIn, folder: files, control: { version: "0.0.0-test", folder: files } },
+		// The downloads piece drops an engine whose folders are gone; these are there. A version that takes several requests at once (#605).
+		engine: { version: "0.1.63-test", path: standIn, folder: files, control: { version: "0.1.63-test", folder: files } },
 		models: [
 			{ id: "alpha", name: "Alpha (stand-in)", pack: "Q2", path: alpha, contextSize: 40_960, config: config("alpha"), options: { parallel: 2, unknown: "kept" } },
 			{ id: "beta", name: "Beta (stand-in)", pack: "Q2", path: beta, contextSize: 8_192, config: config("beta"), options: { vision: true, visionFile: join(files, "beta.mmproj") } },

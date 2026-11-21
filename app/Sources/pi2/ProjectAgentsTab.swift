@@ -1,3 +1,4 @@
+import MenuKit
 import SwiftUI
 
 // The board's Agents tab (#475; docs/design/projects.md, Agents and templates): the orchestrator's card with what it
@@ -105,8 +106,9 @@ struct ProjectAgentsTab: View {
                     .disabled(engine.status != .connected || project.archivedAt != nil)
                     .help("Make a new agent of this project, set up by hand")
                 Menu {
-                    ForEach(engine.agents) { template in
-                        Button(template.name) { copyTemplate(template) }
+                    // Each template's whole name and face, as the Give to menu shows the project's agents (#597).
+                    MenuChoices(engine.agents.map(MenuChoice.init(agent:))) { choice in
+                        if let template = engine.agents.first(where: { $0.id == choice.id }) { copyTemplate(template) }
                     }
                 } label: {
                     Label("From a Template", systemImage: "doc.on.doc")

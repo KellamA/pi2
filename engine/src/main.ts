@@ -401,11 +401,14 @@ function keepingOrder<T extends { name: string } | undefined>(current: unknown, 
 
 /** How a conversation that starts from `agent` is configured: a sub-chat, or a conversation of its own. */
 async function agentChange(agent: AgentProfile, options: { subChat: boolean; projectId?: string | null; model?: ModelRef }): Promise<AgentChange> {
-	// The model the conversation starts with: the person's choice where `conversation.create` was given one.
-	const model = options.model ?? (agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined ? agent.model : await defaultModel());
+	// The model the conversation starts with: the person's choice where `conversation.create` was given one, else the
+	// agent's own, else the default for agents as it is now (#617): an agent with no model of its own follows it.
+	const own = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined;
+	const model = options.model ?? (own ? agent.model! : await defaultModel());
+	const onDefault = options.model === undefined && !own;
 	return {
 		model,
-		thinkingLevel: (agent.thinkingLevel as never) ?? defaultThinking(model),
+		thinkingLevel: (agent.thinkingLevel as never) ?? ((onDefault ? defaultModelThinking(model) : defaultThinking(model)) as never),
 		instructions: agent.instructions.trim() === "" ? null : agent.instructions,
 		tools: toolsFor(agent.access, agent, options.subChat, { projectId: options.projectId, model }),
 		cwd: agent.cwd,
@@ -481,7 +484,13 @@ const harness = await Harness.open(
 
 const settingsPath = join(home, "settings.json");
 const settings: {
+	/** The model last picked in an agent conversation's toolbar: the default for agents while none is chosen in Settings. */
 	defaultModel?: ModelRef;
+	/**
+	 * The default model for agents the person chose in Settings › General (#617), with the thinking level it runs at
+	 * (null for the model's own default). Absent: the model last picked in a conversation, as before.
+	 */
+	agentDefault?: { model: ModelRef; thinkingLevel: string | null };
 	lastAgent?: string;
 	dailyBudget?: number | null;
 	onboarded?: boolean;
@@ -1179,17 +1188,44 @@ async function providersEvent() {
 }
 async function announceProviders(): Promise<void> {
 	broadcast(await providersEvent());
+	// A provider signed out, or a model switched off, can make the default for agents fall back, or come back.
+	broadcast(await agentDefaultEvent());
 	// Signing in or out changes which usage has a price.
 	usagePricingChanged = true;
 	scheduleUsageRefresh();
 	for (const feature of host.features) feature.providersChanged?.();
 }
 
-/** The model a new conversation starts with: the last one picked if it is still usable, else the demo model. */
+/**
+ * The model an agent with none of its own starts a conversation on: the one chosen in Settings › General (#617) while
+ * its provider offers it and it is not switched off; else the one last picked in a conversation, if still usable; else
+ * the demo model.
+ */
 async function defaultModel(): Promise<ModelRef> {
+	const chosen = settings.agentDefault?.model;
+	if (chosen !== undefined && !hiddenModel(chosen) && (await usable(chosen))) return chosen;
 	const wanted = settings.defaultModel;
 	if (wanted !== undefined && (await usable(wanted))) return wanted;
 	return { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
+}
+
+const hiddenModel = (model: ModelRef) => settings.hiddenModels?.[model.provider]?.includes(model.modelId) === true;
+const sameModel = (a: ModelRef | null | undefined, b: ModelRef | null | undefined) => a?.provider === b?.provider && a?.modelId === b?.modelId;
+
+/** The thinking level of a conversation on the default model: the one chosen with it in Settings, else the model's own. */
+function defaultModelThinking(model: ModelRef): string | null {
+	const chosen = settings.agentDefault;
+	return chosen !== undefined && chosen.thinkingLevel !== null && sameModel(chosen.model, model) ? chosen.thinkingLevel : defaultThinking(model);
+}
+
+/**
+ * Settings › General's default model for agents (#617): what was chosen (null for the model used last), and the model a
+ * conversation of an agent with none of its own starts on now, which differs from the choice when it fell back.
+ */
+async function agentDefaultEvent() {
+	const chosen = settings.agentDefault ?? null;
+	const using = await defaultModel();
+	return { event: "agentDefault", model: chosen?.model ?? null, thinkingLevel: chosen?.thinkingLevel ?? null, using, fellBack: chosen !== null && !sameModel(chosen.model, using) };
 }
 
 /** A choice in a conversation's model menu counts for future conversations, too. */
@@ -1197,6 +1233,14 @@ function rememberModel(model: ModelRef, chat: boolean): void {
 	if (chat) settings.lastChatModel = model;
 	else settings.defaultModel = model;
 	saveSettings();
+	// While no default for agents is chosen in Settings, this is it: the app shows it for each agent with no model of its own.
+	if (!chat) void announceDefault().catch((error) => log("announcing the default model failed:", error instanceof Error ? error.message : error));
+}
+
+/** The default model for agents, as the providers event and Settings › General show it. */
+async function announceDefault(): Promise<void> {
+	broadcast(await providersEvent());
+	broadcast(await agentDefaultEvent());
 }
 
 /** Whether `model`'s provider is connected and offers it now. */
@@ -1226,8 +1270,12 @@ const chatEvent = () => ({ event: "chat", ...chatSettings(settings.chat) });
  * engine's thread is never held for long. Entries committed meanwhile go as usual, and a new start drops what of the
  * old list was still to come. Each list sent from the start says whether the conversation has entries before it
  * (`more`), and those come a part at a time when the app asks (`older`, #440).
+ *
+ * With `tail` (#618), only that newest part is sent: what is older comes when the app asks, as entries older than the
+ * window do. The Dashboard's window onto each orchestrator shows only the end of the conversation, and five of them
+ * should not each take in the engine's whole window.
  */
-async function subscribe(client: Client, id: number, newestFirst = false): Promise<void> {
+async function subscribe(client: Client, id: number, newestFirst = false, tail = false): Promise<void> {
 	if (client.subscriptions.has(id)) return;
 	let watch: Awaited<ReturnType<Conversation["watch"]>> | undefined;
 	let view: ConversationView | undefined;
@@ -1279,7 +1327,11 @@ async function subscribe(client: Client, id: number, newestFirst = false): Promi
 		}
 		olderJSON = new ItemJSON<Item>();
 		const start = partStart(items, olderJSON.size, FIRST_BYTES, FIRST_COUNT);
-		older = items.slice(0, start);
+		if (tail) {
+			// The rest is read from the store when asked, from the newest entry not sent (`readOlder`).
+			older = [];
+			if (start > 0) below = items[start - 1]!.id as unknown as EntryRecord["id"];
+		} else older = items.slice(0, start);
 		const more = below !== undefined;
 		if (!client.socket.destroyed) client.socket.write(`${olderJSON.line({ event: "conversation", id, reset, state, earlier: older.length, more }, items.slice(start))}\n`);
 		sendOlder();
@@ -1532,13 +1584,15 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 	/**
-	 * `{ id, newestFirst? }`: send the app the conversation, and keep sending it as it changes. With `newestFirst`, a
-	 * long one comes in parts, the newest first (`subscribe`); an app that does not ask gets it in one event.
+	 * `{ id, newestFirst?, tail? }`: send the app the conversation, and keep sending it as it changes. With `newestFirst`,
+	 * a long one comes in parts, the newest first (`subscribe`); an app that does not ask gets it in one event. With
+	 * `tail`, only the newest part comes, and the rest when asked (#618).
 	 */
 	"conversation.open": async (params, client) => {
 		await conversation(params.id);
 		if (params.newestFirst !== undefined && typeof params.newestFirst !== "boolean") throw new Error("newestFirst must be true or false");
-		await subscribe(client, params.id as number, params.newestFirst === true);
+		if (params.tail !== undefined && typeof params.tail !== "boolean") throw new Error("tail must be true or false");
+		await subscribe(client, params.id as number, params.newestFirst === true || params.tail === true, params.tail === true);
 		return {};
 	},
 	/**
@@ -1914,6 +1968,30 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const event = compactionSettingsEvent();
 		broadcast(event);
 		return { defaultCompactionTokens: event.defaultCompactionTokens };
+	},
+	/**
+	 * The default model for agents (#617): `{ model: { provider, modelId } | null, thinkingLevel?: string | null }`. Null
+	 * goes back to the model last picked in a conversation. Every agent with no model of its own starts its next
+	 * conversation on it; conversations already started keep theirs. Answers as the `agentDefault` event says.
+	 */
+	"settings.setAgentDefault": async (params) => {
+		if (!("model" in params)) throw new Error("model must be { provider, modelId }, or null for the model used last");
+		if (params.model === null) delete settings.agentDefault;
+		else {
+			const { provider, modelId } = (params.model ?? {}) as Partial<ModelRef>;
+			if (typeof provider !== "string" || typeof modelId !== "string") throw new Error("model must be { provider, modelId }, or null for the model used last");
+			if (providers.models.getModel(provider, modelId) === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
+			const level = params.thinkingLevel ?? null;
+			if (level !== null) {
+				const levels = (await providers.listModels()).find((model) => model.provider === provider && model.id === modelId)?.thinkingLevels ?? [];
+				if (typeof level !== "string" || !levels.includes(level)) throw new Error(`${provider}/${modelId} has no thinking level ${String(level)}`);
+			}
+			settings.agentDefault = { model: { provider, modelId }, thinkingLevel: level as string | null };
+		}
+		saveSettings();
+		await announceDefault();
+		const { event: _, ...answer } = await agentDefaultEvent();
+		return answer;
 	},
 	"settings.setAutoArchive": async (params) => {
 		settings.autoArchiveDays = validateAutoArchive(params.days);
@@ -2980,6 +3058,7 @@ const server = createServer((socket) => {
 	send(client, compactionSettingsEvent());
 	for (const feature of host.features) for (const event of feature.greeting?.() ?? []) send(client, event);
 	void providersEvent().then((event) => send(client, event));
+	void agentDefaultEvent().then((event) => send(client, event));
 	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line
 	// are kept apart and joined once, at its end: searching one growing string for the line break would copy all of it
 	// again for every chunk, seconds of work during which nothing else is answered.

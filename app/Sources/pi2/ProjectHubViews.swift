@@ -483,9 +483,21 @@ private struct HubAgentPanel: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(title.isEmpty ? "This conversation has no title yet" : title)
+                    .layoutPriority(1)
                 Spacer(minLength: 8)
+                // Its branch, as a conversation's toolbar shows it, and the size of its change (#598). The branch's name gives
+                // way before the title does.
+                if let status = engine.branches[conversation] {
+                    BranchMenu(engine: engine, id: conversation, status: status)
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .font(.system(size: 11.5))
+                        .tint(Theme.tx2)
+                    ChangeSize(status: status, size: 11)
+                }
                 Button("Back to the Board") { model.hubs.setAgent(nil, for: project.id) }
                     .buttonStyle(.piGhost)
+                    .fixedSize()
                     .help("Show the project's board again, keeping the conversation with the orchestrator")
             }
             .padding(.horizontal, 10)
@@ -503,11 +515,16 @@ private struct HubAgentPanel: View {
 // MARK: - The strip
 
 /// Along the bottom of the board while the conversation is folded, and along the bottom of a Dashboard column (#481):
-/// the orchestrator's last words, and a field that sends it a message.
+/// the orchestrator's last words, and a field that sends it a message. Under the Dashboard's window onto the
+/// orchestrator, which shows what it said, it is the field alone (#618).
 struct HubStrip: View {
     let engine: EngineClient
     let hubs: ProjectHubs
     let project: ProjectRow
+    /// Whether the orchestrator's last words show above the field.
+    var showsLastWords = true
+    /// Goes up when the person asks for this field with the keyboard (the Dashboard's ⌥⌘1 to ⌥⌘9, #618).
+    var focusRequest = 0
     @State private var text = ""
     @FocusState private var focused: Bool
 
@@ -523,7 +540,7 @@ struct HubStrip: View {
             }
             .frame(width: 12)
             VStack(alignment: .leading, spacing: 6) {
-                lastWords
+                if showsLastWords { lastWords }
                 TextField(project.conversation == nil ? "Starting the conversation with the orchestrator…" : "Message the orchestrator…", text: $text)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
@@ -536,9 +553,11 @@ struct HubStrip: View {
                 .disabled(!canSend)
                 .help("Send to the orchestrator (Return)")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, 14).padding(.vertical, showsLastWords ? 10 : 7)
         .panel(radius: 12, border: focused ? Theme.acc.opacity(0.55) : Theme.line2)
-        .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 6)
+        .padding(.horizontal, 12).padding(.bottom, showsLastWords ? 12 : 10).padding(.top, showsLastWords ? 6 : 8)
+        // Asked for with the keyboard, including by a column unfolded to take it.
+        .task(id: focusRequest) { if focusRequest > 0 { focused = true } }
     }
 
     @ViewBuilder

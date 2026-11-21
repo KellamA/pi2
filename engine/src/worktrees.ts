@@ -16,7 +16,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, statSync } from "node:fs";
-import { rm, rmdir } from "node:fs/promises";
+import { lstat, readFile, rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentReader, Tx } from "@earendil-works/pi-durable";
@@ -168,6 +168,12 @@ export type BranchInfo = {
 	conflicts: number;
 	/** A merge, rebase, cherry-pick or revert that has stopped half way. */
 	operation: string | null;
+	/**
+	 * The size of the change, in lines added and removed: what is committed beyond where the branch left `base`, plus what
+	 * is not committed yet, new files included (`lineCounts`). Null when it could not be measured.
+	 */
+	added: number | null;
+	removed: number | null;
 	state: BranchState;
 };
 
@@ -292,6 +298,19 @@ export async function subChatFolder(parent: string | null, own: string | null): 
 	return a !== undefined && b !== undefined && realish(a.commonDir) === realish(b.commonDir) ? parent : own;
 }
 
+/**
+ * The branch a new sub-chat's worktree is made on: as the call gave it; for an agent whose own setting gives each of its
+ * conversations a worktree, "" for the branch pi² names (#604), since the `created` hook that gives a conversation made
+ * by a request its worktree never runs for a sub-chat; undefined for none. In a `folder` that is in no repository there
+ * is none to make, as for a conversation the agent starts itself. `delegate` and a held start use it; `approveWorktree`
+ * asks nobody for that agent's worktree, since it is made.
+ */
+export async function subChatBranch(given: unknown, target: Pick<AgentProfile, "worktree">, folder: string | null): Promise<string | undefined> {
+	if (typeof given === "string") return given.trim();
+	if (target.worktree !== true) return undefined;
+	return folder !== null && (await repoOf(folder)) !== undefined ? "" : undefined;
+}
+
 /** The repository's default branch: what origin/HEAD points at, else a local main or master. */
 async function defaultBranch(root: string): Promise<string | null> {
 	const remote = await tryGit(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], root);
@@ -381,6 +400,126 @@ function operationIn(gitDir: string): string | null {
 	return null;
 }
 
+// ---- The size of a change
+//
+// Lines added and removed: `git diff --shortstat` of the working tree against where the branch left its base (its merge
+// base), which counts what is committed beyond it and what is staged or not, plus the lines of new files git does not
+// track yet, which no diff counts. Measured only when the checkout changed since the last look, and kept between looks,
+// so that a folder nobody touches costs no git process more than before (#377, #598). Whether it changed is told without
+// starting one: from what `git status` printed, HEAD's commit, the base and the count of commits not on it, and the size
+// and time of change of each file status lists and of each new file counted last time.
+
+/** New files counted at most, the most bytes read in one, and in all: a large tree nobody added cannot slow a look. */
+const NEW_FILES_MAX = 500;
+const NEW_FILE_BYTES_MAX = 1024 * 1024;
+const NEW_BYTES_MAX = 16 * 1024 * 1024;
+/** What is kept of a checkout's last measure, by its top folder. */
+type Measured = { key: string; at: number; value: { added: number; removed: number } | null; newFiles: string[] };
+const measured = new Map<string, Measured>();
+/** How long a measure no look asked for is kept. */
+const MEASURED_TTL_MS = 10 * 60_000;
+
+/** A path as git status prints it: C-quoted when it has unusual characters. */
+export function unquotePath(path: string): string {
+	if (!path.startsWith('"') || !path.endsWith('"') || path.length < 2) return path;
+	const inner = path.slice(1, -1);
+	const bytes: number[] = [];
+	const escapes: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
+	for (let i = 0; i < inner.length; i++) {
+		const c = inner[i]!;
+		if (c !== "\\") {
+			bytes.push(...Buffer.from(c, "utf8"));
+			continue;
+		}
+		const next = inner[++i] ?? "";
+		if (/^[0-7]{3}$/.test(inner.slice(i, i + 3))) {
+			bytes.push(Number.parseInt(inner.slice(i, i + 3), 8));
+			i += 2;
+		} else bytes.push(escapes[next] ?? next.charCodeAt(0));
+	}
+	return Buffer.from(bytes).toString("utf8");
+}
+
+/** The paths `git status --porcelain=v2` lists: changed (both sides of a rename) and new, relative to the top folder. */
+export function statusPaths(out: string): { changed: string[]; untracked: string[] } {
+	const changed: string[] = [];
+	const untracked: string[] = [];
+	// The path follows a fixed number of fields: 8 for a change, 9 for a rename or copy, 10 for a conflict.
+	const after = (line: string, fields: number) => line.split(" ").slice(fields).join(" ");
+	for (const line of out.split("\n")) {
+		if (line.startsWith("? ")) untracked.push(unquotePath(line.slice(2)));
+		else if (line.startsWith("1 ")) changed.push(unquotePath(after(line, 8)));
+		else if (line.startsWith("u ")) changed.push(unquotePath(after(line, 10)));
+		else if (line.startsWith("2 ")) changed.push(...after(line, 9).split("\t").map(unquotePath));
+	}
+	return { changed, untracked };
+}
+
+/** Reads `git diff --shortstat`: " 3 files changed, 128 insertions(+), 14 deletions(-)", or nothing for no change. */
+export function parseShortstat(out: string): { added: number; removed: number } {
+	return { added: Number(/(\d+) insertions?\(\+\)/.exec(out)?.[1] ?? 0), removed: Number(/(\d+) deletions?\(-\)/.exec(out)?.[1] ?? 0) };
+}
+
+/** Lines in a file as git counts them: a last line without a newline counts; a binary file (a NUL in its start) has none. */
+export function linesIn(data: Buffer): number {
+	if (data.subarray(0, 8000).includes(0)) return 0;
+	let lines = 0;
+	for (const byte of data) if (byte === 10) lines++;
+	return data.length > 0 && data[data.length - 1] !== 10 ? lines + 1 : lines;
+}
+
+/** What a file is now, for telling whether it changed: its size and time of change, or that it is gone. */
+async function stamp(path: string): Promise<string> {
+	try {
+		const s = await lstat(path, { bigint: true });
+		return `${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
+	} catch {
+		return "-";
+	}
+}
+
+/**
+ * The lines added and removed in the checkout at `root`, measured again only when something in it changed since the
+ * last look. Null when git could not say (no commit yet, or a base it cannot find).
+ */
+async function lineCounts(root: string, statusOut: string, oid: string | null, base: string | null, unmerged: number | null): Promise<{ added: number; removed: number } | null> {
+	if (oid === null || (base !== null && unmerged === null)) return null;
+	const { changed, untracked } = statusPaths(statusOut);
+	const was = measured.get(root);
+	// The new files counted last time are stamped too: inside a new folder, status lists the folder and not them.
+	const watched = [...new Set([...changed, ...untracked, ...(was?.newFiles ?? [])])].slice(0, 2 * NEW_FILES_MAX);
+	const stamps = await Promise.all(watched.map((path) => stamp(join(root, path))));
+	const key = JSON.stringify([oid, base, unmerged, statusOut, watched, stamps]);
+	const now = Date.now();
+	if (was !== undefined && was.key === key) {
+		was.at = now;
+		return was.value;
+	}
+	const against = base === null ? ["HEAD"] : ["--merge-base", base];
+	const diff = await tryGit(["diff", "--shortstat", "--no-ext-diff", "--no-textconv", "--no-color", ...against, "--"], root);
+	let value: Measured["value"] = diff === undefined ? null : parseShortstat(diff);
+	let newFiles: string[] = [];
+	if (value !== null && untracked.length > 0) {
+		// Status lists a new folder, not what is in it: git lists those files, leaving out what it ignores.
+		const folders = untracked.filter((path) => path.endsWith("/"));
+		const inFolders = folders.length === 0 ? "" : await tryGit(["ls-files", "-z", "--others", "--exclude-standard", "--", ...folders], root);
+		newFiles = [...untracked.filter((path) => !path.endsWith("/")), ...(inFolders ?? "").split("\0").filter((path) => path !== "")].slice(0, NEW_FILES_MAX);
+		let bytes = 0;
+		let added = 0;
+		for (const path of newFiles) {
+			const full = join(root, path);
+			const size = await lstat(full).then((s) => (s.isFile() ? s.size : -1), () => -1);
+			if (size < 0 || size > NEW_FILE_BYTES_MAX || bytes + size > NEW_BYTES_MAX) continue;
+			bytes += size;
+			added += await readFile(full).then(linesIn, () => 0);
+		}
+		value = { added: value.added + added, removed: value.removed };
+	}
+	measured.set(root, { key, at: now, value, newFiles });
+	for (const [other, entry] of measured) if (now - entry.at >= MEASURED_TTL_MS) measured.delete(other);
+	return value;
+}
+
 function unreadableWorktree(own: Worktree, state: "missing" | "unavailable"): BranchInfo {
 	return {
 		repo: basename(own.repo),
@@ -397,6 +536,8 @@ function unreadableWorktree(own: Worktree, state: "missing" | "unavailable"): Br
 		changes: 0,
 		conflicts: 0,
 		operation: null,
+		added: null,
+		removed: null,
 		state,
 	};
 }
@@ -434,6 +575,8 @@ async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval =
 		// everything on it is now on the base. Any other branch with nothing of its own may simply be new.
 		if (managed && unmerged === 0 && status.oid !== own.baseCommit) merged = true;
 	}
+	// Removing a worktree reads its status to decide, not to show it; the size of its change is not wanted there.
+	const size = checkingRemoval ? null : await lineCounts(repo.root, out, status.oid, base, unmerged);
 	const info = {
 		repo: basename(repo.main),
 		root: repo.root,
@@ -449,6 +592,8 @@ async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval =
 		changes: status.changes,
 		conflicts: status.conflicts,
 		operation,
+		added: size?.added ?? null,
+		removed: size?.removed ?? null,
 	};
 	return { ...info, state: stateOf(info, { merged }) };
 }
@@ -467,14 +612,19 @@ export function whyKeepWorktree(info: BranchInfo | undefined): string | undefine
 
 /** A branch name made from a conversation's title: "pi2/fix-the-login-page". */
 export function suggestBranch(title: string, fallback: string): string {
-	const slug = title
+	const slug = branchSlug(title);
+	return `pi2/${slug === "" ? fallback : slug}`;
+}
+
+/** The words of a title as a branch name holds them: lower case, hyphens between words, at most 40 characters. */
+export function branchSlug(title: string): string {
+	return title
 		.toLowerCase()
 		.normalize("NFKD")
 		.replace(/[^a-z0-9]+/g, "-")
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 40)
 		.replace(/-+$/, "");
-	return `pi2/${slug === "" ? fallback : slug}`;
 }
 
 /** A folder name for a branch: its slashes and anything odd turned into dashes. */

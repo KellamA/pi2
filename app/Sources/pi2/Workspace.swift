@@ -262,7 +262,10 @@ struct WorkspaceView: View {
 
     var body: some View {
         let focusedID = workspace.focusedConversation
-        Group {
+        // A stack, not a Group: a Group gives its modifiers to each of its children, so the title and the toolbar
+        // went with the conversation's own view, which is made anew for each conversation (`.id`), and the window's
+        // whole toolbar was taken down and made again each time one was opened, some 25 ms of the main thread (#502).
+        ZStack {
             if workspace.isSplit {
                 PaneTree(node: workspace.root, model: model)
                     .padding(SplitBranch.gutter)
@@ -305,8 +308,9 @@ struct WorkspaceView: View {
         if engine.agent(state?.agent.agentId)?.browser?.enabled == true { BrowserButton(engine: engine, conversationID: id) }
         if let branch = engine.branches[id] { BranchMenu(engine: engine, id: id, status: branch) }
         // Until the conversation has come from the engine there is no model or access to show, and "Model" and
-        // "Tools off" would read as if nothing were chosen; the pane says it is loading instead.
-        if let state {
+        // "Tools off" would read as if nothing were chosen; the pane says it is loading instead. They come once a pane
+        // has shown it: making them takes the main thread some 20 ms, which held up its first frame (#502).
+        if let state, engine.open[id]?.shown == true {
             ContextMeter(engine: engine, id: id, state: state)
             ModelMenu(engine: engine, id: id, agent: state.agent)
             ToolsMenu(engine: engine, id: id, agent: state.agent)

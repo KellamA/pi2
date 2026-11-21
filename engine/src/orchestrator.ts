@@ -483,6 +483,12 @@ export function projectSection(project: Project, conversation: number, offered: 
 	return [
 		`You are ${name}, an agent of the pi² project “${project.name}”, ${folderWords(project)}. ${orchestrator} is its orchestrator.${reports ? " It handed you this work, and your answer is your report to it." : ""}`,
 		...(offered.has("work") ? [`The project's work list is ${listWords(project)}. Keep it with the work tool: take what you work on, note progress, and finish it with what was done.`] : []),
+		// A worker is told which of its two ways to ask the person to use when (5.8, #507).
+		...(parent !== undefined && offered.has("needs_you")
+			? [
+				"When something is the person's to decide and your work can go on without it, put it to them with needs_you and carry on: their answer comes to you as you work, or, once you have finished, to the agent that handed you this work. Use ask_user only when your next step needs the answer and there is nothing else to do meanwhile.",
+				]
+			: []),
 	].join("\n");
 }
 
