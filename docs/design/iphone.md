@@ -1,6 +1,6 @@
 # pi² for iPhone: the design
 
-This is the design for epic [#620](https://github.com/KellamA/pi2/issues/620): an iPhone app that does nothing by itself and, once paired with pi² on a Mac, is the whole of pi² from the pocket. Nothing here is built yet. The drawings are in [iphone-drafts.html](iphone-drafts.html): open it in a browser; the buttons along its top switch between the screens, and one switches between dark and light. The contract that every later issue is built against is [../iphone.md](../iphone.md); this page says what the person sees and does, and that page says exactly how.
+This is the design for epic [#620](https://github.com/KellamA/pi2/issues/620): an iPhone app that does nothing by itself and, once paired with pi² on a Mac, is the whole of pi² from the pocket. Nothing here is built yet. The drawings are in [iphone-drafts.html](iphone-drafts.html): open it in a browser; the buttons along its top switch between the screens, and one switches between dark and light (an address ending in `:light`, such as `iphone-drafts.html#card:light`, opens a screen in light). The contract that every later issue is built against is [../iphone.md](../iphone.md); this page says what the person sees and does, and that page says exactly how.
 
 The owner has three decisions open (below). This page is written for the recommended answer of each, and each is kept in one place, so a different answer changes that section and the contract's matching section, not the whole.
 

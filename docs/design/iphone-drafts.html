@@ -510,7 +510,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
         <tr><td>9:38</td><td>Merged #617 “Sidebar badges” (pi2)</td><td>home</td><td>✓</td><td class="t3">done</td></tr>
         <tr><td>Yesterday 22:05</td><td>Answered Scribe: “No, only live ones” (pi2)</td><td>iCloud</td><td></td><td class="t3">done</td></tr>
         <tr><td>Yesterday 19:12</td><td>Sent to website's orchestrator: “Publish once the links check”</td><td>direct</td><td></td><td class="t3">done</td></tr>
-        <tr><td>Yesterday 19:10</td><td>Allow everything for Forge</td><td>direct</td><td>✓</td><td class="t3" style="color:var(--bad)">refused: no Face ID</td></tr>
+        <tr><td>Yesterday 19:10</td><td>Allow everything for Forge</td><td>direct</td><td></td><td class="t3" style="color:var(--bad)">refused: no Face ID</td></tr>
       </table></div>
     </div>
   </div>
@@ -601,11 +601,19 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 
 <script>
 const buttons = document.querySelectorAll('nav button[data-s]');
-function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id===id)); buttons.forEach(b=>b.classList.toggle('on', b.dataset.s===id)); history.replaceState(null,'','#'+id); }
-// onclick, not addEventListener: a page that runs this script twice (some previewers do) still toggles once a click.
+// The address says the screen and the appearance, as #card or #card:light, so either can be linked to.
+let light = location.hash.endsWith(':light');
+function show(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id===id));
+  buttons.forEach(b=>b.classList.toggle('on', b.dataset.s===id));
+  document.body.classList.toggle('light', light);
+  document.getElementById('theme').textContent = light ? 'Dark' : 'Light';
+  history.replaceState(null,'','#'+id+(light?':light':''));
+}
+function current(){ return (location.hash.slice(1).split(':')[0]) || 'pair'; }
+// onclick, not addEventListener: a page that runs this script twice (some previewers do) still acts once a click.
 buttons.forEach(b=>{ b.onclick=()=>show(b.dataset.s); });
-show((location.hash||'#pair').slice(1));
-const theme=document.getElementById('theme');
-theme.onclick=()=>{ const light=document.body.classList.toggle('light'); theme.textContent= light?'Dark':'Light'; };
+document.getElementById('theme').onclick=()=>{ light=!light; show(current()); };
+show(current());
 </script>
 </body></html>
