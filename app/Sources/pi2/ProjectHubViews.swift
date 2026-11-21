@@ -556,7 +556,8 @@ struct HubStrip: View {
         .padding(.horizontal, 14).padding(.vertical, showsLastWords ? 10 : 7)
         .panel(radius: 12, border: focused ? Theme.acc.opacity(0.55) : Theme.line2)
         .padding(.horizontal, 12).padding(.bottom, showsLastWords ? 12 : 10).padding(.top, showsLastWords ? 6 : 8)
-        .onChange(of: focusRequest) { focused = true }
+        // Asked for with the keyboard, including by a column unfolded to take it.
+        .task(id: focusRequest) { if focusRequest > 0 { focused = true } }
     }
 
     @ViewBuilder

@@ -342,6 +342,11 @@ struct ProjectWorkGitHub: View {
         }
         .onAppear {
             PerfProbe.workTab("frame drawn")
+            // A pull request clicked on the Dashboard opens here (#618), as one clicked in the list does.
+            if let number = model.hubs.takePull(for: project.id) {
+                opened = .pull(number)
+                return
+            }
             // A row the preference named is read whole here, as one the person clicked is by the change below.
             fill(opened)
             if case .merge? = WorkRowLaunch.asked, let pull = openPull(work) { confirmingMerge = pull }
