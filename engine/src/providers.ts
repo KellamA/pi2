@@ -36,13 +36,15 @@ export const LOCAL_PROVIDER = "local";
 export const LOCAL_PROVIDER_NAME = "On this Mac";
 
 /**
- * The thinking level a conversation gets when nothing chose one, for its model: Low for a model on this Mac, and the
+ * The thinking level a conversation gets when nothing chose one, for its model: Medium for a model on this Mac, and the
  * library's default (Off) for the rest. Qwen3.8-Flash-Next left to itself thinks at length (2,300 tokens, 31 seconds,
- * before a 200-word story); told Low it thinks for a few lines, about a second, and still reasons before it calls a
- * tool, which Off once did not (#293). An agent's own thinking level, or the person's choice, wins.
+ * before a 200-word story); told a level it thinks for a few lines on a short task, and still reasons before it calls a
+ * tool, which Off once did not (#293). On agent steps that need reasoning, Medium thought least: 12,445 tokens over 18
+ * requests, against 16,891 at High and 25,772 at Low, whose "keep your thinking brief" made it think longer (#606).
+ * An agent's own thinking level, or the person's choice, wins.
  */
-export function defaultThinking(model: { provider: string } | null | undefined): "low" | null {
-	return model?.provider === LOCAL_PROVIDER ? "low" : null;
+export function defaultThinking(model: { provider: string } | null | undefined): "medium" | null {
+	return model?.provider === LOCAL_PROVIDER ? "medium" : null;
 }
 
 /** A model on this Mac, ready to be asked: where, with which key, and until when. `done` lets it go. */
@@ -686,7 +688,12 @@ function localProvider(runner: () => LocalRunner | undefined): Provider {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: entry.contextSize,
 				maxTokens: Math.min(16_384, Math.floor(entry.contextSize / 4)),
-				compat: { supportsDeveloperRole: false, supportsReasoningEffort: thinks, supportsLongCacheRetention: false },
+				// A section of the system prompt that changes (the background commands, as one starts and ends) is sent in
+				// place as a later system message, which Strata's server turns into a user message where it is. Folded back
+				// into the first one, as pi-ai does for a model without this, it changed the start of the prompt, and the
+				// engine read the whole conversation again: 97 times in six tickets, 68 minutes (#606). Tools are still
+				// sent whole at the top: Strata takes no tool added in a later message.
+				compat: { supportsDeveloperRole: false, supportsReasoningEffort: thinks, supportsLongCacheRetention: false, supportsMidConvoSystemMessages: true },
 			} as Model<"openai-completions">;
 			built.set(entry.id, { stamp, model });
 			return model;

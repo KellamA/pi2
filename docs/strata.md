@@ -11,6 +11,7 @@ Unless a line says it was read from Strata's code or documentation, it was run o
 - pi² starts **one process**, the Python server, which starts the engine and the picture reader. It is ready when it writes its ready file; SIGTERM stops all of them in about 2 seconds.
 - The server speaks the **OpenAI chat completions API** (and Anthropic's and the Responses API), streams, returns **tool calls** as OpenAI `tool_calls`, reads **pictures**, and sends the model's thinking as `reasoning_content`.
 - With IQ3_S: ready **160 s** after the first start (Metal compiles the kernels once) and **21 s** after later ones; about **60 GB** of memory held; **90 to 100 tokens/s** written, about 740 tokens/s read; one request at a time unless started with `--parallel N`.
+- **Speed in an agent's work** (#606, [below](#where-an-agents-time-goes-and-what-makes-it-faster-606)): engine 0.1.63 writes about twice as fast as 0.1.60 and reads in about two thirds of the time; no engine option beat the start line pi² uses, which is Strata's own default for this pack on a Mac; what wasted the most time was the prompt read again from its start whenever a section of it changed, which pi² no longer causes.
 
 ## The engine
 
@@ -289,6 +290,59 @@ On the busy M5 Max, context 32K, draft layer on, one slot:
 | "What is 17 * 23?" with little or no thinking, once warm | 0.6 to 3.4 s |
 
 The draft layer (MTP) proposes tokens that the full model checks, which changes nothing in the answer: the server reported 80 to 90% of the drafts accepted.
+
+## Where an agent's time goes, and what makes it faster (#606)
+
+Measured on the same M5 Max on 2026-11-20, with the installed model's files: first from the logs of a night in which a local worker did six tickets (engine 0.1.60), then on a server of the worker's own with fixed prompts, a fixed seed and three runs or more of each. The issue (#606) has every run.
+
+**Where six tickets' time went** (Strata's engine log has a line per request: tokens reused and read, time reading, tokens written and time writing):
+
+| Ticket | Wall time | Requests | Reading | of it, read again because the prompt's start changed | Summaries | Writing | Tools and the rest |
+|---|---|---|---|---|---|---|---|
+| #558 | 2 min | 25 | 16% | none | none | 61% | 23% |
+| #560 | 7 min | 22 | 38% | 30% (4 times) | none | 35% | 27% |
+| #564 | 68 min | 298 | 27% | 16% (15 times) | 6, 6 min | 54% | 19% |
+| #553 (first part) | 137 min | 543 | 33% | 26% (48 times) | 9, 11 min | 56% | 11% |
+| #584 | 41 min | 113 | 20% | 16% (9 times) | 1, 1 min | 18% | 62% |
+| #588 | 120 min | 220 | 15% | 11% (21 times) | 6, 5 min | 30% | 55% |
+| All six | 374 min | 1,221 | 25% (93 min) | 18% (68 min) | 23 min | 43% (160 min) | 32% (121 min) |
+
+- **Read again from the start: 97 times, 68 minutes.** pi² sends a changed section of the system prompt as a later system message; pi-ai folds such messages back into the first one for a model that does not say it takes them (`compat.supportsMidConvoSystemMessages`), and the local provider did not. So each change (the list of background commands, as one starts and as it ends) changed the prompt's first tokens, and the engine, whose state can only go back to a kept checkpoint, read everything again. Strata's server takes a system message after the first and makes it a user message where it is (`_late_system_to_user` in `serve/frontend.py`), so the local provider now says it takes them. On the real model, a 31K-token conversation with the section changed: folded, nothing reused and 31,315 tokens read in 27 to 49 s; in place, 31,261 reused and 57 read in 0.8 to 0.9 s.
+- **Summaries**: at 81,920 tokens (pi-durable's default for a 131,072 window: the window less 16,384 kept for the answer and 32,768 for a summary made in the background). Each costs a fresh read of the summariser's prompt (18K to 32K tokens: it is not the conversation's own prefix), about 1,500 tokens written, then a fresh read of the summarised conversation, of which only the 8,800 to 9,200 tokens of tools and system prompt were reused: about 75 s each on 0.1.60.
+- **Thinking**: the worker thinks at High, which Strata's template turns into its `xhigh` instruction. In the two tickets whose server log was left, 41% and 63% of the tokens written were thinking.
+- **Writing speed did not fall with length**: 68 to 70 tokens/s in every 20K band from 20K to 100K of context; reading 1,000 to 1,230 tokens/s at every position. A turn that read under 4,000 new tokens took 0.79 s on average before its first token (1,067 of them, 14 minutes).
+
+**Engine 0.1.60 against 0.1.63** (Strata 0.2.17), the same files and start line, one after the other on a quiet Mac, three runs each, 400 tokens written with thinking off (the same tokens in both):
+
+| | 0.1.60 | 0.1.63 |
+|---|---|---|
+| Writing code | 52 to 54 tokens/s | 104 to 109 |
+| Writing prose | 45 to 49 | 82 to 88 |
+| Copying a file with small edits | 60 to 61 | 110 to 115 |
+| Reading 25,669 new tokens | 27 to 36 s | 19 to 20 s |
+| A turn of about 190 new tokens on a 24K conversation | 0.59 to 0.83 s | 0.44 to 0.60 s |
+
+**Each option of the engine, on 0.1.63**, one at a time against pi²'s start line (`--expert-cache 64 --prefill auto --spec 3 --spec-min-p 0.5 --mtp … --mmap-experts`, `STRATA_METAL_STREAM=0`), with the unchanged line started again after every two. The unchanged line itself moved by up to 20% from one start to the next (Strata's `tools/calibrate.py` says 8 to 28%), so only larger differences count:
+
+| Option | Reading | Writing | So |
+|---|---|---|---|
+| `--spec 2`, `--spec 4`, `--spec-min-p 0.3` or `0.7`, `--lookup-chain 4` | the same | the same, within the drift | keep Strata's Metal default for a resident IQ3_S, `--spec 3 --spec-min-p 0.5` (its `strata_control/mac_fit.py`, measured by Strata in interleaved pairs) |
+| No draft layer (`--mtp` left out) | the same | code 48 against 71 tokens/s, prose 48 against 60 | keep it |
+| `--suffix-draft 0` | the same | copying 74 against 90 | keep the default (3) |
+| `STRATA_METAL_STREAM=1` | 15 to 25% slower | 15 to 25% slower | keep 0: it is for a Mac that streams experts from the SSD |
+| `--expert-cache 0` or `1024` | the same | the same | on a Mac the engine computes every expert from its own arena |
+| `--prefill 8192` or `auto:16384` | the same | the same | the Metal prompt kernels read in chunks of 2,048 rows whatever is asked |
+| `--short-read 0` | the same | the same | |
+| `--short-read 256` | a 190-token turn 2.0 s against 0.57 | the same | keep the default (64) |
+| `--kv int8`, `k8v4`, `q4_0` | the same | the same | 1.5, 1.8 and 2.2 GB less memory at a 131K context: only a few of this model's layers keep K/V |
+| Context 65,536 or 262,144 instead of 131,072 | the same at a 25K prompt | the same | 2.6 GB less, 5.3 GB more |
+| Pictures off | 13% quicker in one start, the same in two others | the same | not shown; the idle picture reader keeps the GPU no busier |
+
+**With four requests at once** (`--parallel 4`, which pi² gives a new model since #605), on 0.1.63, 400 tokens each, three runs: one request alone wrote about as fast as with one slot (code 100 to 103 tokens/s against 99 to 122 for one slot in the starts before and after); two at once made 82 to 84 tokens/s together against 90 to 98 with one slot taking them in turn, and four at once 96 to 100 against 90 to 97. The batch windows run the slots one after another and take no drafts (every batched request showed none accepted), with or without `--batch-mtp`. So more slots let each conversation wait less, not finish more.
+
+**Other packs** were not tried: each is a download of tens of gigabytes. Q2_0 and IQ3_XXS share IQ3_S's 28.8 GB n-gram table, so they would add 37.6 and 47.0 GB; [The packs](#the-packs) has what each loses. Strata's own `mac_fit.py` gives a resident Q2_0 the same `--spec 3 --spec-min-p 0.5` as IQ3_S (measured +0.4 to +11.5% over `--spec 2`) and IQ3_XXS `--spec 2`. Q2_0 is the one to try for speed, at some loss of accuracy; UD-Q4_K_XL (111 GB, about 91 GB of memory) for accuracy, slower.
+
+Writing does slow somewhat deep into a conversation: after a 55K-token prompt, code 63 to 66 tokens/s, prose 49 to 52 and copying 69 to 77, against 72 to 75, 60 to 62 and 88 to 95 after a short one (0.1.63, the same session, three runs each).
 
 ## What this changed in the design (#173)
 

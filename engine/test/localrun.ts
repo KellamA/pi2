@@ -8,10 +8,13 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { STRATA } from "../src/localengine.ts";
+import { Providers } from "../src/providers.ts";
 import { EngineClient, exited, running, standInApp, stop, until } from "./patience.ts";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
@@ -85,6 +88,51 @@ step("how far loading has got is read from what the engine prints");
 	}
 }
 step("a prepared model is started through Strata's control package with its run config, adjusted to its settings");
+{
+	// A section of the system prompt that changes mid-conversation goes in place, as a later system message, and the
+	// first one stays byte for byte what it was: folded into it, the engine read the whole conversation again (#606).
+	const bodies: { messages: { role: string; content: unknown }[]; tools?: unknown[] }[] = [];
+	const server = createServer((request, response) => {
+		let text = "";
+		request.setEncoding("utf8").on("data", (chunk: string) => (text += chunk)).on("end", () => {
+			bodies.push(JSON.parse(text));
+			const chunk = (delta: Record<string, unknown>, finish: string | null = null) => `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.end(`${chunk({ role: "assistant", content: "ok" })}${chunk({}, "stop")}data: [DONE]\n\n`);
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const data = mkdtempSync(join(tmpdir(), "pi2-local-prompt-"));
+	try {
+		const providers = new Providers(data, new InMemoryCredentialStore(), () => "device", { builtins: (options) => createModels(options) });
+		const setup = { engine: null, models: [{ id: "m", name: "M", pack: "Q2", path: "/m", contextSize: 32_768, options: {} }] };
+		const port = (server.address() as { port: number }).port;
+		providers.connectLocal({ setup: () => setup, lease: async () => ({ baseUrl: `http://127.0.0.1:${port}/v1`, key: "k", signal: new AbortController().signal, done: () => {} }) });
+		const local = providers.models.getModel("local", "m")!;
+		const tool = { name: "bash", description: "Run a command", parameters: { type: "object", properties: { command: { type: "string" } } } } as never;
+		const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
+		const first = [user("Start the tests in the background")];
+		const answered = { role: "assistant", content: [{ type: "text", text: "Started." }], api: "openai-completions", provider: "local", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 };
+		const update = { role: "system", content: "", sections: { background_commands: "- bg-1: `npm test`, running since 10:00." }, timestamp: 3 };
+		for (const messages of [first, [...first, answered, update, user("Is it done?")]]) {
+			const stream = providers.models.stream(local, { systemPrompt: "You are a worker.", tools: [tool], messages } as never, { reasoningEffort: "low" } as never);
+			assert.equal((await stream.result()).stopReason, "stop");
+		}
+		assert.equal(bodies.length, 2);
+		assert.deepEqual(bodies[1]!.messages[0], bodies[0]!.messages[0], "the first system message is the same in both requests");
+		assert.deepEqual(bodies[1]!.tools, bodies[0]!.tools);
+		assert.deepEqual(
+			bodies[1]!.messages.map((message) => message.role),
+			["system", "user", "assistant", "system", "user"],
+			"the update is a later system message, where it happened, which Strata's server makes a user message in place",
+		);
+		assert.match(String(bodies[1]!.messages[3]!.content), /^Updated system prompt section "background_commands":\n\n- bg-1: `npm test`/);
+	} finally {
+		server.close();
+		rmSync(data, { recursive: true, force: true });
+	}
+}
+step("a section of the system prompt that changes is sent in place, and the prompt's start stays the same");
 
 // ---- The stand-in, as the engine set up on this Mac, and the models it serves
 
@@ -211,7 +259,7 @@ try {
 	// ---- Start on first use; a message sent while it loads waits and is answered
 	const a = await client.conversation("alpha");
 	assert.equal(client.state(a).local.status, "stopped", "a conversation with the model, not shown and not working, does not start it");
-	assert.equal(client.state(a).agent.thinkingLevel, "low", "a new conversation with a model on this Mac thinks at Low");
+	assert.equal(client.state(a).agent.thinkingLevel, "medium", "a new conversation with a model on this Mac thinks at Medium");
 	assert.equal(client.server("alpha"), undefined);
 	await client.show(a);
 	const loading = await client.until("alpha starting", () => client.server("alpha"));
