@@ -4,6 +4,8 @@ This page is for an agent that has been handed one or more GitHub issues in this
 
 The work is meant to be done without help. Nobody is watching your chat as you go, and a question you ask will not be answered, so decide, record why on the issue, and carry on. Stop early only for the cases under [When to stop](#when-to-stop).
 
+As an agent of a pi² project, put what is truly the person's to decide, and does not stop your work meanwhile, to them with `needs_you` and carry on: their answer reaches you as you work, or the agent that handed you the work once you have finished. Use `ask_user`, which holds you until they answer, only when your next step needs the answer and there is nothing else to do meanwhile.
+
 ## Where you are
 
 - You are an agent running inside pi², on a Mac where pi² is in real use. The pi² you run in is an installed release. Its engine, data folder, Keychain items, login item and macOS permissions belong to the person whose Mac it is: never drive, quit, restart or signal them ([Testing safely](../CONTRIBUTING.md#testing-safely)).

@@ -132,6 +132,17 @@ struct NeedItem: Decodable, Equatable, Identifiable {
     let change: ReachChange?
     let start: Start?
     let limit: LimitReading?
+    /// A worker's question or decision: the work item its run was handed, when it was handed one (#507).
+    let work: Int?
+
+    /// Whether a worker asks, in a sub-chat, rather than an agent in a conversation of its own (#507).
+    var fromSubChat: Bool { conversationId != rootConversationId }
+
+    /// Where it was asked, as a line names it: "sub-chat “Fix login”", or a conversation's title.
+    var placeWords: String {
+        guard fromSubChat else { return title.isEmpty ? rootTitle : title }
+        return title.isEmpty ? "sub-chat \(conversationId)" : "sub-chat “\(title)”"
+    }
 
     /// Which switch asked, in words the person reads, or the switch's own name when the app does not know it.
     var switchWords: String? {
