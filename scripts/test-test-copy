@@ -455,7 +455,23 @@ HOME="$T/home" expect "refusing a symlink" call test-7 engine.info
 HOME="$T/home" expect "refusing a symlink" socket test-7
 HOME="$T/home" expect "refusing a symlink" send test-7 8 hello
 
-# can-click tells the causes apart with stand-ins for macOS and the copy's own app (#579).
+# can-click tells the causes apart with stand-ins for macOS and the copy's own app (#579), and gives three answers,
+# each with its own exit status: yes 0, no 1, cannot tell from here 2 (#612).
+# answers <exit status> <what it should say> <arguments...>, with the environment given before it.
+answers() {
+	local want_status=$1 want=$2; shift 2
+	local out status
+	out=$("$copy" "$@" 2>&1)
+	status=$?
+	if ((status == want_status)) && [[ $out == *"$want"* ]]; then
+		echo "ok: test-copy $* answers $status ($want)"
+	else
+		echo "FAIL: test-copy $*"
+		echo "  wanted exit $want_status saying: $want"
+		echo "  got (exit $status): $out"
+		failures=$((failures + 1))
+	fi
+}
 rm -- "$data"
 mkdir -p "$data/test-copy-control"
 # A stand-in app process that really runs from the copy's bundle, so the recorded checks pass. macOS kills a
@@ -475,14 +491,20 @@ if [[ $1 == -l && $2 == JavaScript && $3 == - && $4 == app-running && $5 == dev.
 fi
 if [[ $1 == -l && $2 == JavaScript && $3 == - && $4 == reach ]]; then
 	[[ $CAN_CLICK_WINDOW == yes ]] && echo 55
+	# A window drawn a moment after the app is up, as after start or reopen: there from the third question on.
+	if [[ $CAN_CLICK_WINDOW == late ]]; then
+		echo asked >>"$CAN_CLICK_ASKED"
+		(($(wc -l <"$CAN_CLICK_ASKED") >= 3)) && echo 55
+	fi
 	exit 0
 fi
 exit 1
 SH
 chmod +x "$T/bin/osascript"
-PATH="$T/bin:$PATH" CAN_CLICK_APP=no HOME="$T/home" expect "the pi² app is not running" can-click test-7
-PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=no HOME="$T/home" \
-	expect "no window of the copy is in the window server" can-click test-7
+PATH="$T/bin:$PATH" CAN_CLICK_APP=no HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the pi² app is not running" can-click test-7
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=no TEST_COPY_WINDOW_WAIT=1 HOME="$T/home" \
+	answers 1 "no window of the copy has been in the window server for 1 seconds" can-click test-7
 rm -rf -- "$data/test-copy-control"
 ln -s "$T/elsewhere" "$data/test-copy-control"
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes HOME="$T/home" \
@@ -505,19 +527,36 @@ respond() {
 	) &
 	RESPONDER_PID=$!
 }
-respond '{"result":"Raised the parked main window"}'
-out=$(PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" "$copy" can-click test-7 2>&1)
-status=$?
+raised='Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it'
+respond "{\"result\":\"$raised\"}"
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 0 "Yes: computer use can read and click test-7 now" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
-if ((status == 0)) && [[ $out == *'Raised the parked main window in test-7.'* && $out == *'parked window is raised'* ]]; then
-	echo "ok: test-copy can-click exposes the copy's parked window and says the tool can click it"
-else
-	echo "FAIL: test-copy can-click did not expose and answer (exit $status): $out"
-	failures=$((failures + 1))
-fi
+respond "{\"result\":\"$raised\"}"
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 0 "cannot be told from here: whether pi² has the Accessibility permission" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+# Asked at once after start or reopen, before the window is drawn, it waits for the window rather than saying no (#612).
+respond "{\"result\":\"$raised\"}"
+: >"$T/reach-asked"
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=late CAN_CLICK_ASKED="$T/reach-asked" HOME="$T/home" \
+	answers 0 "Yes: computer use can read and click test-7 now" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+rm -f -- "$T/reach-asked"
+# A no only where the copy says the tool's search would not find its window.
+respond '{"error":"the app does not give its main window to accessibility, even after raising it: it is not the app'\''s main or focused window, nor among its windows, so the computer tool would not find it"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the app does not give its main window to accessibility" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+# What #612 was: a copy's answer that is not that, such as the window list's "did not join", which the tool read
+# through regardless, is never a no.
+respond '{"error":"the main window did not join the app'\''s accessibility window list when raised"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 2 "cannot tell from here whether computer use can click in test-7: the copy did not say" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
 respond '{"error":"unknown test-copy window command"}'
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
-	expect "predates the request that exposes its parked window" can-click test-7
+	answers 2 "predates the request that raises its parked window" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
 # Put back the symlinked data folder the reopen refusal below expects, and stop the stand-in app.
 kill "$STANDIN_APP" 2>/dev/null
