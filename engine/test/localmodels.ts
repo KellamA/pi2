@@ -502,7 +502,7 @@ try {
 		pack: "SMALL",
 		path: join(home, "local", "models", "test-small", "small-1.gguf"),
 		contextSize: 65_536,
-		options: { vision: false, visionFile: null, parallel: 1 },
+		options: { vision: false, visionFile: null, parallel: 4 },
 		config: join(home, "local", "configs", "test-small.json"),
 		preparedWith: "0.0.2-test",
 	});
@@ -519,6 +519,11 @@ try {
 	await assert.rejects(client.call("local.model.configure", { id: "test-small", contextSize: 1000 }), /The context size must be one of/);
 	await assert.rejects(client.call("local.model.configure", { id: "test-small", options: { vision: true } }), /This pack has no picture reader/);
 	await assert.rejects(client.call("local.model.configure", { id: "test-small", options: { parallel: 9 } }), /from 1 to 4/);
+	// What Settings says of requests at once (#605): four for a new model, and this test's engine (0.0.1) is older than the
+	// first Strata that runs several without stopping itself, so it is started with one.
+	const atOnce = ((await client.call("local.status")) as { requests: Record<string, unknown> }).requests;
+	assert.deepEqual({ ...atOnce, slotGBPerToken: undefined }, { default: 4, most: 4, several: false, slotGBPerToken: undefined });
+	assert.ok(Math.abs((atOnce.slotGBPerToken as number) * 131_072 - 3.59) < 0.01, "about 3.3 GiB a request at a 131K context");
 	step("a model's context size and requests at once are set, and wrong values refused");
 
 	// The test's engine is no server: it ends at once, and trying the model says so (the running part, #291, starts it).
@@ -570,7 +575,7 @@ try {
 	await client.call("local.download.resume", { id: "test-big" });
 	status = await client.until("the big pack set up", () => client.status?.models.some((m) => m.id === "test-big") && client.status);
 	const big = status.models.find((m) => m.id === "test-big")!;
-	assert.deepEqual(big.options, { vision: true, visionFile: join(home, "local", "models", "test-big", "big-vision.gguf"), parallel: 1 });
+	assert.deepEqual(big.options, { vision: true, visionFile: join(home, "local", "models", "test-big", "big-vision.gguf"), parallel: 4 });
 	assert.equal(status.catalog[0]!.packs.find((p) => p.id === "test-big")!.installed, true);
 	for (const file of bigFiles) assert.equal(createHash("sha256").update(readFileSync(join(home, "local", "models", "test-big", file.name))).digest("hex"), file.sha256);
 	step("files of the person's own are used where they match and downloaded where not, through a stalled connection; a preparation that fails says why, and Try Again carries on");
