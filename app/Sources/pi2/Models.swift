@@ -1159,6 +1159,13 @@ final class OpenConversation {
     private(set) var more = false
     /// Whether a part of those older entries has been asked for and has not come yet (`EngineClient.loadOlder`).
     var loadingOlder = false
+    /// Whether a pane has shown the conversation since it was opened. The window's controls for it wait for that, so
+    /// that making them does not hold up the first frame that shows it (#502).
+    private(set) var shown = false
+
+    func markShown() {
+        if !shown { shown = true }
+    }
 
     /// Takes in one update from the engine, touching only what changed. `earlier` and `more` come with a list sent from
     /// the start.

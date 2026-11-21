@@ -463,7 +463,9 @@ struct ChatModeDetail: View {
     private var needsChat: Bool { id == nil && engine.status == .connected && engine.hasLoadedLibrary }
 
     var body: some View {
-        Group {
+        // A stack, not a Group: a Group gives its modifiers to each of its children, and the chat's view is made anew
+        // for each chat (`.id`), so the window's toolbar was taken down and made again each time one was opened (#502).
+        ZStack {
             if let id {
                 ChatView(engine: engine, id: id, chat: true)
                     .id(id)
@@ -479,8 +481,8 @@ struct ChatModeDetail: View {
                     Button("Continue with an Agent…", systemImage: "arrowshape.turn.up.right") { model.continueWithAgent(id) }
                         .disabled(!engine.canContinueWithAgent(id))
                         .help("Continue with an Agent: hand this chat to one of your agents, in a folder you choose")
-                    // Left out until the chat has come from the engine, as in the agent view.
-                    if let agent = engine.open[id]?.state?.agent { ModelMenu(engine: engine, id: id, agent: agent) }
+                    // Left out until the chat has come from the engine and been shown, as in the agent view (#502).
+                    if let open = engine.open[id], open.shown, let agent = open.state?.agent { ModelMenu(engine: engine, id: id, agent: agent) }
                 }
             }
         }
