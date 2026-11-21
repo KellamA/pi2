@@ -11,6 +11,7 @@ Unless a line says it was read from Strata's code or documentation, it was run o
 - pi² starts **one process**, the Python server, which starts the engine and the picture reader. It is ready when it writes its ready file; SIGTERM stops all of them in about 2 seconds.
 - The server speaks the **OpenAI chat completions API** (and Anthropic's and the Responses API), streams, returns **tool calls** as OpenAI `tool_calls`, reads **pictures**, and sends the model's thinking as `reasoning_content`.
 - With IQ3_S: ready **160 s** after the first start (Metal compiles the kernels once) and **21 s** after later ones; about **60 GB** of memory held; **90 to 100 tokens/s** written, about 740 tokens/s read; one request at a time unless started with `--parallel N`.
+- **Speed in an agent's work** (#606, [below](#where-an-agents-time-goes-and-what-makes-it-faster-606)): engine 0.1.63 writes about twice as fast as 0.1.60 and reads in about two thirds of the time; no engine option beat the start line pi² uses, which is Strata's own default for this pack on a Mac; what wasted the most time was the prompt read again from its start whenever a section of it changed, which pi² no longer causes.
 
 ## The engine
 
@@ -338,6 +339,8 @@ Measured on the same M5 Max on 2026-11-20, with the installed model's files: fir
 | Pictures off | 13% quicker in one start, the same in two others | the same | not shown; the idle picture reader keeps the GPU no busier |
 
 **With four requests at once** (`--parallel 4`, which pi² gives a new model since #605), on 0.1.63, 400 tokens each, three runs: one request alone wrote about as fast as with one slot (code 100 to 103 tokens/s against 99 to 122 for one slot in the starts before and after); two at once made 82 to 84 tokens/s together against 90 to 98 with one slot taking them in turn, and four at once 96 to 100 against 90 to 97. The batch windows run the slots one after another and take no drafts (every batched request showed none accepted), with or without `--batch-mtp`. So more slots let each conversation wait less, not finish more.
+
+**Other packs** were not tried: each is a download of tens of gigabytes. Q2_0 and IQ3_XXS share IQ3_S's 28.8 GB n-gram table, so they would add 37.6 and 47.0 GB; [The packs](#the-packs) has what each loses. Strata's own `mac_fit.py` gives a resident Q2_0 the same `--spec 3 --spec-min-p 0.5` as IQ3_S (measured +0.4 to +11.5% over `--spec 2`) and IQ3_XXS `--spec 2`. Q2_0 is the one to try for speed, at some loss of accuracy; UD-Q4_K_XL (111 GB, about 91 GB of memory) for accuracy, slower.
 
 Writing does slow somewhat deep into a conversation: after a 55K-token prompt, code 63 to 66 tokens/s, prose 49 to 52 and copying 69 to 77, against 72 to 75, 60 to 62 and 88 to 95 after a short one (0.1.63, the same session, three runs each).
 
