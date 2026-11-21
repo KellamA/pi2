@@ -47,7 +47,7 @@ Keep each issue's record as [CLAUDE.md](../CLAUDE.md#issues-one-for-every-piece-
 
 - taking it before you change any file, unless your task begins "Work #N:" (the orchestrator's `work` `assign` made it yours);
 - a note for each decision or dead end worth keeping, since nobody saw you make it;
-- once the pull request is merged, the summary (`scripts/issue done`; with the tool, a `note` beginning `**Done.**`), then a check that the issue ended closed with no "in progress" label;
+- once the pull request is merged, the summary (`scripts/issue done`, or the tool's `finish`), then a check that the issue ended closed with no "in progress" label;
 - an idea filed for anything worth doing outside your issue, and leave it.
 - Do not classify issues (the labels `local model` and `cloud model`, the tool's `class`): the agent that handed out the work does that ([issue-classes.md](issue-classes.md)). If you think an issue is in the wrong class, say so in your report.
 
