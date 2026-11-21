@@ -1624,6 +1624,8 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | A project's badge | `needs` by `projectId`; `activity` by `projectId` | #470 |
 | The orchestrator and the agents working now, under the open project | `projects` (`orchestratorId`, `conversation`); `activity` by `projectId` and `runsAs` | #470 |
 | A project's other conversations, folded under it | `library` by `projectId`, not the orchestrator's | #470 |
+| Under each working agent's and other conversation's title: its branch, its worktree mark, the size of its change, and the warning for a working agent in the main checkout on the default branch | `branches` (`branch`, `worktree`, `managed`, `base`, `added`, `removed`) | #598 |
+| The branch and the size of the change in the header of an agent's conversation in place of the board, and on Now's working rows | `branches` | #598 |
 | The hub's bar: folder and branch, the orchestrator's model, the plan's week | `projects`; `branches`; `agents`; `limits` | #471 |
 | The folded conversation's strip | `projects` (`lastWords`); sending to `projects`' current `conversation` | #471 |
 | Now: Needs you | `needs` | #472 |
