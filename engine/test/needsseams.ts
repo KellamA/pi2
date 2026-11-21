@@ -350,10 +350,11 @@ step("an answer's shape is checked by its kind");
 const offeredTo = (agent: object, subChat: boolean, access: "none" | "ask" = "ask") => needsFeature.toolNames!(access, agent as never, { subChat });
 assert.deepEqual(offeredTo({ projectId: "p1" }, false), ["needs_you"]);
 assert.deepEqual(offeredTo({ projectId: "p1" }, false, "none"), ["needs_you"], "whatever its access");
-assert.deepEqual(offeredTo({ projectId: "p1" }, true), [], "not in a sub-chat, which keeps ask_user (#507)");
+assert.deepEqual(offeredTo({ projectId: "p1" }, true), ["needs_you"], "in a sub-chat too, which keeps ask_user as well (#507)");
+assert.deepEqual(offeredTo({}, true), [], "not in a sub-chat of an agent of no project");
 assert.deepEqual(offeredTo({}, false), [], "not to an agent of no project");
 assert.deepEqual(offeredTo({ projectId: "p2" }, false), [], "not in a deleted project");
-step("needs_you is offered to a project agent's own conversations, not to a sub-chat or outside a project");
+step("needs_you is offered to a project agent's conversations and their sub-chats, not outside a project");
 
 // ---- With the preview off: nothing in the list, and the new requests refused
 
