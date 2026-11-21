@@ -143,7 +143,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 
 <!-- ============================== Pairing ============================== -->
 <section class="screen" id="pair">
-  <p class="cap"><b>Pairing, once, with both devices in hand.</b> The Mac shows a code good for five minutes; the phone scans it and reaches the Mac through pi²'s relay, or directly if both are on the same network; both show the same six digits; the person clicks Pair on the Mac. Only the Mac can pair a device.</p>
+  <p class="cap"><b>Pairing, once, with both devices in hand; or the demo mode, with none.</b> The Mac shows a code good for five minutes; the phone scans it and reaches the Mac through pi²'s relay, or directly if both are on the same network; both show the same six digits; the person clicks Pair on the Mac. Only the Mac can pair a device.</p>
   <div class="phones">
     <div class="fig" style="width:420px"><div class="lbl">1 · On the Mac: Settings › Devices › Pair an iPhone</div>
       <div class="mac" style="height:420px">
@@ -164,7 +164,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
           <div class="t2">Your Mac does the work. This iPhone shows it, and answers for you when agents need you.</div>
           <div class="t3 sm">On your Mac: pi² › Settings › Devices › Pair an iPhone.</div>
         </div>
-        <div style="padding:0 18px 10px"><div class="btn pri" style="width:100%;padding:11px">Scan the code on your Mac</div></div>
+        <div style="padding:0 18px 10px" class="col"><div class="btn pri" style="width:100%;padding:11px">Scan the code on your Mac</div><div style="text-align:center;color:var(--acc);padding:10px 0 2px">Try it without a Mac</div></div>
         <div class="home"></div></div>
     </div>
     <div class="fig"><div class="lbl">3 · Scanning</div>
@@ -185,10 +185,27 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
         <div style="padding:0 16px 10px" class="col"><div class="t3 xs" style="text-align:center">Next: notifications, then Face ID, each with what it is for.</div></div>
         <div class="home"></div></div>
     </div>
+    <div class="fig"><div class="lbl">5 · Or: the demo mode, with no Mac</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div style="background:var(--accbg);color:var(--acc);font-size:11.5px;font-weight:600;padding:6px 14px;display:flex;align-items:center">Demo · nothing here is real<span class="sp"></span><span>Leave</span></div>
+        <div class="nav"><h2>pi²</h2><div class="conn"><span class="dot acc"></span>Demo Mac · canned data, no network</div></div>
+        <div class="body">
+          <div class="sec">Needs you · 2</div>
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · Garden planner · approval</div><div class="mono" style="font-size:11px">npm test</div><div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="sec">Projects</div>
+          <div class="list">
+            <div class="r"><span class="av a3">G</span><div class="grow"><div class="row"><span class="b">Garden planner</span><span class="sp"></span><span class="badge">2</span></div><div class="t3 sm ell">The watering schedule is ready for review.</div></div></div>
+            <div class="r"><span class="av a4">R</span><div class="grow"><div class="row"><span class="b">Recipe site</span><span class="sp"></span><div class="spin"></div></div><div class="t3 sm ell">Scout is checking every recipe's links.</div></div></div>
+          </div>
+          <div class="t3 xs" style="padding:0 4px">Every screen works here: answer cards, write to an orchestrator, open a pull request and merge it with Face ID. When you have pi² on a Mac, pair it from Settings.</div>
+        </div>
+        <div class="home"></div></div>
+    </div>
   </div>
   <div class="notes">
     <div><b>What the code holds</b>The Mac's name, its public key, the relay's address, and a one-time secret. No account, no password. The relay is told only that a phone may join for the next five minutes.</div>
     <div><b>Why digits as well</b>The code could be photographed from across a room. The digits are worked out from the encrypted connection itself, so a second phone cannot pair in the person's place unnoticed; and the relay lets only a genuine pi² for iPhone join.</div>
+    <div><b>The demo mode</b>For someone who has not paired yet, and for App Review, whose reviewer has no Mac running pi². The real screens, fed by a recording made with pi²'s scripted demo model; it connects nowhere, and Leave deletes what it wrote.</div>
     <div><b>After pairing</b>The phone asks for notifications, then Face ID, each with a line on what it is for. Either can be refused; Face ID's answers then stay on the Mac.</div>
   </div>
 </section>

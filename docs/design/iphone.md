@@ -2,7 +2,7 @@
 
 This is the design for epic [#620](https://github.com/KellamA/pi2/issues/620): an iPhone app that does nothing by itself and, once paired with pi² on a Mac, is the whole of pi² from the pocket. Nothing here is built yet. The drawings are in [iphone-drafts.html](iphone-drafts.html): open it in a browser; the buttons along its top switch between the screens, and one switches between dark and light (an address ending in `:light`, such as `iphone-drafts.html#card:light`, opens a screen in light). The contract that every later issue is built against is [../iphone.md](../iphone.md); this page says what the person sees and does, and that page says exactly how.
 
-The owner has answered the first of three decisions: the phone must work on any network, with the Mac on another. The other two are open (below). This page is written for the answer given and for the recommended answer of each open one, and each is kept in one place, so a different answer changes that section and the contract's matching section, not the whole.
+The owner has answered two of three decisions: the phone must work on any network, with the Mac on another; and it may do everything the person does at the Mac, with Face ID for the risky answers and a Devices page on the Mac. The third, who it is for, is open; the owner asked what changes if the App Store is planned for from the start, and this page is written for that (below). This page is written for the answers given and for the likely answer of the open one, and each is kept in one place, so a different answer changes that section and the contract's matching section, not the whole.
 
 ## What the phone is, and is not
 
@@ -13,8 +13,8 @@ The phone runs no agents, holds no provider's key, and keeps nothing of its own 
 | Decision | Written for | Where it lives |
 |---|---|---|
 | 1. How the phone reaches the Mac away from home | **Answered**: "it needs to work on separate networks or it defeats the purpose." The whole of pi², the live conversation included, works with the phone on any network and the Mac on another, with nothing to set up beyond pairing. The way recommended: **a small relay pi² runs**, on Cloudflare, which passes only sealed messages and sends the pushes; at home the phone talks to the Mac directly. | [On any network](#on-any-network) here; [sections 5 and 6](../iphone.md#5-transport) of the contract |
-| 2. What the phone may do | **What the person does at the Mac**, but what needs the Mac's hands or a secret; the riskiest answers (more reach, Allow everything, a merge, starting past a limit) ask for Face ID first. The same on every network. | [What the phone may do](#what-the-phone-may-do) here; [4.2](../iphone.md#42-what-a-device-may-send) of the contract |
-| 3. Who it is for at first | **The owner alone, through TestFlight**, until the security reading of step 6; then the owner decides about the App Store. | [Who it is for](#who-it-is-for-at-first) here; [section 9](../iphone.md#9-who-it-is-for-and-how-it-is-given-out) of the contract |
+| 2. What the phone may do | **Answered, as recommended**: everything the person does at the Mac, but what needs the Mac's hands or a secret; the riskiest answers (more reach, Allow everything, a merge, starting past a limit) ask for Face ID first; a Devices page on the Mac. The same on every network. | [What the phone may do](#what-the-phone-may-do) here; [4.2](../iphone.md#42-what-a-device-may-send) of the contract |
+| 3. Who it is for at first | **Open.** Written for what is likely: **built so that the App Store stays possible, given out to the owner alone through TestFlight first.** | [Who it is for](#who-it-is-for-at-first) here; [section 9](../iphone.md#9-who-it-is-for-and-how-it-is-given-out) of the contract, with [9.5, If it goes to the App Store](../iphone.md#95-if-it-goes-to-the-app-store) |
 
 ## The screens
 
@@ -22,7 +22,11 @@ Each has a drawing in [iphone-drafts.html](iphone-drafts.html), in phone-sized f
 
 ### Pairing
 
-On the Mac: **Settings › Devices › Pair an iPhone** shows a code to scan, good for five minutes. On the phone, the first screen says what pi² for iPhone is and offers **Scan the code on your Mac**. The phone scans it, reaches the Mac (through pi²'s relay, or over the home network if it is on it: pairing works on any network), and both show the same six digits; the person checks them and clicks **Pair** on the Mac. The phone then asks for notifications and for Face ID, saying what each is for. Pairing happens only at the Mac, with the Mac's own app: a phone cannot pair another phone.
+On the Mac: **Settings › Devices › Pair an iPhone** shows a code to scan, good for five minutes. On the phone, the first screen says what pi² for iPhone is and offers **Scan the code on your Mac**, and under it **Try it without a Mac**, the demo mode ([below](#the-demo-mode)). The phone scans it, reaches the Mac (through pi²'s relay, or over the home network if it is on it: pairing works on any network), and both show the same six digits; the person checks them and clicks **Pair** on the Mac. The phone then asks for notifications and for Face ID, saying what each is for. Pairing happens only at the Mac, with the Mac's own app: a phone cannot pair another phone.
+
+### The demo mode
+
+The whole app against canned data, with no Mac and no network: demo projects with agents at work, a card of every kind, notifications with their buttons, a conversation that answers, a pull request to merge with Face ID. A **Demo** bar across the top of every screen says so, with **Leave**, which deletes what the demo wrote. It is there for a person who has installed the app and has nothing paired yet, and for App Review, whose reviewer has no Mac running pi². Every screen in it is the real one, fed by a recording instead of a Mac.
 
 ### The projects list, with what needs the person at the top
 
@@ -151,7 +155,11 @@ An Apple Watch glance and an iPad layout are left for later, if wanted.
 
 ## Who it is for at first
 
-Under the recommended answer to decision 3, the owner alone, through TestFlight's internal testing, with the Mac's pi² as the owner already runs it. The app goes to anyone else only after step 6, the second security reading, and on the owner's word. Until then nothing in the Mac app shows Devices unless the owner turns on a preview switch, as projects had.
+Decision 3 is open. The owner asked what changes if the App Store is planned for from the start, which is likely where it lands, so this page and the contract are written for it: **built so that the App Store stays possible, given out to the owner alone through TestFlight first.**
+
+- **First, the owner alone**, as an internal tester in TestFlight: no review by Apple, builds good for 90 days, up to 100 people of the owner's own team. The Mac app shows Devices only once the owner turns on a preview switch, as projects had. External testers (up to 10,000 strangers, by e-mail or a public link) would add a review of the first build and everything a stranger needs.
+- **Built for anyone from the start**, so the App Store needs no redesign: a pairing is two devices' keys, never an account; the relay serves any number of pairings, each with its own limits, and holds nothing of the owner's; everything it passes is sealed, so it has no content to disclose; only Apple's public APIs; the conversation's page is inside the app, never downloaded; it works on IPv6-only networks; the phone can unpair itself, which deletes what the relay keeps of it; a privacy policy and a way to reach pi² are in the app from the first build; and the demo mode shows a reviewer all of it.
+- **What would still be to do then** is work, not redesign: the notes for review, the privacy label and policy, export compliance for the encryption, running the relay for strangers and whether to charge for it (through Apple's in-app purchase if so), the Mac app's first run written for people who are not its author, support, and the listing. One risk cannot be designed away: App Review keeps remote desktop apps that mirror software to the local network, and pi² for iPhone is not one (it draws its own screens from data), which the notes for review must say plainly. The contract's [9.5](../iphone.md#95-if-it-goes-to-the-app-store) lists each, with the guideline it rests on.
 
 ## Still open
 
@@ -162,7 +170,7 @@ Under the recommended answer to decision 3, the owner alone, through TestFlight'
 
 ## Roadmap
 
-The issues, step by step, are in [section 12](../iphone.md#12-the-later-issues) of the contract and, once filed, in the epic. In short: (0) this design and the contract, agreed and read for security; (1) foundations side by side: the shared package, devices in the engine, the encrypted channel, the Mac's helper, the relay and its deployment, the Devices page, the iPhone app's shell, testing with no phone, and a check that the relay sees only sealed bytes; (2) the first useful release, on any network: projects, the Dashboard, Needs you, the orchestrator's conversation, Now; (3) notifications through the relay, the Mac out of reach, moving between the relay and home; (4) the rest of the board; (5) what only a phone can do; (6) the second security reading, battery and data measured, a lost phone tried.
+The issues, step by step, are in [section 12](../iphone.md#12-the-later-issues) of the contract and, once filed, in the epic. In short: (0) this design and the contract, agreed and read for security; (1) foundations side by side: the shared package, devices in the engine, the encrypted channel, the Mac's helper, the relay and its deployment, the Devices page, the iPhone app's shell, testing with no phone, and a check that the relay sees only sealed bytes; (2) the first useful release, on any network: projects, the Dashboard, Needs you, the orchestrator's conversation, Now, and the demo mode; (3) notifications through the relay, the Mac out of reach, moving between the relay and home; (4) the rest of the board; (5) what only a phone can do; (6) the second security reading, battery and data measured, a lost phone tried.
 
 [^fg]: Apple, [UNNotificationActionOptions.foreground](https://developer.apple.com/documentation/usernotifications/unnotificationactionoptions/foreground): "The action causes the app to launch in the foreground." An action without it runs with the app in the background ([Handling notifications and notification-related actions](https://developer.apple.com/documentation/usernotifications/handling-notifications-and-notification-related-actions)), where no Face ID prompt can be shown.
 [^auth]: Apple, [UNNotificationActionOptions.authenticationRequired](https://developer.apple.com/documentation/usernotifications/unnotificationactionoptions/authenticationrequired): "The action can be performed only on an unlocked device."
