@@ -158,9 +158,17 @@ try {
 	assert.deepEqual([done.state, done.takenBy, done.result], ["done", null, "Checked the result"]);
 	assert.equal(typeof done.closedAt, "number");
 	refusal(await socket.tool(loser, "take", { id }), /#1 is done\. Reopen it first\./);
-	assert.deepEqual(value(await socket.tool(worker, "list")), []);
-	assert.deepEqual(value(await socket.tool(worker, "list", { states: ["done"] })), [done]);
-	assert.deepEqual(value(await socket.tool(worker, "show", { id })), done);
+	// `list` and `show` answer in plain lines, never the item whole (#595).
+	const empty = await socket.tool(worker, "list");
+	assert.equal(empty.isError, false, empty.text);
+	assert.equal(empty.text, "0 items.");
+	const closed = await socket.tool(worker, "list", { states: ["done"] });
+	assert.match(closed.text, new RegExp(`^#${id} done · local model · nobody · changed .+ · Race$`, "m"));
+	assert.match(closed.text, /^1 item: 1 done\.$/m);
+	const shown = await socket.tool(worker, "show", { id });
+	assert.match(shown.text, new RegExp(`^#${id} done .* · Race$`, "m"));
+	assert.match(shown.text, /Work description/, "the item's own text");
+	assert.match(shown.text, /Done: Checked the result/);
 	const reopened = (await act(id, "reopen")).item;
 	assert.deepEqual([reopened.state, reopened.result, reopened.closedAt], ["open", null, null]);
 	assert.equal(value(await socket.tool(worker, "take", { id })).state, "in_progress");
@@ -173,10 +181,10 @@ try {
 
 	const projectSettings = (withoutAsking: Record<string, boolean>) => socket.call("projects.set", { id: projectId, settings: { withoutAsking } });
 	await socket.call("conversation.configure", { id: worker, access: "none" });
-	assert.equal(value(await socket.tool(worker, "show", { id })).id, id);
+	assert.match((await socket.tool(worker, "show", { id })).text, new RegExp(`^#${id} `), "an agent with no access may still read it");
 	refusal(await socket.tool(worker, "note", { id, text: "No tools" }), /access does not let it change/);
 	await socket.call("conversation.configure", { id: worker, access: "read" });
-	assert.deepEqual(value(await socket.tool(worker, "list")), []);
+	assert.equal((await socket.tool(worker, "list")).text, "0 items.");
 	refusal(await socket.tool(worker, "file", { title: "Read only" }), /access does not let it change/);
 	await socket.call("conversation.configure", { id: worker, access: "ask" });
 	const open = await create("Assign this", { text: "Read the assignment's body" });
@@ -239,6 +247,35 @@ try {
 	assert.equal(byPerson.item.takenBy.conversationId, byPerson.conversation);
 	await socket.until("the second assignment wakes the orchestrator with waking on", () => socket.conversations.get(parent)?.items.some((item: any) => item.kind === "marker" && item.details?.wake?.text?.includes(`Sub-chat ${byPerson.conversation} “Filed with approval” answered:`)) && !socket.conversations.get(parent)?.state.busy);
 	step("assign refuses without a claim or child, races a take, and starts a durable sub-chat for agent and person");
+
+	// ---- A list of six long items answers in a few hundred characters an item, and `show` gives one item's words (#595)
+	const long = "The whole of this piece of work, said at length. ".repeat(120);
+	for (let n = 0; n < 6; n++) await create(`Backlog ${n + 1}`, { text: `${long}${n}` });
+	const many = await socket.tool(worker, "list");
+	assert.equal(many.isError, false, many.text);
+	const lines = many.text.split("\n").filter((line: string) => /· Backlog \d+$/.test(line));
+	assert.equal(lines.length, 6, many.text);
+	for (const line of lines) assert.ok(line.length < 300, `a few hundred characters an item: ${line.length}\n${line}`);
+	assert.ok(!many.text.includes("said at length"), "none of the text");
+	assert.match(many.text, /^7 items: 6 open, 1 in progress\.$/m);
+	const one = lines.find((line: string) => line.endsWith("Backlog 3"))!;
+	const backlogId = Number(/#(\d+)/.exec(one)![1]);
+	const showed = await socket.tool(worker, "show", { id: backlogId });
+	assert.match(showed.text, /said at length/, "show gives the text");
+	assert.match(showed.text, /more characters of the text; the project's Work tab shows it/, "and says where the rest is");
+	assert.ok(showed.text.length < 4_500, `a cut text: ${showed.text.length}`);
+	// A long item's notes come newest first, and the answer says how many more there are.
+	for (let n = 0; n < 14; n++) await act(backlogId, "note", { text: `Note ${n + 1}. ${"said at length ".repeat(20)}` });
+	const noted = await socket.tool(worker, "show", { id: backlogId });
+	assert.match(noted.text, /^Notes \(14\), newest first:$/m);
+	assert.match(noted.text, /Note 14\./, "the newest note first");
+	assert.ok(!noted.text.includes("Note 1\."), "not the oldest ones");
+	assert.match(noted.text, /\[2 more notes; the project's Work tab shows it\]/, "and how many more there are");
+	// One note longer than a note's cut is cut itself, and says so.
+	const longNote = await create("A long note", {});
+	await act(longNote, "note", { text: "x".repeat(2_000) });
+	assert.match((await socket.tool(worker, "show", { id: longNote })).text, /\[\+\d+ characters\]/, "a long note is cut and says so");
+	step("a list of six long items stays a few hundred characters a line, and show gives one item's text and cut notes");
 
 	// The orchestrator is told of the person's assignment at its next turn (#466), in a catch-up in front of the wake; its
 	// own assignment is not news to it (#468).

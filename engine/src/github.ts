@@ -1362,6 +1362,7 @@ export const github: Feature = (host, running) => {
 	wireGithubWork({
 		backend: (_project, writing) => backend(writing),
 		readAt: (project) => listingOf(project)?.readAt ?? null,
+		pulls: (project) => listingOf(project)?.pulls ?? [],
 		listingNote,
 		pull: (project, action, by, args, call) => noting(project, pull(project, action, by, args, call)),
 		assignHeld,
