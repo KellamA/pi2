@@ -39,7 +39,7 @@ A newer engine reaches the person only with a pi² update that pins it, since pi
 - **It carries on.** `local-setup.json` in the data folder lists the downloads under way and whether each is running, paused or stopped. The next engine carries on with those that were running, after pi² quits, the engine restarts or is killed. A dropped connection, a stall (nothing for a minute) or a busy server (HTTP 429 or 5xx) is tried again by itself, waiting longer each time, eight times, each time from where it stopped (an HTTP range request); after that the download stops with a message, and **Try Again** carries on.
 - **Pause, Resume, Cancel.** Pausing keeps what it has. Cancelling removes it all: the parts, any of the pack's files already finished, and what preparing it made. A model set up before that is being prepared again (below) has no Cancel: Remove is what takes it away.
 - **Progress** is sent as `local.progress` events, about twice a second while a download runs, and the whole state as `local` whenever it changes.
-- **Out of backups.** The engine and models are in `local/` in the data folder (`local/engine/<version>/` and `local/control/<version>/`, `local/models/<pack>/` with `prepared/` in it, `local/strata/` for what Strata keeps of its own, `local/configs/`, `local/run/` and `local/logs/`), or a folder the person chooses for models. pi²'s backup copies named files only, never these; each folder pi² makes is marked for Time Machine to skip (`tmutil addexclusion`, which needs no permission).
+- **Out of backups.** The engine and models are in `local/` in the data folder (`local/engine/<version>/` and `local/control/<version>/`, `local/models/<pack>/` with `prepared/` in it, where Strata 0.1.62 and later also keep parked conversations while the model runs (`conversation-spill/`, up to 32 GiB, #605), `local/strata/` for what Strata keeps of its own, `local/configs/`, `local/run/` and `local/logs/`), or a folder the person chooses for models. pi²'s backup copies named files only, never these; each folder pi² makes is marked for Time Machine to skip (`tmutil addexclusion`, which needs no permission).
 - **What a person reads when it fails**: no network ("pi² could not reach huggingface.co. Check the network connection…"), a dropped connection, no space, a checksum that does not match, a server that refuses ("huggingface.co refused the download (HTTP 403 Forbidden). The file may have moved or been withdrawn; a newer pi² may know where it is now."), a busy server, and preparing that stopped (below).
 
 ## Files already on this Mac
@@ -79,7 +79,7 @@ pi² reads the Mac's memory and, for each pack, says one of: fits (the Mac has a
 
 ## Configuring
 
-A model's context size (16K to 262K tokens), whether it reads pictures (for a pack with a picture reader), and how many requests it runs at once (1 to 4). Each context size shows about how much memory the model takes with it; above what Metal lets one program keep, the sheet warns that it would read from the SSD or not start, and above 32K that Strata has not measured it on a Mac (its setup says the same of 64K: "measured on the Mac up to 32768 (needles found at 8K-32K); longer is kept"). The defaults are what Strata's setup chooses: 32K below 96 GB of memory and 64K from 96 GB, pictures on, one request at once. Nothing has to be pressed for them to apply, and none needs the model prepared again: the running part writes them into the run config at each start.
+A model's context size (16K to 262K tokens), whether it reads pictures (for a pack with a picture reader), and how many requests it runs at once (1 to 4). Each context size shows about how much memory the model takes with it; above what Metal lets one program keep, the sheet warns that it would read from the SSD or not start, and above 32K that Strata has not measured it on a Mac (its setup says the same of 64K: "measured on the Mac up to 32768 (needles found at 8K-32K); longer is kept"). The defaults are what Strata's setup chooses: 32K below 96 GB of memory and 64K from 96 GB, pictures on; and four requests at once (#605): with Strata 0.1.63 four agents get about as much done together as with one, and each waits for its turn a third as long ([strata.md](strata.md#several-requests-at-once-605)). The memory shown counts what each request at once takes when there is more than one (about 3.3 GB at a 131K context), and the sheet says so; with a Strata engine older than 0.1.62 it says that the model runs one at a time until Strata is updated. Nothing has to be pressed for them to apply, and none needs the model prepared again: the running part writes them into the run config at each start.
 
 ## Trying it
 
@@ -93,13 +93,13 @@ While it starts, the row says what the engine says it is doing and for how long,
 
 ```json
 {
-  "engine": { "version": "0.1.60", "path": "<the strata executable>", "folder": "<the engine package>",
-              "control": { "version": "0.1.61", "folder": "<the control package>" }, "component": true },
+  "engine": { "version": "0.1.63", "path": "<the strata executable>", "folder": "<the engine package>",
+              "control": { "version": "0.1.63", "folder": "<the control package>" }, "component": true },
   "models": [{
     "id": "qwen3.8-flash-next-iq3-s", "name": "Qwen3.8-Flash-Next (IQ3_S)", "pack": "IQ3_S",
     "path": "<the pack's first file; the others are beside it>", "contextSize": 65536,
-    "options": { "vision": true, "visionFile": "<the picture reader>", "parallel": 1 },
-    "config": "<pi²'s copy of the run config Strata's setup wrote>", "preparedWith": "0.1.61"
+    "options": { "vision": true, "visionFile": "<the picture reader>", "parallel": 4 },
+    "config": "<pi²'s copy of the run config Strata's setup wrote>", "preparedWith": "0.1.63"
   }]
 }
 ```

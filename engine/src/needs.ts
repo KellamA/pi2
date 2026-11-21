@@ -16,7 +16,8 @@
 // - `limit` (#464, projectlimitstarts.ts): a start refused for a limit, started anyway or left.
 //
 // Questions and decisions are this file's own: the answer is given to the conversation that asked as a wake of the kind
-// `answer` (wakes.ts).
+// `answer` (wakes.ts). One a worker (a sub-chat) put is given to it while its run goes, and once the run has ended to
+// the conversation that handed it the work, saying whose question it was (#507; wakes.ts, `relay`).
 
 import type { Context } from "@earendil-works/chord/context";
 import { type CommitChange, defineDoc, defineTool, type JsonObject, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
@@ -24,7 +25,8 @@ import { arr, bool, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
 import { allProjects, inProject, type LimitReading, Projects, projectsOn, requirePreview, type Start, type SwitchName } from "./projects.ts";
-import { type AgentProfile, type InboxItem, type Meta, runsAs } from "./state.ts";
+import { latestReport } from "./reports.ts";
+import { type AgentProfile, type InboxItem, Library, type Meta, runsAs } from "./state.ts";
 import { chatIdOf } from "./versions.ts";
 import { arrivedIn, arriveIn } from "./wakes.ts";
 import { answerGoesTo } from "./orchestrator.ts";
@@ -59,9 +61,12 @@ type StoredBase = {
 	createdAt: number;
 };
 
+/** Put in a sub-chat whose run was handed a work item (`work assign`): its number, for the card (#507). */
+type OnWork = { work?: number };
+
 export type StoredNeed =
-	| (StoredBase & { kind: "question"; question: string })
-	| (StoredBase & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
+	| (StoredBase & OnWork & { kind: "question"; question: string })
+	| (StoredBase & OnWork & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
 	| (StoredBase & { kind: "reach"; change: ReachChange; why: string | null })
 	| (StoredBase & { kind: "rule"; text: string; binds: "orchestrator" | "everyone"; why: string | null })
 	| (StoredBase & { kind: "limit"; start: Start; limit: LimitReading; confirmed?: LimitReading[] });
@@ -121,8 +126,8 @@ export type NeedItem =
 			/** The answers it takes. */
 			answers: ApprovalAnswer[];
 	  })
-	| (WireBase & { kind: "question"; question: string })
-	| (WireBase & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
+	| (WireBase & OnWork & { kind: "question"; question: string })
+	| (WireBase & OnWork & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
 	| (WireBase & { kind: "reach"; change: ReachChange; why: string | null })
 	| (WireBase & { kind: "rule"; text: string; binds: "orchestrator" | "everyone"; why: string | null })
 	| (WireBase & { kind: "limit"; start: Start; limit: LimitReading });
@@ -362,10 +367,11 @@ export async function claim(id: string, answer: NeedAnswer): Promise<void> {
 // ---- Questions and decisions: the answer wakes the conversation that asked
 
 /** A question as the person's line names it: "the question “Merge now…”". */
-const named = (question: string) => {
+const quoted = (question: string) => {
 	const line = question.replace(/\s+/g, " ").trim();
-	return `the question “${line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line}”`;
+	return `“${line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line}”`;
 };
+const named = (question: string) => `the question ${quoted(question)}`;
 
 /** What the agent is given: "The person answered your question “Merge now or after the release?”: After the release." */
 export function answerText(question: string, answer: string): string {
@@ -374,7 +380,43 @@ export function answerText(question: string, answer: string): string {
 	return `The person answered your question “${question}”: ${said}${/[.!?…)”"']$/.test(said) ? "" : "."}`;
 }
 
-async function wakeWith(tx: Tx, need: StoredNeed & { question: string }, said: string): Promise<AnswerOutcome> {
+/** The longest piece of an answer the orchestrator's news quotes, as it quotes a message the person wrote (6.4). */
+const NEWS_CHARS = 300;
+
+/**
+ * What the conversation that handed worker `need.conversationId` the work is given, when the answer comes after the
+ * worker's run has ended (#507): whose question it was, where and on what, what was asked, what the person answered, and
+ * how to continue the sub-chat. And the label of its line, and the orchestrator's news if the worker is given it instead.
+ */
+export function relayWords(need: { conversationId: number; question: string; work?: number }, agent: string, title: string, said: string): { label: string; text: string; news: string } {
+	const chat = need.conversationId;
+	const place = `sub-chat ${chat}${title === "" ? "" : ` “${title}”`}${need.work === undefined ? "" : ` (on #${need.work})`}`;
+	const answer = said.trim();
+	const given = answer.includes("\n") ? `Their answer:\n\n${answer}` : `Their answer: ${answer}${/[.!?…)”"']$/.test(answer) ? "" : "."}`;
+	const line = answer.replace(/\s+/g, " ");
+	const excerpt = line.length > NEWS_CHARS ? `${line.slice(0, NEWS_CHARS).trimEnd()}…` : line;
+	return {
+		label: `${agent}'s question ${quoted(need.question)} in sub-chat ${chat}`,
+		text:
+			`The person answered the question ${agent} asked in ${place}: “${need.question}”\n\n${given}\n\n` +
+			`${agent.charAt(0).toUpperCase()}${agent.slice(1)}'s run had ended, so it has not been told. To carry on with the answer, continue the sub-chat: delegate with chat: ${chat}.`,
+		news: `The person answered ${agent}'s question in sub-chat ${chat}: “${excerpt}”`,
+	};
+}
+
+async function wakeWith(tx: Tx, need: StoredNeed & { question: string; work?: number }, said: string): Promise<AnswerOutcome> {
+	const meta = (await tx.doc(Library)).conversations[String(need.conversationId)];
+	if (meta?.parent !== undefined) {
+		// A worker's: given to it as it works, or to its parent if its run has ended by then (wakes.ts decides, #507).
+		const agents = running?.agents() ?? {};
+		const agentId = runsAs(meta, agents);
+		const agent = (agentId === undefined ? undefined : agents[agentId]?.name) ?? "an agent that was deleted";
+		const words = relayWords(need, agent, meta.title, said);
+		const text = answerText(need.question, said);
+		const relay = { label: words.label, text: words.text, news: { projectId: need.projectId, text: words.news } };
+		await arriveIn(tx, need.conversationId, { key: `answer:${need.id}`, kind: "answer", ref: need.id, label: named(need.question), ended: "was answered", text, relay });
+		return { after: () => arrivedIn(need.conversationId) };
+	}
 	// Asked in an earlier conversation with the orchestrator: the answer goes to its current one (orchestrator.ts, 6.5).
 	const { to, earlier } = await answerGoesTo(tx, need.conversationId);
 	const text = answerText(need.question, said) + (earlier ? `\n\n(You asked this in your earlier conversation, ${need.conversationId}.)` : "");
@@ -480,7 +522,8 @@ const text = (value: string) => [{ type: "text" as const, text: value }];
 const refuse = (value: string): ToolExecutionResult => ({ output: text(value), isError: true });
 
 const NEEDS_YOU_DESCRIPTION =
-	"Put a question or a decision to the person under Needs you, and carry on working: their answer comes to you later as a message, waking you if you are not answering. Use it for what is theirs to decide; do not use it for what you can find out yourself, and do not wait for the answer.\n" +
+	"Put a question or a decision to the person under Needs you, and carry on working: their answer comes to you later as a message, waking you if you are not answering. Use it for what is theirs to decide; do not use it for what you can find out yourself, and do not wait for the answer. " +
+	"When your next step needs the answer and you have nothing else to do meanwhile, use ask_user instead, which waits for it.\n" +
 	`- ask: put \`question\` (${MAX_QUESTION.toLocaleString("en")} characters at most). With \`choices\` (${MIN_CHOICES} to ${MAX_CHOICES}, ${MAX_CHOICE} characters each) it is a decision with a button for each; \`words: false\` leaves out an answer in words, which is allowed by default. Returns at once with the item's id.\n` +
 	"- withdraw: take back one of this conversation's items still waiting, by `id`, when it is no longer needed.\n" +
 	"- list: this conversation's items still waiting.";
@@ -509,7 +552,6 @@ function needsYouTool() {
 			const conversationId = api.conversationId as unknown as number;
 			const meta = wired?.conversations()[String(conversationId)];
 			const project = inProject(conversationId);
-			if (meta?.parent !== undefined) return refuse("A sub-chat cannot put things to the person and carry on: use ask_user, which waits for their answer.");
 			if (project === undefined || running === undefined) return refuse("needs_you works only in a conversation of a project, with projects turned on.");
 			const engine = running;
 			const commit = async <T>(edit: (tx: Tx) => Promise<T>, ctx: Context) => {
@@ -531,7 +573,9 @@ function needsYouTool() {
 					if (long !== undefined) return refuse(`The choice “${long}” is ${long.length} characters; the most is ${MAX_CHOICE}. Shorten it.`);
 					choices = labels.map((label, index) => ({ id: `c${index + 1}`, label }));
 				}
-				const base = { projectId: project.id, conversationId, callId: api.callId };
+				// A worker's question names the piece of work its run was handed, if any, for the card (#507).
+				const work = meta?.parent === undefined ? null : (latestReport(conversationId)?.work ?? null);
+				const base = { projectId: project.id, conversationId, callId: api.callId, ...(work === null ? {} : { work }) };
 				const need = await commit(
 					(tx) => putNeed(tx, choices === undefined ? { ...base, kind: "question", question } : { ...base, kind: "decision", question, choices, words: args.words !== false }),
 					context,
@@ -595,9 +639,9 @@ export const needs: Feature = (host, engine) => {
 		},
 		greeting: () => [needsEvent()],
 		tools: [needsYouTool()],
-		// Offered in a project agent's own conversations with the preview on, the orchestrator's included, and not in a
-		// sub-chat, which is not woken and so could not be told the answer: it keeps ask_user, which holds it (5.5, #507).
-		toolNames: (_access, agent, where) => (!where.subChat && agent?.projectId !== undefined && projectsOn() && liveProject(agent.projectId) ? ["needs_you"] : []),
+		// Offered in every conversation of a project agent with the preview on, the orchestrator's and its sub-chats included:
+		// a worker's answer reaches it as it works, or its parent once it has ended (5.5, #507). It keeps ask_user too.
+		toolNames: (_access, agent) => (agent?.projectId !== undefined && projectsOn() && liveProject(agent.projectId) ? ["needs_you"] : []),
 		inboxChanged: announce,
 		previewChanged: announce,
 		// A conversation archived or deleted takes its needs with it, as an approval is let go when its run stops (3.9).

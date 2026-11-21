@@ -34,7 +34,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { DownloadError, download as downloadFile } from "./download.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Feature } from "./features.ts";
-import { STRATA_SETUP, type StrataCommand } from "./localengine.ts";
+import { STRATA_SETUP, type StrataCommand, takesSeveral } from "./localengine.ts";
 import { forgetRun, leftOverLog, newRun, noteProcess, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 import {
 	CATALOG,
@@ -46,6 +46,9 @@ import {
 	KEEP_FREE_BYTES,
 	KV_BYTES_PER_TOKEN,
 	METAL_SHARE,
+	MOST_REQUESTS_AT_ONCE,
+	REQUESTS_AT_ONCE,
+	SLOT_BYTES_PER_TOKEN,
 	SMALLEST_MAC_GB,
 } from "./localcatalog.ts";
 
@@ -356,6 +359,14 @@ export const localModels: Feature = (host, engine) => {
 				default: defaultContext(),
 				measured: CONTEXT_MEASURED,
 				gbPerToken: KV_BYTES_PER_TOKEN / GB,
+			},
+			// Requests at once (#605): the default, the most offered, what each beyond one takes, and whether the engine set
+			// up runs several (an engine older than 0.1.62 is started with one whatever the setting, localengine.ts).
+			requests: {
+				default: REQUESTS_AT_ONCE,
+				most: MOST_REQUESTS_AT_ONCE,
+				slotGBPerToken: SLOT_BYTES_PER_TOKEN / GB,
+				several: installed.engine === null || takesSeveral(installed.engine.version),
 			},
 		};
 		return Object.assign(own, ...host.features.map((feature) => feature.localStatus?.() ?? {}));
@@ -709,7 +720,7 @@ export const localModels: Feature = (host, engine) => {
 				pack: pack.pack,
 				path: join(folder, pack.files[0]!.name),
 				contextSize: defaultContext(),
-				options: { vision: pack.visionFile !== null, visionFile: pack.visionFile === null ? null : join(folder, pack.visionFile), parallel: 1 },
+				options: { vision: pack.visionFile !== null, visionFile: pack.visionFile === null ? null : join(folder, pack.visionFile), parallel: REQUESTS_AT_ONCE },
 			};
 			if (config !== undefined) {
 				entryFor.config = config;
@@ -1183,7 +1194,7 @@ export const localModels: Feature = (host, engine) => {
 					model.options.vision = options.vision;
 				}
 				if (options.parallel !== undefined) {
-					if (typeof options.parallel !== "number" || !Number.isInteger(options.parallel) || options.parallel < 1 || options.parallel > 4) throw new Error("Requests at once must be a whole number from 1 to 4.");
+					if (typeof options.parallel !== "number" || !Number.isInteger(options.parallel) || options.parallel < 1 || options.parallel > MOST_REQUESTS_AT_ONCE) throw new Error(`Requests at once must be a whole number from 1 to ${MOST_REQUESTS_AT_ONCE}.`);
 					model.options.parallel = options.parallel;
 				}
 				saveInstalled();

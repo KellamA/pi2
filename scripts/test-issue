@@ -327,13 +327,20 @@ jq -n --arg hour "$hour" --arg twodays "$twodays" '
 		i(32; "OPEN"; ""; ["waiting", "blocked", "backlog", "local model"]; $hour; null),
 		i(33; "OPEN"; ""; ["agent"]; $hour; null),
 		i(34; "OPEN"; ""; ["backlog", "agent"]; $hour; null),
-		i(35; "OPEN"; ""; ["waiting", "local model", "cloud model"]; $hour; null)
+		i(35; "OPEN"; ""; ["waiting", "local model", "cloud model"]; $hour; null),
+		i(36; "CLOSED"; "COMPLETED"; ["agent"]; $hour; "2026-11-10T10:00:00Z"),
+		i(37; "CLOSED"; "COMPLETED"; ["agent"]; $hour; "2026-11-10T10:00:00Z")
 	]' | canned audit list
 comments() { jq -n '{comments: [$ARGS.positional[] | {body: .}]}' --args "$@"; }
 comments "Picked up." "**Done.** Fixed." | canned audit 26
 comments "Picked up." | canned audit 25
 comments "This is **Done.** but not a summary." | canned audit 31
 comments | canned audit 27
+# The summary the work tool of a pi² project posts, after a line naming the
+# agent, counts; that line before anything else does not.
+tool_line=$'*From Worker, an agent of the pi² project “pi2”.*\n\n'
+comments "${tool_line}Taken by Worker, in conversation 146." "${tool_line}**Done.** Fixed."$'\n\n<!-- pi2:7d69ec3548a2f6a8 -->' | canned audit 36
+comments "${tool_line}Taken by Worker, in conversation 146." "${tool_line}Not **Done.** yet." | canned audit 37
 run audit audit --since 2026-11-01
 check "audit: exit status not 0" test "$status" -ne 0
 check "audit: closed with a status label" said '#20  closed, but still labelled "waiting"'
@@ -348,19 +355,20 @@ check "audit: the other problem of #33" said "#33  open with no class label"
 check "audit: in progress for two days untouched" said "#23  in progress, but nothing has happened on it since $twodays"
 check "audit: agent issue closed as completed with no summary" said "#25  closed as completed, but has no **Done.** summary"
 check "audit: a comment that is not a summary does not count" said "#31  closed as completed, but has no **Done.** summary"
-check "audit: counts the problems" said "11 problems on the board."
-for n in 24 26 27 28 29 30; do
+check "audit: a tool's line before a note that is not a summary does not count" said "#37  closed as completed, but has no **Done.** summary"
+check "audit: counts the problems" said "12 problems on the board."
+for n in 24 26 27 28 29 30 36; do
 	check "audit: #$n is fine" eval "! grep -q '^#$n ' <<<\"\$out\""
 done
-check "audit: in order of number" test "$(grep -oE '^#[0-9]+' <<<"$out" | tr -d '#' | tr '\n' ' ')" == "20 21 22 23 25 31 32 33 33 34 35 "
+check "audit: in order of number" test "$(grep -oE '^#[0-9]+' <<<"$out" | tr -d '#' | tr '\n' ' ')" == "20 21 22 23 25 31 32 33 33 34 35 37 "
 check "audit: changes nothing" eval "! grep -vE '^gh issue (list|view) ' \"\$GH_LOG\" | grep -q ."
 check "audit: fetches comments only for agent issues closed as completed since the date" \
-	test "$(grep -oE '^gh issue view [0-9]+' "$GH_LOG" | awk '{print $4}' | tr '\n' ' ')" == "25 26 31 "
+	test "$(grep -oE '^gh issue view [0-9]+' "$GH_LOG" | awk '{print $4}' | tr '\n' ' ')" == "25 26 31 36 37 "
 
 # An earlier date takes in the older issue too.
 run audit audit --since 2026-01-01
 check "audit --since earlier: the older issue is reported" said "#27  closed as completed, but has no **Done.** summary"
-check "audit --since earlier: counts it" said "12 problems on the board."
+check "audit --since earlier: counts it" said "13 problems on the board."
 
 # The default date is after all these closings: none of them is checked for a summary.
 run audit audit

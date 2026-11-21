@@ -120,6 +120,7 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"settings.finishOnboarding": () => true, // settings.json
 	"settings.setCompaction": () => true, // as above
 	"settings.setAutoArchive": () => true, // as above
+	"settings.setAgentDefault": () => true, // as above: the model every agent with none of its own starts on (#617)
 	"settings.setAwake": () => true, // as above: keeping the Mac awake while agents work
 	"backup.create": () => true, // copies the person's database to a chosen folder
 	"recovery.dismiss": () => true, // clears the notice for everyone
@@ -196,6 +197,7 @@ const OPEN_TO_ANY = new Set([
 	"github.refresh",
 	"github.diff",
 	"github.unknown", // reads the writes whose outcome pi² could not tell (#573)
+	"github.show", // reads one issue or pull request whole into the listing (#599)
 	"memory.add",
 	"memory.edit",
 	"memory.delete", // notes never widen (projects.md 7.1)

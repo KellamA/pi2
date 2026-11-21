@@ -102,9 +102,11 @@ struct ChatSettingsView: View {
     }
 }
 
-/// The model a new chat starts with: one of the person's models, or the one chosen last in a chat.
-private struct ChatModelPicker: View {
+/// The model a new chat starts with: one of the person's models, or the one chosen last in a chat. Settings › General's
+/// default model for agents (#617) is chosen with it too, under its own label.
+struct ChatModelPicker: View {
     let engine: EngineClient
+    var label = "Model"
     let selection: ModelRef?
     let choose: (ModelRef?) -> Void
 
@@ -125,7 +127,7 @@ private struct ChatModelPicker: View {
                 }
             }
         } label: {
-            Text("Model")
+            Text(label)
         } currentValueLabel: {
             // The menu groups models under their provider; closed, the provider has to be named.
             if let chosen {
