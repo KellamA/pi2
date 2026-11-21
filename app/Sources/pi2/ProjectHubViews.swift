@@ -483,9 +483,21 @@ private struct HubAgentPanel: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(title.isEmpty ? "This conversation has no title yet" : title)
+                    .layoutPriority(1)
                 Spacer(minLength: 8)
+                // Its branch, as a conversation's toolbar shows it, and the size of its change (#598). The branch's name gives
+                // way before the title does.
+                if let status = engine.branches[conversation] {
+                    BranchMenu(engine: engine, id: conversation, status: status)
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .font(.system(size: 11.5))
+                        .tint(Theme.tx2)
+                    ChangeSize(status: status, size: 11)
+                }
                 Button("Back to the Board") { model.hubs.setAgent(nil, for: project.id) }
                     .buttonStyle(.piGhost)
+                    .fixedSize()
                     .help("Show the project's board again, keeping the conversation with the orchestrator")
             }
             .padding(.horizontal, 10)

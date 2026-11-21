@@ -43,10 +43,9 @@ struct WorkFacts: View {
         HStack(spacing: 6) {
             Text("#\(piece.id)").font(Theme.mono)
             if let agentId = piece.holderAgentId {
-                let name = engine.agent(agentId)?.name ?? agentId
                 AgentAvatar(agent: engine.agent(agentId), size: 14)
-                    .help("\(name) has it")
-                    .accessibilityLabel("\(name) has it")
+                    .help(holder(agentId))
+                    .accessibilityLabel(holder(agentId))
                     .accessibilityHidden(false)
             }
             WorkAgo(date: piece.updatedAt)
@@ -55,6 +54,17 @@ struct WorkFacts: View {
         .foregroundStyle(Theme.tx3)
         .lineLimit(1)
         .fixedSize()
+    }
+
+    /// "Forge has it, in sub-chat 17, on fix-the-thing": who, and where it is worked on, with the branch its sub-chat
+    /// works on as Branches shows it (#596), which the opened page says in its line.
+    private func holder(_ agentId: String) -> String {
+        var words = "\(engine.agent(agentId)?.name ?? agentId) has it"
+        if let chat = piece.holderConversation {
+            words += ", in sub-chat \(chat)"
+            if let branch = engine.branches[chat]?.branch { words += ", on \(branch)" }
+        }
+        return words
     }
 }
 
@@ -90,6 +100,10 @@ struct WorkStatusLine: View {
                 Text(engine.agent(agentId)?.name ?? agentId).foregroundStyle(Theme.tx2)
                 if full, let chat = piece.holderConversation {
                     Text("in sub-chat \(chat)").foregroundStyle(Theme.tx3)
+                    // The branch its sub-chat works on, as Branches shows it (#596): the tracker already knows it.
+                    if let branch = engine.branches[chat]?.branch {
+                        Text("on \(branch)").foregroundStyle(Theme.tx3).help("The branch its sub-chat works on")
+                    }
                 }
             } else {
                 Text(full ? "Nobody has it" : "Nobody").foregroundStyle(Theme.tx3)

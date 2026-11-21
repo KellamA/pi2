@@ -15,6 +15,10 @@ enum Selection: Hashable {
     case project(String)
     /// The Dashboard's row in the sidebar of projects, with the preview on (ProjectsSidebar.swift; drawn by #481).
     case dashboard
+    /// A row under the open project in the sidebar of projects: one of its agents' conversations, shown in place of the
+    /// board (#473). Only the sidebar's list holds it, so that the arrow keys reach those rows (#600); choosing it opens the
+    /// conversation with `AppModel.openAgent`, and the window's selection stays `.project`.
+    case projectAgent(project: String, conversation: Int)
 }
 
 #if PI2_DEVELOPMENT
@@ -492,7 +496,7 @@ struct RootView: View {
                     case .agent(let id):
                         AgentEditor(model: model, agentID: id)
                             .id(id)
-                    case .project(let id):
+                    case .project(let id), .projectAgent(let id, _):
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
                     case .dashboard:

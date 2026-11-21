@@ -173,7 +173,8 @@ struct MenuBarNeedRow: View {
                         .truncationMode(.tail)
                 }
                 Spacer(minLength: 0)
-                Text("in \(need.title.isEmpty ? need.rootTitle : need.title)")
+                // A worker's question names its sub-chat, and the piece of work its run was handed (#507).
+                Text("in \(need.placeWords)\(need.work.map { " · #\($0)" } ?? "")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

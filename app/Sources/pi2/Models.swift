@@ -116,6 +116,10 @@ struct BranchStatus: Codable, Equatable {
     let conflicts: Int
     /// A merge, rebase, cherry-pick or revert that stopped half way.
     let operation: String?
+    /// The size of the change in lines: what is committed beyond where the branch left `base`, plus what is not committed
+    /// yet, new files included. Nil when it could not be measured, or from an engine older than #598.
+    var added: Int? = nil
+    var removed: Int? = nil
     /// "conflict", "changes", "detached", "merged", "ahead", "behind", "clean" or "missing".
     let state: String
 
