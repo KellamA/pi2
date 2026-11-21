@@ -1607,7 +1607,7 @@ This page decides only what the app reads, sends and keeps. What each screen loo
 
 ### 10.1 What the app keeps itself
 
-In the app's preferences, by project id, not in the engine: how each project's hub was left (`project.<id>.fold`: both shown, the conversation folded, or the board folded), the board's tab, and the projects ticked on the Dashboard (`dashboard.projects`). Two Macs do not share them, and the engine has no use for them. While the app runs, which project shows is the window's selection (`Selection.project`), and how its hub was left is `ProjectHubs` (`app/Sources/pi2/ProjectHub.swift`): `AppModel.showProject` sets them together, for the sidebar of projects (#470) and a test copy's `show` (#471). `ProjectHubs` also keeps, for each project and for this launch only, the conversation of one of its agents shown in place of the board (#473): choosing a project or its orchestrator goes back to the board, and a hub opens on its board.
+In the app's preferences, by project id, not in the engine: how each project's hub was left (`project.<id>.fold`: both shown, the conversation folded, or the board folded), the board's tab, and the projects ticked on the Dashboard (`dashboard.projects`). Two Macs do not share them, and the engine has no use for them. While the app runs, which project shows is the window's selection (`Selection.project`), and how its hub was left is `ProjectHubs` (`app/Sources/pi2/ProjectHub.swift`): `AppModel.showProject` sets them together, for the sidebar of projects (#470) and a test copy's `show` (#471). `ProjectHubs` also keeps, for each project and for this launch only, the conversation of one of its agents shown in place of the board (#473): choosing a project goes back to the board, and a hub opens on its board. The rows under the open project carry `Selection.projectAgent` in the sidebar's list alone, so that the arrow keys reach them (#600): choosing one opens its conversation in place of the board through `AppModel.openAgent`, the window's selection stays `.project`, and while one shows the list marks its row.
 
 ### 10.2 With the preview off
 
@@ -1625,7 +1625,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 |---|---|---|
 | The sidebar's projects, their order and names | `projects` | #470 |
 | A project's badge | `needs` by `projectId`; `activity` by `projectId` | #470 |
-| The orchestrator and the agents working now, under the open project | `projects` (`orchestratorId`, `conversation`); `activity` by `projectId` and `runsAs` | #470 |
+| The project's row as its orchestrator's: working, waiting for the person or a limit, its model in the help, Stop in its menu; the agents working now under it | `projects` (`orchestratorId`, `conversation`); `activity` by `projectId` and `runsAs`; `agents` | #470, #600 |
 | A project's other conversations, folded under it | `library` by `projectId`, not the orchestrator's | #470 |
 | Under each working agent's and other conversation's title: its branch, its worktree mark, the size of its change, and the warning for a working agent in the main checkout on the default branch | `branches` (`branch`, `worktree`, `managed`, `base`, `added`, `removed`) | #598 |
 | The branch and the size of the change in the header of an agent's conversation in place of the board, and on Now's working rows | `branches` | #598 |
