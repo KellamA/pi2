@@ -554,7 +554,7 @@ Every action, for either kind of list, goes through one table. "Holder" is `take
 |---|---|---|---|---|
 | `file` | — | open | none | any agent of the project (under `fileWork`), the person |
 | `take` | open | in_progress | the caller | any agent; refused if the item has a holder ("#12 is taken by Forge, in sub-chat 14") |
-| `assign` | open | in_progress | the assigned agent and the sub-chat started for it | the orchestrator (under `startAgents`), the person |
+| `assign` | open | in_progress | the assigned agent and the sub-chat started for it, in a worktree of its own unless `worktree: false` (#596) | the orchestrator (under `startAgents`), the person |
 | `release` | in_progress, waiting, blocked | open | none | the holder, the orchestrator, the person |
 | `wait` | in_progress, blocked | waiting | unchanged | the holder |
 | `block` | in_progress, waiting | blocked | unchanged | the holder |
@@ -1012,6 +1012,8 @@ work {
 	class?: "local" | "cloud";   // file, classify
 	agent?: string;         // assign
 	task?: string;          // assign: what to say beyond the work's own text
+	worktree?: string | false;  // assign: the branch for a git worktree of the sub-chat, as delegate's; false for the project's folder (#596)
+	from?: string;          // with worktree: what the new branch starts from, as delegate's
 	base?: string;          // pull_request: default the repository's default branch
 	verdict?: "approve" | "changes" | "comment";  // review
 	as?: "done" | "dropped";                      // close
@@ -1020,10 +1022,11 @@ work {
 
 Each action is a row of the table in [3.11](#311-work-pi2work-pi2github-githubjson), with the same result and error shapes for both kinds of list. Besides:
 
-- `list`, `show`: the items, or one with its text, notes and result; for GitHub, with when the listing was read.
+- `list`, `show` (#595): `list` answers one plain line an item — its number, state, class, who has it and in which sub-chat, when it last changed and its title — then, for a GitHub project, a line for each pull request of the listing with its checks and its review in a word, a count by state, and when the listing was read. Never the items' text or notes: an orchestrator lists its work often, and their prose would be read again at every later turn. `show` answers one item the same way, then its text, what finishing it said, and its notes: oldest first, or newest first when there are many, a long one cut, and a line saying how many more there are and where to read them (its page on GitHub, or the project's Work tab). Both answer in plain lines as `project_settings` `show` does, not JSON; a script asks the `work.list` and `work.show` requests for the items as they are.
 - `pull_request` (GitHub): opens one from the branch this conversation's folder is on, in the attached repository; with `id`, adds "Fixes #<id>" to the text unless it is there. Answers its number and address.
 - `review` (GitHub): posts the finding on the pull request, as a comment beginning with the agent's line and the verdict.
-- `assign` answers as `delegate` with `wait: false` does. `merge` merges under the `merge` switch. `send_back` as [3.11](#311-work-pi2work-pi2github-githubjson) says.
+- `assign` answers as `delegate` with `wait: false` does, and says where the sub-chat works. `merge` merges under the `merge` switch. `send_back` as [3.11](#311-work-pi2work-pi2github-githubjson) says.
+- `assign` gives its sub-chat a worktree of its own (#596), as `delegate` gives one, through the same code and with the same rules: the person is asked where `delegate`'s would ask (an agent's call, and an agent whose own setting is off), a branch that cannot be made refuses the start with the reason and nothing claimed, and a `from` without a `worktree` is refused as it is there. With **neither**, when the project's folder is a git repository and the agent's own setting is off, it makes one on a branch named for the work, `work-<number>-<a few words of the title>`, rather than starting the sub-chat in the project's own checkout on `main` beside every other worker; the answer says so. `worktree: false` asks for the project's folder itself. An agent whose own setting gives its conversations worktrees gets that one, and no second. A folder that is not a repository gets none, and no error. The person's **Give to** sends no `worktree`, so it gets the same default, and the row shows the branch its sub-chat works on.
 
 Outside GitHub, `pull_request`, `review`, `merge` and `send_back` are refused: "This project's work is kept by pi², which has no pull requests."
 
