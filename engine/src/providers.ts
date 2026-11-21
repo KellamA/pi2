@@ -685,7 +685,12 @@ function localProvider(runner: () => LocalRunner | undefined): Provider {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: entry.contextSize,
 				maxTokens: Math.min(16_384, Math.floor(entry.contextSize / 4)),
-				compat: { supportsDeveloperRole: false, supportsReasoningEffort: thinks, supportsLongCacheRetention: false },
+				// A section of the system prompt that changes (the background commands, as one starts and ends) is sent in
+				// place as a later system message, which Strata's server turns into a user message where it is. Folded back
+				// into the first one, as pi-ai does for a model without this, it changed the start of the prompt, and the
+				// engine read the whole conversation again: 97 times in six tickets, 68 minutes (#606). Tools are still
+				// sent whole at the top: Strata takes no tool added in a later message.
+				compat: { supportsDeveloperRole: false, supportsReasoningEffort: thinks, supportsLongCacheRetention: false, supportsMidConvoSystemMessages: true },
 			} as Model<"openai-completions">;
 			built.set(entry.id, { stamp, model });
 			return model;
