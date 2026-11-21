@@ -88,8 +88,11 @@ const calls = (): { args: string[] }[] => readFileSync(`${state}.log`, "utf8").t
 
 class Client extends EngineClient {
 	order: string[] = [];
+	/** The projects a `github` event has said a read is under way for (#599). */
+	readingSeen = new Set<string>();
 	override receive(message: any): void {
 		if (typeof message.event === "string") this.order.push(message.event);
+		if (message.event === "github") for (const [id, one] of Object.entries<any>(message.projects ?? {})) if (one.reading === true) this.readingSeen.add(id);
 		super.receive(message);
 	}
 	results(id: number, name: string) {
@@ -139,7 +142,7 @@ try {
 	// ---- With the preview off
 	assert.deepEqual(await client.until("greetings", () => client.events.github), { event: "github", projects: {} });
 	assert.ok(client.order.indexOf("work") < client.order.indexOf("github"), "github comes after work (4.4)");
-	for (const method of ["github.attach", "github.detach", "github.refresh", "github.merge", "github.sendBack", "github.diff", "github.unknown", "github.settle", "projects.watch"]) {
+	for (const method of ["github.attach", "github.detach", "github.refresh", "github.merge", "github.sendBack", "github.diff", "github.unknown", "github.settle", "github.show", "projects.watch"]) {
 		await assert.rejects(client.call(method, {}), { message: PREVIEW_OFF });
 	}
 	step("with the preview off, the empty github event after work, and every github request refused");
@@ -390,6 +393,42 @@ try {
 	await client.until("the fresh conversation is idle", () => !client.conversations.get(fresh)?.state.busy);
 	step("the state block of a fresh conversation counts the repository's work (wireWorkState)");
 
+	// ---- A read asks its questions together, and only for what changed since the last (#599)
+	const logged = calls().length;
+	const readBefore = client.github(projectId).readAt;
+	// Each command takes a third of a second, as the real gh takes more; #5 is renamed where no question for changes sees it.
+	changeStandIn((whole) => {
+		whole.delay = "300-300";
+		const five = whole.repos["example/widgets"].issues.find((one: any) => one.number === 5);
+		Object.assign(five, { title: "Renamed quietly", updatedAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString() });
+	});
+	client.readingSeen.clear();
+	await client.call("work.act", { projectId, id: 4, action: "note", text: "Read behind" });
+	const landed = await client.until("the read landed", () => client.github(projectId)?.reading === false && client.github(projectId).readAt !== readBefore && client.github(projectId));
+	const read = calls().slice(logged).filter((one) => ["issue list", "pr list"].includes(one.args.slice(0, 2).join(" ")));
+	const lastRead = read.slice(-4);
+	const flag = (one: { args: string[] }, name: string) => (one.args.includes(`--${name}`) ? one.args[one.args.indexOf(`--${name}`) + 1] : undefined);
+	assert.deepEqual(lastRead.map((one) => `${one.args[0]} ${flag(one, "state")} ${flag(one, "json") === "number" ? "numbers" : (flag(one, "search") ?? "").replace(/[\dT:+-]+$/, "")}`).sort(), [
+		"issue all updated:>=",
+		"issue open numbers",
+		"pr closed updated:>=",
+		"pr open ",
+	]);
+	const changesSince = Date.parse(flag(lastRead.find((one) => flag(one, "state") === "all")!, "search")!.replace("updated:>=", ""));
+	assert.ok(changesSince <= readBefore - 10 * 60_000 && changesSince > readBefore - 10 * 60_000 - 2_000, "changes since ten minutes before the last read began");
+	const times = lastRead as unknown as { at: number; ended: number }[];
+	assert.ok(Math.max(...times.map((one) => one.at)) < Math.min(...times.map((one) => one.ended)), "the four questions of one read ran at the same time");
+	assert.equal(landed.issues.find((one: any) => one.id === 5).title, "Held back", "an issue GitHub does not count as changed is not read again");
+	assert.equal(landed.issues.find((one: any) => one.id === 4).notes.at(-1).text, "Read behind");
+	assert.ok(client.readingSeen.has(projectId), "the event said a read was under way");
+	changeStandIn((whole) => {
+		delete whole.delay;
+		whole.repos["example/widgets"].issues.find((one: any) => one.number === 5).updatedAt = new Date().toISOString();
+	});
+	await client.call("work.act", { projectId, id: 4, action: "note", text: "And again" });
+	await client.until("the rename read", () => client.github(projectId)?.issues?.find((one: any) => one.id === 5 && one.title === "Renamed quietly"));
+	step("a read asks its four questions at once, says it is reading meanwhile, and reads again only what GitHub says changed");
+
 	// ---- GitHub unreachable, and its rate limit
 	const before = client.github(projectId).issues;
 	changeStandIn((whole) => void (whole.fail = { kind: "unreachable" }));
@@ -502,6 +541,29 @@ try {
 	const dropped = widgets().issues.find((one) => one.number === pathy.id);
 	assert.deepEqual([dropped.state, dropped.stateReason, dropped.labels.map((label: any) => label.name)], ["CLOSED", "NOT_PLANNED", ["agent"]]);
 	step("an issue taken with scripts/issue is refused saying so until the orchestrator releases it; resume posts a line; the home folder is posted as ~; finish and close take the status label off");
+
+	// ---- A first read reads everything, and what is closed comes brief until it is opened (#599)
+	const secondFolder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-github-anew-")));
+	const { id: anew } = await client.call("projects.create", { folder: secondFolder, name: "Widgets anew" });
+	await client.call("github.attach", { projectId: anew, repository: "example/widgets" });
+	const whole = await client.until("the first read", () => client.github(anew)?.state === "ok" && client.github(anew));
+	const brief = whole.issues.find((one: any) => one.id === 1);
+	assert.deepEqual([brief.state, brief.partial, brief.text, brief.notes], ["done", true, "", []]);
+	assert.equal(whole.issues.find((one: any) => one.id === 4).partial, undefined, "an open issue comes whole");
+	const briefPull = whole.pulls.find((one: any) => one.number === 2);
+	assert.deepEqual([briefPull.state, briefPull.partial, briefPull.findings], ["merged", true, []]);
+	const shownIssue = (await client.call("github.show", { projectId: anew, number: 1 })).item;
+	assert.deepEqual([shownIssue.partial, shownIssue.text], [undefined, "They are grey."]);
+	const shownPull = (await client.call("github.show", { projectId: anew, number: 2, pull: true })).pull;
+	assert.deepEqual([shownPull.partial, shownPull.head, shownPull.work], [undefined, "feature", 1]);
+	await client.until("both whole in the listing", () => {
+		const now = client.github(anew);
+		return now.issues.find((one: any) => one.id === 1)?.text === "They are grey." && now.pulls.find((one: any) => one.number === 2)?.partial === undefined;
+	});
+	await assert.rejects(client.call("github.show", { projectId: anew, number: 99 }), /#99/);
+	await client.call("projects.archive", { id: anew });
+	rmSync(secondFolder, { recursive: true, force: true });
+	step("a first read reads everything, what is closed comes brief, and github.show reads one whole into the listing");
 
 	// ---- Detaching, and the preview off
 	await client.call("github.detach", { projectId });

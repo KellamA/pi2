@@ -102,15 +102,32 @@ export type PullRequest = {
 	openedBy: { conversationId: number } | null;
 	/** The work item it fixes, from "Fixes #N" in its text. */
 	work: number | null;
+	/** Only what its row shows was read: no text, comments or checks (#599). `github.show` reads the rest. */
+	partial?: true;
 };
 
+/** An issue of the listing: a closed one is `partial` until it is opened, as a pull request is (#599). */
+type ListedItem = WorkItem & { partial?: true };
+
 type ListingState = "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited";
-type Listing = { readAt: number | null; issues: WorkItem[]; pulls: PullRequest[] };
+/**
+ * `readAt`: when the read that made it began, so the next one asks for what changed since then. `fullAt`: when the
+ * last whole read began; between whole reads, a read asks only for what changed (#599).
+ */
+type Listing = { readAt: number | null; fullAt?: number; issues: ListedItem[]; pulls: PullRequest[] };
 
 /** How many intents done or failed are kept per project, newest; pending and unknown ones are always kept. */
 const KEPT_INTENTS = 2_000;
 /** The listing is read at most this often per project, but after a write of pi²'s (3.11). */
 const READ_EVERY_MS = 60_000;
+/**
+ * Between reads of everything, a read asks only for what changed since the last (#599). Once in this long it reads
+ * everything again, so that what the questions for changes cannot see (an issue deleted or moved to another
+ * repository) does not stay.
+ */
+const FULL_EVERY_MS = 30 * 60_000;
+/** A change is asked for from this long before the last read began: GitHub's search can take a while to see one. */
+const SEARCH_LAG_MS = 10 * 60_000;
 /** Closed issues and pull requests are listed for this long after they closed. */
 const CLOSED_FOR_MS = 7 * 24 * 60 * 60_000;
 /** A `gh` command still running after this is stopped: a hang guard, not a measure of GitHub. */
@@ -240,6 +257,11 @@ type GhPull = {
 
 const ISSUE_FIELDS = "number,title,body,state,stateReason,labels,url,createdAt,updatedAt,closedAt,comments";
 const PULL_FIELDS = "number,title,url,headRefName,headRepositoryOwner,isCrossRepository,baseRefName,author,state,isDraft,statusCheckRollup,mergeable,body,comments";
+// What the listing reads of a closed issue or pull request (#599): what its row shows, without its text, comments and
+// checks, which made the two closed lists most of a read (1.2 MB and 8.7 s each, of this repository's last seven days).
+// Opening one reads the rest (`github.show`); it is `partial` until then.
+const ISSUE_BRIEF = "number,title,state,stateReason,labels,url,createdAt,updatedAt,closedAt";
+const PULL_BRIEF = "number,title,url,headRefName,headRepositoryOwner,isCrossRepository,baseRefName,author,state,isDraft";
 
 const time = (value: string | null | undefined) => (value == null || value === "" ? null : Date.parse(value));
 const json = <T>(text: string): T => JSON.parse(text) as T;
@@ -562,10 +584,93 @@ function noteFailure(project: Project, error: unknown): void {
 	announce();
 }
 
+const listJson = <T>(args: string[], cwd: string): Promise<T> => gh(args, cwd).then((out) => json<T>(out));
+/** A time as GitHub's search takes it, to the second. */
+const searchTime = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "+00:00");
+const byNumber = { issues: (a: ListedItem, b: ListedItem) => b.id - a.id, pulls: (a: PullRequest, b: PullRequest) => b.number - a.number };
+const closedState = (item: WorkItem) => item.state === "done" || item.state === "dropped";
+/** The most a question for closed or changed items answers; a read that meets it reads everything instead. */
+const LIST_LIMIT = 200;
+
+/**
+ * Everything the listing holds, read again (#599): four questions, asked together, so a read takes as long as the
+ * slowest of them rather than all four one after another. The closed ones come brief (`ISSUE_BRIEF`, `PULL_BRIEF`).
+ */
+async function readWhole(project: Project, name: string, began: number): Promise<Pick<Listing, "issues" | "pulls">> {
+	const cwd = folderOf(project);
+	const since = new Date(began - CLOSED_FOR_MS).toISOString().slice(0, 10);
+	const [openIssues, closedIssues, openPulls, closedPulls] = await Promise.all([
+		listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", ISSUE_FIELDS], cwd),
+		listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", String(LIST_LIMIT), "--json", ISSUE_BRIEF], cwd),
+		listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "open", "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
+		listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", String(LIST_LIMIT), "--json", PULL_BRIEF], cwd),
+	]);
+	await readMirror();
+	const intents = intentsOf(project);
+	const openedBy = mirror.projects[project.id]?.openedBy;
+	return {
+		issues: [...openIssues.map((issue) => issueItem(issue, intents)), ...closedIssues.map((issue): ListedItem => ({ ...issueItem(issue, intents), partial: true }))].sort(byNumber.issues),
+		pulls: [...openPulls.map((pull) => pullOf(pull, intents, openedBy)), ...closedPulls.map((pull): PullRequest => ({ ...pullOf(pull, intents, openedBy), partial: true }))].sort(byNumber.pulls),
+	};
+}
+
+/**
+ * Only what changed since the last read (#599), into the listing as it is when the answers come: which issues are
+ * open now (their numbers only), the issues and closed pull requests changed since, whole, and the open pull requests,
+ * since their checks and whether they can be merged change without GitHub counting it as a change. Asked together.
+ * Undefined when only a whole read can tell: more changed than one answer holds, GitHub would not take the question,
+ * or an issue opened or closed that the question for changes has not seen yet.
+ */
+async function readChanges(project: Project, name: string, since: number, began: number): Promise<Pick<Listing, "issues" | "pulls"> | undefined> {
+	const cwd = folderOf(project);
+	const changed = `updated:>=${searchTime(since - SEARCH_LAG_MS)}`;
+	let answers: [{ number: number }[], GhIssue[], GhPull[], GhPull[]];
+	try {
+		answers = await Promise.all([
+			listJson<{ number: number }[]>(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", "number"], cwd),
+			listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "all", "--search", changed, "--limit", String(LIST_LIMIT), "--json", ISSUE_FIELDS], cwd),
+			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "open", "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
+			// Whole, as the changed issues are: few change between two reads, and one merged a moment ago may be open on the page.
+			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "closed", "--search", changed, "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
+		]);
+	} catch (error) {
+		if (error instanceof GhError && error.kind === "refused") return undefined;
+		throw error;
+	}
+	const [openNow, changedIssues, openPulls, closedPulls] = answers;
+	if (changedIssues.length >= LIST_LIMIT || closedPulls.length >= LIST_LIMIT) return undefined;
+	await readMirror();
+	const current = listingOf(project);
+	if (current === undefined) return undefined;
+	const intents = intentsOf(project);
+	const openedBy = mirror.projects[project.id]?.openedBy;
+	const cutoff = began - CLOSED_FOR_MS;
+
+	const issues = new Map(current.issues.map((item) => [item.id, item]));
+	for (const issue of changedIssues) issues.set(issue.number, issueItem(issue, intents));
+	const open = new Set(openNow.map((one) => one.number));
+	const seen = new Set(changedIssues.map((one) => one.number));
+	for (const number of open) if (!issues.has(number)) return undefined;
+	for (const [id, item] of issues) {
+		if (!closedState(item) && !open.has(id) && !seen.has(id)) return undefined;
+		if (closedState(item) && (item.closedAt ?? 0) < cutoff) issues.delete(id);
+	}
+
+	const pulls = new Map(current.pulls.map((pull) => [pull.number, pull]));
+	const openPull = new Set(openPulls.map((pull) => pull.number));
+	const closedPull = new Set(closedPulls.map((pull) => pull.number));
+	for (const pull of current.pulls) if (pull.state === "open" && !openPull.has(pull.number) && !closedPull.has(pull.number)) return undefined;
+	for (const pull of openPulls) pulls.set(pull.number, pullOf(pull, intents, openedBy));
+	for (const pull of closedPulls) pulls.set(pull.number, pullOf(pull, intents, openedBy));
+	return { issues: [...issues.values()].sort(byNumber.issues), pulls: [...pulls.values()].sort(byNumber.pulls) };
+}
+
 /**
  * Read the project's repository's open issues and pull requests, and those closed in the last seven days, unless it
- * was read in the last minute (`force`: after a write of pi²'s). A failure leaves the last listing as it was, with what
- * went wrong. Two reads at once are one.
+ * was read in the last minute (`force`: after a write of pi²'s). A read asks only for what changed since the last one,
+ * and everything once in `FULL_EVERY_MS`, its questions together (#599). The listing stays as it was while it runs, and
+ * the `github` event says it runs (`reading`). A failure leaves the last listing as it was, with what went wrong. Two
+ * reads at once are one.
  */
 export function readListing(project: Project, force = false): Promise<void> {
 	if (project.repository === null) return Promise.resolve();
@@ -575,29 +680,20 @@ export function readListing(project: Project, force = false): Promise<void> {
 	if (!force && listing?.readAt != null && Date.now() - listing.readAt < READ_EVERY_MS) return Promise.resolve();
 	const repository = project.repository;
 	const run = (async () => {
-		if (listing === undefined) {
-			states.set(project.id, { state: "loading", error: null });
-			announce();
-		}
+		if (listing === undefined) states.set(project.id, { state: "loading", error: null });
 		const name = repoName(repository);
-		const cwd = folderOf(project);
-		const since = new Date(Date.now() - CLOSED_FOR_MS).toISOString().slice(0, 10);
+		// When the read began is when it was read: what changes while it runs is asked for by the next one.
+		const began = Date.now();
 		try {
-			const openIssues = json<GhIssue[]>(await gh(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", ISSUE_FIELDS], cwd));
-			const closedIssues = json<GhIssue[]>(await gh(["issue", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", "200", "--json", ISSUE_FIELDS], cwd));
-			const openPulls = json<GhPull[]>(await gh(["pr", "list", "--repo", name, "--state", "open", "--limit", "200", "--json", PULL_FIELDS], cwd));
-			const closedPulls = json<GhPull[]>(await gh(["pr", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", "200", "--json", PULL_FIELDS], cwd));
-			await readMirror();
-			const intents = intentsOf(project);
-			const openedBy = mirror.projects[project.id]?.openedBy;
-			const issues = [...openIssues, ...closedIssues].map((issue) => issueItem(issue, intents)).sort((a, b) => b.id - a.id);
-			const pulls = [...openPulls, ...closedPulls].map((pull) => pullOf(pull, intents, openedBy)).sort((a, b) => b.number - a.number);
+			const partly = listing?.readAt != null && listing.fullAt !== undefined && began - listing.fullAt < FULL_EVERY_MS;
+			const changes = partly ? await readChanges(project, name, listing!.readAt!, began) : undefined;
+			const read = changes ?? (await readWhole(project, name, began));
 			// A repository changed while this was read is not given another's listing.
 			if (!sameRepository(allProjects()[project.id]?.repository, repository)) return;
-			listings[project.id] = { ...(listings[project.id] ?? {}), [name]: { readAt: Date.now(), issues, pulls } };
+			const fullAt = changes === undefined ? began : listing!.fullAt!;
+			listings[project.id] = { ...(listings[project.id] ?? {}), [name]: { readAt: began, fullAt, ...read } };
 			states.delete(project.id);
 			saveListings();
-			announce();
 			void reconcileAll(project);
 		} catch (error) {
 			engine?.log("could not read GitHub for project", project.id, error instanceof Error ? error.message : error);
@@ -608,8 +704,12 @@ export function readListing(project: Project, force = false): Promise<void> {
 			}
 			throw error;
 		}
-	})().finally(() => reading.delete(project.id));
+	})().finally(() => {
+		reading.delete(project.id);
+		announce();
+	});
 	reading.set(project.id, run);
+	announce();
 	return run;
 }
 
@@ -1330,6 +1430,8 @@ export const github: Feature = (host, running) => {
 			projects[project.id] = {
 				state: status.state,
 				error: status.error,
+				// A read under way behind the listing, which stays as it was until the read lands (#599).
+				reading: reading.has(project.id),
 				readAt: listing?.readAt ?? null,
 				repository: copy(project.repository),
 				issues: listing?.issues ?? [],
@@ -1522,6 +1624,28 @@ export const github: Feature = (host, running) => {
 				// The orchestrator is told in its catch-up when the person sent it (3.11).
 				await commit((tx) => workNews(tx, project, { kind: "person" }, `The person sent back pull request #${n}: ${params.reason}`, `pull:${n}`));
 				return {};
+			},
+			/**
+			 * `{ projectId, number, pull? }`: one issue, or with `pull: true` one pull request, read now, whole, into the
+			 * listing: what the app asks for as the person opens one, whose text, comments and checks a closed one's row
+			 * does not carry (#599). Answers it as `item` or `pull`; the `github` event carries it too.
+			 */
+			"github.show": async (params) => {
+				requirePreview();
+				const project = attached(params.projectId);
+				const n = numberOf(params.number);
+				if (params.pull === true) {
+					const read = await noting(project, viewPull(project, n));
+					await readMirror();
+					const pull = pullOf(read, intentsOf(project), mirror.projects[project.id]?.openedBy);
+					keepInListing(project, undefined, pull);
+					return { pull };
+				}
+				const read = await noting(project, viewIssue(project, n));
+				await readMirror();
+				const item = issueItem(read, intentsOf(project));
+				keepInListing(project, item);
+				return { item };
 			},
 			"github.diff": async (params) => {
 				requirePreview();

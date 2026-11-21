@@ -45,6 +45,8 @@ export type PullSummary = {
 	draft: boolean;
 	checks: "passing" | "failing" | "pending" | "none";
 	findings: { verdict: "approve" | "changes" | "comment"; at: number }[];
+	/** Only what its row shows was read, a closed one's (#599): its checks and review are not known here. */
+	partial?: true;
 };
 export type WorkDoc = { projects: Record<string, { items: Record<string, WorkItem>; next: number }> };
 export interface WorkBackend {
@@ -341,6 +343,7 @@ function pullLine(pull: PullSummary): string {
 	const newest = [...pull.findings].sort((one, other) => one.at - other.at).at(-1);
 	const review = newest === undefined ? "no review" : newest.verdict === "approve" ? "approved" : newest.verdict === "changes" ? "changes requested" : "comments only";
 	const state = pull.state === "merged" ? "merged" : pull.state === "closed" ? "closed" : pull.draft ? "open, a draft" : "open";
+	if (pull.partial === true) return `#${pull.number} pull request ${state} · ${oneLine(pull.title)}`;
 	return `#${pull.number} pull request ${state} · ${checks} · ${review} · ${oneLine(pull.title)}`;
 }
 

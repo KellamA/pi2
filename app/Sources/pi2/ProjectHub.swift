@@ -128,6 +128,7 @@ final class ProjectHubs {
 
     func setTab(_ tab: HubTab, for id: String) {
         guard tabs[id] != tab else { return }
+        if tab == .work { PerfProbe.workTab("asked") }
         tabs[id] = tab
         UserDefaults.standard.set(tab.rawValue, forKey: Self.key(id, "tab"))
     }
@@ -227,6 +228,7 @@ extension AppModel {
     /// in: the sidebar of projects (#470) and a test copy's `show` both come here. Choosing the project, or its
     /// orchestrator, goes back to the board, from whichever agent's conversation was in its place (#473).
     func showProject(_ id: String, tab: HubTab? = nil, fold: HubFold? = nil) {
+        if (tab ?? hubs.tab(id)) == .work { PerfProbe.workTab("asked") }
         if let tab { hubs.setTab(tab, for: id) }
         if let fold { hubs.setFold(fold, for: id) }
         hubs.setAgent(nil, for: id)

@@ -83,6 +83,8 @@ final class Feed {
     var hubAgent = false
     /// Whether the detail shows the Dashboard (#481).
     var dashboard = false
+    /// What the board's Work tab shows, when the board shows it (#599): nil for the plain board.
+    var work: WorkShown?
     @ObservationIgnored var frames: [String: CGRect] = [:]
 }
 
@@ -289,7 +291,11 @@ struct HubDetail: View {
         probe("board") {
             VStack(spacing: 8) {
                 ScrollView(.horizontal) { HStack { ForEach(["Now", "Work", "Agents", "Rules", "Notes", "Branches", "Settings"], id: \.self) { Text($0) } } }
-                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                if let work = feed.work {
+                    WorkTab(shown: work).frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+                } else {
+                    ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                }
             }
         }
     }
@@ -299,6 +305,84 @@ struct HubDetail: View {
         view()
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { feed.frames[name] = $0 }
             .onDisappear { feed.frames[name] = nil }
+    }
+}
+
+/// What the board's Work tab shows (#599).
+enum WorkShown: CaseIterable {
+    /// The first read of a repository, with nothing read yet: the bar with its spinner, and the groups' places with
+    /// bars where rows will be, each a share of the width (`WorkLoading`).
+    case loading
+    /// The list: one line a row, the title first and cut where it must be, its facts at their own size, in a lazy stack.
+    case list
+    /// An opened issue: its top and its line of where it is (which says less when it does not fit), the bar of its
+    /// actions, its text, and the field at its foot.
+    case page
+}
+
+/// The board's Work tab as the app draws it (`ProjectWorkGitHub`, `WorkParts.swift`), in each of the states it can be in
+/// as it comes on screen, with long lines from outside where the app shows titles and text from GitHub.
+struct WorkTab: View {
+    let shown: WorkShown
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text("owner/repository").lineLimit(1)
+                Text("read 2 min ago").lineLimit(1).layoutPriority(-1)
+                ProgressView().controlSize(.mini)
+                Spacer(minLength: 8)
+                Button("Refresh") {}
+            }
+            .frame(height: 38)
+            switch shown {
+            case .loading:
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text(longLine).fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(0..<3, id: \.self) { _ in
+                        Text("Open")
+                        ForEach(0..<3, id: \.self) { row in
+                            GeometryReader { geometry in
+                                RoundedRectangle(cornerRadius: 3).frame(width: max(0, (geometry.size.width - 16) * [0.7, 0.55, 0.62][row]), height: 9)
+                            }
+                            .frame(height: 30)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            case .list:
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(0..<200, id: \.self) { index in
+                            HStack(spacing: 8) {
+                                Text(index.isMultiple(of: 2) ? longLine : unbroken).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                Text("#\(index) · 5 min ago").lineLimit(1).fixedSize()
+                                Button("Give to") {}.fixedSize()
+                            }
+                            .frame(minHeight: 30)
+                        }
+                    }
+                }
+            case .page:
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(longLine).fixedSize(horizontal: false, vertical: true).lineLimit(4)
+                    ViewThatFits(in: .horizontal) {
+                        Text("Waiting · Nobody has it · needs a cloud model · \(unbroken.prefix(80))").fixedSize()
+                        Text("Waiting · Nobody · cloud model").fixedSize()
+                    }
+                    HStack { Button("Release") {}; Button("Resume") {}; Spacer(minLength: 8); Button("Close") {} }
+                }
+                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                HStack {
+                    TextField("Add a comment", text: .constant(""), axis: .vertical).lineLimit(1...4)
+                    Button("Add") {}
+                }
+                .padding(12)
+            }
+        }
     }
 }
 
@@ -635,6 +719,46 @@ Task { @MainActor in
             }
         }
         check("with the sidebar the hub is too narrow for both panels, and without it is not", widths.count == 2 && widths[0] < HubFold.narrowWidth && widths[1] >= HubFold.narrowWidth, "widths \(widths)")
+        check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
+        check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
+        hub.close()
+    }
+
+    await group("a project's hub on the Work tab, loading for the first time, its list and an opened issue, at the smallest size, in each fold (#599)") {
+        let hub = Made(fixed: true, hub: true)
+        hub.feed.work = .loading
+        await hub.layOut()
+        check("the smallest size is the same as without the hub", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+        check("the content is never asked for a size as small as that", hub.measuredFor.isEmpty, "asked for \(hub.measuredFor)")
+        hub.window.setContentSize(fixed)
+        await hub.layOut()
+        let smallest = hub.window.frame
+        let bounds = hub.host.frame
+        hub.resizes = 0
+        for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+            hub.feed.sidebar = sidebar
+            for fold in [HubFold.both, .conversationFolded] {
+                hub.feed.hubFold = fold
+                // The tab goes from its first read to the list, and the list to an opened issue and back, as it does
+                // when a read lands and the person clicks a row.
+                for work in WorkShown.allCases + [.list, .loading] {
+                    hub.feed.work = work
+                    await hub.layOut()
+                    let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(fold.rawValue), \(work)"
+                    check("\(name): the window does not resize", hub.window.frame == smallest, "frame \(hub.window.frame), was \(smallest)")
+                    check("\(name): smallest size", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+                    check("\(name): the split view is no taller than the window", hub.tallestColumn <= hub.host.frame.height + 0.5, "a column is \(hub.tallestColumn) tall")
+                    // At the smallest size with the sidebar, both panels do not fit, and the hub folds the board itself.
+                    if fold.shown(narrow: hub.feed.hubNarrow) == .boardFolded {
+                        check("\(name): the board folded itself away", hub.feed.frames["board"] == nil, "frames \(hub.feed.frames)")
+                    } else if let board = hub.feed.frames["board"] {
+                        check("\(name): the board is inside the window", board.minX >= -0.5 && board.maxX <= bounds.width + 0.5 && board.maxY <= bounds.height + 0.5, "board \(board) in \(bounds.size)")
+                    } else {
+                        check("\(name): the board is shown", false, "frames \(hub.feed.frames)")
+                    }
+                }
+            }
+        }
         check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
         check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
         hub.close()
