@@ -67,11 +67,14 @@ Usage: scripts/test-copy <command> [arguments]
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
-  can-click <suffix>              Say whether computer use can reach this copy's window now, and which cause if
-                                   not: the pi² app not running (only the person can reopen it), no window in the
-                                   window server, or a copy whose build predates the request that raises its parked
-                                   window (rebuild and reopen it). A yes raises the window, which is what the tool
-                                   needs to read it. Run this before planning checks that need clicks.
+  can-click <suffix>              Say whether computer use can read and click this copy's window now. Yes (exit 0):
+                                   the copy raised its parked window and gives it to accessibility where the tool
+                                   looks. No (exit 1), with its cause: the pi² app not running (only the person can
+                                   reopen it), no window in the window server after 30 seconds, or a window the copy
+                                   does not give to accessibility. Cannot tell from here (exit 2): the copy did not
+                                   say, or its build predates the request (rebuild and reopen it). pi²'s own
+                                   Accessibility permission can never be told from here. Run this before planning
+                                   checks that need clicks.
   answer <suffix> <conversation> allow|deny
                                    Answer one waiting approval (allow once); refuses if more than one is waiting.
   answer <suffix> <need-id> '<json answer>'
@@ -665,20 +668,36 @@ case $cmd in
 		control="$DATA/test-copy-control"
 		[[ ! -L $control ]] || die "refusing a symlink for the copy's window control folder"
 		[[ -d $DATA ]] || die "the copy's data folder is missing"
-		# Nothing below asks macOS for a permission: each check is one that needs none.
-		[[ -n $(ask_macos app-running "$USUAL_ID") ]] ||
-			die "cannot click in $SUFFIX: the pi² app is not running, and only the person can reopen it"
-		[[ -n $(ask_macos reach "$APP_PID") ]] ||
-			die "cannot click in $SUFFIX: no window of the copy is in the window server; is one open? scripts/test-copy show $SUFFIX <conversation-or-project>"
+		# Three answers (#612): yes (exit 0); no, with its cause (exit 1); and cannot tell from here (exit 2), where
+		# nothing a command can ask decides it. A no is only ever given for a cause that is known, since a wrong no makes
+		# an agent skip the clicking it could have done. Nothing below asks macOS for a permission: each check needs none.
+		no() { echo "test-copy: no, computer use cannot click in $SUFFIX: $*" >&2; exit 1; }
+		cannot_tell() { echo "test-copy: cannot tell from here whether computer use can click in $SUFFIX: $*" >&2; exit 2; }
+		[[ -n $(ask_macos app-running "$USUAL_ID") ]] || no "the pi² app is not running, and only the person can reopen it"
+		# A copy just started or reopened draws its window a moment after its app is up: wait for it, as shot does.
+		# TEST_COPY_WINDOW_WAIT shortens the wait for scripts/test-test-copy.
+		window_wait=${TEST_COPY_WINDOW_WAIT:-$SHOT_LIMIT}
+		[[ $window_wait =~ ^[0-9]+$ ]] || die "TEST_COPY_WINDOW_WAIT is a whole number of seconds"
+		deadline=$((SECONDS + window_wait))
+		until [[ -n $(ask_macos reach "$APP_PID") ]]; do
+			is_recorded "$APP_PID" "$APP_START" "$APP_EXE" || no "the copy's app stopped running"
+			((SECONDS < deadline)) ||
+				no "no window of the copy has been in the window server for $window_wait seconds; is one open? scripts/test-copy show $SUFFIX <conversation-or-project>"
+			sleep 0.5
+		done
+		# The copy raises its parked window within its own level and says whether its app element then gives the window
+		# to accessibility where the tool's search looks: as its main or focused window, or among its windows.
 		if ! out=$(node "$ROOT/scripts/test-copy-drive.mjs" expose "$control" "$SUFFIX" "$APP_PID" 2>&1); then
+			out=${out#test-copy: }
 			case $out in
+				*"does not give its main window to accessibility"*) no "$out" ;;
 				*unknown\ test-copy\ window\ command*)
-					die "cannot click in $SUFFIX: the copy's build predates the request that exposes its parked window; rebuild the app (./app/build.sh) and run scripts/test-copy reopen $SUFFIX" ;;
-				*) die "cannot click in $SUFFIX: ${out#test-copy: }" ;;
-		esac
+					cannot_tell "the copy's build predates the request that raises its parked window and says whether the tool can find it; rebuild the app (./app/build.sh), run scripts/test-copy reopen $SUFFIX, and ask again" ;;
+				*) cannot_tell "the copy did not say whether the tool can find its window: $out" ;;
+			esac
 		fi
-		echo "$out"
-		echo "The copy's parked window is raised, which is what computer use needs to read it. If the tool still reads no controls, the other thing it needs is pi²'s Accessibility permission, which only the person can grant, in this agent's settings under Computer use."
+		echo "Yes: computer use can read and click $SUFFIX now. The pi² app is running, the copy's window is in the window server, and the copy raised it within its own level and gives it to accessibility, where the computer tool looks for it."
+		echo "One thing cannot be told from here: whether pi² has the Accessibility permission, which no command can read without asking macOS or the pi² app. If the tool answers that pi² does not have it, only the person can grant it, in this agent's settings under Computer use."
 		;;
 	answer|fill)
 		names "${1-}"; shift

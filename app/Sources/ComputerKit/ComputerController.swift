@@ -224,7 +224,7 @@ public actor ComputerController {
     /// window that was never front is absent from that list, wherever it is parked, so the tool asks the copy to
     /// raise it once within its own level — nothing a person can see — and then reads it like any app's window.
     package enum ExposedCopy: Equatable {
-        /// The copy answered that its window is in the list now (or already was).
+        /// The copy answered that its app element gives the window to accessibility now, where the search finds it.
         case listed
         /// The copy's build predates the request: it answered with the unknown command.
         case oldBuild

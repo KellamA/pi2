@@ -8,6 +8,10 @@ import AppKit
 /// Ordering the window front within its own level joins it: a parked window (level -1) rises above nothing any person
 /// can see, and once a window has been front it stays in the list after `orderBack` puts it back, wherever it is
 /// parked. The copy does this itself, over the control folder `scripts/test-copy` gives it.
+///
+/// The list is not the only way in, though, nor a steady one (#612): on macOS 27 a copy's app element answered its
+/// parked window as its main and focused window from launch, and listed it among its windows only while AppKit counted
+/// it as on the active Space. So whether the tool can reach the window is asked of every attribute its search reads.
 @MainActor
 package enum ParkedWindow {
     /// What an assistive app sets on an app it works, to have it build its accessibility scene for good.
@@ -27,12 +31,25 @@ package enum ParkedWindow {
         return (value as? NSNumber)?.boolValue ?? (value as? Bool)
     }
 
-    /// Whether `window` is among the app element's windows, which is what the accessibility server lists to another
-    /// app. Read in-process, asking the app element what the server would ask it for another app. Its children are
-    /// not only windows — a menu bar is one too — so each child is checked, not the list cast whole.
-    package static func isListed(_ window: NSWindow) -> Bool {
-        let children: [Any] = NSApp?.accessibilityChildren() ?? []
-        return children.contains { ($0 as? NSWindow) === window }
+    /// Whether another app's accessibility search finds `window`: the app element answers it as its main or focused
+    /// window, or lists it among its windows or children. Read in-process, asking the app element for each attribute the
+    /// computer tool's search reads from another app (`windowCandidates` in `ComputerController`), which the
+    /// accessibility server answers with these same methods.
+    ///
+    /// Not the window list alone (#612): AppKit leaves a parked window out of `kAXWindows` and `kAXChildren` whenever it
+    /// does not count it as on the active Space, which came and went within minutes of a copy's launch, raise or no
+    /// raise, while `kAXMainWindow` and `kAXFocusedWindow` answered it throughout and the tool read it through them.
+    package static func isReachable(_ window: NSWindow) -> Bool {
+        guard let app = NSApp else { return false }
+        return reachable(window, main: app.accessibilityMainWindow(), focused: app.accessibilityFocusedWindow(),
+                         windows: app.accessibilityWindows() ?? [], children: app.accessibilityChildren() ?? [])
+    }
+
+    /// The decision itself, from what the app element answered, so that a check can give it answers AppKit gives only
+    /// in states a check cannot make, such as a window off the active Space. The children are not only windows — a
+    /// menu bar is one too — so each is checked, not the list cast whole.
+    package static func reachable(_ window: NSWindow, main: Any?, focused: Any?, windows: [Any], children: [Any]) -> Bool {
+        ([main, focused].compactMap { $0 } + windows + children).contains { ($0 as? NSWindow) === window }
     }
 
     /// Join `window` to the app's accessibility window list, and put it back where it was: it rises only within its
@@ -40,7 +57,8 @@ package enum ParkedWindow {
     /// marked as wanting enhanced accessibility for the raise, as an assistive app's arrival does, so it has a scene
     /// for the raise to register in — a test copy has none of its own until a reader connects — and the mark is put
     /// back as it was afterwards: it changes how an app lays out and animates, and a copy is pictured as it is.
-    /// Returns whether the window is listed now; false, raising nothing, for a window that is not parked.
+    /// Returns whether another app's search finds the window now (`isReachable`); false, raising nothing, for a window
+    /// that is not parked.
     @discardableResult
     package static func expose(_ window: NSWindow) -> Bool {
         guard isParked(window) else { return false }
@@ -49,6 +67,6 @@ package enum ParkedWindow {
         window.orderFrontRegardless()
         window.orderBack(nil)
         if wasEnhanced != true { NSApp?.accessibilitySetValue(false, forAttribute: enhanced) }
-        return isListed(window)
+        return isReachable(window)
     }
 }
