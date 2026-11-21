@@ -92,6 +92,98 @@ extension BranchStatus {
     }
 
     func help(sharing: CheckoutSharing?) -> String { ([name, whereText(sharing: sharing)] + facts).joined(separator: "\n") }
+
+    /// Whether there is a change to size: lines added or removed (#598).
+    var hasChangeSize: Bool { (added ?? 0) + (removed ?? 0) > 0 }
+
+    /// What the two numbers count, in words.
+    var changeSizeHelp: String {
+        let added = added ?? 0, removed = removed ?? 0
+        let lines = "\(added) line\(added == 1 ? "" : "s") added and \(removed) removed"
+        if let base { return "\(lines): what is committed on \(name) since it left \(base), and what is not committed yet" }
+        return "\(lines) that are not committed yet"
+    }
+
+    /// The repository's main checkout on its default branch: the tracker measures against no other branch there (`base`
+    /// is nil only on the branch it would measure against). Said of a working agent's row, where it is worth a warning:
+    /// what the agent changes lands where the person and every other agent work (#596, #598).
+    var onDefaultBranchInMainCheckout: Bool { !worktree && branch != nil && base == nil && state != "missing" }
+}
+
+/// The size of a conversation's change, "+128 −14", in a diff's colours (#598). Nothing when nothing changed, or the
+/// tracker could not measure it.
+struct ChangeSize: View {
+    let status: BranchStatus
+    var size: CGFloat = 10.5
+
+    var body: some View {
+        if status.hasChangeSize {
+            let added = status.added ?? 0, removed = status.removed ?? 0
+            HStack(spacing: 4) {
+                Text("+\(Self.short(added))").foregroundStyle(Theme.ok)
+                Text("−\(Self.short(removed))").foregroundStyle(Theme.bad)
+            }
+            .font(.system(size: size, weight: .medium).monospacedDigit())
+            .lineLimit(1)
+            .fixedSize()
+            .help(status.changeSizeHelp)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(added) lines added, \(removed) removed")
+        }
+    }
+
+    /// A count in four characters at most, so that a vast change does not take the row: 12345 is "12k".
+    static func short(_ count: Int) -> String {
+        switch count {
+        case ..<10_000: "\(count)"
+        case ..<1_000_000: "\(count / 1000)k"
+        default: "\(count / 1_000_000)M"
+        }
+    }
+}
+
+/// The quiet second line of a conversation's row under a project in the sidebar (#598): the branch it works on, with the
+/// old sidebar's mark and help (`BranchIcon`, boxed for a worktree, faded for a sub-chat in its parent's checkout), and
+/// the size of its change. A view of its own, so that the tracker's event draws this line again and not the row.
+/// `working`: a working agent's row, which says so, quietly, when the agent works in the main checkout on its default branch.
+struct BranchLine: View {
+    let engine: EngineClient
+    let conversationID: Int
+    var working = false
+
+    var body: some View {
+        if let status = engine.branches[conversationID] {
+            let sharing = engine.sharing(of: conversationID)
+            HStack(spacing: 5) {
+                BranchIcon(status: status, size: 9, shared: sharing != nil)
+                    .help(status.help(sharing: sharing))
+                Text(status.name)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.tx3)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(status.help(sharing: sharing))
+                    .layoutPriority(1)
+                if working, status.onDefaultBranchInMainCheckout {
+                    // The words give way to the mark alone, before the branch's name does; the help says it either way.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 3) {
+                            Text(status.kindText(sharing: sharing))
+                            Image(systemName: "exclamationmark.triangle")
+                        }
+                        Image(systemName: "exclamationmark.triangle")
+                    }
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.warn)
+                    .lineLimit(1)
+                    .help("Works in \(status.repo)’s main checkout, on its default branch \(status.name), not in a worktree of its own: what it changes lands where you and the other agents work.")
+                    .accessibilityLabel("Works in the main checkout on \(status.name)")
+                }
+                Spacer(minLength: 4)
+                ChangeSize(status: status)
+            }
+        }
+    }
 }
 
 /// A sub-chat working in a checkout that is not its own, as most do: the one the conversation that opened it works in.
@@ -540,6 +632,7 @@ struct BranchTracker: View {
                 .foregroundStyle(Theme.tx2)
             }
             Spacer(minLength: 8)
+            ChangeSize(status: row.status, size: 11.5)
             Tag(row.status.stateTitle, row.status.tone).help(row.status.facts.joined(separator: "\n"))
             Menu {
                 Button("Open Conversation") { model.selection = .conversation(row.conversation.id) }
@@ -604,6 +697,7 @@ struct BranchTracker: View {
                 .foregroundStyle(Theme.tx2)
             }
             Spacer(minLength: 8)
+            ChangeSize(status: item.status, size: 11.5)
             Tag(item.status.stateTitle, item.status.tone).help(item.status.facts.joined(separator: "\n"))
             Button("Remove…") { WorktreeDialogs.shared.remove(item.id, status: item.status) }
                 .buttonStyle(.piSecondary)
@@ -658,6 +752,15 @@ struct BranchTracker: View {
                     .foregroundStyle(Theme.tx2)
                     .opacity(BranchIcon.sharedOpacity)
                 Text("A faded one is a sub-chat working in its parent’s checkout rather than one of its own.").font(.callout).foregroundStyle(Theme.tx2)
+            }
+            HStack(spacing: 8) {
+                HStack(spacing: 3) {
+                    Text("+").foregroundStyle(Theme.ok)
+                    Text("−").foregroundStyle(Theme.bad)
+                }
+                .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .frame(width: 15)
+                Text("Lines added and removed: what is committed on the branch since it left the one it was made from, and what is not committed yet.").font(.callout).foregroundStyle(Theme.tx2)
             }
         }
     }

@@ -20,7 +20,7 @@ pi² was built around agents a person defines one by one, and the conversations 
 
 ## The sidebar
 
-The sidebar lists projects, in place of conversations and agents. Each shows a badge: how many things need the person, or how many agents are working, or idle. The open project lists its orchestrator and the agents working now beneath it, as sub-chats are listed under a conversation today. Above the projects is the Dashboard; below them, the templates and the archive. The switch between this and chat mode stays.
+The sidebar lists projects, in place of conversations and agents. Each shows a badge: how many things need the person, or how many agents are working, or idle. The open project lists its orchestrator and the agents working now beneath it, as sub-chats are listed under a conversation today. Each of those rows, and each of the project's other conversations, has a quiet second line: the branch it works on, with the old sidebar's mark for a worktree of its own or the main checkout, and the size of its change in lines added and removed (`+128 −14`, nothing when there is none). A working agent in the repository's main checkout on its default branch says so there, in the warning's colour. The title has the room: the agent's name beside it gives way first, cut in the middle and then down to the agent's avatar. Above the projects is the Dashboard; below them, the templates and the archive. The switch between this and chat mode stays.
 
 ## The hub
 

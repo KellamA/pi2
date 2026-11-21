@@ -166,7 +166,7 @@ private struct ProjectBlock: View {
             OrchestratorRow(model: model, project: project, live: live)
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
-                    RunRow(engine: engine, run: run, shown: agent == id) { model.openAgent(id, in: project.id) }
+                    RunRow(engine: engine, id: id, run: run, shown: agent == id) { model.openAgent(id, in: project.id) }
                         .padding(.leading, 14)
                 }
             }
@@ -259,6 +259,8 @@ private struct OrchestratorRow: View {
 /// One agent working now in the open project.
 private struct RunRow: View {
     let engine: EngineClient
+    /// Its conversation.
+    let id: Int
     let run: RunLive
     /// Whether its conversation is the one in place of the project's board (#473).
     let shown: Bool
@@ -271,22 +273,23 @@ private struct RunRow: View {
         #endif
         let agent = engine.agent(run.agentId)
         Button(action: open) {
-            HStack(spacing: 8) {
-                if run.waiting {
-                    Circle().fill(Theme.warn).frame(width: 7, height: 7).frame(width: 16)
-                        .accessibilityLabel("Needs you")
-                } else if run.atLimit {
-                    Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
-                        .accessibilityLabel("Waiting for a limit")
-                } else {
-                    Spinner().frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 8) {
+                    if run.waiting {
+                        Circle().fill(Theme.warn).frame(width: 7, height: 7).frame(width: 16)
+                            .accessibilityLabel("Needs you")
+                    } else if run.atLimit {
+                        Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
+                            .accessibilityLabel("Waiting for a limit")
+                    } else {
+                        Spinner().frame(width: 16)
+                    }
+                    // The title has the room: the agent's name gives way first (#598).
+                    Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 4)
+                    if let agent, !run.title.isEmpty { AgentNameGivingWay(agent: agent) }
                 }
-                Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1)
-                Spacer(minLength: 4)
-                if let agent, !run.title.isEmpty {
-                    // The agent's name is short and says who; the title gives way first.
-                    Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1).fixedSize()
-                }
+                BranchLine(engine: engine, conversationID: id, working: true).padding(.leading, 24)
             }
             .background(shown ? Theme.card2 : .clear, in: .rect(cornerRadius: 6))
             .contentShape(.rect)
@@ -295,6 +298,22 @@ private struct RunRow: View {
         .accessibilityAddTraits(shown ? .isSelected : [])
         // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
         .help("Open this agent’s conversation in place of the board")
+    }
+}
+
+/// The agent's name beside a working agent's title, which gives way to it (#598): whole, then cut in the middle, then only
+/// the agent's avatar, with the name in its help.
+private struct AgentNameGivingWay: View {
+    let agent: AgentProfile
+
+    var body: some View {
+        let name = Text(agent.name).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
+        ViewThatFits(in: .horizontal) {
+            name.fixedSize()
+            name.truncationMode(.middle).frame(maxWidth: 72, alignment: .trailing)
+            AgentAvatar(agent: agent, size: 14)
+        }
+        .help(agent.name)
     }
 }
 
@@ -335,12 +354,15 @@ private struct OtherConversations: View {
             if shown {
                 ForEach(others) { conversation in
                     Button { model.openAgent(conversation.id, in: project.id) } label: {
-                        HStack(spacing: 8) {
-                            AgentAvatar(agent: model.engine.agent(conversation.agentId), size: 16)
-                            Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
-                                .lineLimit(1)
-                                .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
-                            Spacer(minLength: 0)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 8) {
+                                AgentAvatar(agent: model.engine.agent(conversation.agentId), size: 16)
+                                Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
+                                    .lineLimit(1)
+                                    .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
+                                Spacer(minLength: 0)
+                            }
+                            BranchLine(engine: model.engine, conversationID: conversation.id).padding(.leading, 24)
                         }
                         .background(agent == conversation.id ? Theme.card2 : .clear, in: .rect(cornerRadius: 6))
                         .contentShape(.rect)

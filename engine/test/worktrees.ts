@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { forgetRun, type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, sweepRuns, useRunFolder } from "../src/processes.ts";
-import { inspect, parseStatus, suggestBranch } from "../src/worktrees.ts";
+import { inspect, linesIn, parseShortstat, parseStatus, statusPaths, suggestBranch, unquotePath } from "../src/worktrees.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.
@@ -82,6 +82,61 @@ run(plain, "merge", "--abort");
 run(plain, "checkout", "-q", "--detach");
 assert.equal((await inspect(plain))!.state, "detached");
 step("a folder's branch reads as clean, changed, ahead, in conflict or detached");
+
+{
+	// The size of the change (#598): lines added and removed beyond where the branch left its base, plus what is not
+	// committed, new files included.
+	assert.deepEqual(parseShortstat(" 3 files changed, 128 insertions(+), 14 deletions(-)"), { added: 128, removed: 14 });
+	assert.deepEqual(parseShortstat(" 1 file changed, 1 deletion(-)"), { added: 0, removed: 1 });
+	assert.deepEqual(parseShortstat(""), { added: 0, removed: 0 });
+	assert.equal(unquotePath('"caf\\303\\251 \\"x\\".txt"'), 'café "x".txt');
+	assert.deepEqual(statusPaths(["# branch.oid 0123", "1 .M N... 100644 100644 100644 a b with space.txt", "2 R. N... 100644 100644 100644 a b R100 new name.txt\told.txt", "u UU N... 1 2 3 4 a b c both.txt", "? fresh/", '? "tab\\there"'].join("\n")), {
+		changed: ["with space.txt", "new name.txt", "old.txt", "both.txt"],
+		untracked: ["fresh/", "tab\there"],
+	});
+	assert.equal(linesIn(Buffer.from("a\nb\nc")), 3, "a last line without a newline counts");
+	assert.equal(linesIn(Buffer.from("a\0b\n")), 0, "a binary file has no lines");
+
+	const sized = repo("sized");
+	writeFileSync(join(sized, ".gitignore"), "*.log\n");
+	run(sized, "add", ".gitignore");
+	run(sized, "commit", "-q", "-m", "ignore logs");
+	let size = (await inspect(sized))!;
+	assert.deepEqual([size.added, size.removed], [0, 0], "a clean checkout on its default branch has changed nothing");
+	writeFileSync(join(sized, "README.md"), "hello\none\ntwo\n");
+	writeFileSync(join(sized, "sub", "notes.txt"), "");
+	writeFileSync(join(sized, "new.txt"), "1\n2\n3\n4\n5\n");
+	mkdirSync(join(sized, "fresh", "deeper"), { recursive: true });
+	writeFileSync(join(sized, "fresh", "deeper", "a.txt"), "x\ny");
+	writeFileSync(join(sized, "fresh", "debug.log"), "ignored\n".repeat(50));
+	writeFileSync(join(sized, "fresh", "picture.bin"), Buffer.from([1, 0, 2, 10, 3, 10]));
+	size = (await inspect(sized))!;
+	assert.deepEqual([size.added, size.removed], [2 + 5 + 2, 1], "on the default branch, only what is not committed counts: new files too, but not ignored or binary ones");
+	writeFileSync(join(sized, "README.md"), "hello\none\ntwo\nthree\n");
+	size = (await inspect(sized))!;
+	assert.equal(size.added, 3 + 5 + 2, "a file changed again is measured again, though git status prints the same");
+	writeFileSync(join(sized, "fresh", "deeper", "a.txt"), "x\ny\nz\n");
+	size = (await inspect(sized))!;
+	assert.equal(size.added, 3 + 5 + 3, "so is a new file inside a new folder");
+	run(sized, "checkout", "-q", "-b", "topic");
+	run(sized, "add", "README.md", "sub/notes.txt");
+	run(sized, "commit", "-q", "-m", "topic");
+	writeFileSync(join(sized, "README.md"), "hello\none\n");
+	size = (await inspect(sized))!;
+	assert.equal(size.base, "main");
+	assert.deepEqual([size.added, size.removed], [1 + 5 + 3, 1], "on a branch, what is committed beyond its base counts with what is not committed yet");
+	run(sized, "checkout", "-q", "--", "README.md");
+	rmSync(join(sized, "new.txt"));
+	rmSync(join(sized, "fresh"), { recursive: true });
+	size = (await inspect(sized))!;
+	assert.deepEqual([size.added, size.removed], [3, 1], "committed on the branch alone");
+	run(sized, "checkout", "-q", "main");
+	run(sized, "merge", "-q", "--ff-only", "topic");
+	run(sized, "checkout", "-q", "topic");
+	size = (await inspect(sized))!;
+	assert.deepEqual([size.added, size.removed], [0, 0], "once merged into its base, a branch has changed nothing more");
+	step("the size of a change counts lines committed beyond the base and not yet committed, and is measured again when the checkout changes");
+}
 
 // ---- The engine: worktrees for conversations
 
@@ -732,6 +787,27 @@ try {
 		const ownWas = asked(whichRepo, ownFolder);
 		await client.call("branches.refresh");
 		assert.ok(asked(whichRepo, ownFolder) > ownWas, "a worktree pi² made is asked which repository it is in at every look");
+		// The size of the change (#598) is measured with one git process when the checkout changed since the last look,
+		// and with none when it did not.
+		const itsDiff = /^diff /;
+		writeFileSync(join(kept, "README.md"), "hello\nmore\n");
+		await client.call("branches.refresh");
+		await client.until("measured", () => client.branch(keeper)?.added === 1);
+		let diffWas = asked(itsDiff, kept);
+		assert.ok(diffWas > 0, "a changed checkout is measured with git diff");
+		statusWas = asked(itsStatus, kept);
+		await client.call("branches.refresh");
+		await client.call("branches.refresh");
+		assert.ok(asked(itsStatus, kept) >= statusWas + 2, "it was looked at twice more");
+		assert.equal(asked(itsDiff, kept), diffWas, "but not measured again, since nothing in it changed");
+		// The same file changed again: git status prints the same, and the file's size and time say it changed.
+		writeFileSync(join(kept, "README.md"), "hello\nmore\nand more\n");
+		await client.call("branches.refresh");
+		await client.until("measured again", () => client.branch(keeper)?.added === 2);
+		assert.equal(asked(itsDiff, kept), diffWas + 1, "a look after a change measures it once");
+		diffWas = asked(itsDiff, kept);
+		await client.call("branches.refresh");
+		assert.equal(asked(itsDiff, kept), diffWas, "and the next look, with nothing new, not at all");
 		step("the tracker reuses answers for ordinary folders until they move, and asks again at every look about folders in no repository and worktrees pi² made");
 	}
 
