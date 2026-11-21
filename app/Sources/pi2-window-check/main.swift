@@ -443,7 +443,7 @@ struct DashboardDetail: View {
     }
 
     /// One project's column, sized as the app's: the window onto the orchestrator takes its height, 190 points unless
-    /// the person changed it, but at most two fifths of what the column has beside its header, vitals and field.
+    /// the person changed it, but at most about a third of what the column has beside its header, vitals and field.
     struct Column: View {
         let feed: Feed
         let index: Int
@@ -505,7 +505,7 @@ struct DashboardDetail: View {
                                 .padding(12)
                             }
                             .defaultScrollAnchor(.bottom)
-                            .frame(height: max(80, min(190, (height - 170) * 0.4)))
+                            .frame(height: max(80, min(190, (height - 170) * 0.35)))
                             .frame(maxWidth: .infinity)
                         }
                     }

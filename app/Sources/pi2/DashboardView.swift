@@ -194,9 +194,9 @@ private struct DashboardColumn: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minHeight: 0)
-            // The window takes at most two fifths of what the column has beside its header, vitals and field, so that
+            // The window takes at most a third or so of what the column has beside its header, vitals and field, so that
             // at the window's smallest size a card and a working row still show above it.
-            OrchestratorPane(model: model, project: project, visible: visible, tallest: max(DashboardPaneLayout.minimumHeight, (height - 170) * 0.4))
+            OrchestratorPane(model: model, project: project, visible: visible, tallest: max(DashboardPaneLayout.minimumHeight, (height - 170) * 0.35))
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
         }
         .background(Theme.window)
