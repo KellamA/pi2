@@ -128,8 +128,30 @@ final class ProjectHubs {
 
     func setTab(_ tab: HubTab, for id: String) {
         guard tabs[id] != tab else { return }
+        if tab == .work { PerfProbe.workTab("asked") }
         tabs[id] = tab
         UserDefaults.standard.set(tab.rawValue, forKey: Self.key(id, "tab"))
+    }
+
+    /// The sections of the Work tab's list the person folded or unfolded, by project and section (#599), kept with the
+    /// hub's fold and tab (`project.<id>.workFolds`: a section's id and whether it is folded). A section the person never
+    /// touched is as `WorkFolds.foldedAtFirst` says.
+    private var workFolds: [String: [String: Bool]] = [:]
+
+    private func workChoices(_ id: String) -> [String: Bool] {
+        workFolds[id] ?? (UserDefaults.standard.dictionary(forKey: Self.key(id, "workFolds")) as? [String: Bool]) ?? [:]
+    }
+
+    func workFolded(_ id: String, section: String) -> Bool {
+        workChoices(id)[section] ?? WorkFolds.foldedAtFirst.contains(section)
+    }
+
+    func setWorkFolded(_ folded: Bool, section: String, for id: String) {
+        var choices = workChoices(id)
+        guard choices[section] != folded else { return }
+        choices[section] = folded
+        workFolds[id] = choices
+        UserDefaults.standard.set(choices, forKey: Self.key(id, "workFolds"))
     }
 
     /// Folds or shows the conversation, or the board, as its button and key do.
@@ -227,6 +249,7 @@ extension AppModel {
     /// in: the sidebar of projects (#470) and a test copy's `show` both come here. Choosing the project, or its
     /// orchestrator, goes back to the board, from whichever agent's conversation was in its place (#473).
     func showProject(_ id: String, tab: HubTab? = nil, fold: HubFold? = nil) {
+        if (tab ?? hubs.tab(id)) == .work { PerfProbe.workTab("asked") }
         if let tab { hubs.setTab(tab, for: id) }
         if let fold { hubs.setFold(fold, for: id) }
         hubs.setAgent(nil, for: id)

@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { AgentDoc, type ConversationId, defineDoc, type EntryRecord, type JsonObject, type Tx } from "@earendil-works/pi-durable";
 import { defineOp, record, wireRepository } from "./changes.ts";
@@ -101,15 +102,32 @@ export type PullRequest = {
 	openedBy: { conversationId: number } | null;
 	/** The work item it fixes, from "Fixes #N" in its text. */
 	work: number | null;
+	/** Only what its row shows was read: no text, comments or checks (#599). `github.show` reads the rest. */
+	partial?: true;
 };
 
+/** An issue of the listing: a closed one is `partial` until it is opened, as a pull request is (#599). */
+type ListedItem = WorkItem & { partial?: true };
+
 type ListingState = "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited";
-type Listing = { readAt: number | null; issues: WorkItem[]; pulls: PullRequest[] };
+/**
+ * `readAt`: when the read that made it began, so the next one asks for what changed since then. `fullAt`: when the
+ * last whole read began; between whole reads, a read asks only for what changed (#599).
+ */
+type Listing = { readAt: number | null; fullAt?: number; issues: ListedItem[]; pulls: PullRequest[] };
 
 /** How many intents done or failed are kept per project, newest; pending and unknown ones are always kept. */
 const KEPT_INTENTS = 2_000;
 /** The listing is read at most this often per project, but after a write of pi²'s (3.11). */
 const READ_EVERY_MS = 60_000;
+/**
+ * Between reads of everything, a read asks only for what changed since the last (#599). Once in this long it reads
+ * everything again, so that what the questions for changes cannot see (an issue deleted or moved to another
+ * repository) does not stay.
+ */
+const FULL_EVERY_MS = 30 * 60_000;
+/** A change is asked for from this long before the last read began: GitHub's search can take a while to see one. */
+const SEARCH_LAG_MS = 10 * 60_000;
 /** Closed issues and pull requests are listed for this long after they closed. */
 const CLOSED_FOR_MS = 7 * 24 * 60 * 60_000;
 /** A `gh` command still running after this is stopped: a hang guard, not a measure of GitHub. */
@@ -196,6 +214,8 @@ const CLASS_LABELS: Record<string, { color: string; description: string }> = {
 	"local model": { color: "0e8a16", description: "A model on this Mac can do it" },
 	"cloud model": { color: "1d76db", description: "It needs a cloud model" },
 };
+/** The label scripts/issue puts on the issues agents open, file and take: the tool does the same (#604). */
+const AGENT_LABEL: Record<string, { color: string; description: string }> = { agent: { color: "5319e7", description: "Opened by an agent session" } };
 const STATUS_OF: Partial<Record<WorkState, string>> = { open: "backlog", in_progress: "in progress", waiting: "waiting", blocked: "blocked" };
 const classLabel = (value: WorkItem["class"]) => (value === "local" ? "local model" : value === "cloud" ? "cloud model" : null);
 
@@ -237,6 +257,11 @@ type GhPull = {
 
 const ISSUE_FIELDS = "number,title,body,state,stateReason,labels,url,createdAt,updatedAt,closedAt,comments";
 const PULL_FIELDS = "number,title,url,headRefName,headRepositoryOwner,isCrossRepository,baseRefName,author,state,isDraft,statusCheckRollup,mergeable,body,comments";
+// What the listing reads of a closed issue or pull request (#599): what its row shows, without its text, comments and
+// checks, which made the two closed lists most of a read (1.2 MB and 8.7 s each, of this repository's last seven days).
+// Opening one reads the rest (`github.show`); it is `partial` until then.
+const ISSUE_BRIEF = "number,title,state,stateReason,labels,url,createdAt,updatedAt,closedAt";
+const PULL_BRIEF = "number,title,url,headRefName,headRepositoryOwner,isCrossRepository,baseRefName,author,state,isDraft";
 
 const time = (value: string | null | undefined) => (value == null || value === "" ? null : Date.parse(value));
 const json = <T>(text: string): T => JSON.parse(text) as T;
@@ -247,11 +272,19 @@ const MARKER = /<!-- pi2:([0-9a-f]{16}) -->/;
 const marker = (id: string) => `<!-- pi2:${id} -->`;
 const AGENT_LINE = /^\*From .*?, an agent of the pi² project “[^”]*”\.\*\s*\n?/;
 
+/**
+ * A text as it may be posted: the repository is public, so the home folder is turned into `~`, as scripts/issue turns
+ * it (#604). Every title and text pi² posts goes through this.
+ */
+export function publicText(text: string, home = process.env.HOME || homedir()): string {
+	return home.length > 1 ? text.split(home.replace(/\/+$/, "")).join("~") : text;
+}
+
 /** The text pi² posts: for an agent, a line naming it first (3.11); the marker last, which GitHub does not show. */
 function compose(project: Project, by: Who, text: string, id: string): string {
 	const name = by.kind === "agent" ? agentName(by.agentId) : null;
 	const head = name === null ? "" : `*From ${name}, an agent of the pi² project “${project.name}”.*\n\n`;
-	return `${head}${text}${text === "" ? "" : "\n\n"}${marker(id)}`;
+	return publicText(`${head}${text}${text === "" ? "" : "\n\n"}${marker(id)}`);
 }
 
 /** What a person reads of a text pi² posted: without the agent's line and the marker. */
@@ -367,7 +400,20 @@ const holderOf = (take: Parsed | undefined): WorkItem["takenBy"] => {
 	return { agentId: take.holder.agentId, conversationId: take.holder.conversationId ?? parent };
 };
 
-const BOOKKEEPING = new Set(["take", "release", "done", "dropped"]);
+const BOOKKEEPING = new Set(["take", "release", "resume", "done", "dropped"]);
+
+/**
+ * Who held an issue closed as completed outside pi², as a merged pull request's "Fixes #N" closes it: the take that
+ * stood when it closed, with no summary ("**Done.**", the tool's or the script's) posted after it (#604). The tool
+ * cannot tell a merge from a close by hand on GitHub; either way the holder may still post its summary.
+ */
+function heldAtClose(comments: Parsed[]): WorkItem["takenBy"] {
+	const take = standing(comments).at(-1);
+	if (take === undefined) return null;
+	const after = comments.slice(comments.indexOf(take) + 1);
+	if (after.some((comment) => comment.text.startsWith("**Done.**"))) return null;
+	return holderOf(take);
+}
 
 /** An issue as a work item (3.11). */
 export function issueItem(issue: GhIssue, intents: Record<string, Intent>): WorkItem {
@@ -382,6 +428,7 @@ export function issueItem(issue: GhIssue, intents: Record<string, Intent>): Work
 	const done = [...comments].reverse().find((comment) => comment.role === "done" || comment.text.startsWith("**Done.**"));
 	const filed = MARKER.exec(issue.body ?? "")?.[1];
 	const createdAt = time(issue.createdAt) ?? 0;
+	const closedHolder = state === "done" ? heldAtClose(comments) : null;
 	return {
 		id: issue.number,
 		title: issue.title,
@@ -398,6 +445,7 @@ export function issueItem(issue: GhIssue, intents: Record<string, Intent>): Work
 		updatedAt: time(issue.updatedAt) ?? createdAt,
 		closedAt: closed ? (time(issue.closedAt) ?? null) : null,
 		url: issue.url,
+		...(closedHolder === null ? {} : { heldAtClose: closedHolder }),
 	};
 }
 
@@ -536,10 +584,93 @@ function noteFailure(project: Project, error: unknown): void {
 	announce();
 }
 
+const listJson = <T>(args: string[], cwd: string): Promise<T> => gh(args, cwd).then((out) => json<T>(out));
+/** A time as GitHub's search takes it, to the second. */
+const searchTime = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "+00:00");
+const byNumber = { issues: (a: ListedItem, b: ListedItem) => b.id - a.id, pulls: (a: PullRequest, b: PullRequest) => b.number - a.number };
+const closedState = (item: WorkItem) => item.state === "done" || item.state === "dropped";
+/** The most a question for closed or changed items answers; a read that meets it reads everything instead. */
+const LIST_LIMIT = 200;
+
+/**
+ * Everything the listing holds, read again (#599): four questions, asked together, so a read takes as long as the
+ * slowest of them rather than all four one after another. The closed ones come brief (`ISSUE_BRIEF`, `PULL_BRIEF`).
+ */
+async function readWhole(project: Project, name: string, began: number): Promise<Pick<Listing, "issues" | "pulls">> {
+	const cwd = folderOf(project);
+	const since = new Date(began - CLOSED_FOR_MS).toISOString().slice(0, 10);
+	const [openIssues, closedIssues, openPulls, closedPulls] = await Promise.all([
+		listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", ISSUE_FIELDS], cwd),
+		listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", String(LIST_LIMIT), "--json", ISSUE_BRIEF], cwd),
+		listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "open", "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
+		listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", String(LIST_LIMIT), "--json", PULL_BRIEF], cwd),
+	]);
+	await readMirror();
+	const intents = intentsOf(project);
+	const openedBy = mirror.projects[project.id]?.openedBy;
+	return {
+		issues: [...openIssues.map((issue) => issueItem(issue, intents)), ...closedIssues.map((issue): ListedItem => ({ ...issueItem(issue, intents), partial: true }))].sort(byNumber.issues),
+		pulls: [...openPulls.map((pull) => pullOf(pull, intents, openedBy)), ...closedPulls.map((pull): PullRequest => ({ ...pullOf(pull, intents, openedBy), partial: true }))].sort(byNumber.pulls),
+	};
+}
+
+/**
+ * Only what changed since the last read (#599), into the listing as it is when the answers come: which issues are
+ * open now (their numbers only), the issues and closed pull requests changed since, whole, and the open pull requests,
+ * since their checks and whether they can be merged change without GitHub counting it as a change. Asked together.
+ * Undefined when only a whole read can tell: more changed than one answer holds, GitHub would not take the question,
+ * or an issue opened or closed that the question for changes has not seen yet.
+ */
+async function readChanges(project: Project, name: string, since: number, began: number): Promise<Pick<Listing, "issues" | "pulls"> | undefined> {
+	const cwd = folderOf(project);
+	const changed = `updated:>=${searchTime(since - SEARCH_LAG_MS)}`;
+	let answers: [{ number: number }[], GhIssue[], GhPull[], GhPull[]];
+	try {
+		answers = await Promise.all([
+			listJson<{ number: number }[]>(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", "number"], cwd),
+			listJson<GhIssue[]>(["issue", "list", "--repo", name, "--state", "all", "--search", changed, "--limit", String(LIST_LIMIT), "--json", ISSUE_FIELDS], cwd),
+			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "open", "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
+			// Whole, as the changed issues are: few change between two reads, and one merged a moment ago may be open on the page.
+			listJson<GhPull[]>(["pr", "list", "--repo", name, "--state", "closed", "--search", changed, "--limit", String(LIST_LIMIT), "--json", PULL_FIELDS], cwd),
+		]);
+	} catch (error) {
+		if (error instanceof GhError && error.kind === "refused") return undefined;
+		throw error;
+	}
+	const [openNow, changedIssues, openPulls, closedPulls] = answers;
+	if (changedIssues.length >= LIST_LIMIT || closedPulls.length >= LIST_LIMIT) return undefined;
+	await readMirror();
+	const current = listingOf(project);
+	if (current === undefined) return undefined;
+	const intents = intentsOf(project);
+	const openedBy = mirror.projects[project.id]?.openedBy;
+	const cutoff = began - CLOSED_FOR_MS;
+
+	const issues = new Map(current.issues.map((item) => [item.id, item]));
+	for (const issue of changedIssues) issues.set(issue.number, issueItem(issue, intents));
+	const open = new Set(openNow.map((one) => one.number));
+	const seen = new Set(changedIssues.map((one) => one.number));
+	for (const number of open) if (!issues.has(number)) return undefined;
+	for (const [id, item] of issues) {
+		if (!closedState(item) && !open.has(id) && !seen.has(id)) return undefined;
+		if (closedState(item) && (item.closedAt ?? 0) < cutoff) issues.delete(id);
+	}
+
+	const pulls = new Map(current.pulls.map((pull) => [pull.number, pull]));
+	const openPull = new Set(openPulls.map((pull) => pull.number));
+	const closedPull = new Set(closedPulls.map((pull) => pull.number));
+	for (const pull of current.pulls) if (pull.state === "open" && !openPull.has(pull.number) && !closedPull.has(pull.number)) return undefined;
+	for (const pull of openPulls) pulls.set(pull.number, pullOf(pull, intents, openedBy));
+	for (const pull of closedPulls) pulls.set(pull.number, pullOf(pull, intents, openedBy));
+	return { issues: [...issues.values()].sort(byNumber.issues), pulls: [...pulls.values()].sort(byNumber.pulls) };
+}
+
 /**
  * Read the project's repository's open issues and pull requests, and those closed in the last seven days, unless it
- * was read in the last minute (`force`: after a write of pi²'s). A failure leaves the last listing as it was, with what
- * went wrong. Two reads at once are one.
+ * was read in the last minute (`force`: after a write of pi²'s). A read asks only for what changed since the last one,
+ * and everything once in `FULL_EVERY_MS`, its questions together (#599). The listing stays as it was while it runs, and
+ * the `github` event says it runs (`reading`). A failure leaves the last listing as it was, with what went wrong. Two
+ * reads at once are one.
  */
 export function readListing(project: Project, force = false): Promise<void> {
 	if (project.repository === null) return Promise.resolve();
@@ -549,29 +680,20 @@ export function readListing(project: Project, force = false): Promise<void> {
 	if (!force && listing?.readAt != null && Date.now() - listing.readAt < READ_EVERY_MS) return Promise.resolve();
 	const repository = project.repository;
 	const run = (async () => {
-		if (listing === undefined) {
-			states.set(project.id, { state: "loading", error: null });
-			announce();
-		}
+		if (listing === undefined) states.set(project.id, { state: "loading", error: null });
 		const name = repoName(repository);
-		const cwd = folderOf(project);
-		const since = new Date(Date.now() - CLOSED_FOR_MS).toISOString().slice(0, 10);
+		// When the read began is when it was read: what changes while it runs is asked for by the next one.
+		const began = Date.now();
 		try {
-			const openIssues = json<GhIssue[]>(await gh(["issue", "list", "--repo", name, "--state", "open", "--limit", "1000", "--json", ISSUE_FIELDS], cwd));
-			const closedIssues = json<GhIssue[]>(await gh(["issue", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", "200", "--json", ISSUE_FIELDS], cwd));
-			const openPulls = json<GhPull[]>(await gh(["pr", "list", "--repo", name, "--state", "open", "--limit", "200", "--json", PULL_FIELDS], cwd));
-			const closedPulls = json<GhPull[]>(await gh(["pr", "list", "--repo", name, "--state", "closed", "--search", `closed:>=${since}`, "--limit", "200", "--json", PULL_FIELDS], cwd));
-			await readMirror();
-			const intents = intentsOf(project);
-			const openedBy = mirror.projects[project.id]?.openedBy;
-			const issues = [...openIssues, ...closedIssues].map((issue) => issueItem(issue, intents)).sort((a, b) => b.id - a.id);
-			const pulls = [...openPulls, ...closedPulls].map((pull) => pullOf(pull, intents, openedBy)).sort((a, b) => b.number - a.number);
+			const partly = listing?.readAt != null && listing.fullAt !== undefined && began - listing.fullAt < FULL_EVERY_MS;
+			const changes = partly ? await readChanges(project, name, listing!.readAt!, began) : undefined;
+			const read = changes ?? (await readWhole(project, name, began));
 			// A repository changed while this was read is not given another's listing.
 			if (!sameRepository(allProjects()[project.id]?.repository, repository)) return;
-			listings[project.id] = { ...(listings[project.id] ?? {}), [name]: { readAt: Date.now(), issues, pulls } };
+			const fullAt = changes === undefined ? began : listing!.fullAt!;
+			listings[project.id] = { ...(listings[project.id] ?? {}), [name]: { readAt: began, fullAt, ...read } };
 			states.delete(project.id);
 			saveListings();
-			announce();
 			void reconcileAll(project);
 		} catch (error) {
 			engine?.log("could not read GitHub for project", project.id, error instanceof Error ? error.message : error);
@@ -582,8 +704,12 @@ export function readListing(project: Project, force = false): Promise<void> {
 			}
 			throw error;
 		}
-	})().finally(() => reading.delete(project.id));
+	})().finally(() => {
+		reading.delete(project.id);
+		announce();
+	});
 	reading.set(project.id, run);
+	announce();
 	return run;
 }
 
@@ -816,7 +942,7 @@ async function ensureLabels(project: Project): Promise<void> {
 	if (labelled.has(name)) return;
 	const cwd = folderOf(project);
 	const have = new Set(json<{ name: string }[]>(await gh(["label", "list", "--repo", name, "--limit", "200", "--json", "name"], cwd)).map((label) => label.name));
-	for (const [label, { color, description }] of Object.entries({ ...STATUS_LABELS, ...CLASS_LABELS })) {
+	for (const [label, { color, description }] of Object.entries({ ...AGENT_LABEL, ...STATUS_LABELS, ...CLASS_LABELS })) {
 		if (!have.has(label)) await gh(["label", "create", label, "--repo", name, "--color", color, "--description", description, "--force"], cwd);
 	}
 	labelled.add(name);
@@ -857,9 +983,12 @@ async function recordGithub(tx: Tx, project: Project, by: Who, call: Call | unde
 	return change.id;
 }
 
-/** The labels to add and take off for an issue to read as `state` and `cls`, from those it has. */
-function labelChange(have: string[], state: WorkState | null, cls: WorkItem["class"] | undefined): { add: string[]; remove: string[] } {
-	const want = new Set<string>();
+/**
+ * The labels to add and take off for an issue to read as `state` and `cls`, from those it has, and `extra` added. A
+ * closed state has no status label, so finishing or closing takes it off (#604).
+ */
+function labelChange(have: string[], state: WorkState | null, cls: WorkItem["class"] | undefined, extra: string[] = []): { add: string[]; remove: string[] } {
+	const want = new Set<string>(extra);
 	const drop = new Set<string>();
 	if (state !== null) {
 		const status = STATUS_OF[state];
@@ -923,19 +1052,22 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 	const text = typeof args.text === "string" ? args.text : undefined;
 	const comment = async (key: string, role: string, said: string, extra: Record<string, unknown> = {}) =>
 		write(project, step(key), "issue.comment", { ...base, number, role, body: compose(project, by, said, step(key)), summary: `commenting on #${number}`, ...extra });
-	const labels = async (state: WorkState | null, cls?: WorkItem["class"]) => {
+	const labels = async (state: WorkState | null, cls?: WorkItem["class"], extra: string[] = []) => {
 		const now = await viewIssue(project, number!);
-		const change = labelChange((now.labels ?? []).map((label) => label.name), state, cls);
+		const change = labelChange((now.labels ?? []).map((label) => label.name), state, cls, extra);
 		if (change.add.length === 0 && change.remove.length === 0) return;
 		await write(project, step(`labels:${state}:${cls}`), "issue.labels", { ...base, number, ...change, summary: `labelling #${number}` });
 	};
+	/** "Worker, in conversation 146", or "the person": who did it, as the tool's one-line comments say. */
+	const whoDid = by.kind === "agent" ? `${names(by.agentId)}, in conversation ${by.conversationId}` : "the person";
 	let admittedNote: string | undefined;
 	const holderName = (holder: WorkItem["takenBy"]) => (holder === null ? "nobody" : names(holder.agentId));
 
 	switch (action) {
 		case "file": {
-			const labelsOf = ["backlog", ...(after.class === null ? [] : [classLabel(after.class)!])];
-			const made = (await write(project, step("create"), "issue.create", { ...base, title: after.title, body: compose(project, by, after.text, step("create")), labels: labelsOf, summary: `filing “${short(after.title)}”` })) as { number: number };
+			// An agent's issue carries the `agent` label, as scripts/issue's do (#604).
+			const labelsOf = ["backlog", ...(by.kind === "agent" ? ["agent"] : []), ...(after.class === null ? [] : [classLabel(after.class)!])];
+			const made = (await write(project, step("create"), "issue.create", { ...base, title: publicText(after.title), body: compose(project, by, after.text, step("create")), labels: labelsOf, summary: `filing “${short(after.title)}”` })) as { number: number };
 			number = made.number;
 			break;
 		}
@@ -994,19 +1126,25 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 				await readMirror();
 				admittedNote = (intentsOf(project)[claimKey]?.args.admitted as string | undefined) ?? admittedNote;
 			}
-			await labels("in_progress");
+			// An agent works on it now: the `agent` label, as scripts/issue's take puts on (#604).
+			await labels("in_progress", undefined, ["agent"]);
 			break;
 		}
-		case "release":
-			await comment("release", "release", `Released: ${holderName(before!.takenBy)} no longer works on it.`, { holder: before!.takenBy ?? undefined });
+		case "release": {
+			// One taken outside the tool has no holder it knows (#604).
+			const said = before!.takenBy === null ? "Released: it was taken outside the work tool, and is open again." : `Released: ${holderName(before!.takenBy)} no longer works on it.`;
+			await comment("release", "release", said, { holder: before!.takenBy ?? undefined });
 			await labels("open");
 			break;
+		}
 		case "wait":
 		case "block":
 			if (text?.trim()) await comment("note", action, `**${action === "wait" ? "Waiting" : "Blocked"}:** ${text}`);
 			await labels(after.state);
 			break;
 		case "resume":
+			// One line, as take posts one (#604).
+			await comment("resume", "resume", `Resumed by ${whoDid}.`);
 			await labels("in_progress");
 			break;
 		case "finish":
@@ -1014,7 +1152,8 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 			// Always a comment: it ends every hold, so a "Taken by" before it never counts again.
 			const done = after.state === "done";
 			await comment("done", done ? "done" : "dropped", `**${done ? "Done" : "Dropped"}.**${text?.trim() ? ` ${text}` : ""}`);
-			await labels(null);
+			// A closed issue has no status label (#604). One a merge closed already is not closed again.
+			await labels(after.state);
 			const now = await viewIssue(project, number!);
 			if (now.state.toUpperCase() !== "CLOSED") await write(project, step("close"), "issue.close", { ...base, number, reason: done ? "completed" : "not planned", summary: `closing #${number}` });
 			break;
@@ -1033,8 +1172,9 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 			const body = issue?.body ?? "";
 			const head = AGENT_LINE.exec(body)?.[0] ?? "";
 			const tail = MARKER.exec(body)?.[0];
-			const edited = `${head}${after.text}${tail === undefined ? "" : `\n\n${tail}`}`;
-			if (after.title !== before!.title || edited !== body) await write(project, step("edit"), "issue.edit", { ...base, number, title: after.title, body: edited, summary: `editing #${number}` });
+			const edited = publicText(`${head}${after.text}${tail === undefined ? "" : `\n\n${tail}`}`);
+			const title = publicText(after.title);
+			if (title !== before!.title || edited !== body) await write(project, step("edit"), "issue.edit", { ...base, number, title, body: edited, summary: `editing #${number}` });
 			break;
 		}
 		case "classify":
@@ -1174,7 +1314,7 @@ async function pull(project: Project, action: PullAction, by: Who, args: Record<
 		const baseBranch = typeof args.base === "string" && args.base.trim() !== "" ? args.base.trim() : await defaultBranch(project);
 		let said = typeof args.text === "string" ? args.text : "";
 		if (fixes !== null && !new RegExp(`\\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\\s+#${fixes}\\b`, "i").test(said)) said = said.trim() === "" ? `Fixes #${fixes}` : `${said}\n\nFixes #${fixes}`;
-		const made = (await write(project, key, "pr.create", { call: keys.call, by, role: "pull_request", head, base: baseBranch, title, body: compose(project, by, said, key), openedBy: by.conversationId, summary: `opening the pull request “${short(title)}”` })) as { number: number; url: string };
+		const made = (await write(project, key, "pr.create", { call: keys.call, by, role: "pull_request", head, base: baseBranch, title: publicText(title), body: compose(project, by, said, key), openedBy: by.conversationId, summary: `opening the pull request “${short(title)}”` })) as { number: number; url: string };
 		text = `Opened pull request #${made.number} from ${head} into ${baseBranch}: ${made.url}`;
 		summary = `Opened pull request #${made.number} “${short(title)}” on GitHub`;
 	} else if (action === "review") {
@@ -1290,6 +1430,8 @@ export const github: Feature = (host, running) => {
 			projects[project.id] = {
 				state: status.state,
 				error: status.error,
+				// A read under way behind the listing, which stays as it was until the read lands (#599).
+				reading: reading.has(project.id),
 				readAt: listing?.readAt ?? null,
 				repository: copy(project.repository),
 				issues: listing?.issues ?? [],
@@ -1482,6 +1624,28 @@ export const github: Feature = (host, running) => {
 				// The orchestrator is told in its catch-up when the person sent it (3.11).
 				await commit((tx) => workNews(tx, project, { kind: "person" }, `The person sent back pull request #${n}: ${params.reason}`, `pull:${n}`));
 				return {};
+			},
+			/**
+			 * `{ projectId, number, pull? }`: one issue, or with `pull: true` one pull request, read now, whole, into the
+			 * listing: what the app asks for as the person opens one, whose text, comments and checks a closed one's row
+			 * does not carry (#599). Answers it as `item` or `pull`; the `github` event carries it too.
+			 */
+			"github.show": async (params) => {
+				requirePreview();
+				const project = attached(params.projectId);
+				const n = numberOf(params.number);
+				if (params.pull === true) {
+					const read = await noting(project, viewPull(project, n));
+					await readMirror();
+					const pull = pullOf(read, intentsOf(project), mirror.projects[project.id]?.openedBy);
+					keepInListing(project, undefined, pull);
+					return { pull };
+				}
+				const read = await noting(project, viewIssue(project, n));
+				await readMirror();
+				const item = issueItem(read, intentsOf(project));
+				keepInListing(project, item);
+				return { item };
 			},
 			"github.diff": async (params) => {
 				requirePreview();

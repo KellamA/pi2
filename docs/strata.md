@@ -1,6 +1,6 @@
 # Strata and Qwen3.8-Flash-Next on a Mac: what they need
 
-This page is for whoever builds or changes local models in pi² (#173 and its pieces #291, #292, #293). It records what was found by running the real engine and model on a Mac (#290), so that the pieces can be built and checked without downloading 90 GB first, and what running them through pi² added (#293). How pi² gets them onto the Mac and prepares them is in [local-models.md](local-models.md), how it runs them in [local-models-running.md](local-models-running.md), with what #293 saw there. It describes **Strata 0.2.15** (engine 0.1.60, control 0.1.61), released on 2026-11-16. When pi² pins a newer Strata, check again everything below that is marked as pinned.
+This page is for whoever builds or changes local models in pi² (#173 and its pieces #291, #292, #293). It records what was found by running the real engine and model on a Mac (#290), so that the pieces can be built and checked without downloading 90 GB first, and what running them through pi² added (#293). How pi² gets them onto the Mac and prepares them is in [local-models.md](local-models.md), how it runs them in [local-models-running.md](local-models-running.md), with what #293 saw there. It describes **Strata 0.2.15** (engine 0.1.60, control 0.1.61), released on 2026-11-16. When pi² pins a newer Strata, check again everything below that is marked as pinned. Since #605 pi² pins **Strata 0.2.17** (engine and control 0.1.63, released on 2026-11-20): what #605 found running it, and why, is in [Several requests at once](#several-requests-at-once-605); the rest of this page was not measured again with it.
 
 Unless a line says it was read from Strata's code or documentation, it was run on an Apple M5 Max with 128 GB, macOS 27.2, on 2026-11-17, while seventeen other agents were building and testing on the same Mac. Times and speeds are from that busy Mac: a quiet Mac does better.
 
@@ -20,6 +20,8 @@ Unless a line says it was read from Strata's code or documentation, it was run o
 | --- | --- | --- | --- | --- |
 | Engine 0.1.60 (Metal) | `strata-engine-0.1.60-macos-arm64-metal.tar.gz` | v0.2.14 | 5,754,720 (15.8 MB unpacked) | `31ce1cd98bef83938434c15fcc94c1768340037b8fe7f292ee82836db0ca074d` |
 | Control 0.1.61 | `strata-control-0.1.61-macos-arm64.tar.gz` | v0.2.15 | 48,715,939 (149 MB unpacked) | `b5fcda16daee894260efc9726d19b526b70df869c46ed73f22e5345833c92a86` |
+| Engine 0.1.63 (Metal), pinned since #605 | `strata-engine-0.1.63-macos-arm64-metal.tar.gz` | v0.2.17 | 2,696,028 (6.9 MB unpacked) | `92a3e6440da49e98d0493b59418c501fd9744ade1bee3ac192abf4e3b7a9c2fd` |
+| Control 0.1.63, pinned since #605 | `strata-control-0.1.63-macos-arm64.tar.gz` | v0.2.17 | 45,613,317 (139 MB unpacked) | `f7ca382b30010772135f6f9ebfdd9cf4fd5046a5f3ba6bb8476cdc6264ebac4a` |
 
 The URLs are `https://github.com/Niko1221/Strata/releases/download/<release>/<archive>`. Note that the newest Mac engine is in the **v0.2.14** release, not in v0.2.15: it is listed only in the signed update feed, so "latest" does not find it. Pin both URLs and both SHA-256 in pi².
 
@@ -247,6 +249,32 @@ A user message with `{"type": "image_url", "image_url": {"url": "data:image/png;
 - **With `--parallel 2`** (`/v1/status` then says `"concurrency": {"serving": 2}`): both started at once (first tokens at 0.3 s and 0.9 s), each written at about 43 tokens/s, and both were done in 19.8 s. The engine's resident memory was within the first run's range (about 60 GB), so the extra slot's cost was too small to see here. Strata's own measurement on the same chip (`docs/MAC.md`): 0.65 GB of state per slot at a 36K context, the engine's own memory 8.3, 12.0, 14.0 and 16.0 GB for one to four slots, and the total rate rising to about 120 tokens/s at four.
 - So several pi² conversations can share one loaded model either way. With one slot, a conversation waits while another is answering; with two or more they answer side by side, each more slowly. The number of slots is fixed when the server starts.
 
+### Several requests at once (#605)
+
+In real use at `--parallel 4`, engine 0.1.60 ended itself three times when two long answers overlapped: `strata serve: no progress for 60 s during a request (idle -1) - stopping the engine so the server starts it again (issue #29)`, exit code -6. #605 found why, from Strata's source and on a server of its own on the installed model's files (M5 Max, 128 GB, IQ3_S at a 131,072-token context, pictures on, requests of a pi² worker's shape: its system prompt, 14 tools, a history of file reads, `reasoning_effort: high`, streamed).
+
+**Why it stopped.** The message is the engine's own watchdog (`strata-watchdog` in `src/program/generate.cpp`): once a second it looks at a `busy` flag and a counter of beats, and ends the engine with `std::abort()` (the -6) when the flag is up and nothing has beaten for `STRATA_WATCHDOG_S` seconds (60; 0 turns it off). Prompt chunks and the one-request loop's windows beat. With `--parallel N` above one the server starts the engine with `--batch N`, and as soon as a second request comes the requests are decoded in batch windows, which raise the flag. On CUDA a finished batch window beats; on Metal, `Verifier::run_slot_rows` returned before the beat. So on a Mac the engine was ended whenever **two or more answers had been written side by side for 60 s with no request admitted meanwhile**, whatever N, thinking or not; one answer alone, however long, never tripped it (it runs in the one-request loop), and neither did a request reading its prompt (its chunks beat). `idle -1` is the stage the last admission left; the stall report (`0 layers served`, the CPU pool and the one-request loop idle for minutes) describes the parts a Mac's batch windows do not use, not a hang. Reproduced on 0.1.60: two requests 5 s apart, answers of about 2,000 tokens each, stopped 60 s after the second was admitted; the same with overlaps of 45 and 58 s did not.
+
+**The fix is Strata's**, in engine 0.1.62 (Strata 0.2.16, 2026-11-18): the Metal batch window beats, "Without it a Metal --batch decode with no admission for 60 s was ended as "no progress"". pi² pins 0.2.17 (engine and control 0.1.63). It runs a model prepared by control 0.1.61 as it is, and its setup prepares one with pi²'s command line exactly as 0.1.61's did, the same seven steps and the same run config (tried in a scratch folder on clones of the model's files, in under a minute with the draft layer's tensors there). With 0.1.63, the same runs at 2, 3 and 4 at once never stopped, with up to ten minutes of answers written side by side. An engine older than 0.1.62 is started with one request at a time whatever the setting (`requestsAtOnce` in `localengine.ts`).
+
+**New in 0.1.62 and later: an SSD tier for parked conversations**, by default in `conversation-spill/` beside the pack's folder (for pi², `prepared/conversation-spill/` in the model's folder, which is out of backups), up to min(32 GiB, a quarter of the free disk). Each engine writes into a folder of its own (`<pid>-<nonce>`, with a `.lock`), a clean stop removes it and the next start removes those of engines that died. `--conversation-spill-dir` and `--conversation-spill-mib` (0 = off) set it.
+
+**What several at once are worth** (engine 0.1.63; one run each, on a Mac with other agents' builds running):
+
+| At once | First tokens of N fresh 42–44K prompts sent together | Each writes | All of them together while all decode | Engine's footprint |
+| --- | --- | --- | --- | --- |
+| 1 | 42 s | 113 tok/s (copying text; an agent's own turns 40–62) | — | 23 GB at `--parallel 1` |
+| 2 | 37, 137 s | 16–33 tok/s | 44 tok/s (76 with 8.6K prompts) | |
+| 3 | 69, 176, 274 s | 14–27 tok/s | 64 tok/s | |
+| 4 | 61, 154, 247, 351 s | 11–19 tok/s | 61 tok/s | 37 GB at `--parallel 4` |
+
+- **The total does not grow with more slots.** The Mac's engine runs a batch window slot by slot (`strata verify: batch windows of up to 4 sequences, run slot by slot in the Metal window`) and without draft rows (`--batch-mtp` is refused on Metal, #5674 in Strata), where one request alone uses the draft layer. Strata's MAC.md figure of about 120 tok/s at four is for 150-token prompts; at an agent's 40–50K tokens it is about half.
+- **Prompts are read one at a time** whatever the slots; while others decode, a prompt is read in ~1K-token parts at 394–461 tok/s, against 700–1,150 alone.
+- **Memory:** each slot takes about 3.3 GiB at a 131K context once there is more than one (`--batch 4: the slot sessions take 13.36 GiB`). `ps`'s resident memory, which counts the mapped model file, stayed at 60–68 GiB either way.
+- **Four agents working** (four conversations of a worker's shape, 42–43K first prompts, six turns each, every tool answered after 2 s with a real file's first 6 KB): at `--parallel 1` all was done in 426 s, at 4 in 472 s. The four cold first turns took longer at 4 (done by 335 s against 267 s); after them, four slots got more done (29.5 against 23.5 tok/s together), a turn took the same (median 20 s), and its first token came after a median 4.1 s against 11.8 s, the worst 11.9 s against 44.5 s. At one slot every later turn still reused its conversation's 42–51K tokens from Strata's conversation cache and read only the 1.5–1.9K new ones (1.8–3.3 s): one slot does not mean prompts read again, only waiting for the others' turns.
+
+So pi² runs four at once by default from #605 ([local-models.md](local-models.md#configuring)). What would make several worth more than one is Strata's: a Metal batch window that runs the slots together and takes draft rows.
+
 ## How fast it answers
 
 On the busy M5 Max, context 32K, draft layer on, one slot:
@@ -273,7 +301,7 @@ All of it is built (#291, #292, #293); where pi² does it is in [local-models.md
 - **Starting is slow the first time** (about 160 s, then a minute more on the first long prompt), and about 20 s after that. Show that it is starting, relay the server's lines, and do not time out early. A "Try it" at the end of setting up takes the slow first start out of the person's first conversation, if it sends a message longer than 64 tokens.
 - **The port opens only when the model is loaded**, so readiness is the ready file (or the port answering `/health`), not the process having started.
 - **Stopping** is SIGTERM to the server by pid; its children are in process groups of their own and are ended by Strata's watchers, not by pi²'s group signal.
-- **One request at a time by default.** Shared conversations queue; `--parallel 2` lets two answer at once, for a few GB more by Strata's figures. Which to use is a setting fixed at start.
+- **One request at a time by default** was the design; since #605 it is four, with Strata 0.1.63 ([Several requests at once](#several-requests-at-once-605)). Which to use is a setting fixed at start.
 - **Memory**: about 60 GB held while loaded, and most of it wired. Offer IQ3_S from 96 GB, and say plainly that the Mac has that much less while the model is loaded.
 - **Tools and pictures work** through the OpenAI API, and thinking is `reasoning_content`, so the model can be an OpenAI-completions model in pi²'s providers with tools, images and reasoning marked on.
 - **The licence** (Qwen Community License 1.0, clause 2) is for the owner to read before pi² offers the model; see [Licences](#licences).

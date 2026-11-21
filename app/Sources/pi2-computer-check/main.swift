@@ -403,9 +403,9 @@ Task { @MainActor in
         parked.isReleasedWhenClosed = false
         parked.title = "Parked"
         parked.level = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
-        check("a window that has never been ordered is not in the app's accessibility window list", !ParkedWindow.isListed(parked))
+        check("a window that has never been ordered is not where another app's accessibility search finds it", !ParkedWindow.isReachable(parked))
         check("raising it once within its own level joins it to the list", ParkedWindow.expose(parked))
-        check("it stays in the list after it is put back behind everything", ParkedWindow.isListed(parked))
+        check("it stays where the search finds it after it is put back behind everything", ParkedWindow.isReachable(parked))
         check("the mark for enhanced accessibility is put back as it was found", ParkedWindow.enhancedMark == false)
         let before = parked.frame
         _ = ParkedWindow.expose(parked)
@@ -419,11 +419,32 @@ Task { @MainActor in
         let ordinary = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         ordinary.isReleasedWhenClosed = false
         check("a window among ordinary windows is not parked, and is never raised",
-              !ParkedWindow.isParked(ordinary) && !ParkedWindow.expose(ordinary) && !ParkedWindow.isListed(ordinary))
+              !ParkedWindow.isParked(ordinary) && !ParkedWindow.expose(ordinary) && !ParkedWindow.isReachable(ordinary))
         ordinary.close()
         parked.close()
         NSApp.accessibilitySetValue(true, forAttribute: enhanced)
         check("the mark reads as set again, as an assistive app leaves it", ParkedWindow.enhancedMark == true)
+    }
+
+    await group("a parked window the app answers as its main or focused window is reachable, listed or not (#612)") {
+        // What a live copy's app element answered once AppKit stopped counting its parked window as on the active
+        // Space: the window as its main and focused window, an empty window list, and only the menu bar among its
+        // children. The computer tool read and clicked it through the main window; test-copy can-click, which asked
+        // the children alone, said no. A check cannot move a window off the active Space, so these are the answers.
+        let parked = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 550), styleMask: [.titled], backing: .buffered, defer: false)
+        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        parked.isReleasedWhenClosed = false
+        other.isReleasedWhenClosed = false
+        defer { parked.close(); other.close() }
+        let menuBar = NSMenu(title: "Main")
+        check("answered as the main window, though out of the windows and the children, it is reachable",
+              ParkedWindow.reachable(parked, main: parked, focused: nil, windows: [], children: [menuBar]))
+        check("answered as the focused window alone, it is reachable",
+              ParkedWindow.reachable(parked, main: nil, focused: parked, windows: [], children: []))
+        check("listed among the children beside a menu bar, it is reachable",
+              ParkedWindow.reachable(parked, main: nil, focused: nil, windows: [], children: [menuBar, parked]))
+        check("in none of them, it is not, though another window is the main one",
+              !ParkedWindow.reachable(parked, main: other, focused: other, windows: [other], children: [menuBar, other]))
     }
 
     await group("the tool's expose request reaches the copy's control folder and is taken for its answer") {

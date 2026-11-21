@@ -1,4 +1,5 @@
 import ComposeKit
+import MenuKit
 import SwiftUI
 import WindowKit
 
@@ -102,15 +103,7 @@ struct DashboardView: View {
     private var bar: some View {
         HStack(spacing: 10) {
             Menu {
-                ForEach(listed) { project in
-                    Button(action: { tick(project.id) }) {
-                        if watching(project.id) {
-                            Label(project.name, systemImage: "checkmark")
-                        } else {
-                            Text(project.name)
-                        }
-                    }
-                }
+                MenuChoices(listed.map { MenuChoice(id: $0.id, title: $0.name, ticked: watching($0.id)) }) { tick($0.id) }
                 if listed.isEmpty {
                     Button("No projects yet. Make one from a folder with +.") {}.disabled(true)
                 }

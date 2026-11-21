@@ -1,3 +1,4 @@
+import MenuKit
 import SwiftUI
 
 // The board's Rules tab (#476): the project's rules, read and changed, and a proposal waiting to be answered.
@@ -440,8 +441,9 @@ private struct BindsMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(ProjectRule.Binds.allCases) { value in
-                Button(value == binds ? "✓ \(value.title)" : value.title) { choose(value) }
+            // The one it binds now ticked as the model menus tick theirs, so each row says only whom it stands for (#597).
+            MenuChoices(ProjectRule.Binds.allCases.map { MenuChoice(id: $0.rawValue, title: $0.title, ticked: $0 == binds) }) { choice in
+                if let value = ProjectRule.Binds(rawValue: choice.id) { choose(value) }
             }
         } label: {
             Text(binds.title)

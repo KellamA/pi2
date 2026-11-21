@@ -1,6 +1,7 @@
 import ComposeKit
 import ComputerKit
 import BrowserKit
+import MenuKit
 import SwiftUI
 import WebKit
 import WindowKit
@@ -584,27 +585,18 @@ struct ModelChoices: View {
     let choose: (ModelInfo) -> Void
 
     var body: some View {
-        ForEach(engine.modelGroups, id: \.provider) { group in
-            let models = group.models.filter { !excluding.contains($0.ref) }
-            if models.count > 12 {
-                Menu(group.name) { modelButtons(models) }
-            } else if !models.isEmpty {
-                Section(group.name) { modelButtons(models) }
-            }
+        // Rows made by MenuKit, which pi2-window-check reads as a native menu draws them (#597).
+        let groups = engine.modelGroups.map { group in
+            MenuChoiceGroup(id: group.provider, title: group.name, choices: group.models.filter { !excluding.contains($0.ref) }.map { model in
+                MenuChoice(id: Self.id(of: model.ref), title: model.listName, ticked: model.ref == selected)
+            })
+        }
+        GroupedMenuChoices(groups) { choice in
+            if let model = engine.models.first(where: { Self.id(of: $0.ref) == choice.id }) { choose(model) }
         }
     }
 
-    private func modelButtons(_ models: [ModelInfo]) -> some View {
-        ForEach(models, id: \.ref) { model in
-            Button { choose(model) } label: {
-                if model.ref == selected {
-                    Label(model.listName, systemImage: "checkmark")
-                } else {
-                    Text(model.listName)
-                }
-            }
-        }
-    }
+    private static func id(of ref: ModelRef) -> String { "\(ref.provider)/\(ref.modelId)" }
 }
 
 struct ToolsMenu: View {

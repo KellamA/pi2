@@ -33,7 +33,7 @@ Each chat has a switch that turns the web off for it (#287). A new chat starts a
 
 ## The model
 
-Each chat has its own model and thinking level, chosen with `conversation.configure` as in the agent view, also in the middle of a chat. A new chat starts with the model chosen last in a chat (by `configure`, or passed to `conversation.create`), else chat mode's default model, else the agent view's: choosing a default model in Settings forgets the last one, so it counts from the next chat. The agent view keeps its own last model apart; choosing one in a chat does not change it.
+Each chat has its own model and thinking level, chosen with `conversation.configure` as in the agent view, also in the middle of a chat. A new chat starts with the model chosen last in a chat (by `configure`, or passed to `conversation.create`), else chat mode's default model, else the default model for agents (Settings › General, #617): choosing a default model in Settings forgets the last one, so it counts from the next chat. The agent view keeps its own last model apart; choosing one in a chat does not change it.
 
 ## Settings
 

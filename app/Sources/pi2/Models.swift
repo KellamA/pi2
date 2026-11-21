@@ -1113,6 +1113,11 @@ final class ExtraEvents {
     }
 
     private var slots: [String: Slot] = [:]
+    /// How many times each kind has changed, for a reading of it worked out once per change rather than at every look
+    /// (`WorkListings`, #599). Not observed: what reads it reads the value too.
+    private var generations: [String: Int] = [:]
+
+    func generation(_ kind: String) -> Int { generations[kind] ?? 0 }
 
     private func slot(_ kind: String) -> Slot {
         if let slot = slots[kind] { return slot }
@@ -1125,7 +1130,10 @@ final class ExtraEvents {
         get { slot(kind).value }
         set {
             let slot = slot(kind)
-            if slot.value != newValue { slot.value = newValue }
+            if slot.value != newValue {
+                slot.value = newValue
+                generations[kind, default: 0] += 1
+            }
         }
     }
 }

@@ -88,6 +88,9 @@ struct LocalStatus: Decodable {
     struct Running: Decodable { let id: String; let status: String; let startedAt: Double; let stage: String? }
     struct Folder: Decodable { let path: String; let isDefault: Bool; let free: Double? }
     struct Context: Decodable { let sizes: [Int]; let `default`: Int; let measured: Int; let gbPerToken: Double }
+    /// Requests at once (#605): the default for a new model, the most offered, the memory each takes per token of context
+    /// once there is more than one, and whether the engine set up runs several (one older than 0.1.62 runs one).
+    struct Requests: Decodable { let `default`: Int; let most: Int; let slotGBPerToken: Double; let several: Bool }
 
     let platform: Platform
     let engine: Engine
@@ -96,6 +99,7 @@ struct LocalStatus: Decodable {
     let downloads: [Download]
     let folder: Folder
     let context: Context
+    let requests: Requests?
     let running: [Running]?
 
     init?(_ value: JSONValue?) {
@@ -108,7 +112,14 @@ struct LocalStatus: Decodable {
 
     /// About how much memory a model takes with this context and this many requests at once, in GB.
     func memoryGB(needs: Double, context size: Int, parallel: Int) -> Double {
-        needs + context.gbPerToken * Double(size) * Double(parallel)
+        // With more than one at once, Strata keeps a session of its own for each request as well (#605).
+        let several = parallel > 1 ? (requests?.slotGBPerToken ?? context.gbPerToken) * Double(size) * Double(parallel) : 0
+        return needs + context.gbPerToken * Double(size) + several
+    }
+
+    /// What each request at once beyond the first takes in memory with this context, in GB.
+    func slotGB(context size: Int) -> Double {
+        (requests?.slotGBPerToken ?? context.gbPerToken) * Double(size)
     }
 }
 
@@ -588,17 +599,19 @@ private struct ConfigureLocalModelSheet: View {
                 Text("The picture reader takes about 1 GB more. Without it, the model is not sent pictures.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Stepper("Requests at once: \(parallel)", value: $parallel, in: 1...4)
-            Text("Several conversations can use the model at the same moment; each request run at once keeps its own context in memory, and each is slower than one alone.")
+            Stepper("Requests at once: \(parallel)", value: $parallel, in: 1...(status.requests?.most ?? 4))
+            Text("How many conversations the model answers at the same moment. With several, an agent whose tool has finished goes on within seconds instead of waiting for the others' whole turns. Together they write about as fast as one alone, since the Mac's engine takes them in turn, so each writes more slowly. With more than one, each keeps about \(LocalFormat.gb(status.slotGB(context: context))) more in memory at this context.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("One at a time is the steadier choice: with more, the engine can stop itself when two long answers overlap, and pi² then starts it again.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if status.requests?.several == false {
+                Text("The Strata engine set up on this Mac answers one request at a time whatever this says: with more, it stopped itself when two answers were written side by side for a minute. Update Strata in Settings › Providers › On this Mac to run several.")
+                    .font(.callout).foregroundStyle(Theme.warn).fixedSize(horizontal: false, vertical: true)
+            }
             Text("A change counts from the next time the model starts.").font(.callout).foregroundStyle(.secondary)
             HStack {
                 Button("Defaults") {
                     context = status.context.default
                     vision = model.options.visionFile != nil
-                    parallel = 1
+                    parallel = status.requests?.default ?? 4
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)

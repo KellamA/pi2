@@ -18,19 +18,19 @@ Every task an agent does in this repository gets a GitHub issue, so there is a r
 | Ending a turn unfinished | `wait` (on the person) or `block`, saying why; `resume` to go on | `wait N "…"` or `block N "…"`; `take N` to go on |
 | A decision that is the person's | `needs_you` `ask`, and carry on (a sub-chat too, #507) | `wait N "…"` |
 | A pull request | `pull_request` with `id`, which adds `Fixes #N` | `gh pr create --body-file FILE` |
-| Finished: what changed, what was and was not verified | `finish`; once a merge has closed the issue (`finish` then refuses), a `note` beginning `**Done.**` | `done N "…"`, even once a merge has closed it |
+| Finished: what changed, what was and was not verified | `finish` once merged, on the issue the merge closed | `done N "…"`, even once a merge has closed it |
 | Abandoned | `release`, saying why in a `note` | `drop N "why"` |
-| An idea outside the task: file it, do not do it | `file`, with no `class` | `idea "Title" -b "…"` |
+| An idea outside the task: file it, do not do it | `file` | `idea "Title" -b "…"` |
 | What is open | `list`, `show` | `list` |
 
-- If `work` refuses to `take` an issue already in progress, waiting or blocked with no holder, it was kept with `scripts/issue` so far: keep it with the script, and say so in your report.
-- **Classifying:** every open issue has a class, `local model` or `cloud model`, saying which kind of model it needs ([docs/issue-classes.md](docs/issue-classes.md)). Only the agent that hands out the work sets it: `work` `classify`, or `scripts/issue classify N local` or `cloud` (`--model` when it files). A worker never does, and never gives `file` a `class`, though the tool would take one.
+- If `work` refuses an issue as taken outside the tool, it was kept with `scripts/issue` so far: keep it with the script, and say so in your report.
+- **Classifying:** every open issue has a class, `local model` or `cloud model`, saying which kind of model it needs ([docs/issue-classes.md](docs/issue-classes.md)). Only the agent that hands out the work sets it: `work` `classify`, or `scripts/issue classify N local` or `cloud` (`--model` when it files). A worker never does: `file` leaves out a class a worker gives it.
 - **Not tracking:** only if GitHub cannot be reached, or the person said not to track something: `scripts/issue skip "why"`, or in a project say so in your report.
 - Mention the issue in commit messages and pull requests (`Fixes #N` closes it on merge; for a part, `Part of #N`, and `pull_request` without `id`).
 - A question that changes no files needs no issue.
 - **Checking the board:** `scripts/issue audit` lists what is wrong (a closed issue with a status label, an open one with none or more than one, one in progress with no activity for a day, an agent's issue closed as completed with no `**Done.**` summary, the script's or the tool's) and exits non-zero if anything is. It changes nothing. A workflow, `.github/workflows/issue-labels.yml`, takes the status labels off any closed issue and puts `backlog` on one reopened with none.
 
-The repository is public, and so are its issues. Write them for any reader: no personal details, keys, or paths from this Mac (the script turns the home folder into `~`; the tool posts what it is given).
+The repository is public, and so are its issues. Write them for any reader: no personal details, keys, or paths from this Mac (the script and the tool turn the home folder into `~`).
 
 ### The backstop under Claude Code
 

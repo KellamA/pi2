@@ -152,6 +152,10 @@ try {
 	await peer.until("the other app sees the winner", () => peer?.events.work?.projects[projectId]?.[0]?.takenBy?.conversationId === winner);
 	refusal(await socket.tool(loser, "wait", { id }), /Only the holder/);
 	assert.equal(value(await socket.tool(winner, "wait", { id, text: "Waiting for a response" })).state, "waiting");
+	// Taking what it holds is no error, and says how to go on (#604).
+	const mine = await socket.tool(winner, "take", { id });
+	assert.equal(mine.isError, false, mine.text);
+	assert.match(mine.text, new RegExp(`^#${id} is yours already, and waiting: use resume to go on\\.\\n\\n\\{`));
 	assert.equal(value(await socket.tool(winner, "block", { id, text: "Blocked on the response" })).state, "blocked");
 	assert.equal((await act(id, "resume")).item.state, "in_progress");
 	assert.deepEqual((await show(id)).takenBy, holder);
@@ -181,6 +185,16 @@ try {
 	assert.equal((await act(id, "note", { text: "Person's note" })).item.notes.at(-1).by.kind, "person");
 	assert.equal((await act(id, "close", { as: "dropped" })).item.state, "dropped");
 	step("concurrent tools claim once, report the holder, and persist state, notes, classification and result");
+
+	// Only the orchestrator classifies: another agent's item is filed unclassed, and told so in a line (#604).
+	const unclassed = await socket.tool(worker, "file", { title: "With a class", class: "local" });
+	assert.equal(unclassed.isError, false, unclassed.text);
+	const [unclassedItem, unclassedLine] = unclassed.text.split("\n\n");
+	assert.equal(JSON.parse(unclassedItem).class, null);
+	assert.equal(unclassedLine, "Filed without a class: only the orchestrator classifies work, and it will.");
+	const classed = await socket.tool(parent, "file", { title: "Classed by the orchestrator", class: "cloud" });
+	assert.equal(value(classed).class, "cloud", "the orchestrator's class is kept");
+	for (const item of [JSON.parse(unclassedItem).id, value(classed).id]) await act(item, "close", { as: "dropped" });
 
 	const projectSettings = (withoutAsking: Record<string, boolean>) => socket.call("projects.set", { id: projectId, settings: { withoutAsking } });
 	await socket.call("conversation.configure", { id: worker, access: "none" });
@@ -241,6 +255,10 @@ try {
 	assert.equal(report.work, open);
 	assert.equal(report.delivered, null);
 	refusal(await socket.tool(child, "assign", { id: filed.id, agent: "Worker" }), /Only the orchestrator assigns work/);
+	// The assigned sub-chat that takes its own work is told it is its already (#604).
+	const ownTake = await socket.tool(child, "take", { id: open });
+	assert.equal(ownTake.isError, false, ownTake.text);
+	assert.match(ownTake.text, new RegExp(`^#${open} is yours already: carry on\\.`));
 	assert.equal(value(await socket.tool(child, "note", { id: open, text: "From its own sub-chat" })).notes.length, 1);
 	const finish = socket.tool(child, "finish", { id: open, text: "Assigned work complete" });
 	await decide("closeWork", "once");

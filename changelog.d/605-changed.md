@@ -1,0 +1,2 @@
+### Changed
+- A model newly set up on this Mac answers four requests at once, so four agents can work on it together: each goes on within seconds of its tool finishing instead of waiting for the others' whole turns. Together they write about as fast as one alone, and each request at once takes about 3 GB more memory at a 131K context, which the model's settings now show. A model set up before keeps its setting.
