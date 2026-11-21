@@ -602,9 +602,10 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 <script>
 const buttons = document.querySelectorAll('nav button[data-s]');
 function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id===id)); buttons.forEach(b=>b.classList.toggle('on', b.dataset.s===id)); history.replaceState(null,'','#'+id); }
-buttons.forEach(b=>b.addEventListener('click',()=>show(b.dataset.s)));
+// onclick, not addEventListener: a page that runs this script twice (some previewers do) still toggles once a click.
+buttons.forEach(b=>{ b.onclick=()=>show(b.dataset.s); });
 show((location.hash||'#pair').slice(1));
 const theme=document.getElementById('theme');
-theme.addEventListener('click',()=>{ const light=document.body.classList.toggle('light'); theme.textContent= light?'Dark':'Light'; });
+theme.onclick=()=>{ const light=document.body.classList.toggle('light'); theme.textContent= light?'Dark':'Light'; };
 </script>
 </body></html>
