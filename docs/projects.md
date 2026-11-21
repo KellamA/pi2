@@ -1020,7 +1020,7 @@ work {
 
 Each action is a row of the table in [3.11](#311-work-pi2work-pi2github-githubjson), with the same result and error shapes for both kinds of list. Besides:
 
-- `list`, `show`: the items, or one with its text, notes and result; for GitHub, with when the listing was read.
+- `list`, `show` (#595): `list` answers one plain line an item — its number, state, class, who has it and in which sub-chat, when it last changed and its title — then, for a GitHub project, a line for each pull request of the listing with its checks and its review in a word, a count by state, and when the listing was read. Never the items' text or notes: an orchestrator lists its work often, and their prose would be read again at every later turn. `show` answers one item the same way, then its text, what finishing it said, and its notes: oldest first, or newest first when there are many, a long one cut, and a line saying how many more there are and where to read them (its page on GitHub, or the project's Work tab). Both answer in plain lines as `project_settings` `show` does, not JSON; a script asks the `work.list` and `work.show` requests for the items as they are.
 - `pull_request` (GitHub): opens one from the branch this conversation's folder is on, in the attached repository; with `id`, adds "Fixes #<id>" to the text unless it is there. Answers its number and address.
 - `review` (GitHub): posts the finding on the pull request, as a comment beginning with the agent's line and the verdict.
 - `assign` answers as `delegate` with `wait: false` does. `merge` merges under the `merge` switch. `send_back` as [3.11](#311-work-pi2work-pi2github-githubjson) says.

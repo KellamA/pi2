@@ -32,6 +32,15 @@ export type WorkItem = {
 	closedAt: number | null;
 	url?: string;
 };
+/** What the tool's `list` says of a pull request (#595): the fields of github.ts's own `PullRequest` that it reads. */
+export type PullSummary = {
+	number: number;
+	title: string;
+	state: "open" | "merged" | "closed";
+	draft: boolean;
+	checks: "passing" | "failing" | "pending" | "none";
+	findings: { verdict: "approve" | "changes" | "comment"; at: number }[];
+};
 export type WorkDoc = { projects: Record<string, { items: Record<string, WorkItem>; next: number }> };
 export interface WorkBackend {
 	list(project: Project, filter: { states?: WorkState[] }): Promise<WorkItem[]>;
@@ -92,6 +101,8 @@ export type GithubWork = {
 	backend(project: Project, writing: GithubWriting): WorkBackend;
 	/** When the listing was read; null when it never was. */
 	readAt(project: Project): number | null;
+	/** The pull requests the listing holds, for the tool's `list` answer (#595). */
+	pulls(project: Project): PullSummary[];
 	/** A line for the tool's `list` and `show`: when the listing was read, and why it is not newer. */
 	listingNote(project: Project): string;
 	/** A pull request's action (5.7): the text the model is given, and the change it was recorded as. */
@@ -271,6 +282,104 @@ type Write = { call?: Call; launch?: Runner; confirmedSwitch?: SwitchName; assig
 
 /** The line of news for a change to a work item. */
 export const workNewsText = (item: Pick<WorkItem, "id" | "title">, action: string) => `Work #${item.id}: ${item.title.replace(/\s+/g, " ")} (${action}).`;
+
+// ---- How the tool answers `list` and `show` (#595): a line an item, so that a whole backlog's prose is not read again at
+// every later turn. `show` gives one item's text and notes; the newest notes come first, and a cut says what is left.
+
+/** How much of an item's text `show` gives before it says the rest is elsewhere. */
+const TEXT_SHOWN = 4_000;
+/** How many characters of notes `show` gives before it says how many more there are. */
+const NOTES_SHOWN = 4_000;
+/** How many notes `show` gives at most, however short they are, and how much of one note. */
+const NOTES_MOST = 12;
+const NOTE_SHOWN = 1_200;
+
+const STATE_WORDS: Record<WorkState, string> = { open: "open", in_progress: "in progress", waiting: "waiting", blocked: "blocked", done: "done", dropped: "dropped" };
+const when = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")}Z`;
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/** "Worker, sub-chat 34", or "nobody". */
+const holderWords = (item: WorkItem, name: (id: string) => string) =>
+	item.takenBy === null ? "nobody" : `${name(item.takenBy.agentId)}, sub-chat ${item.takenBy.conversationId}`;
+
+/** One line for a piece of work: its number, state, class, who has it and in which sub-chat, when it last changed, and its title. */
+function itemLine(item: WorkItem, name: (id: string) => string): string {
+	const modelClass = item.class === null ? "not classified" : `${item.class} model`;
+	return `#${item.id} ${STATE_WORDS[item.state]} · ${modelClass} · ${holderWords(item, name)} · changed ${when(item.updatedAt)} · ${oneLine(item.title)}`;
+}
+
+/** One line for a pull request: its number, state and draft, its checks and its review, each in a word, and its title. */
+function pullLine(pull: PullSummary): string {
+	const checks = pull.checks === "none" ? "no checks" : `checks ${pull.checks}`;
+	const newest = [...pull.findings].sort((one, other) => one.at - other.at).at(-1);
+	const review = newest === undefined ? "no review" : newest.verdict === "approve" ? "approved" : newest.verdict === "changes" ? "changes requested" : "comments only";
+	const state = pull.state === "merged" ? "merged" : pull.state === "closed" ? "closed" : pull.draft ? "open, a draft" : "open";
+	return `#${pull.number} pull request ${state} · ${checks} · ${review} · ${oneLine(pull.title)}`;
+}
+
+/** How many there are, by state, so that a list says how the backlog stands without any of its words. */
+function countWords(items: WorkItem[], pulls: PullSummary[]): string {
+	const order: WorkState[] = [...openStates, ...closedStates];
+	const byState = order
+		.filter((state) => items.some((item) => item.state === state))
+		.map((state) => `${items.filter((item) => item.state === state).length} ${STATE_WORDS[state]}`);
+	const said = `${items.length} ${items.length === 1 ? "item" : "items"}${byState.length === 0 ? "" : `: ${byState.join(", ")}`}.`;
+	if (pulls.length === 0) return said;
+	const open = pulls.filter((pull) => pull.state === "open").length;
+	return `${said} ${pulls.length} ${pulls.length === 1 ? "pull request" : "pull requests"}, ${open} of them open.`;
+}
+
+/** The tool's `list` answer: a line an item, a line a pull request, how many there are, and when GitHub was read. */
+function listAnswer(project: Project, items: WorkItem[], name: (id: string) => string): string {
+	const pulls = project.repository === null || github === undefined ? [] : github.pulls(project);
+	const lines = items.map((item) => itemLine(item, name));
+	if (pulls.length > 0) lines.push(...pulls.map(pullLine));
+	lines.push(countWords(items, pulls));
+	if (project.repository !== null && github !== undefined) lines.push(github.listingNote(project));
+	return lines.join("\n");
+}
+
+/** `text` cut at `most` characters, at a word or a line break where there is one, and how much was left out. */
+function cut(text: string, most: number): { shown: string; rest: number } {
+	if (text.length <= most) return { shown: text, rest: 0 };
+	const window = text.slice(0, most);
+	const at = Math.max(window.lastIndexOf("\n"), window.lastIndexOf(" "));
+	const shown = at > most * 0.6 ? window.slice(0, at) : window;
+	return { shown, rest: text.length - shown.length };
+}
+
+/** Where the rest of a cut item is: its page on GitHub, or the tab that shows it. */
+const restWords = (item: WorkItem) => (item.url === undefined ? "the project's Work tab shows it" : `the rest is on its page: ${item.url}`);
+
+/** The tool's `show` answer: the item's line, its text, what finishing it said, and its notes. */
+function showAnswer(item: WorkItem, name: (id: string) => string): string {
+	const lines = [itemLine(item, name)];
+	const text = cut(item.text.trim(), TEXT_SHOWN);
+	if (text.shown !== "") lines.push("", text.shown);
+	if (text.rest > 0) lines.push(`[${text.rest} more characters of the text; ${restWords(item)}]`);
+	if (item.result !== null && item.result.trim() !== "") lines.push("", `Done: ${item.result.trim()}`);
+	if (item.notes.length > 0) {
+		// A long item is read from its newest notes, which say where it stands now; a short one in the order it was written.
+		const newestFirst = item.notes.length > NOTES_MOST || item.notes.reduce((all, note) => all + note.text.length, 0) > NOTES_SHOWN;
+		const order = newestFirst ? [...item.notes].reverse() : item.notes;
+		const shown: typeof item.notes = [];
+		let used = 0;
+		for (const note of order) {
+			if (shown.length >= NOTES_MOST || (shown.length > 0 && used + note.text.length > NOTES_SHOWN)) break;
+			shown.push(note);
+			used += note.text.length;
+		}
+		lines.push("", `Notes (${item.notes.length})${newestFirst ? ", newest first" : ""}:`);
+		for (const note of shown) {
+			const who = note.by.kind === "person" ? "the person" : name(note.by.agentId);
+			const said = cut(oneLine(note.text), NOTE_SHOWN);
+			lines.push(`${when(note.at)}, ${who}: ${said.shown}${said.rest === 0 ? "" : ` [+${said.rest} characters]`}`);
+		}
+		const left = item.notes.length - shown.length;
+		if (left > 0) lines.push(`[${left} more ${left === 1 ? "note" : "notes"}; ${restWords(item)}]`);
+	}
+	return lines.join("\n");
+}
 
 /**
  * Check, in the commit `tx`, that `by` may make `action` now (both backends): the project live and not archived, with the
@@ -554,7 +663,7 @@ export const work: Feature = (host, engine) => {
 
 	const tool = defineTool({
 		name: "work",
-		description: "Keep this project's work list. Use list or show to read it; file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it.",
+		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it.",
 		parameters: obj({
 			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, classify, pull_request, review, merge, or send_back" }),
 			id: opt(int({ description: "Work item number (on GitHub, the issue's); for review, merge and send_back, the pull request's" })),
@@ -591,9 +700,12 @@ export const work: Feature = (host, engine) => {
 						const done = await github.pull(project, action as PullAction, by, { id, ...args }, { api, context });
 						return { output: toolText(done.text), ...(done.change === undefined ? {} : { details: { change: done.change } }) };
 					}
-					const listed = (value: unknown) => toolText(project.repository === null || github === undefined ? JSON.stringify(value) : `${JSON.stringify(value)}\n\n${github.listingNote(project)}`);
-					if (action === "list") return { output: listed(await backendFor(engine, project).list(project, { states: filtered(args.states) ?? openStates })) };
-					if (action === "show") return { output: listed(await backendFor(engine, project).show(project, numberId(id))) };
+					const names = (id: string) => host.agent(id)?.name ?? id;
+					if (action === "list") {
+						const items = await backendFor(engine, project).list(project, { states: filtered(args.states) ?? openStates });
+						return { output: toolText(listAnswer(project, items, names)) };
+					}
+					if (action === "show") return { output: toolText(showAnswer(await backendFor(engine, project).show(project, numberId(id)), names)) };
 					if (args.class !== undefined && args.class !== "local" && args.class !== "cloud") throw new Error("class must be local or cloud");
 					item = await mutate(project, { kind: "agent", agentId, conversationId: number }, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
 				}

@@ -192,6 +192,7 @@ try {
 	assert.equal(typeof readAt, "number");
 	const listing = await client.work(reviewer, "list");
 	assert.match(listing.text, /\(GitHub's listing of example\/widgets, read /);
+	assert.match(listing.text, /^1 item: 1 open\.$/m, "a line an item, a count, and no text (#595)");
 
 	const [a, b] = await Promise.all([client.work(worker, "take", { id: 1 }), client.work(reviewer, "take", { id: 1 })]);
 	assert.notEqual(a.isError, b.isError, `exactly one gets it: ${a.text} / ${b.text}`);
@@ -211,8 +212,11 @@ try {
 		await client.work(winner, "release", { id: 1 });
 		value(await client.work(worker, "take", { id: 1 }));
 	}
-	const shown = value(await client.work(reviewer, "show", { id: 1 }));
-	assert.deepEqual([shown.state, shown.takenBy, shown.notes], ["in_progress", { agentId: workerId, conversationId: worker }, []]);
+	// `show` answers in plain lines: its line, its text, and its notes (#595).
+	const shown = (await client.work(reviewer, "show", { id: 1 })).text;
+	assert.match(shown, /^#1 in progress · cloud model · (Worker|Reviewer), sub-chat \d+ · changed .+ · Make widgets blue$/m);
+	assert.match(shown, /\n\nThey are grey\./);
+	assert.ok(!shown.includes("Notes ("), "no notes yet");
 	step("an agent files an issue (labels made as scripts/issue makes them), two take it at once and one holds it");
 
 	const opened = await client.work(worker, "pull_request", { id: 1, title: "Blue widgets" });
@@ -257,6 +261,7 @@ try {
 		{ name: "lint", url: "https://ci.example.invalid/lint" },
 	]);
 	assert.deepEqual((client.github(projectId)?.pulls ?? []).map((one: any) => [one.number, one.checks, one.failingChecks]), [[3, "none", []], [2, "failing", named]]);
+	assert.match((await client.work(reviewer, "list")).text, /^#2 pull request open · checks failing · no review · Blue widgets$/m, "a pull request's checks, in a word (#595)");
 	changeStandIn((whole) => void (whole.repos["example/widgets"].pulls[0].statusCheckRollup = []));
 	value(await client.work(parent, "classify", { id: 1, class: "cloud" }));
 	const calmed = await client.until("none failing", () => {
@@ -272,6 +277,7 @@ try {
 	const finding = await client.until("the finding", () => client.github(projectId)?.pulls?.find((one: any) => one.number === 2)?.findings?.[0]);
 	assert.deepEqual([finding.agentName, finding.verdict, finding.text], ["Reviewer", "changes", "Use a darker blue."]);
 	assert.match(widgets().pulls[0].comments[0].body, /^\*From Reviewer, an agent of the pi² project “Widgets”\.\*\n\n\*\*Changes requested\.\*\* Use a darker blue\./);
+	assert.match((await client.work(reviewer, "list")).text, /^#2 pull request open · no checks · changes requested · Blue widgets$/m, "and its review, in a word");
 	refusal(await client.work(worker, "send_back", { id: 2, text: "Not mine to send" }), /Only the orchestrator can send a pull request back/);
 	refusal(await client.work(worker, "merge", { id: 2 }), /Only the orchestrator can merge a pull request/);
 
@@ -367,10 +373,10 @@ try {
 	assert.match(down.error, /error connecting to api\.github\.com/);
 	assert.deepEqual([down.issues, down.unknown], [before, []]);
 	const cached = await client.work(worker, "list");
-	assert.deepEqual(value(cached).map((item: any) => item.id), [5, 4]);
+	assert.deepEqual([...cached.text.matchAll(/^#(\d+) (?!pull request)/gm)].map((match) => Number(match[1])), [5, 4]);
 	assert.match(cached.text, /It is not newer: GitHub cannot be reached/);
 	changeStandIn((whole) => void (whole.fail = { kind: "rate_limited" }));
-	assert.equal(value(await client.work(worker, "show", { id: 4 })).id, 4, "the cached item, while GitHub refuses");
+	assert.match((await client.work(worker, "show", { id: 4 })).text, /^#4 /, "the cached item, while GitHub refuses");
 	assert.match((await client.until("rate limited", () => client.github(projectId)?.state === "rate_limited" && client.github(projectId))).error, /rate limit/);
 	changeStandIn((whole) => delete whole.fail);
 	value(await client.work(worker, "note", { id: 4, text: "Back again" }));
