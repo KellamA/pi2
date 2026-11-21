@@ -124,11 +124,16 @@ final class ProjectLive {
     fileprivate(set) var needs = 0
     /// How many of its runs are working (not waiting for the person).
     fileprivate(set) var working = 0
-    /// Whether the orchestrator's own conversation is running.
+    /// Whether the orchestrator's own conversation is running: working, or waiting for the person or a limit.
     fileprivate(set) var orchestratorWorking = false
+    /// Whether the orchestrator waits for the person, or for a provider's limit: the project's row says so, since it
+    /// is the orchestrator's row too (#600).
+    fileprivate(set) var orchestratorWaiting = false
+    fileprivate(set) var orchestratorAtLimit = false
     /// The conversations working or waiting now, but the orchestrator's, oldest run first.
     fileprivate(set) var runs: [Int] = []
     /// Its other conversations, newest first by when they were made, so that one being used does not reorder the list.
+    /// One working now is listed with the working runs instead, so that no conversation has two rows (#600).
     fileprivate(set) var others: [ProjectConversation] = []
 }
 
@@ -251,12 +256,18 @@ final class ProjectsStore {
             let working = mine.count(where: { $0.status != "waiting" })
             if live.working != working { live.working = working }
             let orchestrator = project?.conversation
-            let orchestratorWorking = orchestrator.map { conversation in mine.contains { $0.conversationId == conversation } } ?? false
+            let orchestratorRun = orchestrator.flatMap { conversation in mine.first { $0.conversationId == conversation } }
+            let orchestratorWorking = orchestratorRun != nil
             if live.orchestratorWorking != orchestratorWorking { live.orchestratorWorking = orchestratorWorking }
+            let orchestratorWaiting = orchestratorRun?.status == "waiting"
+            if live.orchestratorWaiting != orchestratorWaiting { live.orchestratorWaiting = orchestratorWaiting }
+            let orchestratorAtLimit = orchestratorRun?.limit != nil
+            if live.orchestratorAtLimit != orchestratorAtLimit { live.orchestratorAtLimit = orchestratorAtLimit }
             let runs = mine.map(\.conversationId).filter { $0 != orchestrator }
             if live.runs != runs { live.runs = runs }
+            let running = Set(runs)
             let others = conversations
-                .filter { $0.projectId == id && $0.parent == nil && $0.orchestrator == nil && !$0.isChat && $0.id != orchestrator }
+                .filter { $0.projectId == id && $0.parent == nil && $0.orchestrator == nil && !$0.isChat && $0.id != orchestrator && !running.contains($0.id) }
                 .sorted { ($0.createdAt ?? 0, $0.id) > ($1.createdAt ?? 0, $1.id) }
                 .map { ProjectConversation(id: $0.id, title: $0.title, agentId: $0.runsAs ?? $0.agentId) }
             if live.others != others { live.others = others }
