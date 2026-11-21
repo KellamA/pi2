@@ -369,7 +369,8 @@ struct TestCopyControl: NSViewRepresentable {
                 // only by an ordering event, which a copy's launch window never gets (#579). Raise this one within
                 // its own level, where it stays behind every ordinary window and nothing on screen changes, and put
                 // it back — as the Window menu's own command does for a window someone chose. The raise is what
-                // the tool needs; whether it can then be read is the tool's own answer to give.
+                // the tool needs. The answer is whether the tool's search would then find it, asked of every attribute
+                // that search reads, not of the window list alone, which comes and goes with the Space (#612).
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 // A copy opened by hand has no launch switch parking its window, and raising a window among ordinary
                 // ones would put it over the person's work, so that one is never raised.
@@ -377,9 +378,9 @@ struct TestCopyControl: NSViewRepresentable {
                     return ["error": "the main window is not parked behind other windows, so it was not raised"]
                 }
                 _ = ParkedWindow.expose(window)
-                return ParkedWindow.isListed(window)
-                    ? ["result": "Raised the parked main window within its own level"]
-                    : ["error": "the main window did not join the app's accessibility window list when raised"]
+                return ParkedWindow.isReachable(window)
+                    ? ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it"]
+                    : ["error": "the app does not give its main window to accessibility, even after raising it: it is not the app's main or focused window, nor among its windows, so the computer tool would not find it"]
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size

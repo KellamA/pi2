@@ -23,6 +23,9 @@ let package = Package(
         .target(name: "PiStyle", path: "Sources/PiStyle"),
         // Window sizing and diagnostics shared by the app and pi2-window-check (#400, #436, #542).
         .target(name: "WindowKit", dependencies: ["PiStyle"], path: "Sources/WindowKit"),
+        // The rows of the app's pop-up menus, and an agent's avatar drawn as a picture for one (#597). Its own module so
+        // pi2-window-check can read what AppKit makes of them.
+        .target(name: "MenuKit", path: "Sources/MenuKit"),
         // What a file linked in a conversation is once its path is made whole, and what a click and its menu do (#451).
         // Its own module so pi2-file-link-check can check it.
         .target(name: "FileLinkKit", path: "Sources/FileLinkKit"),
@@ -34,7 +37,7 @@ let package = Package(
         .target(name: "PeerKit", path: "Sources/PeerKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "MenuKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
             // inspector (docs/development.md). On in a debug build, and in an optimised development build, which
@@ -57,8 +60,8 @@ let package = Package(
         // Checks ComposeKit's Return key: the decision, then a real SwiftUI field in an off-screen window of its own.
         .executableTarget(name: "pi2-compose-check", dependencies: ["ComposeKit"], path: "Sources/pi2-compose-check"),
         // Checks WindowKit: a window's smallest size stays fixed whatever its SwiftUI content holds, in off-screen
-        // windows of its own.
-        .executableTarget(name: "pi2-window-check", dependencies: ["WindowKit"], path: "Sources/pi2-window-check"),
+        // windows of its own. And MenuKit: what each pop-up menu's rows come out as in a native menu, never shown.
+        .executableTarget(name: "pi2-window-check", dependencies: ["WindowKit", "MenuKit", "PiStyle"], path: "Sources/pi2-window-check"),
         .executableTarget(name: "pi2-login-item-check", dependencies: ["LoginItemKit"], path: "Sources/pi2-login-item-check"),
         // Checks FileLinkKit against files it makes in a temporary folder of its own. Shows nothing in Finder.
         .executableTarget(name: "pi2-file-link-check", dependencies: ["FileLinkKit"], path: "Sources/pi2-file-link-check"),

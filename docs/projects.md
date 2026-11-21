@@ -546,6 +546,8 @@ type WorkItem = {
 	closedAt: number | null;
 	/** GitHub only: the issue's address. */
 	url?: string;
+	/** GitHub only: who held it when it was closed outside pi² (a merged pull request's "Fixes #N"), until that holder finishes it (#604). */
+	heldAtClose?: { agentId: string; conversationId: number };
 };
 
 type WorkState = "open" | "in_progress" | "waiting" | "blocked" | "done" | "dropped";
@@ -559,19 +561,19 @@ Every action, for either kind of list, goes through one table. "Holder" is `take
 
 | Action | From | To | Holder after | Who may |
 |---|---|---|---|---|
-| `file` | — | open | none | any agent of the project (under `fileWork`), the person |
-| `take` | open | in_progress | the caller | any agent; refused if the item has a holder ("#12 is taken by Forge, in sub-chat 14") |
+| `file` | — | open | none | any agent of the project (under `fileWork`), the person; a `class` only from the orchestrator and the person: another agent's is left out, and its answer says so in a line (#604) |
+| `take` | open | in_progress | the caller | any agent; refused if the item has a holder ("#12 is taken by Forge, in sub-chat 14"), but the holder itself is answered that it is its already, with no error and nothing written (#604) |
 | `assign` | open | in_progress | the assigned agent and the sub-chat started for it, in a worktree of its own unless `worktree: false` (#596) | the orchestrator (under `startAgents`), the person |
 | `release` | in_progress, waiting, blocked | open | none | the holder, the orchestrator, the person |
 | `wait` | in_progress, blocked | waiting | unchanged | the holder |
 | `block` | in_progress, waiting | blocked | unchanged | the holder |
 | `resume` | waiting, blocked | in_progress | unchanged | the holder, the orchestrator, the person |
-| `finish` | in_progress, waiting, blocked | done | none | the holder (under `closeWork`) |
+| `finish` | in_progress, waiting, blocked; done, on GitHub, while `heldAtClose` names the caller (#604) | done | none | the holder (under `closeWork`) |
 | `close` | any open state | done or dropped | none | the orchestrator (under `closeWork`), the person |
 | `reopen` | done, dropped | open | none | the orchestrator, the person |
 | `note`, `edit`, `classify` | any | unchanged | unchanged | `note`: any agent; `edit`, `classify`: the orchestrator, the person |
 
-An action from a state the table does not list is refused, saying the state it is in: "#12 is done. Reopen it first." `take` and `assign` of a closed item are refused that way. `assign` claims the item and starts the sub-chat as one step: if the start is refused (a limit, a switch the person denies, an error), the claim is let go in the same step and the item is as it was.
+An action from a state the table does not list is refused, saying the state it is in: "#12 is done. Reopen it first." An item in progress, waiting or blocked with no holder, which on GitHub is one taken or paused with `scripts/issue` or by hand, is refused for `take`, `assign` and every action only its holder may make, saying it was taken outside the work tool and that the orchestrator's `release` hands it over; the tool reads no holder from the script's comments, since they name no agent (#604). `take` and `assign` of a closed item are refused that way. `assign` claims the item and starts the sub-chat as one step: if the start is refused (a limit, a switch the person denies, an error), the claim is let go in the same step and the item is as it was.
 
 **The backend.** `work.ts` (#467) owns the dispatcher: the `work` tool, the `work.*` requests, the table above, the shapes of results and errors. It calls one of two backends, chosen by the project's `repository`, through one interface:
 
@@ -598,8 +600,9 @@ The attached repository is named in every operation: every `gh` command pi² run
 | `notes` | comments, oldest first, by whom pi² posted each (from its first line, below) or the person otherwise |
 | `result` | the comment that closed it as done, which pi² begins with `**Done.**` |
 | `takenBy` | the newest "Taken by" comment pi² posted that no later "Released" comment of pi²'s for the same holder follows, nor any later "Done." or "Dropped." comment of pi²'s, while the issue is in progress, waiting or blocked (#468: a "Released" names its holder, so the loser's in a race does not release the winner) |
+| `heldAtClose` | the same "Taken by", on an issue closed as completed with no "**Done.**" comment after it, as a merged pull request leaves it: its holder may still `finish` it, which posts the summary, takes the status label off and closes nothing (#604). pi² cannot tell a merge from a close by hand on GitHub, so either allows it; a close as not planned does not |
 
-Each comment pi² posts for an agent begins with a line naming it, `*From Forge, an agent of the pi² project “pi²”.*`, and ends with a marker GitHub does not show, `<!-- pi2:<intent id> -->`. Labels it needs and the repository lacks are made as `scripts/issue` makes them (the same names, colours and descriptions). Two `take`s at once on GitHub cannot be made one commit: after posting its "Taken by" comment, `take` reads the issue again, and if an earlier "Taken by" of another holder stands, it posts "Released" and is refused as above. (#468: the "Taken by" comments it weighs are those the read before it did not see, and any of the last ten minutes, which may be another take still on its way; an older one it saw on an open issue was left from before a close and reopen outside pi². `finish` and `close` always post "Done." or "Dropped.", with the text when there is one, which ends every hold.)
+Each comment pi² posts for an agent begins with a line naming it, `*From Forge, an agent of the pi² project “pi²”.*`, and ends with a marker GitHub does not show, `<!-- pi2:<intent id> -->`. Every title and text it posts has the home folder turned into `~`, as `scripts/issue` turns it (#604). Labels it needs and the repository lacks are made as `scripts/issue` makes them (the same names, colours and descriptions). (#604: an issue an agent files, takes or is assigned carries the `agent` label, as the script's do; `finish` and `close` take the status label off; `resume` posts one line, "Resumed by Forge, in conversation 14.", which is no note.) Two `take`s at once on GitHub cannot be made one commit: after posting its "Taken by" comment, `take` reads the issue again, and if an earlier "Taken by" of another holder stands, it posts "Released" and is refused as above. (#468: the "Taken by" comments it weighs are those the read before it did not see, and any of the last ten minutes, which may be another take still on its way; an older one it saw on an open issue was left from before a close and reopen outside pi². `finish` and `close` always post "Done." or "Dropped.", with the text when there is one, which ends every hold.)
 
 **Writes, and a write whose outcome is unknown.** Every write to GitHub (an issue filed, a comment, a label, closing, a pull request opened, a merge) is first recorded as an intent in `pi2.github`, then made, then marked done, each a commit:
 
@@ -639,6 +642,8 @@ type PullRequest = {
 	openedBy: { conversationId: number } | null;
 	/** The work item it fixes, from "Fixes #N" in its text. */
 	work: number | null;
+	/** Only what its row shows was read: no text, comments or checks; `github.show` reads the rest. (#599) */
+	partial?: true;
 };
 ```
 
@@ -646,7 +651,7 @@ type PullRequest = {
 
 **Send back** posts the reason on the pull request, and gives it to the conversation that opened it (from `openedBy`) as an input of its own kind, `pi2.sentBack { by: Who, number, reason }`, which the model reads as "<The person | Orchestrator> sent back pull request #12: <reason>" and the page shows as such, not as a message the person typed. The orchestrator is told in its catch-up when the person sent it.
 
-**The listing** (`github.json` in the data folder) is a cache, kept by project and repository (`{ "<projectId>": { "<owner>/<name>": { readAt, issues, pulls } } }`), so a listing never shows under another repository after one is changed. It holds the open issues and pull requests, and those closed in the last seven days. It is read at most once a minute per project, only while an app has said it shows that project's Work or Now tab (`projects.watch`, [4.2](#42-requests)) or an agent asks (`work` `list` or `show`), and at once after any write pi² makes. A `gh` that fails, is not signed in, or answers that the rate limit is reached leaves the last listing in place, with what went wrong (`state` in the `github` event: `ok`, `loading`, `signed_out`, `unreachable`, `rate_limited`, with `error` and `readAt`). An agent's `work` call then answers with the cached listing and says when it was read and why it is not newer.
+**The listing** (`github.json` in the data folder) is a cache, kept by project and repository (`{ "<projectId>": { "<owner>/<name>": { readAt, issues, pulls } } }`), so a listing never shows under another repository after one is changed. It holds the open issues and pull requests, and those closed in the last seven days. (#599: what is closed is held brief, without its text, comments and checks, and marked `partial: true`, until it is opened, which reads it whole with `github.show`; and a read asks `gh` its questions together, and between whole reads, one each half hour, only for what changed since the last read, so it takes about as long as the slowest single call.) It is read at most once a minute per project, only while an app has said it shows that project's Work or Now tab (`projects.watch`, [4.2](#42-requests)) or an agent asks (`work` `list` or `show`), and at once after any write pi² makes. A `gh` that fails, is not signed in, or answers that the rate limit is reached leaves the last listing in place, with what went wrong (`state` in the `github` event: `ok`, `loading`, `signed_out`, `unreachable`, `rate_limited`, with `error` and `readAt`). While a read runs, the listing stays as it was and the event says so with `reading: true` (#599). An agent's `work` call then answers with the cached listing and says when it was read and why it is not newer.
 
 ### 3.12 The record of changes (`pi2.changes`)
 
@@ -782,6 +787,7 @@ Errors every new request can give, besides its own:
 | `github.refresh { projectId }` | `{}` | Reads again now, within the once-a-minute limit |
 | `github.merge { projectId, number }` | `{}` | Merges with `gh pr merge --merge --repo …`; refuses one that cannot be merged, with GitHub's reason |
 | `github.sendBack { projectId, number, reason }` | `{}` | [3.11](#311-work-pi2work-pi2github-githubjson) |
+| `github.show { projectId, number, pull? }` | `{ item }`, or with `pull: true` `{ pull }` | Reads one issue or pull request whole now, into the listing, as the app does when the person opens one; what is closed is held brief until then (#599) |
 | `github.diff { projectId, number }` | `{ diff }` | As `gh pr diff --repo …` gives it, cut at 2 MB with a line saying so |
 | `github.settle { projectId, intent, happened }` | `{}` | The person says whether a write whose outcome pi² could not tell happened (`true`) or not (`false`) |
 | `github.unknown { projectId }` | `{ unknown }` | The project's writes of unknown outcome (the event's `unknown`), with the id each is settled by, for a script or a test copy (#573) |
@@ -814,7 +820,7 @@ type CarryOverState = { ranAt: number | null; backup: string | null; secretsPend
 { event: "projectRules"; projects: Record<string, ProjectRule[]> }
 { event: "reports"; projects: Record<string, Report[]> }               // undelivered, and the last seven days'
 { event: "work"; projects: Record<string, WorkItem[]> }                // lists kept by pi²
-{ event: "github"; projects: Record<string, { state: "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited"; error: string | null; readAt: number | null; repository: { owner: string; name: string }; issues: WorkItem[]; pulls: PullRequest[]; unknown: { intent: string; summary: string; at: number }[] }> }
+{ event: "github"; projects: Record<string, { state: "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited"; error: string | null; reading: boolean; readAt: number | null; repository: { owner: string; name: string }; issues: WorkItem[]; pulls: PullRequest[]; unknown: { intent: string; summary: string; at: number }[] }> }
 ```
 
 With the preview off, or on with nothing made yet, an app is sent exactly:
@@ -1016,7 +1022,7 @@ work {
 	text?: string;          // note, wait and block (why), finish (the result), file and edit (the text), review (the finding), send_back (the reason)
 	title?: string;         // file, edit, pull_request, assign (the sub-chat's title)
 	states?: string[];      // list: only items in these states; default every open one
-	class?: "local" | "cloud";   // file, classify
+	class?: "local" | "cloud";   // file (the orchestrator's only, #604), classify
 	agent?: string;         // assign
 	task?: string;          // assign: what to say beyond the work's own text
 	worktree?: string | false;  // assign: the branch for a git worktree of the sub-chat, as delegate's; false for the project's folder (#596)
@@ -1032,8 +1038,9 @@ Each action is a row of the table in [3.11](#311-work-pi2work-pi2github-githubjs
 - `list`, `show` (#595): `list` answers one plain line an item — its number, state, class, who has it and in which sub-chat, when it last changed and its title — then, for a GitHub project, a line for each pull request of the listing with its checks and its review in a word, a count by state, and when the listing was read. Never the items' text or notes: an orchestrator lists its work often, and their prose would be read again at every later turn. `show` answers one item the same way, then its text, what finishing it said, and its notes: oldest first, or newest first when there are many, a long one cut, and a line saying how many more there are and where to read them (its page on GitHub, or the project's Work tab). Both answer in plain lines as `project_settings` `show` does, not JSON; a script asks the `work.list` and `work.show` requests for the items as they are.
 - `pull_request` (GitHub): opens one from the branch this conversation's folder is on, in the attached repository; with `id`, adds "Fixes #<id>" to the text unless it is there. Answers its number and address.
 - `review` (GitHub): posts the finding on the pull request, as a comment beginning with the agent's line and the verdict.
+- `take`, `file`, `finish` (#604): `take` by the holder answers "#12 is yours already: carry on." (or, waiting or blocked, to `resume`) before the item, with no error; `file` with a `class` from an agent other than the orchestrator files the item unclassed and adds the line "Filed without a class: only the orchestrator classifies work, and it will."; `finish` by the holder of an issue a merge has just closed posts its summary there ([3.11](#311-work-pi2work-pi2github-githubjson), `heldAtClose`).
 - `assign` answers as `delegate` with `wait: false` does, and says where the sub-chat works. `merge` merges under the `merge` switch. `send_back` as [3.11](#311-work-pi2work-pi2github-githubjson) says.
-- `assign` gives its sub-chat a worktree of its own (#596), as `delegate` gives one, through the same code and with the same rules: the person is asked where `delegate`'s would ask (an agent's call, and an agent whose own setting is off), a branch that cannot be made refuses the start with the reason and nothing claimed, and a `from` without a `worktree` is refused as it is there. With **neither**, when the project's folder is a git repository and the agent's own setting is off, it makes one on a branch named for the work, `work-<number>-<a few words of the title>`, rather than starting the sub-chat in the project's own checkout on `main` beside every other worker; the answer says so. `worktree: false` asks for the project's folder itself. An agent whose own setting gives its conversations worktrees gets that one, and no second. A folder that is not a repository gets none, and no error. The person's **Give to** sends no `worktree`, so it gets the same default, and the row shows the branch its sub-chat works on.
+- `assign` gives its sub-chat a worktree of its own (#596), as `delegate` gives one, through the same code and with the same rules: the person is asked where `delegate`'s would ask (an agent's call, and an agent whose own setting is off), a branch that cannot be made refuses the start with the reason and nothing claimed, and a `from` without a `worktree` is refused as it is there. With **neither**, when the project's folder is a git repository and the agent's own setting is off, it makes one on a branch named for the work, `work-<number>-<a few words of the title>`, rather than starting the sub-chat in the project's own checkout on `main` beside every other worker; the answer says so. `worktree: false` asks for the project's folder itself. An agent whose own setting gives its conversations worktrees gets that one, and no second; so does a sub-chat of it that `delegate` or a limit card's Start Anyway starts (#604), so that the person is not asked for it. A folder that is not a repository gets none, and no error. The admission check ([8.3](#83-limits-and-the-one-admission-check)) comes before the worktree is made (#604), so a start a limit holds back makes no branch. The person's **Give to** sends no `worktree`, so it gets the same default, and the row shows the branch its sub-chat works on.
 
 Outside GitHub, `pull_request`, `review`, `merge` and `send_back` are refused: "This project's work is kept by pi², which has no pull requests."
 
@@ -1616,7 +1623,7 @@ This page decides only what the app reads, sends and keeps. What each screen loo
 
 ### 10.1 What the app keeps itself
 
-In the app's preferences, by project id, not in the engine: how each project's hub was left (`project.<id>.fold`: both shown, the conversation folded, or the board folded), the board's tab, and the projects ticked on the Dashboard (`dashboard.projects`). Two Macs do not share them, and the engine has no use for them. While the app runs, which project shows is the window's selection (`Selection.project`), and how its hub was left is `ProjectHubs` (`app/Sources/pi2/ProjectHub.swift`): `AppModel.showProject` sets them together, for the sidebar of projects (#470) and a test copy's `show` (#471). `ProjectHubs` also keeps, for each project and for this launch only, the conversation of one of its agents shown in place of the board (#473): choosing a project or its orchestrator goes back to the board, and a hub opens on its board.
+In the app's preferences, by project id, not in the engine: how each project's hub was left (`project.<id>.fold`: both shown, the conversation folded, or the board folded), the board's tab, and the projects ticked on the Dashboard (`dashboard.projects`). Two Macs do not share them, and the engine has no use for them. While the app runs, which project shows is the window's selection (`Selection.project`), and how its hub was left is `ProjectHubs` (`app/Sources/pi2/ProjectHub.swift`): `AppModel.showProject` sets them together, for the sidebar of projects (#470) and a test copy's `show` (#471). `ProjectHubs` also keeps, for each project and for this launch only, the conversation of one of its agents shown in place of the board (#473): choosing a project goes back to the board, and a hub opens on its board. The rows under the open project carry `Selection.projectAgent` in the sidebar's list alone, so that the arrow keys reach them (#600): choosing one opens its conversation in place of the board through `AppModel.openAgent`, the window's selection stays `.project`, and while one shows the list marks its row.
 
 ### 10.2 With the preview off
 
@@ -1634,7 +1641,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 |---|---|---|
 | The sidebar's projects, their order and names | `projects` | #470 |
 | A project's badge | `needs` by `projectId`; `activity` by `projectId` | #470 |
-| The orchestrator and the agents working now, under the open project | `projects` (`orchestratorId`, `conversation`); `activity` by `projectId` and `runsAs` | #470 |
+| The project's row as its orchestrator's: working, waiting for the person or a limit, its model in the help, Stop in its menu; the agents working now under it | `projects` (`orchestratorId`, `conversation`); `activity` by `projectId` and `runsAs`; `agents` | #470, #600 |
 | A project's other conversations, folded under it | `library` by `projectId`, not the orchestrator's | #470 |
 | Under each working agent's and other conversation's title: its branch, its worktree mark, the size of its change, and the warning for a working agent in the main checkout on the default branch | `branches` (`branch`, `worktree`, `managed`, `base`, `added`, `removed`) | #598 |
 | The branch and the size of the change in the header of an agent's conversation in place of the board, and on Now's working rows | `branches` | #598 |
@@ -1653,7 +1660,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | The menu bar item's count, the Dock's badge, notifications of what waits | `needs`, in place of the Inbox | #481 |
 | Carrying over's report sheet; **Projects (preview)** | `projects.carryOver` `dryRun`; `projects.setPreview` | #470 |
 
-The app sends `projects.watch` when it shows a project's Now or Work tab, and again when it stops (#472, #479); the engine forgets it when the app disconnects. Nothing about who is working is in the `projects` event, so it is not sent again whenever a run starts or ends (#446).
+The app sends `projects.watch` when it shows a project's Now or Work tab, and again when it stops (#472, #479); the engine forgets it when the app disconnects. The Work tab never waits for its answer or for `gh`: it draws the last `work` or `github` event at once, which the app keeps whatever tab or project is shown, shows a small spinner while `reading` is true, and changes its rows in place when the read lands (#599). Nothing about who is working is in the `projects` event, so it is not sent again whenever a run starts or ends (#446).
 
 In a conversation of a project, the page shows the catch-up's and the state block's entries (6.4), lines with Undo, the reach and rule cards for the needs a tool call made, and, in another agent's conversation the person wrote to, a line "The orchestrator will be told" (an entry `pi2.toldOrchestrator`, written by the engine as the message is taken, #466).
 

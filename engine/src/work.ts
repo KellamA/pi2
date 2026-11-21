@@ -13,7 +13,7 @@ import { recordWorkChange } from "./changes.ts";
 import { handOffWords, reportRun, stageReportRun } from "./reports.ts";
 import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
-import { branchSlug, removeWorktree, repoOf, subChatFolder, worktreeOf } from "./worktrees.ts";
+import { branchSlug, removeWorktree, repoOf, subChatBranch, subChatFolder, worktreeOf } from "./worktrees.ts";
 
 export type WorkState = "open" | "in_progress" | "waiting" | "blocked" | "done" | "dropped";
 export type WorkAction = "file" | "take" | "assign" | "release" | "wait" | "block" | "resume" | "finish" | "close" | "reopen" | "note" | "edit" | "classify";
@@ -31,6 +31,11 @@ export type WorkItem = {
 	updatedAt: number;
 	closedAt: number | null;
 	url?: string;
+	/**
+	 * GitHub only: who held it when it was closed outside pi² (a merged pull request's "Fixes #N"), until that holder
+	 * finishes it with its summary (#604). Absent otherwise.
+	 */
+	heldAtClose?: { agentId: string; conversationId: number };
 };
 /** What the tool's `list` says of a pull request (#595): the fields of github.ts's own `PullRequest` that it reads. */
 export type PullSummary = {
@@ -40,6 +45,8 @@ export type PullSummary = {
 	draft: boolean;
 	checks: "passing" | "failing" | "pending" | "none";
 	findings: { verdict: "approve" | "changes" | "comment"; at: number }[];
+	/** Only what its row shows was read, a closed one's (#599): its checks and review are not known here. */
+	partial?: true;
 };
 export type WorkDoc = { projects: Record<string, { items: Record<string, WorkItem>; next: number }> };
 export interface WorkBackend {
@@ -207,7 +214,14 @@ export async function workNews(tx: Tx, project: Project, by: Who, text: string, 
 	if (orchestrates(project, by)) return;
 	await addNews(tx, project.id, { kind: "work", text, ref, at });
 }
-const heldBy = (item: WorkItem | null, by: Who) => by.kind === "agent" && item?.takenBy?.agentId === by.agentId && item.takenBy.conversationId === by.conversationId;
+const sameHolder = (holder: WorkItem["takenBy"] | undefined, by: Who) => by.kind === "agent" && holder?.agentId === by.agentId && holder.conversationId === by.conversationId;
+const heldBy = (item: WorkItem | null, by: Who) => sameHolder(item?.takenBy, by);
+
+/** What the tool answers an agent that takes what it holds already (#604): no error, and how to go on. */
+export function yoursAlready(item: WorkItem, by: Who): string | undefined {
+	if (!heldBy(item, by)) return undefined;
+	return item.state === "in_progress" ? `#${item.id} is yours already: carry on.` : `#${item.id} is yours already, and ${item.state}: use resume to go on.`;
+}
 
 function actor(project: Project, by: Who, action: WorkAction, access?: Access): void {
 	const row = table[action];
@@ -227,6 +241,18 @@ export function checkWorkTransition(project: Project, item: WorkItem, action: Wo
 	const holder = item.takenBy;
 	if ((action === "take" || action === "assign") && holder !== null) {
 		throw new Error(`#${item.id} is taken by ${agentName(holder.agentId)}, in sub-chat ${holder.conversationId}`);
+	}
+	// An issue a merged pull request closed under its holder: the holder still finishes it, with its summary (#604).
+	if (action === "finish" && item.state === "done" && item.heldAtClose !== undefined) {
+		if (by.kind === "agent" && !sameHolder(item.heldAtClose, by)) throw new Error(`Only the holder can finish #${item.id}. Tell the orchestrator in your report.`);
+		return;
+	}
+	// Held, with no holder this tool knows: taken or paused with scripts/issue, or by hand on GitHub (#604). The tool knows
+	// a holder only from its own comments, and does not guess one from the script's.
+	if (holder === null && heldStates.includes(item.state) && (action === "take" || action === "assign" || (by.kind === "agent" && (row.agent === "holder" || (row.agent === "either" && !orchestrates(project, by)))))) {
+		const said = `#${item.id} is ${item.state.replace("_", " ")}, but it was taken outside the work tool (with scripts/issue, or on GitHub by hand), so the tool knows no holder for it.`;
+		const next = by.kind === "person" || orchestrates(project, by) ? " Release it first: that hands it over to the work tool." : " Keep it with what took it, or ask the orchestrator to release it, which hands it over to the work tool.";
+		throw new Error(`${said}${next}`);
 	}
 	if (!row.from?.includes(item.state)) {
 		const next = closedStates.includes(item.state) ? " Reopen it first." : item.state === "open" ? " Take or assign it first." : " Check the work list and choose an action for that state.";
@@ -252,7 +278,10 @@ export function workTransition(before: WorkItem | null, id: number, action: Work
 		if (args.as !== "done" && args.as !== "dropped") throw new Error("as must be done or dropped");
 		item.state = args.as;
 	} else if (row.to !== "same") item.state = row.to;
-	if (row.holder === "none") item.takenBy = null;
+	if (row.holder === "none") {
+		item.takenBy = null;
+		delete item.heldAtClose;
+	}
 	else if (row.holder === "caller" && by.kind === "agent") item.takenBy = { agentId: by.agentId, conversationId: by.conversationId };
 	else if (row.holder === "assigned") {
 		if (assigned === undefined) throw new Error("The assigned agent's sub-chat was not started.");
@@ -314,6 +343,7 @@ function pullLine(pull: PullSummary): string {
 	const newest = [...pull.findings].sort((one, other) => one.at - other.at).at(-1);
 	const review = newest === undefined ? "no review" : newest.verdict === "approve" ? "approved" : newest.verdict === "changes" ? "changes requested" : "comments only";
 	const state = pull.state === "merged" ? "merged" : pull.state === "closed" ? "closed" : pull.draft ? "open, a draft" : "open";
+	if (pull.partial === true) return `#${pull.number} pull request ${state} · ${oneLine(pull.title)}`;
 	return `#${pull.number} pull request ${state} · ${checks} · ${review} · ${oneLine(pull.title)}`;
 }
 
@@ -517,13 +547,17 @@ function checkWorktreeArgs(args: Record<string, unknown>): void {
  * folder is a git repository and the agent's own setting is off. An agent whose setting is on already gets its one
  * worktree, which is not made twice.
  */
-async function plannedWorktree(project: Project, item: Pick<WorkItem, "id" | "title">, target: AgentProfile, options: { worktree?: unknown; from?: unknown }): Promise<{ branch: string; from?: string } | undefined> {
+async function plannedWorktree(project: Project, item: Pick<WorkItem, "id" | "title">, target: AgentProfile, options: { worktree?: unknown; from?: unknown }, folder: string | null): Promise<{ branch: string; from?: string } | undefined> {
 	const from = typeof options.from === "string" && options.from.trim() !== "" ? options.from.trim() : undefined;
 	const given = options.worktree;
 	if (given === false) return undefined;
 	if (typeof given === "string") return { branch: given.trim(), ...(from === undefined ? {} : { from }) };
-	// An agent whose own setting gives every conversation a worktree: its one, on the branch pi² names for the sub-chat.
-	if (target.worktree === true) return { branch: "" };
+	// An agent whose own setting gives every conversation a worktree: its one, on the branch pi² names for the sub-chat,
+	// when the sub-chat's folder is in a repository, as `delegate` gives it (#604).
+	if (target.worktree === true) {
+		const branch = await subChatBranch(undefined, target, folder);
+		return branch === undefined ? undefined : { branch };
+	}
 	if (project.folder === null || (await repoOf(project.folder)) === undefined) return undefined;
 	return { branch: branchForWork(item), ...(from === undefined ? {} : { from }) };
 }
@@ -599,9 +633,26 @@ export const work: Feature = (host, engine) => {
 		};
 		// The sub-chat is made before the work is claimed, so that its worktree can be made before anything is handed over
 		// (#596): a worktree that cannot be made then refuses the start with nothing claimed and no run begun.
-		const plan = await plannedWorktree(project, before!, target, { worktree: args.worktree, from: args.from });
+		const plan = await plannedWorktree(project, before!, target, { worktree: args.worktree, from: args.from }, agent.cwd ?? null);
 		const named = title ?? titleOf(before!.title)!;
-		const child = plan === undefined ? undefined : await (call === undefined ? engine.harness() : call.api).commit((tx: Tx) => newSubChat(tx, project, target, agent, named, parent), context);
+		const writer = call === undefined ? engine.harness() : call.api;
+		// The admission check comes before a worktree is made (#604), so that a start a limit holds back makes no branch to
+		// remove again. Admitted here, it is not checked a second time at the claim.
+		let admittedEarly: { note?: string } | undefined;
+		if (plan !== undefined) {
+			const outcome = await writer.commit(async (tx: Tx): Promise<{ note?: string } | { limit: LimitReading } | { refused: string }> => {
+				const admitted = await admit(startOf(before!), confirm, { tx, model: agent.model, callId: call?.api.callId });
+				if (admitted.ok) return admitted.note === undefined ? {} : { note: admitted.note };
+				if (by.kind === "person") return { limit: admitted.limit };
+				const refused = limitRefusal(admitted.limit, project.conversation !== null);
+				if (call !== undefined) await workReceipt(tx, call, { item: null, refused });
+				return { refused };
+			}, context);
+			if ("limit" in outcome) throw limitError(outcome.limit);
+			if ("refused" in outcome) throw new Error(outcome.refused);
+			admittedEarly = outcome;
+		}
+		const child = plan === undefined ? undefined : await writer.commit((tx: Tx) => newSubChat(tx, project, target, agent, named, parent), context);
 		if (plan !== undefined && child !== undefined) {
 			const reason = await giveWorktree(reader as Reader, child, plan.branch, plan.from, context);
 			if (reason !== undefined) {
@@ -610,14 +661,14 @@ export const work: Feature = (host, engine) => {
 			}
 		}
 		const launch: Runner = async (tx, current, item) => {
-			const result = await launchAssignment(tx, current, startOf(item), target, agent, { confirm, callId: call?.api.callId, ...(child === undefined ? {} : { child }) });
+			const result = await launchAssignment(tx, current, startOf(item), target, agent, { confirm, callId: call?.api.callId, ...(child === undefined ? {} : { child }), ...(admittedEarly === undefined ? {} : { admitted: admittedEarly }) });
 			if ("holder" in result) onStarted?.(result.note);
 			return result;
 		};
 		// On GitHub the claim is no commit of pi²'s: the admission check comes first, then the claim, then the start (github.ts).
 		const assign: GithubAssign = {
 			agentId: target.id,
-			admit: (tx, _current, item) => admit(startOf(item), confirm, { tx, model: agent.model, callId: call?.api.callId }),
+			admit: async (tx, _current, item) => (admittedEarly === undefined ? admit(startOf(item), confirm, { tx, model: agent.model, callId: call?.api.callId }) : { ok: true as const, ...admittedEarly }),
 			start: async (tx, current, item, admitted) => {
 				const result = await launchAssignment(tx, current, startOf(item), target, agent, { admitted, ...(child === undefined ? {} : { child }) });
 				if (!("holder" in result)) throw new Error("The start was held back after it was admitted.");
@@ -703,7 +754,7 @@ export const work: Feature = (host, engine) => {
 			const held = retained(start);
 			const project = retained(current);
 			const hooks = github;
-			const plan = await plannedWorktree(project, { id: held.work!, title: held.title ?? "" }, saved, held.options);
+			const plan = await plannedWorktree(project, { id: held.work!, title: held.title ?? "" }, saved, held.options, agent.cwd ?? null);
 			return {
 				child: null,
 				after: async () => {
@@ -727,7 +778,7 @@ export const work: Feature = (host, engine) => {
 		if (target?.projectId !== projectId || target.removedAt !== undefined) throw new Error(`Unknown agent: ${start.agentId}`);
 		const here = (await tx.doc(AgentDoc, conversationId(start.parent!))).cwd ?? null;
 		const agent = { ...await host.agentChange(target, { subChat: true }), cwd: await subChatFolder(here, target.cwd) };
-		const plan = await plannedWorktree(current, item, target, start.options);
+		const plan = await plannedWorktree(current, item, target, start.options, agent.cwd ?? null);
 		const result = await launchAssignment(tx, current, start, target, agent, { card: rememberReading(need.confirmed ?? [], need.limit) });
 		if ("limit" in result) return result;
 		const assigned = workTransition(item, item.id, "assign", whoPerson, {}, Date.now(), result.holder);
@@ -796,6 +847,7 @@ export const work: Feature = (host, engine) => {
 				const meta = host.meta(api.conversationId);
 				const project = inProject(number);
 				const agentId = runsAs(meta, engine.agents());
+				const classGiven = args.class !== undefined;
 				const receipt = await api.snapshot(WorkCall, api.taskId, context);
 				if (receipt?.call === api.callId && receipt.refused !== undefined) throw new Error(receipt.refused);
 				if (receipt?.call === api.callId && receipt.text !== undefined) return { output: toolText(receipt.text), ...(receipt.change === undefined ? {} : { details: { change: receipt.change } }) };
@@ -818,13 +870,26 @@ export const work: Feature = (host, engine) => {
 						return { output: toolText(listAnswer(project, items, names)) };
 					}
 					if (action === "show") return { output: toolText(showAnswer(await backendFor(engine, project).show(project, numberId(id)), names)) };
+					const by: Who = { kind: "agent", agentId, conversationId: number };
+					// Only the orchestrator classifies (docs/issue-classes.md): another agent's item is filed unclassed (#604).
+					if (action === "file" && args.class !== undefined && !orchestrates(project, by)) delete args.class;
 					if (args.class !== undefined && args.class !== "local" && args.class !== "cloud") throw new Error("class must be local or cloud");
-					item = await mutate(project, { kind: "agent", agentId, conversationId: number }, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
+					// An assigned sub-chat that takes its own work is told it is its already, with no error (#604).
+					if (action === "take") {
+						const now = await backendFor(engine, project).show(project, numberId(id));
+						const yours = yoursAlready(now, by);
+						if (yours !== undefined) return { output: toolText(`${yours}\n\n${JSON.stringify(now)}`) };
+					}
+					item = await mutate(project, by, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
 				}
 				// The change an agent's write was recorded as, for the conversation's line with Undo (docs/projects.md, 3.12).
 				const change = (await api.snapshot(WorkCall, api.taskId, context))?.change;
 				const recorded: { change?: number } = change === undefined ? {} : { change };
-				if (action !== "assign") return { output: toolText(JSON.stringify(item)), ...(change === undefined ? {} : { details: { change } }) };
+				if (action !== "assign") {
+					const unclassed = action === "file" && classGiven && project !== undefined && agentId !== undefined && !orchestrates(project, { kind: "agent", agentId, conversationId: number });
+					const said = unclassed ? "\n\nFiled without a class: only the orchestrator classifies work, and it will." : "";
+					return { output: toolText(`${JSON.stringify(item)}${said}`), ...(change === undefined ? {} : { details: { change } }) };
+				}
 				const holder = item.takenBy!;
 				await followAssignment(item);
 				const name = host.agent(holder.agentId)?.name ?? holder.agentId;
