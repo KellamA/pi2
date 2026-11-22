@@ -168,7 +168,7 @@ struct TestCopyControl: NSViewRepresentable {
                 if conversation != nil || launch.agent == nil || Date() >= launchUntil {
                     launchProject = nil
                     model.showProject(id, tab: launch.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: launch.hub.flatMap { HubFold(rawValue: $0.rawValue) })
-                    if let conversation { model.openAgent(conversation, in: id) }
+                    if let conversation { model.openAgent(conversation, in: id, beside: false) }
                 }
             }
             for name in names.sorted() where name.hasPrefix("request-") {
@@ -250,7 +250,7 @@ struct TestCopyControl: NSViewRepresentable {
             // says so (#553).
             let unfolded = conversation != nil && (fold ?? model.hubs.fold(id)) == .boardFolded
             model.showProject(id, tab: view.tab.flatMap { HubTab(rawValue: $0.rawValue) }, fold: fold)
-            if let conversation { model.openAgent(conversation, in: id) }
+            if let conversation { model.openAgent(conversation, in: id, beside: false) }
             hubWaiting.append((dir, view, id, unfolded, Date().addingTimeInterval(Self.limit)))
             return nil
         }
@@ -260,7 +260,7 @@ struct TestCopyControl: NSViewRepresentable {
         private func hubDrawn(_ asked: ProjectCopyView, project: String, unfolded: Bool) -> String? {
             let fold = model.hubs.fold(project)
             guard let drawn = HubDrawn.current, drawn.project == project, drawn.tab == model.hubs.tab(project),
-                  drawn.fold == fold.shown(narrow: drawn.narrow, agent: drawn.agent != nil),
+                  drawn.fold == fold.shown(narrow: drawn.narrow, agent: drawn.panes),
                   drawn.agent == (fold == .boardFolded ? nil : model.hubs.agent(project)) else { return nil }
             // The page draws a conversation with entries; an empty one shows the agent's introduction once it has come.
             for conversation in [drawn.conversation, drawn.agent].compactMap({ $0 }) where TranscriptDrawn.drawings[conversation] == nil {
@@ -294,10 +294,10 @@ struct TestCopyControl: NSViewRepresentable {
             // behind Inbox or Chat, on the other hand, needs to draw again when it comes back on screen.
             // With the projects preview on, it opens where it lives (#644): a hub's panel, or the Archive's reader.
             let alreadyShown = model.mode == .chat ? model.chats.selection == id
-                : model.engine.projectsPreview ? HubDrawn.current.map { $0.conversation == id || $0.agent == id } == true || model.archiveConversation == id
+                : model.engine.projectsPreview ? HubDrawn.current.map { $0.conversation == id || $0.shown.contains(id) } == true || model.archiveConversation == id
                 : model.showsWorkspace && model.workspace.panes.contains { $0.conversation == id }
             let before = TranscriptDrawn.drawings[id]
-            model.openConversation(id)
+            model.openConversation(id, beside: false)
             if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
             waiting.append((dir, id, before ?? 0, Date().addingTimeInterval(Self.limit)))
             return nil

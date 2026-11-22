@@ -1,67 +1,61 @@
 
 import SwiftUI
+import PaneKit
 import WindowKit
 
-/// A project's hub: its bar, then the conversation with the orchestrator and the board, each folding (#471).
+/// A project's hub: its bar, then the conversation with the orchestrator and the board, each folding (#471). The board's
+/// side can be divided into panes, each showing the board or one of the project's conversations (#657, HubPanes.swift).
 struct ProjectHubView: View {
     let model: AppModel
     let projectID: String
     /// Whether the hub is too narrow for both panels, so the board is folded whatever the fold.
     @State private var narrow = false
-    /// Whether the person is typing to the orchestrator while an agent's conversation holds the board's place: one of
-    /// the two takes the keyboard and ⌘Return, and the agent's does until the person clicks in the orchestrator's
-    /// field (#473).
-    @State private var orchestratorTyping = false
     private var engine: EngineClient { model.engine }
-
-    /// The conversation of one of the project's agents shown in place of the board, while it is still in the library
-    /// (#473), or in the Archive, where it reads with its Restore bar (#644).
-    private var agentConversation: Int? {
-        guard let id = model.hubs.agent(projectID), engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else { return nil }
-        return id
-    }
 
     var body: some View {
         if let project = engine.project(projectID) {
             let fold = model.hubs.fold(projectID)
-            let agent = agentConversation
-            let shown = fold.shown(narrow: narrow, agent: agent != nil)
+            let layout = model.hubs.layout(projectID)
+            // The board alone is the hub as it always was; anything else beside the conversation takes the width when the
+            // window is narrow, as an agent's conversation in place of the board did (#473).
+            let panes = !layout.isBoardOnly
+            let shown = fold.shown(narrow: narrow, agent: panes)
             let tab = model.hubs.tab(projectID)
-            // Exactly one of the two conversations takes the keyboard: the agent's, which the person just opened,
-            // unless they clicked in the orchestrator's field.
-            let orchestratorActive = agent == nil || orchestratorTyping
-            let agentActive = agent != nil && !orchestratorTyping
+            // Exactly one conversation takes the keyboard and ⌘Return: the focused pane's, which the person last opened or
+            // clicked in, unless they clicked in the orchestrator's field, or the focused pane is the board, or the board's
+            // side is folded. A pane just made has a field of its own.
+            let orchestratorKeyed = shown == .boardFolded
+                || (shown != .conversationFolded && (model.hubs.orchestratorKeyed[projectID] == true || layout.content(of: layout.focused) == .board))
+            let least = HubLayout.minimum(layout.root)
             VStack(spacing: 0) {
                 HubBar(engine: engine, project: project)
                 if shown != fold {
-                    NarrowNote(agent: agent != nil) { model.hubs.setFold(.conversationFolded, for: projectID) }
+                    NarrowNote(agent: panes, split: layout.isSplit) { model.hubs.setFold(.conversationFolded, for: projectID) }
                 }
-                HubPanels(fold: fold, narrow: $narrow, agent: agent != nil) {
-                    HubConversationPanel(model: model, project: project, shown: shown, active: orchestratorActive) {
-                        orchestratorTyping = true
+                if let why = model.hubs.refusals[projectID] {
+                    RefusalNote(text: why) { model.hubs.refusals[projectID] = nil }
+                }
+                HubPanels(fold: fold, narrow: $narrow, agent: panes, across: HubLayout.across(layout.root), boardMinimum: CGFloat(least.width)) {
+                    HubConversationPanel(model: model, project: project, shown: shown, active: orchestratorKeyed, focusRequest: model.hubs.keyboardRequests[projectID] ?? 0) {
+                        model.hubs.keyOrchestrator(projectID)
                     }
                 } board: {
-                    if let agent {
-                        HubAgentPanel(model: model, project: project, conversation: agent, shown: shown, active: agentActive) {
-                            orchestratorTyping = false
-                        }
-                    } else {
-                        HubBoard(model: model, project: project, tab: tab, shown: shown)
-                    }
+                    HubPaneArea(model: model, project: project, layout: layout, shown: shown, orchestratorKeyed: orchestratorKeyed)
                 } strip: {
                     HubStrip(engine: engine, hubs: model.hubs, project: project)
                 }
+                // The room the panes have, for telling whether another split fits: the hub's width, which they can take
+                // with the conversation folded, and their height.
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { model.hubs.rooms[projectID] = $0 }
             }
             .background(Theme.window)
             .navigationTitle(project.name)
-            .navigationSubtitle("Project")
-            // The conversation with the keyboard, for the Conversation menu (#632): the agent's while it has it, else the
-            // orchestrator's, which the strip writes to when its panel is folded.
-            .onChange(of: keyed(shown: shown, agent: agent, agentActive: agentActive, project: project), initial: true) { _, keyed in
+            .navigationSubtitle(layout.isSplit ? "Project · \(layout.panes.count) panes" : "Project")
+            // The conversation with the keyboard, for the Conversation menu (#632): the focused pane's while it has it, else
+            // the orchestrator's, which the strip writes to when its panel is folded.
+            .onChange(of: orchestratorKeyed ? project.conversation : layout.focusedConversation ?? project.conversation, initial: true) { _, keyed in
                 model.hubs.setKeyboard(keyed, for: projectID)
             }
-            // A conversation the person opens takes the keyboard, whichever one had it.
-            .onChange(of: agent) { orchestratorTyping = false }
             .alert("Start a fresh conversation with \(engine.agent(project.orchestratorId)?.name ?? "the orchestrator")?", isPresented: Binding(
                 get: { model.hubs.freshAsked == projectID },
                 set: { if !$0, model.hubs.freshAsked == projectID { model.hubs.freshAsked = nil } }
@@ -76,7 +70,8 @@ struct ProjectHubView: View {
                 if project.conversation == nil { model.hubs.startConversation(project, engine: engine) }
             }
             #if PI2_DEVELOPMENT
-            .onChange(of: HubDrawn.Shown(project: project.id, tab: tab, fold: shown, narrow: narrow, conversation: shown == .conversationFolded ? nil : project.conversation, agent: shown == .boardFolded ? nil : agent), initial: true) { _, drawn in
+            .onChange(of: HubDrawn.Shown(project: project.id, tab: tab, fold: shown, narrow: narrow, conversation: shown == .conversationFolded ? nil : project.conversation,
+                                         agent: shown == .boardFolded ? nil : layout.focusedConversation, panes: panes, shown: shown == .boardFolded ? [] : layout.conversations), initial: true) { _, drawn in
                 HubDrawn.current = drawn
             }
             // The hub of the next project can appear before this one goes.
@@ -104,8 +99,9 @@ extension AppModel {
         return { [weak self] conversation in
             guard let self else { return }
             if conversation == current {
-                self.hubs.setAgent(nil, for: id)
+                self.hubs.update(id) { $0.showBoard() }
                 if self.hubs.fold(id) == .conversationFolded { self.hubs.setFold(.both, for: id) }
+                self.hubs.keyOrchestrator(id, keyboard: true)
             } else {
                 self.openAgent(conversation, in: id)
             }
@@ -116,28 +112,22 @@ extension AppModel {
 extension ProjectHubView {
     /// What the new conversation begins with, and what becomes of this one (docs/projects.md, 6.5).
     static let freshWords = "The new conversation begins with the project as it stands: who is working, what waits for you, the reports not yet read and the work. It has the project’s rules and notes, as every conversation in the project does, but not this conversation’s messages. Work handed out and not yet reported goes on, and reports to the new one.\n\nThis conversation is kept and can be read, linked from the new one, but takes no more messages."
-
-    /// Which of the hub's two conversations has the keyboard, as drawn.
-    fileprivate func keyed(shown: HubFold, agent: Int?, agentActive: Bool, project: ProjectRow) -> Int? {
-        switch shown {
-        case .boardFolded: project.conversation
-        case .conversationFolded: agent ?? project.conversation
-        case .both: agentActive ? agent : project.conversation
-        }
-    }
 }
 
 /// The line that says the board folded by itself, with the way to see it.
 private struct NarrowNote: View {
-    /// Whether an agent's conversation takes the board's place, so that it is that which folds the board, not the
-    /// board's own side being chosen: the way back is in its own header then (#473).
+    /// Whether an agent's conversation, or panes, take the board's place, so that it is that which folds the board, not
+    /// the board's own side being chosen: the way back is in its own header then (#473, #657).
     let agent: Bool
+    /// Whether there are several panes, which then take the width.
+    var split = false
     let showBoard: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "rectangle.righthalf.inset.filled").foregroundStyle(Theme.tx3)
-            Text(agent ? "The window is too narrow for both panels, so the agent’s conversation takes the width."
+            Text(split ? "The window is too narrow for the conversation beside these panes, so the panes take the width."
+                       : agent ? "The window is too narrow for both panels, so the agent’s conversation takes the width."
                        : "The window is too narrow for both panels, so the board is folded.")
                 .foregroundStyle(Theme.tx2)
                 .lineLimit(1)
@@ -154,6 +144,39 @@ private struct NarrowNote: View {
         .frame(height: 30)
         .background(Theme.panel)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+}
+
+/// The line that says why a split, or a conversation opened beside, could not be made (#657). It goes by itself after a
+/// while, or with its button.
+private struct RefusalNote: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "rectangle.split.2x1.slash").foregroundStyle(Theme.warn)
+            Text(text)
+                .foregroundStyle(Theme.tx2)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .help(text)
+            Spacer(minLength: 4)
+            Button("Dismiss", systemImage: "xmark", action: dismiss)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.tx3)
+                .help("Dismiss")
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 12)
+        .frame(minHeight: 30)
+        .background(Theme.panel)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+        .task(id: text) {
+            try? await Task.sleep(for: .seconds(10))
+            if !Task.isCancelled { dismiss() }
+        }
     }
 }
 
@@ -292,6 +315,8 @@ private struct WeekUsed: View {
 
 /// A panel's header: what it is, and the buttons that fold it and show the other.
 private struct PanelHeader<Leading: View, Trailing: View>: View {
+    /// Tinted, as the focused one of several panes (#657).
+    var tint = false
     @ViewBuilder let leading: Leading
     @ViewBuilder let trailing: Trailing
 
@@ -307,7 +332,7 @@ private struct PanelHeader<Leading: View, Trailing: View>: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 34)
-        .background(Theme.panel)
+        .background(tint ? Theme.acc.opacity(0.10) : Theme.panel)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
 }
@@ -320,6 +345,8 @@ private struct HubConversationPanel: View {
     /// Whether this conversation takes the keyboard and ⌘Return, while an agent's conversation holds the other side
     /// (#473).
     let active: Bool
+    /// Goes up when the person moves here with the keyboard (Next Pane, #657).
+    var focusRequest = 0
     /// Called when the person clicks in its message field while another conversation has the keyboard.
     let onFocus: () -> Void
     private var engine: EngineClient { model.engine }
@@ -353,7 +380,7 @@ private struct HubConversationPanel: View {
             }
             Group {
                 if let id = project.conversation {
-                    ChatView(engine: engine, id: id, active: active, onFocus: onFocus)
+                    ChatView(engine: engine, id: id, active: active, focusRequest: focusRequest, onFocus: onFocus)
                         .id(id)
                 } else {
                     StartingConversation(hubs: model.hubs, engine: engine, project: project)
@@ -402,16 +429,18 @@ private struct StartingConversation: View {
     }
 }
 
-/// The board: its tabs, which are the project's navigation, and what the tab shows.
-private struct HubBoard: View {
+/// The board: its tabs, which are the project's navigation, and what the tab shows. One of several panes, it can be
+/// closed, and its header is tinted while it has the focus (#657).
+struct HubBoard: View {
     let model: AppModel
     let project: ProjectRow
     let tab: HubTab
     let shown: HubFold
+    var pane: HubPaneHeader? = nil
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader {
+            PanelHeader(tint: pane?.focused == true) {
                 if shown == .conversationFolded {
                     Button("Show the Conversation", systemImage: "sidebar.left") { model.hubs.setFold(.both, for: project.id) }
                         .labelStyle(.iconOnly)
@@ -424,7 +453,11 @@ private struct HubBoard: View {
             } trailing: {
                 if shown != .conversationFolded {
                     Button("Fold the Board", systemImage: "sidebar.right") { model.hubs.setFold(.boardFolded, for: project.id) }
-                        .help("Fold the board, so the conversation takes the width (⌥⌘])")
+                        .help(pane == nil ? "Fold the board, so the conversation takes the width (⌥⌘])" : "Fold the board and the panes beside it, so the conversation takes the width (⌥⌘])")
+                }
+                if let close = pane?.close {
+                    Button("Close Pane", systemImage: "xmark", action: close)
+                        .help("Close the board's pane (⌃⌘W). The board comes back with Back to the Board, or in a new pane.")
                 }
             }
             switch tab {
@@ -467,17 +500,26 @@ private struct BoardTabs: View {
     }
 }
 
-/// One of the project's agents in place of the board (#473): its conversation, which the person can read and write to
-/// as any other, under its avatar and name, the conversation's title and the way back to the board.
-private struct HubAgentPanel: View {
+/// One of the project's agents in place of the board (#473), or in one of the hub's panes (#657): its conversation,
+/// which the person can read and write to as any other, under its avatar and name, the conversation's title and the
+/// way back to the board, and among several panes, its close button.
+struct HubAgentPanel: View {
     let model: AppModel
     let project: ProjectRow
     let conversation: Int
     let shown: HubFold
     /// Whether this conversation takes the keyboard and ⌘Return, while the orchestrator's also shows (#473).
     let active: Bool
+    /// Whether the pane has the focus among several, and its close button (#657).
+    var pane = HubPaneHeader(focused: false, close: nil)
+    /// Whether another pane shows the board, so that the way back to it is not needed here.
+    var boardShown = false
+    /// Goes up when the person moves to this pane with the keyboard (Next Pane, #657).
+    var focusRequest = 0
     /// Called when the person clicks in its message field while the orchestrator's conversation has the keyboard.
     let onFocus: () -> Void
+    /// Shows the board in this conversation's place.
+    var backToBoard: () -> Void = {}
     private var engine: EngineClient { model.engine }
     private var summary: ConversationSummary? { engine.conversations.first { $0.id == conversation } }
     /// An archived one is in the Archive's list, or, a sub-chat of one, in neither: its state names it (#644).
@@ -515,18 +557,21 @@ private struct HubAgentPanel: View {
                     ChangeSize(status: status, size: 11)
                 }
                 HubContextMeter(model: model, id: conversation, project: project, orchestrator: false)
-                Button("Back to the Board") { model.hubs.setAgent(nil, for: project.id) }
-                    .buttonStyle(.piGhost)
-                    .fixedSize()
-                    .help("Show the project's board again, keeping the conversation with the orchestrator")
+                if !boardShown {
+                    Button("Back to the Board", action: backToBoard)
+                        .buttonStyle(.piGhost)
+                        .fixedSize()
+                        .help(pane.close == nil ? "Show the project's board again, keeping the conversation with the orchestrator" : "Show the project's board in this pane")
+                }
+                if let close = pane.close { HubPaneClose(close: close) }
             }
             .padding(.horizontal, 10)
             .frame(height: 34)
-            .background(Theme.panel)
+            .background(pane.focused ? Theme.acc.opacity(0.10) : Theme.panel)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
-            ChatView(engine: engine, id: conversation, active: active, onFocus: onFocus)
+            ChatView(engine: engine, id: conversation, active: active, focusRequest: focusRequest, onFocus: onFocus)
                 .id(conversation)
-                .environment(\.inSplitPane, shown == .both)
+                .environment(\.inSplitPane, shown == .both || pane.close != nil)
                 .environment(\.showInHub, model.showInHub(project))
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
         }

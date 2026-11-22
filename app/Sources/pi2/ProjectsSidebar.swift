@@ -192,6 +192,10 @@ private struct ProjectBlock: View {
                     RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
                         .padding(.leading, 14)
                         .tag(Selection.projectAgent(project: project.id, conversation: id))
+                        // Dropped on one of the hub's panes, it shows there; on a pane's edge, beside it (#657).
+                        .draggable(ConversationDrag(id: id)) {
+                            Label(run.title.isEmpty ? "New conversation" : run.title, systemImage: "bubble.left").padding(6)
+                        }
                 }
             }
             OtherConversations(model: model, project: project, live: live, agent: agent)
@@ -319,7 +323,7 @@ private struct RunRow: View {
         }
         .buttonStyle(.plain)
         // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
-        .help("Open this agent’s conversation in place of the board")
+        .help("Open this agent’s conversation in the hub’s focused pane; with ⌥, in a new pane beside it")
     }
 }
 
@@ -391,7 +395,7 @@ private struct OtherConversations: View {
                     .buttonStyle(.plain)
                     .padding(.leading, 28)
                     .tag(Selection.projectAgent(project: project.id, conversation: conversation.id))
-                    .help("Open its conversation in place of the board")
+                    .help("Open its conversation in the hub’s focused pane; with ⌥, in a new pane beside it")
                     .draggable(ConversationDrag(id: conversation.id)) {
                         Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left").padding(6)
                     }

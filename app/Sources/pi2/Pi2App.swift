@@ -143,10 +143,11 @@ final class AppModel {
         TestCopyPanels.install(engine: engine)
         #endif
         engine.onNavigate = { [weak self] id, from in self?.openConversation(id, from: from) }
-        // With the projects preview on there are no panes to open beside: it opens where it lives, as Open does (#644).
+        // With the projects preview on, a sub-chat card's Beside opens it in a new pane of its project's hub, beside the
+        // conversation it came from (#657), or where it lives, as Open does, when that is not a hub (#644).
         engine.onOpenBeside = { [weak self] id, beside in
             guard let self else { return }
-            if engine.projectsPreview { openConversation(id, from: beside) } else { openBeside(id, beside: beside) }
+            if engine.projectsPreview { openConversation(id, from: beside, beside: true) } else { openBeside(id, beside: beside) }
         }
     }
 
@@ -178,7 +179,7 @@ final class AppModel {
     /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
         workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
-            .union(hubConversation.map { [$0] } ?? []).union(hubAgentConversation.map { [$0] } ?? [])
+            .union(hubConversation.map { [$0] } ?? []).union(hubPaneConversations)
             .union(archiveConversation.map { [$0] } ?? [])
             .union(dashboardConversations)
     }
@@ -570,6 +571,8 @@ struct RootView: View {
             guard loaded else { return }
             // Panes kept from last time that show conversations since deleted are emptied.
             model.workspace.forget { id in !engine.conversations.contains { $0.id == id } && !model.isArchived(id) }
+            // A hub's panes kept from last time whose conversations were archived or deleted since close (#657).
+            model.hubs.forget(projects: engine.projectStore.listed.map(\.id)) { id in !engine.conversations.contains { $0.id == id } }
             guard model.selection == nil else { return }
             #if PI2_DEVELOPMENT
             if ChatLaunch.apply(ProcessInfo.processInfo.environment["PI2_SHOW"], to: model) { return }
@@ -596,10 +599,13 @@ struct RootView: View {
         .onChange(of: model.selection) { _, selection in
             if selection == nil, engine.projectsPreview, model.mode == .agents { model.landOnProjects() }
         }
-        .onChange(of: engine.conversations) { _, list in
+        .onChange(of: engine.conversations) { old, list in
             // Panes showing a deleted conversation are emptied; the focused one moves on below.
             if engine.hasLoadedLibrary {
                 model.workspace.forget { id in id != model.selectedConversationID && !list.contains { $0.id == id } && !model.isArchived(id) }
+                // A hub's pane whose conversation leaves the library, archived or deleted, closes (#657).
+                let gone = Set(old.map(\.id)).subtracting(list.map(\.id))
+                if !gone.isEmpty { model.hubs.forget(projects: engine.projectStore.listed.map(\.id)) { gone.contains($0) } }
             }
             // The conversation on screen was deleted: move to the next one. An archived one may stay on screen: it can
             // still be read.
