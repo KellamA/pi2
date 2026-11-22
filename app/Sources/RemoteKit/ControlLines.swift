@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 
 // The lines a channel carries on top of the engine's own (iphone.md 5.6): its first lines (the Mac's proof, `pair` and
-// `paired`, `attach` and `attached`, resuming through `attach`), `presence` inside `attach`, `sessionEnd` and `revoked`.
+// `paired`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`
+// and `revoked`.
 // Each is one JSON object with one member, named for what it is. Every byte string is base64url; every P-256 public
 // key is SPKI DER, a channel key its 32 raw bytes; every signature is ECDSA P-256 over the exact `signed` text
 // (SignedStatement), and every `signed` is checked field by field, with no field missing and none unknown.
@@ -425,6 +426,55 @@ public struct Revocation: Sendable {
 	}
 }
 
+/// pi² Remote's word that it did not attach the phone, and why, from a fixed list: `{"refused":{"reason":…}}`, sent
+/// just before the channel's `bye` (`Channel.sealRefusal`). Never free text: the engine's own words stay on the Mac.
+/// It travels inside the channel, so only a device that completed the handshake with a channel key on pi² Remote's list
+/// reads it, and pi² Remote sends it only once the attach is signed by that device's key; what each reason tells the
+/// device, and what the phone does on each, is in remotekit.md ("The refused line"). A reason this build does not
+/// know, from a newer Mac, is read as a plain refusal (`reason` nil), never as an error.
+public struct Refusal: Sendable, Equatable {
+	public enum Reason: String, Sendable, CaseIterable {
+		/// The phone's build is below the lowest this Mac attaches (5.3, 6.5).
+		case update
+		/// The device is suspended until the person resumes it on the Mac's Devices page (3.6).
+		case suspended
+		/// The presence signature was not taken: the presence key's signature was refused, or a new presence key waits to
+		/// be accepted on the Mac (4.3).
+		case presence
+		/// The attach's `at` is more than two minutes from the Mac's clock (3.4).
+		case clock
+		/// The session the attach named cannot be resumed on this channel: the phone attaches afresh (5.8).
+		case resume
+	}
+
+	/// Nil for a reason this build does not know.
+	public var reason: Reason? { Reason.allCases.first { $0.rawValue.sameBytes(text) } }
+
+	/// The reason as written: a reason this build knows, or one of the same form it does not.
+	private let text: String
+
+	public init(_ reason: Reason) { text = reason.rawValue }
+
+	private init(text: String) { self.text = text }
+
+	/// The longest reason read: lower-case letters, as many as a Mac item's kind.
+	static let maxReasonLength = 32
+
+	public static func == (lhs: Refusal, rhs: Refusal) -> Bool { lhs.text.sameBytes(rhs.text) }
+
+	var json: JSONValue { .object([("refused", .object([("reason", .string(text))]))]) }
+
+	static func read(_ value: JSONValue) throws -> Refusal {
+		let part = "refused"
+		let fields = try Fields(value, part: part, keys: ["reason"])
+		let text = try fields.string("reason", maxLength: maxReasonLength)
+		guard !text.isEmpty, text.utf8.allSatisfy({ (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0) }) else {
+			throw RemoteKitError(part, "reason is not a reason")
+		}
+		return Refusal(text: text)
+	}
+}
+
 /// One of a channel's own lines (5.6), as read from or written to the channel.
 public enum ControlLine: Sendable {
 	/// The Mac's first message: a challenge and its proof.
@@ -434,6 +484,8 @@ public enum ControlLine: Sendable {
 	case attach(AttachClaim)
 	case attached(Attached)
 	case revoked(Revocation)
+	/// pi² Remote did not attach the phone, and says why; the channel's `bye` follows.
+	case refused(Refusal)
 	/// The phone's session ended (4.5): `{"sessionEnd":{}}`.
 	case sessionEnd
 
@@ -456,6 +508,7 @@ public enum ControlLine: Sendable {
 		if name.sameBytes("attach") { return .attach(try AttachClaim.read(inner)) }
 		if name.sameBytes("attached") { return .attached(try Attached.read(inner)) }
 		if name.sameBytes("revoked") { return .revoked(try Revocation.read(inner)) }
+		if name.sameBytes("refused") { return .refused(try Refusal.read(inner)) }
 		if name.sameBytes("sessionEnd") {
 			guard case let .object(fields) = inner, fields.isEmpty else { throw RemoteKitError("sessionEnd", "not empty") }
 			return .sessionEnd
@@ -472,6 +525,7 @@ public enum ControlLine: Sendable {
 		case let .attach(claim): JSON.write(claim.json)
 		case let .attached(attached): JSON.write(attached.json)
 		case let .revoked(revocation): JSON.write(revocation.json)
+		case let .refused(refusal): JSON.write(refusal.json)
 		case .sessionEnd: JSON.write(.object([("sessionEnd", .object([]))]))
 		}
 	}
