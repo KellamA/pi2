@@ -6,11 +6,14 @@ import Foundation
 ///     pi2://pair?v=2&p=<pairing>&n=<Mac's name>&c=<channel key>&i=<identity key>&r=<record key>&s=<secret>&u=<relay>&a=<address:port,…>&e=<expiry>
 ///
 /// Each value is written as JavaScript's `encodeURIComponent` writes it (letters, digits and `-_.!~*'()` as they are,
-/// every other byte of its UTF-8 as `%XX`), so the engine can make the text with that function. Reading is strict: every
-/// parameter exactly once and no other, no `+`, only valid UTF-8, and each value checked for what it is.
+/// every other byte of its UTF-8 as `%XX` in upper case), so the engine can make the text with that function. Reading is
+/// strict, so that each payload has one spelling: every parameter exactly once and no other, no `+`, no lower-case
+/// escape and no escape of a character that needs none, only valid UTF-8, and each value checked for what it is. The
+/// Mac's name may hold no control or invisible formatting character (`ShownText`).
 ///
-/// The secret `s` is never in `description`: printing a payload cannot put it in a log.
-public struct PairingPayload: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+/// The secret `s` is never in `description`, `debugDescription` or a mirror (`dump`): printing a payload cannot put it in
+/// a log.
+public struct PairingPayload: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
 	public static let version = 2
 	public static let maxLength = 4096
 	public static let maxAddresses = 16
@@ -62,6 +65,10 @@ public struct PairingPayload: Sendable, Equatable, CustomStringConvertible, Cust
 
 	public var description: String { "pairing \(pairing) with \(macName), until \(expires)" }
 	public var debugDescription: String { description }
+
+	public var customMirror: Mirror {
+		Mirror(self, children: ["pairing": pairing.text, "macName": macName, "relay": relay, "addresses": addresses, "expires": expires], displayStyle: .struct)
+	}
 
 	/// Whether the join window this payload names is still open at `date`, by the phone's clock.
 	public func isOpen(at date: Date) -> Bool { Int64(date.timeIntervalSince1970) < expires }
@@ -119,9 +126,7 @@ public struct PairingPayload: Sendable, Equatable, CustomStringConvertible, Cust
 
 	private func check() throws {
 		func fail(_ reason: String) -> RemoteKitError { RemoteKitError("pairing payload", reason) }
-		guard !macName.isEmpty, macName.utf8.count <= Self.maxNameLength,
-			!macName.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
-		else { throw fail("n is not a Mac's name") }
+		guard !macName.isEmpty, macName.utf8.count <= Self.maxNameLength, ShownText.isShowable(macName) else { throw fail("n is not a Mac's name") }
 		guard secret.count == 32 else { throw fail("s is not 32 bytes") }
 		guard Self.isRelayAddress(relay) else { throw fail("u is not a relay's address") }
 		guard addresses.count <= Self.maxAddresses, addresses.allSatisfy(Self.isHostAndPort) else { throw fail("a is not a list of addresses") }
@@ -161,7 +166,10 @@ public struct PairingPayload: Sendable, Equatable, CustomStringConvertible, Cust
 		while index < bytes.count {
 			let byte = bytes[index]
 			if byte == UInt8(ascii: "%") {
-				guard index + 2 < bytes.count, let high = hexValue(bytes[index + 1]), let low = hexValue(bytes[index + 2]) else { return nil }
+				// Only upper-case hex, and only for a byte encodeURIComponent escapes: each value has one spelling.
+				guard index + 2 < bytes.count, let high = upperHexValue(bytes[index + 1]), let low = upperHexValue(bytes[index + 2]),
+					!isUnescaped(high << 4 | low)
+				else { return nil }
 				out.append(high << 4 | low)
 				index += 3
 			} else {
@@ -172,6 +180,14 @@ public struct PairingPayload: Sendable, Equatable, CustomStringConvertible, Cust
 		}
 		// Only valid UTF-8: String(validating:) refuses anything else rather than putting in replacement characters.
 		return String(validating: out, as: UTF8.self)
+	}
+
+	private static func upperHexValue(_ byte: UInt8) -> UInt8? {
+		switch byte {
+		case UInt8(ascii: "0")...UInt8(ascii: "9"): byte - UInt8(ascii: "0")
+		case UInt8(ascii: "A")...UInt8(ascii: "F"): byte - UInt8(ascii: "A") + 10
+		default: nil
+		}
 	}
 
 	private static func hexValue(_ byte: UInt8) -> UInt8? {

@@ -55,10 +55,11 @@ const noiseSources = [
 const hpkeSource = {
 	name: "cfrg-hpke",
 	repository: "https://github.com/cfrg/draft-irtf-cfrg-hpke",
-	commit: "b1f7cb0cdeab6906c61b3d6574e8bdfdbe1cd3fb",
+	// The commit RFC 9180's [TestVectors] reference names. The file is the same at the repository's head (b1f7cb0) today.
+	commit: "5f503c564da00b0687b3de75f1dfbdfc4079ad31",
 	path: "test-vectors.json",
 	sha256: "61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6",
-	note: "RFC 9180, Appendix A: 'These test vectors are also available in JSON format at [TestVectors]', this file.",
+	note: "RFC 9180, Appendix A: 'These test vectors are also available in JSON format at [TestVectors]', this file, at the commit the RFC cites.",
 };
 
 async function fetchSource(source) {

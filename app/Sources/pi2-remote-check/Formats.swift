@@ -30,6 +30,8 @@ enum Formats {
 		Check.that(PairingID(Base64URL.encode(Bytes.random(15))) == nil, "a pairing's id of 15 bytes is refused")
 		Check.that(DeviceID("dev_" + Base64URL.encode(Bytes.random(16))) != nil, "a device's id reads")
 		Check.that(DeviceID("dav_" + Base64URL.encode(Bytes.random(16))) == nil, "a device's id without dev_ is refused")
+		Check.that(ShownText.isShowable("Alex’s iPhone") && !ShownText.isShowable("Alex\u{202E}enohPi") && !ShownText.isShowable("a\u{7}"),
+			"a name with a direction-changing or control character is not shown")
 		Check.that(SessionID("") == nil && SessionID("a b") == nil && SessionID(String(repeating: "a", count: 65)) == nil, "session ids are kept to their form")
 		let key = P256.Signing.PrivateKey().publicKey
 		Check.that(PublicKeys.signingKey(fromBase64URL: PublicKeys.text(key)) != nil, "an SPKI key reads")
@@ -118,6 +120,13 @@ enum Formats {
 		var zero = LengthFraming()
 		Check.refuses("a TCP message of length zero") { _ = try zero.push(Data([0, 0])) }
 		Check.refuses("a TCP message longer than Noise allows") { _ = try LengthFraming.encode(Data(repeating: 0, count: 65536)) }
+		var many = LengthFraming()
+		Check.runs("4 MB of small messages in one push come out whole, read where they lie") {
+			let one = try LengthFraming.encode(Data(repeating: 9, count: 16))
+			let pushed = Data((0..<(4 * 1024 * 1024 / one.count)).flatMap { _ in one })
+			let messages = try many.push(pushed)
+			guard messages.count == pushed.count / one.count, many.buffered == 0 else { throw RemoteKitError("check", "framing") }
+		}
 	}
 
 	static func payload() {
@@ -158,6 +167,13 @@ enum Formats {
 		variant(replacing("n", "%0A"), "a line break in the name")
 		variant(replacing("n", ""), "an empty name")
 		variant(replacing("n", "%zz"), "a broken escape")
+		variant(replacing("n", "Alex%c3%a9"), "a lower-case escape, which encodeURIComponent never writes")
+		variant(replacing("n", "%41lex"), "an escape of a letter, which needs none")
+		variant(replacing("n", "%2Dx"), "an escape of a hyphen, which needs none")
+		variant(replacing("n", "Alex%E2%80%AE"), "a name with a direction-changing character (U+202E)")
+		variant(replacing("n", "Al%E2%80%8Bex"), "a name with an invisible space (U+200B)")
+		variant(replacing("n", "%EF%BB%BFAlex"), "a name with a byte-order mark (U+FEFF)")
+		variant(replacing("n", "Alex%E2%81%A6"), "a name with an isolate (U+2066)")
 		variant(replacing("s", Base64URL.encode(Bytes.random(31))), "a secret of 31 bytes")
 		variant(replacing("c", Base64URL.encode(Bytes.random(33))), "a channel key of 33 bytes")
 		variant(replacing("i", Base64URL.encode(identity.x963Representation)), "an identity key that is not SPKI")

@@ -12,18 +12,59 @@
 // --iterations N  each target runs N times, whatever the time
 // --target NAME   only that target
 // --replay NAME HEX  runs NAME once on the input HEX (as a crash printed it), with the same --seed
+// --help          prints this and runs nothing
+//
+// Any other argument, or a value it cannot read, stops it with the usage and exit code 2.
 
 import Foundation
 
-func argument(_ name: String) -> String? {
-	guard let index = CommandLine.arguments.firstIndex(of: name), index + 1 < CommandLine.arguments.count else { return nil }
-	return CommandLine.arguments[index + 1]
+let usage = """
+	usage: pi2-remote-fuzz [--seed N] [--seconds S | --iterations N] [--target NAME]
+	       pi2-remote-fuzz [--seed N] --replay NAME HEX
+	       pi2-remote-fuzz --help
+	"""
+
+/// Stops with the usage and exit code 2: an argument this program does not know, or a value it cannot read, must never
+/// quietly change or shorten a run (in CI least of all).
+func refuse(_ why: String) -> Never {
+	FileHandle.standardError.write(Data("pi2-remote-fuzz: \(why)\n\(usage)\n".utf8))
+	exit(2)
+}
+
+var seed: UInt64 = 674
+var seconds: Double = 60
+var iterations: UInt64?
+var only: String?
+var replay: (name: String, hex: String)?
+var arguments = CommandLine.arguments.dropFirst()
+@MainActor func value(_ name: String) -> String {
+	guard let next = arguments.popFirst() else { refuse("\(name) needs a value") }
+	return next
+}
+while let argument = arguments.popFirst() {
+	switch argument {
+	case "--help":
+		print(usage)
+		exit(0)
+	case "--seed":
+		guard let number = UInt64(value(argument)) else { refuse("--seed takes a whole number") }
+		seed = number
+	case "--seconds":
+		guard let number = Double(value(argument)), number.isFinite, number > 0, number <= 86_400 else { refuse("--seconds takes a number of seconds above zero") }
+		seconds = number
+	case "--iterations":
+		guard let number = UInt64(value(argument)), number > 0 else { refuse("--iterations takes a whole number above zero") }
+		iterations = number
+	case "--target":
+		only = value(argument)
+	case "--replay":
+		replay = (value(argument), value(argument))
+	default:
+		refuse("unknown argument \(argument)")
+	}
 }
 
 setvbuf(stdout, nil, _IOLBF, 0)
-let seed = UInt64(argument("--seed") ?? "674") ?? 674
-let seconds = Double(argument("--seconds") ?? "60") ?? 60
-let iterations = argument("--iterations").flatMap { UInt64($0) }
 var targets: [Target]
 do {
 	targets = try Targets.all(seed: seed)
@@ -32,28 +73,25 @@ do {
 	exit(1)
 }
 
-if let index = CommandLine.arguments.firstIndex(of: "--replay"), index + 2 < CommandLine.arguments.count {
-	let name = CommandLine.arguments[index + 1]
-	let hex = Array(CommandLine.arguments[index + 2].utf8)
+if let replay {
+	let hex = Array(replay.hex.utf8)
+	guard hex.count % 2 == 0 else { refuse("--replay takes hex") }
 	var input: [UInt8] = []
 	var at = 0
-	while at + 1 < hex.count, let byte = UInt8(String(decoding: hex[at...at + 1], as: UTF8.self), radix: 16) {
+	while at + 1 < hex.count {
+		guard let byte = UInt8(String(decoding: hex[at...at + 1], as: UTF8.self), radix: 16) else { refuse("--replay takes hex") }
 		input.append(byte)
 		at += 2
 	}
-	guard let target = targets.first(where: { $0.name == name }) else {
-		print("pi2-remote-fuzz: no target \(name)")
-		exit(1)
-	}
+	guard let target = targets.first(where: { $0.name == replay.name }) else { refuse("no target \(replay.name)") }
 	Crash.install()
-	print("\(name): \(target.run(input) ? "taken" : "refused")")
+	print("\(replay.name): \(target.run(input) ? "taken" : "refused")")
 	exit(0)
 }
 
-if let only = argument("--target") { targets = targets.filter { $0.name == only } }
-guard !targets.isEmpty else {
-	print("pi2-remote-fuzz: no such target")
-	exit(1)
+if let only {
+	targets = targets.filter { $0.name == only }
+	guard !targets.isEmpty else { refuse("no target \(only)") }
 }
 
 Crash.install()

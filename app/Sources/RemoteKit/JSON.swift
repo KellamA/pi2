@@ -376,7 +376,7 @@ struct Fields {
 
 	func nonEmpty(_ key: String, maxLength: Int = 256) throws -> String {
 		let text = try string(key, maxLength: maxLength)
-		guard !text.isEmpty, !text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+		guard !text.isEmpty, ShownText.isShowable(text) else {
 			throw RemoteKitError(part, "\(key) is not a fitting text")
 		}
 		return text

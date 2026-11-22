@@ -23,16 +23,16 @@ enum Vectors {
 	struct NoiseVector {
 		let source: String
 		let pattern: NoisePattern
-		let initPrologue: Data
-		let respPrologue: Data
+		var initPrologue: Data
+		var respPrologue: Data
 		let initStatic: Data
 		let respStatic: Data
 		let initEphemeral: Data
 		let respEphemeral: Data
 		let initRemoteStatic: Data?
 		let respRemoteStatic: Data?
-		let initPSK: Data?
-		let respPSK: Data?
+		var initPSK: Data?
+		var respPSK: Data?
 		let handshakeHash: Data?
 		var messages: [(payload: Data, ciphertext: Data)]
 
@@ -89,6 +89,9 @@ enum Vectors {
 			print("   from \(source["name"] ?? "?") at \(source["commit"] ?? "?"), SHA-256 \(source["sha256"] ?? "?")")
 		}
 		var counts: [String: (vectors: Int, messages: Int)] = [:]
+		var total = 0
+		var changes = 0
+		var changesRefused = 0
 		for entry in (fixture["vectors"] as? [[String: Any]]) ?? [] {
 			let source = entry["source"] as? String ?? "?"
 			do {
@@ -97,26 +100,59 @@ enum Vectors {
 				let key = "\(vector.pattern.protocolName) from \(source)"
 				counts[key, default: (0, 0)].vectors += 1
 				counts[key, default: (0, 0)].messages += checked
+				total += 1
 				Check.that(true, key)
+				// And the check itself: one bit changed in any message, a prologue or a pre-shared key, and it fails.
+				for changed in oneBitChanges(vector) {
+					changes += 1
+					if (try? run(changed)) == nil { changesRefused += 1 }
+				}
 			} catch {
 				Check.that(false, "a vector from \(source): \(error)")
 			}
 		}
+		Check.that(total == 12, "exactly the 12 published vectors the fixture holds (7 KK, 5 IKpsk2), none lost")
+		Check.that(changes > 0 && changesRefused == changes, "each of \(changes) one-bit changes to a vector's messages, prologues and pre-shared keys fails")
 		for (key, count) in counts.sorted(by: { $0.key < $1.key }) {
 			print("ok   \(key): \(count.vectors) vector\(count.vectors == 1 ? "" : "s"), \(count.messages) messages")
 		}
 		for pattern in NoisePattern.allCases {
 			Check.that(counts.keys.contains { $0.hasPrefix(pattern.protocolName + " ") }, "a published vector for \(pattern.protocolName)")
 		}
-		// And the check itself: a vector with one bit of one message changed must fail.
-		if let entry = (fixture["vectors"] as? [[String: Any]])?.first, var vector = try? NoiseVector(source: "changed", entry["vector"] as? [String: Any] ?? [:]) {
-			var messages = vector.messages
-			var changed = messages[2].ciphertext
-			changed[changed.startIndex] ^= 1
-			messages[2].ciphertext = changed
-			vector.messages = messages
-			Check.that((try? run(vector)) == nil, "a vector with one bit changed fails")
+	}
+
+	/// The vector with one bit changed: in each message's published ciphertext in turn, in each side's prologue, and in
+	/// each side's pre-shared key.
+	static func oneBitChanges(_ vector: NoiseVector) -> [NoiseVector] {
+		func flipped(_ data: Data) -> Data {
+			var data = data
+			if data.isEmpty { return Data([1]) }
+			data[data.startIndex + data.count / 2] ^= 0x10
+			return data
 		}
+		var changes: [NoiseVector] = []
+		for index in vector.messages.indices {
+			var changed = vector
+			changed.messages[index].ciphertext = flipped(changed.messages[index].ciphertext)
+			changes.append(changed)
+		}
+		var prologue = vector
+		prologue.initPrologue = flipped(prologue.initPrologue)
+		changes.append(prologue)
+		prologue = vector
+		prologue.respPrologue = flipped(prologue.respPrologue)
+		changes.append(prologue)
+		if vector.pattern.usesPSK, let psk = vector.initPSK {
+			var changed = vector
+			changed.initPSK = flipped(psk)
+			changes.append(changed)
+		}
+		if vector.pattern.usesPSK, let psk = vector.respPSK {
+			var changed = vector
+			changed.respPSK = flipped(psk)
+			changes.append(changed)
+		}
+		return changes
 	}
 
 	/// Runs both sides of one vector, each from its own keys, and checks every message against the published one.
@@ -132,11 +168,11 @@ enum Vectors {
 		if let given = v.respRemoteStatic, !Bytes.constantTimeEqual(given, initiatorKey.publicKey.rawRepresentation) {
 			throw RemoteKitError("vector", "resp_remote_static is not the initiator's key")
 		}
-		var initiator = try NoiseHandshake(
+		let initiator = try NoiseHandshake(
 			pattern: v.pattern, initiator: true, prologue: v.initPrologue, localStatic: initiatorKey,
 			remoteStatic: responderKey.publicKey.rawRepresentation, psk: v.pattern.usesPSK ? v.initPSK : nil,
 			ephemeral: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: v.initEphemeral))
-		var responder = try NoiseHandshake(
+		let responder = try NoiseHandshake(
 			pattern: v.pattern, initiator: false, prologue: v.respPrologue, localStatic: responderKey,
 			remoteStatic: needsInitiatorKey ? initiatorKey.publicKey.rawRepresentation : nil, psk: v.pattern.usesPSK ? v.respPSK : nil,
 			ephemeral: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: v.respEphemeral))
@@ -205,8 +241,45 @@ enum Vectors {
 				Check.that(false, "an HPKE vector: \(error)")
 			}
 		}
-		Check.that(vectors > 0, "a published vector for mode_auth, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM")
+		Check.that(vectors == 1, "the one published vector for mode_auth, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM")
+		// And the check itself: one bit changed in a ciphertext, the encapsulated key, the info or an export, and it fails.
+		if let v = ((fixture["vectors"] as? [[String: Any]])?.first?["vector"]) as? [String: Any] {
+			var changes = 0
+			var refused = 0
+			for change in hpkeOneBitChanges(v) {
+				changes += 1
+				if (try? runHPKE(change)) == nil { refused += 1 }
+			}
+			Check.that(changes == 4 && refused == changes, "each of 4 one-bit changes to the HPKE vector fails")
+		}
 		print("ok   HPKE mode_auth P-256/SHA-256/AES-256-GCM: \(vectors) vector, \(encryptions) encryptions opened, \(exports) exports")
+	}
+
+	static func hpkeOneBitChanges(_ v: [String: Any]) -> [[String: Any]] {
+		func flip(_ hex: String) -> String {
+			guard var data = Data(hex: hex), !data.isEmpty else { return hex }
+			data[data.startIndex + data.count / 2] ^= 0x01
+			return data.hex
+		}
+		var changes: [[String: Any]] = []
+		if var encryptions = v["encryptions"] as? [[String: String]], encryptions.count > 3 {
+			var changed = v
+			encryptions[3]["ct"] = flip(encryptions[3]["ct"] ?? "")
+			changed["encryptions"] = encryptions
+			changes.append(changed)
+		}
+		for key in ["enc", "info"] {
+			var changed = v
+			changed[key] = flip(v[key] as? String ?? "")
+			changes.append(changed)
+		}
+		if var exports = v["exports"] as? [[String: Any]], !exports.isEmpty {
+			var changed = v
+			exports[0]["exported_value"] = flip(exports[0]["exported_value"] as? String ?? "")
+			changed["exports"] = exports
+			changes.append(changed)
+		}
+		return changes
 	}
 
 	static func runHPKE(_ v: [String: Any]) throws -> (Int, Int) {

@@ -90,3 +90,17 @@ public enum PublicKeys {
 	public static func text(_ key: P256.KeyAgreement.PublicKey) -> String { Base64URL.encode(key.derRepresentation) }
 	public static func text(_ key: Curve25519.KeyAgreement.PublicKey) -> String { Base64URL.encode(key.rawRepresentation) }
 }
+
+/// Texts the person is shown: a Mac's name, a device's name, model and system. They may hold no control character and
+/// none of the invisible or direction-changing formatting characters (U+200B to U+200F, U+202A to U+202E, U+2066 to
+/// U+2069, U+FEFF), with which one name could pass for another, as when the Mac offers to replace a device by its name.
+public enum ShownText {
+	public static func isShowable(_ text: String) -> Bool {
+		!text.unicodeScalars.contains { scalar in
+			switch scalar.value {
+			case 0x200B...0x200F, 0x202A...0x202E, 0x2066...0x2069, 0xFEFF: true
+			default: scalar.properties.generalCategory == .control
+			}
+		}
+	}
+}

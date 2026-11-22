@@ -79,8 +79,13 @@ public struct Frame: Equatable, Sendable {
 
 /// An engine line cut into frames: `more` frames, then a `data` frame.
 public enum Lines {
-	/// The longest line taken by default: a greeting is the size of the person's library (iphone.md 5.9), so this is generous;
-	/// a channel can be given another.
+	/// The longest line a channel takes until the device is attached: its own first lines (the Mac's proof, `pair` with
+	/// its attestation, `attach`) are a few kilobytes at most. So a pairing claimer, who needs only `s`, or a device that
+	/// has not yet attached, can make the other end hold no more than this.
+	public static let firstLinesMaxLength = 64 * 1024
+
+	/// The longest line taken once the device is attached, unless the channel is given another: a greeting is the size of
+	/// the person's library (iphone.md 5.9), so this is generous.
 	public static let defaultMaxLength = 64 * 1024 * 1024
 
 	public static func frames(for line: Data, maxBody: Int = Frame.maxBodyLength) throws -> [Frame] {
@@ -101,7 +106,8 @@ public enum Lines {
 
 /// Puts lines back together from `more` and `data` frames.
 public struct LineAssembler: Sendable {
-	public let maxLength: Int
+	/// The longest line taken: a frame that would pass it is refused before its bytes are held.
+	public var maxLength: Int
 	private var pending = Data()
 
 	public init(maxLength: Int = Lines.defaultMaxLength) {
@@ -130,7 +136,7 @@ public struct LengthFraming: Sendable {
 	/// No Noise message pi² sends is shorter: a transport message is at least its tag.
 	public static let minLength = Noise.tagLength
 
-	private var buffer = Data()
+	private var buffer = [UInt8]()
 
 	public init() {}
 
@@ -142,18 +148,23 @@ public struct LengthFraming: Sendable {
 	/// Bytes waiting for the rest of their message.
 	public var buffered: Int { buffer.count }
 
-	/// Takes bytes as they arrive and gives back each whole message they finish.
+	/// Takes bytes as they arrive and gives back each whole message they finish. Linear in what is pushed: the messages
+	/// are read where they lie, and what is left is moved to the front once.
 	public mutating func push(_ bytes: Data) throws -> [Data] {
-		buffer.append(bytes)
+		buffer.append(contentsOf: bytes)
 		var messages: [Data] = []
-		while buffer.count >= 2 {
-			let length = Int(Bytes.readUInt16(buffer, at: 0))
-			guard length >= Self.minLength else { throw RemoteKitError("TCP framing", "a message of an impossible length") }
-			guard buffer.count >= 2 + length else { break }
-			let start = buffer.startIndex
-			messages.append(Data(buffer[(start + 2)..<(start + 2 + length)]))
-			buffer = Data(buffer[(start + 2 + length)...])
+		var offset = 0
+		while buffer.count - offset >= 2 {
+			let length = Int(buffer[offset]) << 8 | Int(buffer[offset + 1])
+			guard length >= Self.minLength else {
+				buffer.removeAll()
+				throw RemoteKitError("TCP framing", "a message of an impossible length")
+			}
+			guard buffer.count - offset >= 2 + length else { break }
+			messages.append(Data(buffer[(offset + 2)..<(offset + 2 + length)]))
+			offset += 2 + length
 		}
+		buffer.removeFirst(offset)
 		return messages
 	}
 }

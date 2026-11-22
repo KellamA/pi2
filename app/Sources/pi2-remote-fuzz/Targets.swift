@@ -319,40 +319,34 @@ enum Targets {
 			remoteChannelKey: world.phoneChannel.publicKey, ephemeral: world.ephemerals[ephemeral])
 	}
 
+	// A handshake or a channel is one state shared by all its holders (Noise.swift), so each input gets a side of its
+	// own, made again from the same keys and ephemeral keys: the same seed makes the same sides.
+
 	static func kkResponder(_ world: World) throws -> Target {
-		let seeds = try (0..<3).map { index -> [UInt8] in
-			var side = try kkInitiatorSide(world, index)
-			return Array(try side.writeMessage())
-		}
-		let fresh = try kkResponderSide(world, 3)
+		let seeds = try (0..<3).map { index -> [UInt8] in Array(try kkInitiatorSide(world, index).writeMessage()) }
 		return Target(name: "kk-responder", seeds: seeds, maxLength: 256) { input in
-			var side = fresh
+			guard let side = try? kkResponderSide(world, 3) else { Fuzz.violation("kk-responder", "could not make its side", input) }
 			let taken = Fuzz.takes("kk-responder", input) { try side.readMessage(Data(input)) }
 			return refuseAllBut("kk-responder", seeds, input, taken: taken)
 		}
 	}
 
 	static func kkInitiator(_ world: World) throws -> Target {
-		var initiator = try kkInitiatorSide(world, 0)
-		let first = try initiator.writeMessage()
+		let first = try kkInitiatorSide(world, 0).writeMessage()
 		let seeds = try (3..<6).map { index -> [UInt8] in
-			var side = try kkResponderSide(world, index)
+			let side = try kkResponderSide(world, index)
 			try side.readMessage(first)
 			return Array(try side.writeMessage())
 		}
-		let waiting = initiator
 		return Target(name: "kk-initiator", seeds: seeds, maxLength: 256) { input in
-			var side = waiting
+			guard let side = try? kkInitiatorSide(world, 0), (try? side.writeMessage()) != nil else { Fuzz.violation("kk-initiator", "could not make its side", input) }
 			let taken = Fuzz.takes("kk-initiator", input) { try side.readMessage(Data(input)) }
 			return refuseAllBut("kk-initiator", seeds, input, taken: taken)
 		}
 	}
 
 	static func kkRespondByTrial(_ world: World) throws -> Target {
-		let seeds = try (0..<2).map { index -> [UInt8] in
-			var side = try kkInitiatorSide(world, index)
-			return Array(try side.writeMessage())
-		}
+		let seeds = try (0..<2).map { index -> [UInt8] in Array(try kkInitiatorSide(world, index).writeMessage()) }
 		let devices = [(world.otherDevice, world.otherChannel.publicKey), (world.device, world.phoneChannel.publicKey)]
 		return Target(name: "kk-respond-by-trial", seeds: seeds, maxLength: 256) { input in
 			var found: DeviceID?
@@ -364,14 +358,16 @@ enum Targets {
 		}
 	}
 
+	static func pairingResponderSide(_ world: World) throws -> ChannelHandshake {
+		try ChannelHandshake.pairingResponder(pairing: world.pairing, secret: world.secret, channelKey: world.macChannel, ephemeral: world.ephemerals[3])
+	}
+
 	static func pairingResponder(_ world: World) throws -> Target {
 		let seeds = try (0..<3).map { index -> [UInt8] in
-			var side = try ChannelHandshake.pairingInitiator(payload: world.payload, channelKey: world.phoneChannel, ephemeral: world.ephemerals[index])
-			return Array(try side.writeMessage())
+			Array(try ChannelHandshake.pairingInitiator(payload: world.payload, channelKey: world.phoneChannel, ephemeral: world.ephemerals[index]).writeMessage())
 		}
-		let fresh = try ChannelHandshake.pairingResponder(pairing: world.pairing, secret: world.secret, channelKey: world.macChannel, ephemeral: world.ephemerals[3])
 		return Target(name: "ikpsk2-responder", seeds: seeds, maxLength: 256) { input in
-			var side = fresh
+			guard let side = try? pairingResponderSide(world) else { Fuzz.violation("ikpsk2-responder", "could not make its side", input) }
 			let taken = Fuzz.takes("ikpsk2-responder", input) { try side.readMessage(Data(input)) }
 			if taken, !Bytes.constantTimeEqual(side.remoteChannelKey!.rawRepresentation, world.phoneChannel.publicKey.rawRepresentation) {
 				Fuzz.violation("ikpsk2-responder", "learnt another channel key", input)
@@ -380,17 +376,19 @@ enum Targets {
 		}
 	}
 
+	static func pairingInitiatorSide(_ world: World) throws -> ChannelHandshake {
+		try ChannelHandshake.pairingInitiator(payload: world.payload, channelKey: world.phoneChannel, ephemeral: world.ephemerals[0])
+	}
+
 	static func pairingInitiator(_ world: World) throws -> Target {
-		var initiator = try ChannelHandshake.pairingInitiator(payload: world.payload, channelKey: world.phoneChannel, ephemeral: world.ephemerals[0])
-		let first = try initiator.writeMessage()
+		let first = try pairingInitiatorSide(world).writeMessage()
 		let seeds = try (3..<6).map { index -> [UInt8] in
-			var side = try ChannelHandshake.pairingResponder(pairing: world.pairing, secret: world.secret, channelKey: world.macChannel, ephemeral: world.ephemerals[index])
+			let side = try ChannelHandshake.pairingResponder(pairing: world.pairing, secret: world.secret, channelKey: world.macChannel, ephemeral: world.ephemerals[index])
 			try side.readMessage(first)
 			return Array(try side.writeMessage())
 		}
-		let waiting = initiator
 		return Target(name: "ikpsk2-initiator", seeds: seeds, maxLength: 256) { input in
-			var side = waiting
+			guard let side = try? pairingInitiatorSide(world), (try? side.writeMessage()) != nil else { Fuzz.violation("ikpsk2-initiator", "could not make its side", input) }
 			let taken = Fuzz.takes("ikpsk2-initiator", input) { try side.readMessage(Data(input)) }
 			return refuseAllBut("ikpsk2-initiator", seeds, input, taken: taken)
 		}
@@ -398,30 +396,33 @@ enum Targets {
 
 	// MARK: Transport and items
 
-	static func transport(_ world: World) throws -> Target {
-		var phone = try kkInitiatorSide(world, 6)
-		var mac = try kkResponderSide(world, 7)
+	/// A fresh pair of channels, always with the same keys, both opened at `opened`.
+	static func channels(_ world: World, opened: ContinuousClock.Instant) throws -> (phone: Channel, mac: Channel) {
+		let phone = try kkInitiatorSide(world, 6)
+		let mac = try kkResponderSide(world, 7)
 		try mac.readMessage(try phone.writeMessage())
 		try phone.readMessage(try mac.writeMessage())
-		let opened = Date(timeIntervalSince1970: 1_800_000_000)
-		var sender = try phone.channel(openedAt: opened)
+		let sender = try phone.channel(openedAt: opened, maxLineLength: Lines.defaultMaxLength)
 		sender.padding = Frame.paddingBlock
-		let receiver = try mac.channel(openedAt: opened)
-		// Each seed is a first message, made from a fresh copy of the sender.
+		return (sender, try mac.channel(openedAt: opened))
+	}
+
+	static func transport(_ world: World) throws -> Target {
+		let opened = ContinuousClock.now
+		// Each seed is a first message, made from a fresh sender.
 		var seeds: [[UInt8]] = []
 		for make in [
-			{ (channel: inout Channel) in try channel.seal(line: Data("{\"id\":1}".utf8), at: opened)[0] },
-			{ (channel: inout Channel) in try channel.seal(line: Data(repeating: 0x61, count: 70_000), at: opened)[0] },
-			{ (channel: inout Channel) in try channel.sealAck(5, at: opened) },
-			{ (channel: inout Channel) in try channel.sealPing(at: opened) },
-			{ (channel: inout Channel) in try channel.sealBye() },
+			{ (channel: Channel) in try channel.seal(line: Data("{\"id\":1}".utf8), at: opened)[0] },
+			{ (channel: Channel) in try channel.seal(line: Data(repeating: 0x61, count: 70_000), at: opened)[0] },
+			{ (channel: Channel) in try channel.sealAck(5, at: opened) },
+			{ (channel: Channel) in try channel.sealPing(at: opened) },
+			{ (channel: Channel) in try channel.sealBye() },
 		] {
-			var copy = sender
-			seeds.append(Array(try make(&copy)))
+			seeds.append(Array(try make(try channels(world, opened: opened).phone)))
 		}
 		return Target(name: "transport", seeds: seeds, maxLength: Noise.maxMessageLength + 4) { input in
-			var copy = receiver
-			let taken = Fuzz.takes("transport", input) { _ = try copy.open(Data(input), at: opened) }
+			guard let receiver = try? channels(world, opened: opened).mac else { Fuzz.violation("transport", "could not make its channel", input) }
+			let taken = Fuzz.takes("transport", input) { _ = try receiver.open(Data(input), at: opened) }
 			if taken, !seeds.contains(input) { Fuzz.violation("transport", "took a transport message that was not made for it", input) }
 			return taken
 		}
@@ -455,14 +456,22 @@ enum Targets {
 	static func requestItem(_ world: World) -> Target {
 		let address = ItemAddress(pairing: world.pairing, reader: .mac, id: ItemID(Base64URL.encode(Data(repeating: 5, count: 16)))!)
 		let seeds = (try? requestSeeds(world, address)) ?? []
+		// What the keys signed: an item that verifies must hold one of these texts, signed, and nothing else.
+		let signed = Set(seeds.compactMap { try? RequestItem.read(Data($0)).statement.text })
 		return Target(name: "request-item", seeds: seeds, dictionary: words(["\\\"", "\"presence\":", "\"params\":", "null", ","]), maxLength: 16384) { input in
 			var item: RequestItem?
 			guard Fuzz.takes("request-item", input, { item = try RequestItem.read(Data(input)) }) else { return false }
 			var again: RequestItem?
 			guard Fuzz.takes("request-item", input, { again = try RequestItem.read(item!.plaintext) }) else { Fuzz.violation("request-item", "could not read what it wrote", input) }
 			if again!.plaintext != item!.plaintext { Fuzz.violation("request-item", "wrote one item two ways", input) }
-			// Checking it never crashes either, whatever it holds.
-			_ = try? item!.verify(deviceKey: world.deviceKey.publicKey, presenceKey: world.presenceKey.publicKey, writer: world.device, address: address)
+			// A signature that verifies is over exactly what the device key signed: with and without the presence key.
+			for presenceKey in [world.presenceKey.publicKey, nil] {
+				if (try? item!.verify(deviceKey: world.deviceKey.publicKey, presenceKey: presenceKey, writer: world.device, address: address)) != nil,
+					!signed.contains(item!.statement.text)
+				{
+					Fuzz.violation("request-item", "verified a text the device key never signed", input)
+				}
+			}
 			return true
 		}
 	}
@@ -473,13 +482,17 @@ enum Targets {
 			try? MacItem.make(kind: "state", number: 3, body: .object([("needs", .array([]))]), pairing: world.pairing, device: world.device, id: address.id, identity: world.identity),
 			try? MacItem.make(kind: "receipt", body: .string("This is no longer waiting."), pairing: world.pairing, device: world.device, id: address.id, identity: world.identity),
 		].compactMap { $0.map { Array($0.plaintext) } }
+		let signed = Set(seeds.compactMap { try? MacItem.read(Data($0)).statement.text })
 		return Target(name: "mac-item", seeds: seeds, dictionary: words(["\\\"", "\"number\\\":", "\"state\"", ","]), maxLength: 16384) { input in
 			var item: MacItem?
 			guard Fuzz.takes("mac-item", input, { item = try MacItem.read(Data(input)) }) else { return false }
 			var again: MacItem?
 			guard Fuzz.takes("mac-item", input, { again = try MacItem.read(item!.plaintext) }) else { Fuzz.violation("mac-item", "could not read what it wrote", input) }
 			if again!.plaintext != item!.plaintext { Fuzz.violation("mac-item", "wrote one item two ways", input) }
-			_ = try? item!.verify(identityKey: world.identity.publicKey, address: address)
+			// A signature that verifies is over exactly what the identity key signed.
+			if (try? item!.verify(identityKey: world.identity.publicKey, address: address)) != nil, !signed.contains(item!.statement.text) {
+				Fuzz.violation("mac-item", "verified a text the identity key never signed", input)
+			}
 			return true
 		}
 	}

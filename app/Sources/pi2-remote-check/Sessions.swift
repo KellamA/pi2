@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import RemoteKit
+@_spi(Vectors) import RemoteKit
 
 /// A pairing and a connection between two ends of the check's own, a phone and a stand-in for pi² Remote, in memory
 /// (#674: "a pair and a KK session run between two test ends"). Every key is made in software, here; nothing touches a
@@ -29,6 +29,8 @@ enum Sessions {
 
 	/// Every secret the two ends hold, as text in each form a log could hold it, for `errorsHoldNoSecret`.
 	nonisolated(unsafe) static var secrets: [Data] = []
+	/// Payloads, handshakes and channels whose descriptions and mirrors `errorsHoldNoSecret` reads.
+	nonisolated(unsafe) static var subjects: [Any] = []
 
 	static func run() {
 		let mac = Mac()
@@ -72,18 +74,18 @@ enum Sessions {
 		}
 	}
 
-	static func line(_ channel: inout Channel, _ event: ChannelEvent?) throws -> ControlLine {
+	static func line(_ event: ChannelEvent?) throws -> ControlLine {
 		guard case let .line(bytes) = event else { throw RemoteKitError("check", "no line") }
 		return try ControlLine.parse(bytes)
 	}
 
 	/// Sends one control line through both channels' ends and reads it on the other.
-	static func send(_ line: ControlLine, from sender: inout Channel, to receiver: inout Channel, wire: inout Wire) throws -> ControlLine {
+	static func send(_ line: ControlLine, from sender: Channel, to receiver: Channel, wire: inout Wire) throws -> ControlLine {
 		var last: ChannelEvent?
 		for message in try sender.seal(line: line.line) {
 			last = try receiver.open(try wire.carry(message))
 		}
-		return try Self.line(&receiver, last)
+		return try Self.line(last)
 	}
 
 	struct PairResult {
@@ -103,16 +105,17 @@ enum Sessions {
 			Check.that(!String(describing: scanned).contains(Base64URL.encode(secret)), "a payload's description leaves out its secret")
 
 			// The handshake: IKpsk2, the phone first.
-			var phoneHandshake = try ChannelHandshake.pairingInitiator(payload: scanned, channelKey: phone.channel)
-			var macHandshake = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
+			let phoneHandshake = try ChannelHandshake.pairingInitiator(payload: scanned, channelKey: phone.channel)
+			let macHandshake = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
 			let first = try phoneHandshake.writeMessage()
 			Check.that(first.count == 96, "the first pairing message is e, s and two tags, with no payload (96 bytes)")
 			try macHandshake.readMessage(try wire.carry(first))
 			let second = try macHandshake.writeMessage()
 			Check.that(second.count == 48, "the second pairing message is e and a tag (48 bytes)")
 			try phoneHandshake.readMessage(try wire.carry(second))
-			var phoneChannel = try phoneHandshake.channel()
-			var macChannel = try macHandshake.channel()
+			let phoneChannel = try phoneHandshake.channel()
+			let macChannel = try macHandshake.channel()
+			subjects += [payload, scanned, phoneHandshake, macHandshake, phoneChannel, macChannel]
 			phoneChannel.padding = Frame.paddingBlock
 			Check.that(Bytes.constantTimeEqual(phoneChannel.handshakeHash, macChannel.handshakeHash), "both ends have the same channel binding")
 			Check.that(Bytes.constantTimeEqual(macChannel.remoteChannelKey, phone.channel.publicKey.rawRepresentation), "the Mac learns the phone's channel key")
@@ -120,7 +123,7 @@ enum Sessions {
 			// The Mac's proof, then the phone's claim.
 			let challenge = Bytes.random(32)
 			let proof = try MacProof.make(challenge: challenge, pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
-			guard case let .mac(receivedProof) = try send(.mac(proof), from: &macChannel, to: &phoneChannel, wire: &wire) else {
+			guard case let .mac(receivedProof) = try send(.mac(proof), from: macChannel, to: phoneChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not a proof")
 			}
 			Check.runs("the phone takes the Mac's proof") {
@@ -128,7 +131,7 @@ enum Sessions {
 			}
 			let claim = try PairClaim.make(
 				device: phone.description, attestation: nil, keyId: nil, pairing: pairing, binding: phoneChannel.handshakeHash, deviceKey: phone.device)
-			guard case let .pair(receivedClaim) = try send(.pair(claim), from: &phoneChannel, to: &macChannel, wire: &wire) else {
+			guard case let .pair(receivedClaim) = try send(.pair(claim), from: phoneChannel, to: macChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not a claim")
 			}
 			Check.runs("pi² Remote takes the phone's claim") {
@@ -149,7 +152,7 @@ enum Sessions {
 
 			let device = DeviceID.random()
 			let answer = try Paired(device: device, pairing: pairing, name: scanned.macName, addresses: scanned.addresses)
-			guard case let .paired(received) = try send(.paired(answer), from: &macChannel, to: &phoneChannel, wire: &wire) else {
+			guard case let .paired(received) = try send(.paired(answer), from: macChannel, to: phoneChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not paired")
 			}
 			Check.that(received == answer, "the phone reads paired as the Mac wrote it")
@@ -163,16 +166,16 @@ enum Sessions {
 
 	static func kk(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID) throws -> (Channel, Channel) {
 		var wire = Wire()
-		var phoneHandshake = try ChannelHandshake.connection(
+		let phoneHandshake = try ChannelHandshake.connection(
 			initiator: true, pairing: pairing, device: device, channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
 		let first = try phoneHandshake.writeMessage()
 		// The TCP path does not say which device is calling: pi² Remote tries its paired devices' keys.
 		let other = (DeviceID.random(), Curve25519.KeyAgreement.PrivateKey().publicKey)
-		var (found, macHandshake) = try ChannelHandshake.respond(
+		let (found, macHandshake) = try ChannelHandshake.respond(
 			toFirstMessage: try wire.carry(first), pairing: pairing, channelKey: mac.channel, devices: [other, (device, phone.channel.publicKey)])
 		guard found == device else { throw RemoteKitError("check", "the wrong device was found") }
 		try phoneHandshake.readMessage(try wire.carry(try macHandshake.writeMessage()))
-		var phoneChannel = try phoneHandshake.channel()
+		let phoneChannel = try phoneHandshake.channel()
 		phoneChannel.padding = Frame.paddingBlock
 		return (phoneChannel, try macHandshake.channel())
 	}
@@ -180,20 +183,20 @@ enum Sessions {
 	static func connect(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID) -> SessionID? {
 		do {
 			var wire = Wire()
-			var (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+			let (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
 			Check.that(Bytes.constantTimeEqual(phoneChannel.handshakeHash, macChannel.handshakeHash), "a KK connection: both ends have the same binding")
 
 			// The engine's challenge comes with the Mac's proof; the phone attaches.
 			let challenge = Bytes.random(32)
 			let proof = try MacProof.make(challenge: challenge, pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
-			guard case let .mac(receivedProof) = try send(.mac(proof), from: &macChannel, to: &phoneChannel, wire: &wire) else {
+			guard case let .mac(receivedProof) = try send(.mac(proof), from: macChannel, to: phoneChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not a proof")
 			}
 			try receivedProof.verify(identityKey: mac.identity.publicKey, pairing: pairing, binding: phoneChannel.handshakeHash)
 			let attach = try AttachClaim.make(
 				pairing: pairing, device: device, session: nil, received: nil, binding: phoneChannel.handshakeHash, challenge: receivedProof.challenge,
 				build: "1.0.42", deviceKey: phone.device, presenceKey: phone.presence)
-			guard case let .attach(receivedAttach) = try send(.attach(attach), from: &phoneChannel, to: &macChannel, wire: &wire) else {
+			guard case let .attach(receivedAttach) = try send(.attach(attach), from: phoneChannel, to: macChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not an attach")
 			}
 			Check.runs("pi² Remote finds the attach signed by a device on its own list") {
@@ -205,10 +208,24 @@ enum Sessions {
 					binding: macChannel.handshakeHash, challenge: challenge)
 			}
 			let session = SessionID("s1")!
-			guard case let .attached(attached) = try send(.attached(Attached(session: session, resume: false)), from: &macChannel, to: &phoneChannel, wire: &wire) else {
+			guard case let .attached(attached) = try send(.attached(Attached(session: session, resume: false)), from: macChannel, to: phoneChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not attached")
 			}
 			Check.that(attached.session == session && !attached.resume, "the phone reads attached")
+
+			// Until the device is attached a channel takes lines of 64 KB at most, and refuses a longer one before it holds
+			// more than that; once attached, each end raises its limit.
+			Check.that(phoneChannel.maxLineLength == Lines.firstLinesMaxLength && macChannel.maxLineLength == Lines.firstLinesMaxLength,
+				"a new channel takes first lines of 64 KB at most")
+			do {
+				let (phone2, mac2) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let over = try mac2.seal(line: Data(repeating: 0x61, count: Lines.firstLinesMaxLength + 1))
+				Check.that(over.count == 2, "a line of 64 KB and a byte goes in two frames")
+				Check.that(try phone2.open(over[0]) == nil, "the first frame is held: it is within the limit")
+				Check.refuses("a line over the limit, at the frame that would pass it") { _ = try phone2.open(over[1]) }
+			}
+			phoneChannel.maxLineLength = Lines.defaultMaxLength
+			macChannel.maxLineLength = Lines.defaultMaxLength
 
 			// Engine lines both ways, a long one in pieces.
 			let request = Data(#"{"id":1,"method":"projects.list","params":{}}"#.utf8)
@@ -228,23 +245,46 @@ enum Sessions {
 			Check.that(try ControlLine.parse(ControlLine.sessionEnd.line).line == ControlLine.sessionEnd.line, "sessionEnd reads back")
 
 			// A message changed on the way, played twice, or out of order is refused, and the channel is over.
-			var copy = phoneChannel
-			var macCopy = macChannel
-			let one = try copy.seal(line: request)[0]
-			let two = try copy.seal(line: request)[0]
-			Check.refuses("a message out of order") { _ = try macCopy.open(two) }
-			Check.refuses("a channel that refused a message takes nothing more") { _ = try macCopy.open(one) }
-			macCopy = macChannel
-			var changed = one
-			changed[changed.startIndex + 5] ^= 0x40
-			Check.refuses("a message with one bit changed") { _ = try macCopy.open(changed) }
-			macCopy = macChannel
-			_ = try macCopy.open(one)
-			Check.refuses("a message played twice") { _ = try macCopy.open(one) }
+			do {
+				let (phone2, mac2) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let one = try phone2.seal(line: request)[0]
+				let two = try phone2.seal(line: request)[0]
+				Check.refuses("a message out of order") { _ = try mac2.open(two) }
+				Check.refuses("a channel that refused a message takes nothing more") { _ = try mac2.open(one) }
+			}
+			do {
+				let (phone2, mac2) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				var changed = try phone2.seal(line: request)[0]
+				changed[changed.startIndex + 5] ^= 0x40
+				Check.refuses("a message with one bit changed") { _ = try mac2.open(changed) }
+			}
+			do {
+				let (phone2, mac2) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let one = try phone2.seal(line: request)[0]
+				_ = try mac2.open(one)
+				Check.refuses("a message played twice") { _ = try mac2.open(one) }
+			}
+			// A channel is one state, however many hold it: two holders never seal under one key and nonce, and when one
+			// sees a message refused, the other's channel is over too.
+			do {
+				let (phone2, mac2) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let phoneTwin = phone2
+				let macTwin = mac2
+				let first = try phone2.seal(line: request)[0]
+				let second = try phoneTwin.seal(line: request)[0]
+				Check.that(first != second, "two holders of one channel seal under different nonces")
+				Check.that(try mac2.open(first) == .line(request) && (try macTwin.open(second)) == .line(request), "and the other end reads both, in order")
+				var changed = try phone2.seal(line: request)[0]
+				let good = changed
+				changed[changed.startIndex] ^= 1
+				Check.refuses("a message with one bit changed, to one holder") { _ = try mac2.open(changed) }
+				Check.refuses("a failed channel has no usable twin") { _ = try macTwin.open(good) }
+				Check.that(macTwin.isOver, "the twin says it is over")
+			}
 
-			// A day old, the channel is made again.
-			var old = macChannel
-			Check.refuses("a channel over a day old") { _ = try old.seal(line: request, at: Date().addingTimeInterval(Channel.lifetime + 1)) }
+			// A day old, by a clock that counts while the device sleeps, the channel is made again.
+			Check.refuses("a channel over a day old") { _ = try macChannel.seal(line: request, at: macChannel.openedAt + Channel.lifetime + .seconds(1)) }
+			Check.that(!macChannel.isOver, "asking a day too late changes nothing in the channel")
 			// bye ends it.
 			Check.that(try macChannel.open(try wire.carry(try phoneChannel.sealBye())) == .bye, "bye arrives")
 			Check.that(macChannel.isOver && phoneChannel.isOver, "after bye both ends are over")
@@ -261,7 +301,7 @@ enum Sessions {
 		do {
 			var wire = Wire()
 			let (first, _) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
-			var (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+			let (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
 			Check.that(!Bytes.constantTimeEqual(first.handshakeHash, phoneChannel.handshakeHash), "every channel has its own binding")
 			let challenge = Bytes.random(32)
 			let oldAttach = try AttachClaim.make(
@@ -275,7 +315,7 @@ enum Sessions {
 			let resume = try AttachClaim.make(
 				pairing: pairing, device: device, session: session, received: 9, binding: phoneChannel.handshakeHash, challenge: challenge,
 				build: "1.0.42", deviceKey: phone.device, presenceKey: phone.presence)
-			guard case let .attach(received) = try send(.attach(resume), from: &phoneChannel, to: &macChannel, wire: &wire) else {
+			guard case let .attach(received) = try send(.attach(resume), from: phoneChannel, to: macChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not an attach")
 			}
 			Check.that(received.session == session && received.received == 9, "a resume names its session and the lines the phone has")
@@ -327,7 +367,7 @@ enum Sessions {
 				}
 			}
 			let revocation = try Revocation.make(pairing: pairing, device: device, identity: mac.identity)
-			guard case let .revoked(receivedRevocation) = try send(.revoked(revocation), from: &macChannel, to: &phoneChannel, wire: &wire) else {
+			guard case let .revoked(receivedRevocation) = try send(.revoked(revocation), from: macChannel, to: phoneChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not revoked")
 			}
 			Check.runs("the phone takes a revocation its Mac signed") {
@@ -353,14 +393,14 @@ enum Sessions {
 			// A wrong secret: the claimer cannot read the Mac's answer, and the Mac cannot read what it sends next.
 			var wrong = payload
 			wrong.secret = Bytes.random(32)
-			var attacker = try ChannelHandshake.pairingInitiator(payload: wrong, channelKey: Curve25519.KeyAgreement.PrivateKey())
-			var macSide = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
+			let attacker = try ChannelHandshake.pairingInitiator(payload: wrong, channelKey: Curve25519.KeyAgreement.PrivateKey())
+			let macSide = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
 			try macSide.readMessage(try attacker.writeMessage())
 			let answer = try macSide.writeMessage()
 			Check.refuses("a claimer without the secret cannot complete the pairing handshake") { try attacker.readMessage(answer) }
 			// The Mac's side completes; the first transport message a claimer without the secret sends fails, which is
 			// where pi² Remote counts a wrong try (3.1).
-			var macChannel = try macSide.channel()
+			let macChannel = try macSide.channel()
 			let forgedKeys = SymmetricKey(size: .bits256)
 			let garbage = try ChaChaPoly.seal(Data([1, 0, 1, 0x7b]), using: forgedKeys).ciphertext + Data(repeating: 0, count: 16)
 			Check.refuses("the Mac refuses the first message of a claimer without the secret") { _ = try macChannel.open(garbage) }
@@ -368,64 +408,114 @@ enum Sessions {
 			// A pairing handshake made for another pairing.
 			var elsewhere = payload
 			elsewhere.pairing = PairingID.random()
-			var other = try ChannelHandshake.pairingInitiator(payload: elsewhere, channelKey: phone.channel)
-			var macOther = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
+			let other = try ChannelHandshake.pairingInitiator(payload: elsewhere, channelKey: phone.channel)
+			let macOther = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
 			let otherFirst = try other.writeMessage()
 			Check.refuses("a pairing handshake made for another pairing") { try macOther.readMessage(otherFirst) }
 
 			// A handshake message with a payload: Noise allows one, the channel takes none.
-			var withPayload = try NoiseHandshake(
+			let withPayload = try NoiseHandshake(
 				pattern: .kk, initiator: true, prologue: Data("pi2-v2".utf8) + Data([0]) + Data(pairing.text.utf8) + Data([0]) + Data(device.text.utf8),
 				localStatic: phone.channel, remoteStatic: mac.channel.publicKey.rawRepresentation, psk: nil)
 			let carrying = try withPayload.writeMessage(payload: Data("hello".utf8))
-			var macKK = try ChannelHandshake.connection(
+			let macKK = try ChannelHandshake.connection(
 				initiator: false, pairing: pairing, device: device, channelKey: mac.channel, remoteChannelKey: phone.channel.publicKey)
 			Check.refuses("a handshake message that carries a payload") { try macKK.readMessage(carrying) }
+			Check.that(macKK.hasFailed, "a handshake that refused a payload has failed")
+			Check.refuses("and writes no answer") { _ = try macKK.writeMessage() }
+			Check.refuses("and gives no channel") { _ = try macKK.channel() }
+			// The same at the second message, on the initiator's side.
+			let initiatorKK = try ChannelHandshake.connection(
+				initiator: true, pairing: pairing, device: device, channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
+			let answering = try NoiseHandshake(
+				pattern: .kk, initiator: false, prologue: Data("pi2-v2".utf8) + Data([0]) + Data(pairing.text.utf8) + Data([0]) + Data(device.text.utf8),
+				localStatic: mac.channel, remoteStatic: phone.channel.publicKey.rawRepresentation, psk: nil)
+			_ = try answering.readMessage(try initiatorKK.writeMessage())
+			let answerWithPayload = try answering.writeMessage(payload: Data("hello".utf8))
+			Check.refuses("a second handshake message that carries a payload") { try initiatorKK.readMessage(answerWithPayload) }
+			Check.refuses("and then the initiator gives no channel") { _ = try initiatorKK.channel() }
+
+			// A handshake gives one channel: a second would share the first one's keys and nonces.
+			do {
+				let phoneSide = try ChannelHandshake.connection(
+					initiator: true, pairing: pairing, device: device, channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
+				let macSide = try ChannelHandshake.connection(
+					initiator: false, pairing: pairing, device: device, channelKey: mac.channel, remoteChannelKey: phone.channel.publicKey)
+				try macSide.readMessage(try phoneSide.writeMessage())
+				try phoneSide.readMessage(try macSide.writeMessage())
+				let once = try phoneSide.channel()
+				Check.refuses("a handshake gives one channel, not two") { _ = try phoneSide.channel() }
+				let reader = try macSide.channel()
+				Check.that(try reader.open(try once.seal(line: Data("{}".utf8))[0]) == .line(Data("{}".utf8)), "and that one channel works")
+				subjects += [phoneSide, macSide, once, reader]
+			}
 
 			// KK from a key that is not paired, and for another device.
 			let stranger = Curve25519.KeyAgreement.PrivateKey()
-			var strangerSide = try ChannelHandshake.connection(
+			let strangerSide = try ChannelHandshake.connection(
 				initiator: true, pairing: pairing, device: device, channelKey: stranger, remoteChannelKey: mac.channel.publicKey)
 			let strangerFirst = try strangerSide.writeMessage()
 			Check.refuses("a connection from a channel key that is not paired") {
 				_ = try ChannelHandshake.respond(
 					toFirstMessage: strangerFirst, pairing: pairing, channelKey: mac.channel, devices: [(device, phone.channel.publicKey)])
 			}
-			var otherDevice = try ChannelHandshake.connection(
+			let otherDevice = try ChannelHandshake.connection(
 				initiator: true, pairing: pairing, device: DeviceID.random(), channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
 			let otherDeviceFirst = try otherDevice.writeMessage()
+			Check.refuses("a first message of another length, before any key agreement") {
+				_ = try ChannelHandshake.respond(
+					toFirstMessage: strangerFirst + Data([0]), pairing: pairing, channelKey: mac.channel, devices: [(device, phone.channel.publicKey)])
+			}
+			Check.refuses("more devices than the trials") {
+				_ = try ChannelHandshake.respond(
+					toFirstMessage: strangerFirst, pairing: pairing, channelKey: mac.channel,
+					devices: (0...ChannelHandshake.trials).map { _ in (DeviceID.random(), Curve25519.KeyAgreement.PrivateKey().publicKey) })
+			}
+			// A device found in the last of the eight places, among seven others, and alone.
+			do {
+				let others = (0..<7).map { _ in (DeviceID.random(), Curve25519.KeyAgreement.PrivateKey().publicKey) }
+				let phoneSide = try ChannelHandshake.connection(
+					initiator: true, pairing: pairing, device: device, channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
+				let first = try phoneSide.writeMessage()
+				let (last, lastSide) = try ChannelHandshake.respond(
+					toFirstMessage: first, pairing: pairing, channelKey: mac.channel, devices: others + [(device, phone.channel.publicKey)])
+				Check.that(last == device, "the device in the eighth place is found")
+				try phoneSide.readMessage(try lastSide.writeMessage())
+				Check.that(Bytes.constantTimeEqual(try phoneSide.channel().handshakeHash, try lastSide.channel().handshakeHash),
+					"and the handshake it gives back goes on, with nothing of the failed trials in it")
+			}
 			Check.refuses("a connection made for another device's prologue") {
 				_ = try ChannelHandshake.respond(
 					toFirstMessage: otherDeviceFirst, pairing: pairing, channelKey: mac.channel, devices: [(device, phone.channel.publicKey)])
 			}
 			// An ephemeral key of small order (all zeros) is refused.
 			var zeroes = Data(repeating: 0, count: 48)
-			var macZero = try ChannelHandshake.connection(
+			let macZero = try ChannelHandshake.connection(
 				initiator: false, pairing: pairing, device: device, channelKey: mac.channel, remoteChannelKey: phone.channel.publicKey)
 			Check.refuses("an ephemeral key of small order") { try macZero.readMessage(zeroes) }
 			zeroes[0] = 1
-			var macOne = try ChannelHandshake.connection(
+			let macOne = try ChannelHandshake.connection(
 				initiator: false, pairing: pairing, device: device, channelKey: mac.channel, remoteChannelKey: phone.channel.publicKey)
 			Check.refuses("an ephemeral key of small order (one)") { try macOne.readMessage(zeroes) }
 			// Every single byte of a good first message changed is refused.
-			var good = try ChannelHandshake.connection(
+			let good = try ChannelHandshake.connection(
 				initiator: true, pairing: pairing, device: device, channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
 			let goodFirst = try good.writeMessage()
 			var allRefused = true
 			for index in 0..<goodFirst.count {
 				var changed = goodFirst
 				changed[changed.startIndex + index] ^= 0x01
-				var side = try ChannelHandshake.connection(
+				let side = try ChannelHandshake.connection(
 					initiator: false, pairing: pairing, device: device, channelKey: mac.channel, remoteChannelKey: phone.channel.publicKey)
 				if (try? side.readMessage(changed)) != nil { allRefused = false }
 			}
 			Check.that(allRefused, "a first KK message with any one byte changed is refused")
 			Check.refuses("a handshake read out of turn") {
-				var side = try ChannelHandshake.connection(
+				let side = try ChannelHandshake.connection(
 					initiator: true, pairing: pairing, device: device, channelKey: phone.channel, remoteChannelKey: mac.channel.publicKey)
 				try side.readMessage(goodFirst)
 			}
-			Check.refuses("a second message written out of turn") { var side = good; _ = try side.writeMessage() }
+			Check.refuses("a second message written out of turn") { _ = try good.writeMessage() }
 
 			// A pairing claim that names a channel key other than the handshake's, or is signed by another key.
 			let binding = Bytes.random(32)
@@ -439,6 +529,10 @@ enum Sessions {
 			Check.refuses("a claim signed by a key that is not the device key") {
 				_ = try PairClaim.make(device: phone.description, attestation: nil, keyId: nil, pairing: pairing, binding: binding, deviceKey: phone.presence)
 			}
+			var disguised = phone.description
+			disguised.name = "Alex\u{202E}s iPhone"
+			let disguisedClaim = try PairClaim.make(device: disguised, attestation: nil, keyId: nil, pairing: pairing, binding: binding, deviceKey: phone.device)
+			Check.refuses("a claim whose device name holds a direction-changing character") { _ = try ControlLine.parse(ControlLine.pair(disguisedClaim).line) }
 			let proof = try MacProof.make(challenge: Bytes.random(32), pairing: pairing, binding: binding, identity: P256.Signing.PrivateKey())
 			Check.refuses("a Mac's proof not signed by the identity key in the payload") {
 				try proof.verify(identityKey: mac.identity.publicKey, pairing: pairing, binding: binding)
@@ -458,11 +552,21 @@ enum Sessions {
 				device: device, id: id, deviceKey: phone.device, presenceKey: phone.presence)
 			let item = try SealedItem.seal(request.plaintext, to: address, readerKey: mac.record.publicKey, writerKey: phone.record)
 			Check.that(item.count <= SealedItem.maxLength, "a sealed request fits the mailbox")
-			let opened = try RequestItem.read(try SealedItem.open(item, at: address, readerKey: mac.record, writerKey: phone.record.publicKey))
-			Check.runs("the Mac opens the phone's item and finds it signed by the device key, with presence") {
-				try opened.verify(deviceKey: phone.device.publicKey, presenceKey: phone.presence.publicKey, writer: device, address: address)
+			// One call opens, reads and verifies: nothing unverified reaches a caller.
+			let opened = try SealedItem.openRequest(
+				item, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey, deviceKey: phone.device.publicKey,
+				presenceKey: phone.presence.publicKey)
+			Check.that(opened.method == "needs.answer" && opened.nonce == id && opened.hasPresence, "the Mac opens the phone's item, signed by the device key, with presence")
+			Check.refuses("openRequest refuses an item whose presence signature is another key's") {
+				_ = try SealedItem.openRequest(
+					item, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey, deviceKey: phone.device.publicKey,
+					presenceKey: P256.Signing.PrivateKey().publicKey)
 			}
-			Check.that(opened.method == "needs.answer" && opened.nonce == id, "the request reads back")
+			Check.refuses("openRequest refuses an item from another device than the relay says") {
+				_ = try SealedItem.openRequest(
+					item, at: address, readerKey: mac.record, writer: DeviceID.random(), writerRecordKey: phone.record.publicKey, deviceKey: phone.device.publicKey,
+					presenceKey: phone.presence.publicKey)
+			}
 			Check.refuses("an item moved to another id") {
 				_ = try SealedItem.open(item, at: ItemAddress(pairing: pairing, reader: .mac, id: ItemID.random()), readerKey: mac.record, writerKey: phone.record.publicKey)
 			}
@@ -488,7 +592,9 @@ enum Sessions {
 			let forgedItem = try SealedItem.seal(forged.plaintext, to: address, readerKey: mac.record.publicKey, writerKey: phone.record)
 			let forgedOpened = try RequestItem.read(try SealedItem.open(forgedItem, at: address, readerKey: mac.record, writerKey: phone.record.publicKey))
 			Check.refuses("a request sealed with the right keys but not signed by the device key") {
-				try forgedOpened.verify(deviceKey: phone.device.publicKey, presenceKey: nil, writer: device, address: address)
+				_ = try SealedItem.openRequest(
+					forgedItem, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey,
+					deviceKey: phone.device.publicKey, presenceKey: phone.presence.publicKey)
 			}
 			Check.refuses("a request whose presence signature is required and missing") {
 				try forgedOpened.verify(deviceKey: forger.publicKey, presenceKey: phone.presence.publicKey, writer: device, address: address)
@@ -505,15 +611,25 @@ enum Sessions {
 				let state = try MacItem.make(
 					kind: "state", number: number, body: .object([("needs", .integer(number))]), pairing: pairing, device: device, id: stateID, identity: mac.identity)
 				let sealed = try SealedItem.seal(state.plaintext, to: stateAddress, readerKey: phone.record.publicKey, writerKey: mac.record)
-				let read = try MacItem.read(try SealedItem.open(sealed, at: stateAddress, readerKey: phone.record, writerKey: mac.record.publicKey))
-				try read.verify(identityKey: mac.identity.publicKey, address: stateAddress)
+				let read = try SealedItem.openMacItem(
+					sealed, at: stateAddress, readerKey: phone.record, writerRecordKey: mac.record.publicKey, identityKey: mac.identity.publicKey)
 				Check.that(numbers.take(read.number!) == .newer, "state \(number) is newer")
 			}
 			Check.that(numbers.take(2) == .same && numbers.take(1) == .older && numbers.shown == 2, "an old state handed back is refused")
 			let stateID = ItemID.random()
 			let stateAddress = ItemAddress(pairing: pairing, reader: .device(device), id: stateID)
 			let notMac = try MacItem.make(kind: "receipt", body: .string("done"), pairing: pairing, device: device, id: stateID, identity: P256.Signing.PrivateKey())
-			Check.refuses("a Mac item not signed by the Mac's identity key") { try notMac.verify(identityKey: mac.identity.publicKey, address: stateAddress) }
+			Check.refuses("a Mac item not signed by the Mac's identity key") {
+				let sealed = try SealedItem.seal(notMac.plaintext, to: stateAddress, readerKey: phone.record.publicKey, writerKey: mac.record)
+				_ = try SealedItem.openMacItem(sealed, at: stateAddress, readerKey: phone.record, writerRecordKey: mac.record.publicKey, identityKey: mac.identity.publicKey)
+			}
+			// A value the strict reader would refuse, or read as something else, is never signed.
+			Check.refuses("a number that is not one number is not signed") {
+				_ = try MacItem.make(kind: "receipt", body: .object([("a", .number(#"1,"b":2"#))]), pairing: pairing, device: device, id: stateID, identity: mac.identity)
+			}
+			Check.refuses("an object with a key twice is not signed") {
+				_ = try MacItem.make(kind: "receipt", body: .object([("a", .null), ("a", .null)]), pairing: pairing, device: device, id: stateID, identity: mac.identity)
+			}
 			Check.refuses("a state without its number") {
 				_ = try MacItem.make(kind: "state", body: .null, pairing: pairing, device: device, id: stateID, identity: mac.identity)
 			}
@@ -539,11 +655,22 @@ enum Sessions {
 		Check.that(takes(SecureEnclave.P256.KeyAgreement.PrivateKey.self), "CryptoKit's HPKE takes a Secure Enclave record key")
 	}
 
-	/// No error RemoteKit threw in these checks holds a secret, in hex, base64 or base64url.
+	/// No error RemoteKit threw in these checks, and no description or mirror of a payload, handshake or channel, holds a
+	/// secret, in hex, base64 or base64url; and no mirror shows bytes at all (a handshake's chaining key is no secret this
+	/// check knows, but would show as bytes).
 	static func errorsHoldNoSecret() {
-		Check.section("Errors hold no secret")
+		Check.section("Errors, descriptions and mirrors hold no secret")
 		let forms = secrets.flatMap { [$0.hex, $0.base64EncodedString(), Base64URL.encode($0)] }
 		let leaking = Check.errors.filter { error in forms.contains { error.contains($0) } }
 		Check.that(!Check.errors.isEmpty && leaking.isEmpty, "none of \(Check.errors.count) refusals' errors holds a key or the secret")
+		Check.that(subjects.count >= 10, "payloads, handshakes and channels to read")
+		for subject in subjects {
+			var dumped = ""
+			dump(subject, to: &dumped)
+			let texts = [dumped, String(reflecting: subject), String(describing: subject)]
+			let kind = String(describing: type(of: subject))
+			Check.that(!texts.contains { text in forms.contains { text.contains($0) } }, "a \(kind)'s description and dump hold no secret")
+			Check.that(!dumped.contains(" bytes"), "a \(kind)'s dump shows no bytes")
+		}
 	}
 }

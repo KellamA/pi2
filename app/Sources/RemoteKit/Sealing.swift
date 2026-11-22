@@ -70,7 +70,10 @@ public enum SealedItem {
 		return item
 	}
 
-	/// Opens an item sealed for `address` by the writer whose record key is `writerKey`.
+	/// Opens an item sealed for `address` by the writer whose record key is `writerKey`, without reading or verifying
+	/// what it holds: for the checks only. Everyone else opens with `openRequest` or `openMacItem`, which give nothing
+	/// unverified.
+	@_spi(Vectors)
 	public static func open<Key: HPKEDiffieHellmanPrivateKey>(
 		_ item: Data, at address: ItemAddress, readerKey: Key, writerKey: P256.KeyAgreement.PublicKey
 	) throws -> Data where Key.PublicKey == P256.KeyAgreement.PublicKey {
@@ -86,6 +89,32 @@ public enum SealedItem {
 		} catch {
 			throw RemoteKitError("sealed item", "does not open for this reader, writer and address")
 		}
+	}
+}
+
+extension SealedItem {
+	/// Opens a request the phone left in the Mac's mailbox, reads it and checks it, in one call, so that nothing acts on
+	/// one that is not verified: sealed for this address by the device's record key, signed by its device key, for this
+	/// pairing, from the device the relay says wrote it, with the item's own id as its nonce; and a presence signature,
+	/// if it carries one, made by its presence key. How old it may be and whether its nonce was seen are the engine's.
+	public static func openRequest<Key: HPKEDiffieHellmanPrivateKey>(
+		_ item: Data, at address: ItemAddress, readerKey: Key, writer: DeviceID, writerRecordKey: P256.KeyAgreement.PublicKey,
+		deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey
+	) throws -> RequestItem where Key.PublicKey == P256.KeyAgreement.PublicKey {
+		let request = try RequestItem.read(try open(item, at: address, readerKey: readerKey, writerKey: writerRecordKey))
+		try request.verify(deviceKey: deviceKey, presenceKey: presenceKey, presenceRequired: false, writer: writer, address: address)
+		return request
+	}
+
+	/// Opens an item the Mac left for this device, reads it and checks it, in one call: sealed for this address by the
+	/// Mac's record key, signed by its identity key, for this pairing and device, with the item's own id as its nonce.
+	/// Whether a state is newer than the one shown is `StateNumbers`'.
+	public static func openMacItem<Key: HPKEDiffieHellmanPrivateKey>(
+		_ item: Data, at address: ItemAddress, readerKey: Key, writerRecordKey: P256.KeyAgreement.PublicKey, identityKey: P256.Signing.PublicKey
+	) throws -> MacItem where Key.PublicKey == P256.KeyAgreement.PublicKey {
+		let macItem = try MacItem.read(try open(item, at: address, readerKey: readerKey, writerKey: writerRecordKey))
+		try macItem.verify(identityKey: identityKey, address: address)
+		return macItem
 	}
 }
 
@@ -153,6 +182,7 @@ public struct RequestItem: Sendable {
 		return JSON.write(.object(members))
 	}
 
+	@_spi(Vectors)
 	public static func read(_ plaintext: Data) throws -> RequestItem {
 		let part = "request item"
 		let value: JSONValue
@@ -177,14 +207,25 @@ public struct RequestItem: Sendable {
 	/// The check whoever opens the item makes: the writer's device key signed it, for this pairing, as the device the
 	/// relay says wrote it, with the item's own id as its nonce; and, when given a presence key, that the presence
 	/// signature is good. How old `at` may be, and whether the nonce was seen, are the engine's (4.3).
+	@_spi(Vectors)
 	public func verify(deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey?, writer: DeviceID, address: ItemAddress) throws {
+		try verify(deviceKey: deviceKey, presenceKey: presenceKey, presenceRequired: presenceKey != nil, writer: writer, address: address)
+	}
+
+	/// Whether the phone signed it with its presence key too, which `SealedItem.openRequest` has checked (4.3, 5.3).
+	public var hasPresence: Bool { presence != nil }
+
+	func verify(
+		deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey?, presenceRequired: Bool, writer: DeviceID, address: ItemAddress
+	) throws {
 		let part = "request item"
 		guard statement.isSigned(by: deviceKey) else { throw RemoteKitError(part, "not signed by the device key") }
 		guard pairing == address.pairing, address.reader == .mac else { throw RemoteKitError(part, "for another pairing or reader") }
 		guard device == writer else { throw RemoteKitError(part, "from another device") }
 		guard nonce == address.id else { throw RemoteKitError(part, "its nonce is not the item's id") }
-		if let presenceKey {
-			guard let presence, SignedStatement.verify(presence, over: Data(statement.text.utf8), by: presenceKey) else {
+		if presenceRequired, presence == nil { throw RemoteKitError(part, "no valid presence signature") }
+		if let presence {
+			guard let presenceKey, SignedStatement.verify(presence, over: Data(statement.text.utf8), by: presenceKey) else {
 				throw RemoteKitError(part, "no valid presence signature")
 			}
 		}
@@ -256,6 +297,7 @@ public struct MacItem: Sendable {
 		JSON.write(.object([("v", .integer(2)), ("signed", .string(statement.text)), ("signature", .string(statement.signatureText))]))
 	}
 
+	@_spi(Vectors)
 	public static func read(_ plaintext: Data) throws -> MacItem {
 		let part = "mac item"
 		let value: JSONValue
@@ -270,6 +312,7 @@ public struct MacItem: Sendable {
 	}
 
 	/// The phone's check: its Mac's identity key signed this item, for this pairing and device, with the item's own id.
+	@_spi(Vectors)
 	public func verify(identityKey: P256.Signing.PublicKey, address: ItemAddress) throws {
 		let part = "mac item"
 		guard statement.isSigned(by: identityKey) else { throw RemoteKitError(part, "not signed by the Mac's identity key") }

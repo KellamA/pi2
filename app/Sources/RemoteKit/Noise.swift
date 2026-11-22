@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 
 // The Noise Protocol Framework, revision 34 (https://noiseprotocol.org/noise.html), for the two protocols pi² uses
 // (iphone.md 5.2): Noise_IKpsk2_25519_ChaChaPoly_SHA256 to pair and Noise_KK_25519_ChaChaPoly_SHA256 for every
@@ -174,35 +175,23 @@ struct NoiseSymmetricState: Sendable {
 	}
 }
 
-/// Section 5.3: one side of a handshake.
-public struct NoiseHandshake: Sendable {
-	public let pattern: NoisePattern
-	public let isInitiator: Bool
+/// Section 5.3: one side of a handshake, as a value: the state `NoiseHandshake` keeps behind its lock.
+struct HandshakeCore: Sendable {
+	let pattern: NoisePattern
+	let isInitiator: Bool
 	private var symmetric: NoiseSymmetricState
 	private let localStatic: Curve25519.KeyAgreement.PrivateKey
 	private var localEphemeral: Curve25519.KeyAgreement.PrivateKey?
 	private let fixedEphemeral: Curve25519.KeyAgreement.PrivateKey?
-	private var remoteStatic: Data?
+	private(set) var remoteStatic: Data?
 	private var remoteEphemeral: Data?
 	private let psk: Data?
 	private var messageIndex = 0
-	private var failed = false
+	private(set) var failed = false
+	/// Whether the transport has been made from it: a handshake gives one, and only one.
+	private var spent = false
 
-	/// - Parameters:
-	///   - remoteStatic: the other side's static key, when the pattern has it known beforehand (both sides of KK, the
-	///     initiator of IK); nil otherwise.
-	///   - psk: the 32-byte pre-shared key of IKpsk2; nil for KK.
-	public init(
-		pattern: NoisePattern, initiator: Bool, prologue: Data, localStatic: Curve25519.KeyAgreement.PrivateKey,
-		remoteStatic: Data?, psk: Data?
-	) throws {
-		try self.init(pattern: pattern, initiator: initiator, prologue: prologue, localStatic: localStatic, remoteStatic: remoteStatic, psk: psk, ephemeral: nil)
-	}
-
-	/// The same, with the ephemeral key given rather than made: only for checking against the published test vectors,
-	/// which fix it. An ephemeral key used twice gives away the channel.
-	@_spi(Vectors)
-	public init(
+	init(
 		pattern: NoisePattern, initiator: Bool, prologue: Data, localStatic: Curve25519.KeyAgreement.PrivateKey,
 		remoteStatic: Data?, psk: Data?, ephemeral: Curve25519.KeyAgreement.PrivateKey?
 	) throws {
@@ -226,18 +215,14 @@ public struct NoiseHandshake: Sendable {
 		if pattern.responderPremessage.contains(.s) { symmetric.mixHash(initiator ? remoteStatic! : local) }
 	}
 
-	public var isComplete: Bool { messageIndex == pattern.messages.count }
+	var isComplete: Bool { messageIndex == pattern.messages.count }
+	var writesNext: Bool { !isComplete && (messageIndex % 2 == 0) == isInitiator }
+	var handshakeHash: Data { symmetric.hash }
+	var messagesDone: Int { messageIndex }
 
-	/// Whether the next message is this side's to write.
-	public var writesNext: Bool { !isComplete && (messageIndex % 2 == 0) == isInitiator }
+	mutating func fail() { failed = true }
 
-	/// The handshake hash: the channel binding once the handshake is complete (section 11.2).
-	public var handshakeHash: Data { symmetric.hash }
-
-	/// The other side's static key, once known.
-	public var remoteStaticKey: Data? { remoteStatic }
-
-	public mutating func writeMessage(payload: Data = Data()) throws -> Data {
+	mutating func writeMessage(payload: Data) throws -> Data {
 		guard !failed else { throw RemoteKitError("Noise handshake", "has already failed") }
 		guard writesNext else { throw RemoteKitError("Noise handshake", "not this side's turn to write") }
 		do {
@@ -269,8 +254,7 @@ public struct NoiseHandshake: Sendable {
 		}
 	}
 
-	/// Reads the other side's next message and gives back its payload.
-	public mutating func readMessage(_ message: Data) throws -> Data {
+	mutating func readMessage(_ message: Data) throws -> Data {
 		guard !failed else { throw RemoteKitError("Noise handshake", "has already failed") }
 		guard !isComplete, !writesNext else { throw RemoteKitError("Noise handshake", "not this side's turn to read") }
 		do {
@@ -307,12 +291,14 @@ public struct NoiseHandshake: Sendable {
 		}
 	}
 
-	/// The transport's two cipher states, once the handshake is complete (section 5.2's Split).
-	public func split() throws -> NoiseTransport {
+	/// Section 5.2's Split, once: a second call is refused, since two transports from one handshake would share their
+	/// keys and nonces.
+	mutating func split() throws -> TransportCore {
 		guard isComplete, !failed else { throw RemoteKitError("Noise handshake", "not complete") }
+		guard !spent else { throw RemoteKitError("Noise handshake", "has already given its transport") }
+		spent = true
 		let (first, second) = symmetric.split()
-		return NoiseTransport(
-			sender: isInitiator ? first : second, receiver: isInitiator ? second : first, handshakeHash: symmetric.hash)
+		return TransportCore(sender: isInitiator ? first : second, receiver: isInitiator ? second : first)
 	}
 
 	/// Section 5.3's DH tokens, from this side's point of view.
@@ -327,7 +313,95 @@ public struct NoiseHandshake: Sendable {
 		default: (local, remote) = (nil, nil)
 		}
 		guard let local, let remote else { throw RemoteKitError("Noise handshake", "a key is missing for a DH") }
-		return try Self.agree(local, remote)
+		return try NoiseHandshake.agree(local, remote)
+	}
+}
+
+/// Section 5.3: one side of a handshake.
+///
+/// A final class with its state behind a lock, not a value: a copy of a value would hold the same keys, and two
+/// transports or two messages made from them would reuse a key with a nonce. A reference shares one state, so every
+/// holder sees the same nonce and the same failure, from any thread. The transport is given once (`split()`).
+/// `description`, `debugDescription` and `dump` show the pattern and the progress, never a key.
+public final class NoiseHandshake: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	public let pattern: NoisePattern
+	public let isInitiator: Bool
+	private let core: Mutex<HandshakeCore>
+
+	/// - Parameters:
+	///   - remoteStatic: the other side's static key, when the pattern has it known beforehand (both sides of KK, the
+	///     initiator of IK); nil otherwise.
+	///   - psk: the 32-byte pre-shared key of IKpsk2; nil for KK.
+	public convenience init(
+		pattern: NoisePattern, initiator: Bool, prologue: Data, localStatic: Curve25519.KeyAgreement.PrivateKey,
+		remoteStatic: Data?, psk: Data?
+	) throws {
+		try self.init(pattern: pattern, initiator: initiator, prologue: prologue, localStatic: localStatic, remoteStatic: remoteStatic, psk: psk, ephemeral: nil)
+	}
+
+	/// The same, with the ephemeral key given rather than made: only for checking against the published test vectors,
+	/// which fix it. An ephemeral key used twice gives away the channel.
+	@_spi(Vectors)
+	public init(
+		pattern: NoisePattern, initiator: Bool, prologue: Data, localStatic: Curve25519.KeyAgreement.PrivateKey,
+		remoteStatic: Data?, psk: Data?, ephemeral: Curve25519.KeyAgreement.PrivateKey?
+	) throws {
+		self.pattern = pattern
+		self.isInitiator = initiator
+		core = Mutex(try HandshakeCore(
+			pattern: pattern, initiator: initiator, prologue: prologue, localStatic: localStatic, remoteStatic: remoteStatic, psk: psk,
+			ephemeral: ephemeral))
+	}
+
+	public var isComplete: Bool { core.withLock { $0.isComplete } }
+
+	/// Whether the next message is this side's to write.
+	public var writesNext: Bool { core.withLock { $0.writesNext } }
+
+	/// Whether it refused a message, or was told to fail: then it does nothing more.
+	public var hasFailed: Bool { core.withLock { $0.failed } }
+
+	/// The handshake hash: the channel binding once the handshake is complete (section 11.2).
+	public var handshakeHash: Data { core.withLock { $0.handshakeHash } }
+
+	/// The other side's static key, once known.
+	public var remoteStaticKey: Data? { core.withLock { $0.remoteStatic } }
+
+	public func writeMessage(payload: Data = Data()) throws -> Data {
+		try core.withLock { try $0.writeMessage(payload: payload) }
+	}
+
+	/// Reads the other side's next message and gives back its payload.
+	public func readMessage(_ message: Data) throws -> Data {
+		try core.withLock { try $0.readMessage(message) }
+	}
+
+	/// Reads the other side's next message, which must carry no payload; one that does fails the handshake.
+	func readMessageWithoutPayload(_ message: Data) throws {
+		try core.withLock { core in
+			let payload = try core.readMessage(message)
+			guard payload.isEmpty else {
+				core.fail()
+				throw RemoteKitError("channel handshake", "a payload in a handshake message")
+			}
+		}
+	}
+
+	/// The transport's two cipher states, once the handshake is complete (section 5.2's Split). Given once: a second call
+	/// is refused.
+	public func split() throws -> NoiseTransport { NoiseTransport(core: try splitCore(), handshakeHash: handshakeHash) }
+
+	func splitCore() throws -> TransportCore { try core.withLock { try $0.split() } }
+
+	public var description: String {
+		let (done, failed) = core.withLock { ($0.messagesDone, $0.failed) }
+		return "\(pattern.protocolName) handshake, \(isInitiator ? "initiator" : "responder"), \(done) of \(pattern.messages.count) messages\(failed ? ", failed" : "")"
+	}
+
+	public var debugDescription: String { description }
+
+	public var customMirror: Mirror {
+		Mirror(self, children: ["pattern": pattern.protocolName, "isInitiator": isInitiator, "state": description], displayStyle: .class)
 	}
 
 	static func agree(_ local: Curve25519.KeyAgreement.PrivateKey, _ remote: Data) throws -> Data {
@@ -346,26 +420,45 @@ public struct NoiseHandshake: Sendable {
 	}
 }
 
-/// Section 5: the transport's two cipher states and the channel binding, after the handshake.
-public struct NoiseTransport: Sendable {
+/// The transport's two cipher states, as a value: what `NoiseTransport` and `Channel` keep behind their locks.
+struct TransportCore: Sendable {
 	private var sender: NoiseCipherState
 	private var receiver: NoiseCipherState
-	public let handshakeHash: Data
 
-	init(sender: NoiseCipherState, receiver: NoiseCipherState, handshakeHash: Data) {
+	init(sender: NoiseCipherState, receiver: NoiseCipherState) {
 		self.sender = sender
 		self.receiver = receiver
-		self.handshakeHash = handshakeHash
 	}
 
 	/// Transport messages have no associated data.
-	public mutating func encrypt(_ plaintext: Data) throws -> Data {
+	mutating func encrypt(_ plaintext: Data) throws -> Data {
 		guard plaintext.count <= Noise.maxPlaintextLength else { throw RemoteKitError("Noise", "a plaintext too long") }
 		return try sender.encrypt(ad: Data(), plaintext: plaintext)
 	}
 
-	public mutating func decrypt(_ message: Data) throws -> Data {
+	mutating func decrypt(_ message: Data) throws -> Data {
 		guard message.count <= Noise.maxMessageLength else { throw RemoteKitError("Noise", "a message too long") }
 		return try receiver.decrypt(ad: Data(), ciphertext: message)
 	}
+}
+
+/// Section 5: the transport's two cipher states and the channel binding, after the handshake. A final class with its
+/// state behind a lock, for the reason `NoiseHandshake` gives. The channel (`Channel`) is what pi² uses; this is Noise's
+/// own transport, for the published vectors.
+public final class NoiseTransport: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	private let core: Mutex<TransportCore>
+	public let handshakeHash: Data
+
+	init(core: TransportCore, handshakeHash: Data) {
+		self.core = Mutex(core)
+		self.handshakeHash = handshakeHash
+	}
+
+	public func encrypt(_ plaintext: Data) throws -> Data { try core.withLock { try $0.encrypt(plaintext) } }
+
+	public func decrypt(_ message: Data) throws -> Data { try core.withLock { try $0.decrypt(message) } }
+
+	public var description: String { "Noise transport" }
+	public var debugDescription: String { description }
+	public var customMirror: Mirror { Mirror(self, children: [:], displayStyle: .class) }
 }

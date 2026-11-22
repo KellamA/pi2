@@ -31,10 +31,15 @@ public struct SignedStatement: Sendable {
 	/// The text, read.
 	public let value: JSONValue
 
-	/// Writes `value` and signs it.
+	/// Writes `value` and signs it, after reading its own text back as any reader will: a value the strict reader would
+	/// refuse (a key twice) or read as something else (a `JSONValue.number` that is not one number) is refused, never
+	/// signed.
 	public static func make(_ value: JSONValue, signer: some StatementSigner) throws -> SignedStatement {
 		let text = JSON.text(value)
 		guard text.utf8.count <= maxTextLength else { throw RemoteKitError("signed statement", "too long") }
+		guard let read = try? JSON.parse(text), read == value else {
+			throw RemoteKitError("signed statement", "a value its own reader would refuse or read otherwise")
+		}
 		let signature: Data
 		do {
 			signature = try signer.sign(Data(text.utf8))

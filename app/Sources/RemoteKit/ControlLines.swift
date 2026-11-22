@@ -8,7 +8,7 @@ import Foundation
 // (SignedStatement), and every `signed` is checked field by field, with no field missing and none unknown.
 
 /// The longest first line taken: a `pair` with its App Attest attestation is the longest, a few kilobytes.
-public let maxControlLineLength = 64 * 1024
+public let maxControlLineLength = Lines.firstLinesMaxLength
 
 /// How far `at` in an attach may be from the reader's clock (3.4).
 public let attachClockWindow: TimeInterval = 2 * 60
@@ -202,9 +202,9 @@ public struct Paired: Sendable, Equatable {
 	public let addresses: [String]
 
 	public init(device: DeviceID, pairing: PairingID, name: String, addresses: [String]) throws {
-		guard !name.isEmpty, name.utf8.count <= PairingPayload.maxNameLength,
-			!name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
-		else { throw RemoteKitError("paired", "name is not a Mac's name") }
+		guard !name.isEmpty, name.utf8.count <= PairingPayload.maxNameLength, ShownText.isShowable(name) else {
+			throw RemoteKitError("paired", "name is not a Mac's name")
+		}
 		guard addresses.count <= PairingPayload.maxAddresses, addresses.allSatisfy(PairingPayload.isHostAndPort) else {
 			throw RemoteKitError("paired", "addresses are not addresses")
 		}

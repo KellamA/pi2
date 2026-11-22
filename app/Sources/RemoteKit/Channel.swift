@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 
 // The channel between a phone and pi² Remote (iphone.md 5.2), the same on every path: a Noise handshake with no payload
 // in either message, then frames in transport messages.
@@ -12,11 +13,14 @@ import Foundation
 // Ids are written in the prologue as their texts, in UTF-8; neither can hold a zero byte, so the prologue has one reading.
 
 /// A channel's handshake, as one side runs it.
-public struct ChannelHandshake: Sendable {
+///
+/// A final class, as `NoiseHandshake` is and for its reason: holders share one state, so nothing can be sent twice under
+/// one key and nonce, and it gives its channel once. A handshake message that carries a payload fails it.
+public final class ChannelHandshake: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
 	public enum Kind: Sendable { case pairing, connection }
 
 	public let kind: Kind
-	private var noise: NoiseHandshake
+	private let noise: NoiseHandshake
 
 	private init(kind: Kind, noise: NoiseHandshake) {
 		self.kind = kind
@@ -81,23 +85,47 @@ public struct ChannelHandshake: Sendable {
 			remoteStatic: remoteChannelKey.rawRepresentation, psk: nil, ephemeral: ephemeral))
 	}
 
+	/// The length of a connection's first message: KK's `e` and the tag of its empty payload.
+	public static let connectionFirstMessageLength = Noise.dhLength + Noise.tagLength
+
+	/// How many devices `respond(toFirstMessage:…)` tries, whatever the number paired: the most a Mac may pair (3.5) with
+	/// room to spare.
+	public static let trials = 8
+
+	/// Keys no device holds, tried in place of the devices a Mac does not have, so that every first message costs the same
+	/// eight trials (made once; their private halves are dropped at once).
+	private static let decoys: [(DeviceID, Curve25519.KeyAgreement.PublicKey)] = (0..<trials).map { _ in
+		(DeviceID.random(), Curve25519.KeyAgreement.PrivateKey().publicKey)
+	}
+
 	/// pi² Remote's side of a connection whose first message came without saying which device sent it (a path with no
-	/// device id in front, such as TCP): tries the paired devices' keys in turn, at most five (3.5), and gives back the
-	/// device whose key the message was made for, with the handshake ready to write its answer.
+	/// device id in front, such as TCP): tries the paired devices' keys, and gives back the device whose key the message
+	/// was made for, with the handshake ready to write its answer.
+	///
+	/// A message that is not exactly a first message's length is refused before any key agreement. Every call makes
+	/// exactly `trials` trials, the paired devices' and then decoys', and none stops early, so neither how many devices
+	/// are paired nor where a device is in the list shows in how long it takes. A failed trial leaves nothing behind.
 	public static func respond(
 		toFirstMessage message: Data, pairing: PairingID, channelKey: Curve25519.KeyAgreement.PrivateKey,
 		devices: [(DeviceID, Curve25519.KeyAgreement.PublicKey)]
 	) throws -> (DeviceID, ChannelHandshake) {
-		guard devices.count <= 8 else { throw RemoteKitError("channel handshake", "too many devices to try") }
-		for (device, key) in devices {
-			var handshake = try connection(initiator: false, pairing: pairing, device: device, channelKey: channelKey, remoteChannelKey: key)
-			if (try? handshake.readMessage(message)) != nil { return (device, handshake) }
+		guard message.count == connectionFirstMessageLength else { throw RemoteKitError("channel handshake", "not a connection's first message") }
+		guard devices.count <= trials else { throw RemoteKitError("channel handshake", "too many devices to try") }
+		let slots = devices.map { Optional($0) } + Array(repeating: nil, count: trials - devices.count)
+		var found: (DeviceID, ChannelHandshake)?
+		for (index, slot) in slots.enumerated() {
+			let (device, key) = slot ?? decoys[index]
+			let handshake = try connection(initiator: false, pairing: pairing, device: device, channelKey: channelKey, remoteChannelKey: key)
+			let taken = (try? handshake.readMessage(message)) != nil
+			if taken, slot != nil, found == nil { found = (device, handshake) }
 		}
-		throw RemoteKitError("channel handshake", "made for no paired device")
+		guard let found else { throw RemoteKitError("channel handshake", "made for no paired device") }
+		return found
 	}
 
 	public var writesNext: Bool { noise.writesNext }
 	public var isComplete: Bool { noise.isComplete }
+	public var hasFailed: Bool { noise.hasFailed }
 
 	/// The other side's channel key: known from the start but on pi² Remote's side of pairing, where the phone's comes
 	/// in the first message.
@@ -106,21 +134,33 @@ public struct ChannelHandshake: Sendable {
 	}
 
 	/// This side's next handshake message. It carries no payload (5.2).
-	public mutating func writeMessage() throws -> Data { try noise.writeMessage() }
+	public func writeMessage() throws -> Data { try noise.writeMessage() }
 
 	/// The other side's next handshake message, which must carry no payload (5.2): the first message of KK and IK can be
-	/// replayed and is only weakly forward-secret, so the first data always waits for the transport.
-	public mutating func readMessage(_ message: Data) throws {
-		let payload = try noise.readMessage(message)
-		guard payload.isEmpty else { throw RemoteKitError("channel handshake", "a payload in a handshake message") }
+	/// replayed and is only weakly forward-secret, so the first data always waits for the transport. A message with a
+	/// payload fails the handshake: it writes, reads and gives a channel no more.
+	public func readMessage(_ message: Data) throws { try noise.readMessageWithoutPayload(message) }
+
+	/// The channel, once both messages are done. Given once: a second call is refused, since two channels from one
+	/// handshake would share their keys and nonces.
+	///
+	/// - Parameters:
+	///   - openedAt: when the day it may last begins, on a clock that keeps counting while the device sleeps.
+	///   - maxLineLength: the longest line the channel takes from the other side. It starts small, enough for the
+	///     channel's own first lines; raise it with `Channel.maxLineLength` once the device is attached.
+	public func channel(openedAt: ContinuousClock.Instant = .now, maxLineLength: Int = Lines.firstLinesMaxLength) throws -> Channel {
+		let transport = try noise.splitCore()
+		guard let remote = noise.remoteStaticKey else { throw RemoteKitError("channel handshake", "not complete") }
+		return Channel(transport: transport, handshakeHash: noise.handshakeHash, remoteChannelKey: remote, openedAt: openedAt, maxLineLength: maxLineLength)
 	}
 
-	/// The channel, once both messages are done.
-	public func channel(openedAt: Date = Date()) throws -> Channel {
-		let transport = try noise.split()
-		guard let remote = noise.remoteStaticKey else { throw RemoteKitError("channel handshake", "not complete") }
-		return Channel(transport: transport, remoteChannelKey: remote, openedAt: openedAt)
+	public var description: String {
+		"\(kind == .pairing ? "pairing" : "connection") handshake: \(noise.description)"
 	}
+
+	public var debugDescription: String { description }
+
+	public var customMirror: Mirror { Mirror(self, children: ["state": description], displayStyle: .class) }
 }
 
 /// What a transport message brought.
@@ -136,96 +176,134 @@ public enum ChannelEvent: Equatable, Sendable {
 
 /// One end of a channel after its handshake: frames in Noise transport messages.
 ///
-/// A channel that refuses a message is over: every call after throws, since the two sides' nonces no longer agree and a
-/// message that failed may have been an attack. A channel lasts a day at most and is never rekeyed (5.2).
-public struct Channel: Sendable {
-	public static let lifetime: TimeInterval = 24 * 60 * 60
+/// A final class with its state behind a lock, not a value, for the reason `NoiseHandshake` gives: a copy of a value
+/// would seal two lines under one key and nonce. Every holder shares one state, so a channel that refuses a message is
+/// over for all of them: every call after throws, since the two sides' nonces no longer agree and a message that failed
+/// may have been an attack. A channel lasts a day at most, on a clock that keeps counting while the device sleeps, and
+/// is never rekeyed (5.2).
+public final class Channel: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	public static let lifetime: Duration = .seconds(24 * 60 * 60)
 
 	/// The channel binding: the handshake hash (5.2), which `pair`, `attach` and the Mac's proof sign.
 	public let handshakeHash: Data
 	/// The other side's channel key, as the handshake proved it.
 	public let remoteChannelKey: Data
-	public let openedAt: Date
-	/// Pads each frame this end sends to the next multiple of this many bytes; the phone sets 256 (5.2).
-	public var padding: Int?
+	public let openedAt: ContinuousClock.Instant
 
-	private var transport: NoiseTransport
-	private var assembler: LineAssembler
-	private var state = State.open
+	private let state: Mutex<State>
 
-	private enum State { case open, ended, failed }
-
-	init(transport: NoiseTransport, remoteChannelKey: Data, openedAt: Date, maxLineLength: Int = Lines.defaultMaxLength) {
-		self.transport = transport
-		self.handshakeHash = transport.handshakeHash
-		self.remoteChannelKey = remoteChannelKey
-		self.openedAt = openedAt
-		assembler = LineAssembler(maxLength: maxLineLength)
+	private struct State {
+		var transport: TransportCore
+		var assembler: LineAssembler
+		var padding: Int?
+		var phase = Phase.open
 	}
 
-	public func isExpired(at date: Date) -> Bool { date.timeIntervalSince(openedAt) >= Self.lifetime }
+	private enum Phase { case open, ended, failed }
+
+	init(transport: TransportCore, handshakeHash: Data, remoteChannelKey: Data, openedAt: ContinuousClock.Instant, maxLineLength: Int) {
+		self.handshakeHash = handshakeHash
+		self.remoteChannelKey = remoteChannelKey
+		self.openedAt = openedAt
+		state = Mutex(State(transport: transport, assembler: LineAssembler(maxLength: maxLineLength)))
+	}
+
+	/// Pads each frame this end sends to the next multiple of this many bytes; the phone sets 256 (5.2).
+	public var padding: Int? {
+		get { state.withLock { $0.padding } }
+		set { state.withLock { $0.padding = newValue } }
+	}
+
+	/// The longest line taken from the other side. It starts at what `channel(…)` was given; pi² Remote and the phone
+	/// raise it once the device is attached. A line that would pass it is refused before it is held.
+	public var maxLineLength: Int {
+		get { state.withLock { $0.assembler.maxLength } }
+		set { state.withLock { $0.assembler.maxLength = newValue } }
+	}
+
+	public func isExpired(at instant: ContinuousClock.Instant = .now) -> Bool { instant - openedAt >= Self.lifetime }
 
 	/// Whether it has ended, with `bye` either way, or failed.
-	public var isOver: Bool { state != .open }
+	public var isOver: Bool { state.withLock { $0.phase != .open } }
 
-	private func usable(at date: Date) throws {
-		guard state == .open else { throw RemoteKitError("channel", state == .ended ? "has ended" : "has failed") }
-		guard !isExpired(at: date) else { throw RemoteKitError("channel", "is over a day old: make a new one") }
+	private func usable(_ state: State, at instant: ContinuousClock.Instant) throws {
+		guard state.phase == .open else { throw RemoteKitError("channel", state.phase == .ended ? "has ended" : "has failed") }
+		guard !isExpired(at: instant) else { throw RemoteKitError("channel", "is over a day old: make a new one") }
 	}
 
 	/// The transport messages that carry `line`.
-	public mutating func seal(line: Data, at date: Date = Date()) throws -> [Data] {
-		try usable(at: date)
-		return try Lines.frames(for: line).map { try seal($0) }
+	public func seal(line: Data, at instant: ContinuousClock.Instant = .now) throws -> [Data] {
+		let frames = try Lines.frames(for: line)
+		return try state.withLock { state in
+			try usable(state, at: instant)
+			return try frames.map { try Self.seal($0, &state) }
+		}
 	}
 
-	public mutating func sealAck(_ count: UInt64, at date: Date = Date()) throws -> Data {
-		try usable(at: date)
-		return try seal(Frame.ack(count))
+	public func sealAck(_ count: UInt64, at instant: ContinuousClock.Instant = .now) throws -> Data {
+		try state.withLock { state in
+			try usable(state, at: instant)
+			return try Self.seal(Frame.ack(count), &state)
+		}
 	}
 
-	public mutating func sealPing(at date: Date = Date()) throws -> Data {
-		try usable(at: date)
-		return try seal(Frame(.ping))
+	public func sealPing(at instant: ContinuousClock.Instant = .now) throws -> Data {
+		try state.withLock { state in
+			try usable(state, at: instant)
+			return try Self.seal(Frame(.ping), &state)
+		}
 	}
 
 	/// The last message this end sends.
-	public mutating func sealBye() throws -> Data {
-		guard state == .open else { throw RemoteKitError("channel", "has ended") }
-		let message = try seal(Frame(.bye))
-		state = .ended
-		return message
+	public func sealBye() throws -> Data {
+		try state.withLock { state in
+			guard state.phase == .open else { throw RemoteKitError("channel", "has ended") }
+			let message = try Self.seal(Frame(.bye), &state)
+			state.phase = .ended
+			return message
+		}
 	}
 
-	private mutating func seal(_ frame: Frame) throws -> Data {
+	private static func seal(_ frame: Frame, _ state: inout State) throws -> Data {
 		do {
-			return try transport.encrypt(frame.encoded(padTo: padding))
+			return try state.transport.encrypt(frame.encoded(padTo: state.padding))
 		} catch {
-			state = .failed
+			state.phase = .failed
 			throw error
 		}
 	}
 
 	/// Reads one transport message from the other side.
-	public mutating func open(_ message: Data, at date: Date = Date()) throws -> ChannelEvent? {
-		try usable(at: date)
-		do {
-			let frame = try Frame.decode(transport.decrypt(message))
-			switch frame.kind {
-			case .data, .more:
-				return try assembler.take(frame).map(ChannelEvent.line)
-			case .ack:
-				guard !assembler.isPartway else { throw RemoteKitError("channel", "an ack inside a line") }
-				return .ack(frame.ackCount!)
-			case .ping:
-				return .ping
-			case .bye:
-				state = .ended
-				return .bye
+	public func open(_ message: Data, at instant: ContinuousClock.Instant = .now) throws -> ChannelEvent? {
+		try state.withLock { state in
+			try usable(state, at: instant)
+			do {
+				let frame = try Frame.decode(state.transport.decrypt(message))
+				switch frame.kind {
+				case .data, .more:
+					return try state.assembler.take(frame).map(ChannelEvent.line)
+				case .ack:
+					guard !state.assembler.isPartway else { throw RemoteKitError("channel", "an ack inside a line") }
+					return .ack(frame.ackCount!)
+				case .ping:
+					return .ping
+				case .bye:
+					state.phase = .ended
+					return .bye
+				}
+			} catch {
+				state.phase = .failed
+				throw error
 			}
-		} catch {
-			state = .failed
-			throw error
 		}
 	}
+
+	public var description: String {
+		let phase = state.withLock { $0.phase }
+		return "channel, \(phase == .open ? "open" : phase == .ended ? "ended" : "failed")"
+	}
+
+	public var debugDescription: String { description }
+
+	public var customMirror: Mirror { Mirror(self, children: ["state": description], displayStyle: .class) }
 }
