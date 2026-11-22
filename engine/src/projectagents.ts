@@ -2,7 +2,7 @@
 //
 // A project agent is an ordinary agent in `pi2.agents` with a `projectId`; a template is an agent with none, so every
 // agent that exists today is a template as it stands. Saving, duplicating and deleting stay `agents.save`,
-// `agents.duplicate` and `agents.delete` in main.ts, which share their checks with what this file adds through
+// `agents.duplicate` and `agents.delete` in agentrequests.ts, which share their checks with what this file adds through
 // `engine.saveAgent`: copying a template into a project, Update from template, putting back an agent removed through a
 // tool, and which agents a conversation may hand work to. Which agent a conversation runs as is `runsAs` in state.ts.
 //

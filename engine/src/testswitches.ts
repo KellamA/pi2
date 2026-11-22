@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
  * `<file>.started`, so that a test can kill the engine there: `PI2_BACKUP_GATE` a backup's copy (backup.ts),
  * `PI2_CARRY_SECRETS_GATE`, `PI2_CARRY_COMMIT_GATE` and `PI2_RESTORE_COMMIT_GATE` carrying over and its undoing
  * (carryover.ts), `PI2_DEMO_COMPACTION_GATE` the demo model's summary (providers.ts). `PI2_CARRY_NEVER` makes a data
- * folder as an older version left it. The demo model's: a price (`PI2_DEMO_COST`, main.ts), a model that cannot see
+ * folder as an older version left it. The demo model's: a price (`PI2_DEMO_COST`, usage.ts), a model that cannot see
  * pictures (`PI2_DEMO_TEXT_MODEL`), a picture model on a stand-in server (`PI2_DEMO_PICTURES`) and its typing speed
  * (`PI2_DEMO_TOKENS_PER_SECOND`, all three providers.ts). `PI2_TEST_COPY` is a throwaway copy's suffix, which main.ts
  * checks further against the copy's own folders.

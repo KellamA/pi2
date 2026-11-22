@@ -403,7 +403,7 @@ export function tellOrchestrator(conversation: number): ((tx: Tx, text: string, 
 
 // ---- What the app is sent
 
-/** The transcript's item for an entry of this file's kinds; undefined for any other (main.ts, `toItem`). */
+/** The transcript's item for an entry of this file's kinds; undefined for any other (transcript.ts, `toItem`). */
 export function projectItem(entry: EntryRecord): { id: number; kind: "marker"; text: string; details?: { wake: { text: string } } } | undefined {
 	const id = entry.id as unknown as number;
 	const model = textOf((entry.model?.[0] as { content?: unknown } | undefined)?.content);
