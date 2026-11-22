@@ -98,7 +98,10 @@ pi² has its own browser, with its own sign-ins, apart from Safari and Chrome. A
 
 Sign in with a subscription, add API keys for any of 40 or so providers, add your own endpoint, or run a model on your Mac. Choose which of a provider's models show in the menus, and add one released after your copy of pi² by its id. [Models and providers](docs/models.md).
 
-<p align="center"><img src="docs/images/providers.png" alt="Settings › Providers: a local endpoint, the section for models on this Mac, and two saved API keys" width="400"></p>
+<p align="center">
+  <img src="docs/images/providers.png" alt="Settings › Providers: a local endpoint, the section for models on this Mac, and two saved API keys" width="400">
+  <img src="docs/images/models.png" alt="Anthropic's models in Settings › Providers: the newest of each family ticked to show in the menus, with buttons to add a model by its id or ask Anthropic for its list" width="400">
+</p>
 
 ### Leave it running
 

@@ -63,8 +63,9 @@ public struct AttestKeyID: Hashable, Sendable, CustomStringConvertible {
 		self.text = text
 	}
 
-	public init(bytes: Data) {
-		precondition(bytes.count == 32, "an App Attest key id is 32 bytes")
+	/// The id of a key as `DCAppAttestService` gives its bytes; nil unless they are 32.
+	public init?(bytes: Data) {
+		guard bytes.count == 32 else { return nil }
 		text = bytes.base64EncodedString()
 	}
 
@@ -134,11 +135,12 @@ public struct RelayDevicePresence: Equatable, Sendable {
 	}
 }
 
-/// What the relay tells the Mac once it has proved itself.
+/// What the relay tells the Mac once it has proved itself: the relay's word, a hint it can forge, never a reason to
+/// forget or revoke a device.
 public struct RelayMacReady: Equatable, Sendable {
 	/// The listed devices, and whether each is connected.
 	public let devices: [RelayDevicePresence]
-	/// Devices that left while the Mac was away (3.6).
+	/// Devices the relay says left while the Mac was away (3.6). Its word alone: a hostile relay can name any device.
 	public let left: [DeviceID]
 	/// Whether the pairing is still pending: no device added yet, deleted 15 minutes after it was registered.
 	public let pending: Bool
@@ -153,8 +155,9 @@ public struct RelayMacReady: Equatable, Sendable {
 	}
 }
 
-/// A phone that joined the open window, as the Mac is told (3.3 step 2): its slot, its device key, and the App Attest
-/// key the relay checked.
+/// A phone that joined the open window, as the relay tells the Mac (3.3 step 2): its slot, its device key, and the App
+/// Attest key the relay says it checked. All of it is the relay's word: `addDevice` sends the device key and App Attest
+/// key id of the claim the engine verified, never these.
 public struct RelayJoinNotice: Equatable, Sendable {
 	public let slot: DeviceID
 	public let deviceKey: P256.Signing.PublicKey
@@ -243,8 +246,12 @@ public enum RelayLimits {
 	public static let maxItem = 16 * 1024
 	/// An App Attest attestation, at most (App Attest makes some 6 KB).
 	public static let maxAttestation = 32 * 1024
-	/// The most items a `take` can bring: the Mac's mailbox holds at most 200, a device's 100 and its state.
-	static let maxTaken = 1000
+	/// The most items a mailbox holds (5.3): the Mac's 200, a device's 100, and its state besides.
+	public static let macMailbox = 200
+	public static let deviceMailbox = 100
+
+	/// The most items, not counting a state, that a `take` can bring to this end.
+	static func mailbox(for end: RelayEnd) -> Int { end == .mac ? macMailbox : deviceMailbox }
 	/// A time in `busy` and `held`, at most: the year 2286, in ms. Anything larger is not a time.
 	static let maxTime: Int64 = 9_999_999_999_999
 }
@@ -338,7 +345,7 @@ extension RelayIncoming {
 		case ("taken", .mac), ("taken", .device):
 			let fields = try Fields(body, part: "relay taken", keys: ["count"])
 			let taken = try count(fields, "count")
-			guard taken <= RelayLimits.maxTaken else { throw RemoteKitError(fields.part, "count is too large") }
+			guard taken <= RelayLimits.mailbox(for: end) + (end == .device ? 1 : 0) else { throw RemoteKitError(fields.part, "count is more than a mailbox holds") }
 			return .taken(count: taken)
 		case ("mail", .mac), ("mail", .device), ("mail", .joining):
 			_ = try Fields(body, part: "relay mail", keys: [])

@@ -5,7 +5,8 @@
 // Swift client sends the join's client data hash the relay expects (`PairingSecrets.joinClientDataHash`), byte for byte.
 //
 // Run only by scripts/relay-protocol-test, through scripts/isolated.mjs, on 127.0.0.1, with wrangler.jsonc beside this
-// file. Nothing deploys it: the relay's own wrangler.jsonc names src/index.ts, and check-bundle reads that.
+// file. Nothing deploys it: the relay's own wrangler.jsonc names src/index.ts, and check-bundle reads that. It also
+// answers /redirect with a redirect to /v1, for the check that the client follows none.
 
 import type { AppAttestExpected, AppAttestResult } from "../../src/attest.ts";
 import { concat, same } from "../../src/bytes.ts";
@@ -25,7 +26,10 @@ export class Pairing extends RelayPairing {
 export { Address, AttestKey };
 
 export default {
-	fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, env: Env): Promise<Response> {
+		// A redirect to the relay itself, which the client must not follow (#678's security read): followed, the
+		// connection would succeed; refused, it ends with the 302.
+		if (new URL(request.url).pathname === "/redirect") return new Response(null, { status: 302, headers: { Location: "/v1" } });
 		// Cloudflare sets the connecting address, which registrations are counted by; the local runtime may not.
 		if (request.headers.has("CF-Connecting-IP")) return worker.fetch(request, env);
 		const headers = new Headers(request.headers);

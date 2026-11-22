@@ -9,7 +9,8 @@ import Synchronization
 /// stand-in for App Attest's verifier that takes only the join's true client data hash, `relay/test/protocol`). A Mac
 /// registers and connects; a phone joins its window and the two pass bytes; the Mac adds the phone and closes the
 /// window; the phone connects as itself; the mailbox both ways; a dropped socket opened again; `busy` past a limit and
-/// back; another Mac; pings; leaving; deleting the pairing. Every connection goes through `URLSessionRelayConnector`,
+/// back; another Mac; pings; leaving; a redirect not followed; deleting the pairing. Every connection goes through
+/// `URLSessionRelayConnector`, the join's through the one `join` makes by default,
 /// which the relay would answer 403 if it sent an `Origin`, as a connection that does send one is shown to be.
 ///
 /// The test's settings, which scripts/relay-protocol-test gives the relay: MIN_BUILD_MAC 100, MIN_BUILD_DEVICE 1.
@@ -44,7 +45,7 @@ enum ProtocolTest {
 
 		// The Mac pings every second and takes its socket for dead after 8 seconds without a word, so that pongs that did
 		// not come would show within the test (below).
-		let macClient = RelayClient(
+		let macClient = try RelayClient(
 			relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options(pingEvery: 1_000, quietAfter: 8_000))
 		let macEvents = Inbox(macClient.events)
 		await macClient.start()
@@ -52,12 +53,12 @@ enum ProtocolTest {
 		Check.equal(ready, RelayMacReady(devices: [], left: [], pending: true, mail: 0), "the Mac is ready, its pairing pending")
 
 		// A Mac with another key is refused for its signature, and the connected Mac hears nothing.
-		let stranger = RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(P256.Signing.PrivateKey()), connector: connector, options: options())
+		let stranger = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(P256.Signing.PrivateKey()), connector: connector, options: options())
 		let strangerEvents = Inbox(stranger.events)
 		await stranger.start()
 		Check.equal(try await strangerEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.signature), "a Mac with another key is refused")
 		// A second copy holding the relay key is refused, and the connected Mac is told.
-		let copy = RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options())
+		let copy = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options())
 		let copyEvents = Inbox(copy.events)
 		await copy.start()
 		let (copyDrop, _) = try await copyEvents.next("the copy's drop") { if case let .disconnected(drop, at) = $0 { (drop, at) } else { nil } }
@@ -71,7 +72,7 @@ enum ProtocolTest {
 		let token = PairingSecrets.joinToken(secret: secret, pairing: pairing)
 		let now = SystemRelayClock().now()
 		try await macClient.openJoin(tokenHash: PairingSecrets.joinTokenHash(token), expires: now + 300_000)
-		let relayAttestKey = AttestKeyID(bytes: Bytes.random(32))
+		let relayAttestKey = AttestKeyID(bytes: Bytes.random(32))!
 		let attest: @Sendable (Data) async throws -> RelayAttestation = { hash in
 			// The stand-in takes exactly the client data hash the relay worked out, then the key's id.
 			RelayAttestation(attestation: hash + Data(base64Encoded: relayAttestKey.text)!, keyId: relayAttestKey)
@@ -79,9 +80,10 @@ enum ProtocolTest {
 		await Check.throwsError("a join with another token", .refused(.token)) {
 			try await RelayClient.join(relay: url, pairing: pairing, build: phone, deviceKey: deviceKey.publicKey, token: Bytes.random(32), attest: attest, connector: connector)
 		}
-		let link = try await RelayClient.join(relay: url, pairing: pairing, build: phone, deviceKey: deviceKey.publicKey, token: token, attest: attest, connector: connector)
+		// With the default connector, which `join` makes and lets go: the link keeps its socket's session alive.
+		let link = try await RelayClient.join(relay: url, pairing: pairing, build: phone, deviceKey: deviceKey.publicKey, token: token, attest: attest)
 		let linkEvents = Inbox(link.events)
-		print("ok   joined with the join's client data hash the relay worked out")
+		print("ok   joined, with the default connector, with the join's client data hash the relay worked out")
 		let notice = try await macEvents.next("joined") { if case let .phoneJoined(notice) = $0 { notice } else { nil } }
 		Check.equal(notice, RelayJoinNotice(slot: link.slot, deviceKey: deviceKey.publicKey, keyId: relayAttestKey), "the Mac hears of the joined phone, its key and the relay's App Attest key")
 
@@ -94,9 +96,9 @@ enum ProtocolTest {
 		// The Mac adds it under the engine's id, with its own App Attest key, then closes the window.
 		let device = DeviceID.random()
 		await Check.throwsError("a device key that never joined", .refused(.notJoined)) {
-			try await macClient.addDevice(device, deviceKey: P256.Signing.PrivateKey().publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32)))
+			try await macClient.addDevice(device, deviceKey: P256.Signing.PrivateKey().publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
 		}
-		try await macClient.addDevice(device, deviceKey: deviceKey.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32)))
+		try await macClient.addDevice(device, deviceKey: deviceKey.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
 		try await macClient.closeJoin()
 		try await macClient.send(Data("paired".utf8), to: device)
 		Check.equal(try await linkEvents.next("bytes under the engine's id") { if case let .data(bytes) = $0 { bytes } else { nil } }, Data("paired".utf8), "the same socket carries on under the engine's id, past closeJoin")
@@ -107,7 +109,7 @@ enum ProtocolTest {
 
 		// The phone connects as itself.
 		let tracking = TrackingConnector(connector)
-		let phoneClient = RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: tracking, options: options())
+		let phoneClient = try RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: tracking, options: options())
 		let phoneEvents = Inbox(phoneClient.events)
 		await phoneClient.start()
 		let phoneReady = try await phoneEvents.next("the phone's ready") { if case let .deviceReady(online, mail) = $0 { (online, mail) } else { nil } }
@@ -174,21 +176,29 @@ enum ProtocolTest {
 		_ = try await macEvents.next("left") { $0 == .left(device) ? true : nil }
 		Check.equal(try await phoneEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.left), "a phone that left stops")
 		try await macClient.removeDevice(device)
-		let gone = RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: connector, options: options())
+		let gone = try RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: connector, options: options())
 		let goneEvents = Inbox(gone.events)
 		await gone.start()
 		Check.equal(try await goneEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.notListed), "a phone no longer listed is refused, and stops")
 
 		// A web page's Origin is refused: the client's connections, which all passed, sent none.
-		let origin = RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: OriginConnector(), options: options())
+		let origin = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: OriginConnector(), options: options())
 		let originEvents = Inbox(origin.events)
 		await origin.start()
 		Check.equal(try await originEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(403), "a connection with an Origin is refused with 403")
 
+		// A redirect is not followed: the client stops with the 302, where following it would have connected.
+		var redirect = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+		redirect.path = "/redirect"
+		let redirected = try RelayClient(relay: redirect.url!, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), options: options())
+		let redirectedEvents = Inbox(redirected.events)
+		await redirected.start()
+		Check.equal(try await redirectedEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(302), "a redirect is not followed")
+
 		// Deleting the pairing.
 		try await macClient.deletePairing()
 		Check.equal(try await macEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.deleted), "the Mac's client stops once its pairing is deleted")
-		let late = RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options())
+		let late = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options())
 		let lateEvents = Inbox(late.events)
 		await late.start()
 		Check.equal(try await lateEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.unknownPairing), "a deleted pairing is unknown")

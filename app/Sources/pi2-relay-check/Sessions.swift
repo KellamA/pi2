@@ -23,7 +23,7 @@ enum Sessions {
 			// No jitter: each wait at its shortest, so that the checks know it.
 			options.random = { 0 }
 			let signer = RelaySigner(key ?? (role == .mac(Formats.pairing) ? relayKey : deviceKey))
-			client = RelayClient(relay: url, role: role, build: RelayBuild(build)!, signer: signer, connector: connector, options: options, itemMemory: memory)
+			client = try! RelayClient(relay: url, role: role, build: RelayBuild(build)!, signer: signer, connector: connector, options: options, itemMemory: memory)
 			events = Inbox(client.events)
 		}
 	}
@@ -189,12 +189,20 @@ enum Sessions {
 		Check.equal(first.items.map(\.id), [Formats.item, item2], "the items taken, oldest first")
 		Check.equal(first.items.map(\.presence), [true, false], "with their flags")
 		Check.equal(first.repeats, 0, "none a repeat")
+		Check.holds(await rig.client.itemMemory.count == 0, "nothing is remembered until its reader says so")
+		let unverified = try await taking([
+			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
+			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
+			#"{"taken":{"count":2}}"#,
+		])
+		Check.that(unverified.items.count == 1 && unverified.repeats == 1, "an item not yet remembered is handed over again, but once a take")
+		Check.holds(await rig.client.remember(first.items), "the reader remembers what it opened and kept")
+		Check.holds(await rig.client.itemMemory.count == 2, "the memory holds the two")
 		let second = try await taking([
 			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
 			#"{"taken":{"count":1}}"#,
 		])
-		Check.that(second.items.isEmpty && second.repeats == 1, "an item handed over again is dropped as a repeat")
-		Check.holds(await rig.client.itemMemory.count == 2, "the memory holds the two taken")
+		Check.that(second.items.isEmpty && second.repeats == 1, "an item remembered, handed over again, is dropped as a repeat")
 		let none = try await taking([#"{"taken":{"count":0}}"#])
 		Check.that(none.items.isEmpty && none.state == nil, "an empty mailbox")
 
@@ -221,7 +229,7 @@ enum Sessions {
 
 		// A phone's mailbox brings its state, and its memory carries over from a client before.
 		var memory = RelayItemMemory()
-		_ = memory.isNew(RelayMailItem(from: .mac, id: item2, item: Formats.sealed, presence: false), at: rig.clock.now())
+		_ = memory.remember(RelayMailItem(from: .mac, id: item2, item: Formats.sealed, presence: false), at: rig.clock.now())
 		let phone = Rig(.device(Formats.pairing, Formats.device), memory: memory)
 		await phone.client.start()
 		let (phoneSocket, _) = try await phoneReady(phone)
@@ -555,7 +563,7 @@ enum Sessions {
 			"a joining phone's hello, with no device")
 		let challenge = Bytes.random(32)
 		socket.say(#"{"challenge":"\#(Base64URL.encode(challenge))"}"#)
-		Check.equal(try await seen.take(seconds: 10), PairingSecrets.joinClientDataHash(challenge: challenge, deviceKey: deviceKey.publicKey), "App Attest is asked for the join's client data hash")
+		Check.equal(try await seen.take(seconds: 10), try PairingSecrets.joinClientDataHash(challenge: challenge, deviceKey: deviceKey.publicKey), "App Attest is asked for the join's client data hash")
 		Check.equal(
 			try await socket.nextText("join"),
 			RelayOutgoing.join(pairing: Formats.pairing, deviceKey: deviceKey.publicKey, attestation: Data([1, 2, 3]), keyId: Formats.keyID, token: token).text, "join as sent")

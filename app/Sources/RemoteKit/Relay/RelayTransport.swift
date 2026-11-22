@@ -57,13 +57,40 @@ public struct SystemRelayClock: RelayClock {
 	}
 }
 
-/// The system's WebSocket, `URLSessionWebSocketTask`, in an ephemeral session: no cookies, no cache, no credentials, and
-/// no header but the pairing's. It sends no `Origin`, which the relay refuses with 403 (a web page's, relay/README.md),
-/// and the protocol test connects through it to the real relay to show so.
+/// The system's WebSocket, `URLSessionWebSocketTask`, in an ephemeral session: no cookies, no cache, no credentials.
+/// Its headers are the pairing's and fixed ones in place of those URLSession adds of itself: a `User-Agent` that names
+/// no program or system version, and an `Accept-Language` that names no locale (URLSession sends one whatever is set,
+/// so it is `*`). It sends no `Origin`, which the relay refuses with 403 (a web page's, relay/README.md), and follows
+/// no redirect: a 3xx answer to the upgrade ends the connection with its status, so that a relay cannot send the
+/// pairing's id, a join's token or the traffic elsewhere. The protocol test connects through it to the real relay to
+/// show both.
+///
+/// The session lives as long as the connector or any socket it opened, whichever is last: a join's socket outlives the
+/// connector `join` made by default.
 public final class URLSessionRelayConnector: RelayConnector {
-	private let session: URLSession
+	private let session: RelaySession
 
 	public init() {
+		session = RelaySession()
+	}
+
+	public func connect(to url: URL, pairing: PairingID?) async throws -> any RelaySocket {
+		guard RelayEndpoint.isAllowed(url) else { throw RelaySocketClosed() }
+		var request = URLRequest(url: url)
+		if let pairing { request.setValue(pairing.text, forHTTPHeaderField: "Pi2-Pairing") }
+		let task = session.session.webSocketTask(with: request)
+		// Room for the largest message either way; the client checks each against the protocol's own limits.
+		task.maximumMessageSize = RelayLimits.maxBinary + 1024
+		task.resume()
+		return URLSessionRelaySocket(task, session: session)
+	}
+}
+
+/// The session behind a connector and its sockets, cancelled once none of them holds it.
+final class RelaySession: Sendable {
+	let session: URLSession
+
+	init() {
 		let configuration = URLSessionConfiguration.ephemeral
 		configuration.httpCookieAcceptPolicy = .never
 		configuration.httpShouldSetCookies = false
@@ -72,27 +99,46 @@ public final class URLSessionRelayConnector: RelayConnector {
 		configuration.urlCache = nil
 		configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
 		configuration.timeoutIntervalForRequest = 20
-		session = URLSession(configuration: configuration)
+		configuration.httpAdditionalHeaders = ["User-Agent": RelaySession.userAgent, "Accept-Language": "*"]
+		session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
 	}
 
-	public func connect(to url: URL, pairing: PairingID?) async throws -> any RelaySocket {
-		var request = URLRequest(url: url)
-		if let pairing { request.setValue(pairing.text, forHTTPHeaderField: "Pi2-Pairing") }
-		let task = session.webSocketTask(with: request)
-		// Room for the largest message either way; the client checks each against the protocol's own limits.
-		task.maximumMessageSize = RelayLimits.maxBinary + 1024
-		task.resume()
-		return URLSessionRelaySocket(task)
-	}
+	static let userAgent = "pi2-relay-client"
 
 	deinit { session.invalidateAndCancel() }
 }
 
-final class URLSessionRelaySocket: RelaySocket, @unchecked Sendable {
-	// URLSessionWebSocketTask is safe to use from any thread; nothing else is held.
-	private let task: URLSessionWebSocketTask
+/// Answers every redirect with none: the 3xx is the connection's answer.
+final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+	func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest) async -> URLRequest? {
+		nil
+	}
+}
 
-	init(_ task: URLSessionWebSocketTask) { self.task = task }
+/// Where a relay may be: `wss://` to any host, or `ws://` to this computer's own loopback address, for a relay run here
+/// in tests (iphone.md 10), as the pairing payload's `u` (remotekit.md). Nothing else, so that no setting can point
+/// the client at a relay in clear.
+public enum RelayEndpoint {
+	public static func isAllowed(_ url: URL) -> Bool {
+		guard let scheme = url.scheme?.lowercased(), let host = url.host(percentEncoded: false), !host.isEmpty else { return false }
+		guard url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { return false }
+		switch scheme {
+		case "wss": return true
+		case "ws": return ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host.lowercased())
+		default: return false
+		}
+	}
+}
+
+final class URLSessionRelaySocket: RelaySocket, @unchecked Sendable {
+	// URLSessionWebSocketTask is safe to use from any thread; the session is held only to keep it alive.
+	private let task: URLSessionWebSocketTask
+	private let session: RelaySession
+
+	init(_ task: URLSessionWebSocketTask, session: RelaySession) {
+		self.task = task
+		self.session = session
+	}
 
 	func send(_ frame: RelayFrame) async throws {
 		do {

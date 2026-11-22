@@ -25,6 +25,7 @@ let arguments = Array(CommandLine.arguments.dropFirst()).filter { $0 != "--verbo
 if arguments.isEmpty {
 	Formats.run()
 	await Sessions.run()
+	await Hostile.run()
 } else if arguments.count == 2, arguments[0] == "--relay", let url = local(arguments[1]) {
 	await ProtocolTest.run(relay: url)
 } else if arguments.count == 6, arguments[0] == "--sealed", let url = local(arguments[1]), arguments[2] == "--markers", arguments[4] == "--out" {
