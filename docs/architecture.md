@@ -59,6 +59,7 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/pi2-login-item-check checks LoginItemKit's decisions, with no plist or launchd call; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
+relay/    the relay for pi² for iPhone: a Cloudflare Worker and a Durable Object per pairing (iphone.md 5.3, relay/README.md); not part of the app
 ```
 
 The app is a view of the engine's committed state. It keeps no truth of its own: everything on screen is what the engine last said. The engine is the only process that opens the database.
