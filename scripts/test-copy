@@ -73,8 +73,9 @@ Usage: scripts/test-copy <command> [arguments]
   can-click <suffix>              Say whether computer use can read and click this copy's window now. Yes (exit 0):
                                    the copy raised its parked window and gives it to accessibility where the tool
                                    looks. No (exit 1), with its cause: the pi² app not running (only the person can
-                                   reopen it), no window in the window server after 30 seconds, or a window the copy
-                                   does not give to accessibility. Cannot tell from here (exit 2): the copy did not
+                                   reopen it), no window in the window server after 30 seconds, a window the copy
+                                   does not give to accessibility, or one the window server has at another size or
+                                   not at all, which the tool turns down. Cannot tell from here (exit 2): the copy did not
                                    say, or its build predates the request (rebuild and reopen it). pi²'s own
                                    Accessibility permission can never be told from here. Run this before planning
                                    checks that need clicks.
@@ -697,12 +698,15 @@ case $cmd in
 			out=${out#test-copy: }
 			case $out in
 				*"does not give its main window to accessibility"*) no "$out" ;;
+				# The tool finds the window but turns it down when the window server has it elsewhere at another size,
+				# or not at all (#748).
+				*"so the computer tool would not take it"*) no "$out" ;;
 				*unknown\ test-copy\ window\ command*)
 					cannot_tell "the copy's build predates the request that raises its parked window and says whether the tool can find it; rebuild the app (./app/build.sh), run scripts/test-copy reopen $SUFFIX, and ask again" ;;
 				*) cannot_tell "the copy did not say whether the tool can find its window: $out" ;;
 			esac
 		fi
-		echo "Yes: computer use can read and click $SUFFIX now. The pi² app is running, the copy's window is in the window server, and the copy raised it within its own level and gives it to accessibility, where the computer tool looks for it."
+		echo "Yes: computer use can read and click $SUFFIX now. The pi² app is running, the copy's window is in the window server, and the copy raised it within its own level and gives it to accessibility, where the computer tool looks for it, at the size the window server has it."
 		echo "One thing cannot be told from here: whether pi² has the Accessibility permission, which no command can read without asking macOS or the pi² app. If the tool answers that pi² does not have it, only the person can grant it, in this agent's settings under Computer use."
 		;;
 	answer|fill)

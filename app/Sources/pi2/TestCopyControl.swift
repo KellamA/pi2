@@ -393,9 +393,13 @@ struct TestCopyControl: NSViewRepresentable {
                     return ["error": "the main window is not parked behind other windows, so it was not raised"]
                 }
                 _ = ParkedWindow.expose(window)
-                return ParkedWindow.isReachable(window)
-                    ? ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it"]
-                    : ["error": "the app does not give its main window to accessibility, even after raising it: it is not the app's main or focused window, nor among its windows, so the computer tool would not find it"]
+                guard ParkedWindow.isReachable(window) else {
+                    return ["error": "the app does not give its main window to accessibility, even after raising it: it is not the app's main or focused window, nor among its windows, so the computer tool would not find it"]
+                }
+                // Found there, the window is still turned down by the tool where the window server's record of it
+                // disagrees, so the answer follows the tool's own rule for that too (#748).
+                if let refusal = ParkedWindow.refusal(window) { return ["error": refusal] }
+                return ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it, at the size the window server has it"]
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size
