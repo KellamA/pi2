@@ -16,6 +16,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Retaking the README's pictures | [Retaking the README's pictures](#retaking-the-readmes-pictures) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
+| The iPhone app | [Building the iPhone app](#building-the-iphone-app); the contract is [iphone.md](iphone.md) |
 | Repository scripts, checks and merging | [CI](#ci) |
 
 ## Requirements
@@ -477,6 +478,33 @@ touch ~/Library/Application\ Support/pi2-test-7/perf.on
 
 Then make the load ([Measuring under load](#measuring-under-load), with `--keep`), work the copy, and read `perf.log`. What the probe cannot see, such as how much of the main thread's time SwiftUI spends laying out, `sample <app pid> 10` shows: a process of your own can be sampled without any permission. Never sample or signal the installed pi².
 
+## Building the iPhone app
+
+The iPhone app is one Xcode project, `iphone/pi2.xcodeproj` ([iphone.md](iphone.md), #680). Its folders are ones Xcode keeps in step by itself: a source file added under `iphone/Sources/` (the app) or `iphone/Tests/` (its unit tests) is built without any change to `project.pbxproj`, so add files in the folder rather than through a target's file list. Only a new target (an extension) changes the project file. It links `PiModels`, `EngineKit` and `TranscriptKit` from `app/Package.swift` as a local package, through the library products declared there: a shared target the phone needs gets a product line beside them.
+
+Agents build for the simulator only, unsigned, and in a simulator of their own, never the one already booted, which may be the person's:
+
+```bash
+xcrun simctl create pi2-680 "iPhone 18 Pro"           # prints the new simulator's id
+xcrun simctl boot <id>
+nice -n 15 xcodebuild test -project iphone/pi2.xcodeproj -scheme pi2 \
+  -destination 'platform=iOS Simulator,id=<id>' CODE_SIGNING_ALLOWED=NO \
+  -derivedDataPath "$PI2_SCRATCH/iphone-build"
+xcrun simctl install <id> "$PI2_SCRATCH/iphone-build/Build/Products/Debug-iphonesimulator/pi2.app"
+xcrun simctl launch <id> dev.pi2.ios
+xcrun simctl io <id> screenshot app/build/shots/<issue>/first.png
+xcrun simctl delete <id>                              # when done
+```
+
+- `xcodebuild build` in place of `test` builds without running the tests; `-configuration Release` builds a release build, which has none of what is marked `#if DEBUG`.
+- `xcrun simctl ui <id> appearance dark` (or `light`) and `xcrun simctl ui <id> content_size accessibility-extra-extra-extra-large` (or `large`) change the simulator's appearance and text size, for pictures of both and of the largest Dynamic Type.
+- `SIMCTL_CHILD_PI2_SHOW=face-id-check xcrun simctl launch <id> dev.pi2.ios` opens a debug build on the Face ID check, which says there that it cannot run, since the simulator has no Secure Enclave.
+- Use the simulator's id everywhere, never `booted`, which can name the person's.
+
+**Nothing is signed by an agent.** The project has no development team (`DEVELOPMENT_TEAM` is empty, with automatic signing): the owner chooses theirs in Xcode, under the target's Signing & Capabilities, to run a build on a phone, and does not commit that choice. An agent never builds for a device, never runs `codesign` with an identity, and never touches a provisioning profile or the Keychain: a signing step can put a Keychain prompt on the person's screen. Identifiers, capabilities and profiles are #682's.
+
+What a CI job for the phone would run (the workflow is #681's, and `.github/workflows/` waits for the owner): on a macOS runner, `xcrun simctl create` a simulator, then the `xcodebuild test` above, then `xcodebuild build -configuration Release` for the same destination.
+
 ## CI
 
 Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge` and `scripts/test-docs-lists`). Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
@@ -506,6 +534,7 @@ A development build runs its engine from the checkout it was built in. If that i
 See [architecture.md](architecture.md) for how the pieces fit. In short:
 
 - `engine/src` is the engine; `engine/test` its tests.
+- `iphone/` is pi² for iPhone, one Xcode project ([Building the iPhone app](#building-the-iphone-app)).
 - `scripts/` holds the repository's scripts: `test-copy` for throwaway copies, `issue` and `auto-merge` for the work, and `readme-pictures/`, the kit that stages the README's pictures ([Retaking the README's pictures](#retaking-the-readmes-pictures)).
 - `app/Sources/pi2` is the app: one file per area, listed under [The app](architecture.md#the-app). `EngineClient.swift` is the Mac's side of the connection to the engine, over the client in `app/Sources/EngineKit`; `Theme.swift` the app's shared pieces, over `app/Sources/PiStyle`, which holds the palette, tags, buttons and the spinner.
 - `app/Sources/ComputerKit` is the part of computer use that touches the screen. See [computer-use.md](computer-use.md).
