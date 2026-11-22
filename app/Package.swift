@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "pi2",
-    // iOS for the targets the iPhone app shares with the Mac app (docs/iphone.md section 8): PiModels and EngineKit so far.
+    // iOS for the targets the iPhone app shares with the Mac app (docs/iphone.md section 8): PiModels, EngineKit and RemoteKit so far.
     platforms: [.macOS(.v15), .iOS(.v18)],
     // What the iPhone app's Xcode project (iphone/pi2.xcodeproj, #680) links from this package as a local package: Xcode
     // links only a package's products, never its bare targets. The Mac app's build is unchanged by them.
@@ -51,6 +51,10 @@ let package = Package(
         // conversations and messages on their way, shared by the Mac app and the iPhone app (docs/iphone.md section 8,
         // #670). Foundation, Observation, Network and CryptoKit alone, so that it builds for iOS too.
         .target(name: "EngineKit", dependencies: ["PiModels"], path: "Sources/EngineKit"),
+        // The channel between a phone and pi² Remote, and sealing (#674, docs/iphone.md 5.2, 5.3): Noise, framing, HPKE
+        // items signed by their writer, the pairing payload, pair, attach and presence. CryptoKit only, nothing of the Mac
+        // app's: pi² Remote and the iPhone app share it. Relay/ is the relay's client (#678).
+        .target(name: "RemoteKit", path: "Sources/RemoteKit"),
         .executableTarget(
             name: "pi2",
             dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "MenuKit", "FileLinkKit", "TranscriptKit", "PiModels", "EngineKit", .product(name: "Sparkle", package: "Sparkle")],
@@ -92,5 +96,11 @@ let package = Package(
         // into EngineKit (#670): a recorded session played to the client, and what the views read compared with what they
         // read before.
         .executableTarget(name: "pi2-client-check", dependencies: ["PiModels", "EngineKit"], path: "Sources/pi2-client-check", exclude: ["Fixture"]),
+        // Checks RemoteKit against the published Noise and HPKE test vectors in vectors/, and runs a pairing and a
+        // connection between two ends of its own, in memory. Touches no key store and no network.
+        .executableTarget(name: "pi2-remote-check", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-check", exclude: ["vectors"]),
+        // Runs every parser in RemoteKit that reads bytes from the network against mutated and random input, from a fixed
+        // seed for a bounded time (#674).
+        .executableTarget(name: "pi2-remote-fuzz", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-fuzz"),
     ]
 )
