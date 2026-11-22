@@ -1,0 +1,2 @@
+### For contributors
+- The relay has a check that it sees only sealed bytes: `scripts/relay-protocol-test --sealed` runs a marker session of RemoteKit's two ends through the relay with a recorder at its edge, and fails if any marker or secret shows in what the relay saw, kept or left in its files, if any message or stored field is not on the allow-list of what the relay may see, or if a marker planted in clear goes unfound. `relay/test/sealed.test.ts` checks that its logs stay off and nothing writes to the console. CI runs both.

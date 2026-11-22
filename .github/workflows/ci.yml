@@ -196,6 +196,12 @@ jobs:
         run: swift build --product pi2-relay-check
       - name: Run the client against the relay
         run: scripts/relay-protocol-test
+      # The relay sees only sealed bytes (docs/iphone.md 10, #683): a marker session of RemoteKit's two ends through the
+      # relay with a recorder at its edge, checked for every marker and secret in what the relay saw, kept and left in its
+      # files, and against the allow-list of what it may see; then a marker planted in clear, which the check must find.
+      - name: Check that the relay sees only sealed bytes
+        if: ${{ !cancelled() }}
+        run: scripts/relay-protocol-test --sealed
 
   app:
     name: App (build)

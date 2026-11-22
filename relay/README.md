@@ -21,11 +21,13 @@ This folder is an owner's path (`.github/CODEOWNERS`): a pull request that chang
 | `src/bytes.ts`, `src/crypto.ts` | Base64url and the other texts of bytes, read strictly; P-256 keys and signatures, SHA-256, HMAC |
 | `src/types.d.ts` | One type the engine's verifier needs that Workers' types say otherwise |
 | `test/` | The tests ([Tests](#tests)) |
+| `test/protocol/` | The relay as the protocol test runs it: its own Worker with App Attest's stand-in (#678) |
+| `test/sealed/` | The relay as the sealed-bytes check runs it, with the recorder at its edge, the check, its markers and allow-list ([The relay sees only sealed bytes](#the-relay-sees-only-sealed-bytes)) |
 | `scripts/check-bundle.mjs` | Checks the bundle Wrangler makes for a deploy, without deploying ([The verifier](#the-verifier)) |
 | `scripts/isolated.mjs` | Runs Wrangler, Vitest or TypeScript with a throwaway home folder, Wrangler's usage events off, and no Cloudflare credential ([Tests](#tests)) |
 | `wrangler.jsonc` | The Worker's configuration for local runs and tests: its objects, logs off, Node's modules off, no settings |
 
-`src/apns.ts` (pushes, #689) and the recorder in `test/` (#683) are other issues'.
+`src/apns.ts` (pushes, #689) is another issue's.
 
 ## Tests
 
@@ -42,11 +44,22 @@ The tests run inside the Workers runtime (workerd, through `@cloudflare/vitest-p
 - `protocol.test.ts`: the Worker's door, register and hello with their challenges, builds below the minimum, a second Mac refused and the connected one told, a Mac socket gone quiet replaced, the ten seconds to prove oneself, strict reading.
 - `join.test.ts`: join with a stand-in for the verifier: the window, the token, the three tries, what the verifier is asked, Apple's category and bundle version, App Attest keys tied to one pairing and device, the contract's pairing end to end with two App Attest keys, a joined slot added under the engine's id or let go.
 - `verifier.test.ts`: the verifier is the engine's file; it runs in workerd; Apple's sample (engine/test/appattest.json) through `join` with the real verifier, and refused for the relay's own client data, at today's time, for another key, and altered.
+- `sealed.test.ts`: logs off in the configuration and every environment of it (no Workers Logs, invocation logs, Logpush or tail Workers); no use of the console in `src` or the bundled verifier, and nothing written to it through a whole session with every console method watched; the recorder and the check of [The relay sees only sealed bytes](#the-relay-sees-only-sealed-bytes) on a session of the test's own, which passes, and with a marker planted in clear, which fails; and the check's forms and allow-list one by one.
 - `routing.test.ts`, `mailbox.test.ts`, `limits.test.ts`, `revoke.test.ts`: routing and its notices; the mailbox, its bounds and its expiry; the limits of each end, an end held off with `busy` and never another, the Mac's revoking never held off, only authenticated traffic counted, text in bytes; `removeDevice`, `leave`, `deletePairing` (with the App Attest key's object failing, and nothing of a removed device passing meanwhile), and pairings deleted when pending or idle.
 
 To run it locally, `npm run dev` with every setting given, as `--var NAME:VALUE` after `--` or in a `.dev.vars` file here (which git ignores); it listens on 127.0.0.1.
 
 **What the tools write and send.** Left to themselves, Wrangler 4.166 writes a device id and logs under the home folder's preferences and sends Cloudflare usage events, and Vitest writes a token under the home folder's application support. `send_metrics: false` in `wrangler.jsonc` turns Wrangler's command events off, but not every event this version sends (`deploy`'s project set-up sends its own). So every script in `package.json` that runs a tool goes through `scripts/isolated.mjs`, which gives it a throwaway home folder for the run, `WRANGLER_SEND_METRICS=false`, and no `CLOUDFLARE_*` variable from the caller; `check-bundle` does the same itself, with `--config`, and passes nothing but `PATH` on. Run the tools through those scripts, not with `npx`, and give any other command of Wrangler's both `WRANGLER_SEND_METRICS=false` and a throwaway `HOME`, in CI too.
+
+## The relay sees only sealed bytes
+
+Decision 8 of the contract ([docs/iphone.md 13](../docs/iphone.md#13-decisions-this-contract-made)): the relay can read nothing. The check that proves it (#683, P15) runs the relay on this computer with a recorder at its edge, and a session of RemoteKit's two ends through it that sends known markers every way the relay carries anything; then it looks for them in everything the relay saw and kept ([docs/development.md](../docs/development.md#the-relay-sees-only-sealed-bytes) says how to run it).
+
+- **The recorder** (`test/sealed/recorder.ts`) stands in front of the relay's own Worker and passes every connection on to it, keeping its request (address and headers), every message in and out, text or bytes, in order, and how each side closed. `dump` reads back what an object keeps: its key-value pairs, its tables, its sockets' attachments. `test/sealed/worker.ts` is the protocol test's relay with the recorder in front and its objects able to `dump`; `GET /recording` gives all of it. It is in `test/` only, so it is in no bundle: `check-bundle` refuses one with an input outside `src`.
+- **The marker session** is `pi2-relay-check --sealed` (`app/Sources/pi2-relay-check/Sealed.swift`), with the markers of `test/sealed/markers.json`: the device's name, model and system, the Mac's name, methods, a message, a transcript, a notification's text, a secret's value, a file's preview, a project's name, a line long enough to be cut into frames with a marker across the cut, a request item's answer, a receipt and the Mac's state. Each end checks that every marker reached the other, opened.
+- **The check** (`test/sealed/scan.ts`, run by `test/sealed/check.mjs` after the session) fails on any marker in UTF-8, UTF-16 either way, hex either case, base64 and base64url at each alignment, percent and JSON escapes; on any of the ends' private keys, the pairing's secret or a channel's binding as bytes, hex or base64; in every message alone and every socket's bytes run together, every object's storage read back, every file of the relay's local state read raw (so a deleted page too), and what the local runtime printed. Every binary message must be one of the session's Noise messages, and every item one of its sealed items. It fails too if the recording missed a message of the session, or the storage or the files an item it left, so a recorder that stopped working cannot pass.
+- **What the relay may see** is an allow-list in `scan.ts`, of what 5.3 lists: every control message each way with each field's kind (ids, keys, signatures, sealed items, times, counts, builds, fixed words), the headers a connection brings, and every key, field and table the objects keep. A field, header, table or message it does not list fails the check until the list names it, in a pull request the owner reviews. Two headers are on it that should not be: URLSession's `Accept-Language` and `User-Agent`, which say the person's languages and the device's system (#819).
+- **Not covered yet**: pushes, which the relay sends none of until P20 (#689), whose stand-in for Apple's service hands each request to `Recorder.push` to be checked like the rest; and a deployed relay, whose platform (Cloudflare's own logs, its TLS) this check does not reach.
 
 ## The verifier
 
@@ -124,6 +137,5 @@ Where the contract left something open, or the relay had to choose:
 ## Not here yet
 
 - **Pushes**: `token` is kept and deleted with its device; `push` is P20's (#689), with `src/apns.ts`.
-- **The check that logs stay off** and that the code writes nothing to the console is P15's (#683). Logs are off in `wrangler.jsonc`, and nothing in `src` writes to the console.
 - **A join without an attestation**, which only a local relay for tests may take ([10](../docs/iphone.md#10-testing-with-no-phone-in-hand)), is P13's (#681) to add when the simulator needs it; this relay takes none.
 - **The deployments**: their environments, settings and minimum builds in `wrangler.jsonc`, and the workflow that deploys, are P9's (#677).

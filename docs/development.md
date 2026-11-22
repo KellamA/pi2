@@ -18,7 +18,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | The iPhone app | [Building the iPhone app](#building-the-iphone-app); the contract is [iphone.md](iphone.md) |
 | Repository scripts, checks and merging | [CI](#ci) |
-| The relay | [Relay tests](#relay-tests), [The relay's protocol test](#the-relays-protocol-test), and [relay/README.md](../relay/README.md) |
+| The relay | [Relay tests](#relay-tests), [The relay's protocol test](#the-relays-protocol-test), [The relay sees only sealed bytes](#the-relay-sees-only-sealed-bytes), and [relay/README.md](../relay/README.md) |
 
 ## Requirements
 
@@ -356,6 +356,16 @@ cd app && swift build --product pi2-relay-check && .build/debug/pi2-relay-check
 ```
 
 The protocol test of section 10 as a whole, with pi² Remote in loopback mode and an engine, adds to this program as pi² Remote's relay end is built (the second part of #678).
+
+### The relay sees only sealed bytes
+
+The check of [iphone.md 10](iphone.md#10-testing-with-no-phone-in-hand) and decision 8 (#683) proves that nothing readable passes through or rests in the relay. `scripts/relay-protocol-test --sealed` starts the relay as the protocol test does, but with `relay/test/sealed/wrangler.jsonc`: the same relay with a recorder at its Worker's edge, which keeps every connection's request and headers and every message in and out, both ways, and objects that can read back what they keep. `pi2-relay-check --sealed` then runs a marker session between a Mac and a phone made by the test, both RemoteKit's (the Noise channel, sealing, the relay client, with test keys): it pairs and connects over the relay, and sends the markers of `relay/test/sealed/markers.json` every way the relay carries anything (the channel's lines both ways, the device's name, model and system in `pair`, the Mac's name in `paired`, request items and Mac items through the mailbox, the Mac's state), checking that each reached the other end, opened, and leaves items in the mailbox. `relay/test/sealed/check.mjs` reads the recording, every object's storage read back, every file of the relay's local state raw (the SQLite files and their journals, deleted pages included), and what the local runtime printed, and fails on any marker in UTF-8, UTF-16, hex, base64 or base64url at any alignment, percent or JSON escapes; on any of the ends' private keys, the pairing's secret or a channel's binding; on a binary message that is not one of the session's Noise messages or an item that is not one of its sealed items; on a control message, header or stored field outside the allow-list in `relay/test/sealed/scan.ts` (what [5.3](iphone.md#53-the-relay) says the relay sees); and if the recording missed any of the session's messages or the storage any item it left. Then `pi2-relay-check --plant` sends a marker in clear as the channel's bytes and in an item, and the check must find it everywhere it went. CI runs it in `Relay (protocol test)`, after the protocol test.
+
+`relay/test/sealed.test.ts`, with the relay's other tests in `Relay (tests)`, checks the rest inside workerd: that the relay's configuration keeps Workers Logs, invocation logs, Logpush and tail Workers off in every environment; that no file of `relay/src`, nor the verifier it bundles, uses the console, and that a whole session with every method of the console watched writes nothing; the recorder and the check on a session of the test's own, which must pass, and with a marker planted, which must fail; and the check's forms and allow-list one by one. The recorder lives in `relay/test/sealed` only: `npm run check-bundle` refuses a bundle with any input outside `relay/src`. Pushes are not covered yet: the relay sends none at this head; the recording has a place for them (`Recorder.push`), for the stand-in for Apple's service P20 (#689) adds.
+
+```bash
+(cd relay && npm ci) && (cd app && swift build --product pi2-relay-check) && scripts/relay-protocol-test --sealed
+```
 
 ### Trying changes in a throwaway copy
 
