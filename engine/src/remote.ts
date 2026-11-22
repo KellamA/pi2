@@ -51,6 +51,7 @@ import {
 	macNameNow,
 	MINIMUM_PHONE_BUILD,
 	maskValue,
+	shownName,
 	notify,
 	p256Key,
 	pairClaim,
@@ -448,7 +449,8 @@ function deviceEvent(device: Device) {
 	return {
 		event: "device",
 		id: device.id,
-		name: device.name,
+		// Stored shown already (devices.ts); stripped again, so a record from before reads back as a phone shows it.
+		name: shownName(device.name, "iPhone"),
 		pairing: state.pairing,
 		mac: { name: macNameNow() },
 		addresses: helper?.hello?.addresses ?? [],

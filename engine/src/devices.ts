@@ -701,7 +701,31 @@ export function sessionsChanged(): void {
 }
 
 /** The Mac's name, as the pairing payload and a device are told it. */
-export const macNameNow = () => state.macName || hostname().replace(/\.local$/, "");
+/**
+ * The characters a phone does not show in a name (RemoteKit's `ShownText`): controls, and the invisible and
+ * direction-changing ones, U+200B to U+200F, U+202A to U+202E, U+2066 to U+2069 and U+FEFF. RemoteKit refuses a pairing
+ * payload or a `paired` line whose name holds one; the engine strips them instead, so that a Mac named with an emoji
+ * sequence (a zero-width joiner) or a right-to-left mark can still pair.
+ */
+const NOT_SHOWN = /[\p{Cc}\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
+/** The longest name RemoteKit takes, in UTF-8 bytes (`PairingPayload.maxNameLength`). */
+export const MAX_NAME_BYTES = 128;
+
+/** `text` as a phone may show it: those characters taken out, cut to 128 bytes between characters, trimmed; or `fallback`. */
+export function shownName(text: string, fallback: string): string {
+	let out = "";
+	let bytes = 0;
+	for (const character of text.replace(NOT_SHOWN, "").trim()) {
+		bytes += Buffer.byteLength(character);
+		if (bytes > MAX_NAME_BYTES) break;
+		out += character;
+	}
+	out = out.trim();
+	return out === "" ? fallback : out;
+}
+
+/** The Mac's name, as the pairing payload, `paired` and a device's `device` event give it: one a phone shows. */
+export const macNameNow = () => shownName(state.macName || hostname().replace(/\.local$/, ""), "Mac");
 const macName = macNameNow;
 
 // ---- Pairing (3.1, 3.3)
@@ -951,7 +975,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 	const now = Date.now();
 	const device: Device = {
 		id: `dev_${randomBytes(16).toString("base64url")}`,
-		name: claim.device.name,
+		name: shownName(claim.device.name, "iPhone"),
 		model: claim.device.model,
 		system: claim.device.system,
 		deviceKey: claim.device.deviceKey,
@@ -1252,7 +1276,7 @@ export const deviceRequests: Record<string, (params: Params, client: Client) => 
 		if (!plainText(params.name, 128)) throw new Error("A device's name is 1 to 128 bytes of text.");
 		if (pairedDevice(id) === undefined) throw new Error("No such device is paired.");
 		await change((doc) => {
-			for (const one of doc.devices) if (one.id === id) one.name = params.name as string;
+			for (const one of doc.devices) if (one.id === id) one.name = shownName(params.name as string, one.model);
 		});
 		remoteHooks.recordChanged(id);
 		return {};
