@@ -42,7 +42,7 @@ struct ProjectHubView: View {
                 } board: {
                     HubPaneArea(model: model, project: project, layout: layout, shown: shown, orchestratorKeyed: orchestratorKeyed)
                 } strip: {
-                    HubStrip(engine: engine, hubs: model.hubs, project: project)
+                    HubStrip(engine: engine, project: project)
                 }
                 // The room the panes have, for telling whether another split fits: the hub's width, which they can take
                 // with the conversation folded, and their height.
@@ -657,7 +657,6 @@ private struct HubContextMeter: View {
 /// orchestrator, which shows what it said, it is the field alone (#618).
 struct HubStrip: View {
     let engine: EngineClient
-    let hubs: ProjectHubs
     let project: ProjectRow
     /// Whether the orchestrator's last words show above the field.
     var showsLastWords = true

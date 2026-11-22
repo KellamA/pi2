@@ -409,7 +409,7 @@ final class EngineClient {
     // MARK: - Sign-in
 
     func startSignIn(_ provider: ProviderInfo) {
-        signIn = SignInFlow(providerId: provider.id, providerName: provider.oauth?.name ?? provider.name)
+        signIn = SignInFlow(providerName: provider.oauth?.name ?? provider.name)
         Task {
             do {
                 try await call("providers.login", ["id": provider.id])
@@ -731,7 +731,7 @@ final class EngineClient {
                 // be answered, which the Rules tab shows, and the Now tab's cards. The whole array decodes whatever kinds
                 // are in it, so a need of a kind this app knows nothing of cannot take any of them down.
                 let needs = try decoder.decode(NeedItemsEvent.self, from: line).items
-                projectStore.take(needs: needs.map { NeedRef(id: $0.id, projectId: $0.projectId) })
+                projectStore.take(needs: needs.map { NeedRef(projectId: $0.projectId) })
                 var proposals: [String: [NeedItem]] = [:]
                 for need in needs where need.kind == "rule" {
                     if let projectId = need.projectId { proposals[projectId, default: []].append(need) }

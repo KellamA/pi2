@@ -1353,7 +1353,6 @@ struct AuthPromptInfo: Codable, Equatable {
 
 struct SignInFlow: Equatable {
     var loginId: String?
-    let providerId: String
     let providerName: String
     var messages: [String] = []
     var openURL: String?

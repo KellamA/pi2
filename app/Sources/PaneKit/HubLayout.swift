@@ -192,13 +192,6 @@ public struct HubLayout: Codable, Equatable, Sendable {
         return true
     }
 
-    /// The pane `step` places after (or before) the focused one, in reading order, wrapping around.
-    public func neighbour(_ step: Int) -> UUID? {
-        let order = panes.map(\.id)
-        guard order.count > 1, let index = order.firstIndex(of: focused) else { return nil }
-        return order[((index + step) % order.count + order.count) % order.count]
-    }
-
     private mutating func set(_ content: HubPaneContent, in pane: UUID) {
         if content == .board || content == .picker, lastConversation == pane { lastConversation = nil }
         switch content {

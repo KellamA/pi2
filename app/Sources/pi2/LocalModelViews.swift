@@ -75,7 +75,6 @@ enum LocalModels {
 /// Above the message field of a conversation whose model runs on this Mac: that it is loading, how far, that a message
 /// sent now waits for it; why it could not start, with the end of its log; or that it is not loaded.
 struct LocalModelStrip: View {
-    let engine: EngineClient
     let state: LocalModelState?
     var inset: CGFloat = 28
 
