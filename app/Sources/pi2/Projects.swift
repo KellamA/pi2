@@ -237,7 +237,9 @@ final class ProjectsStore {
                 runLives[run.conversationId] = made
                 return made
             }()
-            if live.title != run.title { live.title = run.title }
+            // The library's title, which a rename changes at once; the engine says what runs only when that changes (#642).
+            let title = conversations.first { $0.id == run.conversationId }?.title ?? run.title
+            if live.title != title { live.title = title }
             let agent = run.runsAs ?? run.agentId
             if live.agentId != agent { live.agentId = agent }
             let waiting = run.status == "waiting"

@@ -3,7 +3,8 @@ import SwiftUI
 // Continue with an Agent (#289, docs/chat.md): a chat that turns into real work is handed to one of the person's agents,
 // as the first message of a new conversation of that agent in the agent view, in a folder the person chooses. The engine
 // (`chat.continueWithAgent`, engine/src/handover.ts) gives the agent the chat as it stands, with its pictures and files,
-// and none of what chat mode remembers. The chat stays as it was, and each links to the other.
+// and none of what chat mode remembers. The chat stays as it was, and each links to the other. With the projects preview
+// on (#654), the sheet chooses a project and one of its agents in place of an agent and a folder (`ContinueInProjectSheet`).
 
 extension ConversationSummary {
     /// The conversations of agents this chat was continued in, oldest first.
@@ -12,8 +13,9 @@ extension ConversationSummary {
 
 extension EngineClient {
     /// Whether a chat can be handed to an agent now: it has something in it, is not answering, and there is an agent.
+    /// With the projects preview on, the sheet can make a project, so none is needed yet.
     func canContinueWithAgent(_ id: Int) -> Bool {
-        guard status == .connected, !agents.isEmpty, isChat(id) else { return false }
+        guard status == .connected, projectsPreview || !agents.isEmpty, isChat(id) else { return false }
         let listed = conversations.first { $0.id == id }
         if listed?.busy == true || open[id]?.state?.busy == true { return false }
         if let data = open[id], data.state != nil { return !data.items.isEmpty }
@@ -144,6 +146,189 @@ struct ContinueWithAgentSheet: View {
                 dismiss()
                 engine.openConversation(id)
                 // An agent's conversation: the window moves to the agent view, and the chat keeps its place here.
+                model.openConversation(id)
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// With the projects preview on (#654, docs/chat.md): which project, which of its agents (its orchestrator unless another
+/// is chosen), and what to do next. To the orchestrator, the chat goes into its present conversation as the person's
+/// message, and the hub shows it; to another agent, into a new conversation of it, shown in place of the hub's board.
+struct ContinueInProjectSheet: View {
+    let model: AppModel
+    let chat: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var projectId = ""
+    /// One of the project's agents; empty for its orchestrator.
+    @State private var agentId = ""
+    @State private var text = ""
+    @State private var sending = false
+    @State private var making = false
+    @State private var problem: String?
+    @FocusState private var writing: Bool
+    private var engine: EngineClient { model.engine }
+    /// The choice at the foot of the list of projects that makes one.
+    private static let newProject = "+new"
+    private var projects: [ProjectInfo] { engine.projectStore.listed }
+    private var project: ProjectInfo? { projects.first { $0.id == projectId } }
+    private var orchestrator: AgentProfile? { project.flatMap { engine.agent($0.orchestratorId) } }
+    /// The project's other agents, by name.
+    private var others: [AgentProfile] {
+        guard let project else { return [] }
+        return engine.allAgents
+            .filter { $0.projectId == project.id && $0.id != project.orchestratorId && $0.removedAt == nil }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    private var agent: AgentProfile? { agentId.isEmpty ? orchestrator : others.first { $0.id == agentId } }
+    private var toOrchestrator: Bool { agentId.isEmpty }
+    private var name: String { agent?.name ?? "The agent" }
+    private var title: String { engine.conversationTitle(chat, chat: true) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Continue with an Agent").font(.system(size: 17, weight: .semibold))
+                Text(summary)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.tx2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow {
+                    Text("Project").foregroundStyle(Theme.tx2).gridColumnAlignment(.trailing)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("Project", selection: $projectId) {
+                            if project == nil { Text("Choose a Project").tag("") }
+                            ForEach(projects) { project in
+                                Text(project.name).tag(project.id)
+                            }
+                            if !projects.isEmpty { Divider() }
+                            Text("New Project…").tag(Self.newProject)
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 260, alignment: .leading)
+                        .disabled(making)
+                        .accessibilityIdentifier("continue-project")
+                        if let project {
+                            Text(project.folder.map { "Works in \(engine.folderName($0))" } ?? "No folder: its agents work in pi²’s scratch folder")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.tx2)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                        }
+                    }
+                }
+                GridRow {
+                    Text("Agent").foregroundStyle(Theme.tx2)
+                    Picker("Agent", selection: $agentId) {
+                        Text(orchestrator.map { "\($0.name) (orchestrator)" } ?? "Its orchestrator").tag("")
+                        ForEach(others) { agent in
+                            Text(agent.name).tag(agent.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 260, alignment: .leading)
+                    .disabled(project == nil)
+                    .accessibilityIdentifier("continue-agent")
+                }
+                GridRow {
+                    Text("Next").foregroundStyle(Theme.tx2)
+                    TextField("What should \(agent?.name ?? "the agent") do now? Leave it empty to have it read the chat and wait.", text: $text, axis: .vertical)
+                        .lineLimit(3...8)
+                        .focused($writing)
+                }
+            }
+            .font(.system(size: 13))
+            if agent != nil {
+                Label(accessText, systemImage: "lock.shield")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.tx2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let problem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(sending ? "Continuing…" : "Continue") { send() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(project == nil || agent == nil || sending || making || engine.status != .connected)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .onAppear {
+            // With one project, it is chosen already.
+            if project == nil, projects.count == 1 { projectId = projects[0].id }
+            writing = true
+        }
+        .onChange(of: projectId) { old, new in
+            agentId = ""
+            if new == Self.newProject {
+                projectId = old == Self.newProject ? "" : old
+                makeProject()
+            }
+        }
+    }
+
+    private var summary: String {
+        guard let project else {
+            return "“\(title)” goes to a project’s orchestrator, or another of its agents, as it stands, with its pictures and files. The chat stays as it is."
+        }
+        if toOrchestrator {
+            return "“\(title)” goes to \(name), \(project.name)’s orchestrator, as a message from you in its conversation, as it stands, with its pictures and files. The chat stays as it is, and links to that conversation."
+        }
+        return "“\(title)” goes to \(name) as the first message of a new conversation in \(project.name), as it stands, with its pictures and files. The chat stays as it is, and each links to the other."
+    }
+
+    /// What the agent may do, so the person knows before it starts: its own settings apply from the first message.
+    private var accessText: String {
+        let level = AccessLevel.all.first { $0.id == agent?.access }?.title ?? "its own access"
+        return "\(name) works with its own tools and tool access (\(level)), as in any of its conversations, and asks before anything its settings say to ask about. Nothing in the chat counts as an approval, and nothing chat mode remembers is passed on."
+    }
+
+    /// New Project…: a folder chosen, a project made with its orchestrator, and chosen here.
+    private func makeProject() {
+        guard let folder = ProjectActions.pickFolder() else { return }
+        making = true
+        problem = nil
+        Task {
+            defer { making = false }
+            do {
+                let result = try await engine.call("projects.create", ["folder": folder])
+                guard let id = result["id"]?.stringValue else { return }
+                // The `projects` event that lists it may come after the answer.
+                for _ in 0..<40 where !projects.contains(where: { $0.id == id }) { try? await Task.sleep(for: .milliseconds(50)) }
+                projectId = id
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+
+    private func send() {
+        guard let project, let agent else { return }
+        sending = true
+        problem = nil
+        var params: [String: Any] = ["id": chat, "projectId": project.id]
+        if !toOrchestrator { params["agentId"] = agent.id }
+        let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !next.isEmpty { params["text"] = next }
+        Task {
+            defer { sending = false }
+            do {
+                let result = try await engine.call("chat.continueWithAgent", params)
+                guard let id = result["id"]?.intValue else { return }
+                dismiss()
+                // Where it lives: the orchestrator's in the hub's panel, another agent's in place of the board.
                 model.openConversation(id)
             } catch {
                 problem = error.localizedDescription

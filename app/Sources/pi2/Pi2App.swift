@@ -260,6 +260,8 @@ final class AppModel {
         if let deleting {
             moveOnFromChat(deleting.id)
             if selectedConversationID == deleting.id { selection = nextAfter(deleting.id) }
+            // Shown in place of a project's board, the board comes back (#642).
+            hubs.boardBack(from: [deleting.id])
             let id = deleting.id
             if removingWorktree {
                 Task {
@@ -287,6 +289,8 @@ final class AppModel {
     func archive(_ conversation: ConversationSummary) {
         moveOnFromChat(conversation.id)
         if selectedConversationID == conversation.id { selection = nextAfter(conversation.id) }
+        // Shown in place of a project's board, it or one of its sub-chats, which go with it, the board comes back (#642).
+        hubs.boardBack(from: withSubChats(conversation.id))
         engine.perform("conversation.archive", ["id": conversation.id])
     }
 
@@ -1064,6 +1068,10 @@ struct ConversationCommands: View {
         // A chat's assistant has no tools on this Mac and no folder.
         let chat = id.map(engine.isChat) ?? false
         let lastAnswer = id.flatMap { engine.open[$0]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) }
+        // In a hub, the agent the conversation runs as, whose model the Model menu changes.
+        let hubAgent = inHub ? engine.agent(conversation.flatMap { $0.runsAs ?? $0.agentId }) : nil
+        // The orchestrator's current conversation is renamed with the project and archived by Start fresh (#642).
+        let current = conversation?.orchestrator == "current" && inHub
         Picker("Tool Access", selection: Binding(
             get: { state?.agent.access ?? "none" },
             set: { value in if let id { engine.setAccess(value, for: id) } }
@@ -1082,9 +1090,10 @@ struct ConversationCommands: View {
                 Menu(group.name) {
                     ForEach(group.models, id: \.ref) { item in
                         Button(item.listName) {
-                            // The orchestrator's model is its agent's, as the hub's bar changes it.
-                            if let orchestrator, let agent = engine.agent(orchestrator.orchestratorId) {
-                                OrchestratorModelMenu.choose(item, for: agent, engine: engine)
+                            // In a project the model is the agent's, as the hub's bar and the agent panel's menu change
+                            // it (#642).
+                            if let hubAgent {
+                                engine.setModel(item, for: hubAgent)
                             } else if let id {
                                 engine.configure(id, ["model": ["provider": item.provider, "modelId": item.id]])
                             }
@@ -1094,7 +1103,7 @@ struct ConversationCommands: View {
             }
         }
         .disabled(id == nil)
-        .help(id == nil ? none : orchestrator != nil ? "The orchestrator's model. Changing it changes the orchestrator's agent, from its next message." : "Model for this conversation")
+        .help(id == nil ? none : hubAgent.map { AgentModelItems.modelHelp($0.name) } ?? "Model for this conversation")
         Divider()
         // An earlier conversation with a project's orchestrator takes no messages, so it is not summarised or started afresh.
         let earlier = id.flatMap(engine.earlierRefusal)
@@ -1132,16 +1141,17 @@ struct ConversationCommands: View {
         .help(conversation == nil ? none : "Save this conversation to a file")
         Divider()
         Button("Rename…") { if let conversation { model.beginRename(conversation) } }
-            .disabled(conversation == nil)
-            .help(conversation == nil ? none : "Rename this conversation")
+            .disabled(conversation == nil || current)
+            .help(conversation == nil ? none : current ? ConversationActions.currentRefusal : "Rename this conversation")
         // The same key as in Mail. A sub-chat is archived with the conversation it belongs to.
+        let archiveRefusal = conversation.flatMap { inHub ? ConversationActions.archiveRefusal($0) : $0.parent != nil ? "A sub-chat is archived with the conversation it belongs to." : nil }
         Button("Archive Conversation") { if let conversation { model.archive(conversation) } }
             .keyboardShortcut("a", modifiers: [.command, .control])
-            .disabled(conversation == nil || conversation?.parent != nil)
-            .help(conversation == nil ? none : conversation?.parent != nil ? "A sub-chat is archived with the conversation it belongs to." : "Put this conversation away, stopping its work. It can be restored from the Archive.")
+            .disabled(conversation == nil || archiveRefusal != nil)
+            .help(conversation == nil ? none : archiveRefusal ?? "Put this conversation away, stopping its work. It can be restored from the Archive.")
         Button("Delete Conversation") { if let conversation { model.delete(conversation) } }
-            .disabled(conversation == nil)
-            .help(conversation == nil ? none : "Delete this conversation, after asking")
+            .disabled(conversation == nil || current)
+            .help(conversation == nil ? none : current ? ConversationActions.currentRefusal : "Delete this conversation, after asking")
         Divider()
         Button("Stop") { if let id { engine.perform("abort", ["id": id]) } }
             .keyboardShortcut(".")

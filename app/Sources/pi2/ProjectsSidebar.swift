@@ -179,6 +179,15 @@ private struct ProjectBlock: View {
                     Button("Stop the Orchestrator") { engine.perform("abort", ["id": conversation]) }
                     Divider()
                 }
+                // Its conversation is renamed with the project and archived by Start fresh, so of its own menu's items
+                // only Export is left to offer here (#642).
+                if let conversation = project.conversation.flatMap({ id in engine.conversations.first { $0.id == id } }) {
+                    Menu("Export the Conversation") {
+                        Button("As Markdown…") { StorageActions.export(conversation, format: "markdown", engine: engine) }
+                        Button("As JSON…") { StorageActions.export(conversation, format: "json", engine: engine) }
+                    }
+                    Divider()
+                }
                 Button("Rename…") { model.beginRename(project) }
                 Button("Archive") { model.archiveProject(project.id) }
             }
@@ -189,9 +198,15 @@ private struct ProjectBlock: View {
             let agent = model.hubs.agent(project.id).flatMap { model.sidebarRow(for: $0, in: project.id) }
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
-                    RunRow(engine: engine, id: id, run: run, open: { model.openAgent(id, in: project.id) }, start: { agent in
-                        if let row = engine.project(project.id) { model.startWith(agent, in: row) }
-                    })
+                    RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
+                        .contextMenu(previewAs: run.title.isEmpty ? engine.agent(run.agentId)?.name ?? "New conversation" : run.title, String(id)) {
+                            // Another conversation with the same agent, in place of the board (#643).
+                            if let agent = engine.agent(run.agentId), let row = engine.project(project.id) {
+                                Button("New Conversation with \(agent.name)", systemImage: "plus.bubble") { model.startWith(agent, in: row) }
+                                Divider()
+                            }
+                            ConversationActions(model: model, id: id)
+                        }
                         .padding(.leading, 14)
                         .tag(Selection.projectAgent(project: project.id, conversation: id))
                 }
@@ -292,8 +307,6 @@ private struct RunRow: View {
     let run: RunLive
     /// Opens its conversation in place of the board, in the project's hub (#473).
     let open: () -> Void
-    /// Starts another conversation with its agent, in place of the board (#643).
-    let start: (AgentProfile) -> Void
 
     var body: some View {
         #if PI2_DEVELOPMENT
@@ -326,11 +339,6 @@ private struct RunRow: View {
         .buttonStyle(.plain)
         // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
         .help("Open this agent’s conversation in place of the board")
-        .contextMenu(previewAs: run.title, String(id)) {
-            if let agent {
-                Button("New Conversation with \(agent.name)", systemImage: "plus.bubble") { start(agent) }
-            }
-        }
     }
 }
 
@@ -403,6 +411,9 @@ private struct OtherConversations: View {
                     .padding(.leading, 28)
                     .tag(Selection.projectAgent(project: project.id, conversation: conversation.id))
                     .help("Open its conversation in place of the board")
+                    .contextMenu(previewAs: conversation.title.isEmpty ? "New conversation" : conversation.title, String(conversation.id)) {
+                        ConversationActions(model: model, id: conversation.id)
+                    }
                     .draggable(ConversationDrag(id: conversation.id)) {
                         Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left").padding(6)
                     }
