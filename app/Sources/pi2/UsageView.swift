@@ -24,7 +24,7 @@ struct UsageView: View {
                     })
                     // The engine counts each project's spend for today only, for its daily limit (`usage`'s `projects`,
                     // docs/projects.md, 8.3), so this one says so where the others above are of all time (#655).
-                    if engine.projectsPreview, let projects = usage.projects {
+                    if let projects = usage.projects {
                         bars("By project, today", projectRows(projects))
                     }
                     days(usage)

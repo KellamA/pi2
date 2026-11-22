@@ -355,8 +355,9 @@ private struct ChatMemorySection: View {
     }
 }
 
-/// The notes of the agents that have memory on: what a chat can read when a question calls for it, and never change.
-/// Shown read-only here; each agent's own settings is where they are edited.
+/// The notes of the templates that have memory on: what a chat can read when a question calls for it, and never change.
+/// Shown read-only: they are what agents kept before projects, and an agent's own notes are no longer edited (#716); a
+/// project's notes are its Notes tab's.
 private struct AgentNotesSection: View {
     let engine: EngineClient
     let enabled: Bool
@@ -371,7 +372,7 @@ private struct AgentNotesSection: View {
         }
         Section {
             if agents.isEmpty {
-                Text("None of your agents keeps notes. An agent does once Remember things between conversations is on in its settings.").foregroundStyle(.secondary)
+                Text("None of your templates keeps notes of its own. A project’s notes are on its Notes tab.").foregroundStyle(.secondary)
             }
             ForEach(agents, id: \.0.id) { agent, notes in
                 let open = Binding(
@@ -402,8 +403,8 @@ private struct AgentNotesSection: View {
             Text("Agents' notes")
         } footer: {
             Text(enabled
-                ? "A chat can read these when a question calls for it, but cannot change or remove them. They are read-only here: change them in each agent's settings, under Memory. It never works the other way: no agent sees what chats remember."
-                : "With memory off, chats do not read these. They are read-only here: change them in each agent's settings, under Memory.").formFooter()
+                ? "A chat can read these when a question calls for it, but cannot change or remove them. They are the notes your agents kept before projects, read-only; a project’s notes are on its Notes tab. It never works the other way: no agent sees what chats remember."
+                : "With memory off, chats do not read these. They are the notes your agents kept before projects, read-only; a project’s notes are on its Notes tab.").formFooter()
         }
     }
 }

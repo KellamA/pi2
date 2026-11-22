@@ -55,9 +55,9 @@ Usage: scripts/test-copy <command> [arguments]
                                    Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show, --hub and --appearance unless
                                    replaced.
-  show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: inbox, activity, usage, archive,
-                                   branches, agent:<id>, chat[:<number or title>], palette[:<query>], settings[:<tab>],
-                                   output:<id>, a conversation's number or title, or
+  show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: activity, usage, archive,
+                                   agent:<id> (a template's page), chat[:<number or title>], palette[:<query>],
+                                   settings[:<tab>], output:<id>, a conversation's number or title (where it lives), or
                                    project:<name-or-id>[#<tab-or-agent>]. It answers once a conversation's page or a
                                    hub has drawn it, and for any other page it says that it cannot wait for it to draw.
   show <suffix> dashboard          Select the Dashboard's row in the sidebar of projects, and answer once it has
@@ -83,7 +83,7 @@ Usage: scripts/test-copy <command> [arguments]
                                    Answer the running copy's next Open or Save panel without showing it.
                                    Paths go in its data folder, the launcher's scratch folder or app/build.
   fill <suffix> <entries>          Make a demo conversation with synthetic history and long command outputs.
-  fill <suffix> --project          Turn the preview on and make a demo project. Prints its id and its conversation ids.
+  fill <suffix> --project          Make a demo project. Prints its id and its conversation ids.
   fill <suffix> --project <name|count>
                                    Make one demo project with that name, or that many (up to 8) for the Dashboard.
   last-copy <suffix>               Print the last Copy action recorded in this copy's data folder as JSON.
@@ -507,7 +507,7 @@ case $cmd in
 		while (($#)); do
 			case $1 in
 				--no-app-nap) no_app_nap=1; shift ;;
-				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; SHOW=$2; shift 2 ;;
+				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as activity or settings:general"; SHOW=$2; shift 2 ;;
 				--hub) check_hub "${2-}"; HUB=$2; shift 2 ;;
 				--welcome) WELCOME=1; shift ;;
 				--env) [[ -n ${2-} ]] || die "--env needs NAME=VALUE"; add_test_env "$2"; shift 2 ;;
@@ -599,7 +599,7 @@ case $cmd in
 		requested_show="" replace_show=0 requested_hub="" requested_appearance=""
 		while (($#)); do
 			case $1 in
-				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as inbox or settings:general"; requested_show=$2; replace_show=1; shift 2 ;;
+				--show) [[ -n ${2-} ]] || die "--show needs what to open on, such as activity or settings:general"; requested_show=$2; replace_show=1; shift 2 ;;
 				--hub) check_hub "${2-}"; requested_hub=$2; shift 2 ;;
 				--appearance) [[ -n ${2-} ]] || die "--appearance needs light or dark"; check_appearance "$2"; requested_appearance=$2; shift 2 ;;
 				*) die "unknown option $1" ;;

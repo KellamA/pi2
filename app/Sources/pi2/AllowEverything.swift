@@ -169,20 +169,3 @@ struct AllowEverythingTag: View {
     }
 }
 
-/// The banner's mark, small, on a conversation's row in the sidebar (#328), so the list shows which conversations run
-/// unasked before one is opened. It reads only the conversation's row and the agents, which change rarely and are set
-/// only when they change, so it adds nothing to what makes a row draw again while agents work.
-struct AllowEverythingMark: View {
-    let engine: EngineClient
-    let conversation: ConversationSummary
-
-    var body: some View {
-        if let text = AllowEverything.warning(conversation, agent: engine.agent(conversation.agentId)) {
-            Image(systemName: "exclamationmark.octagon.fill")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Theme.bad)
-                .help(text)
-                .accessibilityLabel("Allows everything")
-        }
-    }
-}

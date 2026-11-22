@@ -84,7 +84,7 @@ struct ProjectHubView: View {
             ContentUnavailableView(
                 "No Project Here",
                 systemImage: "folder.badge.questionmark",
-                description: Text(engine.projectsPreview ? "This project was deleted, or has not reached the app yet." : "Projects are a preview. Turn them on in Settings › General.")
+                description: Text("This project was deleted, or has not reached the app yet.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.window)
@@ -620,7 +620,7 @@ private struct AgentPanelMenu: View {
     }
 }
 
-/// The context meter of a conversation in the hub (#632), as the old screens' toolbar has it: how full the model's
+/// The context meter of a conversation in the hub (#632): how full the model's
 /// context is, the last request's read, the conversation's use and cost, and the ways to make room. For the
 /// orchestrator's conversation, Start Fresh is the project's; a fork of an agent's shows in place of the board.
 private struct HubContextMeter: View {

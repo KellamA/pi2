@@ -47,7 +47,7 @@ extension AppModel {
         return (engine.agent(project.orchestratorId).map { [$0] } ?? []) + others
     }
 
-    /// ⌘N with the preview on: the picker of the shown project's agents, or with no project shown, of the projects first
+    /// ⌘N: the picker of the shown project's agents, or with no project shown, of the projects first
     /// (the Dashboard, a shared page); with one project there is nothing to choose, and it goes straight to its agents.
     func askNewConversation() {
         let listed = engine.projectStore.listed
@@ -73,7 +73,7 @@ struct StartPickerAsk: Identifiable, Equatable {
     let project: String?
 }
 
-/// ⌘N with the preview on: a short list, keyboard first (type to filter, the arrows to move, Return to choose), of the
+/// ⌘N: a short list, keyboard first (type to filter, the arrows to move, Return to choose), of the
 /// shown project's agents, or of the projects and then the chosen one's agents. The orchestrator's row is Start fresh,
 /// with its confirmation; another agent's starts a conversation in place of the board.
 struct NewConversationPicker: View {
@@ -219,7 +219,7 @@ struct NewConversationPicker: View {
     }
 }
 
-/// File › New Conversation With, with the preview on: the shown project's agents, the orchestrator's being Start fresh;
+/// File › New Conversation With: the shown project's agents, the orchestrator's being Start fresh;
 /// with no project shown, each project with its agents.
 struct ProjectAgentChoices: View {
     let model: AppModel

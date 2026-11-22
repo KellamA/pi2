@@ -1,6 +1,6 @@
-// How the conversation area is divided into panes, as a tree. Its own module so that `pi2-layout-check` can check it
-// built with optimisation, which is how the released app is built (#134). Nothing here knows about SwiftUI or the
-// engine; the app's `Workspace` keeps the tree and draws it.
+// How a project's hub divides the room beside its orchestrator into panes, as a tree (#657). Its own module so that
+// `pi2-layout-check` can check it built with optimisation, which is how the released app is built (#134). Nothing here
+// knows about SwiftUI or the engine; `HubLayout` keeps the tree for each project and the app draws it (HubPanes.swift).
 
 import Foundation
 
@@ -155,29 +155,6 @@ public struct PaneNode: Codable, Equatable, Identifiable, Sendable {
     }
 
     private var allIDs: [UUID] { [id] + children.flatMap(\.allIDs) }
-}
-
-/// The layout as it is kept between launches: the tree, and which pane had the person's attention.
-public struct SavedLayout: Codable, Equatable, Sendable {
-    public let root: PaneNode
-    public let focused: UUID
-
-    public init(root: PaneNode, focused: UUID) {
-        self.root = root
-        self.focused = focused
-    }
-
-    public func encoded() -> Data? { try? JSONEncoder().encode(self) }
-
-    /// A saved layout read back, or nil when there is none, it cannot be read, or it is not one the app can lay out
-    /// (a damaged tree, or more than `maxPanes` panes): the app then starts on a single pane. A focus that is not on
-    /// one of its panes moves to the first.
-    public static func restore(_ data: Data?, maxPanes: Int) -> SavedLayout? {
-        guard let data, let saved = try? JSONDecoder().decode(SavedLayout.self, from: data),
-              saved.root.isValid, (1...maxPanes).contains(saved.root.leaves.count) else { return nil }
-        let focused = saved.root.find(saved.focused)?.isPane == true ? saved.focused : saved.root.leaves[0].id
-        return SavedLayout(root: saved.root, focused: focused)
-    }
 }
 
 /// A ready-made arrangement of panes.

@@ -1,12 +1,11 @@
 import SwiftUI
 
-// One way to open any conversation where it lives (#644; docs/projects.md, 10.3). Every "Open" in the app — the
+// One way to open any conversation where it lives (#644; docs/projects.md, 10.1). Every "Open" in the app — the
 // palette, the Archive, the Branches tab, the menu bar item, Quick Ask, a background command's source, a local model,
-// a need's card, Continue with an Agent, a sub-chat's card, a fork, ⌘N — comes through `AppModel.openConversation`. With
-// the projects preview off it sets the old selection, `Selection.conversation`, as before; with it on, nothing reaches
-// the old panes, and a window with nothing chosen lands on the Dashboard rather than the old Welcome page.
+// a need's card, Continue with an Agent, a sub-chat's card, a fork, ⌘N — comes through `AppModel.openConversation`, and
+// a window with nothing chosen lands on the Dashboard, the one project's hub, or the page that makes the first.
 
-/// Where a conversation shows with the projects preview on.
+/// Where a conversation shows.
 enum ConversationPlace: Equatable {
     /// Its project's hub, in the panel for the conversation with the orchestrator: the orchestrator's present one.
     case hub(String)
@@ -24,13 +23,9 @@ enum ConversationPlace: Equatable {
 extension AppModel {
     /// Opens a conversation where it lives. `parent`, when the caller knows it, is the conversation it was opened from,
     /// for a sub-chat that neither list names: one of an archived conversation.
-    /// `beside`, with the preview on, opens one of a project's conversations in a new pane of its hub beside the focused
-    /// one, or beside `parent`'s (a sub-chat card's Beside); nil reads ⌥ (#657).
+    /// `beside` opens one of a project's conversations in a new pane of its hub beside the focused one, or beside
+    /// `parent`'s (a sub-chat card's Beside); nil reads ⌥ (#657).
     func openConversation(_ id: Int, from parent: Int? = nil, beside: Bool? = nil) {
-        guard engine.projectsPreview else {
-            selection = .conversation(id)
-            return
-        }
         // ⌥ is read as the person asks, not once the conversation has come.
         let beside = beside ?? NSEvent.modifierFlags.contains(.option)
         if knows(id) {
@@ -46,7 +41,7 @@ extension AppModel {
         }
     }
 
-    /// Where a conversation shows with the preview on.
+    /// Where a conversation shows.
     func place(of id: Int, from parent: Int? = nil) -> ConversationPlace {
         if engine.isChat(id) { return .chat }
         let listed = engine.conversations.first { $0.id == id }
@@ -91,9 +86,9 @@ extension AppModel {
         }
     }
 
-    /// The conversation the Archive's reader shows, while the Archive is on screen with the preview on.
+    /// The conversation the Archive's reader shows, while the Archive is on screen.
     var archiveConversation: Int? {
-        guard engine.projectsPreview, mode == .agents, selection == .archive, let id = archiveReading,
+        guard mode == .agents, selection == .archive, let id = archiveReading,
               engine.conversations.contains(where: { $0.id == id }) || isArchived(id) else { return nil }
         return id
     }
@@ -112,8 +107,8 @@ extension AppModel {
         return nil
     }
 
-    /// Where the window goes with the preview on and nothing chosen: the hub of the one project, the Dashboard for
-    /// several, and with none, the page that makes the first.
+    /// Where the window goes with nothing chosen: the hub of the one project, the Dashboard for several, and with none,
+    /// the page that makes the first.
     func landOnProjects() {
         let listed = engine.projectStore.listed
         if listed.count == 1 {
@@ -126,7 +121,7 @@ extension AppModel {
     }
 }
 
-/// With the preview on and no project yet, what the window shows in place of the old Welcome page.
+/// With no project yet, what the window shows: the way to make the first.
 struct NoProjectsPage: View {
     let model: AppModel
 
@@ -154,7 +149,7 @@ struct NoProjectsPage: View {
     }
 }
 
-/// The Archive's reader, with the preview on: a conversation of a deleted or an archived project, or of no project, in
+/// The Archive's reader: a conversation of a deleted or an archived project, or of no project, in
 /// place of the Archive's list, as a project's hub shows an agent's conversation in place of its board (#473). An
 /// archived one reads with its Restore bar in place of the message field.
 struct ArchiveReader: View {

@@ -10,7 +10,7 @@ enum SettingsTab: String, CaseIterable {
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
 enum SettingsSection: String {
     // General
-    case appearance, notifications, projects, agents, summaries, awake, background, updates
+    case appearance, notifications, agents, summaries, awake, background, updates
     // Chat
     case instructions, newChats = "new-chats", memory, agentNotes = "agent-notes"
     // Providers
@@ -214,11 +214,9 @@ struct GeneralSettings: View {
                         .font(.callout).foregroundStyle(.orange)
                 }
             } footer: {
-                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting. A run a provider refuses for its limit waits and carries on by itself; the Inbox says so either way, and the second switch adds a notification once when the limit is reached and once when work carries on.").formFooter()
+                Text("Approvals and questions are shown as notifications while pi² is in the background. The Dock icon always shows how many are waiting. A run a provider refuses for its limit waits and carries on by itself; the Dashboard says so either way, and the second switch adds a notification once when the limit is reached and once when work carries on.").formFooter()
             }
             .id(SettingsSection.notifications)
-            ProjectsPreviewSettings(engine: engine)
-                .id(SettingsSection.projects)
             AgentDefaultSettings(engine: engine)
                 .id(SettingsSection.agents)
             CompactionDefaultSettings(engine: engine)

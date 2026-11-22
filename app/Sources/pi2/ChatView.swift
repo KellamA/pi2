@@ -65,7 +65,6 @@ struct ChatView: View {
             return true
         }
         .overlay { if dropTargeted { DropHighlight() } }
-        // The window's title and toolbar are WorkspaceView's: they follow whichever conversation is active.
         .onAppear {
             engine.openConversation(id)
             // The message field takes the keyboard once the page has shown the conversation, not as the pane is made:
@@ -691,70 +690,7 @@ struct ModelChoices: View {
     private static func id(of ref: ModelRef) -> String { "\(ref.provider)/\(ref.modelId)" }
 }
 
-struct ToolsMenu: View {
-    let engine: EngineClient
-    let id: Int
-    let agent: AgentInfo?
-
-    private var access: String { agent?.access ?? "none" }
-    private var folderName: String? { agent?.cwd.map { URL(fileURLWithPath: $0).lastPathComponent } }
-    /// Whether this conversation's agent may use apps on this Mac, which is set on the agent, not here.
-    private var usesComputer: Bool { engine.agent(agent?.agentId)?.computer?.enabled == true }
-
-    var body: some View {
-        Menu {
-            Picker("Tool access", selection: Binding(get: { access }, set: { engine.setAccess($0, for: id) })) {
-                ForEach(AccessLevel.all, id: \.id) { level in
-                    Text("\(level.title) — \(level.detail)").tag(level.id)
-                }
-            }
-            .pickerStyle(.inline)
-            Divider()
-            if let cwd = agent?.cwd {
-                Text("Folder: \(cwd)")
-            }
-            Button("Choose Folder…") { engine.chooseFolder(for: id) }
-            if let branch = engine.branches[id] {
-                if branch.managed {
-                    Button("Remove Worktree…") { WorktreeDialogs.shared.remove(id, status: branch) }
-                } else {
-                    Button("New Worktree…") { WorktreeDialogs.shared.create(id, engine: engine) }
-                        .help("Move this conversation into a checkout of its own on a new branch")
-                }
-            }
-        } label: {
-            Label(label, systemImage: access == "none" ? "wrench.and.screwdriver" : "wrench.and.screwdriver.fill")
-                .labelStyle(.titleAndIcon)
-        }
-        .help("What the agent may do on this Mac in this conversation")
-    }
-
-    private var label: String {
-        switch access {
-        case "read": "Read · \(folderName ?? "scratch folder")"
-        case "ask": "Ask first · \(folderName ?? "scratch folder")"
-        case "full": "Full · \(folderName ?? "scratch folder")"
-        default: usesComputer ? "Computer use" : engine.agent(agent?.agentId)?.browser?.enabled == true ? "Browser" : "Tools off"
-        }
-    }
-
-}
-
 extension EngineClient {
-    /// Tools always work inside a folder the person chose, never the home folder by default.
-    func setAccess(_ value: String, for id: Int) {
-        var change: [String: Any] = ["access": value]
-        if value != "none", open[id]?.state?.agent.cwd == nil {
-            guard let folder = Self.chooseFolder() else { return }
-            change["cwd"] = folder
-        }
-        configure(id, change)
-    }
-
-    func chooseFolder(for id: Int) {
-        if let folder = Self.chooseFolder() { configure(id, ["cwd": folder]) }
-    }
-
     static func pickFolder(_ panel: String = "conversation-folder") -> String? { chooseFolder(panel) }
 
     /// Files and folders for an agent to keep at hand.
@@ -1393,7 +1329,7 @@ struct AgentIntro: View {
             .font(.system(size: 12.5))
             .padding(.horizontal, 16).padding(.vertical, 12)
             .panel(radius: 12)
-            Text("Change the model and tools from the toolbar.")
+            Text("The model and tools are the agent’s: change them on its page, in the project’s Agents tab.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
             Spacer(minLength: 0)
         }

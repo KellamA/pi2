@@ -55,8 +55,6 @@
 	/** The changes made in this conversation of a project (3.12), by their number, and the needs waiting from it. */
 	let changes = new Map();
 	let needs = new Map();
-	/** Whether the projects preview is on: with it off a conversation shows none of a project's lines or cards (10.2). */
-	let projects = true;
 	/** What each need asked, kept after it leaves the list, so the line it becomes can still say it. */
 	const knownNeeds = new Map();
 	/** An Undo or an answer on its way, by change number or need id. */
@@ -217,17 +215,6 @@
 				next.set(need.id, need);
 			}
 			needs = next;
-		}
-		// The preview's own switch: with it off, a conversation is the one it was before the preview existed (10.2), so
-		// whatever the page holds of a project goes, and none of it is drawn until it comes back on.
-		if (typeof message.projects === "boolean" && message.projects !== projects) {
-			projects = message.projects;
-			if (!projects) {
-				changes = new Map();
-				needs = new Map();
-				knownNeeds.clear();
-				refusals.clear();
-			}
 		}
 		// A refusal the engine gave to an Undo or an answer, in its own words, under the line or card that asked.
 		if (isObject(message.changeProblem) && Number.isInteger(message.changeProblem.change)) {
@@ -1231,7 +1218,6 @@
 	 * undone elsewhere, changes nothing about the entry, so only its own signature can bring the new state to the page.
 	 */
 	function projectKey(call) {
-		if (!projects) return "0";
 		return P.callKey(call, { results, changes, needs, knownNeeds, answered, refusals, undoing, answering, rev });
 	}
 
@@ -1240,8 +1226,6 @@
 		const specs = [];
 		for (const call of itemCalls) {
 			specs.push(toolSpec(call, phase));
-			// With the preview off, a call's row is all it had before the preview existed (10.2).
-			if (!projects) continue;
 			const result = results.get(call.callId);
 			const change = P.namedOf(result, "change");
 			if (change !== null && changes.has(change)) specs.push(changeSpec(change));

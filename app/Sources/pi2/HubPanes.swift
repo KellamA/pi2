@@ -4,7 +4,7 @@ import PaneKit
 import WindowKit
 
 // A project's hub in panes (#657): the place beside the conversation with the orchestrator, where the board shows,
-// divided with the pane tree of the old screens. Each pane shows the board, one of the project's conversations, or, just
+// divided with PaneKit's tree of panes. Each pane shows the board, one of the project's conversations, or, just
 // made, a choice of them. `HubLayout` (PaneKit) is the tree and its rules; `ProjectHubs` keeps one for each project; the
 // View menu's pane commands act on the shown hub's (`HubPaneCommands`); and every way to open one of the project's
 // conversations goes to its focused pane, or with ⌥ to a new one beside it (`AppModel.openAgent`). docs/projects.md,
@@ -113,7 +113,7 @@ extension ProjectHubs {
 extension AppModel {
     /// Why the View menu's pane commands do not apply to what the window shows, or nil when they act on a hub's panes.
     var paneRefusal: String? {
-        if mode == .chat { return "Panes are the agent view's. Chat mode shows one chat at a time." }
+        if mode == .chat { return "Panes are a project hub's. Chat mode shows one chat at a time." }
         if shownProject != nil { return nil }
         if selection == .dashboard { return "The Dashboard shows every project. Open a project to split its hub." }
         return "Panes divide a project's hub. Open a project first."
@@ -571,7 +571,7 @@ private struct HubPanePicker: View {
 
 // MARK: - Commands
 
-/// The View menu's pane commands with the projects preview on: they act on the shown hub's panes, and say why they do
+/// The View menu's pane commands: they act on the shown hub's panes, and say why they do
 /// not apply elsewhere (the Dashboard, a shared page, chat mode). A view of its own, so that what it reads draws this menu
 /// again and not every scene (#436).
 struct HubPaneCommands: View {

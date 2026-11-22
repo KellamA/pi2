@@ -24,37 +24,34 @@ struct PaletteView: View {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         let matches = { (text: String) in needle.isEmpty || text.lowercased().contains(needle) }
         var result: [Entry] = []
-        // With the Projects preview on, projects come first: they are what the sidebar lists. Archived ones only by typing.
-        if engine.projectsPreview {
-            for project in engine.projectStore.listed where matches(project.name) || matches("project \(project.name)") {
-                result.append(Entry(id: "p-\(project.id)", icon: "folder", title: project.name, detail: project.folder.map { "Project · \(engine.folderName($0))" } ?? "Project") {
-                    model.showProject(project.id)
-                })
-            }
-            for project in engine.projectStore.archivedProjects where !needle.isEmpty && matches(project.name) {
-                result.append(Entry(id: "p-\(project.id)", icon: "archivebox", title: project.name, detail: "Project · archived") { model.selection = .archive })
-            }
-            if matches("new project") { result.append(Entry(id: "new-project", icon: "folder.badge.plus", title: "New Project…", detail: "Action") {
-                // The folder panel waits for the palette to go first.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.newProject() }
-            }) }
-            if matches("go to dashboard") { result.append(Entry(id: "go-dashboard", icon: "square.grid.2x2", title: "Go to Dashboard", detail: "View") { model.selection = .dashboard }) }
-            // Every agent's run at once, after a confirmation that names how many (#645); its dialog waits for the
-            // palette to go first.
-            let running = RunStopping.runs(in: nil, engine: engine).count
-            if running > 0, matches("stop all runs agents") {
-                result.append(Entry(id: "stop-all", icon: "stop.fill", title: "Stop All Runs…", detail: running == 1 ? "Action · 1 running" : "Action · \(running) running") {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.stoppingAll = StopAllRequest(projects: nil) }
-                })
-            }
-            projectEntries(needle, into: &result)
+        // Projects come first: they are what the sidebar lists. Archived ones only by typing.
+        for project in engine.projectStore.listed where matches(project.name) || matches("project \(project.name)") {
+            result.append(Entry(id: "p-\(project.id)", icon: "folder", title: project.name, detail: project.folder.map { "Project · \(engine.folderName($0))" } ?? "Project") {
+                model.showProject(project.id)
+            })
         }
+        for project in engine.projectStore.archivedProjects where !needle.isEmpty && matches(project.name) {
+            result.append(Entry(id: "p-\(project.id)", icon: "archivebox", title: project.name, detail: "Project · archived") { model.selection = .archive })
+        }
+        if matches("new project") { result.append(Entry(id: "new-project", icon: "folder.badge.plus", title: "New Project…", detail: "Action") {
+            // The folder panel waits for the palette to go first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.newProject() }
+        }) }
+        if matches("go to dashboard") { result.append(Entry(id: "go-dashboard", icon: "square.grid.2x2", title: "Go to Dashboard", detail: "View") { model.selection = .dashboard }) }
+        // Every agent's run at once, after a confirmation that names how many (#645); its dialog waits for the
+        // palette to go first.
+        let running = RunStopping.runs(in: nil, engine: engine).count
+        if running > 0, matches("stop all runs agents") {
+            result.append(Entry(id: "stop-all", icon: "stop.fill", title: "Stop All Runs…", detail: running == 1 ? "Action · 1 running" : "Action · \(running) running") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.stoppingAll = StopAllRequest(projects: nil) }
+            })
+        }
+        projectEntries(needle, into: &result)
         for agent in engine.agents where matches("new conversation with \(agent.name)") {
             result.append(Entry(id: "new-\(agent.id)", icon: "plus.bubble", title: "New conversation with \(agent.name)", detail: "Agent") { model.newConversation(agentId: agent.id) })
         }
-        let places: [(String, String, Selection)] = [("Inbox", "tray", .inbox), ("Activity", "waveform.path.ecg", .activity), ("Usage", "chart.bar", .usage), ("Archive", "archivebox", .archive)]
-        // With projects, the Inbox is not offered: Now, the Dashboard and the menu bar item show what waits (#655).
-        for (name, icon, selection) in places where matches("go to \(name)") && !(engine.projectsPreview && selection == .inbox) {
+        let places: [(String, String, Selection)] = [("Activity", "waveform.path.ecg", .activity), ("Usage", "chart.bar", .usage), ("Archive", "archivebox", .archive)]
+        for (name, icon, selection) in places where matches("go to \(name)") {
             result.append(Entry(id: "go-\(name)", icon: icon, title: "Go to \(name)", detail: "View") { model.selection = selection })
         }
         if matches("new chat") { result.append(Entry(id: "new-chat", icon: "square.and.pencil", title: "New Chat", detail: "Chat") { model.newChat() }) }
@@ -64,8 +61,8 @@ struct PaletteView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.continueWithAgent(chat) }
             })
         }
-        for (name, mode) in [(engine.projectsPreview ? "Projects" : "Agents", WindowMode.agents), ("Chat", WindowMode.chat)] where model.mode != mode && matches("switch to \(name)") {
-            result.append(Entry(id: "mode-\(name)", icon: mode == .chat ? "bubble.left.and.bubble.right" : "person.2", title: "Switch to \(name)", detail: "View") { model.mode = mode })
+        for (name, mode) in [("Projects", WindowMode.agents), ("Chat", WindowMode.chat)] where model.mode != mode && matches("switch to \(name)") {
+            result.append(Entry(id: "mode-\(name)", icon: mode == .chat ? "bubble.left.and.bubble.right" : "folder", title: "Switch to \(name)", detail: "View") { model.mode = mode })
         }
         if matches("new agent") { result.append(Entry(id: "new-agent", icon: "person.badge.plus", title: "New Agent", detail: "Action") { model.newAgent() }) }
         if matches("quick ask") { result.append(Entry(id: "quick-ask", icon: "bolt", title: "Quick Ask", detail: "Action") { QuickAsk.shared.show(model: model) }) }

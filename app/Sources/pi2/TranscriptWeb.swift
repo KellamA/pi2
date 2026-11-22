@@ -27,7 +27,6 @@ struct ConversationTranscript: View {
                 onShown: onShown,
                 changes: state?.projectChanges ?? [],
                 needs: engine.conversationNeeds.filter { $0.conversationId == conversationID },
-                projects: engine.projectsPreview,
                 inbox: engine.inbox.filter { $0.conversationId == conversationID }, names: names, chat: chat
             )
             // The page stays hidden until it has drawn the conversation; meanwhile this shows through.
@@ -87,11 +86,9 @@ struct TranscriptWebView: NSViewRepresentable {
     let older: TranscriptFeed.Older
     let state: ConversationState?
     let onShown: () -> Void
-    /// The changes made in this conversation of a project, and the needs waiting from it, for their rows and cards, and
-    /// whether the preview is on: with it off the page draws none of them (10.2).
+    /// The changes made in this conversation of a project, and the needs waiting from it, for their rows and cards.
     let changes: [ProjectChangeLine]
     let needs: [TranscriptFeed.Need]
-    let projects: Bool
     let inbox: [InboxItem]
     let names: TranscriptFeed.Names
     let chat: TranscriptFeed.Chat
@@ -108,7 +105,7 @@ struct TranscriptWebView: NSViewRepresentable {
         let openWindow = context.environment.openWindow
         context.coordinator.showOutput = { id in openWindow(id: BackgroundOutputScene.id, value: id) }
         context.coordinator.onShown = onShown
-        context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, older: older, state: state, changes: changes, needs: needs, projects: projects, inbox: inbox, names: names, chat: chat)
+        context.coordinator.show(conversationID: conversationID, items: items, earlier: earlier, older: older, state: state, changes: changes, needs: needs, inbox: inbox, names: names, chat: chat)
     }
 
     static func dismantleNSView(_ view: TranscriptPane, coordinator: TranscriptBridge) {
@@ -133,7 +130,6 @@ final class TranscriptBridge {
     private var state: ConversationState?
     private var changes: [ProjectChangeLine] = []
     private var needs: [TranscriptFeed.Need] = []
-    private var projects = false
     private var inbox: [InboxItem] = []
     private var names: TranscriptFeed.Names?
     private var chat = TranscriptFeed.Chat.none
@@ -169,7 +165,7 @@ final class TranscriptBridge {
         return view
     }
 
-    func show(conversationID: Int, items: [Item], earlier: Int, older: TranscriptFeed.Older, state: ConversationState?, changes: [ProjectChangeLine], needs: [TranscriptFeed.Need], projects: Bool, inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
+    func show(conversationID: Int, items: [Item], earlier: Int, older: TranscriptFeed.Older, state: ConversationState?, changes: [ProjectChangeLine], needs: [TranscriptFeed.Need], inbox: [InboxItem], names: TranscriptFeed.Names, chat: TranscriptFeed.Chat) {
         if conversationID != self.conversationID {
             self.conversationID = conversationID
             feed.restart()
@@ -182,7 +178,6 @@ final class TranscriptBridge {
         self.state = state
         self.changes = changes
         self.needs = needs
-        self.projects = projects
         self.inbox = inbox
         self.names = names
         self.chat = chat
@@ -234,7 +229,7 @@ final class TranscriptBridge {
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
         // A long conversation goes to the page newest first, and the older entries a part at a time, each once the page
         // has drawn the one before (#380): one part on its way at a time, whatever else is sent meanwhile.
-        guard let message = feed.update(items: items, earlier: earlier, older: older, state: state, inbox: inbox, changes: changes, needs: needs, projects: projects, names: names, palette: palette, chat: chat, withOlder: !olderOnTheWay),
+        guard let message = feed.update(items: items, earlier: earlier, older: older, state: state, inbox: inbox, changes: changes, needs: needs, names: names, palette: palette, chat: chat, withOlder: !olderOnTheWay),
               let json = TranscriptFeed.json(message) else {
             drawn?()
             return

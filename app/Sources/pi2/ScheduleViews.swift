@@ -1,14 +1,13 @@
 import SwiftUI
 
 // Schedules (docs/schedules.md; in a project, docs/projects.md 3.13): which agent a schedule runs as, one schedule's
-// row, a list of them with its buttons, and the editor. Shared by the old Activity page, a project's Settings tab and a
-// template's page, and kept apart from Activity so that they outlive it (#483).
+// row, a list of them with its buttons, and the editor. Shared by a project's Settings tab and a template's page.
 
 extension EngineClient {
     /// The agent a schedule runs as, by the engine's rule (`scheduleRunsAs`): the project's copy it was carried to while
-    /// the preview is on and that copy can still be used, else its own agent.
+    /// that copy can still be used, else its own agent.
     func runsAs(_ schedule: Schedule) -> String {
-        guard projectsPreview, let id = schedule.projectAgentId, let copy = agent(id), copy.removedAt == nil else { return schedule.agentId }
+        guard let id = schedule.projectAgentId, let copy = agent(id), copy.removedAt == nil else { return schedule.agentId }
         if let project = copy.projectId, projects.first(where: { $0.id == project })?.deletedAt != nil { return schedule.agentId }
         return id
     }
@@ -18,7 +17,7 @@ extension EngineClient {
         schedules.filter { agent(runsAs($0))?.projectId == id }
     }
 
-    /// A template's schedules, with the preview on: those that run as it, so not those carried to a project's copy.
+    /// A template's schedules: those that run as it, so not those carried to a project's copy.
     func schedules(ofTemplate id: String) -> [Schedule] {
         schedules.filter { runsAs($0) == id }
     }
@@ -32,10 +31,6 @@ struct ScheduleList: View {
     let agents: [AgentProfile]
     /// What the list says while it is empty.
     let empty: String
-    /// Rows in a card of their own each (Activity), or divided within the card they are put in (a tab, a form).
-    var cards = false
-    /// A heading with New Schedule… beside it, as Activity has; without one, the button comes after the rows.
-    var heading: String? = nil
     @State private var editing: Schedule?
     @State private var creating = false
     @State private var problem: String?
@@ -43,30 +38,18 @@ struct ScheduleList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let heading {
-                HStack {
-                    Text(heading).font(.headline)
-                    Spacer()
-                    newButton
-                }
-            }
             if schedules.isEmpty {
                 Text(empty).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            // Rows divided within the card they are put in (a tab, a form).
             ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
-                if cards {
-                    row(schedule).padding(10).panel()
-                } else {
-                    if index > 0 { Divider().overlay(Theme.line) }
-                    row(schedule)
-                }
+                if index > 0 { Divider().overlay(Theme.line) }
+                row(schedule)
             }
             if let problem { Text(problem).font(.callout).foregroundStyle(Theme.bad).fixedSize(horizontal: false, vertical: true) }
-            if heading == nil {
-                HStack {
-                    Spacer()
-                    newButton
-                }
+            HStack {
+                Spacer()
+                newButton
             }
         }
         .sheet(item: $editing) { ScheduleSheet(engine: engine, original: $0, agents: agents) }
@@ -101,7 +84,7 @@ struct ScheduleList: View {
         .opacity(schedule.enabled && schedule.holdReason == nil ? 1 : 0.6)
     }
 
-    /// A run opens where it lives (#644): in place of its project's board with the preview on, else as a conversation.
+    /// A run opens where it lives (#644): in place of its project's board, or in the Archive's reader.
     private func openRun(_ id: Int) {
         model.openConversation(id)
     }

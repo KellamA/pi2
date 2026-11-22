@@ -43,9 +43,8 @@ final class EngineClient {
     private(set) var defaultModel: ModelRef?
     /// Whether the first-run welcome has been completed for this data folder. Nil until the engine has said.
     private(set) var onboarded: Bool?
-    /// The templates: agents that belong to no project, which is every agent made the old way. They are what the agents'
-    /// list, the New Conversation With menus and the palette offer, with the preview on or off; a project's own agents
-    /// are left out of them (docs/projects.md, 10.2).
+    /// The templates: agents that belong to no project, kept under Shared to make a project's agents from. A project's
+    /// own agents are left out of them.
     private(set) var agents: [AgentProfile] = []
     /// Every agent, the projects' own included, for finding one by id: a conversation's agent can be a project's.
     private(set) var allAgents: [AgentProfile] = []
@@ -57,18 +56,9 @@ final class EngineClient {
     /// The models that can look at pictures for one that cannot see them, and the person's choice (engine/src/picturelook.ts).
     /// Nil until the engine says.
     private(set) var look: LookModels?
-    private(set) var inbox: [InboxItem] = [] {
-        didSet {
-            guard inbox != oldValue else { return }
-            let known = Set(oldValue.map(\.id))
-            // With the projects preview on, the `needs` event covers the Inbox too, so it counts and notifies what waits
-            // in the Inbox's place (docs/projects.md, 10.3, #481); with it off, the Inbox does, as before.
-            if !projectsPreview {
-                for item in inbox where !known.contains(item.id) { Notifier.shared.needsYou(item) }
-            }
-            refreshWaitingBadge()
-        }
-    }
+    /// The approvals and questions waiting in each conversation, as the `inbox` event sends them, for the cards in a
+    /// conversation's page. What waits for the person, counted and notified, is `needs` (docs/projects.md, 10.3, #481).
+    private(set) var inbox: [InboxItem] = []
     private(set) var hasLoadedLibrary = false
     private(set) var activity: [ActivityRun] = []
     /// How many runs `activity` lists, for the sidebar, which need not be drawn again for every change to a run.
@@ -95,9 +85,7 @@ final class EngineClient {
     private(set) var branches: [Int: BranchStatus] = [:]
     /// Worktrees of conversations that were archived or deleted, newest first.
     private(set) var leftBehind: [LeftBehindWorktree] = []
-    /// Whether the projects preview is on, and the projects, as the `projects` event last said (docs/projects.md, 4.3).
-    /// With the preview off the app shows none of them (10.2).
-    private(set) var projectsPreview = false
+    /// The projects, as the `projects` event last said (docs/projects.md, 4.3).
     private(set) var projects: [ProjectRow] = []
     /// Everything waiting for the person, of every project and none, as the `needs` event sends it (docs/projects.md,
     /// 3.9): the Now tab's cards. The sidebar's counts, and the Rules tab's proposals, come of the same reading.
@@ -126,7 +114,7 @@ final class EngineClient {
     let computer = ComputerSession()
     /// Works pages in pi²'s own browser for agents; the app holds the web views.
     let browser = BrowserSession()
-    /// Projects, the preview switch and what the sidebar shows of each (Projects.swift).
+    /// Projects, carrying over's state and what the sidebar shows of each (Projects.swift).
     let projectStore = ProjectsStore()
 
     let home: URL
@@ -185,9 +173,11 @@ final class EngineClient {
         }
     }
 
-    func createConversation(agentId: String? = nil) async -> Int? {
+    /// Starts a conversation with an agent: one of a project's (docs/projects.md, 3.5), or a template, whose conversation
+    /// the engine carries into the project of its folder (9.9).
+    func createConversation(agentId: String) async -> Int? {
         do {
-            let result = try await call("conversation.create", agentId.map { ["agentId": $0] } ?? [:])
+            let result = try await call("conversation.create", ["agentId": agentId])
             guard let id = result["id"]?.intValue else { return nil }
             openConversation(id)
             return id
@@ -400,14 +390,9 @@ final class EngineClient {
         return (try? JSONDecoder().decode([SearchResult].self, from: data)) ?? []
     }
 
-    /// Conversations that are not sub-chats, newest first. Chats are chat mode's own (`chats`), so the agent view never
+    /// Conversations that are not sub-chats, newest first. Chats are chat mode's own (`chats`), so the projects' side never
     /// lists them.
     var rootConversations: [ConversationSummary] { conversations.filter { $0.parent == nil && !$0.isChat } }
-
-    /// The sub-chats an agent opened from a conversation, oldest first.
-    func subChats(of id: Int) -> [ConversationSummary] {
-        conversations.filter { $0.parent == id }.sorted { ($0.createdAt ?? 0) < ($1.createdAt ?? 0) }
-    }
 
     func agent(_ id: String?) -> AgentProfile? {
         allAgents.first { $0.id == id }
@@ -704,15 +689,12 @@ final class EngineClient {
                 update(\.branches, Dictionary(uniqueKeysWithValues: event.conversations.compactMap { key, value in Int(key).map { ($0, value) } }))
                 update(\.leftBehind, event.leftBehind ?? [])
             case "projects":
-                // A preview: one the app cannot read is noted in app.log and leaves the window as it was.
+                // One the app cannot read is noted in app.log and leaves the window as it was.
                 guard let event = try? decoder.decode(ProjectsEvent.self, from: line) else {
                     note("The engine's projects event could not be read; projects are not shown.")
                     return
                 }
-                update(\.projectsPreview, event.preview)
                 update(\.projects, event.projects)
-                // Which list the Dock's badge counts turns with the preview switch (#481).
-                refreshWaitingBadge()
                 // What the sidebar and Settings read of it (Projects.swift): without the orchestrator's last words, which
                 // change with every finished answer and would draw the list of projects again for nothing.
                 if let sidebar = try? decoder.decode(SidebarProjectsEvent.self, from: line) { projectStore.take(projects: sidebar) }
@@ -757,12 +739,9 @@ final class EngineClient {
                 let known = Set(self.needs.map(\.id))
                 update(\.ruleNeeds, proposals)
                 update(\.needs, needs)
-                // With the preview on, this list is what waits for the person in the Inbox's place: the Dock's badge,
-                // and the notifications, come from it (10.3, #481).
-                if projectsPreview {
-                    for need in needs where !known.contains(need.id) { Notifier.shared.needsYou(need) }
-                    refreshWaitingBadge()
-                }
+                // This list is what waits for the person: the Dock's badge, and the notifications, come from it (10.3, #481).
+                for need in needs where !known.contains(need.id) { Notifier.shared.needsYou(need) }
+                refreshWaitingBadge()
                 // The reach requests and proposed rules a conversation's page shows cards for (#474), from the same
                 // reading of the event, with only what a card reads.
                 let shown = needs.filter { $0.kind == "reach" || $0.kind == "rule" }.map {
@@ -802,10 +781,9 @@ final class EngineClient {
         }
     }
 
-    /// What the menu bar item counts beside its icon and what the Dock's badge shows: with the projects preview on,
-    /// everything waiting in the `needs` event in place of the Inbox (docs/projects.md, 10.3, #481); with it off, the
-    /// Inbox's, as before.
-    var waitingCount: Int { projectsPreview ? needs.count : inbox.count }
+    /// What the menu bar item counts beside its icon and what the Dock's badge shows: everything waiting in the `needs`
+    /// event (docs/projects.md, 10.3, #481).
+    var waitingCount: Int { needs.count }
 
     /// Sets a property only when the value differs. A property of an observable object tells every view that reads it
     /// of each set, even to the same value, and the engine sends most of these again whenever anything in them changes.
@@ -813,10 +791,9 @@ final class EngineClient {
         if self[keyPath: path] != value { self[keyPath: path] = value }
     }
 
-    /// The Dock's badge: what waits for the person. With the projects preview on, everything in the `needs` event counts
-    /// in place of the Inbox's (docs/projects.md, 10.3, #481); with it off, the Inbox's as before.
+    /// The Dock's badge: what waits for the person, everything in the `needs` event (docs/projects.md, 10.3, #481).
     private func refreshWaitingBadge() {
-        let count = projectsPreview ? needs.count : inbox.count
+        let count = needs.count
         NSApp.dockTile.badgeLabel = count == 0 ? nil : String(count)
     }
 

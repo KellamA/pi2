@@ -388,19 +388,3 @@ private struct PageHost: NSViewRepresentable {
     }
 }
 
-/// A toolbar button that opens the Browser window on a conversation's page.
-struct BrowserButton: View {
-    let engine: EngineClient
-    let conversationID: Int
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        Button("Browser", systemImage: "globe") {
-            let browser = engine.browser.controller
-            if browser.page(conversationID) != nil { browser.selected = conversationID }
-            openWindow(id: "browser")
-        }
-        .labelStyle(.titleAndIcon)
-        .help("Show the page this conversation’s agent is on, in pi²’s browser")
-    }
-}

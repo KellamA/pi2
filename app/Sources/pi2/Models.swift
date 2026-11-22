@@ -84,9 +84,9 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
     var allowEverything: Bool? = nil
-    /// The project it belongs to (docs/projects.md, 3.5), whether the preview is on or not.
+    /// The project it belongs to (docs/projects.md, 3.5).
     var projectId: String? = nil
-    /// The agent it runs as now: its `agentId`, but for a conversation carried over while the preview is on (3.4).
+    /// The agent it runs as now: its `agentId`, but for a conversation carried over, its project's copy (3.4).
     var runsAs: String? = nil
     /// "current" or "earlier" for a project's conversation with its orchestrator; nil for any other.
     var orchestrator: String? = nil
@@ -95,7 +95,7 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
-/// the conversation's toolbar and the Branches page; see BranchViews.swift.
+/// the hub's headers and a project's Branches tab; see BranchViews.swift.
 struct BranchStatus: Codable, Equatable {
     /// The repository's name.
     let repo: String
@@ -130,7 +130,7 @@ struct BranchStatus: Codable, Equatable {
 }
 
 /// A worktree pi² made for a conversation that was archived or deleted since: still on disk until it is removed.
-/// Listed on the Branches page.
+/// Listed on a project's Branches tab.
 struct LeftBehindWorktree: Codable, Identifiable, Equatable {
     let id: Int
     let title: String
@@ -261,9 +261,6 @@ struct LimitWait: Codable, Equatable {
         kind == "overloaded" ? "\(provider) overloaded · until \(untilText)" : "waiting for \(provider)’s limit · until \(untilText)"
     }
 
-    /// The shortest form, for a sidebar row, beside the conversation's title.
-    var shortTag: String { "until \(untilText)" }
-
     /// What a parent conversation says of its sub-chats that wait (#343): one line per provider, kept up to date.
     static func subChatsLine(_ waits: [LimitWait]) -> String? {
         guard !waits.isEmpty else { return nil }
@@ -329,7 +326,7 @@ struct AgentInfo: Codable, Equatable {
 
 /// One change made in a conversation of a project, as the conversation's state carries it (docs/projects.md, 3.12):
 /// what changed, in the record's own words, whether it was undone and whether the person can undo it. Nil from an
-/// engine without the projects preview, and for any conversation in no project.
+/// engine older than projects, and for any conversation in no project.
 struct ProjectChangeLine: Codable, Equatable, Identifiable {
     let id: Int
     let summary: String
@@ -457,7 +454,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     /// after a confirmation, never by saving the agent, and not copied to a duplicate.
     var allowEverything: Bool?
     var createdAt: Double
-    /// The project it belongs to (docs/projects.md, 3.3). Nil for a template, which is every agent made the old way.
+    /// The project it belongs to (docs/projects.md, 3.3). Nil for a template, kept under Shared to make a project's agents from.
     /// Kept as stored by the engine, whatever `agents.save` is sent.
     var projectId: String? = nil
     /// "orchestrator" for a project's orchestrator.
@@ -559,7 +556,6 @@ struct InboxItem: Codable, Equatable, Identifiable {
     let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
     let rootConversationId: Int
-    let rootTitle: String
 
     var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
 }
@@ -751,7 +747,7 @@ struct Schedule: Codable, Equatable, Identifiable {
     var lastConversationId: Int?
     /// Set when an agent made it, with your approval; nil when you did. Only the engine sets it.
     var createdBy: Creator?
-    /// For a schedule on a template carried over: the project's copy of it, which it runs as while the preview is on
+    /// For a schedule on a template carried over: the project's copy of it, which it runs as
     /// (docs/projects.md, 3.13; `EngineClient.runsAs`). Only the engine sets it.
     var projectAgentId: String? = nil
 
