@@ -96,7 +96,7 @@ export type StateSnapshot = {
 	messages: string[];
 };
 
-// ---- What a later issue fills in
+// ---- The state block's work, which github.ts wires in for a project with a repository
 
 /** The states of open work, in the order the state block says them. */
 const OPEN: readonly WorkState[] = ["open", "in_progress", "waiting", "blocked"];
@@ -116,7 +116,7 @@ async function localWork(tx: Tx, project: Project): Promise<StateSnapshot["work"
 type WorkReader = (tx: Tx, project: Project) => Promise<StateSnapshot["work"]>;
 let workState: WorkReader = localWork;
 
-/** #468 supplies the work of a project with a repository attached; `read` is given every project, and may hand back to the list kept by pi². */
+/** github.ts (#468) supplies the work of a project with a repository attached; `read` is given every project, and may hand back to the list kept by pi². */
 export function wireWorkState(read: (tx: Tx, project: Project, local: WorkReader) => Promise<StateSnapshot["work"]>): void {
 	workState = (tx, project) => read(tx, project, localWork);
 }

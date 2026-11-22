@@ -41,11 +41,11 @@ The design's words ([design/projects.md](design/projects.md#words)) hold: projec
 - **Catch-up**: a short text pi² puts in front of the orchestrator's next input, saying what changed in the project since its last turn ([6.4](#64-the-catch-up-and-the-state-block)).
 - **Start**: any new run of an agent that an agent or the person sets going in a project: a new sub-chat, a sub-chat continued, work assigned. Every start passes one admission check ([8.3](#83-limits-and-the-one-admission-check)).
 - **Allowed commands**: commands an agent may run without asking ([allowed-commands.md](allowed-commands.md)). Their stored fields and requests have an older name (`commandRules`, `rules.add`, `rules.remove`). In this page **rule** always means a project's rule.
-- **Older versions**: the versions of pi² from before projects were the only way, some of which had projects behind a switch. What this page keeps for them (the `agentId` a carried conversation keeps, `preview: true`) lets one of them read the data again if it is restored from the copy the update made (9.8).
+- **Older versions**: the versions of pi² from before projects were the only way, some of which had projects behind a switch. What this page keeps for them (the `agentId` a carried conversation keeps, `settings.json`'s `projects: { preview: true }`) lets one of them read the data again if it is restored from the copy the update made (9.8).
 
 ## 2. The preview switch
 
-Retired: there is no switch, and every conversation that is not a chat is in a project, or in a deleted one's ([3.6](#36-archiving-and-deleting)). What is still written for older versions is in [4.3](#43-events) (`preview: true`), [9.6](#96-conversations-what-each-keeps) and [9.8](#98-the-report-and-the-run) (step 4).
+Retired: there is no switch, and every conversation that is not a chat is in a project, or in a deleted one's ([3.6](#36-archiving-and-deleting)). What is still written for older versions is in [9.6](#96-conversations-what-each-keeps) and [9.8](#98-the-report-and-the-run) (step 4, `settings.json`'s `projects: { preview: true }`). The `projects` event and `projects.list` no longer carry `preview` (#725).
 
 ## 3. Documents
 
@@ -195,7 +195,7 @@ removedAt?: number;
   - `delegates`: the orchestrator's current conversation hands work to every other agent of its project, whatever its `delegates` say, and to no agent outside it. Any other conversation of a project agent hands work to the agents its `delegates` name, which for a project agent are agents of its own project.
 - **Copying a template** into a project, by the person or by carrying over, copies every setting, through the same path as `agents.duplicate`, with these differences: the new agent gets `projectId`, `template` and the project's folder; `delegates` is mapped to the project's copies of the templates it named (a template the project has no copy of is left out); allowed commands are copied, all of them, whatever their folder (each holds only in its own folder, so one for another folder does nothing until a conversation works there); the memory switch is copied. Variables are copied with their names only, and Allow everything is not copied, as for a duplicate, except when carrying over ([9.5](#95-agents-copies-adoption-and-secrets)). No conversation, schedule or worktree is copied. Carrying over makes its copies inside its own commits (9.8), not through `agents.duplicate`'s path, which commits on its own: it does there what that path's feature hooks do (`agentDuplicated`: the memory switch, the variables' names), and turns `worktree` off for a copy in a project whose folder is no repository, where `agents.save` would refuse it, saying so in the report (9.5). A copy made **by an agent** is made at the baseline of [7.2](#72-asking-allowing-refusing), and asks for the rest.
 - **Update from template** compares the copy with its template, setting by setting, over every setting a copy takes from its template except its name, `cwd`, `delegates`, allowed commands, variables and Allow everything, which are the project's own. It says what would change (`agents.updateFromTemplate` with `apply: false`) before changing anything, then changes those settings and sets `template.copiedAt` and `templateUpdatedAt`. A template deleted since leaves the copy as it is, with **Update from template** unavailable ("The template this agent was made from has been deleted").
-- **The default orchestrator** is a template that is not stored: a constant, `DEFAULT_ORCHESTRATOR` in `projects.ts`, like chat mode's assistant in `chat.ts`. It is not in the `agents` event and cannot be edited; a project made without naming a template gets a copy of it, which is an ordinary project agent from then on. Its settings: name "Orchestrator", colour violet, no model of its own (so the default model for agents in Settings › General, at the moment its conversation is made, #617), thinking unset, access Ask first, memory on, summarising at 100,000 tokens, the built-in tool **Summarise its own conversation** on, everything else as a new agent's defaults. Its instructions, in full:
+- **The default orchestrator** is a template that is not stored: a constant, `DEFAULT_ORCHESTRATOR` in `projects.ts`, like chat mode's assistant in `chat.ts`. It is not in the `agents` event and cannot be edited; a project made without naming a template gets a copy of it, which is an ordinary project agent from then on. Its settings: name "Orchestrator", colour violet, no model of its own (so the default model for agents in Settings › General as it is at each message, #617, 3.4), thinking unset, access Ask first, memory on, summarising at 100,000 tokens, the built-in tool **Summarise its own conversation** on, everything else as a new agent's defaults. Its instructions, in full:
 
   > You are the orchestrator of this project. The person talks to you. Plan the work with them, hand each piece to one of the project's agents with `delegate` or `work` (`assign`), review what comes back, and report plainly what was done and what was not. Keep the project's work list up to date. When a decision is the person's, put it to them with `needs_you` and carry on with what does not depend on it. If the project has no agent suited to a piece of work, make one with `project_agents`.
 
@@ -216,7 +216,11 @@ The agents are an argument, since the engine keeps no one map of them that every
 
 A conversation whose copy has been removed or deleted, or whose project has been deleted, runs as its `agentId`; one whose `agentId` was deleted too keeps the setup it has, as a conversation whose agent was deleted does today. A conversation whose own `agentId` names a removed project agent keeps the setup it has in the same way.
 
-Changing what a conversation runs as changes only what is taken from the agent at each message today: its tools (`syncTools`), Allow everything (`takeSwitch`), its allowed commands, memory, variables and the rest that are read from the agent as they are used. Its folder, its worktree, its "Always Allow … Here" and its access level are the conversation's own and do not change ([9.6](#96-conversations-what-each-keeps)).
+Changing what a conversation runs as changes only what is taken from the agent at each message today: its tools (`syncTools`), Allow everything (`takeSwitch`), its model and thinking level (below), its allowed commands, memory, variables and the rest that are read from the agent as they are used. Its folder, its worktree, its "Always Allow … Here" and its access level are the conversation's own and do not change ([9.6](#96-conversations-what-each-keeps)).
+
+**Model and thinking are the agent's** (the owner's answer on G3, #642; decided in the engine since #726). A conversation of a project runs on the model and thinking level of the agent it runs as, read at each message, not copied when it is made: the agent's own model while its provider offers it, else the default model for agents as it is then (Settings › General, #617), and the agent's thinking level, else the one chosen with that default, else the model's own (`followedModel` in `main.ts`). The engine writes them into the conversation's `pi.agent` document in the commit that places an input starting a run (the `placeInput` setting: the person's message, a wake, a schedule's prompt, a queued message placed once the conversation is idle), and as the person's message or Continue is taken, before its tools are brought in line (`takeModel`), so `look` follows a model that cannot see. A run under way finishes on the model it has, messages queued or steered into it included, and the next run takes the agent's. So a model chosen with the limit banner's **Carry on with…** holds for that conversation until its run ends; it is not remembered as the model last picked, which an agent with no model of its own would then run on. This is the simpler of the two rules the issue allowed: it needs nothing stored, while holding the choice until the agent's model changes would mean noting, per conversation, what the agent had when the choice was made. What the engine sends for a conversation's model (its state's `agent.model` and `agent.thinkingLevel`) is the one it runs on next: its agent's while it is idle, its run's while it works; an app showing one is sent it again when an agent is saved or the default changes. The app changes the agent only (`agents.save`), from the hub's bar, the menu of an agent's conversation, Conversation › Model and the agent's page.
+
+These keep the model they have, as before: a chat, a conversation in no project (a deleted project's), one of an archived project, an archived or deleted one, an earlier conversation with the orchestrator (read-only), one whose agent was deleted or removed, and one given a model of its own through the socket (`conversation.create` with `model`, `conversation.configure` with `model` or `thinkingLevel`, which set `ownModel` on its record). The app never does that for a project's conversation; tests and scripts that drive a conversation on a model of their choosing do.
 
 ### 3.5 Conversations (`pi2.library`)
 
@@ -228,6 +232,8 @@ projectId?: string;
 projectAgentId?: string;
 /** An orchestrator's conversation begun with Start fresh: the one it followed. */
 freshFrom?: number;
+/** Given a model of its own through the socket: it keeps it rather than following its agent's (3.4, #726). */
+ownModel?: true;
 ```
 
 - `agentId` is never changed by anything here: a carried conversation keeps its template, which older versions read.
@@ -715,7 +721,7 @@ Errors every new request can give, besides its own:
 
 | Request | Answers | Does, and refuses |
 |---|---|---|
-| `projects.list {}` | `{ preview, projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events; `preview` is always `true`, for older versions (section 2) |
+| `projects.list {}` | `{ projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events |
 | `projects.create { folder, name?, template? }` | `{ id, conversation }` | A project from a folder in one step, with its orchestrator and an empty conversation with it. `folder` a folder's path, or null; `name` defaults to the folder's last part ("No folder" for null), with " 2", " 3"… when taken; `template` the id of a template to copy as its orchestrator, else the default orchestrator. Refuses "Not a folder: …" and, for a folder, "There is already a project for this folder: <name>" (an archived one: "…; restore it instead") |
 | `projects.rename { id, name }` | `{}` | Refuses an empty name, one over 80 characters, or one taken |
 | `projects.set { id, folder?, settings? }` | `{ settings }` | Changes the folder (checked as in create; new conversations of its agents start there, those working stay where they are) and any part of the settings ([section 8](#8-settings-without-asking-waking-limits)), each checked; parts not given are kept |
@@ -793,7 +799,7 @@ Errors every new request can give, besides its own:
 New events, each sent whole when what it holds changes, and to each app as it connects:
 
 ```ts
-{ event: "projects"; preview: true; projects: ProjectRow[]; carryOver: CarryOverState | null }   // `preview` always true, for older versions (section 2)
+{ event: "projects"; projects: ProjectRow[]; carryOver: CarryOverState | null }
 
 type ProjectRow = Project & {
 	folderMissing: boolean;
@@ -823,7 +829,7 @@ type CarryOverState = {
 On a new data folder, with nothing made yet, an app is sent exactly:
 
 ```json
-{ "event": "projects", "preview": true, "projects": [], "carryOver": null }
+{ "event": "projects", "projects": [], "carryOver": null }
 { "event": "projectRules", "projects": {} }
 { "event": "needs", "items": [] }
 { "event": "reports", "projects": {} }
@@ -1649,7 +1655,7 @@ Each thing the hub, the sidebar, the Dashboard and the pages under Shared show, 
 | The branch and the size of the change in the header of an agent's conversation in place of the board, and on Now's working rows | `branches` |
 | The hub's panes beside the orchestrator's conversation: each the board or one of the project's conversations under the agent panel's header; a new pane's picker of the working agents, then the other conversations; a pane closing when its conversation leaves the library | `activity` (the working runs), `library` by `projectId`; the app's own `project.<id>.panes` (10.1) |
 | The hub's bar: folder and branch, the orchestrator's model, the plan's week | `projects`; `branches`; `agents`; `limits` |
-| The hub bar's Thinking, beside the model, and the model and Thinking in the menu of an agent's conversation in place of the board: each changes the agent (`agents.save`) and each of its conversations in the library (`conversation.configure`, earlier orchestrator conversations left out), so it counts for all of them from their next message; Conversation › Model in a hub does the same | `agents`; `models` (`thinkingLevels`); `library` (`runsAs`, `orchestrator`) |
+| The hub bar's Thinking, beside the model, and the model and Thinking in the menu of an agent's conversation in place of the board: each changes the agent alone (`agents.save`), and the engine runs each of its conversations on it from their next message (3.4); Conversation › Model in a hub does the same | `agents`; `models` (`thinkingLevels`) |
 | A conversation's own menu: a working agent's row and each other conversation's row in the sidebar (context menu), and the menu in the header of an agent's conversation in place of the board: Stop while it works, Rename…, Export (Markdown, JSON), Archive (greyed for a sub-chat, which goes with its parent), Delete… after a confirmation. The project's row adds Export the Conversation for the orchestrator's current one, which has only Stop and Export; Conversation › Rename…, Archive and Delete are greyed for it, with the reason. Archiving or deleting the conversation in place of the board brings the board back | `library` (`parent`, `orchestrator`, `busy`); `activity` |
 | A sub-chat's Parent button in the header of its conversation in place of the board: its parent in place of the board, or the orchestrator's panel when the parent is the orchestrator's current conversation | `library` (`parent`); the conversation state (`agent.parent`) |
 | The folded conversation's strip | `projects` (`lastWords`); sending to `projects`' current `conversation` |
@@ -1660,7 +1666,7 @@ Each thing the hub, the sidebar, the Dashboard and the pages under Shared show, 
 | Now's and a Dashboard column's working rows: the shell command a run waits on, how long it has run and how long it has printed nothing (a column's shorter: the quiet time in place of the run time once quiet); Stop over the row's end on hover or keyboard focus, and in its menu | `activity` (`commands`); `abort` |
 | Now: finished today, not yet read | `reports` |
 | Lines with Undo, cards in the conversation | conversation state (`projectChanges`), `details.change`, `details.need`, `needs` |
-| Agents tab | `agents` by `projectId`; templates (`agents` with none) |
+| Agents tab, and each agent's page in it, with its memory switch (3.8), as a template's page has too | `agents` by `projectId`; templates (`agents` with none); `memory` (`agents`), `memory.setEnabled` |
 | Starting a conversation with a project's agent, in place of the board: New Conversation on each Agents tab row (and in its … and context menus), on an agent's page (its toolbar) and in a working agent's row's menu in the sidebar; ⌘N's picker of the shown project's agents, keyboard first, which with no project shown (the Dashboard, a shared page) asks for the project first, and with one project goes straight to its agents; File › New Conversation With, listing the shown project's agents, or each project's in a submenu. For the orchestrator each of these is Start fresh, after its confirmation (#632). **Make Orchestrator…** on an Agents tab row, after a confirmation of what changes ([6.5](#65-start-fresh)). Duplicate on a project agent's page opens the copy's page in the Agents tab. Allow everything's red tag on the Agents tab's rows and on a working agent's row. The palette's entries, by typing, for a project's agents (their pages), a new conversation with each, its conversations and its board's tabs, named by the project ("Demo project › Atlas", "Demo project › Work") | `agents` by `projectId`; `conversation.create { agentId }` (3.5); `projects.startFresh`, `projects.setOrchestrator`; `agents.duplicate`; `library` by `projectId` |
 | Rules tab and their cost | `projectRules`; `projects` (`ruleTokens`) |
 | Notes tab | `memory` (`projects`) |

@@ -84,7 +84,7 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, scheduleRunsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, type Start, startWithRefusal } from "./projects.ts";
+import { allProjects, inProject, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorConversation, orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
@@ -215,6 +215,12 @@ const computer = new ComputerHost();
 const browser = new BrowserHost();
 let library: { conversations: Record<string, Meta> } = { conversations: {} };
 let agents: Record<string, AgentProfile> = {};
+/**
+ * The default model for agents as `defaultModel` last worked it out, for what is decided inside a commit, where the
+ * providers are not asked (`followedModel`). Worked out again whenever the providers or the settings change, and as
+ * each app connects.
+ */
+let defaultNow: ModelRef = { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
 let markReady = () => {};
 
 const host: Host = {
@@ -454,8 +460,12 @@ const harness = await Harness.open(
 				automaticReady: automaticCompactionReady,
 			} as import("@earendil-works/pi-durable").CompactionSettings,
 			// As an input is placed, a project's orchestrator is told what changed first (orchestrator.ts; a patch to pi
-			// durable, scripts/patch-inputs.ts). It does nothing anywhere else.
-			placeInput: (tx, id, now) => placeInput(tx, id as unknown as number, now),
+			// durable, scripts/patch-inputs.ts). It does nothing anywhere else. An input that starts a run of a project's
+			// conversation takes its agent's model and thinking level first (`followAgent`).
+			placeInput: async (tx, id, now) => {
+				await followAgent(tx, id as unknown as number);
+				await placeInput(tx, id as unknown as number, now);
+			},
 			retry: {
 				host: (message: Parameters<typeof retryLocalEngine>[0], attempt: number, id: unknown, localRetries = 0, network?: NetworkWait, now = Date.now()) => {
 					const local = retryLocalEngine(message, localRetries, home);
@@ -489,7 +499,6 @@ const settings: {
 	 * (null for the model's own default). Absent: the model last picked in a conversation, as before.
 	 */
 	agentDefault?: { model: ModelRef; thinkingLevel: string | null };
-	lastAgent?: string;
 	dailyBudget?: number | null;
 	onboarded?: boolean;
 	deviceId?: string;
@@ -575,12 +584,72 @@ async function syncTools(conv: Conversation): Promise<void> {
 }
 
 /**
- * A message is about to be sent to conversation `id`: it takes its own agent's Allow everything switch as it is now
- * (state.ts, `takeAgentSwitch`). Every way a message reaches a conversation calls this first: the person's (`submit`,
- * `continue`), a schedule's (`deliver`) and an agent's continuing a sub-chat (`sendToChat`); `delegate` sets a new
- * sub-chat's from its own agent as it makes it.
+ * The model and thinking level a conversation of a project takes from the agent it runs as (state.ts, `runsAs`) at its
+ * next message (docs/projects.md, 3.4): the agent's own model while its provider offers it, else the default model for
+ * agents as it is now, and the agent's thinking level, else that model's own, as a conversation is made with
+ * (`agentChange`). Undefined for a conversation that keeps the model it has: a chat, one in no project (a deleted
+ * project's), one of an archived project, an archived or deleted one, an earlier conversation with a project's
+ * orchestrator, one whose agent was deleted or removed, and one given a model of its own through the socket (`ownModel`).
+ */
+function followedModel(id: number, meta: Meta | undefined): { model: ModelRef; thinkingLevel: string | null } | undefined {
+	if (meta === undefined || meta.ownModel === true || isChat(meta) || meta.version === true || isPutAway(meta)) return undefined;
+	if (meta.parent !== undefined && isPutAway(library.conversations[String(meta.parent)])) return undefined;
+	const project = inProject(id);
+	if (project === undefined || project.earlier.includes(id)) return undefined;
+	const agent = agentOf(meta, agents);
+	if (agent === undefined) return undefined;
+	const own = agent.model !== null && providers.models.getModel(agent.model.provider, agent.model.modelId) !== undefined;
+	const model = own ? agent.model! : defaultNow;
+	return { model, thinkingLevel: agent.thinkingLevel ?? (own ? defaultThinking(model) : defaultModelThinking(model)) };
+}
+
+/**
+ * In commit `tx`, conversation `id` takes its agent's model and thinking level (`followedModel`) when it is not working:
+ * a run under way finishes on the model it has, so a model chosen with the limit banner's Carry on with… holds until
+ * the run ends. Called as an input is placed (the `placeInput` setting), which is every message, wake and queued input
+ * that starts a run, and as the person's message or Continue is taken (`takeModel`). Returns whether it changed.
+ */
+async function followAgent(tx: Tx, id: number): Promise<boolean> {
+	const wanted = followedModel(id, (await tx.doc(Library)).conversations[String(id)]);
+	if (wanted === undefined) return false;
+	const conversationId = id as unknown as ConversationId;
+	if ((await tx.doc(LiveDoc, conversationId)).run !== undefined) return false;
+	const agent = await tx.doc(AgentDoc, conversationId);
+	if (sameModel(agent.model, wanted.model) && (agent.thinkingLevel ?? null) === wanted.thinkingLevel) return false;
+	agent.model = { ...wanted.model };
+	if (wanted.thinkingLevel === null) delete agent.thinkingLevel;
+	else agent.thinkingLevel = wanted.thinkingLevel as never;
+	return true;
+}
+
+/**
+ * Before a message is taken: conversation `id` takes its agent's model and thinking level (`followAgent`), so that its
+ * tools (`syncTools`, which offer `look` to a model that cannot see) and the checks on the message go by that model.
+ */
+async function takeModel(id: ConversationId): Promise<void> {
+	if (followedModel(id as unknown as number, library.conversations[String(id)]) === undefined) return;
+	if (!(await harness.commit((tx) => followAgent(tx, id as unknown as number), context))) return;
+	for (const feature of host.features) feature.modelChanged?.(id as unknown as number);
+}
+
+/**
+ * What `followedModel` says may have changed for some conversations (an agent saved, the default model for agents
+ * changed): the apps showing one of them are sent its state again, which says the model its next message runs on.
+ */
+function followersChanged(): void {
+	for (const client of clients) {
+		for (const [id, subscription] of client.subscriptions) if (followedModel(id, library.conversations[String(id)]) !== undefined) subscription.push();
+	}
+}
+
+/**
+ * A message is about to be sent to conversation `id`: it takes its agent's model and thinking level (`takeModel`) and
+ * its own agent's Allow everything switch as it is now (state.ts, `takeAgentSwitch`). Every way a message reaches a
+ * conversation calls this first: the person's (`submit`, `continue`), a schedule's (`deliver`) and an agent's
+ * continuing a sub-chat (`sendToChat`); `delegate` sets a new sub-chat's from its own agent as it makes it.
  */
 async function takeSwitch(id: ConversationId): Promise<void> {
+	await takeModel(id);
 	const known = library.conversations[String(id)];
 	if (known !== undefined && (known.allowEverything === true) === (agentOf(known, agents)?.allowEverything === true)) return;
 	await harness.commit(async (tx) => {
@@ -921,6 +990,9 @@ function failureDetail(failure: { reason: string; detail?: string }, model: Mode
 function stateOf(view: ConversationView, meta: Meta | undefined) {
 	const live = (view.docs["pi.live"] ?? {}) as LiveDocShape;
 	const agent = (view.docs["pi.agent"] ?? {}) as { model?: ModelRef; thinkingLevel?: string; cwd?: string };
+	// The model its next message runs on: its agent's, for a project's conversation that is not working (`followedModel`);
+	// while it works, the one its run has.
+	const next = live.run === undefined ? followedModel(view.conversation.id as unknown as number, meta) : undefined;
 	const inbox = (view.docs["pi.inbox"] ?? {}) as { items?: { id: number; mode: string; content?: unknown; entry?: { kind?: unknown; data?: unknown } }[] };
 	const partial = live.generation?.message;
 	const { input, ...contextSize } = contextOf(view, agent.model);
@@ -958,8 +1030,8 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 				return { id: item.id, mode: item.mode, text: own?.text ?? textOf(item.content), attachments: own?.attachments ?? [] };
 			}),
 		agent: {
-			model: agent.model ?? null,
-			thinkingLevel: agent.thinkingLevel ?? null,
+			model: next?.model ?? agent.model ?? null,
+			thinkingLevel: next === undefined ? (agent.thinkingLevel ?? null) : next.thinkingLevel,
 			cwd: agent.cwd ?? null,
 			access: meta?.access ?? "none",
 			agentId: meta?.agentId ?? null,
@@ -1204,10 +1276,17 @@ async function announceProviders(): Promise<void> {
  */
 async function defaultModel(): Promise<ModelRef> {
 	const chosen = settings.agentDefault?.model;
-	if (chosen !== undefined && !hiddenModel(chosen) && (await usable(chosen))) return chosen;
-	const wanted = settings.defaultModel;
-	if (wanted !== undefined && (await usable(wanted))) return wanted;
-	return { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
+	const model =
+		chosen !== undefined && !hiddenModel(chosen) && (await usable(chosen))
+			? chosen
+			: settings.defaultModel !== undefined && (await usable(settings.defaultModel))
+				? settings.defaultModel
+				: { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
+	if (!sameModel(model, defaultNow)) {
+		defaultNow = model;
+		followersChanged();
+	}
+	return model;
 }
 
 const hiddenModel = (model: ModelRef) => settings.hiddenModels?.[model.provider]?.includes(model.modelId) === true;
@@ -1242,6 +1321,8 @@ function rememberModel(model: ModelRef, chat: boolean): void {
 async function announceDefault(): Promise<void> {
 	broadcast(await providersEvent());
 	broadcast(await agentDefaultEvent());
+	// The thinking level chosen with the default model can change without the model changing.
+	followersChanged();
 }
 
 /** Whether `model`'s provider is connected and offers it now. */
@@ -1440,7 +1521,7 @@ async function createChat(given: unknown, client: Client): Promise<{ id: Convers
  * it was; it links to the conversation, and a new conversation links back to it. The agent's access, approvals and
  * Allow everything apply from that message, as in any conversation of its own.
  */
-async function continueChat(params: Params, client: Client): Promise<{ id: ConversationId; note?: string }> {
+async function continueChat(params: Params): Promise<{ id: ConversationId; note?: string }> {
 	const shown = await conversation(params.id);
 	const chatId = chatOf(shown.id);
 	const meta = library.conversations[String(chatId)];
@@ -1492,7 +1573,6 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 		},
 		context,
 	);
-	await rememberAgent(agent.id, client);
 	for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 	const conv = (await harness.conversation(created.id, context))!;
@@ -1559,13 +1639,6 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 
 // ---- Requests
 
-/** A script may choose an agent for a new conversation, but not for the person's next one. */
-async function rememberAgent(id: string, client: Client): Promise<void> {
-	if (settings.lastAgent === id || !(await mayAnswer(client)).allowed) return;
-	settings.lastAgent = id;
-	saveSettings();
-}
-
 type Params = Record<string, unknown>;
 const text = (params: Params, key: string): string => {
 	const value = params[key];
@@ -1599,7 +1672,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
 		const confirm = startConfirmation(params);
 		if (params.chat === true) return createChat(params.model, client);
-		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
+		// The app always names the agent; a script that names none gets the oldest.
+		const agent = agents[String(params.agentId ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
 		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
 		if (agent.removedAt !== undefined) throw new Error(`Unknown agent: ${agent.id}`);
@@ -1614,12 +1688,13 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 				agent: change,
 				init: async (tx, id) => {
 					if (agent.projectId !== undefined || carriedInto !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, {}, "", carriedInto);
-					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent) };
+					// A model given here is the conversation's own: it keeps it rather than following its agent's (`ownModel`).
+					const own = params.model === undefined ? {} : { ownModel: true as const };
+					(await tx.doc(Library)).conversations[String(id)] = { title: "", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, ...projectFrom(agent), ...own };
 				},
 			},
 			context,
 		);
-		await rememberAgent(agent.id, client);
 		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id, ...(note === undefined ? {} : { note }) };
@@ -2083,9 +2158,15 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			});
 			for (const other of clients) other.subscriptions.get(id)?.push();
 		}
+		// A model or a thinking level chosen for one conversation is its own from then on: in a project it no longer takes
+		// its agent's at each message (`ownModel`). The app chooses them for the agent there, never with this.
+		const chosen = params.model as ModelRef | undefined;
+		if (chosen !== undefined && providers.models.getModel(chosen.provider, chosen.modelId) === undefined) throw new Error(`Unknown model: ${chosen.provider}/${chosen.modelId}`);
+		if (!chat && (chosen !== undefined || params.thinkingLevel !== undefined) && library.conversations[String(id)]?.ownModel !== true) {
+			await editMeta(conv.id, (meta) => void (meta.ownModel = true));
+		}
 		if (params.model !== undefined) {
 			const model = params.model as ModelRef;
-			if (providers.models.getModel(model.provider, model.modelId) === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
 			// A model on this Mac comes with its own thinking level when the conversation has none (defaultThinking).
 			const thinking = params.thinkingLevel === undefined && ((await harness.snapshot(AgentDoc, conv.id, context))?.thinkingLevel ?? null) === null ? defaultThinking(model) : null;
 			await conv.configure({ model: { provider: model.provider, modelId: model.modelId }, ...(thinking === null ? {} : { thinkingLevel: thinking }) }, context);
@@ -2128,7 +2209,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const carryOn = host.features.find((feature) => feature.carryOn !== undefined)?.carryOn;
 		const switched = await carryOn?.(conv.id, model, scope);
 		if (!switched?.length) throw new Error("No run is still waiting for a limit that can carry on with that model");
-		rememberModel(model, isChat(library.conversations[String(id)]));
+		// In a project the choice holds for this run alone (`followAgent`), so it is not remembered as the model last picked,
+		// which an agent with no model of its own would then run on.
+		if (followedModel(id, library.conversations[String(id)]) === undefined) rememberModel(model, isChat(library.conversations[String(id)]));
 		for (const switchedId of switched) for (const feature of host.features) feature.modelChanged?.(chatOf(switchedId));
 		return { switched };
 	},
@@ -2141,6 +2224,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		// Attachments can be the whole message.
 		const content = attachments.length > 0 && params.text === undefined ? "" : text(params, "text");
 		if (content.trim() === "" && attachments.length === 0) throw new Error("The message is empty");
+		// The agent's settings may have changed since this conversation was set up: its model among them, which the check on
+		// pictures goes by.
+		await takeSwitch(conv.id);
 		if (attachments.some((attachment) => attachment.kind === "image")) {
 			// Refused here, while the person can still change the model or the message. Sent anyway, the pictures would
 			// be swapped for a note that they were left out, and the model would answer without having seen them.
@@ -2149,8 +2235,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			if (model !== undefined && !model.input.includes("image")) throw new Error(`${model.name} cannot see pictures. Choose a model that can, or remove them.`);
 		}
 		if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
-		// The agent's settings may have changed since this conversation was set up.
-		await takeSwitch(conv.id);
 		await syncTools(conv).catch((error) => log("could not update the tools of conversation", params.id, error instanceof Error ? error.message : ""));
 		const draft = {
 			type: "input" as const,
@@ -2515,7 +2599,11 @@ agentsWatch.start(async (call) => {
 	broadcast(agentsEvent());
 	announceInbox();
 	runsAsChanged();
+	// An agent's model or thinking level is its conversations' from their next message.
+	followersChanged();
 });
+// What a conversation of an agent with no model of its own runs on, before anything is decided in a commit.
+await defaultModel().catch((error) => log("could not work out the default model for agents:", error instanceof Error ? error.message : error));
 // Features start once the conversations and agents are loaded, before any schedule is armed: what one writes into a
 // transcript as it starts (a background command the last engine left, a set-up cut short) sets the last engine's
 // work going again at once, before `resume()`.

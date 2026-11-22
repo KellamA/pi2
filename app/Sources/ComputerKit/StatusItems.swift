@@ -16,7 +16,7 @@ package enum StatusItems {
             var owner: pid_t = 0
             guard AXUIElementGetPid(item, &owner) == .success, owner == pid else { return nil }
             let got = AX.values(item, [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute, kAXEnabledAttribute])
-            return Control(element: item, role: (got[0] as? String) ?? "", subrole: nil, kind: "menu bar item",
+            return Control(element: item, role: (got[0] as? String) ?? "", kind: "menu bar item",
                            label: label(title: got[1] as? String, description: got[2] as? String, help: got[3] as? String), value: nil,
                            frame: .zero, enabled: (got[4] as? Bool) ?? true, focused: false, selected: false, statusItem: true)
         }

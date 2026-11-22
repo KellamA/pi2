@@ -205,10 +205,6 @@ public final class BrowserPage {
     // MARK: - Reading
 
     private struct PageView: Decodable {
-        struct Scrolled: Decodable {
-            var top: Int
-            var most: Int
-        }
         var title: String
         var url: String
         var total: Int
@@ -221,7 +217,6 @@ public final class BrowserPage {
         var truncated: Bool
         var password: Bool
         var human: Bool
-        var scrolled: Scrolled
     }
 
     /// Which stretch of the page's text a view shows.

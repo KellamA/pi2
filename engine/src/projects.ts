@@ -6,17 +6,18 @@
 // project's id, and its conversations ordinary conversations in `pi2.library` marked the same way. Nothing that exists
 // is rewritten: carrying over only adds fields, so the last version with the switch can still read every document.
 //
-// Several later issues are built on this file side by side. What each fills in later has a place here, marked with the
-// issue that fills it, and does what the contract's 12.1 says until then:
+// The features that build on this file keep state of their own, made with each engine, and each imports this file. So
+// what the `projects` event needs of them is handed in as each feature is made, through a `wire…` function, and the
+// imports go one way (docs/projects.md, 12.1):
 //
-// - `carryOverState()`: carrying over (#458), which carryover.ts wires in through `wireCarryOver`. Without it (a
-//   stand-in engine in a test), `carryOver` is null.
-// - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard: orchestrator.ts (#466) supplies them
-//   through `wireLastWords`, and marks a new project's conversation for its state block through `wireFresh`.
-// - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by orchestrator.ts (#466).
-// - `requireSwitch` is whole: a switch that is off asks the person, whatever the agent's access (#457, #465, #467 and
-//   #468 call it from their tools).
-// - Each project feature after this one (#459, #462, #463, #467, #468) adds itself in its place in `FEATURES`.
+// - `carryOverState()`: what carrying over has done, from carryover.ts through `wireCarryOver`;
+// - `ruleTokens(projectId)`: what the rules cost, from projectrules.ts through `wireRuleTokens`;
+// - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard, from orchestrator.ts through
+//   `wireLastWords`, which also marks a new project's conversation for its state block through `wireFresh`.
+//
+// Without them (a stand-in engine in a test), `carryOver` is null, `ruleTokens` zeros and `lastWords` null. `news` is
+// stored by `addNews`, from the commits of the features that tell of something, and delivered by orchestrator.ts.
+// `requireSwitch` asks the person when a switch that is off governs a tool, whatever the agent's access.
 
 import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -76,7 +77,7 @@ export type Project = {
 	carriedAt?: number;
 };
 
-/** What carrying over has done (#458). Empty until it lands. */
+/** What carrying over has done (#458): empty on a data folder it has never changed. */
 export type CarryRecord = {
 	ranAt: number | null;
 	backup: string | null;
@@ -381,9 +382,9 @@ export async function addNews(tx: Tx, projectId: string, news: { kind: News["kin
 	return item;
 }
 
-// ---- The places later issues fill in
+// ---- What other features wire in
 
-/** What carryover.ts (#458) gives this file: the event's `carryOver`. */
+/** What carryover.ts gives this file: the event's `carryOver`. */
 export type CarryOverParts = {
 	state(): CarryOverState | null;
 };
@@ -568,8 +569,6 @@ export const projects: Feature = (host, engine) => {
 
 	const projectsEvent = () => ({
 		event: "projects" as const,
-		// Always true since the switch was taken out (#483): only the app built before then reads it, to show projects.
-		preview: true as const,
 		projects: Object.values(current.projects)
 			.sort((a, b) => a.createdAt - b.createdAt)
 			.map(

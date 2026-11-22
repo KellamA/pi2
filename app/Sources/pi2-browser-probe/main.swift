@@ -445,9 +445,8 @@ if browser.page(1) == nil { _ = await open("/next") }
 let state = await open("/state")
 try? await Task.sleep(for: .milliseconds(700))
 var running = await read()
-let one = element("“One”", in: running.text), two = element("“Two”", in: running.text)
-_ = await ask(BrowserRequest(action: "type", element: one, text: "a", conversationId: 1))
-running = await ask(BrowserRequest(action: "type", element: two, text: "b", conversationId: 1))
+_ = await ask(BrowserRequest(action: "type", element: element("“One”", in: running.text), text: "a", conversationId: 1))
+running = await ask(BrowserRequest(action: "type", element: element("“Two”", in: running.text), text: "b", conversationId: 1))
 let facts = running.text.split(separator: "\n").filter { $0.hasPrefix("visibility:") || $0.hasPrefix("frame:") || $0.hasPrefix("timer:") || $0.hasPrefix("seen:") || $0.hasPrefix("focus:") }
 print("info  a page that is not on screen: \(facts.joined(separator: "; "))")
 check("a page that is not on screen still runs its timers", state.ok && running.text.contains("timer: ") && !running.text.contains("timer: no"), running.text)

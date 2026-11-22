@@ -42,7 +42,7 @@ struct ProjectHubView: View {
                 } board: {
                     HubPaneArea(model: model, project: project, layout: layout, shown: shown, orchestratorKeyed: orchestratorKeyed)
                 } strip: {
-                    HubStrip(engine: engine, hubs: model.hubs, project: project)
+                    HubStrip(engine: engine, project: project)
                 }
                 // The room the panes have, for telling whether another split fits: the hub's width, which they can take
                 // with the conversation folded, and their height.
@@ -290,7 +290,7 @@ struct OrchestratorModelMenu: View {
     }
 
     /// Here, and from the Conversation menu while the hub shows the orchestrator's conversation (#632). The agent's
-    /// conversations already going change with it (#642).
+    /// conversations already going follow it from their next message, as the engine decides (#726).
     static func choose(_ model: ModelInfo, for agent: AgentProfile, engine: EngineClient) {
         engine.setModel(model, for: agent)
     }
@@ -657,7 +657,6 @@ private struct HubContextMeter: View {
 /// orchestrator, which shows what it said, it is the field alone (#618).
 struct HubStrip: View {
     let engine: EngineClient
-    let hubs: ProjectHubs
     let project: ProjectRow
     /// Whether the orchestrator's last words show above the field.
     var showsLastWords = true

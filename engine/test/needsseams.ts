@@ -2,8 +2,9 @@
 // as sent, against a stand-in engine and host with a real Inbox and a stand-in harness whose commits run one at a time,
 // as pi durable's do, and change nothing when they throw. needs.ts (the test) drives the same through a real engine.
 //
-// What later issues fill in is checked as it is until they land: an answer to a reach request, a proposed rule or a
-// limit card is refused and leaves the item waiting until #465 or #464 registers what it does with `onAnswer`.
+// What an answer to a reach request, a proposed rule or a limit card does is registered with `onAnswer` by changes.ts
+// and projectlimitstarts.ts, which this test leaves out: until a kind has its handler, an answer to it is refused and
+// the item stays waiting.
 
 import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -84,7 +85,7 @@ const conversations: Record<string, Meta> = {
 };
 const agents = { "orchestrator-p1": { id: "orchestrator-p1", name: "Orchestrator" }, "orchestrator-p2": { id: "orchestrator-p2", name: "Planner" }, forge: { id: "forge", name: "Forge" } };
 
-const saved: Record<string, unknown> = { projects: { preview: true } };
+const saved: Record<string, unknown> = {};
 const broadcasts: any[] = [];
 const engine = {
 	harness: () => harness,
@@ -258,12 +259,12 @@ step("putNeed stores each kind, once per call; the list sends each as its own un
 await assert.rejects(claim("n1", { kind: "question", text: "Now" }), { message: "This is a decision, not a question" });
 await assert.rejects(claim("n1", { kind: "decision", choice: "c9" }), { message: "There is no choice c9 in this decision" });
 await assert.rejects(claim("n1", { kind: "decision", text: "Whenever" }), { message: "This decision takes one of its choices, not an answer in words" });
-// Until #465 and #464 say what their answers do, nothing can act on them: refused, and left waiting.
+// With no handler registered for their kinds, nothing can act on them: refused, and left waiting.
 await assert.rejects(claim(reach.id, { kind: "reach", allow: true }), { message: "pi² cannot act on an answer to a request for more reach yet" });
 await assert.rejects(claim(rule.id, { kind: "rule", accept: true }), { message: "pi² cannot act on an answer to a proposed rule yet" });
 await assert.rejects(claim(limit.id, { kind: "limit", start: true }), { message: "pi² cannot act on an answer to a start held back by a limit yet" });
 assert.equal(storedNeeds().length, 5);
-step("an answer of the wrong kind or choice is refused; reach, rule and limit answers wait for #465 and #464");
+step("an answer of the wrong kind or choice is refused, and so is one to a kind with no handler registered");
 
 // A question or decision answered: a wake of the kind `answer`, stored in the same commit, for the conversation that asked.
 await claim("n1", { kind: "decision", choice: "c2" });

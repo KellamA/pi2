@@ -1,7 +1,7 @@
-// The places in projects.ts that later issues of the projects epic fill in (docs/projects.md, 12.1), each doing what
-// the contract says it does until then, and the helpers every piece of the epic asks: `inProject`,
-// `requireSwitch`, `admit` and `addNews`. The feature is given a stand-in engine and host, with a real Inbox, so no
-// engine is started. projects.ts (the test) drives the same feature through a real engine.
+// The projects feature given a stand-in engine and host, with a real Inbox, so no engine is started: its place in
+// FEATURES, what its list holds when no feature has wired into it (carryover.ts, projectrules.ts, orchestrator.ts;
+// docs/projects.md, 12.1), and the helpers every project feature asks: `inProject`, `projectOf`, `requireSwitch`,
+// `admit`, `addNews` and `addRule`. projects.ts (the test) drives the same feature through a real engine.
 
 import assert from "node:assert/strict";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -33,15 +33,14 @@ function step(name: string): void {
 	console.log(`ok  ${name}`);
 }
 
-// Its place in FEATURES: last of today's features, with the places after it for the others (4.4), which each later
-// issue fills with its own feature: only the epic's features come after it.
+// Its place in FEATURES (4.4): only the projects' own features come after it.
 const epic = ["projects", "projectRules", "needs", "reports", "work", "github"];
 assert.ok(FEATURES.includes(projects));
 assert.deepEqual(
 	FEATURES.slice(FEATURES.indexOf(projects)).map((feature) => feature.name).filter((name) => !epic.includes(name)),
 	[],
 );
-step("the projects feature is last of today's features in FEATURES, where the others' places follow it");
+step("only the projects' own features follow the projects feature in FEATURES");
 
 // The rules' greeting follows projects (4.4), independently of their section's place (6.1).
 assert.equal(FEATURES[FEATURES.indexOf(projects) + 1], projectRules);
@@ -79,7 +78,7 @@ const stored: ProjectsDoc = {
 const meta = (projectId?: string, parent?: number): Meta => ({ title: "", createdAt: 1, updatedAt: 1, access: "ask", agentId: "a", ...(projectId === undefined ? {} : { projectId }), ...(parent === undefined ? {} : { parent }) });
 const conversations: Record<string, Meta> = { 1: meta("p1"), 2: meta("p2"), 3: meta("p3"), 4: meta(), 5: meta("p1", 1), 6: { ...meta("p3"), agentId: "own" } };
 
-const saved: Record<string, unknown> = { projects: { preview: true } };
+const saved: Record<string, unknown> = {};
 const broadcasts: any[] = [];
 const engine = {
 	harness: () => ({ snapshot: async () => structuredClone(stored), observeCommits: () => ({ detach() {} }) }),
@@ -113,19 +112,18 @@ assert.equal(inProject(6), undefined, "it does not get the deleted project's pro
 step("inProject and projectOf");
 
 const listed = (await handlers["projects.list"]!({})) as any;
-assert.equal(listed.preview, true, "for the app built before #483 took the switch out");
 assert.deepEqual(
 	listed.projects.map((row: any) => [row.id, row.folderMissing, row.ruleTokens, row.lastWords]),
 	["p1", "p2", "p3"].map((id) => [id, false, { orchestrator: 0, agents: 0 }, null]),
 );
-step("the list, with preview true");
+step("the list, each project with its folder there and nothing wired in");
 
-// ---- What later issues fill in, as it is until they land
+// ---- What the features that wire in give, without them
 
 assert.equal(carryOverState(), null);
 assert.deepEqual(ruleTokens("p1"), { orchestrator: 0, agents: 0 });
 assert.equal(lastWords("p1"), null);
-step("without carryover.ts carryOver is null; ruleTokens zeros without rules; lastWords null until #466");
+step("with nothing wired in, carryOver is null, ruleTokens zeros and lastWords null");
 
 const start: Start = { by: { kind: "agent", agentId: "a", conversationId: 1 }, agentId: "b", agentName: "B", kind: "new", parent: 1, chat: null, work: null, title: null, task: "Do it", options: {} };
 const admission = { tx: { doc: async (token: unknown) => token === Agents ? { agents: {} } : token === Library ? { conversations } : stored } as never, model: null };
@@ -176,9 +174,10 @@ assert.deepEqual(doc.news.p3!.map((news) => news.id), ["w3"]);
 assert.equal(doc.nextNews, 4);
 await assert.rejects(addNews(tx, "p9", { kind: "work", text: "x", ref: "1" }), { message: "Unknown project: p9" });
 assert.equal(doc.nextNews, 4);
-step("addNews stores news by project, oldest first, each with an id of its own; #466 delivers it");
+step("addNews stores news by project, oldest first, each with an id of its own; orchestrator.ts delivers it");
 
-// #465 will supply attribution and call addRule in its own commit. There is no proposal handler yet.
+// The handler of an accepted proposal (changes.ts) and `project_rules` call addRule in their own commits, with their
+// attribution; the rules feature has no request for proposing one.
 const rulesDoc: ProjectRulesDoc = { projects: {} };
 const rulesTx = { doc: async (token: unknown) => token === Projects ? doc : rulesDoc } as never;
 const addedBy = { kind: "proposal", agentId: "a", conversationId: 1, need: "n1" } as const;
@@ -187,4 +186,4 @@ const rule = await add("p1");
 assert.deepEqual(rule, { id: "r1", text: "Keep this.", binds: "everyone", addedBy, createdAt: rule.createdAt, updatedAt: rule.createdAt });
 assert.deepEqual(rulesDoc.projects.p1, { rules: [rule], next: 2 });
 assert.equal(projectRules(host, engine).handlers?.["projects.rules.propose"], undefined);
-step("addRule appends in the caller's transaction and retains attribution; #465 owns proposal handling");
+step("addRule appends in the caller's transaction and keeps its attribution; proposing a rule is no request");

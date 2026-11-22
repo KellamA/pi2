@@ -6,12 +6,12 @@
 // `engine.saveAgent`: copying a template into a project, Update from template, putting back an agent removed through a
 // tool, and which agents a conversation may hand work to. Which agent a conversation runs as is `runsAs` in state.ts.
 //
-// What later issues fill in, and what it does until then:
+// Where the other files of projects meet this one:
 //
 // - `removeAgent(id)`, and `removeAgentIn(tx, id)` in a commit, is what `project_agents` `remove` does (changes.ts, as
 //   its operation `agent.remove`); `agents.restore` and the operation `agent.restore` put an agent back.
 // - `delegate` calls `admit` (projects.ts) for every start in a project, and asks first through `requireSwitch` while
-//   `startAgents` is off (extensions.ts). `admit` admits every start until #464 fills it in.
+//   `startAgents` is off (extensions.ts). `admit` checks it against the project's limits (projectlimits.ts).
 // - A copy made by an agent (projecttools.ts, #465) is made at the baseline of 7.2 and asks for the rest; `copyTemplate`
 //   here is the person's (and carrying over's, #458), which copies every setting as 3.3 says.
 

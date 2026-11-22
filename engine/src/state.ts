@@ -159,6 +159,13 @@ export type Meta = {
 	projectAgentId?: string;
 	/** A conversation with a project's orchestrator begun with Start fresh (orchestrator.ts, #466): the one it followed. */
 	freshFrom?: number;
+	/**
+	 * Given a model of its own through the socket (`conversation.create` with `model`, `conversation.configure` with
+	 * `model` or `thinkingLevel`): it keeps the model it has, as a conversation in no project does, rather than taking its
+	 * agent's at each message (docs/projects.md, 3.4). The app never sets it for a project's conversation, whose model is
+	 * its agent's; a scripted caller, a test say, can. An engine before #726 reads past it.
+	 */
+	ownModel?: true;
 };
 
 /**

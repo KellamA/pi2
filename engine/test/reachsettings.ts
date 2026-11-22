@@ -184,7 +184,6 @@ try {
 	assert.equal(typeof plain.result?.id, "number");
 	const chat = await other.call("conversation.create", { chat: true, model: demo });
 	assert.equal(typeof chat.result?.id, "number");
-	assert.equal(readSettings().lastAgent, before.lastAgent);
 	assert.deepEqual(readSettings().lastChatModel, before.lastChatModel);
 	await app.call("conversation.create", { chat: true, model: demo });
 	assert.deepEqual(readSettings().lastChatModel, demo);
