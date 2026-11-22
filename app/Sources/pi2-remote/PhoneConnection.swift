@@ -256,7 +256,7 @@ final class PhoneConnection: @unchecked Sendable {
 		let attach = JSONValue.object([
 			("signed", .string(claim.statement.text)), ("signature", .string(claim.statement.signatureText)), ("presence", .string(Base64URL.encode(claim.presence))),
 		])
-		let params = JSONValue.object([("attach", attach), ("binding", .string(Base64URL.encode(channel.handshakeHash))), ("path", .string("home"))])
+		let params = JSONValue.object([("attach", attach), ("binding", .string(Base64URL.encode(channel.handshakeHash))), ("path", .string(peer.path))])
 		remote.engine.request("remote.attach", params) { [weak self] result in
 			guard let self, case .attaching = self.phase else { return }
 			guard case let .success(value) = result, let text = value["session"]?.stringValue, let session = SessionID(text), let resumed = value["resume"]?.boolValue else {

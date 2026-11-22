@@ -73,6 +73,18 @@ package enum IPAddress: Hashable, Sendable, CustomStringConvertible {
 		}
 	}
 
+	/// Whether a connection from this address came by the `home` path, on the Mac's own network (loopback, link-local,
+	/// private and unique-local addresses), or by `direct`, from another address the phone could reach (a private
+	/// network's shared range, as Tailscale's, or any address with **Direct from any address** on): the path the engine
+	/// is told (docs/iphone.md 1, 5.4). The Mac cannot see how the phone found it; the address is what it has.
+	package var path: String {
+		if isLoopback || isLinkLocal { return "home" }
+		switch self {
+		case let .v4(b): return b[0] == 10 || (b[0] == 172 && b[1] & 0xF0 == 16) || (b[0] == 192 && b[1] == 168) ? "home" : "direct"
+		case let .v6(b): return b[0] & 0xFE == 0xFC ? "home" : "direct"
+		}
+	}
+
 	/// Whether the home listener takes a connection from this address while **Direct from any address** is off
 	/// (docs/iphone.md 5.4, decision 32): link-local, private (RFC 1918), unique-local (fc00::/7), and the shared range
 	/// private networks use (100.64.0.0/10, as Tailscale does); and loopback, which is this Mac.

@@ -28,6 +28,8 @@ enum Units {
 		for text in local { Check.expect(IPAddress(text)?.isLocalOrPrivate == true, "\(text) is taken with Direct from any address off") }
 		for text in public_ { Check.expect(IPAddress(text)?.isLocalOrPrivate == false, "\(text) is refused with Direct from any address off") }
 		Check.expect(IPAddress("::ffff:10.0.0.1") == IPAddress("10.0.0.1"), "an IPv4 address mapped into IPv6 is read as itself")
+		Check.expect(["127.0.0.1", "192.168.1.2", "10.0.0.3", "169.254.1.1", "fd00::1", "fe80::2"].allSatisfy { IPAddress($0)?.path == "home" }, "an attach from the Mac's own network is told to the engine as the home path")
+		Check.expect(["100.64.0.1", "8.8.8.8", "2001:db8::1"].allSatisfy { IPAddress($0)?.path == "direct" }, "and one from a private network's shared range, or any other address, as direct")
 		Check.expect(IPAddress("fe80::1")?.withPort(5) == "[fe80::1]:5" && IPAddress("10.0.0.1")?.withPort(5) == "10.0.0.1:5", "addresses are written as the payload writes them")
 		Check.expect(MacAddresses.current(port: 9).allSatisfy { PairingPayload.isHostAndPort($0) && !$0.hasPrefix("[fe80") && !$0.hasPrefix("127.") }, "the Mac's addresses are ones the payload takes, without link-local IPv6 or loopback")
 	}
