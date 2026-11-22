@@ -9,7 +9,7 @@ If you were handed issues to finish on your own, in a worktree of your own (as a
 Every task an agent does in this repository gets a GitHub issue, so there is a record of what was done and a backlog to choose from. This is the rule whichever tool you run in; how it is kept depends on where:
 
 - **In a pi² project**, which offers you a tool named `work` whose work list is this repository's issues: with that tool. Keep an issue with it from start to end, since it knows who holds an issue only from its own comments.
-- **Anywhere else** (Claude Code, or a pi² conversation outside a project, such as a chat): with `scripts/issue`, which uses `gh`. A long text goes in a file, given with `--body-file FILE` in place of `-b` or of the text.
+- **Anywhere else** (Claude Code, or a pi² conversation that has no `work` tool): with `scripts/issue`, which uses `gh`. A long text goes in a file, given with `--body-file FILE` in place of `-b` or of the text.
 
 | When | In a pi² project: `work` with | Anywhere else: `scripts/issue` |
 |---|---|---|
