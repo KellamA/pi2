@@ -14,6 +14,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
+// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+process.env.PI2_CARRY_NEVER = "1";
+
 const home = mkdtempSync(join(tmpdir(), "pi2-all-"));
 const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi2-all-repo-")));
 const main = join(import.meta.dirname, "..", "src", "main.ts");

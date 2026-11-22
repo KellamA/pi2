@@ -79,6 +79,8 @@ This runs, side by side, every file in `engine/test` but three: `patience.ts`, w
 
 The list is made by a program, not by a pattern in `package.json`: `npm test` runs `engine/scripts/test-platform.ts local`, which takes the same list CI's two groups take theirs from. After the run, the files that reported are compared with the list: a file that did not report ends `npm test` with an error naming it, even when every test that ran passed. Node counts a file that ends as a pass, so a file that was never run, or that ended before its tests reported, would otherwise pass silently.
 
+Since #483 took the projects switch out, an engine carries every conversation made with an agent of no project into the project of its folder as it is made ([projects.md](projects.md#99-conversations-made-later)). The tests about something other than projects that drive conversations of such agents (`background.ts`, `chat.ts`, `chatmemory.ts`, `compaction.ts`, `engine.ts`, `environment.ts`, `everything.ts`, `limitwait.ts`, `offered.ts`, `sections.ts`, `testcopies.ts`, `usage.ts`, `worktrees.ts`) set `PI2_CARRY_NEVER=1`, with which their engines carry nothing, as the last version with the switch never on did; the tests of projects use a conversation of a deleted project for one in no project (`leaveOut` in `patience.ts`).
+
 The tests:
 
 ### Engine tests by file
