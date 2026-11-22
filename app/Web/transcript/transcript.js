@@ -1788,7 +1788,7 @@
 				// the words, and nobody may be watching when they are carried out.
 				card.appendChild(el("p", "card-summary words", schedule.when || T.callSummary(args)));
 				if (schedule.prompt) card.appendChild(el("p", "card-summary words card-prompt", schedule.prompt));
-				const caption = el("p", "card-caption", "Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it in Activity.");
+				const caption = el("p", "card-caption", schedule.caption);
 				caption.setAttribute("data-nocopy", "");
 				card.appendChild(caption);
 			} else if (worktree) {

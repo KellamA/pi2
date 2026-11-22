@@ -229,7 +229,6 @@ struct DashboardView: View {
         let folded = foldedColumns.contains(project.id)
         let ids = watched.map(\.id)
         let arrange = ColumnArrangement(
-            number: index + 1,
             canMoveLeft: index > 0,
             canMoveRight: index < ids.count - 1,
             fold: { setFolded(!folded, project.id) },
@@ -515,10 +514,9 @@ private struct DashboardColumn: View {
 
 // MARK: - A column's header, and the strip it folds to
 
-/// What folds and moves a column (#618): its number, for ⌥⌘ and the number, whether it can move either way, and what
-/// folding, moving and a header dropped on it do.
+/// What folds and moves a column (#618): whether it can move either way, and what folding, moving and a header dropped
+/// on it do.
 struct ColumnArrangement {
-    let number: Int
     let canMoveLeft: Bool
     let canMoveRight: Bool
     let fold: () -> Void
@@ -790,8 +788,8 @@ private struct StopAllButton: View {
     }
 }
 
-/// The limit notices, each one line until unfolded, under the line across all projects (#645): the Inbox's own cards,
-/// with their Dismiss and Show Usage. However many there are, they scroll within at most a few lines' room, and in a
+/// The limit notices, each one line until unfolded, under the line across all projects (#645): the usual limit cards
+/// (`LimitNoticeCard`), with their Dismiss and Show Usage. However many there are, they scroll within at most a few lines' room, and in a
 /// short window one line's, with a line saying how many more there are, so that the columns keep the window.
 private struct DashboardLimitNotices: View {
     let model: AppModel
@@ -975,8 +973,8 @@ struct ProjectVitals: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            let parts = parts(now: context.date)
+        TimelineView(.periodic(from: .now, by: 60)) { _ in
+            let parts = parts()
             HStack(spacing: 0) {
                 if parts.isEmpty {
                     Text("Nothing waits, nobody is working, nothing finished today.")
@@ -1014,7 +1012,7 @@ struct ProjectVitals: View {
     }
 
     /// The parts with something to say, in the order the line reads.
-    func parts(now: Date) -> [Part] {
+    func parts() -> [Part] {
         var parts: [Part] = []
         let needs = engine.needs.filter { $0.projectId == project.id }.count
         if needs > 0 {

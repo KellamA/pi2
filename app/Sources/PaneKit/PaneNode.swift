@@ -157,7 +157,7 @@ public struct PaneNode: Codable, Equatable, Identifiable, Sendable {
     private var allIDs: [UUID] { [id] + children.flatMap(\.allIDs) }
 }
 
-/// A ready-made arrangement of panes.
+/// A ready-made arrangement of panes, each within the six a hub holds (`HubLayout.maxPanes`).
 public struct PaneLayout: Identifiable, Sendable {
     public let id: String
     public let name: String
@@ -184,9 +184,5 @@ public struct PaneLayout: Identifiable, Sendable {
         PaneLayout(id: "4-big-left", name: "One big, three on the right") { .split(.row, [.pane(), column(3)]) },
         PaneLayout(id: "5-big-left", name: "One big, four around it") { .split(.row, [.pane(), grid(columns: 2, rows: 2)]) },
         PaneLayout(id: "6-grid", name: "Three by two") { grid(columns: 3, rows: 2) },
-        PaneLayout(id: "8-grid", name: "Four by two") { grid(columns: 4, rows: 2) },
-        PaneLayout(id: "9-grid", name: "Three by three") { grid(columns: 3, rows: 3) },
-        PaneLayout(id: "12-grid", name: "Four by three") { grid(columns: 4, rows: 3) },
-        PaneLayout(id: "16-grid", name: "Four by four") { grid(columns: 4, rows: 4) },
     ]
 }

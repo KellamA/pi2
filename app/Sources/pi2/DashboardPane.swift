@@ -85,7 +85,7 @@ struct OrchestratorPane: View {
                 .frame(maxWidth: .infinity)
                 .background(Theme.window)
             }
-            HubStrip(engine: engine, hubs: model.hubs, project: project, showsLastWords: folded, focusRequest: focusRequest)
+            HubStrip(engine: engine, project: project, showsLastWords: folded, focusRequest: focusRequest)
         }
         .background(Theme.panel)
         .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }

@@ -195,10 +195,10 @@ struct ChatView: View {
                 .padding(.horizontal, inset).padding(.top, 8)
             }
             ContinuedLinks(engine: engine, id: id, inset: inset)
-            LocalModelStrip(engine: engine, state: state?.local, inset: inset)
+            LocalModelStrip(state: state?.local, inset: inset)
             BackgroundStrip(engine: engine, id: id, inset: inset)
             WakeStrip(engine: engine, id: id, inset: inset)
-            PlanStrip(engine: engine, id: id, state: state)
+            PlanStrip(state: state)
             if archived {
                 archivedBar
             } else {

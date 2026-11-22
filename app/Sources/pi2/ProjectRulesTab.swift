@@ -36,9 +36,8 @@ struct ProjectRule: Decodable, Equatable, Identifiable {
     let addedBy: AddedBy
     /// Milliseconds since 1970.
     let createdAt: Double
-    let updatedAt: Double
 
-    private enum CodingKeys: String, CodingKey { case id, text, binds, addedBy, createdAt, updatedAt }
+    private enum CodingKeys: String, CodingKey { case id, text, binds, addedBy, createdAt }
     private enum AddedKeys: String, CodingKey { case kind, agentId, conversationId, need }
 
     init(from decoder: Decoder) throws {
@@ -64,7 +63,6 @@ struct ProjectRule: Decodable, Equatable, Identifiable {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown addedBy kind: \(kind)"))
         }
         createdAt = try values.decode(Double.self, forKey: .createdAt)
-        updatedAt = try values.decode(Double.self, forKey: .updatedAt)
     }
 }
 
@@ -123,12 +121,11 @@ struct NeedItem: Decodable, Equatable, Identifiable {
     let question: String?
     let choices: [Choice]?
     let words: Bool?
-    /// An approval's call, and the switch of the project that asked when it is off (8.1): then `answers` is `once` and
-    /// `deny` only.
+    /// An approval's call, and the switch of the project that asked when it is off (8.1): then it is answered with
+    /// `once` or `deny` only.
     let tool: String?
     let arguments: JSONValue?
     let projectSwitch: String?
-    let answers: [String]?
     /// More reach, and a start the project's limit stopped.
     let change: ReachChange?
     let start: Start?

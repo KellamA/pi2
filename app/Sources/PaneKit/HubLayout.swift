@@ -1,6 +1,6 @@
 
 // The panes of a project's hub (#657): the place beside the conversation with the orchestrator, where the board shows,
-// divided with the same tree the old screens' panes use. Here, apart from SwiftUI and the engine, so that
+// divided with PaneKit's tree of panes (`PaneNode`). Here, apart from SwiftUI and the engine, so that
 // `pi2-layout-check` checks its rules built with optimisation, as it checks the tree's (#134). The app keeps one for each
 // project (`ProjectHubs`) and draws it (`HubPanes.swift`); docs/projects.md, 10.1, says what is remembered of it.
 
@@ -190,13 +190,6 @@ public struct HubLayout: Codable, Equatable, Sendable {
         if board == nil, !leaves.contains(where: { $0.conversation != nil }) { set(.board, in: leaves[0].id) }
         if let id = root.find(focused), id.conversation != nil { lastConversation = focused }
         return true
-    }
-
-    /// The pane `step` places after (or before) the focused one, in reading order, wrapping around.
-    public func neighbour(_ step: Int) -> UUID? {
-        let order = panes.map(\.id)
-        guard order.count > 1, let index = order.firstIndex(of: focused) else { return nil }
-        return order[((index + step) % order.count + order.count) % order.count]
     }
 
     private mutating func set(_ content: HubPaneContent, in pane: UUID) {

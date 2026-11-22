@@ -437,7 +437,6 @@ async function view(args) {
     truncated: page.truncated,
     password: page.records.some((rec) => rec.kind === 'field' && isSecret(rec.el)),
     human: humanCheck(),
-    scrolled: scrollState(),
   };
 }
 

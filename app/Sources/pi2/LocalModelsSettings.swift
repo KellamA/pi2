@@ -23,7 +23,7 @@ struct LocalStatus: Decodable {
         /// A part of it the person must read before agreeing, in its own words, shown in full where they agree.
         let quote: String?
     }
-    struct InstalledEngine: Decodable { let version: String; let path: String }
+    struct InstalledEngine: Decodable { let version: String }
     struct Engine: Decodable {
         struct Pinned: Decodable { let version: String; let controlVersion: String; let size: Double; let licences: [Licence] }
         let installed: InstalledEngine?
@@ -51,8 +51,6 @@ struct LocalStatus: Decodable {
     struct Model: Decodable, Identifiable {
         let id: String
         let name: String
-        let pack: String
-        let path: String
         let contextSize: Int
         let options: Options
         let needsGB: Double?
@@ -60,12 +58,11 @@ struct LocalStatus: Decodable {
         let prepared: Bool?
     }
     struct Download: Decodable, Identifiable {
-        struct Retry: Decodable { let reason: String; let at: Double }
+        struct Retry: Decodable { let reason: String }
         /// While Strata's setup prepares the model: the step it is at (of 7), what it says it is doing, and how far.
-        struct Prepare: Decodable { let step: Int?; let stage: String?; let fraction: Double?; let startedAt: Double }
+        struct Prepare: Decodable { let step: Int?; let stage: String?; let fraction: Double? }
         let id: String
         let kind: String
-        let target: String
         let name: String
         /// "running", "paused", "failed", or "waiting" (downloaded and checked, waiting for the engine to be prepared).
         let state: String

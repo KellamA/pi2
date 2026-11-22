@@ -15,7 +15,6 @@ struct ProjectInfo: Decodable, Equatable, Identifiable {
     let orchestratorId: String
     /// The orchestrator's conversation now; nil until one is made with `projects.startFresh` (9.6).
     let conversation: Int?
-    let createdAt: Double
     let archivedAt: Double?
     let deletedAt: Double?
     /// Its folder has gone since it was set.
@@ -37,8 +36,6 @@ struct CarryOverState: Codable, Equatable {
         let path: String
         let at: Double
     }
-    let ranAt: Double?
-    let backup: String?
     let secretsPending: [Pending]
     /// Set once the update to projects has made its copy of the data (#715). Nil from an engine that does not send it.
     let removalBackup: RemovalBackup?
@@ -51,9 +48,7 @@ struct CarryOverState: Codable, Equatable {
 struct CarryOverReport: Codable, Equatable {
     struct Project: Codable, Equatable, Identifiable {
         struct Orchestrator: Codable, Equatable {
-            let conversation: Int?
             let title: String?
-            let template: String?
         }
         struct Copy: Codable, Equatable, Identifiable {
             let template: String
@@ -101,7 +96,6 @@ struct SidebarProjectsEvent: Decodable {
 /// One thing waiting for the person, as much as the sidebar reads of it: whose project it is. The `needs` event
 /// decodes as `NeedItemsEvent` (ProjectRulesTab.swift), which the Rules tab reads the proposed rules from.
 struct NeedRef: Equatable {
-    let id: String
     let projectId: String?
 }
 
