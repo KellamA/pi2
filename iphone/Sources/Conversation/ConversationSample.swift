@@ -1,5 +1,5 @@
 #if DEBUG
-import Foundation
+import UIKit
 
 /// A debug build's way to picture the states of the conversation's screen that the recorded session never reaches
 /// (docs/iphone-app.md, "Drawing a screen and picturing it"), chosen with `PI2_CONVERSATION_SAMPLE` in the environment
@@ -7,6 +7,8 @@ import Foundation
 ///
 /// - `busy`, `failed`, `stopped`, `archived`, `waiting`: what is drawn around the transcript is a sample, and says so
 ///   in a line of its own, over the real page. Nothing is answered: the samples are only drawn.
+/// - `photos`: opens the photo picker, as Attach › Photo Library does. `pictures`: puts two drawn pictures through
+///   the same preparation a photo goes through, into the strip above the field.
 /// - `send:<text>`: sends `<text>` through the session at launch, as Send does, so that a picture shows what the
 ///   engine (or the recording, which refuses it) answered.
 enum ConversationSample {
@@ -15,6 +17,8 @@ enum ConversationSample {
     case stopped
     case archived
     case waiting
+    case photos
+    case pictures
     case send(String)
 
     static let current: ConversationSample? = ProcessInfo.processInfo.environment["PI2_CONVERSATION_SAMPLE"].flatMap(named)
@@ -27,6 +31,8 @@ enum ConversationSample {
         case "stopped": .stopped
         case "archived": .archived
         case "waiting": .waiting
+        case "photos": .photos
+        case "pictures": .pictures
         default: nil
         }
     }
@@ -64,19 +70,38 @@ enum ConversationSample {
                 .init(id: "b", text: "Forge asks for more reach: write to the docs folder"),
             ]
             status.banners = [note]
-        case .send:
+        case .send, .photos, .pictures:
             break
         }
         return status
     }
 
-    /// For `send:`, sends the text once, as Send does.
+    /// For `send:`, sends the text once, as Send does; for `pictures`, adds two drawn pictures.
     @MainActor
-    func act(sending: (String) -> Void) async {
-        guard case .send(let text) = self else { return }
+    func act(sending: (String) -> Void, pictures: ConversationPictures) async {
         // Once the conversation has come, so that the field and its draft are there.
         try? await Task.sleep(for: .seconds(1.5))
-        sending(text)
+        switch self {
+        case .send(let text):
+            sending(text)
+        case .pictures where pictures.entries.isEmpty:
+            for (index, hue) in [0.62, 0.08].enumerated() {
+                let image = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 900)).image { context in
+                    UIColor(hue: hue, saturation: 0.5, brightness: 0.9, alpha: 1).setFill()
+                    context.fill(CGRect(x: 0, y: 0, width: 1200, height: 900))
+                    UIColor.white.setFill()
+                    context.fill(CGRect(x: 200, y: 200, width: 800, height: 500))
+                }
+                pictures.add(image, name: "Photo \(index + 1)")
+            }
+        default:
+            break
+        }
+    }
+
+    /// Whether the photo picker opens at launch.
+    static var opensPhotos: Bool {
+        if case .photos = current { true } else { false }
     }
 }
 #endif

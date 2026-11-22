@@ -76,7 +76,7 @@ struct ConversationView: View {
                 Text("An agent wrote it: \(url.absoluteString)")
             }
             #if DEBUG
-            .task { await ConversationSample.current?.act(sending: sendText) }
+            .task { await ConversationSample.current?.act(sending: sendText, pictures: pictures) }
             #endif
     }
 

@@ -72,6 +72,12 @@ struct ConversationComposer: View {
                 }
             }
         }
+        #if DEBUG
+        .task {
+            try? await Task.sleep(for: .seconds(1.5))
+            if ConversationSample.opensPhotos { choosingPhotos = true }
+        }
+        #endif
         .fullScreenCover(isPresented: $usingCamera) {
             ConversationCameraPicker { image in
                 usingCamera = false
