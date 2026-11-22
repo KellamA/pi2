@@ -43,14 +43,15 @@ import { forAgent } from "./priority.ts";
 import { forgetRun, lookOutFor, newRun, RUN_VARIABLE } from "./processes.ts";
 import { runningCommands } from "./running.ts";
 import { scratchVariable } from "./scratch.ts";
+import { testSwitch } from "./testswitches.ts";
 import { agentVariables } from "./variables.ts";
 
 /** How long a command in the foreground may run, in seconds: `fallback` when its call names no `timeout`, and `most` whatever it names. */
 export type Limits = { fallback: number; most: number };
 
-/** The limit for a command whose call names none: 2 minutes, as Claude Code's. Tests shorten it with PI2_COMMAND_TIMEOUT_SECONDS. */
+/** The limit for a command whose call names none: 2 minutes, as Claude Code's. Tests shorten it with PI2_COMMAND_TIMEOUT_SECONDS, which a release engine ignores (testswitches.ts). */
 export const DEFAULT_COMMAND_TIMEOUT_SECONDS = (() => {
-	const seconds = Number(process.env.PI2_COMMAND_TIMEOUT_SECONDS);
+	const seconds = Number(testSwitch("PI2_COMMAND_TIMEOUT_SECONDS"));
 	return Number.isFinite(seconds) && seconds > 0 ? seconds : 2 * 60;
 })();
 

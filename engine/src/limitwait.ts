@@ -22,6 +22,7 @@ import { closedStream, failureOf, isNetworkError, noteTransportFailure, SDK_TRAN
 import { CARRY_ON, plainProviderError } from "./providererror.ts";
 import { defaultThinking } from "./providers.ts";
 import { Library, type ModelRef } from "./state.ts";
+import { type TestSwitch, testSwitch } from "./testswitches.ts";
 
 /** A display-only transcript entry for a model switch the person asked for. */
 export const CARRY_ON_ENTRY = "pi2.carryOn";
@@ -761,10 +762,11 @@ const LimitWaits = defineDoc<{ waits: Record<string, Wait> }>({
 	checkpointWhen: () => true,
 });
 
-/** A setting from the environment, for tests: a number of milliseconds, or the default. */
-function setting(name: string, fallback: number): number {
-	const value = Number(process.env[name]);
-	return process.env[name] !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
+/** A setting from the environment, for tests: a number of milliseconds, or the default, always in a release engine. */
+function setting(name: TestSwitch, fallback: number): number {
+	const given = testSwitch(name);
+	const value = Number(given);
+	return given !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 /** What the app is sent about a wait: in the conversation's state while the run sleeps, and in its Activity row. */

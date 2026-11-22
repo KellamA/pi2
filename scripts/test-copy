@@ -67,6 +67,9 @@ Usage: scripts/test-copy <command> [arguments]
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
+  sidebar <suffix> <points> | narrowest
+                                   Set the sidebar column's width in points, kept between its narrowest (210) and
+                                   widest (340), as dragging its divider does. reopen puts it back at 250.
   can-click <suffix>              Say whether computer use can read and click this copy's window now. Yes (exit 0):
                                    the copy raised its parked window and gives it to accessibility where the tool
                                    looks. No (exit 1), with its cause: the pi² app not running (only the person can
@@ -640,7 +643,7 @@ case $cmd in
 		launch_app
 		echo "Reopened $NAME from the latest development build (app pid $APP_PID); kept its data and engine (pid $ENGINE_PID)."
 		;;
-	show|size|choose)
+	show|size|sidebar|choose)
 		names "${1-}"; shift
 		if [[ $cmd == show ]]; then
 			if [[ $# == 3 && ${2-} == --hub && ${1-} == project:* ]]; then
@@ -651,6 +654,9 @@ case $cmd in
 		elif [[ $cmd == size ]]; then
 			{ [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; } ||
 				die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		elif [[ $cmd == sidebar ]]; then
+			[[ $# == 1 && ($1 == narrowest || $1 =~ ^[1-9][0-9]{0,4}$) ]] ||
+				die "use: scripts/test-copy sidebar $SUFFIX <points> | narrowest"
 		else
 			(($# > 0)) || die "use: scripts/test-copy choose $SUFFIX <path>... | cancel"
 		fi

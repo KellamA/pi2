@@ -2,8 +2,6 @@
 
 An agent with computer use on can see and work the apps you choose, one window at a time, in the background while you keep working.
 
-<p align="center"><img src="images/computer-use.png" alt="An agent asks to type notes into TextEdit" width="820"></p>
-
 ## Turning it on
 
 1. Open an agent and scroll to **Computer use**. Switch it on and add the apps it may use. Until there is at least one app, or [test copies of pi²](#clicking-in-test-copies) are allowed, the agent is not given the computer tool or anything about it in its prompt, since it could do nothing with it (#177). The tool comes with the first app you add, and goes again if you remove the last one.
