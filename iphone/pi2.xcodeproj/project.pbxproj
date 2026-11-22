@@ -1,0 +1,403 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		680000000000000000000301 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000401 /* PiModels */; };
+		680000000000000000000302 /* EngineKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000402 /* EngineKit */; };
+		680000000000000000000303 /* TranscriptKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000403 /* TranscriptKit */; };
+		680000000000000000000305 /* session.jsonl in Resources */ = {isa = PBXBuildFile; fileRef = 680000000000000000000103 /* session.jsonl */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		680000000000000000000A01 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 680000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 680000000000000000000601;
+			remoteInfo = pi2;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		680000000000000000000101 /* pi2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = pi2.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		680000000000000000000102 /* pi2Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = pi2Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		680000000000000000000103 /* session.jsonl */ = {isa = PBXFileReference; lastKnownFileType = text; name = session.jsonl; path = "../app/Sources/pi2-client-check/Fixture/session.jsonl"; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		680000000000000000000201 /* Sources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; };
+		680000000000000000000202 /* Tests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Tests; sourceTree = "<group>"; };
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		680000000000000000000502 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				680000000000000000000301 /* PiModels in Frameworks */,
+				680000000000000000000302 /* EngineKit in Frameworks */,
+				680000000000000000000303 /* TranscriptKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680000000000000000000512 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		680000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				680000000000000000000201 /* Sources */,
+				680000000000000000000202 /* Tests */,
+				680000000000000000000103 /* session.jsonl */,
+				680000000000000000000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		680000000000000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				680000000000000000000101 /* pi2.app */,
+				680000000000000000000102 /* pi2Tests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		680000000000000000000601 /* pi2 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 680000000000000000000802 /* Build configuration list for PBXNativeTarget "pi2" */;
+			buildPhases = (
+				680000000000000000000501 /* Sources */,
+				680000000000000000000502 /* Frameworks */,
+				680000000000000000000503 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				680000000000000000000201 /* Sources */,
+			);
+			name = pi2;
+			packageProductDependencies = (
+				680000000000000000000401 /* PiModels */,
+				680000000000000000000402 /* EngineKit */,
+				680000000000000000000403 /* TranscriptKit */,
+			);
+			productName = pi2;
+			productReference = 680000000000000000000101 /* pi2.app */;
+			productType = "com.apple.product-type.application";
+		};
+		680000000000000000000602 /* pi2Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 680000000000000000000803 /* Build configuration list for PBXNativeTarget "pi2Tests" */;
+			buildPhases = (
+				680000000000000000000511 /* Sources */,
+				680000000000000000000512 /* Frameworks */,
+				680000000000000000000513 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				680000000000000000000A02 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				680000000000000000000202 /* Tests */,
+			);
+			name = pi2Tests;
+			packageProductDependencies = (
+			);
+			productName = pi2Tests;
+			productReference = 680000000000000000000102 /* pi2Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		680000000000000000000000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2720;
+				LastUpgradeCheck = 2720;
+			};
+			buildConfigurationList = 680000000000000000000801 /* Build configuration list for PBXProject "pi2" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 680000000000000000000001;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 680000000000000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				680000000000000000000601 /* pi2 */,
+				680000000000000000000602 /* pi2Tests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		680000000000000000000503 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				680000000000000000000305 /* session.jsonl in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680000000000000000000513 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		680000000000000000000501 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680000000000000000000511 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		680000000000000000000A02 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 680000000000000000000601 /* pi2 */;
+			targetProxy = 680000000000000000000A01 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		680000000000000000000701 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 0.1;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		680000000000000000000702 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 0.1;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		680000000000000000000711 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID opens pi², so that only you can answer for your Mac from this iPhone.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		680000000000000000000712 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ENABLE_PREVIEWS = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = session.jsonl;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID opens pi², so that only you can answer for your Mac from this iPhone.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		680000000000000000000721 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/pi2.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/pi2";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		680000000000000000000722 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/pi2.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/pi2";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		680000000000000000000801 /* Build configuration list for PBXProject "pi2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				680000000000000000000701 /* Debug */,
+				680000000000000000000702 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		680000000000000000000802 /* Build configuration list for PBXNativeTarget "pi2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				680000000000000000000711 /* Debug */,
+				680000000000000000000712 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		680000000000000000000803 /* Build configuration list for PBXNativeTarget "pi2Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				680000000000000000000721 /* Debug */,
+				680000000000000000000722 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../app;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		680000000000000000000401 /* PiModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = PiModels;
+		};
+		680000000000000000000402 /* EngineKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = EngineKit;
+		};
+		680000000000000000000403 /* TranscriptKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = TranscriptKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 680000000000000000000000 /* Project object */;
+}

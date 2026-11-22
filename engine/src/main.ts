@@ -32,7 +32,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
-import { createBackup, restoreBackup } from "./backup.ts";
+import { backupStatus, createBackup, restoreBackup, tidyBackups } from "./backup.ts";
 import { appBundle, AppCheck, checkDeviceLists, checkRequestClasses, forTheHelper, ONLY_FROM_THE_HELPER, personOnly } from "./answers.ts";
 import { deviceRequests, devicesClientGone, wireDevices } from "./devices.ts";
 import { helperRequests, stopRemote, wireRemote } from "./remote.ts";
@@ -198,6 +198,7 @@ const pathReady = adoptLoginPath(log, process.env, undefined, undefined, stopLog
 const runningMarker = join(home, "engine.running");
 const stoppedUncleanly = existsSync(runningMarker);
 writeFileSync(runningMarker, String(Date.now()));
+tidyBackups(home, log); // copies an engine on this data folder stopped while making (#792)
 
 // ---- Models, tools, harness
 
@@ -898,8 +899,10 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 // ---- Requests
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
-	// A device is told no path of the Mac's (docs/iphone.md 5.7).
-	"engine.info": async (_params, client) => (client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid }),
+	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792). A device is told no path of
+	// the Mac's, and nothing of its upkeep (docs/iphone.md 5.7).
+	"engine.info": async (_params, client) =>
+		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home) },
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);

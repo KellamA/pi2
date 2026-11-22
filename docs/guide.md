@@ -34,6 +34,8 @@ Work is organised in **projects**. A project is a folder, an **orchestrator** yo
 
 For a question that needs no folder and no agents, there is **chat mode**, a plain chat with an assistant.
 
+Connecting models, choosing which show in the menus and the model new agents start on are in [models.md](models.md).
+
 ## The window
 
 The sidebar has, from the top:
@@ -143,6 +145,8 @@ Each project has one work list, on its Work tab. It is kept in one of two ways:
 Either way, a piece of work is open, in progress, waiting, blocked, done or dropped, and the list is grouped by those, each group folding with a click on its heading. Open a piece to read it, add a note, or act on it: **Give to** an agent (which starts it working on it, in a git worktree of its own when the folder is a repository), **Release**, **Resume**, **Classify**, **Close as Done**, **Close as Dropped**, **Reopen**, **Edit**.
 
 For a GitHub project, pull requests come first, with their checks and what reviewing agents found. An opened pull request has **Diff**, **Merge** and **Send Back**, which posts your reason on it and gives it to the agent that opened it. If pi² was cut off while writing to GitHub and cannot tell whether the write happened, the Work tab says so: look at the repository, then choose **It Happened** or **It Did Not**.
+
+An agent that lists the work with its `work` tool is given the open issues and the open pull requests, and only a count of the merged and closed ones: it asks for those when it needs them, a page at a time.
 
 ## Limits
 

@@ -18,7 +18,7 @@ try {
 			const main = join(src, "main.ts");
 			const original = readFileSync(main, "utf8");
 			// The app's answer to engine.info (a device's leaves out the path, #673).
-			const changed = original.replace("{ build, main: engineMain, pid: process.pid }", '{ build: "wrong-build", main: engineMain, pid: process.pid }');
+			const changed = original.replace("{ build, main: engineMain,", '{ build: "wrong-build", main: engineMain,');
 			assert.notEqual(changed, original, "the negative control must change engine.info");
 			writeFileSync(main, changed);
 		}

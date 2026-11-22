@@ -1,0 +1,339 @@
+#!/bin/bash
+# Checks scripts/iphone-sim against stand-ins for xcrun, xcodebuild and nice, put first on the PATH: xcrun answers
+# `simctl` from a list of simulators kept in a JSON file in a temporary folder, and each stand-in writes down every call
+# it is given. A copy of the script runs in a stand-in checkout there, so its records go there too. No simulator is made,
+# booted or touched, and nothing is built; it needs bash and jq, and runs on Linux as on a Mac.
+#
+#   scripts/test-iphone-sim
+
+set -uo pipefail
+
+script="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/iphone-sim"
+command -v jq >/dev/null || { echo "test-iphone-sim: needs jq" >&2; exit 1; }
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+T=$(cd -P -- "$T" && pwd -P)
+
+mkdir -p "$T/repo/scripts" "$T/repo/iphone/pi2.xcodeproj" "$T/bin" "$T/home/Library" "$T/scratch"
+cp "$script" "$T/repo/scripts/iphone-sim"
+sim="$T/repo/scripts/iphone-sim"
+records="$T/repo/iphone/build/simulators"
+LOG=$T/log
+DEVICES=$T/devices.json
+export LOG DEVICES
+
+# The simulators there are before any case: someone's booted one, and one whose name is taken.
+OWNER=11111111-1111-1111-1111-111111111111
+TAKEN=22222222-2222-2222-2222-222222222222
+reset_devices() {
+	jq -n --arg o "$OWNER" --arg t "$TAKEN" '{devices: {"com.apple.CoreSimulator.SimRuntime.iOS-27-2": [
+		{udid: $o, name: "pi2-owner", state: "Booted", isAvailable: true},
+		{udid: $t, name: "pi2-taken", state: "Shutdown", isAvailable: true}]}}' >"$DEVICES"
+}
+
+# xcrun simctl: list, create (a new id each time, from a counter), bootstatus -b, shutdown, delete, install, launch
+# (which writes down the SIMCTL_CHILD_ variables it would pass on), ui and io. $T/fail-create makes create fail.
+cat >"$T/bin/xcrun" <<'EOF'
+#!/bin/bash
+{ printf 'xcrun'; printf ' %q' "$@"; echo; } >>"$LOG"
+[[ $1 == simctl ]] || { echo "stand-in xcrun: only simctl" >&2; exit 1; }
+shift
+set_state() {
+	jq --arg u "$1" --arg s "$2" '.devices[] |= map(if .udid == $u then .state = $s else . end)' "$DEVICES" >"$DEVICES.new" &&
+		mv "$DEVICES.new" "$DEVICES"
+}
+case $1 in
+list) cat "$DEVICES" ;;
+create)
+	[[ ! -f $(dirname "$LOG")/fail-create ]] || { echo "An error was encountered processing the command" >&2; exit 1; }
+	n=$(($(cat "$DEVICES.count" 2>/dev/null || echo 0) + 1))
+	echo "$n" >"$DEVICES.count"
+	udid=$(printf 'AAAAAAAA-0000-0000-0000-%012d' "$n")
+	jq --arg u "$udid" --arg n "$2" '.devices["com.apple.CoreSimulator.SimRuntime.iOS-27-2"] += [{udid: $u, name: $n, state: "Shutdown", isAvailable: true}]' \
+		"$DEVICES" >"$DEVICES.new" && mv "$DEVICES.new" "$DEVICES"
+	echo "$udid"
+	;;
+bootstatus) set_state "$2" Booted ;;
+shutdown) set_state "$2" Shutdown ;;
+delete)
+	jq --arg u "$2" '.devices[] |= map(select(.udid != $u))' "$DEVICES" >"$DEVICES.new" && mv "$DEVICES.new" "$DEVICES"
+	;;
+launch) env | grep '^SIMCTL_CHILD_' | sort | sed 's/^/child-env /' >>"$LOG" ;;
+install | ui) ;;
+io) for last in "$@"; do :; done; echo png >"$last" ;;
+*) echo "stand-in xcrun: no simctl $1" >&2; exit 1 ;;
+esac
+EOF
+cat >"$T/bin/xcodebuild" <<'EOF'
+#!/bin/bash
+{ printf 'xcodebuild'; printf ' %q' "$@"; echo; } >>"$LOG"
+EOF
+cat >"$T/bin/nice" <<'EOF'
+#!/bin/bash
+{ printf 'nice'; printf ' %q' "$@"; echo; } >>"$LOG"
+shift 2
+exec "$@"
+EOF
+chmod +x "$T/bin/"*
+
+failures=0
+fail() {
+	echo "FAIL: $case_name: $*" >&2
+	echo "  exit $status; stderr:" >&2
+	sed 's/^/    /' "$T/err" >&2
+	echo "  log:" >&2
+	sed 's/^/    /' "$LOG" >&2
+	failures=$((failures + 1))
+}
+
+# run <description> <arguments...>: runs the script from $T with a clean log, as the caller would.
+case_name=
+status=0
+run() {
+	case_name=$1
+	shift
+	: >"$LOG"
+	(cd "$T" && env PATH="$T/bin:$PATH" HOME="$T/home" PI2_SCRATCH="$T/scratch" LOG="$LOG" DEVICES="$DEVICES" \
+		SIMCTL_CHILD_LEAKED=from-the-shell "$sim" "$@") >"$T/out" 2>"$T/err"
+	status=$?
+}
+expect_status() { [[ $status == "$1" ]] || fail "exit $status, expected $1"; }
+expect_err() { grep -qF -- "$1" "$T/err" || fail "stderr lacks: $1"; }
+expect_out() { grep -qxF -- "$1" "$T/out" || fail "stdout lacks the line: $1"; }
+expect_log() { grep -qF -- "$1" "$LOG" || fail "no call with: $1"; }
+expect_no_log() { ! grep -qF -- "$1" "$LOG" || fail "a call with: $1"; }
+# A refusal: exit 2, the reason said, and nothing done but reading the list.
+expect_refused() {
+	expect_status 2
+	expect_err "$1"
+	! grep -v '^xcrun simctl list devices --json$' "$LOG" | grep -q . || fail "it did something before refusing"
+}
+
+reset_devices
+
+# Usage.
+run "no command"
+expect_status 2
+grep -qF 'Usage: scripts/iphone-sim' "$T/out" || fail "no usage"
+run "help" help
+expect_status 0
+grep -qF 'Usage: scripts/iphone-sim' "$T/out" || fail "no usage"
+run "an unknown command" boot pi2-1
+expect_refused "no command 'boot'"
+
+# Names, at create.
+run "create without a name" create
+expect_refused "give the simulator a name of your own"
+run "create booted" create booted
+expect_refused "'booted' names whichever simulator is booted"
+run "create with capitals" create Pi2-1
+expect_refused "is not a name this script takes"
+run "create with a slash" create ../pi2
+expect_refused "is not a name this script takes"
+run "create with an id for a name" create 0bc6c5f2-8328-4dc8-b742-881da489bd30
+expect_refused "looks like a simulator's id"
+run "create a name simctl has already" create pi2-taken
+expect_refused "is there already, and it may be someone else's"
+[[ ! -e $records/pi2-taken ]] || fail "recorded a name it refused"
+run "create an iPad" create pi2-1 --type "iPad Air 11-inch (M4)"
+expect_refused "is not an iPhone's device type"
+run "create with an unknown option" create pi2-1 --boot
+expect_refused "create takes --type, --runtime and --derived-data, not --boot"
+run "create with derived data under ~/Library" create pi2-1 --derived-data "$T/home/Library/Developer/Xcode/DerivedData"
+expect_refused "not under ~/Library"
+[[ ! -e $T/home/Library/Developer ]] || fail "made a folder under ~/Library"
+ln -s "$T/home/Library" "$T/library-link"
+run "create with derived data through a link into ~/Library" create pi2-1 --derived-data "$T/library-link/pi2"
+expect_status 2
+expect_err "not under ~/Library"
+expect_no_log "simctl create"
+touch "$T/fail-create"
+run "create when simctl fails" create pi2-1
+expect_status 1
+expect_err "did not make the simulator"
+[[ ! -e $records/pi2-1 ]] || fail "kept a record of a simulator it did not make"
+rm "$T/fail-create"
+
+# create.
+run "create" create pi2-1
+expect_status 0
+expect_log "xcrun simctl create pi2-1 iPhone\\ 18\\ Pro"
+expect_out "AAAAAAAA-0000-0000-0000-000000000001"
+U1=AAAAAAAA-0000-0000-0000-000000000001
+[[ $(cat "$records/pi2-1/udid" 2>/dev/null) == "$U1" ]] || fail "recorded no id"
+[[ $(cat "$records/pi2-1/derived-data" 2>/dev/null) == "$T/scratch/iphone-build" ]] || fail "the derived data is not under the scratch folder"
+run "create the same name again" create pi2-1
+expect_refused "is there already"
+run "create with a type, a runtime and derived data" create pi2-2 --type "iPhone 17" --runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2 --derived-data dd
+expect_status 0
+expect_log "xcrun simctl create pi2-2 iPhone\\ 17 com.apple.CoreSimulator.SimRuntime.iOS-27-2"
+U2=AAAAAAAA-0000-0000-0000-000000000002
+[[ $(cat "$records/pi2-2/derived-data" 2>/dev/null) == "$T/dd" ]] || fail "a relative derived-data folder was not made absolute"
+(
+	cd "$T" && env -u PI2_SCRATCH PATH="$T/bin:$PATH" HOME="$T/home" LOG="$LOG" DEVICES="$DEVICES" "$sim" create pi2-3 >/dev/null 2>&1
+)
+[[ $(cat "$records/pi2-3/derived-data" 2>/dev/null) == "$T/repo/iphone/build/DerivedData" ]] ||
+	fail "without a scratch folder, the derived data is not under iphone/build"
+
+# Only this checkout's own simulators.
+for command in build test run "shot x.png" "appearance dark" "text-size large" shutdown delete id; do
+	set -- $command
+	run "$1 on the booted simulator by name" "$1" pi2-owner "${@:2}"
+	expect_refused "no simulator named 'pi2-owner' was made by this checkout"
+	run "$1 on booted" "$1" booted "${@:2}"
+	expect_refused "'booted' names whichever simulator is booted"
+	run "$1 on the booted simulator's id" "$1" "$OWNER" "${@:2}"
+	expect_status 2
+	expect_no_log "$OWNER"
+done
+jq --arg u "$U2" '.devices[] |= map(if .udid == $u then .name = "pi2-renamed" else . end)' "$DEVICES" >"$DEVICES.new" &&
+	mv "$DEVICES.new" "$DEVICES"
+run "build on a simulator renamed since" build pi2-2
+expect_refused "is now called 'pi2-renamed': it is left alone"
+run "delete a simulator renamed since" delete pi2-2
+expect_refused "is now called 'pi2-renamed': it is left alone"
+[[ -f $records/pi2-2/udid ]] || fail "forgot a renamed simulator"
+run "list" list
+expect_status 0
+expect_out "pi2-1	$U1	Shutdown"
+expect_out "pi2-2	$U2	renamed to pi2-renamed"
+
+# build and test.
+run "build" build pi2-1
+expect_status 0
+expect_log "nice -n 15 xcodebuild build"
+expect_log "id=$U1 -derivedDataPath"
+expect_log "-destination platform=iOS\\ Simulator"
+expect_log "CODE_SIGNING_ALLOWED=NO"
+expect_log "-configuration Debug"
+expect_log "-derivedDataPath $T/scratch/iphone-build -packageCachePath $T/scratch/iphone-build/PackageCache"
+expect_log "-project $T/repo/iphone/pi2.xcodeproj -scheme pi2"
+run "build a release build" build pi2-1 --release
+expect_status 0
+expect_log "-configuration Release"
+run "test" test pi2-1 -- -only-testing:pi2Tests/PiModelsOnIOSTests -quiet -resultBundlePath "$T/results"
+expect_status 0
+expect_log "nice -n 15 xcodebuild test"
+expect_log "-parallel-testing-enabled NO -only-testing:pi2Tests/PiModelsOnIOSTests -quiet -resultBundlePath $T/results CODE_SIGNING_ALLOWED=NO"
+run "test a release build" test pi2-1 --release
+expect_refused "test runs the Debug build's tests"
+run "build with other derived data" build pi2-1 --derived-data "$T/elsewhere"
+expect_status 0
+expect_log "-derivedDataPath $T/elsewhere"
+run "build with derived data under ~/Library" build pi2-1 --derived-data "$T/home/Library/Developer/Xcode/DerivedData"
+expect_status 2
+expect_no_log xcodebuild
+# HOME set by the caller does not hide the account's own home folder. Refused before anything is made, so nothing is.
+run "build with derived data under the account's ~/Library" build pi2-1 --derived-data "$(eval "printf %s ~$(id -un)")/Library/pi2-test-iphone-sim"
+expect_status 2
+expect_err "not under ~/Library"
+expect_no_log xcodebuild
+for option in "-destination generic/platform=iOS" "-destination platform=iOS,id=00008030-001A" "-sdk iphoneos" \
+	-allowProvisioningUpdates CODE_SIGNING_ALLOWED=YES "CODE_SIGN_IDENTITY=Apple Development" DEVELOPMENT_TEAM=ABCDE12345 \
+	PROVISIONING_PROFILE_SPECIFIER=x archive; do
+	run "build with $option" build pi2-1 -- $option
+	expect_refused "builds for its own simulator only, unsigned"
+done
+run "test with an option not listed" test pi2-1 -- -enableCodeCoverage YES
+expect_refused "-enableCodeCoverage is not an option build and test take"
+run "build with an unknown option" build pi2-1 --sign
+expect_refused "build takes --release, --derived-data"
+
+# run.
+run "run before a build" run pi2-1
+expect_refused "no Debug build in $T/scratch/iphone-build: scripts/iphone-sim build pi2-1 first"
+mkdir -p "$T/scratch/iphone-build/Build/Products/Debug-iphonesimulator/pi2.app"
+run "run" run pi2-1 --env PI2_SHOW=face-id-check --env 'GREETING=a b=c' -- -flag 'two words'
+expect_status 0
+expect_log "xcrun simctl bootstatus $U1 -b"
+expect_log "xcrun simctl install $U1 $T/scratch/iphone-build/Build/Products/Debug-iphonesimulator/pi2.app"
+expect_log "xcrun simctl launch --terminate-running-process $U1 dev.pi2.ios -flag two\\ words"
+expect_log "child-env SIMCTL_CHILD_PI2_SHOW=face-id-check"
+expect_log "child-env SIMCTL_CHILD_GREETING=a b=c"
+expect_no_log "SIMCTL_CHILD_LEAKED"
+run "run again, booted" run pi2-1
+expect_status 0
+expect_no_log bootstatus
+run "run a release build before building it" run pi2-1 --release
+expect_refused "no Release build"
+run "run with a bad --env" run pi2-1 --env 'NO-DASHES=1'
+expect_refused "--env takes NAME=VALUE"
+run "run with --env and no value" run pi2-1 --env
+expect_refused "--env needs NAME=VALUE"
+run "run with a two-line value" run pi2-1 --env $'A=one\ntwo'
+expect_refused "--env takes a value on one line"
+
+# Pictures, appearance and text size.
+run "shot with no file" shot pi2-1
+expect_refused "shot needs a file"
+run "shot to a file that is not a PNG" shot pi2-1 x.jpg
+expect_refused "name a file ending in .png"
+run "shot in an unknown appearance" shot pi2-1 x.png --appearance sepia
+expect_refused "the appearance is light or dark"
+run "shot in an unknown text size" shot pi2-1 x.png --text-size huge
+expect_refused "'huge' is not a text size"
+run "shot" shot pi2-1 shots/plain.png
+expect_status 0
+expect_log "xcrun simctl io $U1 screenshot --type=png shots/plain.png"
+expect_no_log "simctl ui"
+[[ -f $T/shots/plain.png ]] || fail "no picture written"
+run "shot dark, at the largest text" shot pi2-1 "$T/shots/dark.png" --appearance dark --text-size accessibility-extra-extra-extra-large
+expect_status 0
+expect_log "xcrun simctl ui $U1 appearance dark"
+expect_log "xcrun simctl ui $U1 content_size accessibility-extra-extra-extra-large"
+expect_log "xcrun simctl io $U1 screenshot --type=png $T/shots/dark.png"
+run "appearance" appearance pi2-1 light
+expect_status 0
+expect_log "xcrun simctl ui $U1 appearance light"
+run "appearance with no value" appearance pi2-1
+expect_refused "appearance takes a simulator's name and light or dark"
+run "appearance auto" appearance pi2-1 auto
+expect_refused "the appearance is light or dark"
+run "text-size" text-size pi2-1 extra-large
+expect_status 0
+expect_log "xcrun simctl ui $U1 content_size extra-large"
+run "text-size increment" text-size pi2-1 increment
+expect_refused "'increment' is not a text size"
+
+# id, shutdown, delete.
+run "id" id pi2-1
+expect_status 0
+expect_out "$U1"
+run "shutdown" shutdown pi2-1
+expect_status 0
+expect_log "xcrun simctl shutdown $U1"
+run "shutdown, already shut down" shutdown pi2-1
+expect_status 0
+expect_no_log "simctl shutdown"
+run "boot it again" appearance pi2-1 dark
+run "delete" delete pi2-1
+expect_status 0
+expect_log "xcrun simctl shutdown $U1"
+expect_log "xcrun simctl delete $U1"
+expect_err "its builds stay in $T/scratch/iphone-build"
+[[ ! -e $records/pi2-1 ]] || fail "kept the record of a deleted simulator"
+[[ -d $T/scratch/iphone-build ]] || fail "deleted the derived data"
+run "build on a deleted simulator" build pi2-1
+expect_refused "no simulator named 'pi2-1' was made by this checkout"
+U3=$(cat "$records/pi2-3/udid")
+jq --arg u "$U3" '.devices[] |= map(select(.udid != $u))' "$DEVICES" >"$DEVICES.new" && mv "$DEVICES.new" "$DEVICES"
+run "build on a simulator deleted outside the script" build pi2-3
+expect_refused "is gone: scripts/iphone-sim delete pi2-3 forgets it"
+run "delete a simulator deleted outside the script" delete pi2-3
+expect_status 0
+expect_err "was gone already; forgetting it"
+expect_no_log "simctl delete"
+[[ ! -e $records/pi2-3 ]] || fail "kept the record of a simulator that is gone"
+
+# Nothing of anyone else's was touched.
+[[ $(jq -r --arg o "$OWNER" '.devices[][] | select(.udid == $o) | .state' "$DEVICES") == Booted ]] ||
+	fail "the booted simulator is not as it was"
+[[ -n $(jq -r --arg t "$TAKEN" '.devices[][] | select(.udid == $t) | .udid' "$DEVICES") ]] ||
+	fail "the simulator named pi2-taken is gone"
+
+if ((failures)); then
+	echo "test-iphone-sim: $failures failed" >&2
+	exit 1
+fi
+echo "test-iphone-sim: all passed"
