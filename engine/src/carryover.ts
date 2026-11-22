@@ -29,9 +29,8 @@
 //   what knowledge.ts's and variables.ts's do (the memory switch, the variables' names) is done here, in the same commit.
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { AgentDoc, type ConversationId, type Tx } from "@earendil-works/pi-durable";
 import { createBackup, removePartialBackups } from "./backup.ts";
 import { type CarryPlan, type CarrySnapshot, Grouping, lookUp, pending, planCarryOver, type PlannedProject, reportOf, scheduleCopies, unique } from "./carryplan.ts";
@@ -51,6 +50,7 @@ import {
 import { RequestError } from "./requesterror.ts";
 import { Schedules } from "./schedules.ts";
 import { type AgentProfile, Agents, Library, type Meta } from "./state.ts";
+import { ignoredTestSwitches, testSwitch } from "./testswitches.ts";
 import { copyAgentValues } from "./variables.ts";
 import { madeWorktrees } from "./worktrees.ts";
 
@@ -75,34 +75,21 @@ export const RESTORE_FOLDER_MISSING = "The folder of this conversation or one of
  * Tests hold a run at a point, to stop the engine there as a crash would: while the file the variable `name` names
  * exists, the run waits there, having written `<file>.started`. `PI2_CARRY_SECRETS_GATE` holds the Keychain step;
  * `PI2_CARRY_COMMIT_GATE` holds the run before each project's commit but the first; `PI2_RESTORE_COMMIT_GATE` holds
- * a restore after it has checked the plan but before its transaction.
+ * a restore after it has checked the plan but before its transaction. Only in a development engine (testswitches.ts).
  */
 async function gate(name: "PI2_CARRY_SECRETS_GATE" | "PI2_CARRY_COMMIT_GATE" | "PI2_RESTORE_COMMIT_GATE"): Promise<void> {
-	const file = process.env[name];
+	const file = testSwitch(name);
 	if (file === undefined || !existsSync(file)) return;
 	writeFileSync(`${file}.started`, "");
 	while (existsSync(file)) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
 /**
- * Whether this is a release engine: one with a `BUILD` file next to `src`, as main.ts reads it (a development engine has
- * none). Test switches that would leave a person's data as the last version left it are not honoured in one.
- */
-const releaseBuild = (() => {
-	try {
-		return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "BUILD"), "utf8").trim() !== "";
-	} catch {
-		return false;
-	}
-})();
-
-/**
  * Tests make a data folder as the last version with the switch left it, the switch never turned on, with this engine:
  * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing.
- * Only in a development engine (as `PI2_TEST_COPY`, main.ts): a release engine ignores it, and says so at start.
+ * Only in a development engine (testswitches.ts): a release engine ignores it, and says so at start.
  */
-const carryNeverAsked = () => process.env.PI2_CARRY_NEVER === "1";
-const carriesNothing = () => carryNeverAsked() && !releaseBuild;
+const carriesNothing = () => testSwitch("PI2_CARRY_NEVER") === "1";
 
 /** An agent's id as made for a project: its name's slug and a UUID, never reused, whatever is deleted later. */
 const agentIdFor = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent"}-${randomUUID()}`;
@@ -714,9 +701,8 @@ export const carryOver: Feature = (host, engine) => {
 
 	return {
 		start: async () => {
-			if (carryNeverAsked()) {
-				engine.log(releaseBuild ? "PI2_CARRY_NEVER is set and ignored: a release engine always carries over" : "PI2_CARRY_NEVER is set: this development engine carries nothing into projects");
-			}
+			if (ignoredTestSwitches().includes("PI2_CARRY_NEVER")) engine.log("PI2_CARRY_NEVER is set and ignored: a release engine always carries over");
+			else if (carriesNothing()) engine.log("PI2_CARRY_NEVER is set: this development engine carries nothing into projects");
 			// Once every feature has started: the update's run (#715), then any conversation left in no project.
 			void host.ready
 				.then(update)
