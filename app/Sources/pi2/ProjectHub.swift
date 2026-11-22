@@ -1,5 +1,6 @@
 
 import SwiftUI
+import PaneKit
 import WindowKit
 
 // A project's hub (#471): what opens when a project is selected, with the preview on. The bar, the conversation with
@@ -92,25 +93,43 @@ enum HubTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// How each project's hub was left: its fold and its board's tab, kept in the app's preferences by project id
-/// (`project.<id>.fold`, `project.<id>.tab`; docs/projects.md, 10.1), the conversation an agent's row put in place of the
-/// board, which lasts this launch, and the conversations being made for projects that have none yet. Which project shows
-/// is the window's selection (`Selection.project`); `AppModel.showProject` sets them together, for the sidebar of projects
-/// and for a test copy's `show`.
+/// How each project's hub was left: its fold, its board's tab and its panes (#657), kept in the app's preferences by
+/// project id (`project.<id>.fold`, `project.<id>.tab`, `project.<id>.panes`; docs/projects.md, 10.1), and the
+/// conversations being made for projects that have none yet. Which project shows is the window's selection
+/// (`Selection.project`); `AppModel.showProject` sets them together, for the sidebar of projects and for a test copy's
+/// `show`. What the panes are and how they change is `HubLayout` (PaneKit); what this keeps of them for the launch only,
+/// and how the app's commands and the ways to open a conversation use them, is in HubPanes.swift.
 @MainActor
 @Observable
 final class ProjectHubs {
     /// Set this launch; before that, what the preferences say.
     private var folds: [String: HubFold] = [:]
     private var tabs: [String: HubTab] = [:]
-    /// The conversation shown in place of each project's board, while the person reads or writes to one of its agents
-    /// (#473). Kept for the launch only, as the design has it: a hub opens on its board.
-    private var agents: [String: Int] = [:]
+    /// Each project's panes, once changed this launch; before that, what the preferences say (`savedLayouts`).
+    var layouts: [String: HubLayout] = [:]
+    /// Each project's panes as the preferences had them, read once.
+    @ObservationIgnored var savedLayouts: [String: HubLayout] = [:]
+    /// Whether the conversation with the orchestrator has the keyboard, rather than the focused pane's (#473): the person
+    /// clicked in its field, or moved to it with Next Pane. For the launch only.
+    var orchestratorKeyed: [String: Bool] = [:]
+    /// Goes up when the person moves to a pane, or to the orchestrator's conversation, with the keyboard, so its message
+    /// field takes it.
+    var keyboardRequests: [String: Int] = [:]
+    /// The fold each hub was last drawn with: the one chosen, or with the window too narrow, the side that folded by
+    /// itself. Next Pane goes only to what shows.
+    var drawnFolds: [String: HubFold] = [:]
+    /// Why the last split or opening beside could not be made, said in a line above the hub until the next one is.
+    var refusals: [String: String] = [:]
+    /// The room the hub's panes have, and where each pane is in it, as last laid out: for telling whether a split fits,
+    /// and which pane a click landed in. Not observed: they change as the hub is laid out, and nothing on screen
+    /// depends on them.
+    @ObservationIgnored var rooms: [String: CGSize] = [:]
+    @ObservationIgnored var frames: [UUID: CGRect] = [:]
     /// Projects whose conversation with the orchestrator is being made (`projects.startFresh`), and why it could not be.
     private(set) var starting: Set<String> = []
     private(set) var startProblems: [String: String] = [:]
 
-    private static func key(_ id: String, _ what: String) -> String { "project.\(id).\(what)" }
+    static func key(_ id: String, _ what: String) -> String { "project.\(id).\(what)" }
 
     func fold(_ id: String) -> HubFold {
         folds[id] ?? UserDefaults.standard.string(forKey: Self.key(id, "fold")).flatMap(HubFold.init(rawValue:)) ?? .both
@@ -127,6 +146,8 @@ final class ProjectHubs {
     }
 
     func setTab(_ tab: HubTab, for id: String) {
+        // Another tab puts the Agents tab back on its list, as leaving it always has.
+        if tab != .agents { setAgentPage(nil, for: id) }
         guard tabs[id] != tab else { return }
         if tab == .work { PerfProbe.workTab("asked") }
         tabs[id] = tab
@@ -160,20 +181,23 @@ final class ProjectHubs {
         setFold(current == panel ? .both : panel, for: id)
     }
 
-    /// The conversation shown in place of a project's board, if one is.
-    func agent(_ id: String) -> Int? { agents[id] }
+    /// The agent whose own page shows in each project's Agents tab in place of its list (#475), kept here rather than in
+    /// the tab so that the palette, Duplicate and New Agent can open one there (#643). For the launch only.
+    private var agentPages: [String: String] = [:]
 
-    /// Every project's conversation in place of its board, by project id.
-    var shownAgents: [String: Int] { agents }
+    func agentPage(_ id: String) -> String? { agentPages[id] }
 
-    /// Puts a conversation in place of the board, or, with nil, brings the board back.
-    func setAgent(_ conversation: Int?, for id: String) {
-        guard agents[id] != conversation else { return }
-        agents[id] = conversation
+    func setAgentPage(_ agent: String?, for id: String) {
+        guard agentPages[id] != agent else { return }
+        agentPages[id] = agent
     }
 
-    /// The conversation of each project's hub that has the keyboard, as the hub last drew it: the agent's in place of the
-    /// board, unless the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on
+    /// The conversation of the focused pane beside the orchestrator's, if it shows one: the one in place of the board,
+    /// with a single pane (#473).
+    func agent(_ id: String) -> Int? { layout(id).focusedConversation }
+
+    /// The conversation of each project's hub that has the keyboard, as the hub last drew it: the focused pane's, unless
+    /// the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on
     /// it, as it acts on the focused pane in the old screens (#632).
     private(set) var keyboard: [String: Int] = [:]
 
@@ -314,22 +338,26 @@ final class ProjectTabWatch {
 
 extension AppModel {
     /// Shows a project's hub, on a tab of its board and with a fold when they are given, or as it was left. The one way
-    /// in: the sidebar of projects (#470) and a test copy's `show` both come here. Choosing the project, or its
-    /// orchestrator, goes back to the board, from whichever agent's conversation was in its place (#473).
+    /// in: the sidebar of projects (#470) and a test copy's `show` both come here. Choosing the project while its hub
+    /// shows, or asking for a tab of its board, brings the board back into view (#473, #657): its pane, or in place of
+    /// the focused pane's conversation. Coming to it from elsewhere shows its panes as they were left.
     func showProject(_ id: String, tab: HubTab? = nil, fold: HubFold? = nil) {
         if (tab ?? hubs.tab(id)) == .work { PerfProbe.workTab("asked") }
         if let tab { hubs.setTab(tab, for: id) }
         if let fold { hubs.setFold(fold, for: id) }
-        hubs.setAgent(nil, for: id)
+        if shownProject == id || tab != nil { hubs.update(id) { $0.showBoard() } }
         selection = .project(id)
     }
 
-    /// Shows one of a project's agents in place of its board, with the conversation the person chose in the sidebar
-    /// (#473). The board's side has to show for the conversation to be there, so a folded board is shown again.
-    func openAgent(_ conversation: Int, in project: String) {
+    /// Shows one of a project's conversations in its hub (#473, #657): in the pane that shows it, else in a new pane
+    /// beside the focused one when `beside` (⌥ held, when not said), else in the focused pane, or the conversation pane
+    /// focused last when the board has the focus. `parent`, for a sub-chat card's Beside, is the conversation whose pane
+    /// the new one goes beside. The board's side has to show for the conversation to be there, so a folded board is
+    /// shown again.
+    func openAgent(_ conversation: Int, in project: String, beside: Bool? = nil, from parent: Int? = nil) {
         selection = .project(project)
         if hubs.fold(project) == .boardFolded { hubs.setFold(.both, for: project) }
-        hubs.setAgent(conversation, for: project)
+        hubs.open(conversation, in: project, beside: beside ?? NSEvent.modifierFlags.contains(.option), from: parent)
     }
 
     /// The project whose hub the window shows, if it does.
@@ -345,20 +373,20 @@ extension AppModel {
         return engine.project(id)?.conversation
     }
 
-    /// The agent's conversation shown in place of the hub's board, when the board's side shows: told to the engine with
-    /// the rest, for the same reason.
-    var hubAgentConversation: Int? {
-        guard let id = shownProject, hubs.fold(id) != .boardFolded else { return nil }
-        return hubs.agent(id)
+    /// The conversations in the hub's panes, when the board's side shows: told to the engine with the rest, for the same
+    /// reason.
+    var hubPaneConversations: Set<Int> {
+        guard let id = shownProject, hubs.fold(id) != .boardFolded else { return [] }
+        return Set(hubs.layout(id).conversations)
     }
 
-    /// The conversation the Conversation menu acts on (#632): with a hub shown, the one of its two that has the keyboard,
+    /// The conversation the Conversation menu acts on (#632): with a hub shown, the one of its conversations that has the keyboard,
     /// the orchestrator's when the hub has not said (its conversation folded, say, which the strip still writes to); else
     /// the focused pane's, or chat mode's chat.
     var commandConversationID: Int? {
         if let id = shownProject {
             let orchestrator = engine.project(id)?.conversation
-            guard let keyed = hubs.keyboard[id], keyed == orchestrator || keyed == hubs.agent(id) else { return orchestrator }
+            guard let keyed = hubs.keyboard[id], keyed == orchestrator || hubs.layout(id).conversations.contains(keyed) else { return orchestrator }
             return keyed
         }
         return activeConversationID
@@ -409,8 +437,12 @@ enum HubDrawn {
         let narrow: Bool
         /// The orchestrator's conversation in its panel, if the panel shows one.
         let conversation: Int?
-        /// The agent's conversation in place of the board, if the board's side shows one (#473).
+        /// The focused pane's conversation, if the board's side shows one (#473).
         let agent: Int?
+        /// Whether the board's side holds more than the board alone: a conversation, or several panes (#657).
+        let panes: Bool
+        /// Every conversation the panes show, when the board's side shows.
+        let shown: [Int]
     }
 
     static var current: Shown?

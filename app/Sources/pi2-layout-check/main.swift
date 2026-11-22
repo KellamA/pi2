@@ -1,6 +1,8 @@
 // Checks PaneKit, the tree of panes behind the conversation area: splitting, closing panes down to one, giving panes
 // equal room, filling them with conversations, saving the layout and reading it back, and that a layout saved damaged
-// or unreadable gives a single pane rather than a crash at launch.
+// or unreadable gives a single pane rather than a crash at launch. Then the same for a project hub's panes (`HubLayout`,
+// #657): the board in one pane at most and always within reach, where an opened conversation goes, the ready-made
+// layouts, the least size every pane keeps, and damaged saved panes.
 //
 //   cd app && swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
 //
@@ -344,6 +346,221 @@ group("a saved layout that is damaged or unreadable gives a single pane") {
         let restored = SavedLayout.restore(data, maxPanes: 16)
         check("\(name): not restored, so the app starts on a single pane", restored == nil, restored.map { describe($0.root) } ?? "")
     }
+}
+
+// MARK: - A project's hub (#657)
+
+/// What has to hold of a hub's panes whatever was done to them: the tree can be laid out and saves and reads back as
+/// itself, there are at most `maxPanes` panes, the focus is on one, the board is on one at most and names no
+/// conversation, no conversation shows twice, and the board can be reached: a pane shows it, or one shows a conversation.
+func auditHub(_ hub: HubLayout, _ context: @autoclosure () -> String) {
+    let context = context()
+    audit(hub.root, "hub: \(context)")
+    let leaves = hub.panes
+    check("hub: at most \(HubLayout.maxPanes) panes: \(context)", leaves.count <= HubLayout.maxPanes, describe(hub.root))
+    check("hub: the focus is on a pane: \(context)", hub.root.find(hub.focused)?.isPane == true, describe(hub.root))
+    if let board = hub.board {
+        check("hub: the board is on a pane: \(context)", hub.root.find(board)?.isPane == true, describe(hub.root))
+        check("hub: the board's pane names no conversation: \(context)", hub.root.find(board)?.conversation == nil, describe(hub.root))
+    }
+    check("hub: the board can be reached: \(context)", hub.board != nil || !hub.conversations.isEmpty, describe(hub.root))
+    check("hub: no conversation shows twice: \(context)", Set(hub.conversations).count == hub.conversations.count, describe(hub.root))
+    if let last = hub.lastConversation {
+        check("hub: the last conversation's pane shows one: \(context)", hub.root.find(last)?.conversation != nil, describe(hub.root))
+    }
+    let restored = HubLayout.restore(hub.encoded())
+    check("hub: saves and reads back as itself: \(context)", restored == hub, describe(hub.root))
+}
+
+/// Lays a tree out in a room as the hub draws it, with `HubLayout.lengths`, and gives each pane its size.
+func layOut(_ node: PaneNode, width: Double, height: Double, into sizes: inout [UUID: HubLayout.Size]) {
+    guard !node.isPane else {
+        sizes[node.id] = HubLayout.Size(width: width, height: height)
+        return
+    }
+    let horizontal = node.axis == .row
+    let length = horizontal ? width : height
+    let room = length - HubLayout.gutter * Double(node.children.count - 1)
+    let least = node.children.map { child in
+        let size = HubLayout.minimum(child)
+        return horizontal ? size.width : size.height
+    }
+    let lengths = HubLayout.lengths(fractions: node.fractions, least: least, room: room)
+    for (child, share) in zip(node.children, lengths) {
+        layOut(child, width: horizontal ? share : width, height: horizontal ? height : share, into: &sizes)
+    }
+}
+
+group("a hub: the board alone, then panes beside it, closed back to the board") {
+    var hub = HubLayout()
+    auditHub(hub, "as made")
+    check("a hub starts on the board alone", hub.isBoardOnly && hub.content(of: hub.focused) == .board)
+    check("the board alone does not close", !hub.close(hub.focused) && hub.isBoardOnly)
+    // Opening a conversation with one pane puts it in place of the board, as #473 did.
+    hub.put(11, in: hub.openTarget)
+    auditHub(hub, "a conversation in place of the board")
+    check("a conversation takes the board's place", !hub.isSplit && hub.board == nil && hub.focusedConversation == 11, describe(hub.root))
+    check("closing the only pane shows the board", hub.close(hub.focused) && hub.isBoardOnly, describe(hub.root))
+    // Board, then two conversations beside it.
+    let boardPane = hub.focused
+    let first = hub.split(boardPane, .row, showing: 21)
+    let second = first.flatMap { hub.split($0, .row, showing: 22) }
+    auditHub(hub, "the board and two conversations")
+    check("three side by side are one row", describe(hub.root) == "row[0.5,0.25,0.25](_ 21 22)", describe(hub.root))
+    check("a conversation already shown is not split off again", hub.split(boardPane, .row, showing: 21) == nil)
+    // From the board, a conversation goes to the one focused last, and the board stays.
+    hub.focus(first!)
+    hub.focus(boardPane)
+    check("from the board, one opens where a conversation was focused last", hub.openTarget == first, describe(hub.root))
+    hub.put(23, in: hub.openTarget)
+    auditHub(hub, "one opened from the board")
+    check("the board stays", hub.board == boardPane && hub.conversations == [23, 22], describe(hub.root))
+    // Putting a conversation shown in another pane swaps the two, the board with them.
+    hub.put(22, in: boardPane)
+    auditHub(hub, "a shown conversation put in the board's pane")
+    check("the board moves to the pane that had the conversation", hub.board == second && hub.content(of: boardPane) == .conversation(22), describe(hub.root))
+    // The board asked for in a pane swaps with what it shows.
+    hub.showBoard(in: first!)
+    auditHub(hub, "the board asked for in another pane")
+    check("the board is still once", hub.board == first && hub.content(of: second!) == .conversation(23), describe(hub.root))
+    // Closing the board leaves the conversations; closing those brings the board back.
+    hub.close(first!)
+    auditHub(hub, "the board's pane closed")
+    check("the board's pane closed: no board, two conversations", hub.board == nil && hub.conversations.count == 2, describe(hub.root))
+    hub.close(hub.panes[0].id)
+    hub.close(hub.panes[0].id)
+    auditHub(hub, "every conversation closed")
+    check("every conversation closed: the board alone", hub.isBoardOnly, describe(hub.root))
+    // A new pane shows the picker; closing the only conversation beside it shows the board there.
+    var picker = HubLayout()
+    picker.put(31, in: picker.focused)
+    let empty = picker.split(picker.focused, .column)
+    check("a new pane shows the picker", empty.flatMap { picker.content(of: $0) } == .picker, describe(picker.root))
+    picker.close(picker.panes[0].id)
+    auditHub(picker, "the last conversation closed beside the picker")
+    check("the last conversation closed beside the picker: the board shows", picker.isBoardOnly, describe(picker.root))
+    // Archived or deleted conversations close their panes.
+    var gone = HubLayout()
+    gone.put(41, in: gone.focused)
+    _ = gone.split(gone.focused, .row, showing: 42)
+    _ = gone.split(gone.focused, .row, showing: 43)
+    check("panes of conversations gone close", gone.forget { $0 != 42 } && gone.conversations == [42], describe(gone.root))
+    check("and the last one gone shows the board", gone.forget { _ in true } && gone.isBoardOnly, describe(gone.root))
+    // No more than six.
+    var full = HubLayout()
+    for number in 1...10 { _ = full.split(full.focused, number % 2 == 0 ? .row : .column, showing: 50 + number) }
+    auditHub(full, "split ten times")
+    check("a hub holds at most six panes", full.panes.count == HubLayout.maxPanes && !full.canSplit, describe(full.root))
+}
+
+group("a hub's ready-made layouts keep what shows, the board and the focus") {
+    for layout in PaneLayout.all {
+        var hub = HubLayout()
+        let board = hub.focused
+        _ = hub.split(board, .row, showing: 61)
+        _ = hub.split(hub.focused, .row, showing: 62)
+        step("hub layout \(layout.id)")
+        let applied = hub.apply(layout, recent: [62, 63, 64, 65, 66, 67, 68])
+        check("layout \(layout.id) applies only up to \(HubLayout.maxPanes) panes", applied == (layout.count <= HubLayout.maxPanes))
+        guard applied else { continue }
+        auditHub(hub, "layout \(layout.id)")
+        check("layout \(layout.id): as many panes", hub.panes.count == layout.count, describe(hub.root))
+        check("layout \(layout.id): the focused conversation stays, focused", hub.focusedConversation == 62, describe(hub.root))
+        if layout.count >= 3 { check("layout \(layout.id): the board stays", hub.board != nil && hub.conversations.prefix(2) == [61, 62], describe(hub.root)) }
+    }
+}
+
+group("a hub's panes keep their least size, and a long run of everything") {
+    // How a split shares its room.
+    check("even shares in room enough", HubLayout.lengths(fractions: [0.5, 0.5], least: [319, 319], room: 1000) == [500, 500])
+    check("a small share gives way to its least", HubLayout.lengths(fractions: [0.9, 0.1], least: [319, 319], room: 1000) == [681, 319])
+    check("too little room: each its least", HubLayout.lengths(fractions: [0.5, 0.5], least: [319, 319], room: 500) == [319, 319])
+    check("one pane beside the conversation needs the 640 the hub always did", HubLayout.minimumWidth + 1 + 320 == 640)
+
+    var random = Seeded(state: 0x6_5700)
+    var hub = HubLayout()
+    for turn in 1...4000 {
+        let leaves = hub.panes
+        let pane = leaves.randomElement(using: &random)!.id
+        let conversation = Int.random(in: 1...12, using: &random)
+        var what = ""
+        switch Int.random(in: 0..<12, using: &random) {
+        case 0...2:
+            what = "split"
+            step("hub turn \(turn): splitting a pane of \(describe(hub.root))")
+            hub.split(pane, Bool.random(using: &random) ? .row : .column, showing: Bool.random(using: &random) ? conversation : nil)
+        case 3...4:
+            what = "close"
+            step("hub turn \(turn): closing a pane of \(describe(hub.root))")
+            hub.close(pane)
+        case 5...6:
+            what = "put"
+            hub.put(conversation, in: Bool.random(using: &random) ? pane : hub.openTarget)
+        case 7:
+            what = "board"
+            hub.showBoard(in: Bool.random(using: &random) ? pane : nil)
+        case 8:
+            what = "focus"
+            hub.focus(pane)
+        case 9:
+            what = "forget"
+            hub.forget { $0 == conversation }
+        case 10:
+            what = "layout"
+            hub.apply(PaneLayout.all.filter { $0.count <= HubLayout.maxPanes }.randomElement(using: &random)!, recent: [1, 2, 3])
+        default:
+            what = "resize"
+            if let split = splits(hub.root).randomElement(using: &random) {
+                let weights = split.children.map { _ in Double.random(in: 0.02...1, using: &random) }
+                let total = weights.reduce(0, +)
+                var fractions = weights.map { $0 / total }
+                fractions[fractions.count - 1] = 1 - fractions.dropLast().reduce(0, +)
+                hub.resize(split.id, fractions)
+            }
+        }
+        auditHub(hub, "turn \(turn), after \(what)")
+        // Laid out in its least room, or more, every pane has its least size and the panes fill the room.
+        let least = HubLayout.minimum(hub.root)
+        for extra in [0.0, Double.random(in: 1...900, using: &random)] {
+            var sizes: [UUID: HubLayout.Size] = [:]
+            let width = least.width + extra, height = least.height + extra / 2
+            layOut(hub.root, width: width, height: height, into: &sizes)
+            check("turn \(turn): every pane laid out", sizes.count == hub.panes.count, describe(hub.root))
+            check("turn \(turn): no pane below its least, \(Int(extra)) points over",
+                  sizes.values.allSatisfy { $0.width >= HubLayout.minimumWidth - 1e-6 && $0.height >= HubLayout.minimumHeight - 1e-6 },
+                  "\(describe(hub.root)) in \(width)×\(height): \(sizes.values.map { "\(Int($0.width))×\(Int($0.height))" })")
+            check("turn \(turn): the fit agrees", hub.fits(width: width, height: height))
+        }
+        check("turn \(turn): a room smaller than the least does not fit", !hub.fits(width: least.width - 2, height: least.height))
+        check("turn \(turn): across counts the widest row", Double(HubLayout.across(hub.root)) * HubLayout.minimumWidth <= least.width + 1e-6, describe(hub.root))
+    }
+}
+
+group("a hub's saved panes, damaged, give the board or are put right") {
+    let a = "00000000-0000-0000-0000-00000000000A", b = "00000000-0000-0000-0000-00000000000B"
+    let r = "00000000-0000-0000-0000-000000000001"
+    func pane(_ id: String, _ conversation: Int? = nil) -> String {
+        #"{"id":"\#(id)","axis":"row","children":[],"fractions":[]\#(conversation.map { #","conversation":\#($0)"# } ?? "")}"#
+    }
+    func row(_ children: String...) -> String {
+        #"{"id":"\#(r)","axis":"row","children":[\#(children.joined(separator: ","))],"fractions":[\#(Array(repeating: String(1 / Double(children.count)), count: children.count).joined(separator: ","))]}"#
+    }
+    func hub(_ root: String, focused: String = a, board: String? = nil, last: String? = nil) -> HubLayout? {
+        let extra = (board.map { ",\"board\":\"\($0)\"" } ?? "") + (last.map { ",\"lastConversation\":\"\($0)\"" } ?? "")
+        let json = #"{"root":\#(root),"focused":"\#(focused)"\#(extra)}"#
+        return HubLayout.restore(Data(json.utf8))
+    }
+    check("nothing saved gives the board alone", HubLayout.restore(nil) == nil)
+    check("not JSON gives the board alone", HubLayout.restore(Data("panes".utf8)) == nil)
+    check("seven panes give the board alone", hub(row(pane(a), pane(b), pane(UUID().uuidString), pane(UUID().uuidString), pane(UUID().uuidString), pane(UUID().uuidString), pane(UUID().uuidString))) == nil)
+    let good = hub(row(pane(a), pane(b, 5)), focused: b, board: a, last: b)
+    check("a good one reads back", good.map { $0.board?.uuidString == a && $0.focusedConversation == 5 && $0.lastConversation?.uuidString == b } == true)
+    check("a board on the split moves off", hub(row(pane(a, 4), pane(b, 5)), board: r).map { $0.board == nil && $0.conversations == [4, 5] } == true)
+    check("a board naming a conversation names none", hub(row(pane(a, 4), pane(b, 5)), board: a).map { $0.conversations == [5] } == true)
+    check("a conversation in two panes shows once", hub(row(pane(a, 4), pane(b, 4))).map { $0.conversations == [4] && $0.content(of: $0.panes[1].id) == .picker } == true)
+    check("pickers alone show the board", hub(row(pane(a), pane(b))).map { $0.board?.uuidString == a } == true)
+    check("a focus on no pane moves to the first", hub(row(pane(a, 4), pane(b, 5)), focused: r)?.focused.uuidString == a)
+    check("a last conversation on the picker is forgotten", hub(row(pane(a, 4), pane(b)), last: b).map { $0.lastConversation == nil } == true)
 }
 
 print(failures == 0 ? "all held: \(audited) trees checked" : "\(failures) failed")

@@ -874,8 +874,12 @@ private struct AllProjectsLine: View {
             Text("\(working) working").foregroundStyle(Theme.tx2).fixedSize()
             if let spent {
                 dot
-                Text("\(Formats.cost(spent)) today").foregroundStyle(Theme.tx2).fixedSize()
-                    .help("Spent today in all, as Usage counts it")
+                // Usage is where the day's spend is broken down, by model, agent and project (#655).
+                Button("\(Formats.cost(spent)) today") { model.selection = .usage }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.tx2)
+                    .fixedSize()
+                    .help("Spent today in all, as Usage counts it. Open Usage.")
             }
             ForEach(plans) { plan in
                 dot

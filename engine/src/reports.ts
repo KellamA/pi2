@@ -664,10 +664,12 @@ export const reports: Feature = (given, running) => {
 	engine = running;
 	return {
 		tools: [reportsTool()],
-		// The orchestrator's alone (5.1), with the preview on and its project neither archived nor deleted. `toolNames` is
-		// not told the conversation, so another conversation of the orchestrator agent is offered it too, and refused.
+		// The orchestrator's alone (5.1), with the preview on and its project neither archived nor deleted: in its current
+		// conversation, once that is known, and not in another conversation of the orchestrator agent, such as a schedule's
+		// run (3.13). A conversation not made yet is known by its agent; the tool checks the conversation itself too.
 		toolNames: (_access, agent, where) => {
 			if (where.subChat || agent?.role !== "orchestrator" || agent.projectId === undefined || !inProjectOn(agent.projectId)) return [];
+			if (where.conversationId !== undefined && allProjects()[agent.projectId]?.conversation !== where.conversationId) return [];
 			return ["reports"];
 		},
 		start: async () => {

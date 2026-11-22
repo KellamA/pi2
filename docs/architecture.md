@@ -23,7 +23,7 @@ Read only the sections that apply to your work. For more on one feature, see its
 | Storage and credentials | [Where things live](#where-things-live) |
 | Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
 | Projects (the preview of #450) | [projects.md](projects.md), the contract every issue of the epic is built against: read its sections 1, 2 and your issue's row in its section 12 |
-| pi² for iPhone (the epic of #620; not built yet) | [iphone.md](iphone.md), the contract every issue of the epic is built against: read its sections 1, 2, 4 and 5.1, and your issue's row in its section 12; what the person sees is [design/iphone.md](design/iphone.md), with drawings in [design/iphone-drafts.html](design/iphone-drafts.html) |
+| pi² for iPhone (the epic of #620; not built yet) | [iphone.md](iphone.md), the contract every issue of the epic is built against: read its sections 1, 2, 4 and 5.1, and your issue's row in its section 12; what the person sees is [design/iphone.md](design/iphone.md), with drawings in [design/iphone-drafts.html](design/iphone-drafts.html); the owner's settings for the repository and the relay, and which paths wait for the owner's review, are [relay.md](relay.md) and `.github/CODEOWNERS` |
 | A worker's question that does not hold it (#507) | [design/worker-questions.md](design/worker-questions.md), agreed and built; the contract is [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) (3.9, 5.5) and the code `src/needs.ts` and `src/wakes.ts` |
 
 ## The two programs
@@ -37,7 +37,7 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/BrowserKit    pi²'s own browser: loading web pages, reading them and acting in them
           Sources/pi2-probe     a command-line way to try ComputerKit while developing; not part of the app
           Sources/pi2-browser-probe   checks BrowserKit against pages it serves itself; not part of the app
-          Sources/PaneKit       the tree of panes the conversation area is divided into, and the ready-made layouts
+          Sources/PaneKit       the tree of panes the conversation area and a project hub's board side are divided into, and the ready-made layouts
           Sources/pi2-layout-check    checks PaneKit, built with optimisation; not part of the app
           Sources/ComposeKit    what Return does in a field that sends a message: send, start a new line, or leave it to an input method
           Sources/pi2-compose-check   checks ComposeKit, with a real text field in a window of its own; not part of the app
@@ -172,7 +172,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/projectlimits.ts` | Projects: a project's limits, the one admission check every start passes, the readings it keeps, and what a start past a limit is told. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
 | `src/projectlimitstarts.ts` | Projects: a start past a limit allowed from its card, kept (`pi2.allowedStarts`) as the answer is taken and then made as `delegate` or an assignment would have made it. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
 | `src/projectspend.ts` | Projects: what each conversation spent today, from the Usage ledger, so that a project's daily spending counts its sub-chats and its put-away work. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
-| `src/carryover.ts` | Projects (#458): carrying over, one plan of what becomes what, worked out from the documents alone, its report, a run committed a project at a time, the variables' values copied to the Keychain after; and restoring one conversation of a deleted project (#531). See [projects.md](projects.md#9-carrying-over), section 9, and 3.6 |
+| `src/carryover.ts` | Projects (#458): carrying over, one plan of what becomes what, worked out from the documents alone, its report, a run committed a project at a time, the variables' values copied to the Keychain after; and restoring one conversation of a deleted project (#531); schedules on templates given their project's copy (`carrySchedules`, #656). See [projects.md](projects.md#9-carrying-over), section 9, and 3.6 and 3.13 |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, an agent's memory, and chat mode's |
 | `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
@@ -182,7 +182,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/keepawake.ts` | Keeping this Mac awake while agents work: what holds the "no idle sleep" assertion, when, and what the app is told. See [Keeping the Mac awake while agents work](#keeping-the-mac-awake-while-agents-work) |
 | `src/cache.ts` | How long a provider keeps a conversation's prompt cache: the long cache for a conversation that hands out work, a refusal of it, and what `engine.log` says. See [limits.md](limits.md#the-prompt-cache) |
 | `src/providererror.ts` | A provider's error as `delegate` and `engine.log` give it: shortened, with keys, account identifiers and request ids taken out |
-| `src/schedules.ts` | Schedule rules and next-run times |
+| `src/schedules.ts` | Schedule rules and next-run times. A schedule names an agent and starts a new conversation with it at its times, run from `main.ts` (`fire`). With the Projects preview on, a schedule runs as `scheduleRunsAs` (`state.ts`) says, its project's copy for one carried over, and a schedule of a project's agent is that project's: its run is a conversation of the project, and it is listed on the project's Settings tab. See [projects.md](projects.md#313-schedules-pi2schedules) |
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/environment.ts` | The environment the engine gives what it starts for an agent: its own, without the `PI2_` variables that configure pi² |

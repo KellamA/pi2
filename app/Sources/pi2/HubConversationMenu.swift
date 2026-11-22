@@ -165,10 +165,10 @@ struct ParentButton: View {
 }
 
 extension ProjectHubs {
-    /// Brings each project's board back where it showed one of `conversations` in its place: they were archived or
-    /// deleted (#642).
+    /// Closes the panes that showed one of `conversations`, bringing the board back where that was the last of them:
+    /// they were archived or deleted (#642, #657).
     func boardBack(from conversations: Set<Int>) {
-        for (project, shown) in shownAgents where conversations.contains(shown) { setAgent(nil, for: project) }
+        forget(projects: Array(Set(layouts.keys).union(savedLayouts.keys))) { conversations.contains($0) }
     }
 }
 

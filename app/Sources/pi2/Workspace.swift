@@ -1,10 +1,10 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import PaneKit
 
 // MARK: - Layout
 
-// The tree of panes and the ready-made layouts are in PaneKit (`app/Sources/PaneKit`).
+// The tree of panes and the ready-made layouts are in PaneKit (`app/Sources/PaneKit`); the split, its dividers and the
+// rest the hub's panes share with these are in Panes.swift, which outlasts this file (#483, #657).
 
 /// How the conversation area is split into panes, and which pane has the person's attention. The focused pane's
 /// conversation is the one the sidebar, the toolbar and the Conversation menu act on.
@@ -216,45 +216,6 @@ extension AppModel {
     }
 }
 
-extension EngineClient {
-    /// A conversation's title as the window and its pane show it.
-    func conversationTitle(_ id: Int) -> String {
-        // One that is archived is not in the sidebar's list; its title comes with its state.
-        let title = conversations.first { $0.id == id }?.title ?? archived.first { $0.id == id }?.title ?? open[id]?.state?.title ?? ""
-        return title.isEmpty ? "New conversation" : title
-    }
-
-    /// Who a conversation is with, and for a sub-chat, whose it is.
-    func conversationSubtitle(_ id: Int) -> String {
-        let agent = agent(open[id]?.state?.agent.agentId)?.name ?? ""
-        guard let parentID = conversations.first(where: { $0.id == id })?.parent,
-              let parent = conversations.first(where: { $0.id == parentID }) else { return agent }
-        return "\(agent) · sub-chat of “\(parent.title.isEmpty ? "New conversation" : parent.title)”"
-    }
-}
-
-extension EnvironmentValues {
-    /// Whether the view is in one of several panes, where room is short.
-    @Entry var inSplitPane = false
-    /// In a project's hub: shows a conversation in place of the board, as the hub's links to another conversation do
-    /// (#632). Nil elsewhere, where a link selects the conversation.
-    @Entry var showInHub: ((Int) -> Void)? = nil
-}
-
-/// A conversation being dragged from the sidebar onto a pane.
-struct ConversationDrag: Codable, Transferable {
-    let id: Int
-
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .pi2Conversation)
-    }
-}
-
-extension UTType {
-    /// Declared in the app's Info.plist (see build.sh). Its own type, so a text field never takes it as text.
-    static let pi2Conversation = UTType(exportedAs: "dev.pi2.conversation")
-}
-
 // MARK: - Views
 
 /// The conversation area: one conversation, or several in panes.
@@ -271,7 +232,7 @@ struct WorkspaceView: View {
         ZStack {
             if workspace.isSplit {
                 PaneTree(node: workspace.root, model: model)
-                    .padding(SplitBranch.gutter)
+                    .padding(PaneMetrics.gutter)
                     .background(Theme.side)
                     .coordinateSpace(.named(Workspace.space))
                     .background(PaneClickMonitor { point in
@@ -321,103 +282,20 @@ struct WorkspaceView: View {
     }
 }
 
-/// A node of the pane tree: a pane, or a split of more nodes.
+/// The old screens' pane tree, drawn with the split the hub's panes share (Panes.swift).
 struct PaneTree: View {
     let node: PaneNode
     let model: AppModel
 
     var body: some View {
-        if node.isPane {
-            PaneView(pane: node, model: model)
-        } else {
-            SplitBranch(node: node, model: model)
+        let workspace = model.workspace
+        PaneTreeView(node: node, space: Workspace.space, least: nil, actions: PaneSplitActions(
+            resize: { workspace.resize($0, $1) },
+            equalize: { workspace.equalize($0) },
+            save: { workspace.save() }
+        )) { pane in
+            PaneView(pane: pane, model: model)
         }
-    }
-}
-
-/// A split: its nodes with a divider between each two that slides to share the room differently.
-struct SplitBranch: View {
-    let node: PaneNode
-    let model: AppModel
-    /// The shares when the current drag began.
-    @State private var dragStart: [Double]?
-    @State private var dragging: Int?
-
-    static let gutter: CGFloat = 6
-    /// The least room a pane keeps when a divider is dragged towards it, when there is that much to go round.
-    private static let minimumWidth: CGFloat = 180
-    private static let minimumHeight: CGFloat = 130
-
-    private var horizontal: Bool { node.axis == .row }
-
-    var body: some View {
-        GeometryReader { geometry in
-            let length = horizontal ? geometry.size.width : geometry.size.height
-            let room = max(length - Self.gutter * CGFloat(node.children.count - 1), 1)
-            let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
-            stack {
-                ForEach(Array(node.children.enumerated()), id: \.element.id) { index, child in
-                    let share = room * CGFloat(node.fractions[index])
-                    PaneTree(node: child, model: model)
-                        .frame(width: horizontal ? share : geometry.size.width, height: horizontal ? geometry.size.height : share)
-                    if index < node.children.count - 1 {
-                        SplitHandle(axis: node.axis, active: dragging == index)
-                            .gesture(drag(index, room: room))
-                            .onTapGesture(count: 2) { model.workspace.equalize(node.id) }
-                            .help("Drag to resize. Double-click to share the room evenly.")
-                    }
-                }
-            }
-        }
-    }
-
-    /// Moves the divider after child `index`, between it and the next.
-    private func drag(_ index: Int, room: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 1, coordinateSpace: .named(Workspace.space))
-            .onChanged { value in
-                let start = dragStart ?? node.fractions
-                if dragStart == nil {
-                    dragStart = start
-                    dragging = index
-                }
-                guard start.count == node.fractions.count, index + 1 < start.count else { return }
-                let moved = Double((horizontal ? value.translation.width : value.translation.height) / room)
-                let pair = start[index] + start[index + 1]
-                let least = min(Double((horizontal ? Self.minimumWidth : Self.minimumHeight) / room), pair / 2)
-                var fractions = start
-                fractions[index] = min(max(start[index] + moved, least), pair - least)
-                fractions[index + 1] = pair - fractions[index]
-                model.workspace.resize(node.id, fractions)
-            }
-            .onEnded { _ in
-                dragStart = nil
-                dragging = nil
-                model.workspace.save()
-            }
-    }
-}
-
-/// The gutter between two panes, which can be dragged.
-private struct SplitHandle: View {
-    let axis: SplitAxis
-    let active: Bool
-    @State private var hovering = false
-
-    var body: some View {
-        let lit = hovering || active
-        Rectangle()
-            .fill(lit ? Theme.acc.opacity(0.18) : Color.clear)
-            .frame(width: axis == .row ? SplitBranch.gutter : nil, height: axis == .column ? SplitBranch.gutter : nil)
-            .overlay {
-                Capsule()
-                    .fill(lit ? Theme.acc : Theme.line2)
-                    .frame(width: axis == .row ? 2 : 26, height: axis == .row ? 26 : 2)
-            }
-            .contentShape(.rect)
-            .pointerStyle(axis == .row ? .columnResize : .rowResize)
-            .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.12), value: lit)
-            .accessibilityLabel(axis == .row ? "Divider between panes side by side" : "Divider between panes one above the other")
     }
 }
 
@@ -738,54 +616,6 @@ private struct LayoutThumbnail: View {
     }
 }
 
-/// Watches clicks in the workspace, without taking them, so a click anywhere in a pane — the conversation page is a
-/// web view SwiftUI's gestures never see — moves the person's attention to that pane.
-struct PaneClickMonitor: NSViewRepresentable {
-    let onClick: (CGPoint) -> Void
-
-    func makeNSView(context: Context) -> Watcher { Watcher() }
-
-    func updateNSView(_ view: Watcher, context: Context) {
-        view.onClick = onClick
-    }
-
-    static func dismantleNSView(_ view: Watcher, coordinator: ()) {
-        view.stop()
-    }
-
-    final class Watcher: NSView {
-        var onClick: (CGPoint) -> Void = { _ in }
-        private var monitor: Any?
-
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            stop()
-            guard window != nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                let windowNumber = event.windowNumber
-                let location = event.locationInWindow
-                MainActor.assumeIsolated { self?.clicked(at: location, inWindow: windowNumber) }
-                return event
-            }
-        }
-
-        private func clicked(at location: NSPoint, inWindow windowNumber: Int) {
-            guard let window, window.windowNumber == windowNumber else { return }
-            let point = convert(location, from: nil)
-            guard bounds.contains(point) else { return }
-            // SwiftUI measures from the top left.
-            onClick(CGPoint(x: point.x, y: isFlipped ? point.y : bounds.height - point.y))
-        }
-
-        func stop() {
-            if let monitor { NSEvent.removeMonitor(monitor) }
-            monitor = nil
-        }
-    }
-}
-
 // MARK: - Menu commands
 
 /// The View menu's pane commands. They read the mode here rather than in the scene, so that switching it draws this
@@ -795,10 +625,14 @@ struct PaneCommands: View {
     private var workspace: Workspace { model.workspace }
 
     var body: some View {
-        // Panes are the agent view's; in chat mode they would change it out of sight. With the projects preview on they
-        // are not drawn at all (#644).
-        Group { commands }
-            .disabled(model.mode == .chat || model.engine.projectsPreview)
+        // With the projects preview on they act on the shown hub's panes (#657), and these panes are not drawn at all
+        // (#644). Otherwise they are the agent view's; in chat mode they would change it out of sight.
+        if model.engine.projectsPreview {
+            HubPaneCommands(model: model)
+        } else {
+            Group { commands }
+                .disabled(model.mode == .chat)
+        }
     }
 
     @ViewBuilder private var commands: some View {
