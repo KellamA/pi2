@@ -165,6 +165,8 @@ struct HomeConnectionBar: View {
 private struct HomeConnectionDetail: View {
     let reading: HomeConnectionBar.Reading
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .headline) private var dot: CGFloat = 10
 
     var body: some View {
         NavigationStack {
@@ -173,7 +175,7 @@ private struct HomeConnectionDetail: View {
                     Label {
                         Text(reading.line).font(.headline)
                     } icon: {
-                        Circle().fill(reading.tone.color).frame(width: 10, height: 10)
+                        Circle().fill(reading.tone.color).frame(width: dot, height: dot)
                     }
                     Text(reading.explanation)
                         .foregroundStyle(.secondary)
@@ -189,6 +191,7 @@ private struct HomeConnectionDetail: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        // Whole at once at the largest text sizes, where half the screen holds a line or two.
+        .presentationDetents(typeSize.isAccessibilitySize ? [.large] : [.medium, .large])
     }
 }
