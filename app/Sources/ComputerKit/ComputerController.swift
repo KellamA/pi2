@@ -38,10 +38,6 @@ public actor ComputerController {
     private static let needsAccessibility =
         "pi² does not have Accessibility permission, which it needs to read and work other apps. The person can grant it in this agent's settings in pi², under Computer use (System Settings › Privacy & Security › Accessibility), then reopen pi²; an update of pi² can cost it the permission until it is given again. Until then, tell them that is what is missing."
 
-    public func forget(conversationId: Int) {
-        views = views.filter { !$0.key.hasPrefix("\(conversationId)|") }
-    }
-
     // MARK: - Entry point
 
     public func perform(_ request: ComputerRequest) async -> ComputerReply {

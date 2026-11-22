@@ -52,7 +52,7 @@ jobs:
               changelog.d/*) ;;
               # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
               scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
-              scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner) ;;
+              scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
               # could break that.
               app/VERSION)
@@ -124,7 +124,7 @@ jobs:
     name: Scripts (tests)
     # scripts/issue and its hook need only bash, git and jq, so they are checked on Linux (#235). Neither touches a
     # GitHub issue: the hook's test has a stand-in gh. So does the test of scripts/auto-merge, and it touches no pull
-    # request (#553).
+    # request (#553). scripts/test-docs-lists checks that the docs' lists of the engine's files keep up with them (#640).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -134,6 +134,7 @@ jobs:
       - run: scripts/test-issue
       - run: scripts/test-issue-hook
       - run: scripts/test-auto-merge
+      - run: scripts/test-docs-lists
 
   app:
     name: App (build)

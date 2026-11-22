@@ -94,3 +94,44 @@ struct AgentCompactionSection: View {
         }
     }
 }
+
+/// The orchestrator's size, on a project's Settings tab, with its model (#632): the orchestrator's agent's own
+/// `compactionTokens`, saved as its page saves it, with the same choices.
+struct OrchestratorSummarySize: View {
+    let engine: EngineClient
+    let agent: AgentProfile?
+    /// The engine's answer when saving failed, or nil once a save is tried again.
+    let failed: (String?) -> Void
+
+    private var fallback: Int? { engine.extras["compactionSettings"]?["defaultCompactionTokens"]?.intValue }
+
+    var body: some View {
+        let tokens = agent?.compactionTokens
+        Picker("Summarise earlier messages when the conversation reaches", selection: Binding(get: { tokens }, set: { save($0) })) {
+            Text("Use the default (\(fallback.map(CompactionSize.label) ?? "off"))").tag(Int?.none)
+            Text("Off").tag(Int?.some(0))
+            Divider()
+            ForEach(CompactionSize.choices(including: tokens == 0 ? nil : tokens), id: \.self) { Text(CompactionSize.label($0)).tag(Int?.some($0)) }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .fixedSize()
+        .disabled(agent == nil || engine.status != .connected)
+        .help(tokens == 0
+            ? "Off: the conversation is summarised only as it nears the most its model can read at once."
+            : CompactionSize.sentence(tokens ?? fallback, whose: "The orchestrator’s conversations"))
+    }
+
+    private func save(_ value: Int?) {
+        guard let agent, value != agent.compactionTokens else { return }
+        failed(nil)
+        Task {
+            do {
+                // The engine keeps every setting it is not sent, and the agent's project; null inherits the default.
+                _ = try await engine.call("agents.save", ["agent": ["id": agent.id, "name": agent.name, "compactionTokens": value as Any? ?? NSNull()]])
+            } catch {
+                failed(error.localizedDescription)
+            }
+        }
+    }
+}

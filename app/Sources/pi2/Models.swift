@@ -90,6 +90,8 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
     var runsAs: String? = nil
     /// "current" or "earlier" for a project's conversation with its orchestrator; nil for any other.
     var orchestrator: String? = nil
+    /// A conversation with a project's orchestrator begun with Start fresh: the one it followed (docs/projects.md, 6.5).
+    var freshFrom: Int? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
@@ -907,12 +909,6 @@ struct VersionPoint: Codable, Equatable {
     let count: Int
 
     private enum CodingKeys: String, CodingKey { case after, index, count }
-
-    init(after: Int?, index: Int, count: Int) {
-        self.after = after
-        self.index = index
-        self.count = count
-    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
