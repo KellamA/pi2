@@ -37,7 +37,7 @@ struct MenuBarView: View {
             }
             ForEach(engine.activity.filter { $0.parent == nil }) { run in
                 Button {
-                    show(.conversation(run.conversationId))
+                    show(conversation: run.conversationId)
                 } label: {
                     HStack(spacing: 8) {
                         AgentAvatar(agent: engine.agent(run.agentId), size: 16)
@@ -128,13 +128,20 @@ struct MenuBarView: View {
                 }
             }
             ForEach(loose) { need in
-                MenuBarNeedRow(engine: engine, need: need) { show(.conversation(need.rootConversationId)) }
+                MenuBarNeedRow(engine: engine, need: need) { show(conversation: need.rootConversationId) }
             }
         }
     }
 
     private func show(_ selection: Selection?) {
         if let selection { model.selection = selection }
+        openWindow(id: "main")
+        NSApp.activate()
+    }
+
+    /// Opens a conversation where it lives (`AppModel.openConversation`), in the main window.
+    private func show(conversation id: Int) {
+        model.openConversation(id)
         openWindow(id: "main")
         NSApp.activate()
     }
@@ -146,7 +153,7 @@ struct MenuBarView: View {
         Task {
             guard let id = await engine.createConversation() else { return }
             await engine.submit(text, to: id, steer: false)
-            show(.conversation(id))
+            show(conversation: id)
         }
     }
 }
@@ -302,7 +309,7 @@ struct QuickAskView: View {
                 .defaultScrollAnchor(.bottom)
                 HStack {
                     Button("Open in pi²") {
-                        model.selection = .conversation(conversationID)
+                        model.openConversation(conversationID)
                         model.showMainWindow()
                         NSApp.activate()
                         close()

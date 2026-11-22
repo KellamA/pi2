@@ -194,7 +194,7 @@ private struct LocalServerRow: View {
                 .fixedSize()
             }
             if let first = server.users.first {
-                Button("Open") { model.selection = .conversation(engine.conversations.first { $0.id == first }?.parent ?? first) }
+                Button("Open") { model.openConversation(engine.conversations.first { $0.id == first }?.parent ?? first) }
                     .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
                     .fixedSize()
                     .help("Open a conversation using it")
