@@ -1754,6 +1754,177 @@ pre.card-diff {
 	bottom: 50px;
 }
 
+/*
+ * MARK: - A phone (#671)
+ *
+ * The phone's view marks the page `narrow touch` before anything is drawn (TranscriptLayout.phone in TranscriptKit);
+ * the Mac's never does. So none of these rules reaches the Mac, at any width of its panes: the narrowest of them, 319
+ * points, is narrower than any iPhone, so a rule by width alone could not tell the two apart. `narrow` is a screen of
+ * 375 to 440 points held in the hand; `touch` is a finger, with no pointer to hover and nothing smaller to aim at.
+ */
+
+/* The column to the screen's edges, less a thumb's margin, in a size to read at arm's length. */
+html.narrow {
+	font-size: 15px;
+}
+
+html.narrow main {
+	padding: 14px 16px 32px;
+}
+
+html.narrow main > * + * {
+	margin-top: 22px;
+}
+
+html.narrow .bubble,
+html.narrow .attachments {
+	max-width: 88%;
+}
+
+html.narrow .editor {
+	width: 100%;
+}
+
+html.narrow .md table {
+	font-size: 13px;
+}
+
+html.narrow .md th,
+html.narrow .md td {
+	padding: 5px 8px;
+}
+
+html.narrow .codeblock pre {
+	padding: 10px 12px;
+	font-size: 12.5px;
+}
+
+html.narrow .row-body,
+html.narrow .delegate-body {
+	margin-left: 8px;
+}
+
+/* The card's note goes under its title rather than squeeze it into a column of its own. */
+html.narrow .card {
+	padding: 12px 12px 13px;
+	font-size: 13.5px;
+}
+
+html.narrow .card-head {
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 1px;
+}
+
+html.narrow .card-title {
+	font-size: 14px;
+}
+
+html.narrow .card-note {
+	margin-left: 0;
+	white-space: normal;
+}
+
+html.narrow .card-summary {
+	font-size: 12.5px;
+}
+
+html.narrow .card-buttons .btn code {
+	max-width: 11em;
+}
+
+html.narrow #lightbox {
+	padding: 12px;
+}
+
+html.narrow #notice {
+	max-width: calc(100% - 24px);
+}
+
+/* What a pointer shows by hovering is always shown; a row's chevron says it opens. */
+html.touch .actions,
+html.touch .actions.has-versions > .action,
+html.touch .chevron {
+	opacity: 1;
+}
+
+/* Under the message, in the flow, rather than over the gap below it. */
+html.touch .actions {
+	position: static;
+	margin: 2px 0 -10px;
+}
+
+html.touch .msg.assistant .actions {
+	margin-left: -8px;
+}
+
+/* Every control at least 32 points either way, as a finger needs (a tool row is one control, its chevron in it). */
+html.touch .action {
+	width: 34px;
+	height: 34px;
+	border-radius: 8px;
+}
+
+html.touch .action.narrow {
+	width: 32px;
+}
+
+html.touch .action-glyph {
+	width: 16px;
+	height: 16px;
+}
+
+html.touch .row-head {
+	min-height: 36px;
+}
+
+html.touch .code-head,
+html.touch .detail-head {
+	min-height: 38px;
+}
+
+html.touch .copy-button {
+	min-width: 44px;
+	min-height: 34px;
+	padding: 6px 10px;
+	font-size: 12.5px;
+}
+
+html.touch .btn {
+	min-height: 36px;
+	padding: 7px 13px;
+	font-size: 14px;
+}
+
+html.touch .btn code {
+	font-size: 13px;
+}
+
+html.touch .link-button {
+	min-height: 32px;
+	padding: 4px 8px;
+}
+
+html.touch .model-choice {
+	min-height: 40px;
+}
+
+/* At 16 pixels or more, a field that takes the keyboard does not zoom the page. */
+html.touch .answer-field {
+	font-size: 16px;
+}
+
+html.touch #jump {
+	padding: 9px 16px;
+	font-size: 14px;
+}
+
+html.touch #lightbox button {
+	min-height: 36px;
+	padding: 6px 14px;
+	font-size: 14px;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,

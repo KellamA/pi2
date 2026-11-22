@@ -1,6 +1,6 @@
 # Schedules an agent sets for itself
 
-An agent asked to "check this every morning" or "look again in two hours" can set the schedule itself, if the person has allowed it, and the person approves each one before it is set. It is the same kind of schedule the person makes on a project's Settings tab, or on a template's page: at its time, a new conversation starts with the agent and the schedule's prompt. The engine side is `engine/src/selfschedule.ts`; the schedules themselves are in `engine/src/schedules.ts` and run from `main.ts`.
+An agent asked to "check this every morning" or "look again in two hours" can set the schedule itself, if the person has allowed it, and the person approves each one before it is set. It is the same kind of schedule the person makes on a project's Settings tab, or on a template's page: at its time, a new conversation starts with the agent and the schedule's prompt. The engine side is `engine/src/selfschedule.ts`; the schedules themselves are in `engine/src/schedules.ts` and run from `engine/src/scheduleruns.ts`.
 
 ## Turning it on
 

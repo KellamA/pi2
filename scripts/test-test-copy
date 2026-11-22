@@ -210,8 +210,9 @@ expect "no copy named test-7 was started from this checkout" shot test-7 "$root/
 # start skips the first-run welcome by writing the engine's own setting into the copy's settings.json, as
 # settings.finishOnboarding does. If the engine ever names it otherwise, the welcome comes back over every picture.
 engine="$(dirname -- "$script")/../engine/src/main.ts"
-if ! grep -qF 'settings.onboarded = true;' "$engine"; then
-	echo "FAIL: engine/src/main.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
+settingsRequests="$(dirname -- "$script")/../engine/src/settingsrequests.ts"
+if ! grep -qF 'settings.onboarded = true;' "$settingsRequests"; then
+	echo "FAIL: engine/src/settingsrequests.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
 	failures=$((failures + 1))
 elif ! grep -qF 'const settingsPath = join(home, "settings.json");' "$engine"; then
 	echo "FAIL: engine/src/main.ts no longer keeps its settings in settings.json; change where test-copy start writes them"
@@ -589,6 +590,11 @@ kill "$RESPONDER_PID" 2>/dev/null
 respond '{"error":"the window server has no record of the main window, which accessibility gives at 1120×740 at (1760, 1130), so the computer tool would not take it"}'
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
 	answers 1 "no, computer use cannot click in test-7: the window server has no record of the main window" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+# The size alone is taken only for the app's main window, and only with no other window of the copy that size (#770).
+respond '{"error":"the window server has the main window at 1120×740 at (3560, 1130) and accessibility gives it at 1120×740 at (1760, 1130), and another window of the copy is that size too, so it cannot be told by its size alone, so the computer tool would not take it as the same window"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the window server has the main window at 1120×740 at (3560, 1130) and accessibility gives it at 1120×740 at (1760, 1130), and another window of the copy is that size too" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
 # What #612 was: a copy's answer that is not that, such as the window list's "did not join", which the tool read
 # through regardless, is never a no.

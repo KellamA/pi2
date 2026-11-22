@@ -1,3 +1,4 @@
+import EngineKit
 import Foundation
 
 /// Measures how busy the app's main thread is, for working on its speed under load (#347): what each kind of event
@@ -242,3 +243,6 @@ enum PerfProbe {
         try? handle.close()
     }
 }
+
+/// The session in EngineKit says what its work costs through this probe (`EngineSession.probe`).
+extension PerfProbe: EngineProbe {}

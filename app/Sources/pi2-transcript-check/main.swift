@@ -4,6 +4,9 @@
 // twice, and that a page loaded ahead whose process ends is let go and another loaded in its place. Also where a page
 // waits: in the window, unseen, out of reach of clicks, focus and VoiceOver, and that it moves into its pane without
 // ever leaving the window (WebKit is slow to draw a page put back in one); or in no window, when none keeps a place.
+// Then the page's layouts (#671): the Mac's page unmarked and the phone's marked before its scripts run; the page drawn
+// at a phone's width, 390 points, as the phone's view marks it (Narrow.swift), and at the Mac's narrowest pane as before.
+// `--pictures <folder>` writes both as drawn there.
 //
 // The real page is loaded from the repository (`Web/transcript`; run it from `app/`, or pass `--page <folder>`), in
 // web views of this program's own, in a window that never comes on screen, holding a place for the page loaded ahead
@@ -11,7 +14,7 @@
 // To end a page's process it asks WebKit for the process's id, through a call that is not public
 // (`_webProcessIdentifier`), and ends it by that id: a process its own web view started, never another's.
 //
-//   cd app && swift build --product pi2-transcript-check && .build/debug/pi2-transcript-check
+//   cd app && swift build --product pi2-transcript-check && .build/debug/pi2-transcript-check [--pictures build/shots/671]
 //
 // What it cannot see is the app's own bridge feeding a pane's page (the engine is not here): that is tried by hand in a
 // throwaway copy. Exits 1 if anything failed.
@@ -255,6 +258,31 @@ func run(folder: URL) async {
     for page in handed { page.close() }
 }
 
+/// The classes the page's root element has.
+@MainActor
+func marks(_ view: WKWebView) async -> String {
+    await js(view, "document.documentElement.className") as? String ?? "(no page)"
+}
+
+/// The page as the Mac draws it is not marked for a phone; marked, it is before its own scripts run, whatever its
+/// Content-Security-Policy says of scripts (the mark is the app's, not the page's).
+@MainActor
+func layouts(folder: URL) async {
+    await group("the Mac's page is not marked for a phone, and the phone's is, before its first drawing") {
+        let mac = TranscriptWebKitView(folder: folder)
+        let phone = TranscriptWebKitView(folder: folder, layout: .phone)
+        defer { mac.close(); phone.close() }
+        guard await until("both pages say they are ready", { mac.isReady && phone.isReady }) else { return }
+        let wide = await marks(mac)
+        check("the Mac's page has no mark", wide == "", "classes \(wide.debugDescription)")
+        let narrow = await marks(phone)
+        check("the phone's page is marked narrow and touch", narrow == "narrow touch", "classes \(narrow.debugDescription)")
+        // The page's own scripts ran after the mark was set: what they saw is what the page draws with.
+        let early = await js(phone, "document.documentElement.classList.contains('narrow') && typeof window.pi2?.receive === 'function'") as? Bool
+        check("and the page's scripts ran with it", early == true)
+    }
+}
+
 let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
@@ -264,6 +292,10 @@ Task { @MainActor in
     let url = URL(fileURLWithPath: folder, isDirectory: true)
     if FileManager.default.fileExists(atPath: url.appendingPathComponent("index.html").path) {
         await run(folder: url)
+        await layouts(folder: url)
+        let pictures = arguments.firstIndex(of: "--pictures").flatMap { arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1], isDirectory: true) : nil }
+        if let pictures { try? FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true) }
+        await narrow(folder: url, pictures: pictures)
     } else {
         check("the conversation page is found", false, "no index.html in \(url.path); run from app/ or pass --page <folder>")
     }

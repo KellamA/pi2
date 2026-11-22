@@ -59,11 +59,20 @@ package struct ServerWindow {
     /// The two disagree on where the window is while macOS moves it between Spaces, so an exact match alone turned the
     /// copy's own main window down then, and the tool read none of its controls (#748). A stale window that has
     /// closed, such as Settings, is another size and is still turned down. `matching` stays exact, for any other app.
+    ///
+    /// The size alone says which window it is only when nothing else could be meant (#770): give `parked` only for the
+    /// window the app gives as its main window, never a stale focused window, and it is still refused when another
+    /// window of the process is that size too, such as a second Background Command window, since controls read from
+    /// one window would then be paired with another's picture and clicks.
     package static func backing(_ frame: CGRect, in windows: [Self], pid: pid_t, parked: Self?) -> Self? {
         if let exact = matching(frame, in: windows, pid: pid) { return exact }
-        guard let parked, parked.pid == pid,
-              abs(parked.frame.width - frame.width) + abs(parked.frame.height - frame.height) < 4 else { return nil }
+        guard let parked, parked.pid == pid, sameSize(parked.frame, frame),
+              !windows.contains(where: { $0.pid == pid && $0.id != parked.id && sameSize($0.frame, frame) }) else { return nil }
         return parked
+    }
+
+    package static func sameSize(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.width - b.width) + abs(a.height - b.height) < 4
     }
 }
 
@@ -93,5 +102,66 @@ package enum WindowChoice {
     package static func innermost(containing point: CGPoint, in frames: [CGRect]) -> Int? {
         frames.indices.filter { !frames[$0].isEmpty && frames[$0].contains(point) }
             .min { frames[$0].width * frames[$0].height < frames[$1].width * frames[$1].height }
+    }
+}
+
+/// What a click or a context menu at a point acts on, decided in one place for the approval card and for the action,
+/// so that the two cannot choose apart (#770). Generic over the element, so that `pi2-computer-check` can decide it
+/// with stand-ins for what a hit test and a window's listed controls gave.
+package enum AtPoint {
+    /// The element worked at `point` (through accessibility where it answers to that, else by a real click at the
+    /// point), or nil for a real click with nothing named.
+    /// - Any app but a parked test copy: what the hit test found, as it always was, whether or not it can be pressed.
+    /// - A parked copy: the same when the hit test found something in the window read; when it found nothing, or
+    ///   something outside that window, the innermost listed control holding the point (#748), and else nothing. A
+    ///   hit test reads the screen, which shows next to nothing of a parked copy's window.
+    /// `inWindow` is asked only of a parked copy's hit, so any other app's click asks nothing more than it did.
+    package static func target<E>(at point: CGPoint, hit: E?, listed: [(element: E, frame: CGRect)], parked: Bool,
+                                  inWindow: (E) -> Bool) -> E? {
+        guard parked else { return hit }
+        if let hit, inWindow(hit) { return hit }
+        return WindowChoice.innermost(containing: point, in: listed.map(\.frame)).map { listed[$0].element }
+    }
+
+    /// Whether `chosen`, what the approval card named, is still what is at the point after the wait: `target` gives
+    /// it again now (`now`), and where it was a listed control, not the hit test's own find, the control is still
+    /// there and still holds the point (`frameNow`, read again; nil once it is gone).
+    package static func holds<E: Equatable>(_ chosen: E?, now: E?, hit: E?, at point: CGPoint, frameNow: (E) -> CGRect?) -> Bool {
+        guard chosen == now else { return false }
+        guard let chosen, chosen != hit else { return true }
+        return frameNow(chosen)?.contains(point) == true
+    }
+
+    /// What the approval cards for actions at a point named, kept until each action comes. The action acts on that
+    /// choice, and is refused when it no longer holds, rather than on whatever is at the point by then: the window can
+    /// change during a long wait for approval. An action no card was shown for (Ask before each action off, or the
+    /// app allowed for the conversation) finds nothing kept, and acts on what is there, as it always did.
+    package struct Kept<E: Equatable> {
+        private var chosen: [String: E?] = [:]
+
+        package init() {}
+
+        /// The choice a card names, for the action that names `key`: its conversation, app, action and point.
+        package mutating func keep(_ element: E?, for key: String) { chosen[key] = .some(element) }
+
+        /// What the action for `key` acts on: what was chosen now (`now`, with the hit test's own find `hit`) when
+        /// nothing was kept for it; the card's choice when it holds; `.changed` when it does not, and the action is
+        /// refused. The kept choice is used once.
+        package mutating func settle(_ now: E?, hit: E?, for key: String, at point: CGPoint, frameNow: (E) -> CGRect?) -> Settled<E> {
+            guard let card = chosen.removeValue(forKey: key) else { return .act(now) }
+            return AtPoint.holds(card, now: now, hit: hit, at: point, frameNow: frameNow) ? .act(card) : .changed
+        }
+    }
+
+    package enum Settled<E: Equatable>: Equatable {
+        /// Act on this element, or with nil by a real click at the point.
+        case act(E?)
+        /// What the card named is gone or no longer at the point: refuse, and say to look again.
+        case changed
+    }
+
+    /// What the agent is told when the window changed during the wait for approval, so the action was not taken.
+    package static func changed(_ undone: String, x: Double, y: Double) -> String {
+        "The window changed while this waited for approval: what is at (\(Int(x)), \(Int(y))) is not what the approval named, so \(undone). Take a screenshot to look again, then try again."
     }
 }

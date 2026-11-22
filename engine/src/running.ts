@@ -3,9 +3,9 @@
 // A command that is stuck (waiting on a privacy prompt, a network folder, a lock) looks the same as one that is busy:
 // a spinner and "Running…". pi durable's live document says which calls are running but not since when, so the shell
 // tool notes it here as it runs a command (commands.ts), and the engine adds it to what the app is sent: each running
-// call of a conversation's live state, and each run in Activity (main.ts). The app and the conversation page tick the
-// clocks themselves; the engine sends a time only when it changes, and the time of the last output at most every few
-// seconds, which is close enough for "quiet for" shown only after half a minute.
+// call of a conversation's live state, and each run in Activity (appevents.ts). The app and the conversation page tick
+// the clocks themselves; the engine sends a time only when it changes, and the time of the last output at most every
+// few seconds, which is close enough for "quiet for" shown only after half a minute.
 //
 // Kept in memory only. A command running when the engine stopped is not running any more.
 

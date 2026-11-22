@@ -3,8 +3,8 @@
 // Per agent and off by default. The person approves every new schedule, and there is no "always allow": a schedule
 // runs later with no one watching, so each one is a decision of its own. The agent can list its schedules and cancel
 // the ones it set, never the person's, and it never schedules another agent. The schedules themselves are the same rows
-// the person makes on a project's Settings tab (schedules.ts), marked with `createdBy`; main.ts watches them and runs them.
-// See docs/schedules.md.
+// the person makes on a project's Settings tab (schedules.ts), marked with `createdBy`; main.ts watches them, and
+// scheduleruns.ts runs them. See docs/schedules.md.
 
 import { type ConversationId, defineTool, section } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
