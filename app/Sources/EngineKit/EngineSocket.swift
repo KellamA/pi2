@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Network
 
 /// Where the engine's socket is reached: `engine.sock` in the data folder.
 ///
@@ -58,5 +59,53 @@ public enum EngineSocket {
 
     private static func failure(_ message: String) -> NSError {
         NSError(domain: "pi2.EngineSocket", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
+/// The Mac's transport: the engine's Unix socket, at the path `EngineSocket.path(for:)` gives.
+@MainActor
+public final class UnixSocketTransport: EngineTransport {
+    private let connection: NWConnection
+
+    public init(path: String) {
+        connection = NWConnection(to: .unix(path: path), using: .tcp)
+    }
+
+    public func start(_ handler: @escaping @MainActor (EngineTransportEvent) -> Void) {
+        connection.stateUpdateHandler = { [weak self] state in
+            MainActor.assumeIsolated {
+                switch state {
+                case .ready:
+                    handler(.ready)
+                    self?.receive(handler)
+                case .waiting(let error), .failed(let error):
+                    handler(.failed("\(error)"))
+                default:
+                    break
+                }
+            }
+        }
+        connection.start(queue: .main)
+    }
+
+    private func receive(_ handler: @escaping @MainActor (EngineTransportEvent) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 18) { [weak self] data, _, isComplete, error in
+            MainActor.assumeIsolated {
+                if let data { handler(.received(data)) }
+                if isComplete || error != nil {
+                    handler(.closed(error.map { "\($0)" } ?? "closed by the engine"))
+                } else {
+                    self?.receive(handler)
+                }
+            }
+        }
+    }
+
+    public func send(_ data: Data) {
+        connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    public func cancel() {
+        connection.cancel()
     }
 }

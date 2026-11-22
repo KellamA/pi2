@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import Observation
 import PiModels
 
@@ -184,7 +183,8 @@ public final class EngineSession<Draft: MessageDraft> {
     /// The speed probe the session reports to, if any.
     @ObservationIgnored public var probe: any EngineProbe.Type = NoProbe.self
 
-    public private(set) var connection: NWConnection?
+    /// What carries the connection to the engine, while there is one.
+    public private(set) var transport: (any EngineTransport)?
     private var buffer = Data()
     private var nextRequestID = 1
     private var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
@@ -195,7 +195,7 @@ public final class EngineSession<Draft: MessageDraft> {
 
     @discardableResult
     public func call(_ method: String, _ params: [String: Any] = [:]) async throws -> JSONValue {
-        guard let connection, status == .connected else { throw EngineError(message: "The engine is not running yet.", unanswered: true) }
+        guard let transport, status == .connected else { throw EngineError(message: "The engine is not running yet.", unanswered: true) }
         let id = nextRequestID
         nextRequestID += 1
         var data = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
@@ -203,7 +203,7 @@ public final class EngineSession<Draft: MessageDraft> {
         probe.sent(id, method)
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
-            connection.send(content: data, completion: .contentProcessed { _ in })
+            transport.send(data)
         }
     }
 
@@ -450,45 +450,28 @@ public final class EngineSession<Draft: MessageDraft> {
 
     // MARK: - Connection
 
-    /// Connects to the engine's socket at `socketPath`.
-    public func connect(to socketPath: String) {
-        let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
-        self.connection = connection
+    /// Connects to the engine over `transport`.
+    public func connect(_ transport: any EngineTransport) {
+        self.transport = transport
         buffer.removeAll()
-        connection.stateUpdateHandler = { [weak self] state in
-            MainActor.assumeIsolated {
-                guard let self, self.connection === connection else { return }
-                switch state {
-                case .ready:
-                    self.status = .connected
-                    self.host?.sessionConnected()
-                    self.receive(on: connection)
-                    // The engine forgets subscriptions with the connection; ask again for what is on screen.
-                    for id in self.open.keys { self.requestOpen(id) }
-                    self.sendShown()
-                case .waiting(let error), .failed(let error):
-                    if self.status == .connected { self.host?.note("connection failed: \(error)") }
-                    self.retry()
-                default:
-                    break
-                }
-            }
-        }
-        connection.start(queue: .main)
-    }
-
-    private func receive(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 18) { [weak self] data, _, isComplete, error in
-            MainActor.assumeIsolated {
-                guard let self, self.connection === connection else { return }
-                if let data { self.consume(data) }
-                if isComplete || error != nil {
-                    self.host?.note("connection lost: \(error.map { "\($0)" } ?? "closed by the engine")")
-                    self.status = .restarting
-                    self.retry()
-                } else {
-                    self.receive(on: connection)
-                }
+        transport.start { [weak self, weak transport] event in
+            guard let self, let transport, self.transport === transport else { return }
+            switch event {
+            case .ready:
+                self.status = .connected
+                self.host?.sessionConnected()
+                // The engine forgets subscriptions with the connection; ask again for what is on screen.
+                for id in self.open.keys { self.requestOpen(id) }
+                self.sendShown()
+            case .received(let data):
+                self.consume(data)
+            case .failed(let error):
+                if self.status == .connected { self.host?.note("connection failed: \(error)") }
+                self.retry()
+            case .closed(let why):
+                self.host?.note("connection lost: \(why)")
+                self.status = .restarting
+                self.retry()
             }
         }
     }
@@ -769,8 +752,8 @@ public final class EngineSession<Draft: MessageDraft> {
 
     /// Drop the current connection, fail what waited for an answer, and let the host start an engine and connect again.
     private func retry() {
-        connection?.cancel()
-        connection = nil
+        transport?.cancel()
+        transport = nil
         if status == .connected { status = .restarting }
         for continuation in pending.values { continuation.resume(throwing: EngineError(message: "The engine stopped before it answered.", unanswered: true)) }
         pending.removeAll()

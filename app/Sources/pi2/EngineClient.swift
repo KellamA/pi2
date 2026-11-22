@@ -2,7 +2,6 @@ import AppKit
 import EngineKit
 import Foundation
 import LoginItemKit
-import Network
 import Observation
 import PiModels
 
@@ -181,7 +180,7 @@ final class EngineClient: EngineSessionHost {
     // MARK: - Connection
 
     func start() {
-        guard session.connection == nil else { return }
+        guard session.transport == nil else { return }
         connect()
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.session.closeUnwanted() }
@@ -197,13 +196,13 @@ final class EngineClient: EngineSessionHost {
             lastError = "Cannot reach the engine for the data folder \(home.path): \(error.localizedDescription)"
             return
         }
-        session.connect(to: socketPath)
+        session.connect(UnixSocketTransport(path: socketPath))
     }
 
     // MARK: - What the session leaves to the Mac
 
     func sessionConnected() {
-        guard let connection = session.connection else { return }
+        guard let connection = session.transport else { return }
         self.startsWithoutConnecting = 0
         self.launchFailure = nil
         self.lastExit = nil
@@ -225,7 +224,7 @@ final class EngineClient: EngineSessionHost {
         let delay: Duration = startProblem == nil ? .milliseconds(250) : .seconds(2)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
-            guard let self, self.session.connection == nil else { return }
+            guard let self, self.session.transport == nil else { return }
             self.connect()
         }
     }
@@ -482,14 +481,14 @@ final class EngineClient: EngineSessionHost {
 
     /// The engine can outlive the app, but even an engine of this build may have been started by an outdated login
     /// item. Check both after connecting and share a single stop if both need changing. Runs pick up after the stop.
-    private func reconcileEngine(on connection: NWConnection) async {
-        guard Self.isSelfContained, session.connection === connection, !holdEngine,
+    private func reconcileEngine(on connection: any EngineTransport) async {
+        guard Self.isSelfContained, session.transport === connection, !holdEngine,
               let (node, main) = Self.enginePaths else { return }
         var replaceEngine = false
         if !replacedEngine {
             // An engine from before this check does not know the method, which makes it just as much from another build.
             let info = try? await call("engine.info")
-            guard session.connection === connection, !holdEngine else { return }
+            guard session.transport === connection, !holdEngine else { return }
             if info == nil || info?["build"]?.stringValue != Self.buildID || info?["main"]?.stringValue != main {
                 replaceEngine = true
                 replacedEngine = true
@@ -544,9 +543,9 @@ final class EngineClient: EngineSessionHost {
     /// The engine takes answers to approvals and questions only from the app, which it tells by the code signature of
     /// the process at the other end of the connection (#504). Asked once a connection is made, so that if it does not
     /// take them from this app, app.log says why: the person could not answer anything until it did.
-    private func noteIfAnswersRefused(on connection: NWConnection) async {
+    private func noteIfAnswersRefused(on connection: any EngineTransport) async {
         // An engine from before #504 does not know the request, and takes answers from anyone.
-        guard let reply = try? await call("connection.mayAnswer"), session.connection === connection,
+        guard let reply = try? await call("connection.mayAnswer"), session.transport === connection,
               reply["mayAnswer"] == .bool(false) else { return }
         note("the engine will not take answers to approvals and questions from this app: \(reply["why"]?.stringValue ?? "it did not say why")")
     }
