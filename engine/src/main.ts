@@ -37,7 +37,7 @@ import { appBundle, AppCheck, checkRequestClasses, personOnly } from "./answers.
 import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
 import { BrowserHost } from "./browser.ts";
-import { BUILT_IN_TOOLS, chatToolNames, toolsLeftOut } from "./builtins.ts";
+import { chatToolNames, toolsLeftOut } from "./builtins.ts";
 import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
 import { chatHandover, handoverAttachments } from "./handover.ts";
 import { codemodeExtension } from "./codemode.ts";
@@ -56,14 +56,15 @@ import { subChatUsage } from "./subchatusage.ts";
 import { messageSent } from "./heed.ts";
 import { preparedTool } from "./stringargs.ts";
 import { textOf } from "./transcript.ts";
-import { broadcast, type Client, clients, coalesced, send } from "./clients.ts";
+import { broadcast, type Client, clients, send } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, repriceUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
 import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
 import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
+import { activityEvent, agentsEvent, announceActivity, announceInbox, inboxEvent, libraryEvent, wireAppEvents } from "./appevents.ts";
 import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSchedules, tickSchedules, wireSchedules } from "./scheduleruns.ts";
-import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, since, versions, working } from "./indexes.ts";
+import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim } from "./needs.ts";
 import { ComputerHost, hasApps } from "./computer.ts";
@@ -80,7 +81,7 @@ import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, valida
 import { versionRequests, Versions } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { allProjects, inProject, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
-import { orchestratorConversation, orchestratorRole, placeInput, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
+import { orchestratorConversation, placeInput, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { wireProjectSpend } from "./projectlimits.ts";
 import { conversationSpend, dayKey, noSpend } from "./projectspend.ts";
 import { refusal } from "./requesterror.ts";
@@ -524,6 +525,7 @@ wireSchedules({ harness, context, log, host, takeSwitch, syncTools, agentChange 
 wireProviderRequests({ providers, settings, saveSettings, announceProviders, log });
 wireAgentRequests({ harness, context, log, host });
 wireConversationEvents({ providers, host, context, log, conversation, followedModel, chatWeb });
+wireAppEvents({ settings, inbox, host });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
 function deviceId(): string {
@@ -671,68 +673,11 @@ const computerHostOf = new WeakMap<Client, { send: (message: unknown) => void }>
 const browserClients = new Set<Client>();
 const browserHostOf = new WeakMap<Client, { send: (message: unknown) => void }>();
 
-const announceActivity = coalesced(() => activityEvent());
-
 setLibrary((await harness.snapshot(Library, context)) ?? { conversations: {} });
 // Conversations deleted before there was an archive are marked the new way, once.
 if (Object.values(library.conversations).some((meta) => meta.archived !== undefined)) {
 	await harness.commit(async (tx) => void migrateDeleted((await tx.doc(Library)).conversations), context);
 	setLibrary((await harness.snapshot(Library, context)) ?? { conversations: {} });
-}
-
-function libraryEvent() {
-	const conversations = Object.entries(library.conversations)
-		// Sub-chats are listed too, pointing at their parent, unless either of them was archived or deleted. A chat's
-		// versions are not: the chat stands for them.
-		.filter(([, meta]) => meta.version !== true && !isPutAway(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
-		.map(([id, meta]) => ({
-			id: Number(id),
-			title: meta.title,
-			createdAt: meta.createdAt,
-			updatedAt: meta.updatedAt,
-			// A conversation shows as working while it or any of its sub-chats is; a sub-chat only for itself.
-			busy: meta.parent === undefined ? busyConversations.has(Number(id)) : working.has(Number(id)),
-			agentId: meta.agentId ?? null,
-			parent: meta.parent ?? null,
-			// Chat mode lists only chats, and the agent view never does (chat.ts).
-			chat: isChat(meta),
-			pinned: meta.pinned === true,
-			// Continue with an Agent (#289): the chat a conversation was continued from, and the conversations a chat was
-			// continued in, leaving out any deleted since.
-			continuedFrom: meta.continuedFrom ?? null,
-			continuedIn: (meta.continuedIn ?? []).filter((other) => library.conversations[String(other)] !== undefined && !isDeleted(library.conversations[String(other)])),
-			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
-			allowEverything: meta.allowEverything === true,
-			// The project it belongs to (projects.ts), archived or not.
-			projectId: meta.projectId ?? null,
-			// The agent it runs as now (state.ts, `runsAs`): its `agentId`, but for a conversation carried over.
-			runsAs: runsAs(meta, agents) ?? null,
-			// A project's current or earlier conversation with its orchestrator (orchestrator.ts), or null.
-			orchestrator: orchestratorRole(Number(id)),
-			// The conversation with the orchestrator this one was started fresh from.
-			freshFrom: meta.freshFrom ?? null,
-		}))
-		.sort((a, b) => b.updatedAt - a.updatedAt);
-	// The Archive: archived conversations, and sub-chats an agent archived on their own while their conversation stays in
-	// the sidebar. A sub-chat of an archived conversation is reached through that conversation.
-	const archived = Object.entries(library.conversations)
-		.filter(([, meta]) => meta.version !== true && isArchived(meta) && (meta.parent === undefined || !isPutAway(library.conversations[String(meta.parent)])))
-		.map(([id, meta]) => ({
-			id: Number(id),
-			title: meta.title,
-			createdAt: meta.createdAt,
-			updatedAt: meta.updatedAt,
-			archivedAt: meta.archivedAt as number,
-			agentId: meta.agentId ?? null,
-			subChats: Object.values(library.conversations).filter((child) => child.parent === Number(id) && child.version !== true && !isDeleted(child)).length,
-			parent: meta.parent ?? null,
-			parentTitle: meta.parent === undefined ? null : (library.conversations[String(meta.parent)]?.title ?? ""),
-			chat: isChat(meta),
-			pinned: meta.pinned === true,
-			projectId: meta.projectId ?? null,
-		}))
-		.sort((a, b) => b.archivedAt - a.archivedAt);
-	return { event: "library", conversations, archived, autoArchiveDays: settings.autoArchiveDays ?? null };
 }
 
 /**
@@ -783,34 +728,6 @@ async function sweepArchive(): Promise<void> {
 	}
 }
 
-function agentsEvent() {
-	// The list of built-in tools goes with them, so the settings show what the engine offers without a copy of their own.
-	return { event: "agents", agents: Object.values(agents).sort((a, b) => a.createdAt - b.createdAt), builtInTools: BUILT_IN_TOOLS };
-}
-
-/** Everything waiting on the person, with enough context to answer from anywhere in the app. */
-function inboxEvent() {
-	const items = inbox.list().map((item) => {
-		// A question from a chat's version is the chat's: the app shows the chat under its own id.
-		const conversationId = chatOf(item.conversationId);
-		const meta = library.conversations[String(conversationId)];
-		const root = meta?.parent ?? conversationId;
-		return {
-			...item,
-			conversationId,
-			title: meta?.title ?? "",
-			agentName: agentOf(meta, agents)?.name ?? null,
-			rootConversationId: root,
-			rootTitle: library.conversations[String(root)]?.title ?? "",
-		};
-	});
-	return { event: "inbox", items };
-}
-/** Send the Inbox again, and tell the features that show it (Needs you, needs.ts). */
-function announceInbox() {
-	broadcast(inboxEvent());
-	for (const feature of host.features) feature.inboxChanged?.();
-}
 inbox.onChange = () => {
 	announceInbox();
 	announceActivity();
@@ -1632,37 +1549,6 @@ setWorking(conversationsWithWork(graphWatch.value as never));
 refreshBusy();
 // A wait the last engine noted for a run that has since ended (it stopped between the two) is let go.
 for (const feature of host.features) feature.runsChanged?.(working);
-
-/** What is running right now, one row per conversation with live work; subagents point at their parent. */
-function activityEvent() {
-	const waiting = new Set(inbox.list().map((item) => item.conversationId));
-	const runs = [...working]
-		.map((id) => {
-			// A chat's version shows as the chat, which is what the app can open.
-			const shown = chatOf(id);
-			const meta = library.conversations[String(shown)];
-			return {
-				conversationId: shown,
-				parent: meta?.parent ?? null,
-				rootConversationId: rootOf(id),
-				title: meta?.title ?? "",
-				agentId: meta?.agentId ?? null,
-				projectId: meta?.projectId ?? null,
-				// The agent it runs as now (state.ts, `runsAs`).
-				runsAs: runsAs(meta, agents) ?? null,
-				// A chat answering is shown as a chat, not as an agent's work.
-				chat: isChat(meta),
-				status: waiting.has(id) ? "waiting" : "working",
-				since: since.get(id) ?? Date.now(),
-				// What features add (a wait for a provider's limit, say).
-				...Object.assign({}, ...host.features.map((feature) => feature.activity?.(id) ?? {})),
-				// Its shell commands running in the foreground, with their clocks (running.ts).
-				commands: runningCommands.of(id),
-			};
-		})
-		.sort((x, y) => x.since - y.since);
-	return { event: "activity", runs };
-}
 
 // ---- Recovery: what an engine that starts after a crash found and picked up
 
