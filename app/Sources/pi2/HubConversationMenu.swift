@@ -135,8 +135,8 @@ struct ThinkingChoices: View {
     }
 }
 
-/// The header of an agent's conversation in place of the board: the button to the sub-chat's parent (#642), shown for a
-/// sub-chat only.
+/// In the header of an agent's conversation in place of the board: the button to the sub-chat's parent (#642), shown
+/// for a sub-chat only.
 struct ParentButton: View {
     let model: AppModel
     let project: ProjectRow
@@ -150,7 +150,8 @@ struct ParentButton: View {
         if let parent = listed ?? engine.open[id]?.state?.agent.parent {
             let orchestrator = parent == project.conversation
             let title = engine.conversations.first(where: { $0.id == parent })?.title ?? ""
-            Button("Parent", systemImage: "arrow.turn.left.up") { model.showInHub(project)(parent) }
+            // Where the parent lives (#644): in place of the board, or the orchestrator's panel for its conversation.
+            Button("Parent", systemImage: "arrow.turn.left.up") { model.openConversation(parent) }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .font(.system(size: 12))
