@@ -21,7 +21,7 @@ The agent is told it is in a worktree of its own, on which branch, and to commit
 
 An agent given several pieces of work in turn, each for a pull request of its own, may start a new branch in its worktree once its branch is merged, from what the worktree was made from (such as `origin/main`, after a fetch). It is told so (#206). pi² follows the branch the worktree is on now, wherever it shows or uses one:
 
-- The branch tracker and **Branches** show the current branch, and measure "merged" and the commits not yet merged against what the worktree was made from, as before. A new branch with no commits of its own yet shows as merged until its first commit, as the first branch does once merged.
+- The branch tracker and **Branches** show the current branch, and measure "merged" and the commits not yet merged against what the worktree was made from, as before, or the default branch ([When nothing would be lost](#when-nothing-would-be-lost-778)). A new branch with no commits of its own yet shows as merged until its first commit, as the first branch does once merged.
 - `sub_chats` names the current branch, and `remove_worktree` removes the worktree only if nothing on that branch would be lost. Any branch left in the repository stays there.
 - **Remove Worktree and Branch** deletes the branch it is on now, the one the dialog names, and only if it is merged. The branch the worktree was first made on is kept.
 
@@ -61,7 +61,7 @@ When a conversation hands work to another agent, the sub-chat starts in the fold
 
 Continuing an earlier sub-chat keeps the folder it has. Removing a worktree moves the sub-chats working in it back with their conversation.
 
-An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, unless the agent asks for it to be removed and nothing would be lost: nothing uncommitted, nothing half done, and no commits that are not on what it started from. The branch stays. If it merged elsewhere, fetch before retrying: pi² uses the refs the repository has now.
+An agent can see where each of its sub-chats works, on which branch and how that branch stands, and archive the finished ones with its `sub_chats` tool ([archive.md](archive.md#sub-chats-an-agent-puts-away)). A sub-chat's worktree of its own is left where it is when the sub-chat is archived, unless the agent asks for it to be removed (`remove_worktree: true`) and nothing would be lost: nothing uncommitted, nothing half done, and every commit of its HEAD on what it started from or on the repository's default branch as last fetched (see [Worktrees left behind](#worktrees-left-behind)). The branch stays, unless the agent also passes `delete_branch: true`. If it merged elsewhere, fetch before retrying: pi² uses the refs the repository has now, and fetches nothing itself.
 
 Listing and removal both count untracked files that Git does not ignore, even if the repository normally hides them. Calls to `sub_chats` in the same answer run in order, so a list after archive sees the result. If a removal overlaps a separate list, the checkout's status is unavailable rather than a count from a partly removed folder.
 
@@ -86,7 +86,8 @@ An agent handing work on can ask for the new sub-chat to get a worktree of its o
 Choose **Remove Worktree…** from the same places. The conversation goes back to the folder it worked in before.
 
 - **Remove Worktree, Keep Branch** removes the checkout. The branch and its commits stay in the repository.
-- **Remove Worktree and Branch** deletes the branch too, but only if everything on it is merged. A branch with unmerged commits is kept, and pi² says so.
+- **Remove Worktree and Branch** deletes the branch too, but only if everything on it is merged, on what the worktree was made from or on the default branch, and no other worktree has it checked out ([When nothing would be lost](#when-nothing-would-be-lost-778)). A branch with unmerged commits is kept, and pi² says why.
+- A worktree whose HEAD is detached can be removed when its commit is on what it was made from or on the default branch; otherwise put the commit on a branch first, or discard it.
 - A worktree with uncommitted changes can only be removed by discarding them (**Remove and Discard Changes**). Commit them first to keep them.
 
 A worktree cannot be removed while its agent is working. A command the agent left running in the background in the worktree ([background.md](background.md)) does not prevent it: the command is stopped first, and the conversation says so. A stopped Git operation or a detached commit must be put in order before a normal removal. Git-ignored files such as installed packages are not counted as changes and go with the checkout.
@@ -97,6 +98,20 @@ Archiving or deleting a conversation leaves its worktree where it is, with any w
 
 - When you delete a conversation whose worktree has nothing uncommitted, pi² offers **Delete and Remove Worktree**. The branch is kept. A worktree with uncommitted changes is always kept.
 - A project's **Branches** tab lists under **Left Behind** the worktrees of the project's archived conversations, and those of deleted conversations in a repository the project's conversations work in, or named as its folder is, with how each branch stands. **Remove…** asks the same questions as removing any other worktree: keep the branch or delete it too (only if merged), or discard uncommitted changes.
+
+### When nothing would be lost (#778)
+
+A worktree is merged, and removing it loses nothing, when it has nothing uncommitted, nothing half done, and every commit of its HEAD is on what it was made from **or** on the repository's default branch as last fetched (`origin/HEAD`'s branch, such as `origin/main`; without a remote, a local `main` or `master`). So a worktree made from a commit or from a pull request's head (stacked work, a reviewer) counts as merged once its work is on `origin/main`, however far what it was made from is behind, and so does one made from the main checkout's own `main` when that `main` was never pulled. A detached HEAD is judged the same way by its commit: one at a commit on the default branch can be removed. pi² fetches nothing for this: fetch first if work merged on the remote since.
+
+The same rule is used everywhere:
+
+- the branch tracker's **merged** (purple), in **Left Behind** and every other list, once the branch has moved on from where it started; its tooltip names the branch the work is on;
+- `sub_chats` `archive` with `remove_worktree: true`, which removes the worktree only then;
+- deleting the branch with the worktree: **Remove Worktree and Branch**, and `sub_chats` with `delete_branch: true`, delete the local branch only when every commit on it is on what the worktree was made from or on the default branch, and no worktree, the main checkout included, has it checked out, as `git branch -d` would against the default branch. It is deleted with the commit that was checked as the expected old value, so a branch that moved meanwhile is kept, and its settings in the repository's config go with it, as with `git branch -d`. A remote branch is never touched. When a branch is kept, the answer says why.
+
+A branch merged by a rebase or a squash has its changes on the default branch under other commits, while its own commits are not there. pi² tells it apart when every one of its commits has its patch on the default branch (`git cherry` says `-` for each), or, for a squash of several commits, when every file the branch changed since it left the default branch is as the branch has it there now. `sub_chats` says so ("its changes are on origin/main under other commits") rather than counting it as unmerged work, in `archive` and in the archived list, and removes its worktree only when the agent names the sub-chat in `squash_merged`, checking it again first. Its branch is kept even then, since its commits are on no other branch: delete it by hand with `git branch -D` if nothing on it is wanted. The tracker does not look for this at every look, so Branches shows such a branch as having commits not merged.
+
+`sub_chats` `list` with `archived: true` (and with `chats`) says, for an archived sub-chat whose worktree of its own is still there, its folder's name, its branch and how it stands, and whether removing it would lose anything, and if so what. `with_worktree: true` lists only those, and the ordinary list counts them.
 
 Removing the worktree of an archived conversation moves it back to the folder it worked in before, so if you restore it, it carries on there.
 
@@ -115,7 +130,7 @@ The icon's colour says how the branch stands, the most pressing first:
 | Red | Files with conflicts, or a merge, rebase, cherry-pick or revert stopped half way |
 | Amber | Uncommitted changes, including new files |
 | Grey | HEAD is detached, or the worktree's folder is gone |
-| Purple | Merged: everything on a worktree's branch is on the branch it was made from, and it has moved on since it was made |
+| Purple | Merged: everything on a worktree's branch is on the branch it was made from or on the default branch as last fetched, and it has moved on since it was made |
 | Blue | Commits not pushed to its upstream; with no upstream, commits not yet on the branch it was made from (or the default branch). Also used when it is behind its upstream |
 | Green | Clean, and nothing to push or merge |
 
