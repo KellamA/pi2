@@ -165,6 +165,8 @@ try {
 
 	/** Where each conversation the test made should end up: its key, and whether it is carried at all. */
 	const made = new Map<number, { key: string; archived: boolean; carried: boolean; subChat: boolean; agentId: string }>();
+	// The welcome finished, as in any data folder in use: so it has a settings.json for the update's copy to take.
+	await client.call("settings.finishOnboarding");
 	const builder = (await client.call("agents.save", { agent: { name: "Builder", access: "ask", cwd: repo, instructions: "Build it." } })).id as string;
 	const temp = (await client.call("agents.save", { agent: { name: "Temp", access: "read" } })).id as string;
 	await client.call("variables.set", { agentId: "forge", name: "GH_TOKEN", value: "token-458" });
