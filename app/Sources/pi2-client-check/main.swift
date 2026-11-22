@@ -1,12 +1,13 @@
 import Foundation
 
 // Checks that the app's client reads the engine as it did before its models moved into a package (docs/iphone.md
-// section 8, #669): a session a throwaway copy's engine sent, recorded once (`Fixture/session.jsonl`), is replayed
-// through the models the client reads it into (`Replay`), and what every view would read is written out and compared
-// with `Fixture/expected.txt`. That file was made by this program built with the models as they were in the app before
-// they moved (commit 4241886: the app's `Models.swift`, `TranscriptFeed.swift`, and the models of `Projects.swift`,
-// `ProjectHub.swift`, `ProjectRulesTab.swift`, `Attachments.swift` and `LocalModelViews.swift`, compiled into the
-// check itself). A model changed in what it reads or works out changes the text, and the check fails at the first line
+// section 8, #669) and the client itself into EngineKit (#670): a session a throwaway copy's engine sent, recorded once
+// (`Fixture/session.jsonl`), is played to the client, EngineKit's `EngineSession` (`Replay`), and what every view would
+// read is written out and compared with `Fixture/expected.txt`. That file was made by this program built with the models
+// as they were in the app before they moved (commit 4241886: the app's `Models.swift`, `TranscriptFeed.swift`, and the
+// models of `Projects.swift`, `ProjectHub.swift`, `ProjectRulesTab.swift`, `Attachments.swift` and
+// `LocalModelViews.swift`, compiled into the check itself, with a copy of `EngineClient.handle`'s reading of each event).
+// A model or the client changed in what it reads or works out changes the text, and the check fails at the first line
 // that differs.
 //
 // The session: `scripts/test-copy fill --project 2` building two demo projects in a copy of a development build, with

@@ -121,15 +121,6 @@ struct LocalStatus: Decodable {
     }
 }
 
-extension JSONValue {
-    /// This `local` event with one download's progress, from a `local.progress` event, in place of what it said.
-    func replacingDownload(_ download: JSONValue) -> JSONValue {
-        guard case .object(var status) = self, case .array(let downloads)? = status["downloads"], let id = download["id"] else { return self }
-        status["downloads"] = .array(downloads.map { $0["id"] == id ? download : $0 })
-        return .object(status)
-    }
-}
-
 enum LocalFormat {
     static func size(_ bytes: Double) -> String {
         if bytes < 1e9 { return String(format: "%.1f MB", bytes / 1e6) }

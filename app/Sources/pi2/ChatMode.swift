@@ -45,17 +45,6 @@ final class ChatModeState {
     }
 }
 
-// MARK: - Which conversations are chats
-
-extension ConversationSummary {
-    var isChat: Bool { chat == true }
-    var isPinned: Bool { pinned == true }
-}
-
-extension ArchivedConversation {
-    var isChat: Bool { chat == true }
-}
-
 extension EngineClient {
     /// The chats chat mode lists, most recently used first.
     var chats: [ConversationSummary] {
