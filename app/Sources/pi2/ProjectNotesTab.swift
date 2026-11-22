@@ -4,9 +4,7 @@ import SwiftUI
 /// keeps for itself, or a note the person wrote by hand.
 struct ProjectNote: Identifiable {
     struct CarriedFrom {
-        let agentId: String
         let agentName: String
-        let id: String
     }
 
     let id: String
@@ -35,11 +33,8 @@ struct ProjectNotes {
             var written = 0.0
             if case .number(let milliseconds)? = item["createdAt"] { written = milliseconds }
             var carried: ProjectNote.CarriedFrom?
-            if let from = item["carriedFrom"],
-               let agentId = from["agentId"]?.stringValue,
-               let agentName = from["agentName"]?.stringValue,
-               let id = from["id"]?.stringValue {
-                carried = ProjectNote.CarriedFrom(agentId: agentId, agentName: agentName, id: id)
+            if let agentName = item["carriedFrom"]?["agentName"]?.stringValue {
+                carried = ProjectNote.CarriedFrom(agentName: agentName)
             }
             return ProjectNote(
                 id: id, text: text, createdAt: Date(timeIntervalSince1970: written / 1000),

@@ -143,10 +143,8 @@ struct LeftBehindWorktree: Codable, Identifiable, Equatable {
 struct ArchivedConversation: Codable, Identifiable, Equatable {
     let id: Int
     let title: String
-    let updatedAt: Double
     let archivedAt: Double
     let agentId: String?
-    let createdAt: Double?
     /// How many sub-chats went into the Archive with it.
     let subChats: Int
     /// For a sub-chat its conversation's agent archived on its own: that conversation, which stays in the sidebar.
@@ -214,7 +212,6 @@ struct LiveTool: Codable, Equatable {
 }
 
 struct RetryInfo: Codable, Equatable {
-    let at: Double
     let error: String
     /// The network is away, rather than the provider closing the stream.
     let network: Bool?
@@ -364,7 +361,6 @@ struct ScheduleSettings: Codable, Equatable {
 /// One of the built-in tools an agent's settings list, as the engine describes it (engine/src/builtins.ts).
 struct BuiltInTool: Codable, Equatable, Identifiable {
     let key: String
-    let tools: [String]
     let title: String
     let detail: String
     /// Where it is offered at all: "files" (any access but none), "changes" (Ask first or Full access), "browser" (the
@@ -591,14 +587,12 @@ struct WakeItem: Codable, Equatable, Identifiable {
     let key: String
     /// The conversation that will be woken.
     let conversationId: Int
-    let rootConversationId: Int
     /// "subchat" or "background".
     let kind: String
     /// The sub-chat's number, or the command's id.
     let ref: String
-    /// The project of the conversation woken, and for a sub-chat of a project's orchestrator, when its report wakes it
-    /// and the batch it belongs to (docs/projects.md, 4.3). Absent from an engine older than these fields.
-    var projectId: String?
+    /// For a sub-chat of a project's orchestrator, when its report wakes it and the batch it belongs to
+    /// (docs/projects.md, 4.3). Absent from an engine older than these fields.
     var wake: String?
     var batch: String?
     /// "sub-chat 12 “Fix login”", "background command bg-3 (`npm test`)".
@@ -614,20 +608,17 @@ struct WakeItem: Codable, Equatable, Identifiable {
 struct WakeHold: Codable, Equatable {
     let conversationId: Int
     let why: String
-    let since: Double
     let until: Double?
 }
 
 /// A background command and the output of it the engine keeps, as the person reads it (`background.output`).
 struct BackgroundOutput: Decodable, Equatable {
     struct Ended: Decodable, Equatable {
-        let at: Double
         /// Worded to follow "It": "exited with code 1 after 4 seconds".
         let how: String
         let failed: Bool
     }
 
-    let id: String
     let conversationId: Int
     let rootConversationId: Int
     let command: String
@@ -674,7 +665,6 @@ struct ActivityRun: Codable, Equatable, Identifiable {
 
 /// A shell command running in the foreground: what it runs, when it started and when it last printed, in ms since 1970.
 struct RunningCommand: Codable, Equatable {
-    let callId: String
     let command: String
     let startedAt: Double
     let lastOutputAt: Double?
@@ -743,7 +733,6 @@ struct Schedule: Codable, Equatable, Identifiable {
     var enabled: Bool
     var holdReason: String?
     var nextRunAt: Double?
-    var lastRunAt: Double?
     var lastConversationId: Int?
     /// Set when an agent made it, with your approval; nil when you did. Only the engine sets it.
     var createdBy: Creator?
@@ -812,7 +801,6 @@ enum AccessLevel {
 
 struct ConversationState: Codable, Equatable {
     let busy: Bool
-    let turns: Int
     let partial: PartialAnswer?
     let retry: RetryInfo?
     /// Set while the run waits for a provider's limit; nil otherwise, and from an engine older than this field.
@@ -1009,8 +997,6 @@ enum Formats {
 struct UsageSummary: Codable, Equatable {
     struct ModelRow: Codable, Equatable, Identifiable {
         let key: String
-        let input: Int
-        let output: Int
         let tokens: Int
         let cost: Double
         /// Paid for by a subscription sign-in, so there is no per-use cost to show.
@@ -1064,8 +1050,6 @@ struct McpServer: Codable, Equatable, Identifiable {
     struct Tool: Codable, Equatable, Identifiable {
         let name: String
         let toolName: String
-        let description: String
-        let readOnly: Bool
         var id: String { toolName }
     }
     let id: String
@@ -1076,10 +1060,8 @@ struct McpServer: Codable, Equatable, Identifiable {
     let url: String?
     /// A server run as a program: its own environment variables, by name. The values stay in the Keychain.
     let variables: [AgentVariable]?
-    let enabled: Bool
     let status: String
     let error: String?
-    let hasToken: Bool
     let tools: [Tool]
 }
 
@@ -1087,7 +1069,6 @@ struct SearchResult: Codable, Equatable, Identifiable {
     let conversationId: Int
     let title: String
     let entryId: Int
-    let role: String
     let snippet: String
     /// Found in an archived conversation.
     let archived: Bool?
@@ -1268,7 +1249,6 @@ struct ModelInfo: Codable, Equatable, Identifiable {
     let id: String
     let name: String
     let thinkingLevels: [String]
-    let contextWindow: Int
     /// Left out of the model pickers by the choice made in Settings.
     var hidden: Bool? = nil
     /// Whether the model can be sent pictures. Nil from an engine that does not say.
@@ -1289,10 +1269,8 @@ struct ProviderListing: Codable, Equatable {
         /// In pi²'s own list of the provider's models.
         let known: Bool
     }
-    let provider: String
     let providerName: String
     let asked: String?
-    let refreshed: Bool
     let catalogCount: Int
     let models: [Listed]
 }
@@ -1302,9 +1280,7 @@ struct ModelDraft: Codable, Equatable {
     struct Template: Codable, Equatable, Identifiable {
         let id: String
         let name: String
-        let api: String
     }
-    let provider: String
     let providerName: String
     let id: String
     var name: String
@@ -1326,17 +1302,12 @@ struct ModelDraft: Codable, Equatable {
 
 /// What a sign-in flow tells or asks the person, as pi-ai's provider-neutral events and prompts.
 struct AuthNotice: Codable, Equatable {
-    struct Link: Codable, Equatable {
-        let url: String
-        let label: String?
-    }
     let type: String
     let message: String?
     let url: String?
     let instructions: String?
     let userCode: String?
     let verificationUri: String?
-    let links: [Link]?
 }
 
 struct AuthPromptInfo: Codable, Equatable {

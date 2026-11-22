@@ -13,7 +13,6 @@ import WindowKit
 /// ended, and whether it has been given to the orchestrator yet.
 struct ProjectReport: Identifiable, Equatable {
     let submissionId: Int
-    let conversationId: Int
     let agentId: String
     let title: String
     /// Nil while the run goes on.
@@ -26,11 +25,9 @@ struct ProjectReport: Identifiable, Equatable {
 
     init?(_ item: JSONValue) {
         guard let submissionId = item["submissionId"]?.intValue,
-              let conversationId = item["conversationId"]?.intValue,
               let agentId = item["agentId"]?.stringValue,
               let title = item["title"]?.stringValue else { return nil }
         self.submissionId = submissionId
-        self.conversationId = conversationId
         self.agentId = agentId
         self.title = title
         var ended: Date?

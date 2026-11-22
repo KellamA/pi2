@@ -7,7 +7,6 @@ import SwiftUI
 
 /// What a conversation whose model runs on this Mac is told of it: whether it is loading, loaded, stopped or failed.
 struct LocalModelState: Codable, Equatable {
-    let model: String
     let name: String
     /// "starting", "ready", "stopping", "stopped" or "failed".
     let status: String
@@ -36,7 +35,6 @@ struct LocalServer: Codable, Equatable, Identifiable {
     let stage: String?
     /// Bytes its processes hold in memory, at the engine's last look: its own and those it started.
     let memory: Double?
-    let pid: Int?
     /// The conversations using it.
     let users: [Int]
     /// When it stops for want of anyone using it, while that is counting down.
