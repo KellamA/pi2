@@ -143,16 +143,26 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 
 <!-- ============================== Pairing ============================== -->
 <section class="screen" id="pair">
-  <p class="cap"><b>Pairing, once, with both devices in hand; or the demo mode, with none.</b> The Mac shows a code good for five minutes; the phone scans it and reaches the Mac through pi²'s relay, or directly if both are on the same network; both show the same six digits; the person clicks Pair on the Mac. Only the Mac can pair a device.</p>
+  <p class="cap"><b>Pairing, once, with both devices in hand; or the demo mode, with none.</b> The Mac shows a code good for one claim and five minutes; the phone scans it with its own camera and reaches the Mac through pi²'s relay, or directly if both are on the same network; the phone shows six digits, and the person types them on the Mac. Only the Mac can pair a device, and it checks the claim comes from a genuine pi² for iPhone.</p>
   <div class="phones">
     <div class="fig" style="width:420px"><div class="lbl">1 · On the Mac: Settings › Devices › Pair an iPhone</div>
-      <div class="mac" style="height:420px">
+      <div class="mac" style="height:500px">
         <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="b">Pair an iPhone</div></div>
-        <div class="mpane" style="align-items:center;text-align:center">
+        <div class="mpane" style="align-items:center;text-align:center;gap:9px">
           <div class="t2">Open pi² on your iPhone and scan this code.<br>The iPhone can be on any network.</div>
-          <div class="qr"></div>
-          <div class="t3 sm">Good for 4:52 more · <span style="color:var(--acc)">Make a new code</span></div>
-          <div class="t3 xs">Once paired, the iPhone can answer for you and change what agents may do. You can revoke it here at any time.</div>
+          <div class="qr" style="width:120px;height:120px"></div>
+          <div class="t3 sm">Good for 4:52 more, for one iPhone · <span style="color:var(--acc)">Make a new code</span></div>
+          <div class="t2 sm">Then type the six digits your iPhone shows:</div>
+          <div class="row" style="gap:5px"><div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">4</div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">8</div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">2</div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">
+            </div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">
+            </div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">
+            </div></div>
+          <div class="t3 xs">Kept out of screen sharing and recordings. Once paired, the iPhone can answer for you and change what agents may do. You can revoke it here at any time.</div>
         </div>
       </div>
     </div>
@@ -174,11 +184,11 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
         <div class="t2 sm" style="text-align:center;padding:10px 20px">Connecting to “Studio Mac” through pi²'s relay…</div>
         <div class="home"></div></div>
     </div>
-    <div class="fig"><div class="lbl">4 · The same digits on both; Pair is clicked on the Mac</div>
+    <div class="fig"><div class="lbl">4 · The phone shows six digits; the person types them on the Mac</div>
       <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
-        <div class="nav"><h3>Check the digits</h3></div>
+        <div class="nav"><h3>Type these on your Mac</h3></div>
         <div class="body" style="justify-content:center;gap:14px;text-align:center;padding:0 22px">
-          <div class="t2">Your Mac shows these digits too. If they match, click <b style="color:var(--tx)">Pair</b> on your Mac.</div>
+          <div class="t2">Type these digits in the window on your Mac. Nobody else can see them, so nobody else can pair in your place.</div>
           <div class="digits">482 913</div>
           <div class="row" style="justify-content:center"><div class="spin"></div><span class="t3 sm">Waiting for your Mac</span></div>
         </div>
@@ -204,7 +214,8 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
   </div>
   <div class="notes">
     <div><b>What the code holds</b>The Mac's name, its public key, the relay's address, and a one-time secret. No account, no password. The relay is told only that a phone may join for the next five minutes.</div>
-    <div><b>Why digits as well</b>The code could be photographed from across a room. The digits are worked out from the encrypted connection itself, so a second phone cannot pair in the person's place unnoticed; and the relay lets only a genuine pi² for iPhone join.</div>
+    <div><b>Why the digits are typed</b>The code can be seen by anyone at the screen, in a screen share, or by an agent on the Mac. The digits are worked out from the encrypted connection and shown only on the phone that made it, so only the person's own phone can pair. If another device claims the code first, the Mac says so and asks to start again. The Mac also checks the claim comes from a genuine pi² for iPhone.</div>
+    <div><b>Not from a link</b>The phone pairs only from its own camera. A link in a message or a web page can never pair it with someone else's Mac.</div>
     <div><b>The demo mode</b>For someone who has not paired yet, and for App Review, whose reviewer has no Mac running pi². The real screens, fed by a recording made with pi²'s scripted demo model; it connects nowhere, and Leave deletes what it wrote.</div>
     <div><b>After pairing</b>The phone asks for notifications, then Face ID, each with a line on what it is for. Either can be refused; Face ID's answers then stay on the Mac.</div>
   </div>
@@ -375,11 +386,11 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
 <section class="screen" id="card">
   <p class="cap"><b>A card that needs the person, in the app and as a notification.</b> The notification carries the card's buttons; every button asks for the phone to be unlocked; one that needs Face ID opens the app on the card and asks there.</p>
   <div class="phones">
-    <div class="fig"><div class="lbl">On the Lock Screen (previews shown when unlocked)</div>
+    <div class="fig"><div class="lbl">On the Lock Screen (details hidden until unlocked, the default)</div>
       <div class="ph lockbg"><div class="island"></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
         <div class="clock"><span class="sm">Thursday 26 November</span><b>9:41</b></div>
         <div class="sp"></div>
-        <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>now</div><div class="b sm">Forge needs approval</div><div class="sm t2">pi2 · npm --prefix engine test</div></div>
+        <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>now</div><div class="b sm">Forge needs approval</div><div class="sm t2">pi2 · unlock to see the command</div></div>
         <div style="height:6px"></div>
         <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>2 min ago</div><div class="b sm">The orchestrator asks for more reach</div><div class="sm t2">pi2 · Let Forge merge its own pull requests</div></div>
         <div style="height:30px"></div><div class="home" style="background:#fff"></div></div>
@@ -418,8 +429,8 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
     </div>
   </div>
   <div class="notes">
-    <div><b>What a notification may say</b>The agent, the project, the kind of card and its short line, with any secret the Mac knows replaced by •••. Never a file's contents, a command's output, or a transcript. The Lock Screen shows it only if the person's iOS setting allows previews there.</div>
-    <div><b>Buttons, by kind</b>Approval: Allow once, Deny. Question: Reply. Decision: Open. More reach: Allow… (Face ID, opens the app), Refuse. Proposed rule: Accept, Refuse. Limit: Start anyway… (Face ID), Wait.</div>
+    <div><b>What a notification may say</b>The agent, the project, the kind of card and its short line, with any secret the Mac knows, and anything shaped like a key or token, replaced by •••. Never a file's contents, a command's output, or a transcript. On the Lock Screen only who and why, until the phone is unlocked, unless the person turns details on. The words come only from inside the seal: if it does not open, the phone shows “pi²: something needs you”.</div>
+    <div><b>Buttons, by kind</b>Approval: Allow once (only when the whole command is shown; otherwise Open), Deny. Question: Reply. Decision: Open. More reach: Allow… (Face ID, opens the app), Refuse. Proposed rule: Accept, Refuse. Limit: Start anyway… (Face ID), Wait.</div>
     <div><b>Answered elsewhere</b>A card answered on the Mac or on another device takes its notification away, and a button pressed on a stale one is told “This is no longer waiting”.</div>
   </div>
 </section>
@@ -516,15 +527,19 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
         <div class="r"><div class="grow"><div class="b">Reach from an iPhone</div><div class="t3 sm">1 device paired. Reachable while pi² runs on this Mac.</div></div><div class="sw on"></div></div>
         <div class="r"><div class="grow"><div class="b">Reach through pi²'s relay</div><div class="t3 sm">From any network, and notifications. Encrypted end to end; the relay cannot read what it passes. Connected · relay.pi2.example</div></div><div class="sw on"></div></div>
         <div class="r"><div class="grow"><div class="b">Find on this network</div><div class="t3 sm">Talks directly at home, which is faster. macOS asked once for Local Network.</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Direct from any address</div><div class="t3 sm">Off: direct connections only from home and private networks. Keys in this Mac's Secure Enclave.</div></div><div class="sw"></div></div>
       </div>
+      <div class="mbox"><div class="r" style="background:var(--accbg)"><span class="dot ok"></span><div class="grow sm"><b>Alex's iPhone is connected</b> through the relay, since 9:36. The menu bar and the sidebar show it too.</div></div></div>
       <div class="mbox">
         <div class="r"><div class="av a4" style="border-radius:8px">📱</div><div class="grow"><div class="b">Alex's iPhone <span class="t3 sm" style="font-weight:400">iPhone 17 Pro · iOS 27.1</span></div><div class="t3 sm">Paired 26 Nov · last seen 2 min ago, at home · Face ID set up</div></div><span class="t2 sm" style="color:var(--acc)">What it did</span><span class="tag bad" style="padding:4px 9px">Revoke</span></div>
         <div class="r"><span class="grow" style="color:var(--acc)">Pair an iPhone…</span><span class="t3 sm">up to 5 devices</span></div>
+        <div class="r t3 sm">Lost your iPhone away from this Mac? Erase it with Find My: that destroys the keys that pair it.</div>
       </div>
       <div class="b" style="margin-top:4px">What Alex's iPhone did</div>
       <div class="mbox"><table>
         <tr><th>When</th><th>What</th><th>Path</th><th>Face ID</th><th></th></tr>
         <tr><td>9:41</td><td>Allowed once: Forge, npm --prefix engine test (pi2)</td><td>home</td><td></td><td class="t3">done</td></tr>
+        <tr><td>9:36</td><td>Connected, Face ID</td><td>relay</td><td>✓</td><td class="t3">done</td></tr>
         <tr><td>9:38</td><td>Merged #617 “Sidebar badges” (pi2)</td><td>home</td><td>✓</td><td class="t3">done</td></tr>
         <tr><td>Yesterday 22:05</td><td>Answered Scribe: “No, only live ones” (pi2)</td><td>mailbox</td><td></td><td class="t3">done</td></tr>
         <tr><td>Yesterday 19:12</td><td>Sent to website's orchestrator: “Publish once the links check”</td><td>relay</td><td></td><td class="t3">done</td></tr>
@@ -534,7 +549,7 @@ table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;tex
   </div>
   <div class="notes">
     <div><b>Revoke</b>Takes effect at once: the device's keys are forgotten, its connection is closed, and the relay forgets it, its mailbox and its push token. The phone, when it next reaches the Mac, is told and wipes what it kept.</div>
-    <div><b>The log</b>Every answer, message, start, stop and change a device made, kept 90 days, with the path and whether Face ID was given. Reads are not logged.</div>
+    <div><b>The log</b>Every answer, message, start, stop and change a device made, every connection and refused try, and every file it read or conversation it exported, kept 90 days, with the path and whether Face ID was given. Other reads are not logged. After five refused tries in ten minutes the Mac suspends the device until it is resumed here.</div>
     <div><b>Off</b>Turning “Reach from an iPhone” off closes the Mac's connection to the relay and its listener at home; paired devices stay paired and can do nothing until it is on again.</div>
   </div>
 </section>
