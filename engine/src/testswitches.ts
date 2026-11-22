@@ -6,10 +6,17 @@
 // counts. Setting one takes the same access as setting `PI2_HOME`, so this shuts no door; it keeps a stray variable
 // from doing harm, and the engine says at start which of them it was given and ignored.
 //
+// The stand-ins that redirect what the engine reaches or runs (#743) are test switches too: an address on this Mac
+// `web_fetch` may reach, the usage addresses of the plan limits, the program that keeps the Mac awake and the power
+// source it is told, the local models' catalog. So are the tunings of a wait or a limit that only tests change, each
+// described where it is read: a stray one could make the engine give up on a command, a limit or a download early, or
+// look as if it had stalled.
+//
 // Every read of one of these goes through `testSwitch`; engine/test/testswitches.ts fails on a direct read in src.
 // The other variables the engine reads are not listed: those a person, the app or a script sets (the data folder, the
-// Keychain service, the login shell, `PI2_GH`), and the tunings of a limit or a wait, which change no data and stall
-// nothing for good, are read where they are used.
+// Keychain service, the login shell and how long start-up waits for it, `PI2_GH`), and the few tunings that are not
+// only for tests (`PI2_NETWORK_WAIT_SCALE`, `PI2_CACHE_PAUSE_MS`, `PI2_LOCAL_GRACE_SECONDS`), are read where they are
+// used.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,19 +31,50 @@ import { fileURLToPath } from "node:url";
  * pictures (`PI2_DEMO_TEXT_MODEL`), a picture model on a stand-in server (`PI2_DEMO_PICTURES`) and its typing speed
  * (`PI2_DEMO_TOKENS_PER_SECOND`, all three providers.ts). `PI2_TEST_COPY` is a throwaway copy's suffix, which main.ts
  * checks further against the copy's own folders.
+ *
+ * The stand-ins (#743): `PI2_TEST_ALLOW_ADDRESS` (look.ts), `PI2_LIMITS_ANTHROPIC_URL`, `PI2_LIMITS_CODEX_URL` and
+ * `PI2_LIMITS_KIMI_URL` (limits.ts), `PI2_AWAKE_PROGRAM` and `PI2_AWAKE_POWER` (keepawake.ts), `PI2_LOCAL_CATALOG`
+ * (localmodels.ts). The tunings only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
+ * `PI2_COMMAND_TIMEOUT_SECONDS` (commands.ts), `PI2_OUTPUT_WAIT_SECONDS` (background.ts), `PI2_LIMITS_MIN_INTERVAL_MS`
+ * (limits.ts), the `PI2_LIMIT_*_MS` (limitwait.ts), `PI2_LOCAL_STALL_MS`, `PI2_LOCAL_RETRY_MS`, `PI2_LOCAL_RETRIES`,
+ * `PI2_LOCAL_KEEP_FREE`, `PI2_LOCAL_MEMORY_GB` (localmodels.ts), `PI2_LOCAL_RUN_RETRY_MS` (localrun.ts) and
+ * `PI2_WAKES_PER_HOUR` (wakes.ts).
  */
 export const TEST_SWITCHES = [
+	"PI2_AWAKE_GRACE_MS",
+	"PI2_AWAKE_POLL_MS",
+	"PI2_AWAKE_POWER",
+	"PI2_AWAKE_PROGRAM",
 	"PI2_BACKUP_GATE",
 	"PI2_CARRY_COMMIT_GATE",
 	"PI2_CARRY_NEVER",
 	"PI2_CARRY_SECRETS_GATE",
+	"PI2_COMMAND_TIMEOUT_SECONDS",
 	"PI2_DEMO_COMPACTION_GATE",
 	"PI2_DEMO_COST",
 	"PI2_DEMO_PICTURES",
 	"PI2_DEMO_TEXT_MODEL",
 	"PI2_DEMO_TOKENS_PER_SECOND",
+	"PI2_LIMITS_ANTHROPIC_URL",
+	"PI2_LIMITS_CODEX_URL",
+	"PI2_LIMITS_KIMI_URL",
+	"PI2_LIMITS_MIN_INTERVAL_MS",
+	"PI2_LIMIT_BACKOFF_MS",
+	"PI2_LIMIT_REACHED_MS",
+	"PI2_LIMIT_REMEMBER_MS",
+	"PI2_LIMIT_WAIT_MAX_MS",
+	"PI2_LOCAL_CATALOG",
+	"PI2_LOCAL_KEEP_FREE",
+	"PI2_LOCAL_MEMORY_GB",
+	"PI2_LOCAL_RETRIES",
+	"PI2_LOCAL_RETRY_MS",
+	"PI2_LOCAL_RUN_RETRY_MS",
+	"PI2_LOCAL_STALL_MS",
+	"PI2_OUTPUT_WAIT_SECONDS",
 	"PI2_RESTORE_COMMIT_GATE",
+	"PI2_TEST_ALLOW_ADDRESS",
 	"PI2_TEST_COPY",
+	"PI2_WAKES_PER_HOUR",
 ] as const;
 export type TestSwitch = (typeof TEST_SWITCHES)[number];
 

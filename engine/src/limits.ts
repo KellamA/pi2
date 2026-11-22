@@ -26,6 +26,7 @@ import type { Engine, Feature } from "./features.ts";
 import { duration, type EpisodeChange, type Remembered } from "./limitwait.ts";
 import { plainMoment } from "./selfschedule.ts";
 import { agentOf } from "./state.ts";
+import { type TestSwitch, testSwitch } from "./testswitches.ts";
 
 // ---- What the app is sent
 
@@ -532,8 +533,8 @@ class LimitsError extends Error {
  * TEST ONLY. An address from the environment that stands in for a provider's usage address, accepted only when it is on
  * this Mac: the request carries the sign-in's token, so a setting must never be able to send it anywhere else.
  */
-function testAddress(variable: string): string | undefined {
-	const value = process.env[variable];
+function testAddress(variable: TestSwitch): string | undefined {
+	const value = testSwitch(variable);
 	if (value === undefined || value === "") return undefined;
 	try {
 		const host = new URL(value).hostname;
@@ -728,8 +729,8 @@ function listWords(names: string[]): string {
 
 // ---- The tracker
 
-/** The least time between two requests to one provider's usage address. Shorter only in tests. */
-const MIN_INTERVAL_MS = ((value) => (Number.isFinite(value) && value >= 0 ? value : 60_000))(Number(process.env.PI2_LIMITS_MIN_INTERVAL_MS ?? 60_000));
+/** The least time between two requests to one provider's usage address. Shorter only in tests, in a development engine. */
+const MIN_INTERVAL_MS = ((value) => (Number.isFinite(value) && value >= 0 ? value : 60_000))(Number(testSwitch("PI2_LIMITS_MIN_INTERVAL_MS") ?? 60_000));
 /** How long a usage address has to answer. */
 const FETCH_TIMEOUT_MS = 6_000;
 /** Renewing a token is pi-ai's work and has its own limit; this only stops waiting for it. */

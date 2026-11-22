@@ -24,15 +24,17 @@ import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { checkAddress, isPrivateHost, searchAddress } from "./browser.ts";
 import type { Feature } from "./features.ts";
 import { conversationScratch, SCRATCH_VARIABLE, scratchPath } from "./scratch.ts";
+import { testSwitch } from "./testswitches.ts";
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 const fail = (message: string) => ({ output: text(message), isError: true });
 
 /**
  * TEST ONLY. The one address (host and port, such as "127.0.0.1:4821") that `web_fetch` may reach although it is on this
- * Mac, so a test can serve it a page. Read once, when the engine starts. Never set it outside tests.
+ * Mac, so a test can serve it a page. Read once, when the engine starts. Never set it outside tests; a release engine
+ * ignores it (testswitches.ts).
  */
-const TEST_ADDRESS = process.env.PI2_TEST_ALLOW_ADDRESS ?? "";
+const TEST_ADDRESS = testSwitch("PI2_TEST_ALLOW_ADDRESS") ?? "";
 
 // ---- Files
 

@@ -49,6 +49,6 @@ Neither tool asks for approval, as `open` and `search` in the browser do not. **
 
 ## For tests
 
-`PI2_TEST_ALLOW_ADDRESS` names one address (host and port, such as `127.0.0.1:4821`) that `web_fetch` may reach although it is on this Mac, so a test can serve it a page. It is read once, when the engine starts. It is for tests only; never set it otherwise.
+`PI2_TEST_ALLOW_ADDRESS` names one address (host and port, such as `127.0.0.1:4821`) that `web_fetch` may reach although it is on this Mac, so a test can serve it a page. It is read once, when the engine starts. It is for tests only; never set it otherwise. A release engine ignores it ([architecture.md](architecture.md#where-things-live), #743).
 
 `node test/look.ts` from `engine/` (also part of `npm test`) runs `engine/test/look.ts`: glob matching, HTML to text, picking results out of a saved results page, the address checks on redirects and resolved names, and the limits, with a server of its own. The engine test (`engine/test/engine.ts`) checks which tools are offered and that a link or `..` cannot lead out of the folder. No test loads a real website.
