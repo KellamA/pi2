@@ -171,18 +171,21 @@ struct ComputerUseSection: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("Ask before each action", isOn: $settings.ask)
-                // Permissions belong to macOS; this only shows where they stand and opens the way to grant them.
+                // Permissions belong to macOS; this only shows where they stand and opens the way to grant them. A
+                // TimelineView lays several children over each other, so the two rows need a stack of their own (#751).
                 TimelineView(.periodic(from: .now, by: 2)) { _ in
-                    permission(
-                        "Accessibility", granted: ComputerController.accessibilityGranted,
-                        detail: "Needed to read and work the apps’ buttons and fields.",
-                        pane: "Privacy_Accessibility", request: ComputerController.requestAccessibility
-                    )
-                    permission(
-                        "Screen Recording", granted: ComputerController.screenRecordingGranted,
-                        detail: "For pictures of the window. Optional: without it the agent works from the list of controls.",
-                        pane: "Privacy_ScreenCapture", request: ComputerController.requestScreenRecording
-                    )
+                    VStack(alignment: .leading, spacing: 10) {
+                        permission(
+                            "Accessibility", granted: ComputerController.accessibilityGranted,
+                            detail: "Needed to read and work the apps’ buttons and fields.",
+                            pane: "Privacy_Accessibility", request: ComputerController.requestAccessibility
+                        )
+                        permission(
+                            "Screen Recording", granted: ComputerController.screenRecordingGranted,
+                            detail: "For pictures of the window. Optional: without it the agent works from the list of controls.",
+                            pane: "Privacy_ScreenCapture", request: ComputerController.requestScreenRecording
+                        )
+                    }
                 }
             }
         } header: {

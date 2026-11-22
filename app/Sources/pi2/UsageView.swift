@@ -18,10 +18,10 @@ struct UsageView: View {
                     }
                     LimitsSection(engine: engine)
                     budget(usage)
-                    bars("By model", usage.models.map { (modelName($0), $0.tokens, modelDetail($0), Color.piAccent) })
+                    bars("By model", usage.models.map { (modelName($0), nil, $0.tokens, modelDetail($0), Color.piAccent) })
                     bars("By agent", usage.agents.map { row in
                         let agent = engine.agent(row.agentId)
-                        return (agent?.name ?? "Deleted agent", row.tokens, Formats.usage(tokens: row.tokens, cost: row.cost), AgentColor.color(agent?.color))
+                        return (agent?.name ?? "Deleted agent", projectName(of: agent), row.tokens, Formats.usage(tokens: row.tokens, cost: row.cost), AgentColor.color(agent?.color))
                     })
                     // The engine counts each project's spend for today only, for its daily limit (`usage`'s `projects`,
                     // docs/projects.md, 8.3), so this one says so where the others above are of all time (#655).
@@ -66,15 +66,24 @@ struct UsageView: View {
         return "\(model.providerName) · \(model.name)"
     }
 
+    /// The project an agent belongs to, for the By agent list: every project's orchestrator is "Orchestrator" unless
+    /// renamed, so its name alone does not say which (#752). Always shown, so the list keeps one shape whether one project
+    /// spent or several. Nil for a template, which belongs to none. A deleted project is still in the `projects` event, by
+    /// name, for the Archive; "Deleted project" only when the app has no project of that id at all.
+    private func projectName(of agent: AgentProfile?) -> String? {
+        guard let id = agent?.projectId else { return nil }
+        return engine.projects.first { $0.id == id }?.name ?? "Deleted project"
+    }
+
     /// Today's spend of each project that spent anything, the most first, in its orchestrator's colour.
-    private func projectRows(_ projects: [UsageSummary.ProjectSpend]) -> [(name: String, value: Int, detail: String, color: Color)] {
+    private func projectRows(_ projects: [UsageSummary.ProjectSpend]) -> [(name: String, note: String?, value: Int, detail: String, color: Color)] {
         projects
             .filter { $0.today.tokens > 0 || $0.today.cost > 0 }
             .sorted { $0.today.cost != $1.today.cost ? $0.today.cost > $1.today.cost : $0.today.tokens > $1.today.tokens }
             .map { row in
                 let project = engine.projectStore.project(row.id)
                 let name = project.map { $0.archivedAt == nil ? $0.name : "\($0.name) (archived)" } ?? "Deleted project"
-                return (name, row.today.tokens, Formats.usage(tokens: row.today.tokens, cost: row.today.cost), AgentColor.color(engine.agent(project?.orchestratorId)?.color))
+                return (name, nil, row.today.tokens, Formats.usage(tokens: row.today.tokens, cost: row.today.cost), AgentColor.color(engine.agent(project?.orchestratorId)?.color))
             }
     }
 
@@ -151,15 +160,18 @@ struct UsageView: View {
         engine.perform("usage.setBudget", ["daily": value])
     }
 
-    private func bars(_ title: String, _ rows: [(name: String, value: Int, detail: String, color: Color)]) -> some View {
+    /// A list of bars, each with its name and, after it in small grey, its `note` (an agent's project).
+    private func bars(_ title: String, _ rows: [(name: String, note: String?, value: Int, detail: String, color: Color)]) -> some View {
         let most = max(rows.map(\.value).max() ?? 1, 1)
         return VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 13, weight: .semibold))
             if rows.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 10) {
-                    Text(row.name).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                        .frame(width: 190, alignment: .leading).help(row.name)
+                    let label = row.note.map { "\(row.name) · \($0)" } ?? row.name
+                    barName(row.name, note: row.note).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 190, alignment: .leading).help(label)
+                        .accessibilityLabel(row.note.map { "\(row.name), \($0)" } ?? row.name)
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 5).fill(Theme.line)
@@ -174,6 +186,12 @@ struct UsageView: View {
                 .accessibilityElement(children: .combine)
             }
         }
+    }
+
+    /// One Text, so that a long name and its note wrap together within the name's two lines.
+    private func barName(_ name: String, note: String?) -> Text {
+        guard let note else { return Text(name) }
+        return Text(name) + Text("  " + note).font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
     }
 
     private func days(_ usage: UsageSummary) -> some View {
