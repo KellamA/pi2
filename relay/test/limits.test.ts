@@ -43,6 +43,22 @@ async function setLimits(pairing: string, limits: Partial<Limits>, joined: Parti
 	});
 }
 
+/** Counts the pairing's writes from here on: each save of its record and of its day's counts. */
+async function countWrites(pairing: string): Promise<{ count: number }> {
+	const writes = { count: 0 };
+	await runInDurableObject(pairingObject(pairing), (instance: Pairing) => {
+		const object = instance as unknown as Record<"save" | "saveDays", () => Promise<void>>;
+		for (const name of ["save", "saveDays"] as const) {
+			const real = object[name].bind(instance);
+			object[name] = async () => {
+				writes.count += 1;
+				await real();
+			};
+		}
+	});
+	return writes;
+}
+
 /** The clock at the start of the next second. */
 function nextSecond(): void {
 	vi.setSystemTime(Math.ceil((Date.now() + 1) / 1000) * 1000);
@@ -167,24 +183,52 @@ describe("limits", () => {
 		expect(received).toEqual([0, 1, 4]);
 	});
 
-	it("never counts the Mac's removeDevice, closeJoin and deletePairing, and holds off the Mac only for its own traffic", async () => {
+	it("never counts a Mac's removeDevice, closeJoin or deletePairing that takes something away, even past its limits", async () => {
 		const { mac, listed } = await pairWithPhones(2);
-		await setLimits(mac.pairing, { messagesPerSecond: 1 });
-		for (let index = 0; index < 3; index++) {
-			mac.client.send({ closeJoin: {} });
-			expect(await mac.client.json()).toEqual({ ok: { what: "closeJoin" } });
+		await openWindow(mac);
+		await setLimits(mac.pairing, { messagesPerDay: 8 });
+		// Whatever the Mac has spent today pairing its phones, it soon runs out.
+		for (let index = 0; ; index++) {
+			expect(index).toBeLessThan(8);
+			nextSecond();
+			mac.client.send({ take: {} });
+			const answer = await mac.client.json();
+			if ("busy" in answer) {
+				expect(answer).toEqual({ busy: { until: Date.now() + HOUR } });
+				break;
+			}
+			expect(answer).toEqual({ taken: { count: 0 } });
 		}
-		mac.client.send({ removeDevice: { device: listed[0].device } });
-		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
-		mac.client.send({ take: {} });
-		expect(await mac.client.json()).toEqual({ taken: { count: 0 } });
-		mac.client.send({ take: {} });
-		await heldOff(mac.client, Date.now() + 1000);
-		// Its hello is taken at once, whatever its own count.
+		expect(await mac.client.next()).toMatchObject({ reason: "busy" });
+		// Past its day's limit, the Mac is held off for its counted messages; its hello is still taken, and what takes
+		// something away still passes: the window, a device, the pairing.
 		const again = await macHello(mac);
+		again.client.send({ closeJoin: {} });
+		expect(await again.client.json()).toEqual({ ok: { what: "closeJoin" } });
+		again.client.send({ removeDevice: { device: listed[0].device } });
+		expect(await again.client.json()).toEqual({ ok: { what: "removeDevice" } });
 		again.client.send({ deletePairing: {} });
 		expect(await again.client.json()).toEqual({ ok: { what: "deletePairing" } });
-		void listed;
+	});
+
+	it("counts a closeJoin with no window open, or a removeDevice of a device already gone, and writes nothing for them", async () => {
+		const { mac, listed } = await pairWithPhones();
+		await setLimits(mac.pairing, { messagesPerSecond: 3 });
+		const writes = await countWrites(mac.pairing);
+		for (let index = 0; index < 500; index++) mac.client.send({ closeJoin: {} });
+		for (let index = 0; index < 3; index++) expect(await mac.client.json()).toEqual({ ok: { what: "closeJoin" } });
+		await heldOff(mac.client, Date.now() + 1000);
+		expect(writes.count).toBe(0);
+
+		nextSecond();
+		const again = await macHello(mac);
+		again.client.send({ removeDevice: { device: listed[0].device } });
+		expect(await again.client.json()).toEqual({ ok: { what: "removeDevice" } });
+		const before = writes.count;
+		for (let index = 0; index < 500; index++) again.client.send({ removeDevice: { device: listed[0].device } });
+		for (let index = 0; index < 3; index++) expect(await again.client.json()).toEqual({ ok: { what: "removeDevice" } });
+		await heldOff(again.client, Date.now() + 1000);
+		expect(writes.count).toBe(before);
 	});
 
 	it("gives a phone that has only joined a window a smaller allowance of its own", async () => {

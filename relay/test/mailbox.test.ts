@@ -1,5 +1,5 @@
 // The mailbox (docs/iphone.md 5.3, 4.3): sealed items kept for an end that is away, each until taken or until it
-// expires (a day, an hour for an item carrying a presence signature), within the contract's bounds.
+// expires (a day, an hour for an item marked `presence`, a `"face"` request), within the contract's bounds.
 
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,7 +72,7 @@ describe("the mailbox", () => {
 		expect(await device.client.json()).toEqual({ mail: {} });
 	});
 
-	it("deletes an item with a presence signature after an hour, and any other after a day", async () => {
+	it("deletes an item marked presence (a \"face\" request) after an hour, and any other after a day", async () => {
 		const mac = await register();
 		const phone = await addPhone(mac);
 		const device = await phoneHello(mac.pairing, phone);

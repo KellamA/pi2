@@ -303,6 +303,71 @@ describe("join", () => {
 		expect(Object.keys(await theMacs.client.json())).toEqual(["joined"]);
 	});
 
+	it("adds the live slot when the same phone joined twice, and lets go of the other", async () => {
+		const mac = await register();
+		await standInVerifier(mac.pairing);
+		const token = await openWindow(mac);
+		// The phone joins, its socket drops, and it joins again: the same device key, a new App Attest key.
+		const first = await joinHello(mac.pairing);
+		sendJoin(mac.pairing, first, token);
+		const dead = await joined(first);
+		await mac.client.json();
+		first.client.close();
+		expect(await mac.client.json()).toEqual({ offline: { device: dead } });
+		const second = await joinHello(mac.pairing);
+		second.key = first.key;
+		sendJoin(mac.pairing, second, token);
+		const live = await joined(second);
+		await mac.client.json();
+		const device = newDeviceId();
+		mac.client.send({ addDevice: { device, deviceKey: first.key.publicKey, attestKeyId: newAttestKeyId() } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "addDevice" } });
+		mac.client.send({ closeJoin: {} });
+		expect(await mac.client.json()).toEqual({ ok: { what: "closeJoin" } });
+
+		// The live socket carries on under the engine's id.
+		mac.client.sendBytes(concat(fromBase64url(device.slice(4), 16)!, new Uint8Array([5])));
+		expect([...(await second.client.bytes())]).toEqual([5]);
+		second.client.sendBytes(new Uint8Array([6]));
+		expect([...(await mac.client.bytes())]).toEqual([...fromBase64url(device.slice(4), 16)!, 6]);
+		const devices = await runInDurableObject(pairingObject(mac.pairing), async (_: Pairing, state) =>
+			state.storage.get<Record<string, { attestKeyIds: string[] }>>("devices"),
+		);
+		expect(devices).toEqual({ [device]: expect.objectContaining({ attestKeyIds: [second.keyId] }) });
+		expect([dead, live]).not.toContain(device);
+
+		// The dead slot's relay key is untied with it.
+		const other = await register();
+		await standInVerifier(other.pairing);
+		const otherToken = await openWindow(other);
+		const reuse = await joinHello(other.pairing);
+		reuse.keyId = first.keyId;
+		sendJoin(other.pairing, reuse, otherToken);
+		expect(Object.keys(await reuse.client.json())).toEqual(["joined"]);
+	});
+
+	it("prefers a slot with a live socket to a later one whose socket dropped", async () => {
+		const mac = await register();
+		await standInVerifier(mac.pairing);
+		const token = await openWindow(mac);
+		const first = await joinHello(mac.pairing);
+		sendJoin(mac.pairing, first, token);
+		await joined(first);
+		await mac.client.json();
+		const second = await joinHello(mac.pairing);
+		second.key = first.key;
+		sendJoin(mac.pairing, second, token);
+		const later = await joined(second);
+		await mac.client.json();
+		second.client.close();
+		expect(await mac.client.json()).toEqual({ offline: { device: later } });
+		const device = newDeviceId();
+		mac.client.send({ addDevice: { device, deviceKey: first.key.publicKey, attestKeyId: newAttestKeyId() } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "addDevice" } });
+		first.client.sendBytes(new Uint8Array([1]));
+		expect([...(await mac.client.bytes())]).toEqual([...fromBase64url(device.slice(4), 16)!, 1]);
+	});
+
 	it("refuses to add a phone that did not join this pairing: a Mac cannot list devices of its own making", async () => {
 		const mac = await register();
 		const made = await newKey();

@@ -199,10 +199,16 @@ export class Pairing extends DurableObject<Env> {
 		if (attachment.kind !== "mac" && this.devices[attachment.device!] === undefined) return this.refuse(ws, "removed");
 
 		// Only from here on is traffic counted: this socket has proved itself as the pairing's Mac or one of its phones,
-		// and it is counted as its own sender's alone. The Mac's requests that take a device or the pairing away are not
-		// counted at all, so that nothing ever keeps the Mac from them.
+		// and it is counted as its own sender's alone. The Mac's requests that take a device, the window or the pairing
+		// away are not counted when they do take something away, so that nothing ever keeps the Mac from them; a few in a
+		// pairing's life. When there is nothing to take away they are counted like anything else, so that repeating them
+		// costs the relay nothing it does not count.
 		const read = typeof message === "string" ? readMessage(message) : null;
-		const control = attachment.kind === "mac" && (read?.type === "removeDevice" || read?.type === "closeJoin" || read?.type === "deletePairing");
+		const control =
+			attachment.kind === "mac" &&
+			((read?.type === "removeDevice" && this.devices[read.device] !== undefined) ||
+				(read?.type === "closeJoin" && meta.window !== null) ||
+				read?.type === "deletePairing");
 		if (!control) {
 			const sender = attachment.kind === "mac" ? "mac" : attachment.device!;
 			const blocked = meta.blocked[sender];
@@ -548,7 +554,7 @@ export class Pairing extends DurableObject<Env> {
 		const meta = this.meta!;
 		const found = this.addable(message);
 		if (typeof found !== "object") return refused(ws, "addDevice", found);
-		const { slot } = found;
+		const { slot, others } = found;
 		const relayKeys = this.devices[slot].attestKeyIds;
 		if (slot !== message.device) {
 			for (const keyId of relayKeys) {
@@ -571,6 +577,8 @@ export class Pairing extends DurableObject<Env> {
 		}
 
 		const device: Device = { ...this.devices[slot], listed: true, macKeyId: message.attestKeyId };
+		// The same phone's other slots are let go: their sockets closed now, their ties untied below.
+		const dropped = others.filter((id) => this.devices[id] !== undefined).map((id) => [id, this.dropSlot(id, "replaced")] as const);
 		delete this.devices[slot];
 		this.counters.forget(slot);
 		this.devices[message.device] = device;
@@ -584,23 +592,30 @@ export class Pairing extends DurableObject<Env> {
 			socket.serializeAttachment({ ...(socket.deserializeAttachment() as Attachment), kind: "device", device: message.device } satisfies Attachment);
 		}
 		await this.schedule();
-		return ok(ws, "addDevice");
+		ok(ws, "addDevice");
+		for (const [id, keyIds] of dropped) await this.untie(meta.pairing, id, keyIds);
 	}
 
-	/** The slot of the joined phone the Mac's `addDevice` is for, found by its device key, or why it cannot be added. */
-	private addable(message: AddDevice): { slot: string } | Why {
+	/**
+	 * The slot of the joined phone the Mac's `addDevice` is for, found by its device key, and the other slots the same
+	 * phone joined with (its socket dropped after `join` and it joined again); or why it cannot be added. The slot with a
+	 * live socket is taken, else the latest; the others are let go.
+	 */
+	private addable(message: AddDevice): { slot: string; others: string[] } | Why {
 		if (this.devices[message.device]?.listed === true) return "exists";
 		const named = this.devices[message.device];
 		// The engine's id names the slot only if the Mac chose to use the slot's own id; then it must be that phone.
 		if (named !== undefined && named.key !== message.deviceKey) return "device-key";
-		const slot = named !== undefined ? message.device : Object.keys(this.devices).find((id) => !this.devices[id].listed && this.devices[id].key === message.deviceKey);
-		if (slot === undefined) return "not-joined";
+		const slots = Object.keys(this.devices).filter((id) => !this.devices[id].listed && this.devices[id].key === message.deviceKey);
+		if (slots.length === 0) return "not-joined";
+		const slot = named !== undefined ? message.device : (slots.findLast((id) => this.joinedSocket(id) !== null) ?? slots[slots.length - 1]);
 		if (Object.values(this.devices).filter((device) => device.listed).length >= MAX_DEVICES) return "full";
-		return { slot };
+		return { slot, others: slots.filter((id) => id !== slot) };
 	}
 
 	private async put(ws: WebSocket, message: Put, writer: string, now: number): Promise<void> {
-		// An item carrying a presence signature is kept an hour, any other a day (4.3, 5.3).
+		// An item marked `presence`, whose request is a `"face"` one (a widening answer, 4.2, 4.3), is kept an hour, any
+		// other a day (5.3). The relay sees only the flag.
 		const expires = now + (message.presence ? HOUR : DAY);
 		const why = this.mailbox.put(message.to, writer, message.id, message.item, message.presence, expires, now);
 		if (why !== null) return refused(ws, "put", why);
@@ -633,17 +648,22 @@ export class Pairing extends DurableObject<Env> {
 	 * meanwhile, and whether or not the calls to untie its App Attest keys succeed (each tie goes by itself in a week).
 	 */
 	private async forgetSlot(id: string, why: Why): Promise<void> {
-		const meta = this.meta;
+		const keyIds = this.dropSlot(id, why);
+		await this.save();
+		if (this.meta !== null) await this.untie(this.meta.pairing, id, keyIds);
+	}
+
+	/** The part of forgetting a slot that waits on nothing: its record and its socket gone. Gives its App Attest keys. */
+	private dropSlot(id: string, why: Why): string[] {
 		const keyIds = this.devices[id]?.attestKeyIds ?? [];
 		delete this.devices[id];
 		this.mailbox.forget(id);
 		this.counters.forget(id);
-		if (meta !== null) delete meta.blocked[id];
+		if (this.meta !== null) delete this.meta.blocked[id];
 		for (const [ws, attachment] of this.sockets()) {
 			if (attachment.kind !== "mac" && attachment.device === id) this.refuse(ws, why);
 		}
-		await this.save();
-		if (meta !== null) await this.untie(meta.pairing, id, keyIds);
+		return keyIds;
 	}
 
 	/** Unties App Attest keys, as well as it can: a call that fails leaves a tie that goes by itself (claims.ts). */
@@ -660,12 +680,15 @@ export class Pairing extends DurableObject<Env> {
 	/** Closes the join window, and the slots of phones that joined it and were not added. */
 	private async closeWindow(): Promise<void> {
 		const meta = this.meta;
-		if (meta === null) return;
+		// No window, nothing to write: slots of joined phones exist only while their window does.
+		if (meta === null || meta.window === null) return;
 		meta.window = null;
+		// Every joined slot's socket closed before anything waits, then one write, then the unties.
+		const dropped = Object.entries(this.devices)
+			.filter(([, device]) => !device.listed)
+			.map(([id]) => [id, this.dropSlot(id, "window-ended")] as const);
 		await this.save();
-		for (const [id, device] of Object.entries(this.devices)) {
-			if (!device.listed) await this.forgetSlot(id, "window-ended");
-		}
+		for (const [id, keyIds] of dropped) await this.untie(meta.pairing, id, keyIds);
 	}
 
 	/** Deletes the pairing: every socket closed first, then all it kept, then its App Attest keys untied. */
