@@ -80,9 +80,11 @@ func narrowConversation() -> String {
 }
 
 /// What reaches past the page's edges, outside anything that scrolls sideways or clips of itself; and the page's own
-/// width and scrolling width.
+/// width (the viewport's, `viewport`, and what is left beside a scroll bar that takes room, `width`: a Mac set to show
+/// scroll bars always, as CI's is, takes 15 points of 390; a phone's never does) and scrolling width.
 let overflowScript = """
     const width = document.documentElement.clientWidth;
+    const viewport = window.innerWidth;
     const clipped = (e) => {
         for (let p = e.parentElement; p && p !== document.body; p = p.parentElement) {
             const x = getComputedStyle(p).overflowX;
@@ -96,7 +98,7 @@ let overflowScript = """
         if (r.width === 0 || r.height === 0 || getComputedStyle(e).visibility === "hidden") continue;
         if ((r.right > width + 0.5 || r.left < -0.5) && !clipped(e)) out.push(`${e.tagName.toLowerCase()}.${[...e.classList].join(".")} ${Math.round(r.left)}…${Math.round(r.right)}`);
     }
-    return JSON.stringify({ width, scrollWidth: document.documentElement.scrollWidth, out: out.slice(0, 12) });
+    return JSON.stringify({ width, viewport, scrollWidth: document.documentElement.scrollWidth, out: out.slice(0, 12) });
     """
 
 /// Buttons in the transcript a finger would struggle to hit: shown, and less than 32 points either way. A button in a
@@ -178,8 +180,8 @@ func narrow(folder: URL, pictures: URL?) async {
         defer { view.close(); window.close() }
         check("the page is marked for a phone", await marks(view) == "narrow touch")
         if let fit = await pageJSON(view, overflowScript) {
-            let width = fit["width"] as? Int ?? 0, scrollWidth = fit["scrollWidth"] as? Int ?? 0
-            check("the page is \(Int(phoneWidth)) points wide", width == Int(phoneWidth), "\(width)")
+            let width = fit["width"] as? Int ?? 0, viewport = fit["viewport"] as? Int ?? 0, scrollWidth = fit["scrollWidth"] as? Int ?? 0
+            check("the page is \(Int(phoneWidth)) points wide", viewport == Int(phoneWidth), "\(viewport)")
             check("and does not scroll sideways", scrollWidth <= width, "scrolls to \(scrollWidth)")
             let out = fit["out"] as? [String] ?? []
             check("nothing reaches past its edge but inside what scrolls of itself", out.isEmpty, out.joined(separator: "\n      "))
@@ -206,7 +208,7 @@ func narrow(folder: URL, pictures: URL?) async {
         defer { view.close(); window.close() }
         check("the page has no mark", await marks(view) == "")
         // The viewport the phone's page asks for (index.html) is not the Mac's: the page is as wide as its pane.
-        let width = await js(view, "document.documentElement.clientWidth") as? Int
+        let width = await js(view, "window.innerWidth") as? Int
         check("the page is as wide as the pane, whatever the page asks of a phone's viewport", width == Int(macNarrowest), "\(width ?? 0)")
         let actions = await pageJSON(view, actionsScript)
         check("the controls under each message wait for the pointer, as before", (actions?["bars"] as? Int ?? 0) > 0 && actions?["hidden"] as? Int == actions?["bars"] as? Int, "\(actions ?? [:])")
