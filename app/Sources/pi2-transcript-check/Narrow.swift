@@ -81,7 +81,7 @@ func narrowConversation() -> String {
 
 /// What reaches past the page's edges, outside anything that scrolls sideways or clips of itself; and the page's own
 /// width (the viewport's, `viewport`, and what is left beside a scroll bar that takes room, `width`: a Mac set to show
-/// scroll bars always, as CI's is, takes 15 points of 390; a phone's never does) and scrolling width.
+/// scroll bars always, as CI's is, takes 17 points of 390; a phone's never does) and scrolling width.
 let overflowScript = """
     const width = document.documentElement.clientWidth;
     const viewport = window.innerWidth;
