@@ -15,7 +15,7 @@ if (installedState(join(import.meta.dirname, "..")) !== "current") {
 }
 
 const linux = new Set([
-	"addedmodels", "cache", "chat", "codemode", "credentialsplatform", "earlystop", "everything", "exec", "heed", "latepath", "limits", "limitwait",
+	"addedmodels", "appattest", "cache", "chat", "codemode", "credentialsplatform", "earlystop", "everything", "exec", "heed", "latepath", "limits", "limitwait",
 	"localmodels", "log", "look", "mcppath", "mcpreconnect", "modellists", "offered", "pictures", "reading", "rules", "runcode", "sections", "shellpath", "socket",
 	"testcopies", "versions", "wakes",
 ]);
