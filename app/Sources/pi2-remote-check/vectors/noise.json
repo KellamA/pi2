@@ -1,0 +1,357 @@
+{
+	"about": "Published Noise test vectors for the two protocols of iphone.md 5.2, made by extract.mjs.",
+	"sources": [
+		{
+			"name": "cacophony",
+			"repository": "https://github.com/haskell-cryptography/cacophony",
+			"commit": "8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247",
+			"url": "https://raw.githubusercontent.com/haskell-cryptography/cacophony/8ee9d41e34a1a596cfa3ab12aa4069ff87dc1247/vectors/cacophony.txt",
+			"sha256": "3bde7c09a6f349ee11c825c50fcc02649f8f02a47c857a459206b357f9386cae",
+			"format": "json"
+		},
+		{
+			"name": "snow",
+			"repository": "https://github.com/mcginty/snow",
+			"commit": "8ac60f51cfe3e010c84f0a454cc575ad9204fa12",
+			"url": "https://raw.githubusercontent.com/mcginty/snow/8ac60f51cfe3e010c84f0a454cc575ad9204fa12/tests/vectors/snow.txt",
+			"sha256": "69da433305fd045f6c9f01b656662a389d022688986fd39fbe7af009cd402fd3",
+			"format": "json"
+		},
+		{
+			"name": "noise-c",
+			"repository": "https://github.com/rweather/noise-c",
+			"commit": "cfe25410979a87391bb9ac8d4d4bef64e9f268c6",
+			"url": "https://raw.githubusercontent.com/rweather/noise-c/cfe25410979a87391bb9ac8d4d4bef64e9f268c6/tests/vector/noise-c-basic.txt",
+			"sha256": "e826749cf90efda26be85410381f4b1f75552c61c7c0dcad7f9ffb4d639e4e45",
+			"format": "json"
+		},
+		{
+			"name": "flynn-noise",
+			"repository": "https://github.com/flynn/noise",
+			"commit": "4d9f71cd4ba1fe81415efac312664ccc4bc79b46",
+			"url": "https://raw.githubusercontent.com/flynn/noise/4d9f71cd4ba1fe81415efac312664ccc4bc79b46/vectors.txt",
+			"sha256": "0b8a1305176c95952802b114baa4aa2a3d6e7c33fdf2035b60b8c92058a50d9c",
+			"format": "blocks"
+		}
+	],
+	"vectors": [
+		{
+			"source": "cacophony",
+			"vector": {
+				"protocol_name": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"init_prologue": "4a6f686e2047616c74",
+				"init_static": "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+				"init_ephemeral": "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+				"init_remote_static": "31e0303fd6418d2f8c0e78b91f22e8caed0fbe48656dcf4767e4834f701b8f62",
+				"resp_prologue": "4a6f686e2047616c74",
+				"resp_static": "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+				"resp_ephemeral": "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+				"resp_remote_static": "6bc3822a2aa7f4e6981d6538692b3cdf3e6df9eea6ed269eb41d93c22757b75a",
+				"handshake_hash": "24c6b51ecb76277140ca018b5985bc9f03de321dae2d34dcae433dafef0131d9",
+				"messages": [
+					{
+						"payload": "4c756477696720766f6e204d69736573",
+						"ciphertext": "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79440177015efc1fe7a37c629af7120a96274e6ab7afcc9261901d0e09ae32a5bb96"
+					},
+					{
+						"payload": "4d757272617920526f746862617264",
+						"ciphertext": "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f144808843b274d3429adc47ca093ba63ef90f8da89fda108db471dccfa4894aa7b00003"
+					},
+					{
+						"payload": "462e20412e20486179656b",
+						"ciphertext": "966b05bc69ec01b8454d3160a214e6f24a3d884eb31ec2408af63f"
+					},
+					{
+						"payload": "4361726c204d656e676572",
+						"ciphertext": "0ad887fba4f611bbb4afe44ba3556b8164332ca7d5934634d63d80"
+					},
+					{
+						"payload": "4a65616e2d426170746973746520536179",
+						"ciphertext": "012b28ae646ae7830e2c5472cb023eab071c1db3d8413ec69b513b83832f974c2d"
+					},
+					{
+						"payload": "457567656e2042f6686d20766f6e2042617765726b",
+						"ciphertext": "bb3e6a48160d9c5971d37f975727294e0d868342db31832e54d07191ab0ca3c3703b5ed3d9"
+					}
+				]
+			}
+		},
+		{
+			"source": "cacophony",
+			"vector": {
+				"protocol_name": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+				"init_prologue": "4a6f686e2047616c74",
+				"init_psks": [
+					"54686973206973206d7920417573747269616e20706572737065637469766521"
+				],
+				"init_static": "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+				"init_ephemeral": "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+				"init_remote_static": "31e0303fd6418d2f8c0e78b91f22e8caed0fbe48656dcf4767e4834f701b8f62",
+				"resp_prologue": "4a6f686e2047616c74",
+				"resp_psks": [
+					"54686973206973206d7920417573747269616e20706572737065637469766521"
+				],
+				"resp_static": "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+				"resp_ephemeral": "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+				"handshake_hash": "8310f86394dc0dabb40beb8210031556db4403ab1202db7034c526232147a700",
+				"messages": [
+					{
+						"payload": "4c756477696720766f6e204d69736573",
+						"ciphertext": "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79442ec9b09893d0f510791784c10cbc959f25b1766e0def6e301d14fbca1c7790ac829b8b3674f5f649a5f0e98479662cbfbf2b2c47cd4b09fcd266cd29d7cb675f1808849707847840f6d178ec4d3733aa"
+					},
+					{
+						"payload": "4d757272617920526f746862617264",
+						"ciphertext": "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f1448088439a1b3cebf680b2c74217fcb5eba4ff58a9468cd90c4aca6194f57479b379a7"
+					},
+					{
+						"payload": "462e20412e20486179656b",
+						"ciphertext": "a8fde7a0accec190cd306c5950d4fd8e04a205ec288aa747d8b347"
+					},
+					{
+						"payload": "4361726c204d656e676572",
+						"ciphertext": "59caddd9984a3bbe24c4fb31a2bd455b7eba3fa0980674b1a3a5f9"
+					},
+					{
+						"payload": "4a65616e2d426170746973746520536179",
+						"ciphertext": "3b9bfebd210c22ba0cff9de79b4007d7a552fffbf92616881faa8a883e25b80258"
+					},
+					{
+						"payload": "457567656e2042f6686d20766f6e2042617765726b",
+						"ciphertext": "f37512df1043d564d7c46ac85c53d3b6a9a05724bc297e7142808f217561651217fe85b782"
+					}
+				]
+			}
+		},
+		{
+			"source": "snow",
+			"vector": {
+				"protocol_name": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"init_prologue": "5468657265206973206e6f20726967687420616e642077726f6e672e2054686572652773206f6e6c792066756e20616e6420626f72696e672e",
+				"init_psks": [],
+				"init_static": "9ec880ae6e9dc37277b4b7cc43a9981a2a58428648536941c787f34c840ae4b4",
+				"init_ephemeral": "09469832d23dbaa396cb1e8c42c74ea73e3f88eaf39a1b9e89cc6528bd163f9a",
+				"init_remote_static": "673291fd3e40a0ae3008788a0e8b62a81bbabff2464bc5e76b08a9824e539c50",
+				"resp_prologue": "5468657265206973206e6f20726967687420616e642077726f6e672e2054686572652773206f6e6c792066756e20616e6420626f72696e672e",
+				"resp_psks": [],
+				"resp_static": "2f292fe63d73808a2e5307a62428e243ba02ce8b70c949a58a4c70312fb038b5",
+				"resp_ephemeral": "64fd9f17061c66df61f6e5c15ce85dbcd3aaee6e3a9f87989dc9147c6f5cb64a",
+				"resp_remote_static": "3198032f853c7321e63685c7331077716ed312e9fbb4822bb4dbfbcaa4590e08",
+				"messages": [
+					{
+						"payload": "4d1f91e210b2c264713e73509808c3f6d99ca3bb115001388e630b1356a24693",
+						"ciphertext": "311304998133430ee0668c0c91cbdc445cbb3a526457b0c0b7d9dc6789be0904f7d451b7aba0f3031b46fca709b3eed813d6d1080447720cdf86bd9391c0359c717211fbcdda474c03ea5d8d03c33722"
+					},
+					{
+						"payload": "914a3388cb8e5ef4e3d4b7ba0fc4bc0a0cbc7ff41eabdb7c9c501b4d92355fbf",
+						"ciphertext": "59028e838fa2ca7a3fc8d48b5c6379286b61507d4c91e30a0ad387164b0229060e30d119b6845417d128231555ee8666ff8beffe931b1d8296d92189472ec01cffdf25074a38a63a555bb43c749e8d05"
+					},
+					{
+						"payload": "e3ecca19cd0e12b0607470b7b13780428e0bbe6deb02c91ecd1d5c832128258c",
+						"ciphertext": "9faaf3dc38e529089dfb9e3b830c4e014fa7204b7f52288b8f7aa6f5107e556246c2004d0236920739434810979eef50"
+					},
+					{
+						"payload": "517c1116052039051444d2b76d00886bea074d1d730f1e3489457496cdf4d8ca",
+						"ciphertext": "007d8b6d59a12d95c335ccbd4d31486f86020b59889b8ea159b4fdaaee9334f2b9143498aeffa34219fa6c3136361b66"
+					}
+				]
+			}
+		},
+		{
+			"source": "noise-c",
+			"vector": {
+				"name": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"pattern": "KK",
+				"dh": "25519",
+				"cipher": "ChaChaPoly",
+				"hash": "SHA256",
+				"init_prologue": "50726f6c6f677565313233",
+				"init_static": "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+				"init_ephemeral": "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+				"init_remote_static": "31e0303fd6418d2f8c0e78b91f22e8caed0fbe48656dcf4767e4834f701b8f62",
+				"resp_prologue": "50726f6c6f677565313233",
+				"resp_static": "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+				"resp_ephemeral": "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+				"resp_remote_static": "6bc3822a2aa7f4e6981d6538692b3cdf3e6df9eea6ed269eb41d93c22757b75a",
+				"messages": [
+					{
+						"payload": "4c756477696720766f6e204d69736573",
+						"ciphertext": "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79440177015efc1fe7a37c629af7120a962783d1e99e9766611dd7902fba7661273c"
+					},
+					{
+						"payload": "4d757272617920526f746862617264",
+						"ciphertext": "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f144808843b274d3429adc47ca093ba63ef90f8dd2770c7ef5c2c78dc0ba79f2ce665628"
+					},
+					{
+						"payload": "462e20412e20486179656b",
+						"ciphertext": "966b05bc69ec01b8454d3160a214e6f24a3d884eb31ec2408af63f"
+					},
+					{
+						"payload": "4361726c204d656e676572",
+						"ciphertext": "0ad887fba4f611bbb4afe44ba3556b8164332ca7d5934634d63d80"
+					},
+					{
+						"payload": "4a65616e2d426170746973746520536179",
+						"ciphertext": "012b28ae646ae7830e2c5472cb023eab071c1db3d8413ec69b513b83832f974c2d"
+					},
+					{
+						"payload": "457567656e2042f6686d20766f6e2042617765726b",
+						"ciphertext": "bb3e6a48160d9c5971d37f975727294e0d868342db31832e54d07191ab0ca3c3703b5ed3d9"
+					}
+				],
+				"handshake_hash": "36570fff832ae7c579a72bb814d60023a94fad1c618ce8fa4a358c6eadcd97f6"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"msg_0_payload": "",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254de3641cda8802b636ee7afe370f7e34e",
+				"msg_1_payload": "",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466e4c15cda24dee01c5c60ef6c4d6b92b3",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "ab44bf778165ad086eaebbb994df826628b3fe26ad310642480a1b2af8fc23",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "baacf816b83aaeb15954621113f8e0603cb79168fe6308b87413004beee4d2"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"msg_0_payload": "746573745f6d73675f30",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254558809aaeff03abdf354a87685ef23c3191ad86ae0c81bbaafa8",
+				"msg_1_payload": "746573745f6d73675f31",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466f7c3b2f7cef28a2f21245150a4abd05d6404ab474c115c578ea5",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "ab44bf778165ad086eaebbb994df826628b3fe26ad310642480a1b2af8fc23",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "baacf816b83aaeb15954621113f8e0603cb79168fe6308b87413004beee4d2"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"prologue": "6e6f74736563726574",
+				"msg_0_payload": "",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254c2b1750e0c698c0a6112819f9c76fc36",
+				"msg_1_payload": "",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d4846680da3b11f10f1a9b7790d0edd4dffbaf",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "ab44bf778165ad086eaebbb994df826628b3fe26ad310642480a1b2af8fc23",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "baacf816b83aaeb15954621113f8e0603cb79168fe6308b87413004beee4d2"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_KK_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"prologue": "6e6f74736563726574",
+				"msg_0_payload": "746573745f6d73675f30",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254558809aaeff03abdf354ad47d26523f1b98b5ce386c3b066ff53",
+				"msg_1_payload": "746573745f6d73675f31",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466f7c3b2f7cef28a2f212487967f4b709e22ff452dcb68821a10aa",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "ab44bf778165ad086eaebbb994df826628b3fe26ad310642480a1b2af8fc23",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "baacf816b83aaeb15954621113f8e0603cb79168fe6308b87413004beee4d2"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"preshared_key": "2176657279736563726574766572797365637265747665727973656372657421",
+				"msg_0_payload": "",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd1662545bdb2d5031ac09dcb167ccedf2898899c56e3e963e1e707a4df1bed7f3f9594b80af8aa87faa8e0f7b1b9c32a49360cd3dbf48c162520192f875fbe743e38cea",
+				"msg_1_payload": "",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d484662a35d5a9542bd4d8d2f2f4f1784e9ba5",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "abbc8826715c00752948d22874560b57dc102dbf6c3dd853037efdd9499ad0",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "f80bad7ea7c64490f8123d2728a176c3afb97a59f197c7b1be246b7cd3eb1d"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"preshared_key": "2176657279736563726574766572797365637265747665727973656372657421",
+				"msg_0_payload": "746573745f6d73675f30",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd1662545bdb2d5031ac09dcb167ccedf2898899c56e3e963e1e707a4df1bed7f3f9594b80af8aa87faa8e0f7b1b9c32a49360cdd218fc428fc8457cdf1952ae4c8d5ba601f8bf9547bc4e3b5083",
+				"msg_1_payload": "746573745f6d73675f31",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466b86d10d43f68d1d0667499f113d9a91c468559a52225e8f34d8c",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "abbc8826715c00752948d22874560b57dc102dbf6c3dd853037efdd9499ad0",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "f80bad7ea7c64490f8123d2728a176c3afb97a59f197c7b1be246b7cd3eb1d"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"prologue": "6e6f74736563726574",
+				"preshared_key": "2176657279736563726574766572797365637265747665727973656372657421",
+				"msg_0_payload": "",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd1662545bdb2d5031ac09dcb167ccedf2898899c56e3e963e1e707a4df1bed7f3f9594b873a288972e606ec27a89d7805c31c4ce0ff7bf1ff67795d842e014a3c8ee6f7",
+				"msg_1_payload": "",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466bb0445e37867bb67c516312c2a21c06f",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "abbc8826715c00752948d22874560b57dc102dbf6c3dd853037efdd9499ad0",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "f80bad7ea7c64490f8123d2728a176c3afb97a59f197c7b1be246b7cd3eb1d"
+			}
+		},
+		{
+			"source": "flynn-noise",
+			"vector": {
+				"handshake": "Noise_IKpsk2_25519_ChaChaPoly_SHA256",
+				"init_static": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+				"resp_static": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+				"gen_init_ephemeral": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+				"gen_resp_ephemeral": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+				"prologue": "6e6f74736563726574",
+				"preshared_key": "2176657279736563726574766572797365637265747665727973656372657421",
+				"msg_0_payload": "746573745f6d73675f30",
+				"msg_0_ciphertext": "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd1662545bdb2d5031ac09dcb167ccedf2898899c56e3e963e1e707a4df1bed7f3f9594b873a288972e606ec27a89d7805c31c4cd218fc428fc8457cdf1976bed363286c0e199a5df2a8dc631f33",
+				"msg_1_payload": "746573745f6d73675f31",
+				"msg_1_ciphertext": "64b101b1d0be5a8704bd078f9895001fc03e8e9f9522f188dd128d9846d48466b86d10d43f68d1d06674b4ceee887769c53e3b7a239e76287e1f",
+				"msg_2_payload": "79656c6c6f777375626d6172696e65",
+				"msg_2_ciphertext": "abbc8826715c00752948d22874560b57dc102dbf6c3dd853037efdd9499ad0",
+				"msg_3_payload": "7375626d6172696e6579656c6c6f77",
+				"msg_3_ciphertext": "f80bad7ea7c64490f8123d2728a176c3afb97a59f197c7b1be246b7cd3eb1d"
+			}
+		}
+	]
+}

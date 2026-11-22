@@ -64,6 +64,7 @@ struct TestCopyControl: NSViewRepresentable {
             let smallest: Bool?
             let narrowest: Bool?
             let paths: [String]?
+            let window: Int?
         }
 
         let model: AppModel
@@ -360,6 +361,27 @@ struct TestCopyControl: NSViewRepresentable {
             return ["error": "no page or conversation called \(page)"]
         }
 
+        /// The windows attached to the copy's window `number`, the window server's number for it, as numbers separated by
+        /// spaces: its sheets (an alert or a confirmation is one too) and child windows, and theirs, that are on screen.
+        /// `scripts/test-copy shot` captures each by itself and draws them over the window where they sit (#779), since
+        /// `screencapture -l` cannot take a parked window together with what is attached to it. Only the copy knows which
+        /// windows those are: the window server does not say, and the copy's other windows are parked at the same place.
+        private static func attached(to number: Int?) -> [String: String] {
+            guard let number, let window = NSApp.windows.first(where: { $0.windowNumber == number }) else {
+                return ["error": "the copy has no window \(number.map(String.init) ?? "named")"]
+            }
+            var found: [Int] = []
+            func walk(_ parent: NSWindow) {
+                for child in parent.sheets + (parent.childWindows ?? [])
+                where child.isVisible && child.windowNumber > 0 && child.windowNumber != number && !found.contains(child.windowNumber) {
+                    found.append(child.windowNumber)
+                    walk(child)
+                }
+            }
+            walk(window)
+            return ["result": found.map(String.init).joined(separator: " ")]
+        }
+
         /// The answer to a request, or nil when it is to wait.
         private func apply(_ request: Request, to window: NSWindow, dir: URL) -> [String: String]? {
             switch request.command {
@@ -409,6 +431,8 @@ struct TestCopyControl: NSViewRepresentable {
                 // disagrees, so the answer follows the tool's own rule for that too (#748).
                 if let refusal = ParkedWindow.refusal(window) { return ["error": refusal] }
                 return ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it, at the size the window server has it"]
+            case "attached":
+                return Self.attached(to: request.window)
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size
