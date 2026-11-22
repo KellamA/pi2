@@ -19,7 +19,7 @@ import { realpathSync } from "node:fs";
 import type { Tx } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature, FeatureParts } from "./features.ts";
-import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectDeleted, projectOf, projectsOn, requirePreview } from "./projects.ts";
+import { allProjects, inProject, PROJECT_ARCHIVED, type Project, projectDeleted, projectOf } from "./projects.ts";
 import { type AgentProfile, agentOf, Agents } from "./state.ts";
 
 /** What `agents.save` refuses for a project agent given a folder that is not its project's (3.3). */
@@ -121,8 +121,7 @@ export function templateChanges(copy: AgentProfile, template: AgentProfile, memo
 }
 
 /**
- * The agents a conversation may hand work to, in order (3.3, 5.1). With the preview off, those its agent's `delegates`
- * name, as before projects. With it on: in its project's orchestrator's current conversation, every other agent of the
+ * The agents a conversation may hand work to, in order (3.3, 5.1). In its project's orchestrator's current conversation, every other agent of the
  * project, whatever its `delegates` say; in any other conversation of a project, those its `delegates` name that are
  * agents of that project; outside any project, a deleted one's included, those that are templates. An agent removed
  * through a tool is offered to nobody. `conversationId` is undefined for a conversation not made yet, which will be in its agent's project.
@@ -130,7 +129,6 @@ export function templateChanges(copy: AgentProfile, template: AgentProfile, memo
 export function delegateTargets(own: AgentProfile | undefined, agents: Record<string, AgentProfile>, conversationId?: number): AgentProfile[] {
 	const named = (own?.delegates ?? []).map((id) => agents[id]).filter((agent): agent is AgentProfile => agent !== undefined && agent.removedAt === undefined);
 	if (projectDeleted(own?.projectId)) return [];
-	if (!projectsOn()) return named.filter((agent) => !projectDeleted(agent.projectId));
 	const projectId = conversationId === undefined ? own?.projectId : projectOf(conversationId)?.id;
 	if (projectId === undefined) return named.filter((agent) => agent.projectId === undefined);
 	const project = conversationId === undefined ? undefined : inProject(conversationId);
@@ -140,15 +138,6 @@ export function delegateTargets(own: AgentProfile | undefined, agents: Record<st
 			.sort((a, b) => a.createdAt - b.createdAt);
 	}
 	return named.filter((agent) => agent.projectId === projectId);
-}
-
-/**
- * Whether `agents.save` stamps `updatedAt`. Not while the preview has never been on, when nothing new is written
- * (section 2); always once there is a project, whatever the preview, so that a template's `updatedAt` stays true for
- * the copies made of it. With the preview on and no project yet, too.
- */
-export function stampsAgents(): boolean {
-	return projectsOn() || Object.keys(allProjects()).length > 0;
 }
 
 /**
@@ -266,7 +255,6 @@ export const projectAgents: Feature = (host, engine) => {
 			 * fields `agents.save` takes), with the same checks as `agents.save`. Answers `{ id }`.
 			 */
 			"projects.addAgent": async (params) => {
-				requirePreview();
 				const project = projectFor(params.projectId, true);
 				if (params.template !== undefined && params.agent !== undefined) throw new Error("Give a template to copy, or the agent's settings, not both");
 				if (params.template !== undefined) return copyTemplate(project, params.template);
@@ -275,7 +263,6 @@ export const projectAgents: Feature = (host, engine) => {
 			},
 			/** `{ id }`: put back a project agent removed through a tool. Nothing to do for one not removed. */
 			"agents.restore": async (params) => {
-				requirePreview();
 				const agent = typeof params.id === "string" ? engine.agents()[params.id] : undefined;
 				if (agent?.projectId === undefined) throw new Error(`Unknown agent: ${String(params.id)}`);
 				projectFor(agent.projectId, true);
@@ -289,7 +276,6 @@ export const projectAgents: Feature = (host, engine) => {
 			 * or absent it changes nothing, and is allowed in an archived project.
 			 */
 			"agents.updateFromTemplate": async (params) => {
-				requirePreview();
 				if (params.apply !== undefined && typeof params.apply !== "boolean") throw new Error("apply must be true or false");
 				const copy = projectAgent(params.id);
 				projectFor(copy.projectId, params.apply === true);

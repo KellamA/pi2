@@ -1,18 +1,18 @@
 
 # Projects: the contract
 
-This is the contract for the projects epic, [#450](https://github.com/KellamA/pi2/issues/450): the engine's documents, requests, events, tools and prompt sections for a project, how what exists today is carried over, and what the preview switch turns on and off. Every later issue of the epic (#456 to #483) is built against it, several at once, by agents who read this page and not the conversation in which the design was made. Where this page and an issue's text differ, this page has the last word on names and shapes; [section 12](#12-the-later-issues) says which issues it changes and who owns each piece that several issues share.
+This is the contract for the projects epic, [#450](https://github.com/KellamA/pi2/issues/450): the engine's documents, requests, events, tools and prompt sections for a project, and how what existed before projects is carried over. Since #483 (#715 for the engine) projects are the only way: the preview switch is gone, and carrying over runs by itself when the engine of a version without it first starts ([section 9](#9-carrying-over)). Every later issue of the epic (#456 to #483) is built against it, several at once, by agents who read this page and not the conversation in which the design was made. Where this page and an issue's text differ, this page has the last word on names and shapes; [section 12](#12-the-later-issues) says which issues it changes and who owns each piece that several issues share.
 
 The design it builds is [design/projects.md](design/projects.md), with its drawings in [design/projects-drafts.html](design/projects-drafts.html). This page does not repeat why; it says exactly what. Where the design left something open, this page decides it, and [section 13](#13-decisions-this-contract-made) lists each decision with its reason. What only the owner can decide is in [section 14](#14-questions-for-the-owner), each with the answer this page is written for. Nothing in the epic starts until the owner has agreed this page (#455).
 
-#456 has built the project itself, its requests and the preview switch, with the places the later issues fill in ([12.1](#121-who-owns-what-several-issues-share) says where); #457 the agents of a project, templates and `runsAs`; #463 reports and waking; #466 the orchestrator's one conversation, what it is told of the project, and Start fresh. When a piece is built, its issue updates the part of this page it built if the build had to differ, in the same pull request, so the page stays true for the issues after it. Once #483 has taken the old way out, this page becomes the guide to projects for a person and a developer.
+#456 has built the project itself, its requests and the preview switch (taken out by #715), with the places the later issues fill in ([12.1](#121-who-owns-what-several-issues-share) says where); #457 the agents of a project, templates and `runsAs`; #463 reports and waking; #466 the orchestrator's one conversation, what it is told of the project, and Start fresh. When a piece is built, its issue updates the part of this page it built if the build had to differ, in the same pull request, so the page stays true for the issues after it. Once #483 has taken the old way out, this page becomes the guide to projects for a person and a developer.
 
-**How to read it.** Read [section 1](#1-words) and [section 2](#2-the-preview-switch) whatever your issue, then [12.1](#121-who-owns-what-several-issues-share) and the sections your issue's row in [12.2](#122-each-issue) names. Types are written as TypeScript, as `engine/src/state.ts` writes them. Times are milliseconds since 1970, as everywhere in the engine. "The person" is whoever uses pi²; "an agent" is a model working in a conversation.
+**How to read it.** Read [section 1](#1-words) whatever your issue, then [12.1](#121-who-owns-what-several-issues-share) and the sections your issue's row in [12.2](#122-each-issue) names. Types are written as TypeScript, as `engine/src/state.ts` writes them. Times are milliseconds since 1970, as everywhere in the engine. "The person" is whoever uses pi²; "an agent" is a model working in a conversation.
 
 ## Contents
 
 1. [Words](#1-words)
-2. [The preview switch](#2-the-preview-switch)
+2. [The preview switch (retired)](#2-the-preview-switch)
 3. [Documents](#3-documents)
 4. [Requests and events](#4-requests-and-events)
 5. [Tools for agents](#5-tools-for-agents)
@@ -31,11 +31,11 @@ The design it builds is [design/projects.md](design/projects.md), with its drawi
 The design's words ([design/projects.md](design/projects.md#words)) hold: project, orchestrator, agent, template, hub, board, Needs you. This page adds:
 
 - **Project agent**: an agent that belongs to a project (it has a `projectId`). The orchestrator is one.
-- **Template**: an agent that belongs to no project. Every agent that exists today is one, unchanged; with the preview off they are still shown and used as agents, as now.
+- **Template**: an agent that belongs to no project. Every agent made before projects is one, unchanged.
 - **Copy**: a project agent made from a template. It remembers which (`template`), so **Update from template** can say what would change.
-- **The orchestrator's conversation**: the one current conversation between the person and a project's orchestrator. After **Start fresh**, the ones before it are its **earlier conversations**: readable, taking no messages while the preview is on.
+- **The orchestrator's conversation**: the one current conversation between the person and a project's orchestrator. After **Start fresh**, the ones before it are its **earlier conversations**: readable, taking no messages.
 - **Other conversations** of a project: its top-level conversations that are not the orchestrator's, current or earlier. Carrying over makes most of them; the person can start one with any agent of the project.
-- **Runs as**: the agent whose settings a conversation uses at its next message. For almost every conversation it is its `agentId`, as today; for a conversation carried over, with the preview on, it is the project's copy of that agent ([3.4](#34-which-agent-a-conversation-runs-as-runsas)).
+- **Runs as**: the agent whose settings a conversation uses at its next message. For almost every conversation it is its `agentId`; for a conversation carried over it is the project's copy of that agent ([3.4](#34-which-agent-a-conversation-runs-as-runsas)).
 - **Reach**: what agents may do or spend without the person. A change that widens it is one an agent can only ask for ([section 7](#7-reach-what-an-agent-can-only-ask-for)).
 - **Report**: how one run of a sub-chat of the orchestrator ended: its answer, or that it failed or was stopped. A sub-chat continued several times has a report for each run.
 - **Catch-up**: a short text pi² puts in front of the orchestrator's next input, saying what changed in the project since its last turn ([6.4](#64-the-catch-up-and-the-state-block)).
@@ -44,37 +44,13 @@ The design's words ([design/projects.md](design/projects.md#words)) hold: projec
 
 ## 2. The preview switch
 
-Projects are a preview until #483. The switch is a setting of the engine's, so that the engine, not only the app, knows whether agents are told about projects.
+Retired by #483 (#715 for the engine, #716 for the app). Projects were a preview, turned on and off by `projects: { preview }` in `settings.json`, read through `projectsOn()`, and changed by `projects.setPreview`. All of it is gone: every conversation that is not a chat is in a project, or in a deleted one's ([3.6](#36-archiving-and-deleting)), and is told and offered what this page says.
 
-- **Where:** `settings.json`, as `projects: { preview: boolean }`. Absent means off. Read through one function, `projectsOn()` in `engine/src/projects.ts`, which every piece of the epic asks.
-- **Changed by:** `projects.setPreview { on, plan? }` ([4.2](#42-requests)). Turning it on runs the carrying-over ([section 9](#9-carrying-over)) when it has something to do, from the plan the person was shown.
-- **Shown:** Settings › General, under **Projects (preview)**, with a line saying what it does and that switching it off shows everything as it was.
+What is left of it, for the versions before the removal:
 
-What each state does:
-
-| | Never turned on | On | Turned off again |
-|---|---|---|---|
-| Sidebar, Inbox, agents' pages, Activity, Archive | As today | Projects: the hub, Needs you, the Dashboard, templates ([section 10](#10-the-app)) | As today, showing every conversation, including those made in projects; agents with a `projectId` are left out of the agents' list ([10.2](#102-with-the-preview-off)) |
-| Chat mode | As today | As today | As today |
-| Documents | Nothing new is written | As [section 3](#3-documents) says | Kept as they are; nothing in them is changed by switching off |
-| A conversation's agent | Its `agentId` | Its project's copy, for a conversation carried over (`projectAgentId`); its `agentId` for every other | Its `agentId` |
-| What a conversation outside any project is told | As today | As today, byte for byte: prompt, sections, tools, tool descriptions, summary instructions ([6.1](#61-the-sections)) | As today |
-| What a conversation in a project is told | — | The project's sections and tools ([5](#5-tools-for-agents), [6](#6-prompt-sections-and-what-the-orchestrator-is-told)) | No project section, tool, note or catch-up from its next message; what it was already given stays in its history ([6.6](#66-what-switching-the-preview-off-leaves-in-a-conversation)) |
-| A project's limits and its `startAgents` switch | — | Enforced | Still enforced for conversations in that project ([8.3](#83-limits-and-the-one-admission-check)): switching off removes no protection from work that can still run |
-| A project's other switches, waking rules | — | Enforced | Not needed: the project tools they govern are not offered; reports wake as [wakes.md](wakes.md) says |
-| An earlier conversation with the orchestrator | — | Takes no messages | Takes messages, as any conversation |
-| New conversations made the old way (a schedule, a script's `conversation.create` with a template) | As today | Put in the project of their folder as they are made ([9.9](#99-conversations-made-later)) | As today |
-| Chat mode's Continue with an Agent | A template, in a folder | A project, and its orchestrator or another of its agents ([9.9](#99-conversations-made-later), #654) | As today |
-| Quick Ask and the menu bar item's ask field | A conversation with the agent used last | A chat, in chat mode (#654) | As today |
-| Events | The new events of [4.4](#44-what-an-app-is-sent-on-connecting), with `preview: false` and nothing in them, and the fields added to existing events; the app ignores them | All sent and used | As in the first column, with the projects in them |
-| Requests that exist today | As today | As today, with the additions [4.2](#42-requests) names | As today: every one works, for templates and project agents alike |
-| Requests new in this epic | Refused, but `projects.list`, `projects.setPreview` and `projects.carryOver` with `dryRun` | All | As in the first column |
-
-The refusal of a new request while the switch is off is one message for every request: "Projects are a preview. Turn them on in Settings › General first."
-
-What does not wait for the switch: #469's ability to fill a throwaway copy with a demo project (which turns the switch on in that copy).
-
-Turning the switch on or off counts for each conversation from its next message, as any change to an agent does: an answer being written keeps what it started with. The engine sends the `projects` event to every app at once.
+- **`settings.json`'s `projects: { preview: true }`** is written once, at the first start of a version without the switch, once carrying over there is whole ([9.8](#98-the-report-and-the-run)), so that the last version with the switch, if someone goes back to it, shows projects. Nothing reads the key now.
+- **The `projects` event keeps `preview: true`**, always, for the app built before #716; nothing else reads it, and a later issue takes it out.
+- **Documents the versions with the switch wrote** are read as they are: a carried conversation and a carried schedule keep `agentId`, the template, beside the project's copy ([9.6](#96-conversations-what-each-keeps)), so those versions still read every document.
 
 ## 3. Documents
 
@@ -96,7 +72,7 @@ Every document is a session document of pi durable, in `session.sqlite` in the d
 | What pi² did on GitHub, and what it is doing | `pi2.github` | `engine/src/github.ts` | New | #468 |
 | GitHub's listing | `github.json` in the data folder (a cache) | `engine/src/github.ts` | New | #468 |
 | The record of changes | `pi2.changes` | `engine/src/changes.ts` | New | #465 |
-| The preview switch | `settings.json`, `projects.preview` | `projects.ts` | New key | #456 |
+| The preview switch (retired, section 2) | `settings.json`, `projects.preview` | `carryover.ts` writes it `true` once | Written, read by nothing | #456, #715 |
 
 Nothing that exists is removed, renamed or rewritten. Every field added is optional, so a document written before it reads as it did, and a field an older app does not know is ignored by it (the app's `Codable` types ignore unknown keys, and `EngineClient.handle` ignores unknown events).
 
@@ -217,7 +193,7 @@ removedAt?: number;
 ```
 
 - **Templates** are the agents with no `projectId`. There is no other store and no other kind: today's agents are templates as they stand, which is how "today's agents become templates" is done without copying them. A template is made, edited, duplicated and deleted with today's requests (`agents.save`, `agents.duplicate`, `agents.delete`).
-- **Names** are unique, ignoring case, among the templates, and among the agents of each project (removed ones included). A project's agent may share a name with a template or with another project's agent. With the preview on, every tool that names an agent looks only among the agents of the conversation's own project, or only among templates outside any project. `delegate` names an agent among those the conversation may hand work to, as today, so with the preview off it works as today for every conversation.
+- **Names** are unique, ignoring case, among the templates, and among the agents of each project (removed ones included). A project's agent may share a name with a template or with another project's agent. Every tool that names an agent looks only among the agents of the conversation's own project, or only among templates outside any project. `delegate` names an agent among those the conversation may hand work to.
 - **The orchestrator** is a project agent with `role: "orchestrator"`. It cannot be removed or deleted; making another agent the orchestrator is `projects.setOrchestrator` ([6.5](#65-start-fresh)).
 - **What does not make sense in a project.** Every setting of an agent today holds for a project agent, except:
   - `cwd`: always the project's folder (null for a project with no folder). The engine sets it, at copying and whenever the project's folder changes; `agents.save` refuses another (“An agent of a project works in the project's folder”). This is where a *new* conversation of the agent starts. A conversation already working somewhere keeps its own folder, which is its `pi.agent` document's, not the agent's: a conversation carried over, a sub-chat in another repository, a conversation in a worktree all stay where they are ([9.6](#96-conversations-what-each-keeps)).
@@ -236,7 +212,7 @@ The engine decides which agent a conversation runs as with one function, `runsAs
 /** The agent whose settings conversation `meta` uses at its next message. */
 function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): string | undefined {
 	const copy = meta?.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];
-	if (projectsOn() && copy !== undefined && copy.removedAt === undefined && !projectDeleted(meta!.projectId) && !projectDeleted(copy.projectId)) return meta!.projectAgentId;
+	if (copy !== undefined && copy.removedAt === undefined && !projectDeleted(meta!.projectId) && !projectDeleted(copy.projectId)) return meta!.projectAgentId;
 	return meta?.agentId;
 }
 ```
@@ -253,31 +229,31 @@ Changing what a conversation runs as changes only what is taken from the agent a
 // Added to Meta (state.ts). All optional.
 /** The project it belongs to. Set on every conversation of a project, sub-chats included (taken from the parent as one is made). */
 projectId?: string;
-/** For a conversation carried over: the project's copy of its agent, which it runs as while the preview is on (3.4). */
+/** For a conversation carried over: the project's copy of its agent, which it runs as (3.4). */
 projectAgentId?: string;
 /** An orchestrator's conversation begun with Start fresh: the one it followed. */
 freshFrom?: number;
 ```
 
-- `agentId` is never changed by anything in the epic. With the preview off, a conversation is exactly what it was.
-- A conversation made in a project with the preview on (by the person on the hub, by `delegate`, by `work assign`, by Start fresh) has `agentId` set to the project agent it was made with, and `projectId`. It has no `projectAgentId`. The person starts one of a project's other conversations with today's `conversation.create { agentId }`, naming a project agent: the conversation takes that agent's `projectId`.
+- `agentId` is never changed by anything in the epic: a carried conversation keeps its template, which the versions with the switch read.
+- A conversation made in a project (by the person on the hub, by `delegate`, by `work assign`, by Start fresh) has `agentId` set to the project agent it was made with, and `projectId`. It has no `projectAgentId`. The person starts one of a project's other conversations with today's `conversation.create { agentId }`, naming a project agent: the conversation takes that agent's `projectId`.
 - A chat (`chat: true`) and a chat's version never have a `projectId`. Chat mode is outside projects.
 - Whether a conversation is the orchestrator's, current or earlier, is said only by the project (`conversation`, `earlier`): one place, which cannot disagree with another.
-- With the preview on, an earlier conversation with the orchestrator takes no messages: `submit` and `continue` refuse with "This is an earlier conversation with the orchestrator. Write in the current one." With the preview off it is an ordinary conversation.
+- An earlier conversation with the orchestrator takes no messages: `submit` and `continue` refuse with "This is an earlier conversation with the orchestrator. Write in the current one."
 
 ### 3.6 Archiving and deleting
 
 Two states are kept apart, each with one owner, so that neither can undo the other:
 
 - **A conversation's own**, as today: `archivedAt` and `deleted` on its `Meta`, set by the person (archive, delete, restore) and by an agent's `sub_chats` archive. Nothing in the epic writes them except as this table says.
-- **A project's**: `archivedAt` and `deletedAt` on the `Project`, set only by the person (`projects.archive`, `projects.unarchive`, `projects.delete`). It hides the project with the preview on; it changes no conversation's own state, so with the preview off every conversation is where it was.
+- **A project's**: `archivedAt` and `deletedAt` on the `Project`, set only by the person (`projects.archive`, `projects.unarchive`, `projects.delete`). It hides the project; it changes no conversation's own state.
 
-| Operation | A conversation's own state | The project | With the preview off |
+| Operation | A conversation's own state | The project | With the preview off (the versions before #483) |
 |---|---|---|---|
 | Archive a project | Unchanged. Refused while any conversation of the project is working or waiting on the person: "Stop the project's agents first." | Archived: out of the sidebar; `submit`, `continue` and starts in it refused: "This project is archived. Restore it first." Its approvals and questions cannot be waiting (it was idle); its other Needs you items stay, shown under the archived project | Its conversations show and work as today |
 | Restore a project | Unchanged | Back | — |
 | Delete a project | Unchanged. Refused as archiving is | Deleted: shown only in the Archive, under its name, with its conversations; its Needs you items withdrawn; its rules, notes, work and changes kept, shown nowhere. Conversations keep their `projectId`. Only those whose own `agentId` is not one of the project's agents fall back to no project: they run as their `agentId`, hand work to templates, read their agent's own notes, and have no project switch or limit. The project's own conversations keep their agent and their project, but its agents are not offered for delegation and starts with them (including continuing a sub-chat with one) are refused. Their schedules are held, with the reason in Activity › Scheduled and `engine.log`, until edited to use another agent | Conversations stay where they were; the same refusal and schedule hold apply to the project's own agents |
-| Restore one conversation of a deleted project (the Archive, preview on) | Restored if archived | Moves it, with its sub-chats, to the project of its folder by the lookup of [9.4](#94-projects-lookup-and-adoption) — making a project if needed, and restoring an archived one found — and it runs as a copy of its agent made or adopted there, as [9.5](#95-agents-copies-adoption-and-secrets) has it; the rules below | — |
+| Restore one conversation of a deleted project (the Archive) | Restored if archived | Moves it, with its sub-chats, to the project of its folder by the lookup of [9.4](#94-projects-lookup-and-adoption) — making a project if needed, and restoring an archived one found — and it runs as a copy of its agent made or adopted there, as [9.5](#95-agents-copies-adoption-and-secrets) has it; the rules below | — |
 | The person archives one conversation of a project (today's Archive) | Archived, as today: its work stopped, its sub-chats archived with it | Unchanged. If it was the orchestrator's current conversation, the hub shows it archived with Restore, and `conversation` keeps pointing at it | As today |
 | The person restores it | Restored, as today | Unchanged | As today |
 | The person deletes one conversation | Deleted, as today | If it was the orchestrator's current conversation, `conversation` becomes null, and Start fresh (`projects.startFresh`) makes a new one, which begins with the state block (6.4). If an earlier one, it leaves `earlier` | As today |
@@ -285,9 +261,9 @@ Two states are kept apart, each with one owner, so that neither can undo the oth
 | A conversation made later in the folder of an archived project (a schedule's run) | — | It goes in that project ([9.9](#99-conversations-made-later)), and the project is restored, since the person set that run going | As today |
 | A conversation made later in the folder of a deleted project | — | It goes in a new project for that folder | As today |
 
-The engine tests cover the implemented archive and delete operations with the preview on and off.
+The engine tests cover the implemented archive and delete operations. The last column is what the versions with the switch did with it off, kept for a person who goes back to one.
 
-**Restoring one conversation of a deleted project** (`projects.restoreConversation { id, dryRun?, plan? }`, the Archive's action, preview on; #531). Each rule, with its reason:
+**Restoring one conversation of a deleted project** (`projects.restoreConversation { id, dryRun?, plan? }`, the Archive's action; #531). Each rule, with its reason:
 
 - **Which project it goes to.** The project of its folder, found or made exactly as carrying over does for a conversation made later ([9.9](#99-conversations-made-later)): the grouping key of its `cwd` ([9.2](#92-grouping-by-folder)), the lookup of [9.4](#94-projects-lookup-and-adoption) among projects not deleted, else a new one named after the folder ("No folder" for none) with the settings a carried-over project gets ([9.4](#94-projects-lookup-and-adoption), 3). A conversation with no folder goes to the key `none`, where a project the person made with no folder is never taken ([9.4](#94-projects-lookup-and-adoption), 1). If a live member of the family has a folder that is no longer reachable, restore is refused: put it back first. Unlike ordinary grouping, a restore is not a way to recover a folder. A project found that was archived is restored, as a conversation made later restores it ([9.9](#99-conversations-made-later)): the person chose to put the conversation in it. One folder, one project ([13](#13-decisions-this-contract-made), decision 5); a second way to find a project would make two where the person sees one.
 - **Which agent it then runs as.** Its own agent belonged to the deleted project and cannot start work, so a copy of that agent is made in the new project, or the copy found there, as [9.5](#95-agents-copies-adoption-and-secrets) has it for a carried-over conversation: the copy recorded, else an agent of the project made from it (adopted), else nothing if the person has deleted a recorded copy ([9.5](#95-agents-copies-adoption-and-secrets), 3). When the copy was deleted or removed, the conversation still moves but falls back to its own agent ([3.4](#34-which-agent-a-conversation-runs-as-runsas)); the sheet says if that agent is still of the deleted project and unavailable for new starts. A copy made takes the agent's Allow everything, its variables' names and values (the Keychain step retried, [9.5](#95-agents-copies-adoption-and-secrets)), its memory switch and its allowed commands, and hands work to the copies of those it could hand work to; the dry run lists what each copy takes, as carrying over's report does ([9.8](#98-the-report-and-the-run)), so the person is shown what is copied before it happens. A conversation carried over into the deleted project runs as its template, which can still start work; the copy is of the template as [9.5](#95-agents-copies-adoption-and-secrets) says.
@@ -353,8 +329,8 @@ type ProjectNote = {
 ```
 
 - Notes keep today's limits: 400 characters each, 60 per project. Notes carried over are all kept even past 60; the 61st new one is refused until some are removed, as today.
-- **Who reads and writes them.** A project agent whose memory switch is on (`agents[id].enabled` in the memory document, as today) gets, in its `memory` section, the project's notes whose audience is null or itself, and writes notes for the whole project with `remember` (audience null) and removes any it is given with `forget`, in every conversation of its, sub-chats included. With the preview off it gets its own agent notes, as today, which for a project agent are none.
-- An agent's own notes (`agents`) and chat mode's (`chat`) are left as they are. Chat mode's `agent_notes` reads the agents' own notes only, not a project's, during the preview ([13](#13-decisions-this-contract-made), decision 22).
+- **Who reads and writes them.** A project agent whose memory switch is on (`agents[id].enabled` in the memory document, as today) gets, in its `memory` section, the project's notes whose audience is null or itself, and writes notes for the whole project with `remember` (audience null) and removes any it is given with `forget`, in every conversation of its, sub-chats included.
+- An agent's own notes (`agents`) and chat mode's (`chat`) are left as they are. Chat mode's `agent_notes` reads the agents' own notes only, not a project's ([13](#13-decisions-this-contract-made), decision 22).
 - `remember` and `forget` by an agent are changes with a line and Undo ([3.12](#312-the-record-of-changes-pi2changes)).
 
 ### 3.9 Needs you (`pi2.needs`, and the Inbox)
@@ -456,7 +432,7 @@ type NeedAnswer =
 
 **The card** of a need put in a sub-chat names the agent that asked, the sub-chat's title, and the piece of work when the run was assigned one (#507): the stored question or decision, and the item as sent, carry `work`, the work item's number from the run's report, put with the question.
 
-The empty event, as an app with the preview off, or with nothing waiting, is sent it: `{ "event": "needs", "items": [] }`. An item, as sent:
+The empty event, as an app with nothing waiting is sent it: `{ "event": "needs", "items": [] }`. An item, as sent:
 
 ```json
 { "id": "n12", "kind": "decision", "projectId": "p-6f0c…", "conversationId": 41, "rootConversationId": 41,
@@ -518,7 +494,7 @@ batch?: string;
 
 A wake is queued, held (the budget, the hourly cap, the person's Stop) or delayed exactly as [wakes.md](wakes.md) says; a report in a wake not yet submitted is not delivered, and a `read` or a wait that comes first takes it instead, so it is never given twice. Past a project limit, a report wakes nobody ([8.3](#83-limits-and-the-one-admission-check)): it stays undelivered until the orchestrator's next turn or a `read`.
 
-Outside projects, and with the preview off, waking is exactly as [wakes.md](wakes.md) says.
+Outside projects, waking is exactly as [wakes.md](wakes.md) says.
 
 ### 3.11 Work (`pi2.work`, `pi2.github`, `github.json`)
 
@@ -711,7 +687,7 @@ A schedule names an agent, and starts a conversation with it and the schedule's 
 
 ```ts
 // Added to Schedule (schedules.ts). Optional.
-/** For a schedule carried over: the project's copy of its agent, which it runs as while the preview is on (as 3.4). */
+/** For a schedule carried over: the project's copy of its agent, which it runs as (as 3.4). Its `agentId` stays the template. */
 projectAgentId?: string;
 ```
 
@@ -721,7 +697,7 @@ projectAgentId?: string;
 - **Archived and deleted.** A schedule of an archived project does not start while the project is archived ("This project is archived. Restore it first."): the run stays due and is tried again each minute. One carried over (`projectAgentId`) whose copy's project is archived runs as its `agentId` instead, the template, so its run is carried into that project and restores it, as a schedule's run did before (3.6, 9.9). Deleting a project holds the schedules whose own `agentId` is one of its agents (3.6); one carried over whose copy was in it runs as its template again.
 - **Editing** a schedule keeps its `projectAgentId` while its `agentId` stays the same, from either page; choosing another agent drops it, since the person chose that agent. The project's editor shows a carried schedule's copy as its agent and, while the person leaves it, sends its `agentId` unchanged.
 - **Carrying over** gives a schedule on a template its copy ([9.1](#91-what-becomes-what)): `carrySchedules` in `carryover.ts`. A schedule whose agent is a template not removed, with no `projectAgentId` and not held, is given the copy of that template in the project of the template's folder (its grouping key, [9.2](#92-grouping-by-folder), and the lookup of [9.4](#94-projects-lookup-and-adoption), 1 and 2), that copy being the one recorded for that project and template, or else the oldest agent of the project made from it ([9.5](#95-agents-copies-adoption-and-secrets), 1 and 2), and neither removed nor deleted. It never makes a project or a copy: a schedule whose folder has no project yet, or whose project has no copy of its template, stays on its template, and its run is carried as it is made (9.9), which makes them; the schedule is carried in the commit after. A schedule with no folder has the key `none`, as a conversation does, and so goes to the "No folder" project carrying over made, where its runs go. It is done after each run of carrying over, after each conversation carried later, and at engine start once a run is recorded, in a commit of the schedules alone, which writes nothing when there is nothing to carry. The report does not list schedules: the old way reads nothing this writes.
-- **Where they show.** With the preview on, a project's schedules are on its Settings tab; a template's, on the template's page, under Shared › Templates. The old Activity page lists every schedule, as before, until #483 takes it out.
+- **Where they show.** A project's schedules are on its Settings tab; a template's, on the template's page, under Shared › Templates. The old Activity page lists every schedule until the app's half of #483 (#716) takes it out.
 
 ## 4. Requests and events
 
@@ -729,7 +705,7 @@ projectAgentId?: string;
 
 As every request today ([architecture.md](architecture.md#how-they-talk)): `{ id, method, params }`, answered `{ id, result }` or `{ id, error, data? }`, where `error` is a plain message a person can act on. `data`, when present, is an object the caller can act on without parsing the message; the app's `EngineError` keeps it. The limit refusal carries `data.limit`. Carrying over (#458) uses the same `RequestError` envelope for its changed report. Every request in this section is meant to be the person's, made through the app, and none is checked against [section 7](#7-reach-what-an-agent-can-only-ask-for), which is for agents' tools. The engine takes answers to what waits for the person, including a `confirmLimit` retry, only from the app, and the requests of this section that change what the person set only from the app too ([7.3](#73-who-answered)); the rest are reading and runs, as before.
 
-**With the preview off**, every request that exists today works exactly as today, for templates and project agents alike, with or without the fields this page adds to it. Only the requests new in this epic are refused, but `projects.list`, `projects.setPreview` and `projects.carryOver` with `dryRun`; and an existing request is refused only for a parameter that is new and names a project (`memory.add { projectId }`, `conversation.create { confirmLimit }`), with the same message as in [section 2](#2-the-preview-switch).
+**Since #483 there is no switch**: every request works whatever the conversation, and none is refused for it. The refusal "Projects are a preview. Turn them on in Settings › General first." is gone, and so is `projects.setPreview`.
 
 Errors every new request can give, besides its own:
 
@@ -742,20 +718,20 @@ Errors every new request can give, besides its own:
 
 ### 4.2 Requests
 
-**Projects** (#456; `setPreview`'s carrying over #458; `startFresh`, `setOrchestrator` #466):
+**Projects** (#456; carrying over #458, at the update #715; `startFresh`, `setOrchestrator` #466):
 
 | Request | Answers | Does, and refuses |
 |---|---|---|
-| `projects.list {}` | `{ preview, projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events |
-| `projects.setPreview { on, plan? }` | `{ preview, carryOver }` | Turns the preview off, or on. On, when carrying over has something to do, it needs `plan`, the `plan` of the report the person was shown ([9.8](#98-the-report-and-the-run)), runs it, and answers its report; when the plan has changed since, it turns nothing on and answers the new report with the error "What would be carried over has changed since you looked. Look at it again." Off: `carryOver` is null |
+| `projects.list {}` | `{ preview, projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events; `preview` is always `true` (section 2) |
+| `projects.setPreview { on, plan? }` | — | Retired by #715 (section 2): an unknown request now |
 | `projects.create { folder, name?, template? }` | `{ id, conversation }` | A project from a folder in one step, with its orchestrator and an empty conversation with it. `folder` a folder's path, or null; `name` defaults to the folder's last part ("No folder" for null), with " 2", " 3"… when taken; `template` the id of a template to copy as its orchestrator, else the default orchestrator. Refuses "Not a folder: …" and, for a folder, "There is already a project for this folder: <name>" (an archived one: "…; restore it instead") |
 | `projects.rename { id, name }` | `{}` | Refuses an empty name, one over 80 characters, or one taken |
 | `projects.set { id, folder?, settings? }` | `{ settings }` | Changes the folder (checked as in create; new conversations of its agents start there, those working stay where they are) and any part of the settings ([section 8](#8-settings-without-asking-waking-limits)), each checked; parts not given are kept |
 | `projects.setOrchestrator { id, agentId }` | `{ conversation }` | Makes another agent of the project its orchestrator and starts a fresh conversation with it, in one commit ([6.5](#65-start-fresh)) |
 | `projects.startFresh { id }` | `{ conversation }` | [6.5](#65-start-fresh) |
 | `projects.archive { id }`, `projects.unarchive { id }`, `projects.delete { id }` | `{}` | [3.6](#36-archiving-and-deleting) |
-| `projects.restoreConversation { id, dryRun?, plan? }` | the report of what the restore would do ([9.8](#98-the-report-and-the-run)) | Restores one conversation of a deleted project into the project of its folder ([3.6](#36-archiving-and-deleting), only with the preview on). With `dryRun: true`, changes nothing. Without, `plan` must be the dry run's, and the move is one commit with a backup first; taken only from the app ([7.3](#73-who-answered)) |
-| `projects.carryOver { dryRun?, plan? }` | the report ([9.8](#98-the-report-and-the-run)) | With `dryRun: true`, changes nothing, and is allowed with the preview off. Without, the preview must be on, and it runs `plan` as `setPreview` does: to bring in what is new since |
+| `projects.restoreConversation { id, dryRun?, plan? }` | the report of what the restore would do ([9.8](#98-the-report-and-the-run)) | Restores one conversation of a deleted project into the project of its folder ([3.6](#36-archiving-and-deleting)). With `dryRun: true`, changes nothing. Without, `plan` must be the dry run's, and the move is one commit with a backup first; taken only from the app ([7.3](#73-who-answered)) |
+| `projects.carryOver { dryRun: true }` | the report ([9.8](#98-the-report-and-the-run)) | What a run would do now, changing nothing, for a script or a test; open to any connection since it changes nothing. Without `dryRun: true` it is refused: "Carrying over runs by itself when the engine starts. Only a dry run is taken: give dryRun: true." The run is the engine's own, at every start (9.8) |
 | `projects.retrySecrets {}` | `{ secrets }` | Tries again to copy the variables' values still pending ([9.5](#95-agents-copies-adoption-and-secrets)), and answers what is still pending |
 | `projects.watch { projectId, tabs }` | `{}` | This app shows these tabs of this project now (`"now"`, `"work"`): the engine reads GitHub for them ([3.11](#311-work-pi2work-pi2github-githubjson)). `projectId: null` or an empty `tabs` says it shows none. Per connection, and forgotten when the app disconnects |
 
@@ -770,7 +746,7 @@ Errors every new request can give, besides its own:
 | `agents.restore { id }` | `{}` | Puts back a project agent removed through a tool |
 | `agents.updateFromTemplate { id, apply }` | `{ changes: [{ setting, now, template }], applied }` | [3.3](#33-agents-and-templates-pi2agents). With `apply: false`, changes nothing |
 | `conversation.create { agentId, confirmLimit? }` | `{ id }` | As today. With a project agent, a start in that project, checked as [8.3](#83-limits-and-the-one-admission-check) says |
-| `chat.continueWithAgent { id, projectId, agentId?, text?, confirmLimit? }` | `{ id }` | With the preview on, in place of a template and a folder (#654): the chat to the project's orchestrator's present conversation, or a new conversation of another of its agents ([9.9](#99-conversations-made-later)) |
+| `chat.continueWithAgent { id, projectId, agentId?, text?, confirmLimit? }` | `{ id }` | In place of a template and a folder (#654): the chat to the project's orchestrator's present conversation, or a new conversation of another of its agents ([9.9](#99-conversations-made-later)) |
 
 **Rules** (#459). Under `projects.rules`, since `rules.add` and `rules.remove` are the allowed commands':
 
@@ -825,7 +801,7 @@ Errors every new request can give, besides its own:
 New events, each sent whole when what it holds changes, and to each app as it connects:
 
 ```ts
-{ event: "projects"; preview: boolean; projects: ProjectRow[]; carryOver: CarryOverState | null }
+{ event: "projects"; preview: true; projects: ProjectRow[]; carryOver: CarryOverState | null }   // `preview` always true (section 2)
 
 type ProjectRow = Project & {
 	folderMissing: boolean;
@@ -835,7 +811,15 @@ type ProjectRow = Project & {
 	lastWords: { text: string; at: number } | null;
 };
 
-type CarryOverState = { ranAt: number | null; backup: string | null; secretsPending: { copy: string; name: string; project: string; variables: string[]; error: string | null }[] };
+type CarryOverState = {
+	ranAt: number | null;
+	backup: string | null;
+	/** The copy of the data the update made at its first start, before anything changed (9.8): its path, with the home folder as it is on disk, and when. Null: none was made (a new data folder had nothing to copy), or not yet. */
+	removalBackup: { path: string; at: number } | null;
+	/** Why the update's copy of the data, or its run, failed at this start, in words for the person; null otherwise. Tried again at the next start. */
+	removalFailed: string | null;
+	secretsPending: { copy: string; name: string; project: string; variables: string[]; error: string | null }[];
+};
 
 { event: "needs"; items: NeedItem[] }                                  // every project's, and those of no project
 { event: "projectRules"; projects: Record<string, ProjectRule[]> }
@@ -844,10 +828,10 @@ type CarryOverState = { ranAt: number | null; backup: string | null; secretsPend
 { event: "github"; projects: Record<string, { state: "ok" | "loading" | "signed_out" | "unreachable" | "rate_limited"; error: string | null; reading: boolean; readAt: number | null; repository: { owner: string; name: string }; issues: WorkItem[]; pulls: PullRequest[]; unknown: { intent: string; summary: string; at: number }[] }> }
 ```
 
-With the preview off, or on with nothing made yet, an app is sent exactly:
+On a new data folder, with nothing made yet, an app is sent exactly:
 
 ```json
-{ "event": "projects", "preview": false, "projects": [], "carryOver": null }
+{ "event": "projects", "preview": true, "projects": [], "carryOver": null }
 { "event": "projectRules", "projects": {} }
 { "event": "needs", "items": [] }
 { "event": "reports", "projects": {} }
@@ -855,7 +839,7 @@ With the preview off, or on with nothing made yet, an app is sent exactly:
 { "event": "github", "projects": {} }
 ```
 
-and, after the preview was on and off again, the same events with what was made in them, and `preview: false`.
+`carryOver` is null until there is something to say: a run recorded, a backup, a copy of the data recorded by the update, its failure, or variables' values pending. The app shows a notice once from `removalBackup` and `removalFailed` (#716), and keeps whether it was seen itself.
 
 Fields added to events that exist:
 
@@ -874,13 +858,13 @@ How often: `projects`, `projectRules`, `work` and `github` change at the pace of
 
 ### 4.4 What an app is sent on connecting
 
-After today's events (`library`, `agents`, `inbox`, `activity`, `schedules`, `recovery`, `usage`, `mcp`, `chat`, `compactionSettings`), each feature's greeting, in the order of `FEATURES`. The projects' features are listed together there, so their events come in this order: `projects`, `projectRules`, `needs`, `reports`, `work`, `github` (#456 places the `projects` feature and leaves the places for the others; each issue adds its own feature in its place). They are sent whether the preview is on or not, so that turning it on shows everything at once.
+After today's events (`library`, `agents`, `inbox`, `activity`, `schedules`, `recovery`, `usage`, `mcp`, `chat`, `compactionSettings`), each feature's greeting, in the order of `FEATURES`. The projects' features are listed together there, so their events come in this order: `projects`, `projectRules`, `needs`, `reports`, `work`, `github` (#456 places the `projects` feature and leaves the places for the others; each issue adds its own feature in its place).
 
 ## 5. Tools for agents
 
 ### 5.1 Who is offered what
 
-With the preview on, a conversation is in a project when its `projectId` is set and the project is neither archived nor deleted. Outside a project, and with the preview off, nothing in this section is offered and every existing tool, with its definition and description, is exactly as today.
+A conversation is in a project when its `projectId` is set and the project is neither archived nor deleted (and, for a deleted project's, when its own agent is the project's: 3.6). Outside a project nothing in this section is offered, and every existing tool, with its definition and description, is exactly as it was before projects.
 
 There are three kinds of conversation in a project:
 
@@ -1072,14 +1056,12 @@ The `project` section ([6.1](#61-the-sections)) tells every agent of the project
 
 ### 5.8 What existing tools say differently in a project
 
-Only in a project, with the preview on:
+Only in a project:
 
 - `delegate` names only agents of the project; a new sub-chat, or a continued one, is a start, which passes the admission check ([8.3](#83-limits-and-the-one-admission-check)) and asks first when `startAgents` is off. With `wait: false` its result says how the report will come ([5.6](#56-reports-the-orchestrator)).
 - `sub_chats`, in the orchestrator's conversation, lists the sub-chats of its earlier conversations too, still working or not archived, and `delegate` with `chat` continues one of them: Start fresh loses no sub-chat ([6.5](#65-start-fresh)). Each line says whether its last report has been delivered. The conversation with the orchestrator never ends, so its archive only grows: `list` counts the archived ones in a line, and `archived: true` pages through them (#636, [archive.md](archive.md#sub-chats-an-agent-puts-away)).
 - `remember` and `forget` write the project's notes ([3.8](#38-notes-pi2memory)), each a change with a line and Undo.
 - `ask_user`, in a sub-chat of a project, is told apart from `needs_you` in the `project` section (#507): what does not stop the worker goes under Needs you with `needs_you`, and `ask_user` is for the question whose answer its next step needs, with no other work to do meanwhile. `needs_you`'s description says the same in a sentence. `ask_user`'s own definition and description change nowhere: they are every conversation's.
-
-With the preview off, a conversation of a project agent is offered what its agent's settings say, as any conversation is, and `delegate` hands work to the agents its `delegates` name, as today; its starts still pass the project's admission check ([section 2](#2-the-preview-switch)).
 
 ### 5.9 Every change in the hub: its tool, whether it asks, and its Undo
 
@@ -1108,7 +1090,7 @@ The owner's word: whatever the person can do by hand in the hub, the orchestrato
 | Start fresh | — | The person's alone | **None**: the earlier conversation stays readable |
 | Archive, restore, delete the project | — | The person's alone | **None** by Undo; restore is its own action |
 | Answer what is under Needs you | — | The person's alone | **None** |
-| Turn the preview on or off, carry over | — | The person's alone | **None** by Undo ([9.11](#911-switching-the-preview-off)) |
+| Carry over | — | The engine's own, at the update (9.8) | **None** by Undo: the copy of the data made first is the way back ([9.8](#98-the-report-and-the-run)) |
 | Edit or delete a template; an agent's variables; Allow everything's own confirmation | — | The person's alone | — |
 
 The exceptions, each with no tool or no Undo, are question 6 in [section 14](#14-questions-for-the-owner).
@@ -1121,13 +1103,13 @@ Two new sections, and one changed, in this order among [the existing ones](archi
 
 | Section | From | Has something to say when | Steady, or comes and goes |
 |---|---|---|---|
-| `project` | `projects.ts` | the conversation is in a project and the preview is on | Changes in place when the project's name, folder, repository, settings or orchestrator change; comes and goes with the preview |
-| `project_rules` | `projectrules.ts` | the conversation is in a project, the preview is on, and some rule binds its agent | Changes in place when a rule binding its agent is added, edited, moved or removed |
-| `memory` (changed) | `knowledge.ts` | as today; for a project agent with the preview on, the project's notes it is given | As today |
+| `project` | `projects.ts` | the conversation is in a project | Changes in place when the project's name, folder, repository, settings or orchestrator change |
+| `project_rules` | `projectrules.ts` | the conversation is in a project and some rule binds its agent | Changes in place when a rule binding its agent is added, edited, moved or removed |
+| `memory` (changed) | `knowledge.ts` | as before projects; for a project agent, the project's notes it is given | As before |
 
-**Outside a project nothing changes, byte for byte**, with the preview on or off: a section with nothing to say is not sent at all ([architecture.md](architecture.md#the-system-prompts-sections)), so the two new sections cost a conversation outside a project nothing; tools, their definitions and their order are as today; and the instructions the summariser is given (`RETENTION_INSTRUCTIONS`, which `main.ts` gives every conversation) are not changed at all ([13](#13-decisions-this-contract-made), decision 15). `engine/test/sections.ts` checks it, with the demo model's `/system history`, for a conversation outside a project with the preview on.
+**Outside a project nothing changes, byte for byte**: a section with nothing to say is not sent at all ([architecture.md](architecture.md#the-system-prompts-sections)), so the two new sections cost a conversation outside a project nothing; tools, their definitions and their order are as today; and the instructions the summariser is given (`RETENTION_INSTRUCTIONS`, which `main.ts` gives every conversation) are not changed at all ([13](#13-decisions-this-contract-made), decision 15). `engine/test/sections.ts` checks it, with the demo model's `/system history`, for a conversation outside a project.
 
-**A conversation that joins a project** (by carrying over, with the preview turned on) was started without places for the new sections, so the first time one of them has something to say, its whole prompt is sent once more, as for any section a conversation was started without ([architecture.md](architecture.md#the-system-prompts-sections)); from then on each keeps its place. That happens once, to conversations in a project only. A conversation made in a project has the places from its first request.
+**A conversation that joins a project** (by carrying over) was started without places for the new sections, so the first time one of them has something to say, its whole prompt is sent once more, as for any section a conversation was started without ([architecture.md](architecture.md#the-system-prompts-sections)); from then on each keeps its place. That happens once, to conversations in a project only. A conversation made in a project has the places from its first request.
 
 Both new sections are worked out from documents only, never from the time, counts that move, or who is working, so a section's text changes only when what it holds changes, and each change is sent alone, as that one section.
 
@@ -1266,13 +1248,13 @@ It is refused while the current conversation is answering, while a message of th
 | Its task list (`update_plan`) | Stays with the earlier conversation, readable there |
 | News | Represented by the new conversation's state block, and cleared |
 
-The old conversation goes to the end of `earlier`, stays readable and is not archived (archiving would stop its sub-chats); with the preview on it takes no messages ([3.5](#35-conversations-pi2library)). Its page ends with a line, "Continued in a fresh conversation", linking to the new one; the new one begins with "Started fresh from an earlier conversation", linking back, and with the state block. The rules and notes are its sections, as in any conversation of the project.
+The old conversation goes to the end of `earlier`, stays readable and is not archived (archiving would stop its sub-chats); it takes no messages ([3.5](#35-conversations-pi2library)). Its page ends with a line, "Continued in a fresh conversation", linking to the new one; the new one begins with "Started fresh from an earlier conversation", linking back, and with the state block. The rules and notes are its sections, as in any conversation of the project.
 
 Archiving or deleting the current conversation by hand does what [3.6](#36-archiving-and-deleting) says: archiving stops its work, as it does any conversation's.
 
 ### 6.6 What switching the preview off leaves in a conversation
 
-From each conversation's next message, switching off takes away the project's sections and tools (each sent alone, as any change is) and adds no catch-up or state block. What it was already given stays in its transcript and its context, as everything does: catch-ups and state blocks already given are history, which a later summary may fold in like any other. News that comes while the preview is off is kept, and given at the first turn after it is on again. Nothing is deleted from a transcript.
+Retired by #715, with the switch (section 2). What a conversation was given while it was in a project stays in its transcript and its context, as everything does; a conversation of a deleted project is in no project from its next message (3.6).
 
 ## 7. Reach: what an agent can only ask for
 
@@ -1329,7 +1311,7 @@ A change made through any tool, by any agent, and by every path a tool has to it
 
 **A new agent** made by an agent, a copy of a template among them, is made at the baseline (7.2) for every setting that would widen, and one reach request asks for all of those at once.
 
-**Not offered to agents at all**, so neither made nor asked for by a tool: the preview switch, carrying over, archiving, restoring and deleting a project, Start fresh, waking for the whole project, deleting an agent for good, templates themselves, an agent's variables, sign-ins and providers, MCP servers' own settings, and "Always Allow … Here" on a conversation.
+**Not offered to agents at all**, so neither made nor asked for by a tool: carrying over, archiving, restoring and deleting a project, Start fresh, waking for the whole project, deleting an agent for good, templates themselves, an agent's variables, sign-ins and providers, MCP servers' own settings, and "Always Allow … Here" on a conversation.
 
 Lowering any of these (access lowered, a switch turned off, a limit lowered, an app taken away) narrows reach and is made at once, with Undo.
 
@@ -1467,13 +1449,13 @@ In order, for a start by an agent:
 
 For a start by the person (`work.act` `assign`, `conversation.create` with a project agent, a sub-chat started from the board): past a limit, the request is refused with the reading (error "Past the project's limit: …", and the reading as `limit` in the error's data); the app shows it, and the person confirms that one start by sending the request again with `confirmLimit` set to the reading's `id`, checked as Start Anyway is.
 
-With the preview off, a start past a limit is refused with the reason and no card is put anywhere, since nothing would show it; the person can raise the limit after turning the preview on.
-
 Two starts at once can each pass: the limit is a check, not a reservation, and the next start after them sees what they spent. A reading that cannot be made (Usage has never read the plan) does not hold a start back, as above.
 
 ## 9. Carrying over
 
-Carrying over puts what a person has today into projects, with nothing lost, nothing deleted, and nothing the old way reads changed: it only adds documents, adds fields the old way does not read, and copies agents. The code is `engine/src/carryover.ts` (#458).
+Carrying over puts what a person had before projects into projects, with nothing lost, nothing deleted, and nothing the versions with the switch read changed: it only adds documents, adds fields those versions do not read, and copies agents. The code is `engine/src/carryover.ts` (#458).
+
+Since #483 took the switch out (#715), it is the engine's own: it runs by itself at every start, and nothing is shown to the person first. The first start of a version without the switch makes a copy of the data before anything changes, then carries everything over in one run ([9.8](#98-the-report-and-the-run)); every start after finds nothing new and writes nothing, but what was left behind ([9.9](#99-conversations-made-later)). It runs whatever the version before was: one where the switch was never turned on (everything is carried), one where it was on (the plan is empty but for what was made with it off since: 9.6, 9.9), and one with no `pi2.projects` document at all.
 
 ### 9.1 What becomes what
 
@@ -1546,7 +1528,7 @@ For each project, the templates to copy into it are the agents its conversations
 
 ### 9.6 Conversations: what each keeps
 
-Each conversation of the project whose agent has a copy there gets `projectAgentId` set to it. That changes only what is taken from the agent at each message ([3.4](#34-which-agent-a-conversation-runs-as-runsas)). Everything else is the conversation's own and stays as it is, with the preview on or off:
+Each conversation of the project whose agent has a copy there gets `projectAgentId` set to it, and keeps `agentId`, its template, beside it: nothing rewrites `agentId`, so the versions with the switch still read it. That changes only what is taken from the agent at each message ([3.4](#34-which-agent-a-conversation-runs-as-runsas)). Everything else is the conversation's own and stays as it is:
 
 - **its folder**, which is its `pi.agent` document's: a conversation in a subfolder, a sub-chat in another repository and a conversation in a worktree keep working there, continued or not;
 - **its worktree** in `pi2.worktrees`, and so what the branch tracker shows;
@@ -1557,6 +1539,8 @@ What does change, and the report says so for each copy: a *new* sub-chat that a 
 
 **The orchestrator** of a project carrying over makes (not one it adopts, whose orchestrator stands): among the project's top-level conversations that are neither archived nor deleted, whose agent still exists and that have at least one sub-chat (they hand out work), the first by the tie-break of 9.3 becomes the orchestrator's conversation, and the copy of its agent the orchestrator (`role`). When none qualifies, the project gets a copy of the default orchestrator, with no conversation yet (`conversation` null): the app makes one with `projects.startFresh` when the person first opens or writes to the orchestrator, and it begins with the state block (6.4). So no empty conversation appears in the old sidebar for each folder carried over. Every other conversation stays one of the project's other conversations.
 
+**A sub-chat made with the switch off in a conversation carried over** (by a version with the switch, after it had been on) took its parent's `projectId` but no `projectAgentId`, and ran as its template. The plan puts it right (#715): it is given the copy its project has of its agent, by 9.5's rule (the one recorded, unless the person deleted it since; else the oldest agent of the project made from it), and none is made for it. One whose copy was deleted, one deleted itself, one in a deleted project, and one of a project's own agent are left as they are. The report counts them per project (`subChatsPutRight`), and a plan with nothing else to do is not empty while one is left.
+
 ### 9.7 Notes
 
 Each note in `pi2.memory`'s `agents` is copied once into each project it goes to, and recorded in `carry.notes` for that project (`<projectId> <templateId> <noteId>`), in the commit that copies it, whatever became of it since, so no later run copies it there again, even if the note it became has been removed or shared. A run cut off between two projects' commits leaves each project it reached recorded, and the next run copies the note only to the others. A project that gets a copy of the agent later (a later run, or a conversation made later, 9.9) gets its notes then:
@@ -1566,15 +1550,15 @@ Each note in `pi2.memory`'s `agents` is copied once into each project it goes to
 - a note whose text the project already has for the same audience is not copied twice; its source is recorded as dealt with, pointing at the note that has the text;
 - a note of an agent deleted (whose notes are kept and shown nowhere today) is left where it is and recorded `"left"` (`<agentId> <noteId>`); the report counts them (`notesLeft`). A note of an agent with no copy anywhere yet is recorded nowhere, and goes to the first project that gets one.
 
-The agents' own notes are left where they are, and with the preview off are what each agent is given, as before.
+The agents' own notes are left where they are: what each template is given, and what chat mode's `agent_notes` reads.
 
 ### 9.8 The report and the run
 
-`projects.carryOver { dryRun: true }` answers what a run would do, changing nothing:
+`projects.carryOver { dryRun: true }` answers what a run would do now, changing nothing:
 
 ```ts
 type CarryOverReport = {
-	/** The plan's fingerprint (9.3): what `setPreview` and `carryOver` must be given to run it. Null: nothing to do. */
+	/** The plan's fingerprint (9.3): the run at the update applies the plan it works out with its own. Null: nothing to do. */
 	plan: string | null;
 	projects: {
 		key: string;             // the grouping key: a folder, or "none"
@@ -1593,6 +1577,7 @@ type CarryOverReport = {
 		conversations: number;   // top-level, not archived, to be added
 		archivedConversations: number;
 		subChats: number;
+		subChatsPutRight: number; // sub-chats in the project already, made with the switch off, given its copy now (9.6)
 		notes: number;
 		notices: string[];       // lines for the person: a repository gone, a bare repository's worktrees (9.2)
 	}[];
@@ -1607,43 +1592,38 @@ type CarryOverReport = {
 
 `leftOut.deletedProject` counts top-level conversations of deleted projects that are not themselves deleted, whether archived or not. They keep their project record and are not carried again (3.6).
 
-The app shows the report as the person turns the preview on, before the run, with a button to go ahead, and lists by name every copy that takes Allow everything or variables' values (#470).
+Nothing is shown to the person before the run, and nothing asks them (#715; the owner's word on #483). The report is for scripts, tests and the check on a copy of real data.
 
-**The real run** (`projects.setPreview { on: true, plan }`, or `projects.carryOver { plan }`):
+**The run at the update** (`update` in `carryover.ts`), at every engine start, once every feature has started (`host.ready`), in the queue every run and conversation carried later shares, so no two work from the same documents:
 
-1. Works the plan out again; a different fingerprint changes nothing (9.3).
-2. When the plan is empty, changes nothing at all, `ranAt` included, and answers the report.
-3. Makes a backup before the first run that changes anything, unless restoring a conversation ([3.6](#36-archiving-and-deleting)) already made one. It uses **Back Up**'s `createBackup` in `backup.ts`, into `backups/` in the data folder, and records its path. That backup is a snapshot of the database and the settings files before that first carry-over run or restore: it holds no Keychain item, so it cannot bring back keys or variables' values, and restoring it replaces everything done since, in projects or not. With the preview switch, which shows everything as it was without restoring anything, it is the way back ([13](#13-decisions-this-contract-made), decision 19).
-4. Commits, one commit per project (so a large library does not hold the engine's thread in one long commit): the project, its copies, the conversations' fields, the notes, the record (its keys, copies and notes) and `ranAt`. A run cut off between two commits leaves what was committed, which the next run finds by 9.4, 9.5 and 9.7 and does not do again.
-5. Copies variables' values, as 9.5 says.
-6. Answers the report, with `ranAt`, `backup` and what is still pending.
+1. **A copy of the data first.** At the first start of a version without the switch, before anything changes, one backup with **Back Up**'s `createBackup` (`backup.ts`), into `backups/pi2-backup-<date>-<time>/` in the data folder, whether or not the plan is empty and whether or not an older `carry.backup` exists. It is recorded apart, as `carry.removalBackup: { path, at }`, so `carry.backup` keeps meaning the copy made before the first run that changed anything; the event's `carryOver.removalBackup` says it, with the path as it is on disk. A data folder with nothing to copy (no conversation, no `pi2.projects` document, no agent's note: a new installation) gets none: `removalBackup` is recorded with `path: null`, so no later start makes one, and the event says `null`. If the copy cannot be made, nothing is carried at all, the engine says why in `engine.log` and in the event's `carryOver.removalFailed`, and the next start tries again; until a copy is recorded, conversations made meanwhile are not carried either (9.9). The copy is written as `pi2-backup-<date>-<time>.partial/` and renamed once whole: one that fails is removed, and one an engine killed while making it left is removed at the next start, before it makes its own; no folder without that mark is ever removed. An engine killed between the rename and the record leaves one whole copy unrecorded, and the next start makes another and records that one: one extra copy, once. Nothing is written before the copy is recorded: the Keychain step for variables' values still pending (9.5) runs only after it, at every start.
+2. **The plan**, worked out from the documents as they are and applied with its own fingerprint: when it is empty, nothing is written, `ranAt` included.
+3. **One commit per project** (so a large library does not hold the engine's thread in one long commit): the project, its copies, the conversations' fields, the sub-chats put right (9.6), the notes, the record (its keys, copies and notes) and `ranAt`; `carry.backup` takes the update's copy if no older one is recorded. A run cut off between two commits leaves what was committed, which the next start finds by 9.4, 9.5 and 9.7 and does not do again, with the copy already recorded, so no second one is made. A run that fails says so in `removalFailed` and is finished by the next start. The run does not wait for conversations at work: a project the person makes for one of the folders while it runs stops the rest of it ("Something changed while carrying over ran…"), and the next start carries the rest into that project.
+4. **`settings.json`'s `projects: { preview: true }`**, written once the run is whole and only when it does not say so already (section 2).
+5. **Schedules** given their copy ([3.13](#313-schedules-pi2schedules)), and **variables' values** copied, as 9.5 says.
+6. **Then the sweep** of conversations left in no project (9.9).
+
+The engine logs each step: the copy ("carrying over at the update: backed up to …"), the run ("carried over at the update: N projects, plan …"), the switch written, and a failure with its reason. A second start with nothing new writes nothing at all: no copy, no commit, no `settings.json`.
+
+**The copy of the data, and what it does not hold.** It is a consistent copy of `session.sqlite` (every conversation, agent, project, note, rule, work item, need and report) and of `endpoints.json`, `added-models.json`, `mcp.json`, `settings.json` and `credentials.json` (an index of providers, no secrets). Not in it: the Keychain (keys, sign-ins, agents' and MCP servers' variables), `github.json` (a cache, read again), `chats/` (chat mode's documents), `worktrees/`, `output/`, `local/` and `local-models.json`, `model-catalogs.json` and `limits.json`. Restoring it replaces everything done since, in projects or not. To go back to the old way it must be restored with the last version that had the switch, since an update cannot be undone by Sparkle, and a version without the switch carries what it restores over again at its next start. It is the only way back ([13](#13-decisions-this-contract-made), decision 19).
 
 ### 9.9 Conversations made later
 
-While the preview is on, when a top-level conversation that is not a chat is made with no `projectId` (by a schedule, by `conversation.create` from a script with a template, by a fork of a conversation in no project), the engine carries it over as it is made, with `planCarryOver` for that one conversation and its sub-chats: into the project of its key by 9.4 (restoring that project if it was archived, as [3.6](#36-archiving-and-deleting) says; a new one if the folder's was deleted), its agent copied there by 9.5 if it has no copy yet, with the notes that go to that copy (9.7), and `projectAgentId` set. Its start is checked against the limits of that project, as a start of one of its agents is ([8.3](#83-limits-and-the-one-admission-check)).
+When a top-level conversation that is not a chat is made with no `projectId` (by a schedule, by `conversation.create` from a script with a template, by a fork of a conversation in no project), the engine carries it over as it is made, with `planCarryOver` for that one conversation and its sub-chats: into the project of its key by 9.4 (restoring that project if it was archived, as [3.6](#36-archiving-and-deleting) says; a new one if the folder's was deleted), its agent copied there by 9.5 if it has no copy yet, with the notes that go to that copy (9.7), and `projectAgentId` set. Its start is checked against the limits of that project, as a start of one of its agents is ([8.3](#83-limits-and-the-one-admission-check)).
 
-**Continue with an Agent** (#654) makes no such conversation with the preview on: it names a project and, if the person chooses, one of its agents, in place of a template and a folder: `chat.continueWithAgent { id, projectId, agentId?, text? }`. With no `agentId`, or the orchestrator's, the chat's handover ([chat.md](chat.md#continue-with-an-agent), unchanged) goes into the orchestrator's present conversation as a message from the person, taken as the hub's message field takes one (steering a turn under way, with the catch-up in front of it, [6.4](#64-the-catch-up-and-the-state-block)); a project has one conversation with its orchestrator, so no second one is made, and if it has none yet it is made as the hub makes it, beginning with the state block. With another agent of the project, it starts a new conversation of that agent in the project, in its folder, checked against the project's limits as any start of it is. It answers `{ id }`, the conversation the message went to. Refused: a template or an agent of another project ("Choose a project to continue in", "<name> is not an agent of <project>"), `cwd` ("A project's agents work in its folder"), an unknown or deleted project, and an archived one. With the preview off, `projectId` is refused as every request new in the epic is, and the request is as before.
+**Continue with an Agent** (#654) makes no such conversation: it names a project and, if the person chooses, one of its agents, in place of a template and a folder: `chat.continueWithAgent { id, projectId, agentId?, text? }`. With no `agentId`, or the orchestrator's, the chat's handover ([chat.md](chat.md#continue-with-an-agent), unchanged) goes into the orchestrator's present conversation as a message from the person, taken as the hub's message field takes one (steering a turn under way, with the catch-up in front of it, [6.4](#64-the-catch-up-and-the-state-block)); a project has one conversation with its orchestrator, so no second one is made, and if it has none yet it is made as the hub makes it, beginning with the state block. With another agent of the project, it starts a new conversation of that agent in the project, in its folder, checked against the project's limits as any start of it is. It answers `{ id }`, the conversation the message went to. Refused: a template or an agent of another project ("Choose a project to continue in", "<name> is not an agent of <project>"), `cwd` ("A project's agents work in its folder"), an unknown or deleted project, and an archived one.
 
-It is carried in a commit after the one that made it. If that fails, or the engine stops between the two, the conversation is not held up. With the preview on and a run already recorded (`carry.ranAt` is not null), the engine carries the top-level conversations that are not chats or deleted and have no `projectId`, one by one, at startup and again after a carry fails. If the preview is on but no run is recorded, there is no sweep: existing conversations without a project are left to the report and the first backed-up run (9.8). An archived conversation that is carried goes into its project without restoring that project. Conversations of a deleted project keep its `projectId` and are not swept; a fork of one whose own agent does not belong to the deleted project starts outside it and is carried (3.6).
+It is carried in a commit after the one that made it. If that fails, or the engine stops between the two, the conversation is not held up. Once the update's copy of the data is recorded (9.8), the engine carries the top-level conversations that are not chats or deleted and have no `projectId`, one by one, at startup after the update's run and again after a carry fails. Until it is recorded (the copy could not be made), nothing is carried: conversations made meanwhile wait for the next start's run. A sub-chat made while the update's run goes, under a parent not carried yet, stays in no project until the next start, whose plan puts a sub-chat in no project into the project its root conversation is in. An archived conversation that is carried goes into its project without restoring that project. Conversations of a deleted project keep its `projectId` and are not swept; a fork of one whose own agent does not belong to the deleted project starts outside it and is carried (3.6).
 
 A schedule's run carried this way can make the project or the copy its schedule was waiting for: the schedules are carried after each conversation is ([3.13](#313-schedules-pi2schedules)), so the next run of that schedule is the copy's own, made in the project.
 
 ### 9.10 Running it again
 
-Every step looks first, by the rules of 9.4, 9.5 and 9.7, for what an earlier run made or the person made since, and does nothing it finds done. So a second run with nothing new has an empty plan, commits nothing and leaves every document exactly as it was, `ranAt` included. What is new since (a conversation made with the preview off, an agent made since, a note written since) is added as a first run would add it. Nothing the person chose since is changed: a project's name, folder, settings and orchestrator, a copy's settings, a copy or project they deleted, a note they removed or shared.
+Every step looks first, by the rules of 9.4, 9.5 and 9.7, for what an earlier run made or the person made since, and does nothing it finds done. So a second run with nothing new has an empty plan, commits nothing and leaves every document exactly as it was, `ranAt` included. What is new since (a conversation made by a version with the switch off, a sub-chat made then, an agent made since, a note written since) is added as a first run would add it. Nothing the person chose since is changed: a project's name, folder, settings and orchestrator, a copy's settings, a copy or project they deleted, a note they removed or shared.
 
 ### 9.11 Switching the preview off
 
-Nothing is undone: the projects and everything in them stay, and turning the preview on again shows them as they were left. Meanwhile:
-
-- every conversation runs as its `agentId`, exactly as before carrying over ([3.4](#34-which-agent-a-conversation-runs-as-runsas)), in its own folder, as it always did, and so does every schedule ([3.13](#313-schedules-pi2schedules));
-- no project section, rule, note, catch-up or tool reaches any conversation from its next message ([6.6](#66-what-switching-the-preview-off-leaves-in-a-conversation)): a conversation carried over is told exactly what it was told before, byte for byte, whatever was changed in its project with the preview on;
-- what holds for a project's conversations whatever the preview still holds for those carried over: its `startAgents` switch asks before one of their agents starts another ([8.1](#81-what-the-orchestrator-may-do-without-asking)), and its limits hold for their starts ([8.3](#83-limits-and-the-one-admission-check)). So a carried project's settings, changed with the preview on, change how the person's old conversations start agents with it off;
-- a sub-chat made with the preview off in a conversation carried over takes its parent's `projectId` but no `projectAgentId`: with the preview on it runs as its agent, the template, not the project's copy;
-- every request that exists today works as today, except that starts with a deleted project's own agents are refused (3.6);
-- the old screens show every conversation where it was, since nothing in the epic writes a conversation's own archive state ([3.6](#36-archiving-and-deleting)), and no conversation is added for an orchestrator (9.6); the templates are the agents list, and project agents are left out of it by the app ([10.2](#102-with-the-preview-off)), which the app before #470 does not do (12.1);
-- the agents' own notes, allowed commands and variables were never changed, so each agent has all of them;
-- what was made in projects while the preview was on (new conversations, notes, rules, work) is kept, and conversations made in projects are listed in the old sidebar like any other.
+Retired by #715, with the switch (section 2). What it described is what the versions with the switch did with it off, after a run: every conversation ran as its `agentId`, and a sub-chat made then took its parent's `projectId` but no `projectAgentId`. Such sub-chats are put right at the update (9.6). Going back to one of those versions is possible only by restoring the copy of the data the update made (9.8); the last of them, given the data as the update leaves it, finds `projects: { preview: true }` in `settings.json` and shows projects.
 
 ## 10. The app
 
@@ -1709,7 +1689,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | The engine's restart notice as a banner over the Dashboard, or over a hub: what was picked up and the commands and set-ups cut off, under Details; Dismiss | `recovery`; `recovery.dismiss` | #645 |
 | A Dashboard column's window onto the orchestrator | the orchestrator's conversation (`projects`' `conversation`), opened with `conversation.open` `tail: true`, which sends only its newest part ([transcript.md](transcript.md#a-long-conversation-newest-first)); `activity` for what it is doing | #618 |
 | The menu bar item's count, the Dock's badge, notifications of what waits | `needs`, in place of the Inbox | #481 |
-| The update to projects, once, as a banner over the Dashboard, a hub or the page that makes the first project: that pi² works by projects only, where the copy of the data as it was is (with Show in Finder), what the copy does not hold, and that this cannot be switched back; OK puts it away for that copy, by its `at`, kept in the app's own preferences (10.1). A data folder with nothing to move (no conversation, listed or archived, and no project) is not told. While the copy or the move failed, a banner with the engine's reason that stays until it is gone. While a copy's variables' values are not copied (9.5), a line for each with Try Again (`projects.retrySecrets`), in place of Settings' old section. Both fields are read as optional, for an engine that does not send them | `projects` (`carryOver.removalBackup`, `carryOver.removalFailed`, `carryOver.secretsPending`) | #716 |
+| The update to projects, once, as a banner over the Dashboard, a hub or the page that makes the first project: that pi² works by projects only, where the copy of the data as it was is (with Show in Finder), what the copy does not hold, and that this cannot be switched back; OK puts it away for that copy, by its `at`, kept in the app's own preferences (10.1). A data folder with nothing to copy is not told: the engine makes no copy for it and sends `removalBackup: null` (9.8). While the copy or the move failed, a banner with the engine's reason that stays until it is gone. While a copy's variables' values are not copied (9.5), a line for each with Try Again (`projects.retrySecrets`), in place of Settings' old section. Both fields are read as optional, for an engine that does not send them | `projects` (`carryOver.removalBackup`, `carryOver.removalFailed`, `carryOver.secretsPending`) | #716 |
 
 The app sends `projects.watch` when it shows a project's Now or Work tab, and again when it stops (#472, #479); the engine forgets it when the app disconnects. The Work tab never waits for its answer or for `gh`: it draws the last `work` or `github` event at once, which the app keeps whatever tab or project is shown, shows a small spinner while `reading` is true, and changes its rows in place when the read lands (#599). Nothing about who is working is in the `projects` event, so it is not sent again whenever a run starts or ends (#446).
 
@@ -1733,9 +1713,9 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 | Shared piece | Owner | Until then, and how others plug in |
 |---|---|---|
-| `projectsOn()`, `inProject(conversation)` (in a project, the preview on, the project neither archived nor deleted), the `projects` feature and its place in `FEATURES`, with the places after it for the others | #456 | Every other issue asks these two functions and adds its feature in its place |
+| `inProject(conversation)` (in a project neither archived nor deleted; `projectsOn()` beside it until #715 took the switch out), the `projects` feature and its place in `FEATURES`, with the places after it for the others | #456 | Every other issue asks these two functions and adds its feature in its place |
 | `pi2.projects`, the `projects` event and `ProjectRow` | #456 | `ruleTokens` is zeros until #459 fills it; `lastWords` null until #466; `carry` empty until #458 |
-| `projects.setPreview`, and the refusal of new requests while off | #456 | #458 adds the carrying-over through one hook #456 leaves, `onPreviewOn(plan)`; until #458, turning on carries nothing over and a dry run answers an empty report |
+| `projects.setPreview`, and the refusal of new requests while off | #456 | Retired by #715 (section 2). Carrying over was plugged in through `onPreviewOn(plan)`; it now runs by itself at every start (9.8) |
 | `requireSwitch` (8.1) and the Inbox's `projectSwitch` | #456 | Every tool a switch governs calls it (#457, #465, #467, #468) |
 | `addNews` and `news` (storing) | #456 | #463, #464, #465, #467 add news from the start; #466 delivers it |
 | `runsAs`, and every lookup of a conversation's agent through it | #457 | Until #457, a conversation runs as its `agentId` (no `projectAgentId` exists before #458) |
@@ -1756,11 +1736,11 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 **As #456 built them.** Every piece #456 owns is in `engine/src/projects.ts`, which says at its top which later issue fills in each place. What the table does not say:
 
-- `projectsOn(): boolean`. `inProject(conversation: number): Project | undefined`, the project, or undefined outside one, with the preview off, or in an archived or deleted project. `projectOf(conversation)` gives the project whatever the preview and whether it is archived, for what holds with the preview off too (limits, `startAgents`); a conversation whose project was deleted is in none (#458), and `projectDeleted(id)` says so of a project. `allProjects()` gives a plain copy of every project.
-- `requirePreview()` throws the refusal of section 2; every request new in the epic calls it first, but those section 2 allows with the preview off. `PROJECT_ARCHIVED` is the refusal of 4.1 for an archived project; `refuseInArchivedProject(conversation)` and `refuseStartWith(agent)` give it with the preview on, and `submit`, `continue` and `conversation.create` call them.
-- `requireSwitch(conversation, name, what)`: `conversation` is the asking tool call, `{ conversationId, id, callId, tool, arguments, api, context }`, with `id` the Inbox item's (`String(api.taskId)`, as every approval's) and `api` the hook's or tool's (for `memo`). It answers `{ ok: true }`, or `{ ok: false, reason }` with what to tell the model when the person denies. It asks in a project whose switch is off, archived or not, with the preview on or off, and nowhere else: not in a deleted project's conversations, which are in no project (#458). `inbox.decide` takes only `once` or `deny` for such an item.
+- `inProject(conversation: number): Project | undefined`, the project, or undefined outside one, or in an archived or deleted project. `projectOf(conversation)` gives the project whether it is archived or not, for what holds in an archived project too (limits, `startAgents`); a conversation whose project was deleted is in none (#458), and `projectDeleted(id)` says so of a project. `allProjects()` gives a plain copy of every project.
+- `PROJECT_ARCHIVED` is the refusal of 4.1 for an archived project; `refuseInArchivedProject(conversation)` and `refuseStartWith(agent)` give it, and `submit`, `continue` and `conversation.create` call them. (`requirePreview()` and its refusal went with the switch, #715.)
+- `requireSwitch(conversation, name, what)`: `conversation` is the asking tool call, `{ conversationId, id, callId, tool, arguments, api, context }`, with `id` the Inbox item's (`String(api.taskId)`, as every approval's) and `api` the hook's or tool's (for `memo`). It answers `{ ok: true }`, or `{ ok: false, reason }` with what to tell the model when the person denies. It asks in a project whose switch is off, archived or not, and nowhere else: not in a deleted project's conversations, which are in no project (#458). `inbox.decide` takes only `once` or `deny` for such an item.
 - `addNews(tx, projectId, { kind, text, ref, keep?, at? })` adds to `news` inside the commit `tx`, so a piece of news is stored with what it tells of, and answers the `News` with its id. An unknown project throws.
-- `onPreviewOn(plan)`, `carryOverState()`, `ruleTokens(projectId)`, `lastWords(projectId)` are the bodies #458, #458, #459 and #466 replace; `emptyReport()` is the report of a run with nothing to do.
+- `carryOverState()`, `ruleTokens(projectId)`, `lastWords(projectId)` are the bodies #458, #459 and #466 replace. (`onPreviewOn(plan)` and `emptyReport()` went with the switch, #715.)
 - `Projects` is the document's token, for a feature that changes it in a commit of its own; the `projects` event follows any commit that changes it, by anyone, and is sent only when what it holds changed.
 - A project's orchestrator and its conversation are made in the one commit that makes the project. The default orchestrator's memory switch is set through a feature hook, `agentMade(agentId, { memory })`; a template copied as orchestrator goes through `agentDuplicated`, as `agents.duplicate` does.
 - `agents.save` keeps `projectId`, `role`, `template`, `madeBy`, `updatedAt` and `removedAt` as stored, and checks a name against the templates, or against the agents of the same project. `agents.delete` refuses an orchestrator.
@@ -1779,11 +1759,11 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 - Every lookup of a conversation's agent goes through `runsAs` or `agentOf`; a feature with the Host asks `host.agentOf(conversation)`, and whom a conversation may hand work to is `host.delegatesOf(conversation)` (`delegateTargets` in `projectagents.ts`, as [3.3](#33-agents-and-templates-pi2agents) and [5.1](#51-who-is-offered-what) say). Usage's spend by agent stays by `agentId`. `projectAgentId` is on `Meta` as a type, for #458 to set; a fork copies it.
 - A feature saves an agent through `engine.saveAgent(input, { copiedRules?, project?, marks? })`, with `agents.save`'s checks: `project` makes a new agent in that project, in its folder, and `marks` sets `template` or `madeBy`. Copying a template is `projects.addAgent { template }`; #458's carrying over and #465's `make` copy through the same path.
-- `agents.save` stamps `updatedAt` while the preview is on, and once any project exists whatever the preview; never while the preview has never been on.
+- `agents.save` stamps `updatedAt` always (until #715, not while the preview had never been on).
 - `agents.duplicate` of a project agent keeps it in the project, without `role` or `template`. "Keep at least one agent" counts agents of no project. `conversation.create` refuses an agent removed through a tool.
 - `agents.updateFromTemplate`'s `setting` names are `AgentProfile`'s, from `TEMPLATE_SETTINGS`, and `memory` for the memory switch; values are compared as `agents.save` stores them. `apply: false` is allowed in an archived project.
 - `removeAgent(id)` (#465's `agent.remove`) sets `removedAt`, refusing the orchestrator, an agent working now ("Forge is working on sub-chat 14. Wait for it, or ask the person to stop it.") and an archived project's agent. Nothing calls it before #465; `agents.restore` puts an agent back.
-- `delegate`, in a conversation of a project, with the preview on or off: the approval hook asks through `requireSwitch` ("Start a new sub-chat with Forge, “Fix login”.", "Continue sub-chat 14, “Fix login”, with Forge.") while `startAgents` is off, and the tool calls `admit` as it makes or continues the sub-chat, answering "Not started: <reason>" when it is refused. `admit` decides `passLimits` and puts the card in that transaction. `delegate` uses `settle` through the reports helpers.
+- `delegate`, in a conversation of a project: the approval hook asks through `requireSwitch` ("Start a new sub-chat with Forge, “Fix login”.", "Continue sub-chat 14, “Fix login”, with Forge.") while `startAgents` is off, and the tool calls `admit` as it makes or continues the sub-chat, answering "Not started: <reason>" when it is refused. `admit` decides `passLimits` and puts the card in that transaction. `delegate` uses `settle` through the reports helpers.
 
 **As #459 built them.** The rules live in `engine/src/projectrules.ts`.
 
@@ -1805,8 +1785,8 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `ReachChange.op` is `unknown`, as what is stored; changes.ts (#465) reads it as its `Op`. The `pi2.needs` token is a plain JSON object's for that reason.
 - An item's `agentId` is the agent its conversation runs as (`agentOf` in `needs.ts`, through `runsAs`, #457).
 - Questions and decisions wake the conversation that asked through `arriveIn(tx, conversationId, item)` and `arrivedIn(conversationId)` in `wakes.ts`, the wake kind `answer`, keyed `answer:<id>`: stored in the commit that takes the answer, so it is given once, after a restart too.
-- The `needs` event is `{ event: "needs", items: [] }` with the preview off; with it on, the Inbox's items and the stored ones, oldest first. Two feature hooks send it again: `inboxChanged` whenever `main.ts` sends the `inbox` event, and `previewChanged(on)`, which `projects.setPreview` calls. The menu bar item's count and notifications (#481) count its items.
-- `needs_you` is offered by agent, since a feature's `toolNames` is not told the conversation: to a project agent of a project neither archived nor deleted, with the preview on, outside a sub-chat, whatever its access. The tool checks the conversation itself as well.
+- The `needs` event holds the Inbox's items and the stored ones, oldest first. A feature hook sends it again, `inboxChanged`, whenever `main.ts` sends the `inbox` event (`previewChanged(on)` went with the switch, #715). The menu bar item's count and notifications (#481) count its items.
+- `needs_you` is offered by agent, since a feature's `toolNames` is not told the conversation: to a project agent of a project neither archived nor deleted, whatever its access. The tool checks the conversation itself as well.
 - A conversation archived or deleted, itself or its root, takes its stored needs with it (`putAwayChanged`), and so does a project deleted (read from any commit to `pi2.projects`).
 
 **As #463 built them.** Reports and waking are in `engine/src/reports.ts`, with what it changed in `wakes.ts` ([wakes.md](wakes.md#in-a-project)). What 3.10 and 5.6 do not say:
@@ -1817,7 +1797,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 - At a run's end, a report not delivered then adds a `report` piece of news, `at` the run's end, with the sub-chat as `ref` and the line of 6.4; delivering the report takes that piece away, so #466's catch-up never names a report already given. None is added while `delegate` waits for the run.
 - `reportPastLimit(tx, projectId, conversationId)` is checked by `settle` both at the run's end and in the commit that would submit the wake. It uses the receiving conversation's model. When true the report stays unread; other wake items, including the person's answers, can still wake the agent.
 - The `wakes` event's `wake` and `batch` are the watch's own, as stored (null when absent), not the choice in effect; `projectId` is the project of the conversation woken, or null.
-- `reports` is offered to the orchestrator agent of a project in the preview, outside a sub-chat, in its current conversation once the conversation is known (a conversation not made yet is known by its agent): not in another conversation of that agent, such as a schedule's run (3.13, #709). Called from another conversation of that agent all the same, it refuses: "reports is for the project's orchestrator, in its current conversation." A `read` run again after a crash gives what it gave, kept with the call (`pi2.reportsGiven`, a task document). `wake` is a change in #465's record of changes, `wake.choice`, with a line and Undo, and `details.change` on its result; the person's `reports.wake` is not recorded.
+- `reports` is offered to the orchestrator agent of a project neither archived nor deleted, outside a sub-chat, in its current conversation once the conversation is known (a conversation not made yet is known by its agent): not in another conversation of that agent, such as a schedule's run (3.13, #709). Called from another conversation of that agent all the same, it refuses: "reports is for the project's orchestrator, in its current conversation." A `read` run again after a crash gives what it gave, kept with the call (`pi2.reportsGiven`, a task document). `wake` is a change in #465's record of changes, `wake.choice`, with a line and Undo, and `details.change` on its result; the person's `reports.wake` is not recorded.
 - `sub_chats`' list does not say "its answer will come to you as a message" of a run whose report will not wake the agent.
 
 **As #466 built them.** The orchestrator's one conversation, what it is told and Start fresh are in `engine/src/orchestrator.ts`, which says at its top what a later issue fills in; it touches the files of others only at the seams below. What 6.1 and 6.3 to 6.6 do not say:
@@ -1827,14 +1807,14 @@ Each piece below has one owner, which builds it, with what the others need of it
 - **Which conversation gets a state block.** One marked new in the commit that makes it (a conversation document, `pi2.orchestratorFresh`): the project's first conversation (`projects.create` calls `wireFresh`'s mark) and every one Start fresh or `setOrchestrator` makes. A conversation that becomes a project's otherwise (carried over, #458) gets catch-ups. A project whose conversation was deleted, or one carrying over made with the default orchestrator (#458, which makes no conversation for it), gets a new one with `projects.startFresh`, which is allowed then and makes one beginning with the state block; nothing else makes one.
 - **Room.** The 200 pieces kept besides `keep` are counted when the news is given, not as it is stored: the catch-up drops the oldest past 200 and says how many. `addNews` and `settle` store every piece.
 - **The state block's parts.** `working` is every sub-chat of the project working now (`host.working`); its `since` is when this engine first saw the run working, or the sub-chat's `updatedAt` for one working when the engine started; a wait for a limit reads "waiting for its provider's limit until 15:30". `needs` is the `needs` event's items for the project (approvals and `ask_user` questions as the Inbox holds them now). `reports` is read from `pi2.reports` in the same commit. `work` is read from #467's list kept by pi² (`pi2.work`): the four open states counted, and every item in progress, waiting or blocked with who took it; a project with no open work says "Work: none.". #468 gives a project with a repository attached its own through `wireWorkState(read)`, where `read(tx, project, local)` answers `{ counts, held }` and may hand any project back to `local`. A summary's block is made in the summary's commit (`summaryState`, called by `compactionCheckpoint` last) and clears no news.
-- **What the person writes to another agent.** `submit` to a conversation in a project in the preview, other than its current conversation with the orchestrator, takes the message in a commit with a `message` piece of news (`keep`) and the `pi2.toldOrchestrator` line (`tellOrchestrator`, main.ts); the same `requestId` again is told once. Outside that, `submit` is unchanged. Only `submit` tells: a message `delegate` sends a sub-chat is the orchestrator's own doing.
+- **What the person writes to another agent.** `submit` to a conversation in a project neither archived nor deleted, other than its current conversation with the orchestrator, takes the message in a commit with a `message` piece of news (`keep`) and the `pi2.toldOrchestrator` line (`tellOrchestrator`, main.ts); the same `requestId` again is told once. Outside that, `submit` is unchanged. Only `submit` tells: a message `delegate` sends a sub-chat is the orchestrator's own doing.
 - **Start fresh.** `startFresh` and `setOrchestrator` share one function. Refused, in this order: "Answer what the orchestrator is waiting for first." (an approval or an `ask_user` question of that conversation in the Inbox), "Send or take back your queued message first.", "The orchestrator is answering. Let it finish, or stop it, first." (the last two read in the commit). `setOrchestrator` refuses the agent that is the orchestrator already. Neither calls `admit`: a conversation made empty starts no run. The commit moves the old conversation's watches (a background command's label gains ", started in your earlier conversation"), its `arrived` wakes, its wakes of the last hour and a hold for the hourly cap; the features' `created` hooks run for the new conversation afterwards, as for `projects.create`; a wake that was waiting is then handed over at once.
-- **Answers to what an earlier conversation asked.** `answerGoesTo(tx, conversationId)` gives the current conversation for an earlier one, with the preview on. Questions and decisions (needs.ts) use it, and say "(You asked this in your earlier conversation, 12.)"; #464's and #465's handlers for `limit`, `reach` and `rule` should use it too.
+- **Answers to what an earlier conversation asked.** `answerGoesTo(tx, conversationId)` gives the current conversation for an earlier one. Questions and decisions (needs.ts) use it, and say "(You asked this in your earlier conversation, 12.)"; #464's and #465's handlers for `limit`, `reach` and `rule` should use it too.
 - **Earlier sub-chats.** `earlierOf(conversation)` and `ownsSubChat(caller, parent)` are what `sub_chats` (list, archive, wait), `delegate` with `chat` (and #464's `checkChild` for a continue held by a limit), its approval and `unreadReports` ask. An orchestrator's `sub_chats` list ends each line with whether the sub-chat's last report was given (`latestReport` in reports.ts).
 - **What the apps are sent.** `library` rows have `orchestrator` and also `freshFrom` (null, or the conversation it followed), which the link back needs; `orchestrator` is kept from the commits to `pi2.projects` themselves, and the library is sent again when it changes (`engine.libraryChanged()`, new in `features.ts`), with the states of the conversations it changed. The conversation state's `project` and Activity's `lastLine` are added only for a conversation of a project; any other's state and Activity row are as before. `lastLine` and `lastWords` are read from the commits: an answer's text as it is stored, and a finished answer (`stopReason` stop or length) of a project's current conversation; `lastWords` is read again from the transcript when the engine starts. `projects.ts`'s `lastWords` is supplied through `wireLastWords`.
 - **The `project` section** comes from `projectPrompt` in orchestrator.ts, placed in `FEATURES` before `projectRulesPrompt`. A line about a tool is there only while the conversation is offered it (`work`, `project_agents`, `project_settings`, `project_rules`, `reports`, `needs_you`), so it says nothing of #465's and #467's tools until they land, and changes once, in place, when they do.
 
-**As #464 built them.** `projectlimits.ts` uses the same last good `planLimits()` readings as Usage; it never asks the provider. With the preview off it refuses over-limit starts without a card, even if `passLimits` was on.
+**As #464 built them.** `projectlimits.ts` uses the same last good `planLimits()` readings as Usage; it never asks the provider.
 
 - `admit(start, confirm, { tx, model, callId?, card? })` runs after any switch approval, inside the start's transaction. A refused tool returns without starting so its card and news can commit; its task receipt prevents a replay from asking or starting again. A person gets `limitError(limit)` (`RequestError` in `requesterror.ts`); #458 can throw `new RequestError(message, data)` through the same socket and app seam. The no-reading or pass-limit `note` goes with the start's result.
 - `confirmLimit` is an opaque, short-lived receipt for the exact start and model. It is spent once; every currently exceeded window or budget must be covered. If more than one reading needs approval, the next refusal carries the next reading and remembers the earlier approvals for that start only. A reset plan window is not a reading of its next period.
@@ -1851,24 +1831,24 @@ Each piece below has one owner, which builds it, with what the others need of it
 - `orchestrator.set` is made by #466's `projects.setOrchestrator`, which makes the roles and the fresh conversation in a commit of its own, so it cannot be made inside the commit that takes the answer, as 7.2 has every allowed change made. The narrowest that works: that commit checks the request as any other (and keeps it, "The orchestrator is answering or waiting for you. Let it finish, or stop it, first.", while its conversation works or waits); once it is stored, `projects.setOrchestrator` makes the change, which is then recorded, with no Undo, and the fresh conversation is told. If Start fresh refuses at that moment (the orchestrator began answering meanwhile), nothing is changed, the person is told why, and the request is gone: they can make the change themselves.
 - `askReach(tx, { projectId, conversationId, callId, change, why })` puts a reach request, or answers the one waiting for the same change; `reachOf(op, summary, undoes?)` gives a request's target and fields from its operation. The handlers of `reach` and `rule` are registered as the engine makes the feature, so a test of needs.ts alone still sees them unregistered. The answer goes to the conversation that asked as a wake of kind `answer`, as a question's does, or to the current conversation for one asked in an earlier one (#466's `answerGoesTo`). Allowing a request whose target has changed takes it off the list, tells that conversation, and answers the person with `ASKED_CHANGED`.
 - `ReachChange.op` stays typed `unknown` in needs.ts, as what is stored; changes.ts reads it as an `Op` (`Reach`) and checks it again when it is allowed.
-- The tools are offered to the project's current conversation with its orchestrator (`toolNames`' `conversationId`, which #467 added), with the preview on, in a project neither archived nor deleted; a conversation not made yet, to its agent if it is the orchestrator, outside a sub-chat. Each refuses any conversation but that one, and a change without Ask first or Full access.
+- The tools are offered to the project's current conversation with its orchestrator (`toolNames`' `conversationId`, which #467 added), in a project neither archived nor deleted; a conversation not made yet, to its agent if it is the orchestrator, outside a sub-chat. Each refuses any conversation but that one, and a change without Ask first or Full access.
 - `repository` in `project_settings` `change` is refused until #468 ("pi² cannot attach a repository to a project yet"), which makes it a reach request, as 7.1 says. `show` gives the limits as set, not how they stand now (today's spending, the plan windows): projectlimits.ts (#464) keeps no reading a tool can give, and adding one is left to an issue of its own.
 - A copy of a template made by an agent is made at the baseline, and asks for the template's memory switch, allowed commands, delegates and the rest that widen in its one request. It is not given the variables' names, which are the person's.
 - `remember` and `forget` in a project, `work` and `reports` `wake` answer with `details.change` and give the conversation a line with Undo, but their text is as before, without "(change N)" at its end: the person can undo them, and the orchestrator cannot name them to `project_settings` `undo`. Only the three tools' results end with the number.
 
 **As #458 built them.** Carrying over is `engine/src/carryover.ts`: `groupingKey` (and `Grouping`, which works each path out once for a plan), `lookUp`, `planCarryOver(snapshot, only?)`, `fingerprint` and `reportOf` are plain functions of the documents (and of the `.git` entries on disk), and the `carryOver` feature, placed after `orchestrator` and before `projects` in `FEATURES` with no greeting, runs them. What section 9 does not say:
 
-- It plugs into projects.ts through `wireCarryOver({ previewOn, state })`, which `onPreviewOn` and `carryOverState` call, and reads the record through `carryRecord()`. Without the feature (a stand-in engine in a test) turning on carries nothing over, as before.
-- A request refused with data throws `RequestError(message, data)` (`requesterror.ts`, #464's); the engine answers `{ id, error, data }` (4.1). A plan that is not the one given, or no plan when there is something to do, is refused with the new report as `data`, `setPreview` turning nothing on.
-- **Only a template-backed conversation of a deleted project falls back to no project**, with the preview on or off (3.6). `projectOf` keeps the project for a conversation whose own agent belongs to it; `runsAs` still gives the conversation's own `agentId`, not a deleted project's copy. `inProject` leaves out deleted projects when preparing the prompt and tools. `refuseStartWith` and the delegate tool stop starts with a deleted project's own agents; those agents cannot delegate. `previewOnLeavingOut` (`engine/test/patience.ts`) carries over and then deletes the projects so the existing tests' template-backed conversations are in no project.
+- It plugs into projects.ts through `wireCarryOver({ state })`, which `carryOverState` calls, and reads the record through `carryRecord()`. Without the feature (a stand-in engine in a test) nothing is carried. Since #715 its run is `update`, at every start (9.8).
+- A request refused with data throws `RequestError(message, data)` (`requesterror.ts`, #464's); the engine answers `{ id, error, data }` (4.1). A restore whose plan is not the one given is refused with the new report as `data`. (Until #715 a carrying-over run was refused so too.)
+- **Only a template-backed conversation of a deleted project falls back to no project** (3.6). `projectOf` keeps the project for a conversation whose own agent belongs to it; `runsAs` still gives the conversation's own `agentId`, not a deleted project's copy. `inProject` leaves out deleted projects when preparing the prompt and tools. `refuseStartWith` and the delegate tool stop starts with a deleted project's own agents; those agents cannot delegate. `leaveOut` (`engine/test/patience.ts`) deletes the projects carrying over made, so the tests' template-backed conversations are in no project.
 - Copies are made inside the project's own commit, by copying the template's stored profile as `projects.create` copies one (3.3's differences, the memory switch and the variables' names written in the same commit), not through `engine.saveAgent`, which commits on its own: a run cut off part way must never leave a copy without its project. So the features' `agentDuplicated` hooks are not run; only knowledge.ts's and variables.ts's exist, and their part is done in the commit. A comment at the hook in features.ts says so, and carryplan.ts fails when another feature adds one. The copy takes Allow everything, the variables' values and the memory switch as the plan has them, and the commit stops with `CHANGED_DURING` when the template has gained one since (9.5). `worktreeOff` is worked out without running git, with the same home-folder boundary as the grouping (9.2).
 - The variables' values: `copyAgentValues(from, to, names)` in variables.ts copies a value only while the copy still lists that variable with no value, in the Keychain or the profile, so a value set since is never overwritten and a variable removed since is not brought back; the value goes into the Keychain before the profile says there is one. A pending copy whose template or copy has been deleted is taken off the list, there being nothing to copy.
-- Test switches: `PI2_CARRY_SECRETS_GATE` holds the Keychain step, and `PI2_CARRY_COMMIT_GATE` the run before each project's commit but the first, while the file it names exists (having written `<file>.started`), so a test can kill the engine there.
+- Test switches: `PI2_CARRY_SECRETS_GATE` holds the Keychain step, and `PI2_CARRY_COMMIT_GATE` the run before each project's commit but the first, while the file it names exists (having written `<file>.started`), so a test can kill the engine there. `PI2_CARRY_NEVER=1` makes an engine that carries nothing at all and records no copy of the data, for a test to make a data folder as the last version with the switch never on left one (#715); only a development engine (no `BUILD` file, as for `PI2_TEST_COPY`) honours it, and an engine logs at start that it is in force, or that it ignores it in a release engine. `PI2_BACKUP_GATE` holds a copy of the data once its `.partial` folder is made.
 - Notes are recorded per project, in the commit that copies them (9.7), so a run cut off part way leaves a whole record of what it did. Where the same text for the same audience is in a project already (a note shared since, say), it is not copied twice, and the record points at the note that has it. A carried note's `agentId` is the copy's for a note the agent wrote, null for one the person wrote.
 - A sub-chat made since in a conversation already in a project, with no `projectId` of its own, goes into that project; a sub-chat of a deleted conversation is counted with the deleted ones (`leftOut.deleted`).
 - The watches' `wake` (9.1) is not written: a run handed over before carrying over has no report, so it wakes as [wakes.md](wakes.md) says, and a carried project has `wakeOnReports` on, which #463 reads as `each`, for runs started afterwards.
 - No conversation is made for a carried project's default orchestrator (9.6): `conversation` stays null, for any such project, archived or not, until the app calls `projects.startFresh` (#466) as the person first opens or writes to the orchestrator. Restoring a project makes none either. So nothing carrying over makes needs `markFresh`: the conversation `startFresh` makes is marked by it.
-- Conversations made later (9.9): a feature hook, `made(id)` (features.ts), is told of a top-level conversation of an agent made by `conversation.create`, `conversation.fork`, a schedule's run or Continue with an Agent, before its first message, and carries it with the plan for that conversation and its sub-chats, in a commit after the one that made it. It makes no backup and does not set `ranAt`. A failure is logged and starts a sweep of the conversations left without a `projectId`; it also runs once every feature has started (`host.ready`). Both sweeps require the preview on and a recorded run (9.9). Before the conversation is made, `carriedProjectFor(agent, cwd)` gives `admit` the project it will go into (`lookUp` on the stored projects), and main.ts's three starts pass it as `site.projectId`; a schedule refused by it waits a minute before it is tried again, as one of a project's agents does.
+- Conversations made later (9.9): a feature hook, `made(id)` (features.ts), is told of a top-level conversation of an agent made by `conversation.create`, `conversation.fork`, a schedule's run or Continue with an Agent, before its first message, and carries it with the plan for that conversation and its sub-chats, in a commit after the one that made it. It makes no backup and does not set `ranAt`. A failure is logged and starts a sweep of the conversations left without a `projectId`; it also runs once every feature has started (`host.ready`). Both sweeps, and the carrying of one made, wait for the update's copy of the data to be recorded (9.8, 9.9). Tests make a folder as the last version with the switch left it with `PI2_CARRY_NEVER=1`, with which the engine carries nothing at all. Before the conversation is made, `carriedProjectFor(agent, cwd)` gives `admit` the project it will go into (`lookUp` on the stored projects), and main.ts's three starts pass it as `site.projectId`; a schedule refused by it waits a minute before it is tried again, as one of a project's agents does.
 - **The old screens and project agents.** 10.2 has the app leave agents with a `projectId` out of the agents' list, the New Conversation With menu and the palette. The app as it is before #470 does not: with the preview off, after a run (through the socket, `test-copy`, a script), every copy and orchestrator is in its agents list under its template's name, and can be edited, deleted and picked for a new conversation, which then goes into its project. Only #470, which ships that filter with the switch the person turns the preview on with, makes 9.11's "project agents are left out" true; nothing in the app turns the preview on before it.
 
 **As #531 built them.** Restoring one conversation of a deleted project (3.6) is `projects.restoreConversation` in `carryover.ts`: it reuses the plan (`planCarryOver(snapshot, only, { from })`, where `from` is the deleted project, whose agents the plan may copy as it copies templates), the lookup, the commit (`applyProject`) and the Keychain step, all as section 9 has them. The snapshot for the plan is the documents with the conversation's family stripped of `projectId` and `projectAgentId` and the conversation itself of `archivedAt`, its folder read as any carried conversation's is; the commit strips them again before `applyProject` sets the new ones, so the move is one transaction. What the rules of 3.6 say is all the plan decides: a run never changes a project that exists beyond what 3.6 names.
@@ -1897,7 +1877,7 @@ What each issue builds of this contract, and whether the contract changes its sc
 |---|---|---|
 | #456 the project, its requests, the preview switch | [2](#2-the-preview-switch); [3.1](#31-where-things-are-kept), [3.2](#32-the-project-pi2projects) with `news` stored; of [3.3](#33-agents-and-templates-pi2agents), the fields that mark a project agent and the default orchestrator; of [3.5](#35-conversations-pi2library), `projectId`; [3.6](#36-archiving-and-deleting); the project requests of [4.2](#42-requests) but `setOrchestrator`, `startFresh`, `carryOver` and `retrySecrets`; the `projects` event; `library`'s and `activity`'s `projectId`; `agents`' fields; [4.4](#44-what-an-app-is-sent-on-connecting)'s order; `requireSwitch`; the stub of `admit`; [section 8](#8-settings-without-asking-waking-limits)'s settings stored and checked | **Changed.** It makes each project's orchestrator as a project agent, and its empty conversation. With the preview off it refuses only new requests. It owns the pieces of [12.1](#121-who-owns-what-several-issues-share) named for it. Its tests switch the preview off and on after each operation of [3.6](#36-archiving-and-deleting) |
 | #457 agents of a project, templates | [3.3](#33-agents-and-templates-pi2agents), [3.4](#34-which-agent-a-conversation-runs-as-runsas); the agent requests; `runsAs` in `library` and `activity`; `delegate` naming the project's agents and calling `admit` | **Changed.** Templates are the agents with no project. `runsAs` replaces every lookup of a conversation's agent, at once. A project agent's folder is the project's for new conversations only. Removing through a tool is `removedAt`, with `agents.restore` |
-| #458 carrying over | [section 9](#9-carrying-over); `carry` in [3.2](#32-the-project-pi2projects); `projectAgentId`; `projects.carryOver`, `projects.retrySecrets` and the run behind `setPreview` | **Changed.** One plan for report and run, with its fingerprint; lookup, adoption and tie-breaks (9.3 to 9.5); the variables' values copied in a step that is retried; notes carried over too, with their audience (9.7, moved from #461); conversations made later (9.9). "Can be undone" is the backup and the preview switch, described as what they are. Waits for #461 as well, for the notes' document |
+| #458 carrying over | [section 9](#9-carrying-over); `carry` in [3.2](#32-the-project-pi2projects); `projectAgentId`; `projects.carryOver`, `projects.retrySecrets` and the run behind `setPreview` (the run at the update since #715) | **Changed.** One plan for report and run, with its fingerprint; lookup, adoption and tie-breaks (9.3 to 9.5); the variables' values copied in a step that is retried; notes carried over too, with their audience (9.7, moved from #461); conversations made later (9.9). "Can be undone" is the backup and the preview switch, described as what they are. Waits for #461 as well, for the notes' document |
 | #459 rules | [3.7](#37-rules-pi2projectrules); `project_rules` in [6.1](#61-the-sections); [6.2](#62-what-the-rules-cost); the rule requests; the `projectRules` event; `ruleTokens`; `addRule` for #465 | **Changed.** Requests are `projects.rules.*`. A rule binds the orchestrator or everyone, and order ranks nothing. Proposing a rule is #462's card and #465's tool. No sentence is added to the summariser's instructions |
 | #460 allowed commands | Landed: [allowed-commands.md](allowed-commands.md) | Done. Nothing in the contract depends on the preview for it |
 | #461 notes of the project | [3.8](#38-notes-pi2memory) with `audience`; `memory.*` with `projectId`; the `memory` event's `projects`; the `memory` section's change; `remember` and `forget` in a project, with their operations | **Changed.** Carrying today's notes over moves to #458. Notes have an audience. `remember` and `forget` are changes with a line and Undo |
@@ -1922,11 +1902,13 @@ What each issue builds of this contract, and whether the contract changes its sc
 | #480 the Work tab, GitHub | `github.*`, the `github` event, its `unknown` writes | **Changed.** Needs `PI2_GH` in `scripts/test-copy`'s allowlist (#469), and shows writes whose outcome is unknown, with `github.settle` |
 | #481 the Dashboard | Its rows of [10.3](#103-with-the-preview-on) | **Changed** only in that its sources are named |
 | #482 build pi² as a pi² project | All of it, in use | **Changed.** Carrying over makes the orchestrator's standing rules, kept today as its memory notes, notes of the orchestrator's copy alone; making them rules is done by hand as part of setting the project up |
-| #483 take the old way out | [2](#2-the-preview-switch), [3.4](#34-which-agent-a-conversation-runs-as-runsas), [section 9](#9-carrying-over) | **Changed:** it waits for #504 too ([7.3](#73-who-answered)). When the switch goes, `runsAs` always takes the project's copy, and `reports`' choices can move into `delegate` |
+| #483 take the old way out | [2](#2-the-preview-switch), [3.4](#34-which-agent-a-conversation-runs-as-runsas), [section 9](#9-carrying-over) | **Changed:** it waits for #504 too ([7.3](#73-who-answered)). When the switch goes, `runsAs` always takes the project's copy, and `reports`' choices can move into `delegate` (their own issue, after the removal). **Built** in parts: #715 the engine (the switch gone, carrying over at the update with a copy of the data first, sub-chats made with it off put right), #716 the app |
 
 ## 13. Decisions this contract made
 
 What the design left open, or did not say exactly enough to build, and what this page chose. The product choices the owner may want to change are in [section 14](#14-questions-for-the-owner) instead.
+
+Since #483 took the switch out (#715), the decisions that speak of the preview (3, 4, 12, 13, 19, 22 and 24) say what held while it existed. What holds now: a carried conversation runs as its project's copy and keeps its `agentId` (3.4, 9.6); every request works with no switch; the update's copy of the data is the way back (9.8).
 
 1. **A project's agents are kept with every other agent**, in `pi2.agents`, marked with `projectId`. Every place the engine looks an agent up keeps working.
 2. **Templates are simply the agents that belong to no project.** Today's agents are templates where they stand.

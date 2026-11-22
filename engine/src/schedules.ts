@@ -29,8 +29,8 @@ export type Schedule = {
 	/** Set when an agent made it (with the person's approval), from that conversation; absent when the person made it. */
 	createdBy?: { agentId: string; conversationId: number };
 	/**
-	 * For a schedule on a template carried over (docs/projects.md, 3.13): the project's copy of it, which it runs as while
-	 * the preview is on (`scheduleRunsAs`). The old way never reads it.
+	 * For a schedule on a template carried over (docs/projects.md, 3.13): the project's copy of it, which it runs as
+	 * (`scheduleRunsAs`). `agentId` stays the template, which the last version with the switch reads.
 	 */
 	projectAgentId?: string;
 };

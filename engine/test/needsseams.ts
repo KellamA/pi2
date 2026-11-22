@@ -356,18 +356,9 @@ assert.deepEqual(offeredTo({}, false), [], "not to an agent of no project");
 assert.deepEqual(offeredTo({ projectId: "p2" }, false), [], "not in a deleted project");
 step("needs_you is offered to a project agent's conversations and their sub-chats, not outside a project");
 
-// ---- With the preview off: nothing in the list, and the new requests refused
+// ---- needs.list: of one project, and an unknown one refused
 
-await put({ kind: "question", projectId: "p1", conversationId: 1, callId: null, question: "Kept while off?" });
-await handlers["projects.setPreview"]!({ on: false });
-assert.deepEqual(lastNeeds(), [], "turning the preview off sends the empty list");
-assert.deepEqual(needsFeature.greeting!(), [{ event: "needs", items: [] }]);
-assert.deepEqual(offeredTo({ projectId: "p1" }, false), [], "needs_you is not offered with the preview off");
-await assert.rejects(handlers["needs.list"]!({}), { message: "Projects are a preview. Turn them on in Settings › General first." });
-await assert.rejects(handlers["needs.answer"]!({ id: "n8", answer: { kind: "question", text: "x" } }), { message: "Projects are a preview. Turn them on in Settings › General first." });
-assert.equal(storedNeeds().length, 1, "and the need is kept");
-await handlers["projects.setPreview"]!({ on: true });
-assert.equal(lastNeeds().length, 1, "turning it on again sends it");
+await put({ kind: "question", projectId: "p1", conversationId: 1, callId: null, question: "Kept?" });
 assert.equal(((await handlers["needs.list"]!({ projectId: "p1" })) as { items: NeedItem[] }).items.length, 1);
 await assert.rejects(handlers["needs.list"]!({ projectId: "p9" }), { message: "Unknown project: p9" });
-step("with the preview off the list is empty and the new requests refused; what is stored stays");
+step("needs.list of one project; an unknown project refused");

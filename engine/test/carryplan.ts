@@ -339,12 +339,18 @@ for (const [index, entry] of plan.projects.entries()) {
 	const id = entry.existing ?? `p-new-${index}`;
 	if (entry.existing === null) after.projects.projects[id] = project(id, entry.folder, { name: entry.name, carriedAt: 1 });
 	after.projects.carry.folders[entry.key] = id;
+	const copyOf = new Map<string, string>();
 	for (const copy of entry.copies) {
 		const copyId = copy.existing ?? `${copy.template}-copy-${index}`;
 		if (copy.existing === null) after.agents[copyId] = agent(copyId, { name: copy.name, projectId: id, template: { id: copy.template, copiedAt: 1, templateUpdatedAt: 1 } });
 		after.projects.carry.copies[`${id} ${copy.template}`] = copyId;
+		copyOf.set(copy.template, copyId);
 	}
-	for (const one of entry.conversations) after.conversations[String(one.id)]!.projectId = id;
+	for (const one of entry.conversations) {
+		const meta = after.conversations[String(one.id)]!;
+		meta.projectId = id;
+		if (one.template !== null) meta.projectAgentId = copyOf.get(one.template)!;
+	}
 	// Each project's commit records the notes it took, for that project (9.7).
 	for (const note of entry.notes) after.projects.carry.notes[`${id} ${note.agent} ${note.note}`] = { projectId: id, noteId: "n1" };
 }
@@ -354,7 +360,7 @@ assert.equal(fingerprint(again), null, JSON.stringify(again.projects.slice(0, 2)
 /** The documents after that run, with nothing left to do, for the checks below. */
 const settled = structuredClone(after);
 assert.equal(reportOf(again, after.projects.carry, after.agents).already, tops.filter((id) => meta(id).deleted !== true).length + 5);
-// A conversation made since, with the preview off, goes into its folder's project as a first run would put it, and a
+// A conversation made since in no project goes into its folder's project as a first run would put it, and a
 // copy the person deleted since is not made again: its conversations run as their own agent.
 const since = make({ agentId: "builder" }, linked);
 after.conversations[String(since)] = conversations[String(since)]!;
@@ -367,7 +373,7 @@ assert.equal(late.projects[0]!.existing, repoId);
 assert.equal(late.projects[0]!.adopted, false, "found by the record, not adopted");
 assert.deepEqual(late.projects[0]!.copies, [], "the deleted copy is not made again");
 assert.deepEqual(late.projects[0]!.conversations, [{ id: since, template: null, archived: false, subChat: false }]);
-// One made later with the preview on (9.9): the plan for that conversation alone.
+// One made later (9.9): the plan for that conversation alone.
 const alone = planCarryOver(after, since);
 assert.equal(alone.projects.length, 1);
 assert.deepEqual(alone.projects[0]!.conversations.map((one) => one.id), [since]);
@@ -434,6 +440,45 @@ step("a second run with nothing new has an empty plan; what is new since goes wh
 	docs.folders[String(later)] = moved;
 	assert.equal(planCarryOver(docs).projects[0]!.adopted, false, "recorded, not adopted again");
 	step("a project reached by two keys records each, and is not adopted again");
+}
+
+// ---- Sub-chats made with the switch off in a conversation carried over (#715): given the project's copy
+
+{
+	const docs = structuredClone(settled);
+	const repoId = docs.projects.carry.folders[repo]!;
+	const scoutCopy = docs.projects.carry.copies[`${repoId} scout`]!;
+	const root = Object.entries(docs.conversations).find(([, one]) => one.projectId === repoId && one.parent === undefined && one.deleted !== true)![0];
+	// As the versions with the switch made one with it off: its parent's `projectId`, its template, no `projectAgentId`.
+	const offSub = make({ agentId: "scout", parent: Number(root), projectId: repoId });
+	docs.conversations[String(offSub)] = conversations[String(offSub)]!;
+	// One whose agent has no copy in the project, one deleted, one of the project's own agent, and one in a deleted project.
+	const noCopy = make({ agentId: "lonely", parent: Number(root), projectId: repoId });
+	const deletedSub = make({ agentId: "scout", parent: Number(root), projectId: repoId, deleted: true });
+	const own = make({ agentId: scoutCopy, parent: Number(root), projectId: repoId });
+	const noneId = docs.projects.carry.folders.none!;
+	const noneRoot = Object.entries(docs.conversations).find(([, one]) => one.projectId === noneId && one.parent === undefined && one.deleted !== true)![0];
+	const inDeleted = make({ agentId: "scout", parent: Number(noneRoot), projectId: noneId });
+	for (const id of [noCopy, deletedSub, own, inDeleted]) docs.conversations[String(id)] = conversations[String(id)]!;
+	const deletedProject = structuredClone(docs);
+	deletedProject.projects.projects[noneId]!.deletedAt = 9;
+	const fixed = planCarryOver(deletedProject);
+	assert.deepEqual(fixed.projects.map((entry) => [entry.existing, entry.fixes]), [[repoId, [{ id: offSub, copy: scoutCopy }]]]);
+	assert.deepEqual(fixed.projects[0]!.conversations, [], "nothing else to carry");
+	assert.equal(reportOf(fixed, deletedProject.projects.carry, deletedProject.agents).projects[0]!.subChatsPutRight, 1);
+	assert.notEqual(fingerprint(fixed), null);
+	// In a project not deleted, each gets its own project's copy.
+	const both = planCarryOver(docs);
+	const noneScout = docs.projects.carry.copies[`${noneId} scout`];
+	const fixesOf = Object.fromEntries(both.projects.map((entry) => [entry.existing, entry.fixes]));
+	assert.deepEqual(fixesOf, { [repoId]: [{ id: offSub, copy: scoutCopy }], ...(noneScout === undefined ? {} : { [noneId]: [{ id: inDeleted, copy: noneScout }] }) });
+	// Once put right, nothing is left to do; a copy the person deleted since gives none.
+	deletedProject.conversations[String(offSub)]!.projectAgentId = scoutCopy;
+	assert.equal(fingerprint(planCarryOver(deletedProject)), null);
+	delete deletedProject.conversations[String(offSub)]!.projectAgentId;
+	delete deletedProject.agents[scoutCopy];
+	assert.equal(fingerprint(planCarryOver(deletedProject)), null, "the deleted copy stands: it runs as its template");
+	step("a sub-chat made with the switch off in a carried conversation is given its project's copy, and only that");
 }
 
 // ---- Notes, recorded per project: a project that gets a copy later gets them then (9.7)

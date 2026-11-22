@@ -226,8 +226,6 @@ export type FeatureParts = {
 	 * the engine sends the `inbox` event again. Needs you (needs.ts) sends its list again with it.
 	 */
 	inboxChanged?(): void;
-	/** The projects' preview was turned on or off (projects.ts, `projects.setPreview`). */
-	previewChanged?(on: boolean): void;
 	/** The engine is stopping cleanly: stop what this feature started. The app waits a few seconds for the engine, so be quick. */
 	stopping?(): Promise<void>;
 };

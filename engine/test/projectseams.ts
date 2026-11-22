@@ -1,5 +1,5 @@
 // The places in projects.ts that later issues of the projects epic fill in (docs/projects.md, 12.1), each doing what
-// the contract says it does until then, and the helpers every piece of the epic asks: `projectsOn`, `inProject`,
+// the contract says it does until then, and the helpers every piece of the epic asks: `inProject`,
 // `requireSwitch`, `admit` and `addNews`. The feature is given a stand-in engine and host, with a real Inbox, so no
 // engine is started. projects.ts (the test) drives the same feature through a real engine.
 
@@ -13,16 +13,12 @@ import {
 	admit,
 	carryOverState,
 	defaultProjectSettings,
-	emptyReport,
 	inProject,
 	lastWords,
-	onPreviewOn,
-	PREVIEW_OFF,
 	type Project,
 	type ProjectsDoc,
 	projectOf,
 	projects,
-	projectsOn,
 	Projects,
 	requireSwitch,
 	ruleTokens,
@@ -101,9 +97,8 @@ const feature = projects(host, engine);
 await feature.start!();
 const handlers = feature.handlers!;
 
-// ---- projectsOn and inProject
+// ---- inProject
 
-assert.equal(projectsOn(), true);
 assert.equal(inProject(1)?.id, "p1");
 assert.equal(inProject(5)?.id, "p1", "a sub-chat is in its project");
 assert.equal(inProject(2), undefined, "archived");
@@ -115,34 +110,22 @@ assert.equal(projectOf(2)?.id, "p2");
 assert.equal(projectOf(3), undefined, "carried conversation of a deleted project");
 assert.equal(projectOf(6)?.id, "p3", "the deleted project's own conversation still belongs to it");
 assert.equal(inProject(6), undefined, "it does not get the deleted project's prompt or tools");
-step("projectsOn, inProject and projectOf with the preview on");
+step("inProject and projectOf");
 
-assert.deepEqual(await handlers["projects.setPreview"]!({ on: false }), { preview: false, carryOver: null });
-assert.equal(projectsOn(), false);
-assert.deepEqual(saved.projects, { preview: false });
-assert.equal(broadcasts.at(-1).event, "projects");
-assert.equal(broadcasts.at(-1).preview, false);
-assert.equal(inProject(1), undefined, "with the preview off, no conversation is in a project for what it is told");
-assert.equal(projectOf(1)?.id, "p1", "but it still belongs to it");
-for (const method of ["projects.create", "projects.rename", "projects.set", "projects.archive", "projects.unarchive", "projects.delete"]) {
-	await assert.rejects(handlers[method]!({ id: "p1", folder: null, name: "x" }), { message: PREVIEW_OFF });
-}
 const listed = (await handlers["projects.list"]!({})) as any;
-assert.equal(listed.preview, false);
+assert.equal(listed.preview, true, "for the app built before #483 took the switch out");
 assert.deepEqual(
 	listed.projects.map((row: any) => [row.id, row.folderMissing, row.ruleTokens, row.lastWords]),
 	["p1", "p2", "p3"].map((id) => [id, false, { orchestrator: 0, agents: 0 }, null]),
 );
-step("with the preview off: projectsOn false, inProject nothing, new requests refused, list allowed");
+step("the list, with preview true");
 
 // ---- What later issues fill in, as it is until they land
 
-assert.deepEqual(await handlers["projects.setPreview"]!({ on: true, plan: null }), { preview: true, carryOver: emptyReport() });
-assert.deepEqual(await onPreviewOn("any plan"), { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, deletedProject: 0, notesLeft: 0 }, already: 0, ranAt: null, backup: null, secretsPending: [] });
 assert.equal(carryOverState(), null);
 assert.deepEqual(ruleTokens("p1"), { orchestrator: 0, agents: 0 });
 assert.equal(lastWords("p1"), null);
-step("until #458 onPreviewOn carries nothing over and carryOver is null; ruleTokens zeros without rules; lastWords null until #466");
+step("without carryover.ts carryOver is null; ruleTokens zeros without rules; lastWords null until #466");
 
 const start: Start = { by: { kind: "agent", agentId: "a", conversationId: 1 }, agentId: "b", agentName: "B", kind: "new", parent: 1, chat: null, work: null, title: null, task: "Do it", options: {} };
 const admission = { tx: { doc: async (token: unknown) => token === Agents ? { agents: {} } : token === Library ? { conversations } : stored } as never, model: null };
@@ -173,12 +156,10 @@ assert.deepEqual(await answered(1, "t3", "once"), { ok: true }, "asked although 
 const denied = await answered(5, "t4", "deny");
 assert.equal(denied.ok, false);
 assert.match((denied as { reason: string }).reason, /declined/);
-// It holds with the preview off: switching off removes no protection (section 2).
-await handlers["projects.setPreview"]!({ on: false });
 assert.deepEqual(await answered(1, "t5", "once"), { ok: true });
 // An ordinary approval in the same conversation is still answered by Allow everything, as before.
 assert.equal(await inbox.ask({ id: "t7", kind: "approval", conversationId: 1, callId: "c7", tool: "bash", arguments: {}, question: null, createdAt: 1 }, api, BACKGROUND_CONTEXT), "once");
-step("requireSwitch asks only for a switch that is off, in a project, whatever Allow everything and the preview say");
+step("requireSwitch asks only for a switch that is off, in a project, whatever Allow everything says");
 
 // ---- addNews
 
@@ -202,9 +183,6 @@ const rulesDoc: ProjectRulesDoc = { projects: {} };
 const rulesTx = { doc: async (token: unknown) => token === Projects ? doc : rulesDoc } as never;
 const addedBy = { kind: "proposal", agentId: "a", conversationId: 1, need: "n1" } as const;
 const add = (id: string) => addRule(rulesTx, id, { text: " Keep this. ", binds: "everyone", addedBy });
-await assert.rejects(add("p1"), { message: PREVIEW_OFF });
-assert.deepEqual(rulesDoc, { projects: {} });
-await handlers["projects.setPreview"]!({ on: true });
 const rule = await add("p1");
 assert.deepEqual(rule, { id: "r1", text: "Keep this.", binds: "everyone", addedBy, createdAt: rule.createdAt, updatedAt: rule.createdAt });
 assert.deepEqual(rulesDoc.projects.p1, { rules: [rule], next: 2 });

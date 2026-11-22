@@ -14,8 +14,8 @@ import { join } from "node:path";
 import { personOnly, SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { NOT_OF_DELETED_PROJECT, RESTORE_CHANGED, RESTORE_FOLDER_MISSING, RESTORE_SUB_CHAT, STOP_RESTORE } from "../src/carryover.ts";
 import { KeychainObjects } from "../src/credentials.ts";
-import { PREVIEW_OFF, PROJECT_DELETED } from "../src/projects.ts";
-import { EngineClient, previewOn, standInApp, stop } from "./patience.ts";
+import { PROJECT_DELETED } from "../src/projects.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -107,7 +107,6 @@ engine = start();
 let client = await Client.connect(engine, home);
 try {
 	await client.until("the engine's greetings", () => client.events.agents && client.events.library && client.events.projects);
-	await previewOn(client);
 
 	// ---- A project with two conversations, one with a sub-chat, and a schedule on one of its agents
 
@@ -351,11 +350,6 @@ try {
 	await client.call("projects.restoreConversation", { id: second, plan: revised.data.plan });
 	assert.equal(client.project(into.id).earlier.includes(second), false);
 	step("the eventual move clears the earlier-conversation reference");
-
-	await client.call("projects.setPreview", { on: false });
-	assert.equal((await refusal(client.call("projects.restoreConversation", { id: later, dryRun: true }))).message, PREVIEW_OFF);
-	await previewOn(client);
-	step("with the preview off the request is refused");
 
 	// A real connection whose stand-in peer verdict is not the app's can preview but not apply, even with the right plan.
 	client.close();

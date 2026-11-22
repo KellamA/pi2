@@ -30,12 +30,9 @@ struct RemovalNotice: View {
             if let reason = carry.failed {
                 failed(reason)
             } else if let backup = carry.backup, dismissed != backup.at, !RemovalNoticeSeen.told(backup.at) {
-                // A data folder that had nothing to move, as a new installation has, is not told of it.
-                if hadNothing {
-                    Color.clear.frame(height: 0).onAppear { RemovalNoticeSeen.tell(backup.at) }
-                } else {
-                    told(backup)
-                }
+                // A data folder that had nothing to copy, as a new installation has, gets no copy, and so no notice:
+                // the engine sends `removalBackup: null` for it (docs/projects.md, 9.8).
+                told(backup)
             }
             if !carry.pending.isEmpty { pending(carry.pending) }
         }
@@ -48,13 +45,6 @@ struct RemovalNotice: View {
         if let preview = RemovalNoticePreview.asked { return (preview.backup, preview.failed, carry?.secretsPending ?? []) }
         #endif
         return (carry?.removalBackup, carry?.removalFailed, carry?.secretsPending ?? [])
-    }
-
-    /// Whether the data folder had nothing the update could have moved: no conversation, listed or archived, and no
-    /// project. Only once the engine has listed both.
-    private var hadNothing: Bool {
-        engine.hasLoadedLibrary && engine.projectStore.loaded && engine.conversations.isEmpty && engine.archived.isEmpty
-            && engine.projects.isEmpty
     }
 
     /// Once after the update: that pi² works by projects only now, where the copy of the data as it was is, and that the

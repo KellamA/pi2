@@ -1,11 +1,12 @@
 // Schedules in projects (#656, docs/projects.md 3.13), with a real engine on a throwaway data folder and Keychain
-// service, driven over its socket as an app would drive it. Schedules on templates made before the preview are given
-// their project's copy by carrying over, beside their own agent, where that project and copy exist: one in a repository,
+// service, driven over its socket as an app would drive it. Schedules on templates made before the update that took the
+// switch out (by the engine with nothing carried, `PI2_CARRY_NEVER`) are given their project's copy by carrying over at
+// the next start, beside their own agent, where that project and copy exist: one in a repository,
 // one with no folder; one whose folder has no project stays on its template until its first run, carried as it is made,
 // makes them. A run lands in the project as the copy; a schedule of a project's orchestrator runs as a conversation of
 // its own; an edit keeps the copy until another agent is chosen; one carried to an archived project runs as its template
-// and restores it; an agent's own schedule, carried, is still its own to list and cancel; one made since is carried at
-// the next start; and with the preview off every schedule runs as its own agent, as before projects.
+// and restores it; an agent's own schedule, carried, is still its own to list and cancel; and one made since is carried
+// at the next start.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -13,7 +14,7 @@ import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writ
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Grouping, scheduleCopies } from "../src/carryover.ts";
-import { EngineClient, previewOn, standInApp, stop } from "./patience.ts";
+import { EngineClient, standInApp, stop } from "./patience.ts";
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
@@ -132,23 +133,24 @@ class Client extends EngineClient {
 	}
 }
 
-const env = () => ({ ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE });
-const start = () => {
+const env = (extra: Record<string, string>) => ({ ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: KEYCHAIN_SERVICE, ...extra });
+const start = (extra: Record<string, string> = {}) => {
 	const log = openSync(join(home, "engine.log"), "a");
 	try {
-		return spawn(process.execPath, [main], { env: env(), stdio: ["ignore", "ignore", log] });
+		return spawn(process.execPath, [main], { env: env(extra), stdio: ["ignore", "ignore", log] });
 	} finally {
 		closeSync(log);
 	}
 };
 const daily = { kind: "daily", hour: 3, minute: 0 };
 
-engine = start();
+// The first engine carries nothing, as the last version with the switch never on.
+engine = start({ PI2_CARRY_NEVER: "1" });
 let client = await Client.connect(engine, home);
 try {
 	await client.until("the engine's greetings", () => client.events.agents && client.events.library && client.events.schedules);
 
-	// ---- Before the preview: templates, their conversations and schedules
+	// ---- Before the update: templates, their conversations and schedules
 
 	const forge = (await client.call("agents.save", { agent: { name: "Builder", cwd: repo, schedule: { enabled: true } } })).id as string;
 	const loose = (await client.call("agents.save", { agent: { name: "Loose" } })).id as string;
@@ -168,11 +170,16 @@ try {
 	const before = await client.runNow(nightly);
 	assert.equal(client.row(before).agentId, forge);
 	assert.equal(client.row(before).projectId ?? null, null);
-	step("before the preview: schedules on templates, one set by the agent itself, run as before");
+	step("before the update: schedules on templates, one set by the agent itself, run as before");
 
-	// ---- The preview on: carrying over gives each its copy, where there is one
+	// ---- The update: carrying over at the start gives each its copy, where there is one
 
-	await previewOn(client);
+	client.socket.destroy();
+	await stop(engine);
+	engine = start();
+	client = await Client.connect(engine, home);
+	await client.until("the engine's greetings", () => client.events.agents && client.events.library && client.events.schedules && client.events.projects);
+	await client.until("carried at the start", () => typeof client.row(inRepo)?.projectId === "string");
 	const project = client.row(inRepo).projectId as string;
 	assert.equal(typeof project, "string");
 	const forgeCopy = client.copyOf(forge, project).id as string;
@@ -182,7 +189,7 @@ try {
 	assert.equal(client.schedule(own.id).projectAgentId, forgeCopy);
 	assert.equal(client.schedule(nightly).agentId, forge, "the schedule keeps its own agent, which the old way reads");
 	assert.equal(client.schedule(alone).projectAgentId, undefined, "a folder with no project: it stays on its template");
-	step("the preview on: a schedule in a repository and one with no folder given their project's copy; one with no project left");
+	step("at the update: a schedule in a repository and one with no folder given their project's copy; one with no project left");
 
 	// A run lands in the project, as the copy.
 	const carriedRun = await client.runNow(nightly);
@@ -236,6 +243,8 @@ try {
 	step("an edit keeps the copy while the agent stays, and drops it for another agent");
 
 	// The agent's own schedule, carried, is still its own in a conversation that runs as the copy.
+	await client.call("conversation.open", { id: inRepo });
+	await client.until("open", () => client.conversations.get(inRepo) !== undefined);
 	const results = () => client.conversations.get(inRepo).items.filter((item: any) => item.kind === "tool");
 	const count = results().length;
 	await client.call("submit", { id: inRepo, text: "/tool list_schedules {}" });
@@ -271,18 +280,6 @@ try {
 	await client.until("the engine's greetings", () => client.events.schedules && client.events.library && client.events.projects);
 	await client.until("carried at the start", () => client.schedule(later)?.projectAgentId === forgeCopy);
 	step("a schedule made since on a template is carried at the next start");
-
-	// ---- The preview off: every schedule runs as its own agent, as before
-
-	await client.call("projects.setPreview", { on: false });
-	const off = await client.runNow(nightly);
-	assert.equal(client.row(off).agentId, forge);
-	assert.equal(client.row(off).projectId ?? null, null);
-	assert.equal(client.schedule(nightly).projectAgentId, forgeCopy, "nothing is undone");
-	const offLonely = await client.runNow(alone);
-	assert.equal(client.row(offLonely).agentId, lonely);
-	assert.equal(client.row(offLonely).projectId ?? null, null);
-	step("the preview off: carried schedules run as their own agent, in no project, as before");
 } finally {
 	client.socket.destroy();
 	await stop(engine);

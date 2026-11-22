@@ -24,7 +24,7 @@ import { type CommitChange, defineDoc, defineTool, type JsonObject, type ToolExe
 import { arr, bool, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Host } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
-import { allProjects, inProject, type LimitReading, Projects, projectsOn, requirePreview, type Start, type SwitchName } from "./projects.ts";
+import { allProjects, inProject, type LimitReading, Projects, type Start, type SwitchName } from "./projects.ts";
 import { latestReport } from "./reports.ts";
 import { type AgentProfile, type InboxItem, Library, type Meta, runsAs } from "./state.ts";
 import { chatIdOf } from "./versions.ts";
@@ -76,7 +76,7 @@ export type NeedsDoc = { items: Record<string, StoredNeed>; next: number };
 const emptyNeeds = (): NeedsDoc => ({ items: {}, next: 1 });
 
 /**
- * What is stored of Needs you. Made by the first need put, never at start: with the preview never on, nothing is written.
+ * What is stored of Needs you. Made by the first need put, never at start.
  * Its token is a plain JSON object's, since what a reach request or a limit card holds is typed `unknown` in places;
  * `needsIn` gives it its type.
  */
@@ -432,9 +432,9 @@ onAnswer("decision", (tx, need, answer) => wakeWith(tx, need, "choice" in answer
 /** The agent a conversation runs as (state.ts, `runsAs`): its `agentId`, but for a conversation carried over. */
 const agentOf = (meta: Meta | undefined, agents: Record<string, AgentProfile>): string | null => runsAs(meta, agents) ?? null;
 
-/** Every item waiting, of every project and of none, oldest first; nothing with the preview off (3.9). */
+/** Every item waiting, of every project and of none, oldest first (3.9). */
 export function needItems(): NeedItem[] {
-	if (!projectsOn() || wired === undefined || running === undefined) return [];
+	if (wired === undefined || running === undefined) return [];
 	const conversations = running.library().conversations;
 	const agents = running.agents();
 	const base = (id: string, conversation: number, projectId: string | null | undefined, blocking: boolean, createdAt: number): WireBase => {
@@ -639,11 +639,10 @@ export const needs: Feature = (host, engine) => {
 		},
 		greeting: () => [needsEvent()],
 		tools: [needsYouTool()],
-		// Offered in every conversation of a project agent with the preview on, the orchestrator's and its sub-chats included:
+		// Offered in every conversation of a project agent, the orchestrator's and its sub-chats included:
 		// a worker's answer reaches it as it works, or its parent once it has ended (5.5, #507). It keeps ask_user too.
-		toolNames: (_access, agent) => (agent?.projectId !== undefined && projectsOn() && liveProject(agent.projectId) ? ["needs_you"] : []),
+		toolNames: (_access, agent) => (agent?.projectId !== undefined && liveProject(agent.projectId) ? ["needs_you"] : []),
 		inboxChanged: announce,
-		previewChanged: announce,
 		// A conversation archived or deleted takes its needs with it, as an approval is let go when its run stops (3.9).
 		putAwayChanged: () => {
 			const conversations = engine.library().conversations;
@@ -654,7 +653,6 @@ export const needs: Feature = (host, engine) => {
 		handlers: {
 			/** `{ projectId? }`: the `needs` event's items, of one project or all. */
 			"needs.list": async (params) => {
-				requirePreview();
 				if (params.projectId === undefined || params.projectId === null) return { items: needItems() };
 				if (typeof params.projectId !== "string") throw new Error("projectId must be a project's id");
 				if (!liveProject(params.projectId, true)) throw new Error(`Unknown project: ${params.projectId}`);
@@ -662,7 +660,6 @@ export const needs: Feature = (host, engine) => {
 			},
 			/** `{ id, answer }`: answers an item of any kind with a `NeedAnswer`, through `claim`. */
 			"needs.answer": async (params) => {
-				requirePreview();
 				if (typeof params.id !== "string") throw new Error("id must be the id of an item waiting");
 				await claim(params.id, checkAnswer(params.answer));
 				return {};

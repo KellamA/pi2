@@ -14,7 +14,7 @@ import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GONE } from "../src/needs.ts";
-import { EngineClient, exited, previewOnLeavingOut, running, standInApp, stop } from "./patience.ts";
+import { EngineClient, exited, leaveOut, running, standInApp, stop } from "./patience.ts";
 // The engine takes answers for the person only from its app's connection (#504): this test's connection stands for it.
 process.env.PI2_APP_BUNDLE = standInApp();
 
@@ -114,13 +114,14 @@ try {
 
 	// ---- A sub-chat of a conversation in no project is offered nothing new
 
+	// In no project: the project carrying over makes for it is deleted (#458, `leaveOut`).
 	const plain = (await c.call("conversation.create", { agentId: lead })).id as number;
+	await leaveOut(c);
 	await c.call("conversation.open", { id: plain });
 	const outside = await c.tool(plain, `/tool delegate ${JSON.stringify({ agent: "Worker", task: "/system none" })}`);
 	assert.match(outside.text, /TOOLS: /);
-	assert.doesNotMatch(outside.text, /needs_you/, "not offered needs_you with the preview off");
+	assert.doesNotMatch(outside.text, /needs_you/, "not offered needs_you outside a project");
 
-	await previewOnLeavingOut(c);
 	const made = await c.call("projects.create", { folder });
 	const projectId = made.id as string;
 	const oc = made.conversation as number;
@@ -130,9 +131,9 @@ try {
 	await c.until("open", () => c.conversations.get(oc)?.state !== undefined);
 
 	const still = await c.tool(plain, `/tool delegate ${JSON.stringify({ agent: "Worker", task: "/system none" })}`);
-	assert.doesNotMatch(still.text, /needs_you/, "nor with the preview on, outside a project");
+	assert.doesNotMatch(still.text, /needs_you/, "nor beside a project made since");
 	assert.match(still.text, /ask_user/);
-	step("a sub-chat of a conversation in no project is offered nothing new, with the preview off or on");
+	step("a sub-chat of a conversation in no project is offered nothing new, before a project is made or after");
 
 	// ---- A worker is offered both ways to ask, and told which to use when
 
