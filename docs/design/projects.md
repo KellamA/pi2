@@ -1,5 +1,7 @@
 # Projects: the design
 
+*Kept as history: this is the design as it was made, not the app as it is. For the app as it is, see [the guide](../guide.md); for projects' exact names and shapes, [the contract](../projects.md).*
+
 This is the design for epic [#450](https://github.com/KellamA/pi2/issues/450): pi² organised around projects, each with an orchestrator, in place of free-standing agents and their conversations. It records what the owner decided on 19 November 2026 and what is still open. Nothing here is built yet. The drawings are in [projects-drafts.html](projects-drafts.html): open it in a browser; the buttons along its top switch between the screens.
 
 The work is split into issues, listed step by step in the epic's roadmap. The first is the contract, `docs/projects.md` ([#455](https://github.com/KellamA/pi2/issues/455)); nothing else starts until the owner has agreed it.

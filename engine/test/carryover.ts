@@ -698,7 +698,7 @@ try {
 	engine = start();
 	client = await Client.connect(engine, home);
 	await ready(client);
-	const ownersRemoval = await client.until("a fresh copy recorded", () => client.events.projects.carryOver?.removalBackup);
+	const ownersRemoval = await client.until("a fresh copy recorded", () => typeof client.events.projects.carryOver?.removalBackup?.path === "string" && client.events.projects.carryOver.removalBackup);
 	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null, "the update's run done");
 	const twoCopies = backupsMade();
 	assert.equal(twoCopies.length, 2, "a fresh copy, though an older one is recorded");

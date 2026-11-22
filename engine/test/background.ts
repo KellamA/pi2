@@ -690,7 +690,10 @@ try {
 		assert.ok(stopped !== undefined, "the engine says how long its stop took");
 		assert.equal(engine.exitCode, 0, "the engine exited cleanly");
 		assert.ok(Number(stopped[1]) < 5_000, `the engine's stop fits in the five seconds the app gives it: ${stopped[0]}`);
-		assert.ok(pids.every((pid) => !alive(pid)), "stopping the engine stopped the command and what it started");
+		// Ended before the engine exited, but a process killed a moment before is still there to `kill -0` until it is reaped,
+		// by launchd once its parent is gone, which a busy Mac can put off past the test's next line (#707). Each runs for
+		// longer than any wait, so only the stop can meet this one.
+		await until("stopping the engine stopped the command and what it started", () => pids.every((pid) => !alive(pid)));
 		engine = boot();
 		client = await Client.attach(engine);
 		assert.deepEqual(client.running(), []);
