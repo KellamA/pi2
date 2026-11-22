@@ -142,6 +142,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | File | What it holds |
 |---|---|
 | `src/main.ts` | Startup, the socket server, request handlers, events |
+| `src/transcript.ts` | A conversation's entries as the app is sent them: `toItem` makes each stored entry an item of the transcript, with its text (`textOf`), pictures (`imagesOf`) and tool calls (`assistantParts`), and the Needs you items a wake answered (`answeredNeeds`, `wakeLabel`). Plain functions of an entry, moved from `main.ts` (#753) |
 | `src/socket.ts` | Where the engine's socket is reached: `engine.sock` in the data folder, or through a short link under `/tmp` for a data folder whose path is too long for a socket. The app works out the same path in `EngineSocket.swift` |
 | `src/answers.ts` | Who may act for the person (#504, #513): the three lists every request is in (answering what waits for the person, changing what the person set, open to any connection), checked complete before the engine listens, and `AppCheck`, which asks the app's `pi2-peer` whether a connection is the app's own. See [Who may answer for the person](#who-may-answer-for-the-person) |
 | `src/requesterror.ts` | `RequestError`, a refused request that carries data for its caller beside the message (such as the new report when a plan is stale), and the refusal as it is sent |
