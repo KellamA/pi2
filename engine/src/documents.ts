@@ -9,7 +9,7 @@
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, extname, resolve, sep } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, defineTool, section } from "@earendil-works/pi-durable";
 import { bool, obj, opt, str } from "@earendil-works/pi-schema";

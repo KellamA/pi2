@@ -1,0 +1,70 @@
+#!/bin/bash
+# Checks that the docs' two lists of the engine's files keep up with the files (#640): the table under "Engine files"
+# in docs/architecture.md has a row for every file in engine/src, and "Engine tests by file" in docs/development.md a
+# line for every file in engine/test, the files that are not tests among them; and that neither names a file that is
+# not there, or names one twice. It says which file and which list. Reads files only.
+#
+#   scripts/test-docs-lists [<checkout>]
+#
+# The checkout is this script's own unless one is given.
+
+set -uo pipefail
+export LC_ALL=C
+
+root=${1:-"$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"}
+failed=0
+
+# The lines of one section of a page: after its heading, up to the next heading of any level.
+section() {
+	awk -v heading="$2" '$0 == heading { on = 1; next } on && /^#/ { exit } on' "$1"
+}
+
+# compare <list> <what it lists> <files> <names in the list>, the last two one name a line.
+compare() {
+	local list=$1 what=$2 files=$3 names=$4 name
+	if [[ -z $names ]]; then
+		echo "test-docs-lists: found no rows in $list; was its heading or its rows' form changed?" >&2
+		failed=1
+		return
+	fi
+	while IFS= read -r name; do
+		[[ -n $name ]] || continue
+		echo "test-docs-lists: $list has no row for $what$name. Add one, saying in a line what it is for." >&2
+		failed=1
+	done < <(comm -23 <(printf '%s\n' "$files" | sort -u) <(printf '%s\n' "$names" | sort -u))
+	while IFS= read -r name; do
+		[[ -n $name ]] || continue
+		echo "test-docs-lists: $list has a row for $what$name, which is not there. Remove it, or correct its name." >&2
+		failed=1
+	done < <(comm -13 <(printf '%s\n' "$files" | sort -u) <(printf '%s\n' "$names" | sort -u))
+	while IFS= read -r name; do
+		[[ -n $name ]] || continue
+		echo "test-docs-lists: $list names $what$name more than once." >&2
+		failed=1
+	done < <(printf '%s\n' "$names" | sort | uniq -d)
+}
+
+# Every file in a folder of the engine, by its path below `engine/`, leaving out what a Mac or an editor leaves there
+# (names beginning with a dot).
+files_in() {
+	(cd "$root/engine" && find "$1" -type f ! -name '.*' | sort)
+}
+
+architecture="$root/docs/architecture.md"
+development="$root/docs/development.md"
+for page in "$architecture" "$development"; do
+	[[ -f $page ]] || { echo "test-docs-lists: $page is missing" >&2; exit 1; }
+done
+
+# A row of the table: | `src/name.ts` | what it holds |
+rows=$(section "$architecture" "### Engine files" | sed -n 's/^| `\(src\/[^`]*\)` |.*/\1/p')
+compare "docs/architecture.md (Engine files)" "engine/" "$(files_in src)" "$rows"
+
+# A line of the list: - `name.ts`: what it tests
+lines=$(section "$development" "### Engine tests by file" | sed -n 's/^- `\([^`]*\)`:.*/\1/p')
+compare "docs/development.md (Engine tests by file)" "engine/test/" "$(files_in test | sed 's/^test\///')" "$lines"
+
+if [[ $failed -eq 0 ]]; then
+	echo "test-docs-lists: every file of engine/src and engine/test has its row, and every row its file."
+fi
+exit "$failed"

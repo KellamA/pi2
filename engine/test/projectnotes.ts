@@ -10,7 +10,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MAX_NOTES, Memory } from "../src/knowledge.ts";
 import { projectNotebook, type ProjectNote } from "../src/projectnotes.ts";
-import { PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
+import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
 import { Agents } from "../src/state.ts";
 import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 

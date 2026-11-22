@@ -32,7 +32,6 @@ enum PerfProbe {
     private static var wokeAt: Double?
     private static var windowStart: Double = 0
     private static var openings: [Int: Opening] = [:]
-    private static var lines: [String] = []
     /// Requests on their way: the method and when it was sent, by request id.
     private static var asked: [Int: (method: String, at: Double)] = [:]
     /// Requests answered in this window, by method: how many, and their round trips.
