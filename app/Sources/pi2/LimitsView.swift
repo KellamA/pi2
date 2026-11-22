@@ -124,18 +124,72 @@ struct PlanLimits: Decodable, Equatable {
 
 /// A window nearly used up while runs on its subscription were going, in the Inbox. Information, not a request: a run the
 /// provider refuses waits for the reset and carries on by itself, so the card is calm and only offers to put it away.
+/// `foldable`, under the Dashboard's line across all projects (#645), it is one line with Dismiss and Show Usage until
+/// Details unfolds the rest.
 struct LimitNoticeCard: View {
     let engine: EngineClient
     let notice: PlanLimits.Notice
     /// Show a conversation, by its id in the sidebar.
     let open: (Int) -> Void
     let showUsage: () -> Void
+    var foldable = false
+    @State private var unfolded = false
 
     var body: some View {
         // Re-drawn every half minute so "in 2 h" and "noticed" stay true.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            content(now: context.date)
+            if foldable {
+                folded(now: context.date)
+            } else {
+                content(now: context.date)
+            }
         }
+    }
+
+    /// The headline on one line, the time it was noticed while it fits, and the card's buttons; Details unfolds what the
+    /// card says below it.
+    private func folded(now: Date) -> some View {
+        let words = words(now: now)
+        let noticed = Text("noticed \(LimitsFormat.ago(LimitsFormat.date(notice.at), now: now))")
+            .font(.system(size: 11)).foregroundStyle(Theme.tx3)
+            .fixedSize()
+            .help(LimitsFormat.exact(LimitsFormat.date(notice.at)))
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: words.icon).foregroundStyle(words.color)
+                Text(words.title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .lineLimit(1).truncationMode(.tail)
+                    .help(words.title)
+                    .layoutPriority(1)
+                ViewThatFits(in: .horizontal) {
+                    noticed
+                    Color.clear.frame(width: 0, height: 0)
+                }
+                Spacer(minLength: 6)
+                Button(unfolded ? "Hide Details" : "Details") { unfolded.toggle() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.acc)
+                    .fixedSize()
+                    .help(unfolded ? "Fold the notice to its line" : "Show which runs it is about, and what happens next")
+                Button("Show Usage") { showUsage() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.acc)
+                    .fixedSize()
+                Button("Dismiss") { engine.perform("limits.dismiss", ["id": notice.id]) }
+                    .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
+                    .fixedSize()
+                    .help("Put this notice away. It is not shown again for this window before it resets.")
+            }
+            if unfolded {
+                details(words)
+            }
+        }
+        .font(.system(size: 12.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .panel(fill: Theme.panel, border: Theme.line2)
+        .accessibilityElement(children: .contain)
     }
 
     /// The headline, its icon and colour, and what the card says before the runs, at each stage.
@@ -179,33 +233,7 @@ struct LimitNoticeCard: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.tx3)
                     .help(LimitsFormat.exact(LimitsFormat.date(notice.at)))
             }
-            Text(words.intro)
-                .fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(notice.runs, id: \.conversationId) { run in
-                    Button { open(run.rootConversationId) } label: {
-                        HStack(spacing: 6) {
-                            Text("“\(run.title.isEmpty ? "New conversation" : run.title)”").foregroundStyle(Theme.acc).lineLimit(1)
-                            Text([run.agentName, run.subChat ? "sub-chat" : nil].compactMap { $0 }.joined(separator: " · "))
-                                .foregroundStyle(Theme.tx3).lineLimit(1)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help("Open the conversation")
-                }
-                if let more = notice.more, more > 0 {
-                    Text("and \(more) more").foregroundStyle(Theme.tx3)
-                }
-            }
-            .padding(.leading, 4)
-            // One story, not three alarms: what came before this stage, in one quiet line.
-            if notice.currentStage != "nearly", !notice.history.isEmpty {
-                Text(notice.history)
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
-            }
-            Text(words.footer)
-                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
-                .fixedSize(horizontal: false, vertical: true)
+            details(words)
             HStack(spacing: 8) {
                 Button("Dismiss") { engine.perform("limits.dismiss", ["id": notice.id]) }
                     .buttonStyle(.piSecondary)
@@ -220,6 +248,38 @@ struct LimitNoticeCard: View {
         .padding(.horizontal, 13).padding(.vertical, 11)
         .panel(fill: Theme.panel, border: Theme.line2)
         .accessibilityElement(children: .contain)
+    }
+
+    /// What the card says under its headline: the stage, the runs it is about, what came before, and what happens next.
+    @ViewBuilder
+    private func details(_ words: (icon: String, color: Color, title: String, intro: String, footer: String)) -> some View {
+        Text(words.intro)
+            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(notice.runs, id: \.conversationId) { run in
+                Button { open(run.rootConversationId) } label: {
+                    HStack(spacing: 6) {
+                        Text("“\(run.title.isEmpty ? "New conversation" : run.title)”").foregroundStyle(Theme.acc).lineLimit(1)
+                        Text([run.agentName, run.subChat ? "sub-chat" : nil].compactMap { $0 }.joined(separator: " · "))
+                            .foregroundStyle(Theme.tx3).lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Open the conversation")
+            }
+            if let more = notice.more, more > 0 {
+                Text("and \(more) more").foregroundStyle(Theme.tx3)
+            }
+        }
+        .padding(.leading, 4)
+        // One story, not three alarms: what came before this stage, in one quiet line.
+        if notice.currentStage != "nearly", !notice.history.isEmpty {
+            Text(notice.history)
+                .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+        }
+        Text(words.footer)
+            .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

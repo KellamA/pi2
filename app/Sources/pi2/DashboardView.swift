@@ -90,6 +90,12 @@ struct DashboardCommands: View {
                 Button("Show What Needs You First") { model.dashboardKeys.showFirstNeed() }
                     .keyboardShortcut("0", modifiers: [.command, .option])
                     .disabled(!shown)
+                // The line's Stop All from the keyboard (#645). Not disabled by what runs, which changes many times a
+                // second while agents work and would draw the menu again each time; the confirmation says when nothing
+                // does.
+                Button("Stop All Runs…") { model.stoppingAll = StopAllRequest(projects: DashboardView.watchedIDs(model.engine)) }
+                    .keyboardShortcut(".", modifiers: [.command, .option])
+                    .disabled(!shown)
                 Divider()
                 ForEach(1...9, id: \.self) { number in
                     Button("Message the Orchestrator in Column \(number)") { model.dashboardKeys.messageColumn(number) }
@@ -115,6 +121,10 @@ struct DashboardView: View {
     @State private var foldedColumns: Set<String> = []
     /// Which column's field the keyboard was asked for, and how many times, for the column to take it.
     @State private var focus: (project: String, asks: Int) = ("", 0)
+    /// The Dashboard's height: below `shortHeight` the limit notices keep to one line's room, so that the columns keep
+    /// theirs (#645).
+    @State private var height: CGFloat = 0
+    static let shortHeight: CGFloat = 640
 
     private var engine: EngineClient { model.engine }
     /// The projects the sidebar lists, in its order: not archived, not deleted.
@@ -126,6 +136,13 @@ struct DashboardView: View {
         return DashboardArrangement.arranged(listed.filter { ticked.contains($0.id) }, order: order)
     }
 
+    /// The projects the Dashboard watches, as the menu's Stop All counts them: those ticked, or every listed one.
+    @MainActor
+    static func watchedIDs(_ engine: EngineClient) -> Set<String> {
+        let listed = Set(engine.projects.filter { $0.archivedAt == nil && $0.deletedAt == nil }.map(\.id))
+        return DashboardWatch.saved().map { $0.intersection(listed) } ?? listed
+    }
+
     init(model: AppModel) {
         self.model = model
         _chosen = State(initialValue: DashboardWatch.saved())
@@ -134,7 +151,12 @@ struct DashboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The engine's notice that it restarted, over the whole Dashboard (#645).
+            RecoveryBanner(model: model)
             bar
+            // A subscription's window at 90%, or its limit reached, while runs used it: about a subscription, not a
+            // project, so under the line across all projects rather than in a column (#645).
+            DashboardLimitNotices(model: model, short: height < Self.shortHeight)
             if watched.isEmpty {
                 empty
             } else {
@@ -162,6 +184,7 @@ struct DashboardView: View {
             }
         }
         .background(Theme.window)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         .navigationTitle("Dashboard")
         #if PI2_DEVELOPMENT
         // What a test copy's `show` waits for (#469): the Dashboard has drawn these projects' columns.
@@ -281,6 +304,7 @@ struct DashboardView: View {
                 AllProjectsLine(model: model, projects: watched)
             }
             Spacer(minLength: 0)
+            StopAllButton(model: model, projects: Set(watched.map(\.id)))
         }
         .padding(.horizontal, 12)
         .frame(height: 38)
@@ -748,6 +772,69 @@ private struct PullLine: View {
 }
 
 // MARK: - Across all projects
+
+/// Stop All, at the end of the line across all projects while anyone works in the projects watched (#645): it asks first,
+/// naming how many runs it stops (`stopAllConfirmation`).
+private struct StopAllButton: View {
+    let model: AppModel
+    let projects: Set<String>
+
+    var body: some View {
+        let count = RunStopping.runs(in: projects, engine: model.engine).count
+        if count > 0 {
+            Button("Stop All", systemImage: "stop.fill") { model.stoppingAll = StopAllRequest(projects: projects) }
+                .labelStyle(.titleAndIcon)
+                .buttonStyle(PiButtonStyle(kind: .danger, compact: true))
+                .fixedSize()
+                .help(count == 1 ? "Stop the 1 run in the projects shown here" : "Stop the \(count) runs in the projects shown here")
+        }
+    }
+}
+
+/// The limit notices, each one line until unfolded, under the line across all projects (#645): the Inbox's own cards,
+/// with their Dismiss and Show Usage. However many there are, they scroll within at most a few lines' room, and in a
+/// short window one line's, with a line saying how many more there are, so that the columns keep the window.
+private struct DashboardLimitNotices: View {
+    let model: AppModel
+    let short: Bool
+    @State private var height: CGFloat = 0
+    @State private var first: CGFloat = 0
+
+    private var notices: [PlanLimits.Notice] { PlanLimits(model.engine.extras["limits"])?.notices ?? [] }
+
+    var body: some View {
+        let notices = notices
+        if !notices.isEmpty {
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(Array(notices.enumerated()), id: \.element.id) { index, notice in
+                            LimitNoticeCard(
+                                engine: model.engine, notice: notice,
+                                open: { OpenInProjects.open($0, model: model) },
+                                showUsage: { model.selection = .usage },
+                                foldable: true
+                            )
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if index == 0 { first = $0 } }
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                }
+                .frame(height: min(max(height, 1), short ? first + 12 : 200))
+                if short, notices.count > 1, height > first + 12 {
+                    Text(notices.count == 2 ? "1 more notice · Scroll to see it" : "\(notices.count - 1) more notices · Scroll to see all")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.tx3)
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 4)
+                }
+            }
+            .background(Theme.window)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+        }
+    }
+}
 
 /// One line across every project watched, at the top of the Dashboard (#618): how many things need the person in all
 /// (which brings the first into view, ⌥⌘0), how many agents are working, what was spent today in all, and how the plans'

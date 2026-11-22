@@ -39,6 +39,14 @@ struct PaletteView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.newProject() }
             }) }
             if matches("go to dashboard") { result.append(Entry(id: "go-dashboard", icon: "square.grid.2x2", title: "Go to Dashboard", detail: "View") { model.selection = .dashboard }) }
+            // Every agent's run at once, after a confirmation that names how many (#645); its dialog waits for the
+            // palette to go first.
+            let running = RunStopping.runs(in: nil, engine: engine).count
+            if running > 0, matches("stop all runs agents") {
+                result.append(Entry(id: "stop-all", icon: "stop.fill", title: "Stop All Runs…", detail: running == 1 ? "Action · 1 running" : "Action · \(running) running") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.stoppingAll = StopAllRequest(projects: nil) }
+                })
+            }
         }
         for agent in engine.agents where matches("new conversation with \(agent.name)") {
             result.append(Entry(id: "new-\(agent.id)", icon: "plus.bubble", title: "New conversation with \(agent.name)", detail: "Agent") { model.newConversation(agentId: agent.id) })
