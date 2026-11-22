@@ -75,8 +75,8 @@ describe("limits", () => {
 
 	it("answers busy past the day's messages until the next day", async () => {
 		const { mac, phone } = await pairWithPhone();
-		// Five today: the Mac's addDevice was the first.
-		await setLimits(mac.pairing, { messagesPerDay: 5 });
+		// Seven today: pairing the phone took three of the Mac's (openJoin, addDevice, closeJoin).
+		await setLimits(mac.pairing, { messagesPerDay: 7 });
 		for (let index = 0; index < 4; index++) {
 			vi.setSystemTime(Date.now() + 1000);
 			phone.client.sendBytes(new Uint8Array([index]));
@@ -123,10 +123,10 @@ describe("limits", () => {
 
 	it("does not count what a stranger sends: one who knows the pairing's id cannot spend its limits", async () => {
 		const { mac, phone } = await pairWithPhone();
-		await setLimits(mac.pairing, { messagesPerSecond: 2, bytesPerSecond: 70 * 1024 });
-		const impostor = await newKey();
 		const absent = await addPhone(mac);
 		vi.setSystemTime(Math.ceil((Date.now() + 1) / 1000) * 1000);
+		await setLimits(mac.pairing, { messagesPerSecond: 2, bytesPerSecond: 70 * 1024 });
+		const impostor = await newKey();
 		for (let index = 0; index < 20; index++) {
 			const stranger = await connect(mac.pairing);
 			if (index % 4 === 0) {

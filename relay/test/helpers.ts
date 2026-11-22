@@ -161,19 +161,29 @@ export async function macHello(mac: Mac): Promise<{ client: Client; ready: any }
 
 export type Phone = { device: string; key: Key; attestKeyId: string };
 
-export function newDeviceId(): string {
-	return `dev_${base64url(random(16))}`;
-}
-
 export function newAttestKeyId(): string {
 	return base64(random(32));
 }
 
-/** Has the Mac add a phone, as pi² Remote does once the engine paired it (here, as if over the home path). */
+/**
+ * Pairs a phone as pi² Remote and the phone do over the relay: the Mac opens a window, the phone joins it (with the
+ * stand-in verifier), the Mac adds it and closes the window, and the phone's socket closes, leaving it listed and away.
+ * `client` is the Mac's connected socket.
+ */
 export async function addPhone(mac: Mac, client = mac.client): Promise<Phone> {
-	const phone = { device: newDeviceId(), key: await newKey(), attestKeyId: newAttestKeyId() };
+	await standInVerifier(mac.pairing);
+	const token = await openWindow(mac, client);
+	const joining = await joinHello(mac.pairing);
+	sendJoin(mac.pairing, joining, token);
+	const { joined } = await joining.client.json();
+	const phone = { device: joined.device as string, key: joining.key, attestKeyId: joining.keyId };
+	expect(await client.json()).toEqual({ joined: { device: phone.device, deviceKey: phone.key.publicKey, keyId: phone.attestKeyId } });
 	client.send({ addDevice: { device: phone.device, deviceKey: phone.key.publicKey, attestKeyId: phone.attestKeyId } });
 	expect(await client.json()).toEqual({ ok: { what: "addDevice" } });
+	client.send({ closeJoin: {} });
+	expect(await client.json()).toEqual({ ok: { what: "closeJoin" } });
+	joining.client.close();
+	expect(await client.json()).toEqual({ offline: { device: phone.device } });
 	return phone;
 }
 

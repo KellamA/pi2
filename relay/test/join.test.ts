@@ -17,6 +17,7 @@ import {
 	type Joining,
 	joinHello,
 	macHello,
+	newAttestKeyId,
 	newKey,
 	openWindow,
 	pairingObject,
@@ -268,12 +269,46 @@ describe("join", () => {
 		await phoneHello(mac.pairing, { device, key: joining.key, attestKeyId: joining.keyId });
 	});
 
-	it("refuses to add a device whose App Attest key is another pairing's", async () => {
-		const first = await register();
-		const second = await register();
-		const phone = await addPhone(first);
-		second.client.send({ addDevice: { device: `dev_${base64url(random(16))}`, deviceKey: phone.key.publicKey, attestKeyId: phone.attestKeyId } });
-		expect(await second.client.json()).toEqual({ refused: { what: "addDevice", why: "attest-key-taken" } });
+	it("ties a second App Attest key to a joined phone when the Mac checked another of its keys", async () => {
+		const mac = await register();
+		await standInVerifier(mac.pairing);
+		const token = await openWindow(mac);
+		const joining = await joinHello(mac.pairing);
+		sendJoin(mac.pairing, joining, token);
+		const device = await joined(joining);
+		await mac.client.json();
+		const checked = newAttestKeyId();
+		mac.client.send({ addDevice: { device, deviceKey: joining.key.publicKey, attestKeyId: checked } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "addDevice" } });
+		const devices = await runInDurableObject(pairingObject(mac.pairing), async (_: Pairing, state) =>
+			state.storage.get<Record<string, { attestKeyIds: string[] }>>("devices"),
+		);
+		expect(devices![device].attestKeyIds).toEqual([joining.keyId, checked]);
+		// Both are this device's now.
+		const other = await register();
+		await standInVerifier(other.pairing);
+		const otherToken = await openWindow(other);
+		const again = await joinHello(other.pairing);
+		again.keyId = checked;
+		sendJoin(other.pairing, again, otherToken);
+		await again.client.refused("attest-key-taken");
+	});
+
+	it("refuses to add a phone that did not join this pairing: a Mac cannot list devices of its own making", async () => {
+		const mac = await register();
+		const made = await newKey();
+		mac.client.send({ addDevice: { device: `dev_${base64url(random(16))}`, deviceKey: made.publicKey, attestKeyId: "A".repeat(43) + "=" } });
+		expect(await mac.client.json()).toEqual({ refused: { what: "addDevice", why: "not-joined" } });
+		// Nor one that joined another pairing.
+		const other = await register();
+		const theirs = await addPhone(other);
+		mac.client.send({ addDevice: { device: theirs.device, deviceKey: theirs.key.publicKey, attestKeyId: theirs.attestKeyId } });
+		expect(await mac.client.json()).toEqual({ refused: { what: "addDevice", why: "not-joined" } });
+		mac.client.send({ addDevice: { device: `dev_${base64url(random(16))}`, deviceKey: theirs.key.publicKey, attestKeyId: theirs.attestKeyId } });
+		expect(await mac.client.json()).toEqual({ refused: { what: "addDevice", why: "not-joined" } });
+		// The pairing stays pending.
+		mac.client.close();
+		expect((await macHello(mac)).ready.pending).toBe(true);
 	});
 
 	it("lists five devices at most, and refuses an id already listed", async () => {
@@ -282,8 +317,12 @@ describe("join", () => {
 		for (let index = 0; index < 5; index++) phones.push(await addPhone(mac));
 		mac.client.send({ addDevice: { device: phones[0].device, deviceKey: phones[0].key.publicKey, attestKeyId: phones[0].attestKeyId } });
 		expect(await mac.client.json()).toEqual({ refused: { what: "addDevice", why: "exists" } });
-		const sixth = await newKey();
-		mac.client.send({ addDevice: { device: `dev_${base64url(random(16))}`, deviceKey: sixth.publicKey, attestKeyId: "A".repeat(43) + "=" } });
+		const token = await openWindow(mac);
+		const sixth = await joinHello(mac.pairing);
+		sendJoin(mac.pairing, sixth, token);
+		const device = await joined(sixth);
+		await mac.client.json();
+		mac.client.send({ addDevice: { device, deviceKey: sixth.key.publicKey, attestKeyId: sixth.keyId } });
 		expect(await mac.client.json()).toEqual({ refused: { what: "addDevice", why: "full" } });
 	});
 

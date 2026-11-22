@@ -6,7 +6,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { base64url, concat, fromBase64url } from "../src/bytes.ts";
 import type { Pairing } from "../src/pairing.ts";
 import { proofText } from "../src/protocol.ts";
-import { addPhone, connect, itemId, macHello, newDeviceId, newKey, pairingObject, phoneHello, register, sealedItem } from "./helpers.ts";
+import {
+	addPhone,
+	connect,
+	itemId,
+	joinHello,
+	macHello,
+	newKey,
+	openWindow,
+	pairingObject,
+	phoneHello,
+	register,
+	sealedItem,
+	sendJoin,
+	standInVerifier,
+} from "./helpers.ts";
 
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["Date"] });
@@ -67,17 +81,22 @@ describe("removeDevice: revocation", () => {
 		expect(await mac.client.json()).toEqual({ refused: { what: "removeDevice", why: "unknown-device" } });
 	});
 
-	it("unties the device's App Attest key, which may then be added elsewhere", async () => {
+	it("unties the device's App Attest key, which may then join elsewhere", async () => {
 		const mac = await register();
 		const phone = await addPhone(mac);
 		const elsewhere = await register();
-		const add = { addDevice: { device: newDeviceId(), deviceKey: phone.key.publicKey, attestKeyId: phone.attestKeyId } };
-		elsewhere.client.send(add);
-		expect(await elsewhere.client.json()).toEqual({ refused: { what: "addDevice", why: "attest-key-taken" } });
+		await standInVerifier(elsewhere.pairing);
+		const token = await openWindow(elsewhere);
+		const before = await joinHello(elsewhere.pairing);
+		before.keyId = phone.attestKeyId;
+		sendJoin(elsewhere.pairing, before, token);
+		await before.client.refused("attest-key-taken");
 		mac.client.send({ removeDevice: { device: phone.device } });
 		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
-		elsewhere.client.send(add);
-		expect(await elsewhere.client.json()).toEqual({ ok: { what: "addDevice" } });
+		const after = await joinHello(elsewhere.pairing);
+		after.keyId = phone.attestKeyId;
+		sendJoin(elsewhere.pairing, after, token);
+		expect(Object.keys(await after.client.json())).toEqual(["joined"]);
 	});
 });
 
@@ -160,8 +179,12 @@ describe("deleting", () => {
 		await hello.refused("unknown-pairing");
 
 		const elsewhere = await register();
-		elsewhere.client.send({ addDevice: { device: newDeviceId(), deviceKey: phone.key.publicKey, attestKeyId: phone.attestKeyId } });
-		expect(await elsewhere.client.json()).toEqual({ ok: { what: "addDevice" } });
+		await standInVerifier(elsewhere.pairing);
+		const token = await openWindow(elsewhere);
+		const joining = await joinHello(elsewhere.pairing);
+		joining.keyId = phone.attestKeyId;
+		sendJoin(elsewhere.pairing, joining, token);
+		expect(Object.keys(await joining.client.json())).toEqual(["joined"]);
 	});
 
 	it("deletes a pending pairing that no device was added to after 15 minutes", async () => {

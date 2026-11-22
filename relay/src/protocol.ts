@@ -56,6 +56,7 @@ export type Why =
 	| "exists" // a device or an item with that id is already there
 	| "unknown-device"
 	| "device-key" // addDevice names another device key than the slot joined with
+	| "not-joined" // addDevice names no phone that joined this pairing at the relay
 	| "mailbox-full"
 	| "removed" // the device's slot was removed by the Mac
 	| "left" // the device left

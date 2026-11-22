@@ -113,6 +113,7 @@ const CLOSE: Record<Why, number> = {
 	"bundle-version": 4002,
 	"attest-key-taken": 4002,
 	"device-key": 4002,
+	"not-joined": 4002,
 	"unknown-device": 4002,
 	exists: 4002,
 	full: 4002,
@@ -503,36 +504,40 @@ export class Pairing extends DurableObject<Env> {
 		}
 	}
 
+	/**
+	 * The Mac adds a phone it paired (3.3 step 8). Only a phone that joined this pairing at the relay, with its App
+	 * Attest attestation, can be added: under the slot it joined with, or under another id with the same App Attest key,
+	 * whose slot is then let go. So the relay carries traffic only between a Mac and a genuine pi² for iPhone (6.6),
+	 * whatever a Mac of someone's own making asks.
+	 */
 	private async addDevice(ws: WebSocket, message: AddDevice): Promise<void> {
 		const meta = this.meta!;
-		const refusal = this.cannotAdd(message);
-		if (refusal !== null) return refused(ws, "addDevice", refusal);
+		const found = this.addable(message);
+		if (typeof found !== "object") return refused(ws, "addDevice", found);
+		const { slot } = found;
 		const key = this.env.ATTEST_KEYS.get(this.env.ATTEST_KEYS.idFromName(message.attestKeyId));
-		const joined = this.devices[message.device];
 
-		// Tie the App Attest key the Mac checked to this device. A phone that joined under another slot with this key has
-		// it moved here, and that slot is let go.
-		let from: string | null = null;
-		const tiedBefore = joined?.attestKeyIds.includes(message.attestKeyId) === true;
-		if (!tiedBefore && !(await key.tie(meta.pairing, message.device))) {
-			from = Object.keys(this.devices).find((id) => !this.devices[id].listed && this.devices[id].attestKeyIds.includes(message.attestKeyId)) ?? null;
-			if (from === null || !(await key.retie(meta.pairing, from, message.device))) return refused(ws, "addDevice", "attest-key-taken");
+		// Tie the App Attest key the Mac checked to the device: moved from the slot it joined with, or, if the Mac checked
+		// another key of the same phone than the one it joined with, tied anew.
+		const joinedWith = this.devices[slot].attestKeyIds.includes(message.attestKeyId);
+		if (slot !== message.device ? !(await key.retie(meta.pairing, slot, message.device)) : !joinedWith && !(await key.tie(meta.pairing, slot))) {
+			return refused(ws, "addDevice", "attest-key-taken");
 		}
 		// The pairing may have changed while the key was being tied.
-		const late = this.meta !== meta ? "unknown-device" : this.cannotAdd(message);
-		if (late !== null) {
-			if (!tiedBefore) await key.untie(meta.pairing, message.device);
-			return refused(ws, "addDevice", late);
+		const late = this.meta !== meta ? "not-joined" : this.addable(message);
+		if (typeof late !== "object" || late.slot !== slot) {
+			if (slot !== message.device) await key.retie(meta.pairing, message.device, slot);
+			else if (!joinedWith) await key.untie(meta.pairing, slot);
+			return refused(ws, "addDevice", typeof late !== "object" ? late : "not-joined");
 		}
-		if (from !== null && this.devices[from] !== undefined) {
-			const others = this.devices[from].attestKeyIds.filter((id) => id !== message.attestKeyId);
-			await this.forgetSlot(from, others, "replaced");
-		}
-		const existing = this.devices[message.device];
-		if (existing !== undefined) {
-			if (!existing.attestKeyIds.includes(message.attestKeyId)) existing.attestKeyIds.push(message.attestKeyId);
-			existing.listed = true;
+
+		if (slot === message.device) {
+			const device = this.devices[slot];
+			if (!joinedWith) device.attestKeyIds.push(message.attestKeyId);
+			device.listed = true;
 		} else {
+			const others = this.devices[slot].attestKeyIds.filter((id) => id !== message.attestKeyId);
+			await this.forgetSlot(slot, others, "replaced");
 			this.devices[message.device] = { key: message.deviceKey, listed: true, attestKeyIds: [message.attestKeyId], token: null };
 		}
 		meta.pendingUntil = null;
@@ -545,14 +550,19 @@ export class Pairing extends DurableObject<Env> {
 		return ok(ws, "addDevice");
 	}
 
-	/** Why the Mac's `addDevice` cannot be done as things stand, or null. */
-	private cannotAdd(message: AddDevice): Why | null {
+	/** The slot of the joined phone the Mac's `addDevice` names, as things stand, or why it cannot be added. */
+	private addable(message: AddDevice): { slot: string } | Why {
 		const existing = this.devices[message.device];
 		if (existing?.listed === true) return "exists";
+		const slot =
+			existing !== undefined
+				? message.device
+				: Object.keys(this.devices).find((id) => !this.devices[id].listed && this.devices[id].attestKeyIds.includes(message.attestKeyId));
+		if (slot === undefined) return "not-joined";
+		// The Mac must have checked the same device key the phone joined with.
+		if (this.devices[slot].key !== message.deviceKey) return "device-key";
 		if (Object.values(this.devices).filter((device) => device.listed).length >= MAX_DEVICES) return "full";
-		// The phone that joined under this id: the Mac must have checked the same device key it joined with.
-		if (existing !== undefined && existing.key !== message.deviceKey) return "device-key";
-		return null;
+		return { slot };
 	}
 
 	private async put(ws: WebSocket, message: Put, writer: string, now: number): Promise<void> {
