@@ -1,5 +1,7 @@
 # A worker's question that does not hold it
 
+*Kept as history: this is the design as it was made, not the app as it is. For the app as it is, see [the guide](../guide.md); for projects' exact names and shapes, [the contract](../projects.md).*
+
 A design for #507. **Agreed and built:** the owner agreed it on 2026-11-20, as proposed in #570, with all five suggested answers below, and #507 built it. What it recommends is now the contract's text in [projects.md](../projects.md), in the sections it touches, each marked "(#507)", and decision 32 in its section 13 records the answers. The rest of this page is the proposal as the owner read it.
 
 ## The gap
