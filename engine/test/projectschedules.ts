@@ -118,6 +118,11 @@ class Client extends EngineClient {
 	copyOf(template: string, project: string): any {
 		return this.agents().find((agent) => agent.projectId === project && agent.template?.id === template);
 	}
+	/** The demo model's last answer to `/system …` in conversation `id`, once it is whole. */
+	system(id: number): string | undefined {
+		const text = this.conversations.get(id)?.items?.filter((item: any) => item.kind === "assistant").at(-1)?.text as string | undefined;
+		return text?.startsWith("SYSTEM PROMPT") && text.includes("TOOLS: ") && this.row(id)?.busy === false ? text : undefined;
+	}
 	/** Run a schedule now, and wait for its run to have been answered: the conversation idle, with an answer. */
 	async runNow(id: string): Promise<number> {
 		const { conversationId } = await this.call("schedules.runNow", { id });
@@ -197,13 +202,29 @@ try {
 
 	// A schedule of a project's agent: the orchestrator's run is a conversation of its own, not its current one.
 	const orchestrator = client.project(project).orchestratorId as string;
-	const report = (await client.call("schedules.save", { schedule: { title: "Morning report", agentId: orchestrator, prompt: "Report.", repeat: daily } })).id as string;
+	// Its prompt asks the demo model what it was told and offered on the run's first turn.
+	const report = (await client.call("schedules.save", { schedule: { title: "Morning report", agentId: orchestrator, prompt: "/system project", repeat: daily } })).id as string;
 	const orchestratorRun = await client.runNow(report);
 	assert.equal(client.row(orchestratorRun).agentId, orchestrator);
 	assert.equal(client.row(orchestratorRun).projectId, project);
 	assert.notEqual(client.project(project).conversation, orchestratorRun);
 	assert.ok(!client.project(project).earlier?.includes(orchestratorRun));
-	step("a schedule of the orchestrator runs as a conversation of the project of its own");
+	await client.call("conversation.open", { id: orchestratorRun });
+	const told = await client.until("the run's answer", () => client.system(orchestratorRun));
+	const tools = told.slice(told.lastIndexOf("TOOLS: ") + 7).split(", ");
+	for (const only of ["project_agents", "project_settings", "project_rules", "reports"]) assert.ok(!tools.includes(only), `the run is not offered ${only}: ${tools.join(", ")}`);
+	assert.ok(tools.includes("work"), "it keeps the project's work list, as any conversation of the project");
+	assert.match(told, /<<project>>\n<project>\nYou are Orchestrator, an agent of the pi² project “[^”]+”, in .+\. Orchestrator is its orchestrator\./);
+	assert.ok(!told.includes("this is the project's one conversation with you"));
+	// Its current conversation keeps every one of them.
+	const current = (await client.call("projects.startFresh", { id: project })).conversation as number;
+	await client.call("conversation.open", { id: current });
+	await client.call("submit", { id: current, text: "/system project" });
+	const orchestrated = await client.until("the orchestrator's answer", () => client.system(current));
+	const ownTools = orchestrated.slice(orchestrated.lastIndexOf("TOOLS: ") + 7).split(", ");
+	for (const only of ["project_agents", "project_settings", "project_rules", "reports"]) assert.ok(ownTools.includes(only), `the orchestrator's conversation is offered ${only}`);
+	await client.until("idle", () => client.row(current)?.busy === false);
+	step("a schedule of the orchestrator runs as a conversation of the project of its own, offered none of the tools of its current one");
 
 	// Edits: the copy stays while the agent does; another agent chosen drops it.
 	await client.call("schedules.save", { schedule: { id: nightly, title: "Nightly build, renamed", agentId: forge, prompt: "Build it.", repeat: daily } });
