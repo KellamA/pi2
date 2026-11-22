@@ -70,6 +70,8 @@ A conversation with the orchestrator that has grown long can be summarised, or s
 
 Choosing a project shows its **hub**: the conversation with the orchestrator on the left and the **board** on the right.
 
+<p align="center"><img src="images/hero.png" alt="A project's hub: the conversation with the orchestrator on the left, and the board's Now tab on the right, with what needs you, who is working and what finished today" width="820"></p>
+
 - **The bar** above them shows the project's folder and branch, the orchestrator's model and thinking level (changing either changes the orchestrator from its next message), and how much of your plan's week is used.
 - **Each panel folds**: ⌥⌘[ folds the conversation, ⌥⌘] the board. With the conversation folded, a strip along the bottom of the board keeps the orchestrator's last words and a field to answer it. A window too narrow for both folds the board by itself, and says so.
 - **An agent's conversation** opens in place of the board when you click its row in the sidebar or on the board, with **Back to the Board** to return. Its header has a menu to stop it, rename it, export it, archive it or delete it, and its agent's model and thinking level. A sub-chat's header has **Parent**, for the conversation that handed it its work.
@@ -92,6 +94,8 @@ Each project opens as you left it: which panels were folded, which tab, and its 
 The board's side of the hub can be split into panes, so you can watch and write to two or three agents at once beside the orchestrator. **View › Split Right** (⌘D) and **Split Down** (⇧⌘D) add a pane, which offers the project's working agents first, then its other conversations. **Close Pane** (⌃⌘W), **Next Pane** and **Previous Pane** (⌘] and ⌘[), **Even Out Panes** and the ready-made layouts work on them. A conversation opened with ⌥ held, or dragged from the sidebar, goes to a new pane. The board shows in one pane at most; closing the last pane brings it back.
 
 ## The Dashboard
+
+<p align="center"><img src="images/dashboard.png" alt="The Dashboard: three projects, a column each" width="820"></p>
 
 The Dashboard shows the projects you tick under **Projects…**, a column each. A column has, under its header, one line of what needs you, who is working, what finished today and what the project spent today; then what needs you, answered in place; who is working; what finished today; for a GitHub project, the pull requests waiting to be merged; and at the bottom, a window onto the conversation with the orchestrator and a field to message it. **Open** takes you to the project's hub.
 

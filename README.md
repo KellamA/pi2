@@ -17,6 +17,12 @@
   <img src="https://img.shields.io/badge/engine-pi%20durable%201.5.2-4cc38a" alt="pi durable 1.5.2">
 </p>
 
+<p align="center">
+  <img src="docs/images/hero.png" alt="A project's hub in pi²: the conversation with the orchestrator on the left, and on the right the board's Now tab, with a command and a decision waiting for the person, two agents working and two finished" width="900">
+</p>
+
+<p align="center"><sub>The pictures show sample projects, with the models' answers scripted for them.</sub></p>
+
 ## What it is
 
 pi² is a home for agents on your Mac, built on [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable). Every model turn, tool call and decision is saved before it is shown, so a crash, a restart or quitting the app does not lose a run. It picks up where it stopped.
@@ -39,17 +45,25 @@ The orchestrator can change its project itself (make an agent, add a rule, chang
 
 **Rules** are lines the project keeps to, sent word for word to the orchestrator or to every agent at every request, so they hold however long a conversation runs. **Notes** are what the agents keep about the project as they work, which you can read, correct and add to. [The guide](docs/guide.md) has all of it.
 
+The **Dashboard** shows your projects side by side: what needs you, who is working, what finished today, and the conversation with each orchestrator, with a field to write to it.
+
+<p align="center"><img src="docs/images/dashboard.png" alt="The Dashboard: three projects side by side, each with what needs you, who is working, what finished today and the latest of its orchestrator's conversation" width="820"></p>
+
 ### Hand work to agents
 
 An agent is a saved setup: a model, instructions, tools, a folder, and limits. Agents kept outside any project are **templates**, under Shared in the sidebar; a project's agents are made from them, or by hand, and changing a project's agent changes that project only. **Update from Template…** brings one up to date with its template, showing what would change first.
 
 Each piece of work handed out opens a sub-chat under the conversation that handed it out, so you can watch an agent work, open it, and talk to it directly. The orchestrator names each sub-chat for what it is doing, can give each one a git worktree and branch of its own, and archives the finished ones itself. When a sub-chat ends, its answer is a report to the orchestrator, which can wake it at once or wait to be read.
 
+<p align="center"><img src="docs/images/panes.png" alt="The orchestrator's conversation beside two agents' conversations in panes: Forge has fixed a bug, keeps a task list and waits to push, and Atlas is running the end-to-end tests" width="820"></p>
+
 A new agent has no model of its own until you choose one in its settings: it shows **App default** and runs on the **Default model for new agents**, in **Settings › General**, with the thinking level chosen there. Changing that setting changes what every such agent starts its next conversation on; a conversation already started keeps its model. Left at **The model used last**, the default is the model you last picked. If the chosen model is switched off or its provider signed out, agents start on the model used last (else the demo model) until it is back, and Settings says so.
 
 ### Stay in control
 
 Each agent has a tool access level: off, read only, ask first, or full. With "ask first", anything that changes a file or runs a command waits for you. What waits, from every project, shows on each project's Now tab, on the Dashboard, in the menu bar item and as a card in the conversation, and it is still there after a restart. An agent can also put a question or a decision to you under Needs you and carry on with what does not depend on it.
+
+<p align="center"><img src="docs/images/needs-you.png" alt="An agent's conversation in place of the board: Forge has edited a file, written a test, run the tests and committed, and asks before pushing, with Allow Once, Always Allow and Deny" width="820"></p>
 
 A command still running after 2 minutes (or up to 10, if the agent asked for longer) is moved to the background, where you can see and stop it, or stopped where starting it there would have needed your approval, and one that waits for typed input fails at once instead of holding the conversation. For a server or a watching build, an agent can start a command and [leave it running in the background](docs/background.md), read its output later and stop it; Activity lists what is running, each with its output and a Stop button, and the conversation shows the commands it has running above the message field.
 
@@ -101,6 +115,8 @@ Schedules start conversations on their own: every day, every week, every few min
 
 Usage is counted by model, agent, project and conversation. Models you pay for by use show a cost and count toward an optional daily budget; subscriptions and local models count tokens only. Each project can also have limits of its own: no new agent starts while a window of the plan it would run on is too full, or once the project has spent a set amount today. A start past a limit waits for you to start it anyway.
 
+<p align="center"><img src="docs/images/usage.png" alt="Usage: tokens today and in all, then by model, by agent and by project" width="820"></p>
+
 For a subscription you are signed in to, Usage also shows the plan's own limits where the provider reports them: how much of the 5-hour and weekly windows is used, and when each resets. [Where the numbers come from](docs/limits.md).
 
 ### Read it like a document
@@ -114,6 +130,8 @@ Paste a screenshot, drop in files, or attach PDFs and Word documents; pictures s
 ### Chat on the side
 
 Chat mode (⌘2) is a plain chat with an assistant, with nothing to set up: no folder, no agents, no approvals. It can search the web and read pages, write a document, and keep a memory of its own; Try Again and Edit keep each version of an answer. **Continue with an Agent…** hands a chat to a project's orchestrator or one of its agents, with its messages, files and pictures. [How chat mode works](docs/chat.md).
+
+<p align="center"><img src="docs/images/chat.png" alt="Chat mode: a question about Canadian sales tax, answered with a list and a table" width="820"></p>
 
 ### And the rest
 
@@ -136,6 +154,8 @@ Chat mode (⌘2) is a plain chat with an assistant, with nothing to set up: no f
 - **Line breaks in a message**: Return sends, and Shift-Return (or Option-Return) starts a new line, in the message field, Quick Ask, the menu bar panel and an answer to an agent's question.
 - **Backup and restore** of everything except your keys.
 - **Dark and light**, dark by default.
+
+<p align="center"><img src="docs/images/hero-light.png" alt="The same hub in light mode" width="820"></p>
 
 ## Install
 
