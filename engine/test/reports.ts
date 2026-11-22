@@ -1,13 +1,12 @@
 // Reports, and when one wakes the orchestrator (#463; docs/projects.md 3.10, 5.6 and 8.2): a real engine on a throwaway
 // data folder, driven over its socket with the demo model, as an app would drive it.
 //
-// With the preview never on, the empty `reports` event and `reports.wake` refused. Then a project whose orchestrator
+// The empty `reports` event, and `reports.wake` refused for an unknown project. Then a project whose orchestrator
 // hands work out: with the project's default, ten sub-chats ending wake nobody and the orchestrator makes no request;
 // their reports are listed and read, each once. `delegate` waiting takes its own run's report. Then each choice of
 // `reports` `wake`: each, a batch woken once when all of it has ended, a batch woken only at its first failure (with a
 // failure among answers), never; `sub_chats` with `wait` taking a report that woke nobody; the person's `reports.wake`;
-// the project's switch on, which wakes as today; an engine stopped and started again in the middle of a batch; and the
-// preview off again, with which waking is exactly as wakes.md says.
+// the project's switch on, which wakes as today; and an engine stopped and started again in the middle of a batch.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -17,7 +16,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Host } from "../src/extensions.ts";
 import type { Engine } from "../src/features.ts";
-import { defaultProjectSettings, PREVIEW_OFF, type Project, type ProjectsDoc, projects } from "../src/projects.ts";
+import { defaultProjectSettings, type Project, type ProjectsDoc, projects } from "../src/projects.ts";
 import { type Report, type ReportsDoc, type ReportWake, reports, settle } from "../src/reports.ts";
 import { Inbox, type Meta } from "../src/state.ts";
 import type { Watch, WakesDoc } from "../src/wakes.ts";
@@ -230,18 +229,17 @@ try {
 	client = await Client.attach(engine);
 	const c = () => client!;
 
-	// ---- With the preview never on
+	// ---- A new data folder
 
 	assert.deepEqual(c().events.reports, { event: "reports", projects: {} });
 	assert.ok(c().order.indexOf("reports") > c().order.indexOf("projects"), c().order.join(" "));
-	await assert.rejects(c().call("reports.wake", { projectId: "p-x", chats: [1], when: "each" }), { message: PREVIEW_OFF });
-	step("with the preview never on: the empty reports event after the projects event, and reports.wake refused");
+	await assert.rejects(c().call("reports.wake", { projectId: "p-x", chats: [1], when: "each" }), { message: "Unknown project: p-x" });
+	step("the empty reports event after the projects event, and reports.wake refused for an unknown project");
 
 	// ---- A project whose orchestrator hands work out
 
 	const worker = (await c().call("agents.save", { agent: { name: "Worker", description: "Does the work", access: "full", cwd: work } })).id as string;
 	const lead = (await c().call("agents.save", { agent: { name: "Lead", description: "Hands out work", access: "full", cwd: work, delegates: [worker] } })).id as string;
-	await c().call("projects.setPreview", { on: true });
 	const made = await c().call("projects.create", { folder });
 	const projectId = made.id as string;
 	const oc = made.conversation as number;
@@ -457,24 +455,6 @@ try {
 		"none lost: each delivered once",
 	);
 	step("an engine stopped in the middle of a batch: the batch wakes once after the restart, and no report is lost");
-
-	// ---- The preview off: waking exactly as wakes.md says
-
-	// With the preview off, an agent hands work to those its own list names, as today: the orchestrator's names Worker.
-	const orchestratorId = c().events.projects.projects.find((row: Event) => row.id === projectId).orchestratorId;
-	const orchestrator = c().events.agents.agents.find((agent: Event) => agent.id === orchestratorId);
-	await c().call("agents.save", { agent: { ...orchestrator, delegates: [copy] } });
-	await c().until("its delegates", () => c().events.agents.agents.find((agent: Event) => agent.id === orchestratorId)?.delegates?.includes(copy));
-	await c().call("projects.setPreview", { on: false });
-	const g5 = gate();
-	const [off] = await c().tools(oc, `/tools ${JSON.stringify([handOffCall(task(g5, "preview-off"), "Off")])}`);
-	assert.match(off!.text, /Its answer will come to you as a message/);
-	assert.equal(c().reportOf(projectId, off!.details.conversationId), undefined, "no report");
-	g5.open();
-	assert.equal(await c().woken(oc, 7), `pi² woke the agent: sub-chat ${off!.details.conversationId} “Off” answered`);
-	await assert.rejects(c().call("reports.wake", { projectId, chats: [1], when: "each" }), { message: PREVIEW_OFF });
-	assert.equal(c().events.reports.projects[projectId].length, before, "the reports kept as they are");
-	step("with the preview off, a run of the orchestrator has no report and wakes it as today; reports.wake is refused");
 
 	console.log("PASS");
 	passed = true;

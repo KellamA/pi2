@@ -10,9 +10,9 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MAX_NOTES, Memory } from "../src/knowledge.ts";
 import { projectNotebook, type ProjectNote } from "../src/projectnotes.ts";
-import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
+import { PROJECT_ARCHIVED } from "../src/projects.ts";
 import { Agents } from "../src/state.ts";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-notes-"));
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.test-projectnotes-${process.pid}`, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp() };
@@ -64,12 +64,11 @@ try {
 	await client.until("memory greeting", () => client!.events.memory);
 	assert.deepEqual(client.events.memory.projects, {});
 	const methods = ["memory.add", "memory.edit", "memory.delete"];
-	for (const method of methods) await assert.rejects(client.call(method, { projectId: "p-missing" }), { message: PREVIEW_OFF });
 	const legacy = await client.call("memory.add", { agentId: "forge", text: "Only Forge remembers this." });
 	assert.equal(legacy.id, "m1");
 	await client.call("memory.setEnabled", { agentId: "forge", enabled: true });
 	await client.call("memory.add", { chat: true, text: "Only chat remembers this." });
-	await previewOnLeavingOut(client);
+	await leaveOut(client);
 	for (const method of methods) {
 		await assert.rejects(client.call(method, { projectId: "constructor" }), { message: "Unknown project: constructor" });
 		await assert.rejects(client.call(method, { projectId: true }), /projectId must be/);
@@ -108,7 +107,7 @@ try {
 	assert.match((await client.tool(first, "remember", { note: "SHARED from the first conversation." })).text, /already have that note \(n2\)/);
 	assert.equal((await client.call("memory.add", { projectId: otherId, text: "Only the other project reads this." })).id, "n1");
 	assert.doesNotMatch(await client.memory(first), /Only the other/);
-	// With the preview on, a template's conversation goes into its folder's project as it is made, with a copy of its agent
+	// A template's conversation goes into its folder's project as it is made, with a copy of its agent
 	// there (#458, docs/projects.md 9.9), which is given the template's notes, for it alone (9.7); not another project's.
 	const template = await client.create({ agentId: "forge" });
 	const carriedInto = await client.until("carried over", () => client!.events.library.conversations.find((row: any) => row.id === template)?.projectId ?? undefined);
@@ -192,30 +191,12 @@ try {
 	assert.doesNotMatch(await c.memory(first), /Now shared/);
 	console.log("ok  restart, carried-note limits, cross-agent sharing, audience and switch, and sub-chats");
 
-	// bash makes this round ordered. Switch the preview while bash waits, before remember has run.
-	const round = c.answer(first, `/tools ${JSON.stringify([
-		{ name: "bash", arguments: { command: "echo should-not-run" } },
-		{ name: "remember", arguments: { note: "This turn stays in the project." } },
-	])}`);
-	const waiting = await c.until("the ordered round's approval", () => c.events.inbox?.items?.find((item: any) => item.conversationId === first && item.tool === "bash"));
-	await c.call("projects.setPreview", { on: false });
-	await c.call("inbox.decide", { id: waiting.id, decision: "deny" });
-	await round;
-	assert.ok(c.notes(projectId).some((n) => n.text === "This turn stays in the project."));
-	assert.match(await c.memory(first), /your own notes from earlier conversations/);
-	assert.match(await c.memory(later), /your own notes from earlier conversations/);
-	assert.doesNotMatch(await c.memory(later), /Written in a sub-chat/);
-	assert.match((await c.tool(later, "remember", { note: "Legacy after turning off." })).text, /Noted \(m1\)/);
-	for (const method of methods) await assert.rejects(c.call(method, { projectId }), { message: PREVIEW_OFF });
-	assert.ok(c.notes(projectId).some((n) => n.text === "Written in a sub-chat."), "switching off does not hide the field from apps");
-	await c.call("projects.setPreview", { on: true });
-	assert.doesNotMatch(await c.memory(later), /Legacy after turning off/);
 	await c.call("projects.archive", { id: projectId });
 	for (const method of methods) await assert.rejects(c.call(method, { projectId }), { message: PROJECT_ARCHIVED });
 	await c.call("projects.delete", { id: projectId });
 	for (const method of methods) await assert.rejects(c.call(method, { projectId }), { message: `Unknown project: ${projectId}` });
 	assert.doesNotMatch(await c.memory(later), /Written in a sub-chat/);
-	console.log("ok  preview off keeps legacy memory; archived and deleted projects cannot be edited");
+	console.log("ok  archived and deleted projects cannot be edited");
 } finally {
 	other?.close();
 	client?.close();

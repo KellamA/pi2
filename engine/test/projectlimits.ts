@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type ProviderLimits } from "../src/limits.ts";
 import { GONE } from "../src/needs.ts";
-import { defaultProjectSettings, type LimitReading, PREVIEW_OFF } from "../src/projects.ts";
+import { defaultProjectSettings, type LimitReading } from "../src/projects.ts";
 import { conversationSpend } from "../src/projectspend.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
@@ -82,7 +82,6 @@ engine = startEngine();
 let c = await Client.connect(engine, home);
 let second: Client | undefined;
 try {
-	await c.call("projects.setPreview", { on: true });
 	const repo = join(home, "repo");
 	mkdirSync(repo);
 	execFileSync("git", ["-C", repo, "init", "-qb", "test-base"]);
@@ -234,14 +233,10 @@ try {
 	const before = c.items(root, "assistant").length;
 	await c.call("submit", { id: root, text: "The person's own turn still goes ahead" });
 	await c.until("person's turn finished", () => !c.conversations.get(root)?.state.busy && c.items(root, "assistant").length > before);
-	await c.call("projects.setPreview", { on: false });
-	const hiddenRefusal = await c.refused("conversation.create", make);
-	await assert.rejects(c.call("conversation.create", { ...make, confirmLimit: hiddenRefusal.id }), { message: PREVIEW_OFF });
-	assert.equal(c.cards().length, 0);
 	const unaffected = await c.call("conversation.create", { agentId: "forge", model: demo });
 	assert.equal(unaffected.note, undefined);
 	assert.equal(typeof unaffected.id, "number");
-	console.log("ok  project daily spending, ordinary person turns and preview-off enforcement");
+	console.log("ok  project daily spending, and ordinary person turns");
 } finally {
 	c.close(); second?.close();
 	await stop(engine);

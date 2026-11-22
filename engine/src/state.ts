@@ -5,7 +5,7 @@ import type { ComputerSettings } from "./computer.ts";
 import type { ReferenceFile } from "./reference.ts";
 import type { ScheduleSettings } from "./selfschedule.ts";
 import type { CommandRule } from "./rules.ts";
-import { projectDeleted, projectsOn, type SwitchName } from "./projects.ts";
+import { projectDeleted, type SwitchName } from "./projects.ts";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { defineDoc, type HookApi } from "@earendil-works/pi-durable";
 
@@ -154,7 +154,7 @@ export type Meta = {
 	projectId?: string;
 	/**
 	 * For a conversation carried over (#458 sets it; nothing does before): the project's copy of its agent, which it runs
-	 * as while the preview is on (`runsAs`).
+	 * as (`runsAs`). Its `agentId` stays the template, so the last version with the switch still reads it.
 	 */
 	projectAgentId?: string;
 	/** A conversation with a project's orchestrator begun with Start fresh (orchestrator.ts, #466): the one it followed. */
@@ -163,19 +163,19 @@ export type Meta = {
 
 /**
  * The agent whose settings conversation `meta` uses at its next message (docs/projects.md, 3.4): its project's copy of
- * its agent, for a conversation carried over, while the preview is on, the copy is neither removed nor deleted and the
- * project was not deleted; else its `agentId`, as before projects. A deleted project's own conversations keep their own
+ * its agent, for a conversation carried over, while the copy is neither removed nor deleted and the project was not
+ * deleted; else its `agentId`. A deleted project's own conversations keep their own
  * agent; only carried conversations fall back to a template (3.6). Every lookup goes through this or `agentOf`.
  */
 export function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): string | undefined {
 	const copy = meta?.projectAgentId === undefined ? undefined : agents[meta.projectAgentId];
-	if (projectsOn() && copy !== undefined && copy.removedAt === undefined && !projectDeleted(meta!.projectId) && !projectDeleted(copy.projectId)) return meta!.projectAgentId;
+	if (copy !== undefined && copy.removedAt === undefined && !projectDeleted(meta!.projectId) && !projectDeleted(copy.projectId)) return meta!.projectAgentId;
 	return meta?.agentId;
 }
 
 /**
  * The agent a schedule runs as (docs/projects.md, 3.13): by `runsAs`'s rule, the project's copy it was carried to while
- * the preview is on and that copy can still be used; else its own agent, as before projects.
+ * that copy can still be used; else its own agent.
  */
 export function scheduleRunsAs(schedule: { agentId: string; projectAgentId?: string }, agents: Record<string, AgentProfile>): string {
 	const copy = schedule.projectAgentId === undefined ? undefined : agents[schedule.projectAgentId];

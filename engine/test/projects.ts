@@ -1,20 +1,19 @@
-// Projects (#456, docs/projects.md): the project itself, its requests, and the preview switch. A real engine on a
-// throwaway data folder, driven over its socket with the demo model, as an app would drive it.
+// Projects (#456, docs/projects.md): the project itself and its requests. A real engine on a throwaway data folder,
+// driven over its socket with the demo model, as an app would drive it.
 //
-// First what must not change: with the preview never turned on, an app is sent the empty `projects` event, every new
-// request is refused with the one message of section 2, and nothing is written; a conversation in no project is told
-// exactly the same prompt and tool declarations, byte for byte, before the preview was ever on, with it on and with it
-// off again. Then each request, with what it refuses; the operations of 3.6 with the preview switched off and on after
-// each, checking the old sidebar (the `library` event) and the hub (the `projects` event); two apps connected at once;
-// and an engine stopped and started again.
+// First what must not change: a new data folder's app is sent the empty `projects` event, with `preview: true` for the
+// app built before #483 took the switch out, and settings.json says so for the versions before it; a conversation in no
+// project is told exactly the same prompt and tool declarations, byte for byte, before any project and after all of
+// them. Then each request, with what it refuses; the operations of 3.6, checking the library and the hub (the
+// `projects` event); two apps connected at once; and an engine stopped and started again.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
-import { ORCHESTRATOR_INSTRUCTIONS, PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
+import { ORCHESTRATOR_INSTRUCTIONS, PROJECT_ARCHIVED } from "../src/projects.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-proj-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-proj-work-")));
@@ -109,49 +108,32 @@ try {
 	await client.until("providers", () => client.events.providers);
 	await client.until("agents", () => client.events.agents);
 
-	// ---- With the preview never turned on
+	// ---- A new data folder
 
-	assert.deepEqual(client.events.projects, { event: "projects", preview: false, projects: [], carryOver: null });
+	assert.deepEqual(client.events.projects, { event: "projects", preview: true, projects: [], carryOver: null });
 	// After today's events, each feature's greeting in the order of FEATURES, the projects' last (4.4).
 	assert.ok(client.order.indexOf("projects") > client.order.indexOf("compactionSettings"), client.order.join(" "));
 	assert.ok(client.order.indexOf("projects") > client.order.indexOf("memory"), client.order.join(" "));
-	assert.deepEqual(await client.call("projects.list"), { preview: false, projects: [], carryOver: null });
-	for (const [method, params] of [
-		["projects.create", { folder: alpha }],
-		["projects.rename", { id: "p-x", name: "X" }],
-		["projects.set", { id: "p-x", settings: {} }],
-		["projects.archive", { id: "p-x" }],
-		["projects.unarchive", { id: "p-x" }],
-		["projects.delete", { id: "p-x" }],
-	] as const) {
-		await refused(client.call(method, params), PREVIEW_OFF);
-	}
-	// A first start may not have written the file at all yet.
+	assert.deepEqual(await client.call("projects.list"), { preview: true, projects: [], carryOver: null });
+	// A dry run waits for the update's own run at the start (carryover.ts), which writes the switch for the versions before.
+	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null);
 	const settingsFile = () => (existsSync(join(home, "settings.json")) ? JSON.parse(readFileSync(join(home, "settings.json"), "utf8")) : {});
-	assert.equal(settingsFile().projects, undefined);
-	step("with the preview never on: the empty projects event, last of the greetings, and every new request refused");
+	assert.deepEqual(settingsFile().projects, { preview: true });
+	assert.equal(existsSync(join(home, "backups")), false, "nothing to copy on a new data folder");
+	await refused(client.call("projects.carryOver", {}), "Carrying over runs by itself when the engine starts. Only a dry run is taken: give dryRun: true.");
+	step("a new data folder: the empty projects event, last of the greetings, preview true, and the switch written in settings.json");
 
-	// A conversation in no project, made before the preview was ever on: what it is told now is what main tells it.
+	// A conversation made with a template goes into the project of its folder as it is made, here one with no folder
+	// (#458, 9.9); deleting that project leaves it in no project for what it is told, which this test checks below.
 	const plain = (await client.call("conversation.create", { agentId: "forge" })).id as number;
+	const carriedIds = await leaveOut(client);
+	assert.equal(carriedIds.length, 1);
+	const carried = await client.until("the carried project deleted", () => client.projects.find((row: any) => row.id === carriedIds[0] && row.deletedAt !== undefined));
+	assert.equal(carried.name, "No folder");
 	await client.call("conversation.open", { id: plain });
 	const before = await client.told(plain);
 	assert.equal(before.history.split("\n").length, 2, before.history);
-
-	// ---- The preview on
-
-	// Turning on carries `plain` over into a project with no folder (#458, carryover.ts); deleting that project leaves
-	// it in no project for what it is told, which is what this test checks it for below.
-	const turnedOn = await previewOnLeavingOut(client);
-	assert.equal(turnedOn.preview, true);
-	assert.deepEqual(
-		turnedOn.carryOver.projects.map((entry: any) => [entry.name, entry.conversations]),
-		[["No folder", 1]],
-	);
-	await client.until("preview on", () => client.events.projects.preview === true);
-	const carried = await client.until("the carried project deleted", () => client.projects.find((row: any) => row.carriedAt !== undefined && row.deletedAt !== undefined));
-	assert.deepEqual(settingsFile().projects, { preview: true });
-	await refused(client.call("projects.setPreview", { on: "yes" }), "on must be true or false");
-	step("setPreview on carries over what there is, answers its report, and is kept in settings.json");
+	step("a conversation made is carried into its folder's project; that project deleted, it is in none");
 
 	// projects.create: from a folder, in one step, with its orchestrator and an empty conversation with it.
 	const made = await client.call("projects.create", { folder: alpha });
@@ -174,7 +156,6 @@ try {
 	assert.equal(a.lastWords, null);
 	assert.equal(a.archivedAt, undefined);
 	assert.equal(a.deletedAt, undefined);
-	assert.equal(typeof (client.events.projects as any).carryOver.ranAt, "number");
 	const orchestrator = await client.until("the orchestrator", () => client.agent(a.orchestratorId));
 	assert.equal(orchestrator.projectId, made.id);
 	assert.equal(orchestrator.role, "orchestrator");
@@ -293,19 +274,15 @@ try {
 	await client.until("back in alpha", () => client.agent(a.orchestratorId).cwd === alpha);
 	step("projects.set changes the settings part by part, each checked, and the folder with its agents'");
 
-	// ---- Archiving and deleting (3.6), with the preview switched off and on after each
+	// ---- Archiving and deleting (3.6)
 
-	/** The old sidebar and the hub, with the preview off and on again: conversations stay where they were, always. */
+	/** The library and the hub after each: conversations stay where they were, always. */
 	const offAndOn = async (label: string, check: () => void) => {
-		for (const on of [false, true]) {
-			await client.call("projects.setPreview", { on });
-			await client.until(`preview ${on} after ${label}`, () => client.events.projects.preview === on);
-			check();
-		}
-		step(`${label}, with the preview off and on again`);
+		check();
+		step(label);
 	};
 	const inSidebar = (...ids: number[]) => {
-		for (const id of ids) assert.ok(client.listed(id) !== undefined, `conversation ${id} in the old sidebar`);
+		for (const id of ids) assert.ok(client.listed(id) !== undefined, `conversation ${id} in the library`);
 	};
 
 	// Refused while a conversation of the project waits on the person: the orchestrator asks to run a command.
@@ -332,17 +309,12 @@ try {
 	await refused(client.call("projects.rename", { id: made.id, name: "Renamed" }), PROJECT_ARCHIVED);
 	await refused(client.call("projects.set", { id: made.id, settings: {} }), PROJECT_ARCHIVED);
 	await refused(client.call("projects.create", { folder: alpha }), "There is already a project for this folder: the APP; restore it instead");
-	// With the preview off, its conversations work as today.
-	await client.call("projects.setPreview", { on: false });
-	assert.match(await client.answer(other, "hello from the old sidebar"), /^You said: "hello from the old sidebar"/);
-	const offAgain = (await client.call("conversation.create", { agentId: a.orchestratorId })).id as number;
-	await client.call("projects.setPreview", { on: true });
-	step("an archived project refuses messages and starts with the preview on, and works as today with it off");
+	step("an archived project refuses messages and starts");
 
 	await client.call("projects.unarchive", { id: made.id });
 	await client.until("restored", () => client.row(made.id).archivedAt === undefined);
 	await offAndOn("restore a project", () => {
-		inSidebar(made.conversation, other, offAgain);
+		inSidebar(made.conversation, other);
 		assert.equal(client.row(made.id).archivedAt, undefined);
 	});
 	assert.match(await client.answer(other, "back again"), /^You said: "back again"/);
@@ -371,11 +343,11 @@ try {
 		assert.equal(client.row(none2.id).conversation, null);
 	});
 
-	// Deleting a project: its conversations are where they were with the preview off, and its folder and name are free.
+	// Deleting a project: its conversations are where they were, and its folder and name are free.
 	await client.call("projects.delete", { id: made.id });
 	await client.until("deleted", () => client.row(made.id).deletedAt !== undefined);
 	await offAndOn("delete a project", () => {
-		inSidebar(made.conversation, other, offAgain);
+		inSidebar(made.conversation, other);
 		assert.equal(client.listed(other).projectId, made.id);
 		assert.notEqual(client.row(made.id).deletedAt, undefined);
 	});
@@ -395,25 +367,18 @@ try {
 	assert.deepEqual(second.events.projects, client.events.projects);
 	await second.call("projects.rename", { id: copied.id, name: "Forge's project" });
 	await client.until("the first app told", () => client.row(copied.id).name === "Forge's project");
-	await client.call("projects.setPreview", { on: false });
-	await second.until("the second app told", () => second!.events.projects.preview === false);
-	await client.call("projects.setPreview", { on: true });
-	await second.until("on again", () => second!.events.projects.preview === true);
+	await second.until("the second app told", () => second!.events.projects.projects.find((row: any) => row.id === copied.id)?.name === "Forge's project");
 	assert.deepEqual(second.events.projects, client.events.projects);
 	step("two apps connected at once are both told of every change, whichever made it");
 
 	// ---- What a conversation in no project is told, byte for byte
 
-	const during = await client.told(plain);
-	assert.equal(during.full, before.full);
-	await client.call("projects.setPreview", { on: false });
 	const after = await client.told(plain);
 	assert.equal(after.full, before.full);
 	// Nothing was sent again: one system message, the first.
 	assert.equal(after.history, before.history);
-	// A conversation made with the preview on goes into its folder's project as it is made (#458, docs/projects.md 9.9):
-	// one with no folder into the one carrying over makes for no folder, never one the person made with none.
-	await client.call("projects.setPreview", { on: true });
+	// A conversation made goes into its folder's project as it is made (#458, docs/projects.md 9.9): one with no folder
+	// into the one carrying over makes for no folder, never one the person made with none.
 	const later = (await client.call("conversation.create", { agentId: "forge" })).id as number;
 	const laterRow = await client.until("its row", () => client.listed(later)?.projectId !== null && client.listed(later));
 	const laterProject = await client.until("its project", () => client.row(laterRow.projectId));
@@ -421,7 +386,7 @@ try {
 	assert.notEqual(laterProject.carriedAt, undefined);
 	assert.ok(![none.id, none2.id].includes(laterProject.id));
 	// It runs as the copy of Forge there. Told something else, the copy would show in what the conversation is told; its
-	// project deleted, it is in no project (3.6), and is told exactly what it is with the preview off.
+	// project deleted, it is in no project (3.6), and is told nothing of it.
 	const laterCopy = client.agent(laterRow.runsAs);
 	assert.equal(laterCopy.template.id, "forge");
 	await client.call("agents.save", { agent: { ...laterCopy, instructions: "Not what Forge is told." } });
@@ -429,27 +394,20 @@ try {
 	await client.call("projects.delete", { id: laterProject.id });
 	await client.until("deleted", () => client.row(laterProject.id).deletedAt !== undefined);
 	await client.call("conversation.open", { id: later });
-	const laterOn = await client.told(later);
-	assert.doesNotMatch(laterOn.full, /Not what Forge is told/);
-	await client.call("projects.setPreview", { on: false });
-	const laterOff = await client.told(later);
-	assert.equal(laterOff.full, laterOn.full);
-	assert.equal(laterOff.history, laterOn.history);
-	step("a conversation in no project is told the same prompt and tools, byte for byte, never on, on and off again");
+	const laterTold = await client.told(later);
+	assert.doesNotMatch(laterTold.full, /Not what Forge is told/);
+	step("a conversation in no project is told the same prompt and tools, byte for byte, before any project and after all of them");
 
-	// ---- After the preview was on and off: the same events, with what was made in them, and preview false
+	// ---- Every project, in the list as in the event
 
 	const listed = await client.call("projects.list");
-	assert.equal(listed.preview, false);
+	assert.equal(listed.preview, true);
 	assert.equal(listed.projects.length, 8);
 	assert.deepEqual({ event: "projects", ...listed }, client.events.projects);
-	await refused(client.call("projects.create", { folder: delta }), PREVIEW_OFF);
-	step("turned off again: the projects are listed with preview false, and new requests are refused");
+	step("projects.list answers what the event holds");
 
 	// ---- An engine stopped and started again
 
-	await client.call("projects.setPreview", { on: true });
-	await client.until("on before the restart", () => client.events.projects.preview === true);
 	const kept = client.events.projects;
 	const keptAgents = client.events.agents.agents.filter((agent: any) => agent.projectId !== undefined);
 	second.close();
@@ -464,15 +422,8 @@ try {
 	assert.equal(client.listed(other).projectId, made.id);
 	assert.equal(client.listed(again.conversation).projectId, again.id);
 	await client.until("memory after the restart", () => client.events.memory?.agents?.[client.row(again.id).orchestratorId]?.enabled === true);
-	await client.call("projects.setPreview", { on: false });
-	client.close();
-	await stop(engine);
-	engine = start();
-	client = await Client.connect(engine, home);
-	await client.until("projects after the second restart", () => client.events.projects);
-	assert.equal(client.events.projects.preview, false);
-	assert.equal(client.events.projects.projects.length, 8);
-	step("an engine stopped and started again keeps the projects, their agents and conversations, and the switch");
+	assert.deepEqual(settingsFile().projects, { preview: true });
+	step("an engine stopped and started again keeps the projects, their agents and conversations");
 } finally {
 	second?.close();
 	client.close();

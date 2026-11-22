@@ -14,8 +14,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ASKED_CHANGED, CHANGED_SINCE } from "../src/changes.ts";
-import { PREVIEW_OFF } from "../src/projects.ts";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-changes-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-changes-work-")));
@@ -114,21 +113,19 @@ const client = await Client.connect(engine, home);
 try {
 	await client.until("the greeting", () => client.events.providers && client.events.agents && client.events.projects && client.events.needs);
 
-	// ---- With the preview never on: nothing new, and a conversation in no project as before
+	// ---- A conversation in no project: the project carrying over makes for `plain` is deleted, which leaves it in none
+	// (#458, `leaveOut`)
 
 	const plain = (await client.call("conversation.create", { agentId: "forge" })).id as number;
+	await leaveOut(client);
 	await client.call("conversation.open", { id: plain });
 	const plainBefore = await client.answer(plain, "/system full");
-	await refused(client.call("changes.list", { projectId: "p-x" }), PREVIEW_OFF);
-	await refused(client.call("changes.undo", { id: 1 }), PREVIEW_OFF);
-	assert.equal(client.conversations.get(plain).state.projectChanges, undefined);
-	step("with the preview off, changes.* are refused and a conversation in no project has no record of changes");
+	await refused(client.call("changes.list", { projectId: "p-x" }), "Unknown project: p-x");
+	assert.deepEqual(client.conversations.get(plain).state.projectChanges ?? [], []);
+	step("a conversation in no project has no record of changes");
 
 	// ---- A project, and who is offered the tools
 
-	// Turned on as the app does, with the plan of the report; the project carrying over makes for `plain` is deleted, which
-	// leaves it in no project (#458, `previewOnLeavingOut`).
-	await previewOnLeavingOut(client);
 	const created = await client.call("projects.create", { folder: work });
 	const projectId = created.id as string;
 	const O = created.conversation as number;
@@ -511,21 +508,14 @@ try {
 	assert.match(exported, /\*the proposed rule “Never merge on Fridays\.” was not accepted\*/);
 	step("an export writes each change as its line, with whether it was undone, and each card as one line with its outcome");
 
-	// ---- Archived: nothing can be undone; the preview off: the tools are gone, and a conversation in no project is as it was
+	// ---- Archived: nothing can be undone; a conversation in no project is as it was
 
 	await client.until("the orchestrators idle", () => client.idle(O) && client.idle(fresh));
 	await client.call("projects.archive", { id: projectId });
 	await client.until("no Undo while archived", () => client.lines(O).every((line) => line.canUndo === false));
 	await client.call("projects.unarchive", { id: projectId });
-	await client.call("projects.setPreview", { on: false });
-	assert.equal((await client.offered(O)).some((name) => name.startsWith("project_")), false);
 	assert.equal(await client.answer(plain, "/system full"), plainBefore);
-	// With the preview off, an export is exactly as it was: none of the project's lines (10.2).
-	const plainExport = (await client.call("conversation.export", { id: O, format: "markdown" })).text as string;
-	assert.equal(/\*Made the agent Reviewer/.test(plainExport), false);
-	assert.equal(/\*the (request|proposed rule)/.test(plainExport), false);
-	assert.equal(/\(undone\)/.test(plainExport), false);
-	step("archived, no change can be undone; with the preview off the tools are not offered, an export is as it was, and a conversation in no project is told exactly what it was");
+	step("archived, no change can be undone; a conversation in no project is told exactly what it was, after all of it");
 } finally {
 	client.close();
 	await stop(engine);

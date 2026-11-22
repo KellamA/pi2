@@ -10,6 +10,10 @@ import { createRegistry, Harness, UsageDoc, type ConversationId, type UsageState
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
+// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+process.env.PI2_CARRY_NEVER = "1";
+
 const home = mkdtempSync(join(tmpdir(), "pi2-usage-"));
 const price = 5;
 const model = { provider: "demo", modelId: "demo-1" };

@@ -1,7 +1,7 @@
 // Project rules (#459): the board's document and requests, and the instructions the model gets outside its history.
 import { defineDoc, type Tx } from "@earendil-works/pi-durable";
 import type { Feature } from "./features.ts";
-import { inProject, PROJECT_ARCHIVED, Projects, requirePreview, wireRuleTokens } from "./projects.ts";
+import { inProject, PROJECT_ARCHIVED, Projects, wireRuleTokens } from "./projects.ts";
 
 export type ProjectRulesDoc = { projects: Record<string, { rules: ProjectRule[]; next: number }> };
 
@@ -57,7 +57,6 @@ async function checkProject(tx: Tx, projectId: string): Promise<void> {
  * (changes.ts).
  */
 export async function addRule(tx: Tx, projectId: string, given: { text: unknown; binds: unknown; addedBy: ProjectRule["addedBy"] }): Promise<ProjectRule> {
-	requirePreview();
 	const text = ruleText(given.text);
 	const binds = ruleBinding(given.binds);
 	await checkProject(tx, projectId);
@@ -178,7 +177,6 @@ export const projectRules: Feature = (_host, engine) => {
 	});
 	let sent = "";
 	const updateRule = (edit: (tx: Tx, projectId: string, id: string, params: Record<string, unknown>) => Promise<unknown>) => async (params: Record<string, unknown>) => {
-		requirePreview();
 		const projectId = projectIdOf(params.projectId);
 		const { id } = params;
 		if (typeof id !== "string") throw new Error("id must be a rule's id");
@@ -214,7 +212,6 @@ export const projectRules: Feature = (_host, engine) => {
 		greeting: () => [event()],
 		handlers: {
 			"projects.rules.add": async (params) => {
-				requirePreview();
 				const projectId = projectIdOf(params.projectId);
 				return engine.harness().commit(async (tx) => ({ id: (await addRule(tx, projectId, { text: params.text, binds: params.binds, addedBy: { kind: "person" } })).id }), engine.context());
 			},

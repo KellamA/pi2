@@ -84,13 +84,13 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, scheduleRunsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
+import { allProjects, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorConversation, orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
 import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend, type SpendDoc } from "./projectspend.ts";
 import { refusal, RequestError } from "./requesterror.ts";
-import { delegateTargets, projectAgentFolder, stampsAgents } from "./projectagents.ts";
+import { delegateTargets, projectAgentFolder } from "./projectagents.ts";
 import { syncWorkForInput } from "./work.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
@@ -303,8 +303,6 @@ const engine: Engine = {
 	saveSetting: (key, value) => {
 		(settings as Record<string, unknown>)[key] = value;
 		saveSettings();
-		// The preview switched: a conversation carried over runs as another agent now (state.ts, `runsAs`).
-		if (key === "projects") runsAsChanged();
 	},
 	saveAgent: (input, options) => saveAgent(input, options),
 	busy: (id) => working.has(id),
@@ -505,7 +503,10 @@ const settings: {
 	lookModel?: ModelRef | null;
 	/** The model last chosen in a chat, apart from `defaultModel`, the agent view's. */
 	lastChatModel?: ModelRef;
-	/** The projects preview switch (projects.ts); read through `projectsOn()`. Absent means off. */
+	/**
+	 * The projects preview switch of the versions before #483 took it out. Read by nothing now; written `true` once by
+	 * the update's carrying over (carryover.ts), so the last version with the switch shows projects if someone goes back.
+	 */
 	projects?: { preview: boolean };
 	/** Keeping this Mac awake while agents work (keepawake.ts); read through `awakeSettings`. Absent means on, and not on battery. */
 	awake?: { keep: boolean; battery: boolean };
@@ -559,7 +560,7 @@ async function syncTools(conv: Conversation): Promise<void> {
 	const meta = library.conversations[String(id)];
 	const own = agentOf(meta, agents);
 	if (meta === undefined) return;
-	// An agent that was deleted or removed keeps its setup, except work, which follows the project and preview.
+	// An agent that was deleted or removed keeps its setup, except work, which follows the project.
 	if (own === undefined && !isChat(meta)) {
 		if (meta.projectId !== undefined) await harness.commit((tx) => syncWorkForInput(tx, conv.id, meta), context);
 		return;
@@ -686,8 +687,8 @@ async function saveAgent(given: Partial<AgentProfile> | undefined, options: Agen
 				...options.marks,
 			}),
 		);
-		// When it was last saved: not while the preview has never been on, when nothing new is written (projectagents.ts).
-		if (stampsAgents()) marks.updatedAt = Date.now();
+		// When it was last saved, for Update from template (3.3).
+		marks.updatedAt = Date.now();
 		doc.agents[id] = {
 			...agent,
 			commandRules: rules,
@@ -1067,7 +1068,7 @@ function libraryEvent() {
 			continuedIn: (meta.continuedIn ?? []).filter((other) => library.conversations[String(other)] !== undefined && !isDeleted(library.conversations[String(other)])),
 			// Allow everything as this conversation took it at its latest message; the app warns while it or its agent has it.
 			allowEverything: meta.allowEverything === true,
-			// The project it belongs to (projects.ts), whether the preview is on or not.
+			// The project it belongs to (projects.ts), archived or not.
 			projectId: meta.projectId ?? null,
 			// The agent it runs as now (state.ts, `runsAs`): its `agentId`, but for a conversation carried over.
 			runsAs: runsAs(meta, agents) ?? null,
@@ -1100,8 +1101,8 @@ function libraryEvent() {
 }
 
 /**
- * What the conversations carried over run as now, as one string. It changes without the library changing when the
- * preview is switched or a project's copy of an agent is removed or put back: the apps are then sent the library, and
+ * What the conversations carried over run as now, as one string. It changes without the library changing when a
+ * project's copy of an agent is removed or put back: the apps are then sent the library, and
  * Activity, again. Only a conversation with a `projectAgentId` can run as anything but its `agentId` (state.ts, `runsAs`).
  */
 const runsAsNow = () =>
@@ -1433,8 +1434,7 @@ async function createChat(given: unknown, client: Client): Promise<{ id: Convers
 
 /**
  * Continue with an Agent (#289, handover.ts): chat `chatId` as it stands, with its pictures and files, and what the
- * person typed, handed to an agent as a message from the person. With the projects preview off, a new conversation of
- * `agentId`, in `cwd` or the agent's own folder. With it on (#654), in project `projectId`: to its orchestrator, unless
+ * person typed, handed to an agent as a message from the person, in project `projectId` (#654): to its orchestrator, unless
  * `agentId` names another of its agents, in the orchestrator's present conversation (the project's one conversation with
  * it, made if it has none yet); to another agent, in a new conversation of that agent in the project. The chat is left as
  * it was; it links to the conversation, and a new conversation links back to it. The agent's access, approvals and
@@ -1449,18 +1449,14 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 	if (params.text !== undefined && typeof params.text !== "string") throw new Error("text must be text");
 	const typed = typeof params.text === "string" ? params.text.trim() : "";
 	const project = projectToContinueIn(params);
-	const agent = project === undefined ? agents[String(params.agentId ?? "")] : agents[String(params.agentId ?? project.orchestratorId)];
-	if (agent === undefined || agent.removedAt !== undefined) throw new Error(project === undefined ? "Choose one of your agents to continue with" : "Choose one of the project's agents to continue with");
-	if (project !== undefined && agent.projectId !== project.id) throw new Error(`${agent.name} is not an agent of ${project.name}`);
-	let cwd = agent.cwd;
-	if (params.cwd !== undefined && params.cwd !== null) {
-		// A project's agents work in its folder (3.3).
-		if (project !== undefined) throw new Error("A project's agents work in its folder: leave cwd out");
-		cwd = text(params, "cwd");
-		if (!(existsSync(cwd) && statSync(cwd).isDirectory())) throw new Error(`Not a folder: ${cwd}`);
-	}
+	const agent = agents[String(params.agentId ?? project.orchestratorId)];
+	if (agent === undefined || agent.removedAt !== undefined) throw new Error("Choose one of the project's agents to continue with");
+	if (agent.projectId !== project.id) throw new Error(`${agent.name} is not an agent of ${project.name}`);
+	// A project's agents work in its folder (3.3).
+	if (params.cwd !== undefined && params.cwd !== null) throw new Error("A project's agents work in its folder: leave cwd out");
+	const cwd = agent.cwd;
 	const confirm = startConfirmation(params);
-	if (agent.projectId !== undefined) refuseStartWith(agent);
+	refuseStartWith(agent);
 	if (busyConversations.has(chatId)) throw new Error("The chat is still answering. Wait for it to finish, or stop it, then continue with an agent.");
 	if (overBudget()) throw new Error(`Today's budget of $${settings.dailyBudget!.toFixed(2)} is used up. Raise it in Usage to carry on.`);
 
@@ -1475,10 +1471,8 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 	}
 	if (!entries.some((entry) => (entry.model?.[0] as { role?: string } | undefined)?.role === "user")) throw new Error("This chat has nothing in it yet to continue from");
 
-	if (project !== undefined && agent.id === project.orchestratorId) return { id: await handOverToOrchestrator(project.id, agent, chatId, meta!.title, entries, typed) };
+	if (agent.id === project.orchestratorId) return { id: await handOverToOrchestrator(project.id, agent, chatId, meta!.title, entries, typed) };
 	const change = { ...(await agentChange(agent, { subChat: false })), cwd };
-	// A template's conversation goes into its folder's project as it is made (9.9): that project's limits hold (8.3).
-	const carriedInto = await carriedProjectFor(agent, cwd);
 	const model = change.model == null ? undefined : providers.models.getModel(change.model.provider, change.model.modelId);
 	const handover = chatHandover(entries, { title: meta!.title, agent: agent.name, typed: typed !== "", seesPictures: model === undefined || model.input.includes("image") });
 	const attachments = handoverAttachments(handover);
@@ -1489,7 +1483,7 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 			ownership: { kind: "ownerless" },
 			agent: change,
 			init: async (tx, id) => {
-				if (agent.projectId !== undefined || carriedInto !== undefined) note = await checkPersonStart(tx, agent, change.model, confirm, { from: chatId, version: shown.id, through: entries.at(-1)?.id ?? null, cwd }, typed, carriedInto);
+				note = await checkPersonStart(tx, agent, change.model, confirm, { from: chatId, version: shown.id, through: entries.at(-1)?.id ?? null, cwd }, typed);
 				const conversations = (await tx.doc(Library)).conversations;
 				conversations[String(id)] = { title: meta!.title || "From a chat", createdAt: now, updatedAt: now, access: agent.access, agentId: agent.id, continuedFrom: chatId, ...projectFrom(agent) };
 				const chat = conversations[String(chatId)];
@@ -1511,15 +1505,10 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 }
 
 /**
- * The project a chat is continued in (#654): with the preview on, `projectId`, or the project of `agentId` when that
- * names one of a project's agents; a template is refused, since a project's agents are what a chat goes to now. With
- * the preview off, none, and `projectId` is refused, as every request new in the epic is.
+ * The project a chat is continued in (#654): `projectId`, or the project of `agentId` when that names one of a project's
+ * agents; a template is refused, since a project's agents are what a chat goes to.
  */
-function projectToContinueIn(params: Params): Project | undefined {
-	if (!projectsOn()) {
-		if (params.projectId !== undefined && params.projectId !== null) requirePreview();
-		return undefined;
-	}
+function projectToContinueIn(params: Params): Project {
 	const id = params.projectId ?? agents[String(params.agentId ?? "")]?.projectId;
 	if (id === undefined || id === null) throw new Error("Choose a project to continue in");
 	if (typeof id !== "string") throw new Error("projectId must be a project's id");
@@ -1585,7 +1574,6 @@ const text = (params: Params, key: string): string => {
 };
 
 function startConfirmation(params: Params): string | undefined {
-	if (params.confirmLimit !== undefined) requirePreview();
 	return confirmLimit(params.confirmLimit);
 }
 
@@ -1731,7 +1719,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
-		// A fork of a conversation in no project goes into its folder's project with the preview on (9.9), as one made is.
+		// A fork of a conversation in no project goes into its folder's project (9.9), as one made is.
 		for (const feature of host.features) await feature.made?.(fork.id as unknown as number);
 		return { id: fork.id };
 	},
@@ -1936,10 +1924,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const clip = (value: string) => (value.length > 4000 ? `${value.slice(0, 4000)}\n… (${value.length - 4000} more characters)` : value);
 		const results = new Map(items.flatMap((item) => (item.kind === "tool" ? [[item.callId, item] as const] : [])));
 		// The changes made in this conversation (3.12), for each call's line; a change the person allowed has no
-		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9). With the
-		// preview off an export is exactly as it was (10.2), so it says none of this.
-		const changes = new Map(projectsOn() ? linesOf(conv.id).map((line) => [line.id, line]) : []);
-		const waiting = new Map(projectsOn() ? storedNeeds().map((need) => [need.id, need]) : []);
+		// call of its own, so its line rides on the request that asked for it. The needs still waiting (3.9).
+		const changes = new Map(linesOf(conv.id).map((line) => [line.id, line]));
+		const waiting = new Map(storedNeeds().map((need) => [need.id, need]));
 		/** A call's change, as one quiet line: its summary, and that it was undone (3.12). */
 		const changeLine = (id: unknown): string | null => {
 			if (typeof id !== "number") return null;
@@ -1983,19 +1970,16 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 					if ((result?.details as { allowedByEverything?: unknown } | null)?.allowedByEverything === true) lines.push("*Allowed by Allow everything.*", "");
 					lines.push(`${fence}json`, JSON.stringify(call.arguments, null, 2), fence, "");
 					if (result !== undefined) lines.push(result.isError ? "Result (error):" : "Result:", "", fence, clip(result.text), fence, "");
-					// The quiet line for what the call changed, and the one line for what it asked (3.12, 7.2) — none of it with
-					// the preview off, so an export is exactly as it was (10.2).
-					if (projectsOn()) {
-						const details = (result?.details ?? null) as { change?: unknown; need?: unknown } | null;
-						const changed = changeLine(details?.change);
-						if (changed !== null) lines.push(`*${changed}*`, "");
-						const asked = needLine(details?.need);
-						if (asked !== null) lines.push(`*${asked}*`, "");
-						// What allowing the request made, when it made something: its line, with its Undo's mark.
-						if (typeof details?.need === "string") {
-							const allowed = allowedLine(details.need);
-							if (allowed !== null) lines.push(`*${allowed}*`, "");
-						}
+					// The quiet line for what the call changed, and the one line for what it asked (3.12, 7.2).
+					const details = (result?.details ?? null) as { change?: unknown; need?: unknown } | null;
+					const changed = changeLine(details?.change);
+					if (changed !== null) lines.push(`*${changed}*`, "");
+					const asked = needLine(details?.need);
+					if (asked !== null) lines.push(`*${asked}*`, "");
+					// What allowing the request made, when it made something: its line, with its Undo's mark.
+					if (typeof details?.need === "string") {
+						const allowed = allowedLine(details.need);
+						if (allowed !== null) lines.push(`*${allowed}*`, "");
 					}
 				}
 			}
@@ -2274,8 +2258,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	"agents.delete": async (params) => {
 		const id = text(params, "id");
 		if (agents[id] === undefined) throw new Error(`Unknown agent: ${id}`);
-		// At least one agent of no project: the one a conversation starts with when none is named, and what the agents' list
-		// shows with the preview off. Before projects, every agent was one.
+		// At least one agent of no project: the one a conversation starts with when none is named, and a template to copy
+		// into a project.
 		if (agents[id].projectId === undefined && Object.values(agents).filter((agent) => agent.projectId === undefined).length === 1) throw new Error("Keep at least one agent");
 		// A project always has its orchestrator (docs/projects.md, 3.3).
 		if (agents[id].role === "orchestrator") throw new Error(`${agents[id].name} is the project's orchestrator. Make another agent the orchestrator first.`);

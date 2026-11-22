@@ -3,14 +3,13 @@
 // Per agent and off by default. The person approves every new schedule, and there is no "always allow": a schedule
 // runs later with no one watching, so each one is a decision of its own. The agent can list its schedules and cancel
 // the ones it set, never the person's, and it never schedules another agent. The schedules themselves are the same rows
-// the person makes in Activity (schedules.ts), marked with `createdBy`; main.ts watches them and runs them.
+// the person makes on a project's Settings tab (schedules.ts), marked with `createdBy`; main.ts watches them and runs them.
 // See docs/schedules.md.
 
 import { type ConversationId, defineTool, section } from "@earendil-works/pi-durable";
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Feature } from "./features.ts";
 import { nextRun, type Repeat, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
-import { projectsOn } from "./projects.ts";
 import { type AgentProfile, scheduleRunsAs } from "./state.ts";
 
 export type ScheduleSettings = { enabled: boolean };
@@ -183,8 +182,8 @@ const forAgent = (schedule: Schedule, agentId: string, agents: Agents) => schedu
 /** Set by this agent, for this agent. One the person moved to another agent is theirs now. */
 const ownBy = (schedule: Schedule, agentId: string, agents: Agents) => forAgent(schedule, agentId, agents) && schedule.createdBy?.agentId === schedule.agentId;
 const counted = (schedules: Record<string, Schedule>, agentId: string, agents: Agents) => Object.values(schedules).filter((s) => ownBy(s, agentId, agents) && !finished(s)).length;
-/** Where the person turns a schedule of this agent off or deletes it. */
-const placeFor = (agent: AgentProfile) => (projectsOn() && agent.projectId !== undefined ? "on the project's Settings tab" : "in Activity");
+/** Where the person turns a schedule off or deletes it: the Schedules section of a project's Settings tab (#483). */
+const PLACE = "on the project's Settings tab";
 
 /** The prompt section: how to use the tools, and the date and time zone, so "tomorrow at 9" can be worked out. */
 export function describeScheduling(now = Date.now()): string {
@@ -202,7 +201,7 @@ export function describeScheduling(now = Date.now()): string {
 const text = (value: string) => [{ type: "text" as const, text: value }];
 const fail = (message: string) => ({ output: text(message), isError: true });
 
-const OFF = "Scheduling is turned off for this agent. The person can turn it on in the agent's settings, or set a schedule themselves in Activity.";
+const OFF = `Scheduling is turned off for this agent. The person can turn it on in the agent's settings, or set a schedule themselves ${PLACE}.`;
 const DECLINED = "The person declined this schedule, so nothing was scheduled. Do not ask for it again unless they bring it up.";
 const FULL = `You already have ${MAX_AGENT_SCHEDULES} schedules that you set, the most there can be. Cancel one that is no longer needed (list_schedules shows them), then try again.`;
 
@@ -369,7 +368,7 @@ export const selfSchedule: Feature = (host, engine) => {
 			}, context);
 			if ("missing" in result) return fail(`There is no schedule ${id} of yours. list_schedules shows your schedules and their ids.`);
 			if ("theirs" in result) {
-				return fail(`“${result.theirs}” was set by the person, not by you, so you cannot cancel it. If it should stop, tell the person: they can turn it off or delete it ${placeFor(agent)}.`);
+				return fail(`“${result.theirs}” was set by the person, not by you, so you cannot cancel it. If it should stop, tell the person: they can turn it off or delete it ${PLACE}.`);
 			}
 			return { output: text(`Cancelled “${result.title}” (${id}). It will not run again.`), details: { id, title: result.title } };
 		},

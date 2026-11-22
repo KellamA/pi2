@@ -10,7 +10,7 @@ import { isAbsolute, resolve } from "node:path";
 import { isPutAway } from "./archive.ts";
 import { giveWorktree, startedWords, titleOf } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
-import { addNews, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
+import { addNews, allProjects, inProject, type LimitReading, type Project, PROJECT_ARCHIVED, Projects, requireSwitch, type Start, type SwitchName, type Who } from "./projects.ts";
 import { admit, limitError, limitRefusal, rememberReading } from "./projectlimits.ts";
 import { onLimitAssignment } from "./projectlimitstarts.ts";
 import { recordWorkChange } from "./changes.ts";
@@ -529,7 +529,6 @@ export function actedAnswer(action: Exclude<WorkAction, "assign">, item: WorkIte
  * was asked about still the one that holds. Answers the project and the agents as stored.
  */
 export async function checkWriterIn(tx: Tx, projectId: string, by: Who, action: WorkAction, confirmedSwitch: SwitchName | undefined, onGithub: boolean): Promise<{ project: Project; agents: Record<string, AgentProfile> }> {
-	requirePreview();
 	const current = liveProject((await tx.doc(Projects)).projects[projectId], projectId, true);
 	if ((current.repository !== null) !== onGithub) throw new Error("The project's work list changed. Look at it again.");
 	const meta = by.kind === "agent" ? (await tx.doc(Library)).conversations[String(by.conversationId)] : undefined;
@@ -553,7 +552,7 @@ function offersWork(project: Project | undefined, id?: number): boolean {
 /** Wakes admit their own input, without main.ts's syncTools. Refresh just work at that same boundary. */
 export async function syncWorkForInput(tx: Tx, id: ConversationId, meta: Meta | undefined): Promise<void> {
 	if (meta?.projectId === undefined) return;
-	const offered = projectsOn() && offersWork((await tx.doc(Projects)).projects[meta.projectId], id as number);
+	const offered = offersWork((await tx.doc(Projects)).projects[meta.projectId], id as number);
 	const stored = await tx.doc(AgentDoc, id);
 	if (!Array.isArray(stored.tools) || stored.tools.includes("work") === offered) return;
 	stored.tools = offered ? [...stored.tools, "work"] : stored.tools.filter((name) => name !== "work");
@@ -966,7 +965,6 @@ export const work: Feature = (host, engine) => {
 				if (receipt?.call === api.callId && receipt.text !== undefined) return { output: toolText(receipt.text), ...(receipt.change === undefined ? {} : { details: { change: receipt.change } }) };
 				let item = receipt?.call === api.callId ? receipt.item : null;
 				if (item === null) {
-					requirePreview();
 					if (project === undefined || agentId === undefined || project.earlier.includes(number) || isPutAway(meta)) throw new Error("Use work from a current conversation in this project.");
 					// A long text from a file, read before anything else sees `text` (#662); a path given as `text` is refused.
 					await readTextFile(args as Record<string, unknown>, () => rootOf(api, host.scratchFolder(), context), () => conversationScratch(api.conversationId));
@@ -1030,7 +1028,7 @@ export const work: Feature = (host, engine) => {
 			}
 			// A new sub-chat uses its parent's project (including no project), never its target's profile.
 			const id = where.projectId === undefined ? agent?.projectId : where.projectId;
-			if (!projectsOn() || id == null) return [];
+			if (id == null) return [];
 			return offersWork(allProjects()[id]) ? ["work"] : [];
 		},
 		start: async () => {
@@ -1047,18 +1045,15 @@ export const work: Feature = (host, engine) => {
 		greeting: () => [event()],
 		handlers: {
 			"work.list": async (params) => {
-				requirePreview();
 				const project = getProject(projectId(params.projectId));
 				const items = await backendFor(engine, project).list(project, { states: filtered(params.states) });
 				return { items, readAt: project.repository === null || github === undefined ? null : github.readAt(project) };
 			},
 			"work.create": async ({ projectId: id, title, text, class: modelClass }) => {
-				requirePreview();
 				const item = await mutate(getProject(projectId(id), true), whoPerson, "file", null, { title, text, class: modelClass });
 				return { id: item.id };
 			},
 			"work.act": async ({ projectId: project, id, action: given, text, title, class: modelClass, agentId, task, as, confirmLimit, worktree, from }) => {
-				requirePreview();
 				const action = actionOf(given);
 				if (action === "file") throw new Error("Use work.create to file work.");
 				let note: string | undefined;
