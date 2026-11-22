@@ -10,12 +10,17 @@
 // line about ignoring anything. The release engine offers the demo model alone and as it ships, counts its spend as
 // free, makes a backup at once with the gate's file there, touches no gate, and names in one line, once, every switch
 // it was given. And in the sources: every test switch named in src is on the list, and none is read but through it.
+//
+// The stand-ins and tunings only tests set (#743) are given too, each its usual value or a stand-in nothing here reaches
+// (their own tests show a development engine honours them); the release engine names them with the rest. It is told
+// not to keep the Mac awake before it answers, since it ignores the stand-in for caffeinate that patience.ts names.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CATALOG, KEEP_FREE_BYTES } from "../src/localcatalog.ts";
 import { ignoredLine, TEST_SWITCHES } from "../src/testswitches.ts";
 import { EngineClient, standInApp, stop, until } from "./patience.ts";
 
@@ -41,7 +46,7 @@ function step(name: string): void {
 
 // ---- The sources: every test switch is on the list, and read only through testSwitch
 
-const TEST_ONLY = /^(PI2_[A-Z0-9_]*_GATE|PI2_DEMO_[A-Z0-9_]+|PI2_CARRY_NEVER|PI2_TEST_COPY)$/;
+const TEST_ONLY = /^(PI2_[A-Z0-9_]*_GATE|PI2_DEMO_[A-Z0-9_]+|PI2_CARRY_NEVER|PI2_TEST_[A-Z0-9_]+|PI2_LIMITS_[A-Z0-9]+_URL)$/;
 for (const file of readdirSync(source).filter((name) => name.endsWith(".ts") && name !== "testswitches.ts")) {
 	const text = readFileSync(join(source, file), "utf8");
 	for (const [name] of text.matchAll(/\bPI2_[A-Z0-9_]+\b/g)) {
@@ -65,7 +70,34 @@ const SWITCHES: Record<string, string> = {
 	PI2_DEMO_TEXT_MODEL: "1",
 	PI2_DEMO_TOKENS_PER_SECOND: "100000",
 	PI2_TEST_COPY: "test-switches",
+	// The stand-ins: addresses nothing here asks (no provider is signed in, no page fetched), the stand-in for caffeinate
+	// that patience.ts names, and the catalog as it ships.
+	PI2_TEST_ALLOW_ADDRESS: "127.0.0.1:9",
+	PI2_LIMITS_ANTHROPIC_URL: "http://127.0.0.1:9/usage",
+	PI2_LIMITS_CODEX_URL: "http://127.0.0.1:9/usage",
+	PI2_LIMITS_KIMI_URL: "http://127.0.0.1:9/usage",
+	PI2_AWAKE_PROGRAM: process.env.PI2_AWAKE_PROGRAM!,
+	PI2_AWAKE_POWER: "ac",
+	PI2_LOCAL_CATALOG: join(work, "catalog.json"),
+	// The tunings, at their usual values.
+	PI2_AWAKE_GRACE_MS: "60000",
+	PI2_AWAKE_POLL_MS: "30000",
+	PI2_COMMAND_TIMEOUT_SECONDS: "120",
+	PI2_OUTPUT_WAIT_SECONDS: "30",
+	PI2_LIMITS_MIN_INTERVAL_MS: "60000",
+	PI2_LIMIT_BACKOFF_MS: "15000",
+	PI2_LIMIT_WAIT_MAX_MS: "21600000",
+	PI2_LIMIT_REMEMBER_MS: "60000",
+	PI2_LIMIT_REACHED_MS: "300000",
+	PI2_LOCAL_STALL_MS: "60000",
+	PI2_LOCAL_RETRY_MS: "2000",
+	PI2_LOCAL_RETRIES: "8",
+	PI2_LOCAL_KEEP_FREE: String(KEEP_FREE_BYTES),
+	PI2_LOCAL_MEMORY_GB: "64",
+	PI2_LOCAL_RUN_RETRY_MS: "2000",
+	PI2_WAKES_PER_HOUR: "30",
 };
+writeFileSync(SWITCHES.PI2_LOCAL_CATALOG!, JSON.stringify(CATALOG));
 assert.deepEqual(Object.keys(SWITCHES).sort(), [...TEST_SWITCHES].sort(), "this test gives every test switch");
 const armGates = () => {
 	for (const file of Object.values(gates)) {
@@ -169,6 +201,8 @@ async function start(name: string, main: string, extra: Record<string, string> =
 		mkdirSync(backups);
 		assert.ok(existsSync((await client.call("backup.create", { directory: backups })).path), "a backup made with PI2_BACKUP_GATE's file there");
 
+		// It ignores PI2_AWAKE_PROGRAM: without this, its answer would keep this Mac awake with the real caffeinate.
+		await client.call("settings.setAwake", { keep: false });
 		await client.answered("hello");
 		const usage = await client.until("the spend counted", () => client.events.usage?.total.tokens > 0 && client.events.usage);
 		assert.equal(usage.total.cost, 0, "the demo model is free, PI2_DEMO_COST or not");
