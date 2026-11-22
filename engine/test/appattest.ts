@@ -72,18 +72,26 @@ function expectationsOf(sample: Sample): AppAttestExpected {
 
 /** The reason `attestation` is refused for, or null if it passes. */
 async function outcome(attestation: Uint8Array, expected: AppAttestExpected): Promise<AppAttestReason | null> {
+	return (await failure(attestation, expected))?.reason ?? null;
+}
+
+/** The refusal, or null if it passes; anything but an AppAttestError fails the test. */
+async function failure(attestation: Uint8Array, expected: AppAttestExpected): Promise<AppAttestError | null> {
 	try {
 		await verifyAttestation(attestation, expected);
 		return null;
 	} catch (error) {
-		if (error instanceof AppAttestError) return error.reason;
+		if (error instanceof AppAttestError) return error;
 		throw error;
 	}
 }
 
-async function refused(attestation: Uint8Array, expected: AppAttestExpected, reason: AppAttestReason, what: string): Promise<void> {
-	assert.equal(await outcome(attestation, expected), reason, what);
-	step(`${what}: refused (${reason})`);
+/** Refused for `reason`, and, where given, with a message that matches `message`: `malformed` covers many checks. */
+async function refused(attestation: Uint8Array, expected: AppAttestExpected, reason: AppAttestReason, what: string, message?: RegExp): Promise<void> {
+	const error = await failure(attestation, expected);
+	assert.equal(error?.reason, reason, what);
+	if (message !== undefined) assert.match(error.message, message, what);
+	step(`${what}: refused (${reason}${message === undefined ? "" : `: ${error.message}`})`);
 }
 
 // CBOR, to build attestations again with one thing changed: shortest heads, entries in the order given.
@@ -203,18 +211,24 @@ function integer(bytes: Uint8Array): Uint8Array {
 const NONCE_OID = Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x08, 0x02);
 
 /** `certificate` with its key and, for a leaf, its nonce replaced, signed again by `signer` with its own algorithm. */
-async function reissue(certificate: Uint8Array, spki: Uint8Array, signer: CryptoKey, nonce?: Uint8Array): Promise<Uint8Array> {
+async function reissue(
+	certificate: Uint8Array,
+	spki: Uint8Array,
+	signer: CryptoKey,
+	nonce?: Uint8Array,
+	/** Changes the extensions, each whole, by the hex of its OID's content. */
+	change?: (oid: string, extension: Uint8Array) => Uint8Array,
+): Promise<Uint8Array> {
 	const [tbs, algorithm] = inside(certificate);
 	const fields = inside(tbs);
-	if (nonce !== undefined) {
-		const list = inside(inside(fields[7])[0]);
-		const replaced = list.map((extension) =>
-			hex(inside(extension)[0]).includes(hex(NONCE_OID))
-				? der(0x30, der(0x06, NONCE_OID), der(0x04, der(0x30, der(0xa1, der(0x04, nonce)))))
-				: extension,
-		);
-		fields[7] = der(0xa3, der(0x30, ...replaced));
-	}
+	const list = inside(inside(fields[7])[0]).map((extension) => {
+		const oid = hex(inside(extension)[0]).slice(4);
+		if (nonce !== undefined && oid === hex(NONCE_OID)) {
+			return der(0x30, der(0x06, NONCE_OID), der(0x04, der(0x30, der(0xa1, der(0x04, nonce)))));
+		}
+		return change === undefined ? extension : change(oid, extension);
+	});
+	fields[7] = der(0xa3, der(0x30, ...list));
 	fields[6] = spki;
 	const newTbs = der(0x30, ...fields);
 	// ecdsa-with-SHA384 ends 04 03 03, ecdsa-with-SHA256 04 03 02.
@@ -287,13 +301,40 @@ async function main(): Promise<void> {
 	await refused(attestation, { ...expected, keyId: otherKey }, "key-id", "another key id");
 	await refused(attestation, { ...expected, clientDataHash: utf8("example_server_challengf") }, "nonce", "other client data");
 	await refused(attestation, { ...expected, clientDataHash: sha256(sample.clientDataHash) }, "nonce", "the client data's SHA-256 in place of what was attested");
-	await refused(attestation, { ...expected, now: from - 1000 }, "not-yet-valid", "a second before the leaf is valid");
-	await refused(attestation, { ...expected, now: until + 1000 }, "expired", "a second after the leaf expires");
-	await refused(attestation, { ...expected, now: undefined }, "expired", "now, long after the leaf expired");
+	await refused(attestation, { ...expected, now: from - 1000 }, "not-yet-valid", "a second before the leaf is valid", /^The attestation's leaf certificate is not valid yet/);
+	await refused(attestation, { ...expected, now: until + 1000 }, "expired", "a second after the leaf expires", /^The attestation's leaf certificate has expired/);
+	await refused(attestation, { ...expected, now: undefined }, "expired", "now, long after the leaf expired", /^The attestation's leaf certificate has expired/);
 	await refused(attestation, { ...expected, teamId: "abcdefghij" }, "options", "a team id that is not one");
 	await refused(attestation, { ...expected, keyId: new Uint8Array(31) }, "options", "a key id of 31 bytes");
 	await refused(attestation, { ...expected, clientDataHash: new Uint8Array(0) }, "options", "empty client data");
 	await refused(attestation, { ...expected, environments: [] }, "options", "no environment taken");
+	await refused(attestation, { ...expected, now: Number.NaN }, "options", "a time that is not a number", /time is not a time/);
+	await refused(attestation, { ...expected, now: Number.POSITIVE_INFINITY }, "options", "an infinite time", /time is not a time/);
+	const keyIdAsList = Array.from(base64(sample.keyId)) as unknown as Uint8Array;
+	await refused(attestation, { ...expected, keyId: keyIdAsList }, "options", "the key id as a list of numbers", /key id is not 32 bytes/);
+	await refused(attestation, { ...expected, keyId: "x".repeat(32) as unknown as Uint8Array }, "options", "the key id as 32 characters of text", /key id is not 32 bytes/);
+	await refused(attestation, { ...expected, clientDataHash: sample.clientDataHash as unknown as Uint8Array }, "options", "the client data as text", /client data hash is not bytes/);
+	await refused(sample.attestation as unknown as Uint8Array, expected, "malformed", "the attestation as base64 text", /attestation is not bytes/);
+	// The dates' refusals say which certificate, and which way: Apple's intermediate is valid until March 2030, its root
+	// from March 2020.
+	await refused(attestation, { ...expected, now: Date.UTC(2031, 0, 1) }, "expired", "in 2031, after the intermediate", /^The attestation's intermediate certificate has expired/);
+	await refused(attestation, { ...expected, now: Date.UTC(2019, 0, 1) }, "not-yet-valid", "in 2019, before the root", /^Apple's App Attest root is not valid yet/);
+
+	// The caller's buffers changed while the check waits on Web Crypto change nothing: it reads its own copies.
+	for (const passes of [true, false]) {
+		const given = { attestation: attestation.slice(), keyId: base64(sample.keyId), clientDataHash: utf8(sample.clientDataHash) };
+		if (!passes) given.clientDataHash[0] ^= 1;
+		const pending = failure(given.attestation, { ...expected, keyId: given.keyId, clientDataHash: given.clientDataHash });
+		if (passes) {
+			given.attestation.fill(0);
+			given.keyId.fill(0);
+			given.clientDataHash.fill(0);
+		} else {
+			given.clientDataHash[0] ^= 1;
+		}
+		assert.equal((await pending)?.reason ?? null, passes ? null : "nonce");
+	}
+	step("the caller's buffers changed during the check: a good attestation still passes, a bad one is still refused");
 
 	// The authenticator data altered. The field checks come before the nonce, so each fails at its own.
 	const altered = (offset: number, bytes: number[]) => {
@@ -308,38 +349,38 @@ async function main(): Promise<void> {
 	await refused(altered(37, development), expected, "environment", "a development aaguid where production is taken");
 	await refused(altered(37, development), { ...expected, environments: ["development"] }, "nonce", "a development aaguid taken, but not the one attested");
 	await refused(altered(37, [...utf8("appattest"), 0, 0, 0, 0, 0, 0, 1]), { ...expected, environments: ["production", "development"] }, "environment", "an aaguid of neither environment");
-	await refused(altered(55, [parts.authData[55] ^ 1]), { ...expected }, "key-id", "the credential id changed");
-	await refused(altered(97, [parts.authData[97] ^ 1]), expected, "key-id", "the COSE key's x changed");
+	await refused(altered(55, [parts.authData[55] ^ 1]), { ...expected }, "key-id", "the credential id changed", /for another key than the one named/);
+	await refused(altered(97, [parts.authData[97] ^ 1]), expected, "key-id", "the COSE key's x changed", /carries another key than the certificate/);
 	await refused(altered(32, [0x41]), expected, "nonce", "a flag added");
-	await refused(altered(32, [0x00]), expected, "malformed", "the attested-data flag taken away");
-	await refused(altered(53, [0, 31]), expected, "malformed", "a credential id length of 31");
+	await refused(altered(32, [0x00]), expected, "malformed", "the attested-data flag taken away", /holds no attested key/);
+	await refused(altered(53, [0, 31]), expected, "malformed", "a credential id length of 31", /credential id is not 32 bytes/);
 	const version = parts.authData.indexOf(0x61, parts.authData.length - 40);
 	assert.equal(parts.authData[version + 1], 0x31, "the bundle version is where the test thinks");
 	await refused(altered(version + 1, [0x32]), expected, "nonce", "the bundle version changed");
 	await refused(attestationOf({ ...parts, authData: parts.authData.slice(0, 164) }), expected, "nonce", "the extensions taken out");
-	await refused(attestationOf({ ...parts, authData: concat(parts.authData, Uint8Array.of(0)) }), expected, "malformed", "a byte after the extensions");
-	await refused(attestationOf({ ...parts, authData: concat(parts.authData.slice(0, 164), cbor(map(["apple_validation_category_01", 1]))) }), expected, "malformed", "a validation category that is not four bytes");
-	await refused(attestationOf({ ...parts, authData: concat(parts.authData.slice(0, 87), cbor(map([1, 2], [3, -7], [-1, 2], [-2, parts.authData.slice(97, 129)], [-3, parts.authData.slice(132, 164)])), parts.authData.slice(164)) }), expected, "malformed", "a COSE key on another curve");
+	await refused(attestationOf({ ...parts, authData: concat(parts.authData, Uint8Array.of(0)) }), expected, "malformed", "a byte after the extensions", /Something follows the authenticator data's extensions/);
+	await refused(attestationOf({ ...parts, authData: concat(parts.authData.slice(0, 164), cbor(map(["apple_validation_category_01", 1]))) }), expected, "malformed", "a validation category that is not four bytes", /validation category is not four bytes/);
+	await refused(attestationOf({ ...parts, authData: concat(parts.authData.slice(0, 87), cbor(map([1, 2], [3, -7], [-1, 2], [-2, parts.authData.slice(97, 129)], [-3, parts.authData.slice(132, 164)])), parts.authData.slice(164)) }), expected, "malformed", "a COSE key on another curve", /key is not a P-256 key/);
 
 	// The attestation's structure altered.
 	const [leaf, intermediate] = parts.x5c;
-	await refused(attestationOf({ ...parts, fmt: "packed" }), expected, "malformed", "another format");
-	await refused(attestationOf({ ...parts, x5c: [leaf] }), expected, "malformed", "the leaf alone");
-	await refused(attestationOf({ ...parts, x5c: [leaf, intermediate, rootDer] }), expected, "malformed", "the root added");
-	await refused(attestationOf({ ...parts, x5c: [intermediate, leaf] }), expected, "root", "the two certificates swapped");
-	await refused(attestationOf({ ...parts, x5c: [leaf, leaf] }), expected, "root", "the leaf twice");
-	await refused(attestationOf({ ...parts, x5c: [leaf, rootDer] }), expected, "chain", "the root in the intermediate's place");
-	await refused(attestationOf({ ...parts, receipt: new Uint8Array(0) }), expected, "malformed", "an empty receipt");
-	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c])], ["authData", parts.authData])), expected, "malformed", "no receipt");
-	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["authData", parts.authData], ["more", 1])), expected, "malformed", "a key added");
-	await refused(cbor(map(["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["fmt", "apple-appattest"], ["authData", parts.authData])), expected, "malformed", "keys out of order");
-	await refused(cbor(map(["fmt", "apple-appattest"], ["fmt", "apple-appattest"], ["authData", parts.authData])), expected, "malformed", "a key twice");
-	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["authData", "text"])), expected, "malformed", "authData as text");
-	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["authData", { raw: concat(Uint8Array.of(0x5a, 0, 0, 0, parts.authData.length), parts.authData) }])), expected, "malformed", "a length in a longer head than it needs");
-	await refused(concat(Uint8Array.of(0xd8, 0x18), attestation), expected, "malformed", "the attestation in a tag");
-	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", { raw: concat(Uint8Array.of(0x9f), cbor(leaf), cbor(intermediate), Uint8Array.of(0xff)) }], ["receipt", parts.receipt])], ["authData", parts.authData])), expected, "malformed", "an array of indefinite length");
-	await refused(concat(attestation, Uint8Array.of(0)), expected, "malformed", "a byte after the attestation");
-	await refused(concat(attestation, new Uint8Array(32 * 1024)), expected, "malformed", "an attestation larger than App Attest makes");
+	await refused(attestationOf({ ...parts, fmt: "packed" }), expected, "malformed", "another format", /not in App Attest's format/);
+	await refused(attestationOf({ ...parts, x5c: [leaf] }), expected, "malformed", "the leaf alone", /does not hold exactly two certificates/);
+	await refused(attestationOf({ ...parts, x5c: [leaf, intermediate, rootDer] }), expected, "malformed", "the root added", /does not hold exactly two certificates/);
+	await refused(attestationOf({ ...parts, x5c: [intermediate, leaf] }), expected, "root", "the two certificates swapped", /intermediate certificate is not issued by Apple's App Attest root/);
+	await refused(attestationOf({ ...parts, x5c: [leaf, leaf] }), expected, "root", "the leaf twice", /intermediate certificate is not issued by Apple's App Attest root/);
+	await refused(attestationOf({ ...parts, x5c: [leaf, rootDer] }), expected, "chain", "the root in the intermediate's place", /leaf certificate is not issued by its intermediate/);
+	await refused(attestationOf({ ...parts, receipt: new Uint8Array(0) }), expected, "malformed", "an empty receipt", /receipt is missing/);
+	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c])], ["authData", parts.authData])), expected, "malformed", "no receipt", /not in App Attest's format/);
+	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["authData", parts.authData], ["z-after-all", 1])), expected, "malformed", "a key added, in order", /not in App Attest's format/);
+	await refused(cbor(map(["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["fmt", "apple-appattest"], ["authData", parts.authData])), expected, "malformed", "keys out of order", /map keys are out of order or repeated/);
+	await refused(cbor(map(["fmt", "apple-appattest"], ["fmt", "apple-appattest"], ["authData", parts.authData])), expected, "malformed", "a key twice", /map keys are out of order or repeated/);
+	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["authData", "text"])), expected, "malformed", "authData as text", /authenticator data is missing/);
+	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", parts.x5c], ["receipt", parts.receipt])], ["authData", { raw: concat(Uint8Array.of(0x5a, 0, 0, 0, parts.authData.length), parts.authData) }])), expected, "malformed", "a length in a longer head than it needs", /not in CBOR's shortest form/);
+	await refused(concat(Uint8Array.of(0xd8, 0x18), attestation), expected, "malformed", "the attestation in a tag", /CBOR tag or simple value/);
+	await refused(cbor(map(["fmt", "apple-appattest"], ["attStmt", map(["x5c", { raw: concat(Uint8Array.of(0x9f), cbor(leaf), cbor(intermediate), Uint8Array.of(0xff)) }], ["receipt", parts.receipt])], ["authData", parts.authData])), expected, "malformed", "an array of indefinite length", /CBOR length or value App Attest does not use/);
+	await refused(concat(attestation, Uint8Array.of(0)), expected, "malformed", "a byte after the attestation", /^Something follows the attestation\.$/);
+	await refused(concat(attestation, new Uint8Array(32 * 1024)), expected, "malformed", "an attestation larger than App Attest makes", /larger than App Attest makes/);
 
 	// The certificates' signatures altered.
 	const flipLast = (bytes: Uint8Array) => {
@@ -347,8 +388,8 @@ async function main(): Promise<void> {
 		copy[copy.length - 1] ^= 1;
 		return copy;
 	};
-	await refused(attestationOf({ ...parts, x5c: [flipLast(leaf), intermediate] }), expected, "chain", "the leaf's signature changed");
-	await refused(attestationOf({ ...parts, x5c: [leaf, flipLast(intermediate)] }), expected, "root", "the intermediate's signature changed");
+	await refused(attestationOf({ ...parts, x5c: [flipLast(leaf), intermediate] }), expected, "chain", "the leaf's signature changed", /leaf certificate is not signed by its intermediate/);
+	await refused(attestationOf({ ...parts, x5c: [leaf, flipLast(intermediate)] }), expected, "root", "the intermediate's signature changed", /intermediate certificate is not signed by Apple's App Attest root/);
 
 	// A whole chain forged, with Apple's names and dates, under a root of the test's own; the forgery is checked to be a
 	// well-made chain by Node's own X.509, so that the verifier's refusal is the pin's and nothing else's.
@@ -371,11 +412,29 @@ async function main(): Promise<void> {
 	assert.ok(nodeLeaf.checkIssued(nodeIntermediate), "the forged leaf names the forged intermediate");
 	assert.equal(nodeIntermediate.issuer, rootCertificate.subject, "the forged intermediate names Apple's root");
 	const forgedExpected = { ...expected, keyId: forgedKeyId };
-	await refused(attestationOf({ ...parts, x5c: [forgedLeaf, forgedIntermediate], authData: forgedAuthData }), forgedExpected, "root", "a whole chain forged under a root of the test's own, with Apple's names");
+	await refused(attestationOf({ ...parts, x5c: [forgedLeaf, forgedIntermediate], authData: forgedAuthData }), forgedExpected, "root", "a whole chain forged under a root of the test's own, with Apple's names", /not signed by Apple's App Attest root/);
 	const leafUnderApple = await reissue(leaf, await spkiOf(attested.publicKey), fakeIntermediate.privateKey, forgedNonce);
-	await refused(attestationOf({ ...parts, x5c: [leafUnderApple, intermediate], authData: forgedAuthData }), forgedExpected, "chain", "a leaf of the test's own under Apple's real intermediate");
+	await refused(attestationOf({ ...parts, x5c: [leafUnderApple, intermediate], authData: forgedAuthData }), forgedExpected, "chain", "a leaf of the test's own under Apple's real intermediate", /leaf certificate is not signed by its intermediate/);
 	// Apple's leaf, with the authenticator data of the test's own key: the leaf's key is not the one named.
-	await refused(attestationOf({ ...parts, authData: forgedAuthData }), forgedExpected, "key-id", "Apple's leaf with another key's authenticator data");
+	await refused(attestationOf({ ...parts, authData: forgedAuthData }), forgedExpected, "key-id", "Apple's leaf with another key's authenticator data", /attested key is not the key named/);
+
+	// Under the forged root, certificates of the wrong kind, which are refused before any signature is checked.
+	const extension = (oid: string, value: Uint8Array, critical: boolean) =>
+		der(0x30, der(0x06, Buffer.from(oid, "hex")), ...(critical ? [der(0x01, Uint8Array.of(0xff))] : []), der(0x04, value));
+	const forgedChain = async (changeIntermediate?: (oid: string, item: Uint8Array) => Uint8Array, changeLeaf?: (oid: string, item: Uint8Array) => Uint8Array) => {
+		const ca = await reissue(intermediate, await spkiOf(fakeIntermediate.publicKey), fakeRoot.privateKey, undefined, changeIntermediate);
+		const end = await reissue(leaf, await spkiOf(attested.publicKey), fakeIntermediate.privateKey, forgedNonce, changeLeaf);
+		return attestationOf({ ...parts, x5c: [end, ca], authData: forgedAuthData });
+	};
+	const notCa = (oid: string, item: Uint8Array) => (oid === "551d13" ? extension(oid, der(0x30), true) : item);
+	await refused(await forgedChain(notCa), forgedExpected, "chain", "an intermediate whose basic constraints say it is no authority", /intermediate certificate is not a certificate authority/);
+	const noCertSign = (oid: string, item: Uint8Array) => (oid === "551d0f" ? extension(oid, der(0x03, Uint8Array.of(0x07, 0x80)), true) : item);
+	await refused(await forgedChain(noCertSign), forgedExpected, "chain", "an intermediate whose key may not sign certificates", /intermediate certificate is not a certificate authority/);
+	const leafCa = (oid: string, item: Uint8Array) =>
+		oid === "551d13" ? extension(oid, der(0x30, der(0x01, Uint8Array.of(0xff))), true) : oid === "551d0f" ? extension(oid, der(0x03, Uint8Array.of(0x01, 0x06)), true) : item;
+	await refused(await forgedChain(undefined, leafCa), forgedExpected, "chain", "a leaf that is a certificate authority", /leaf certificate is a certificate authority/);
+	const criticalUsage = (oid: string, item: Uint8Array) => (oid === "551d25" ? extension(oid, inside(item).at(-1)!.slice(2), true) : item);
+	await refused(await forgedChain(undefined, criticalUsage), forgedExpected, "chain", "a leaf with a critical extension this check does not read", /critical extension this check does not read/);
 
 	// Fuzzing. Every truncation of the attestation.
 	for (let length = 0; length < attestation.length; length++) {
@@ -523,7 +582,11 @@ async function workersCompatible(): Promise<void> {
 	step("src/appattest.ts runs in a context of the Web globals alone with every import refused: the sample passes, an altered one is refused, and the harness catches a node: import and a Node global");
 }
 
-/** The globals the file may use: what Cloudflare Workers have, Web Crypto among them. JavaScript's own come with any context. */
+/**
+ * The globals the file may use: what Cloudflare Workers have, Web Crypto among them. JavaScript's own come with any
+ * context. These come from this process's realm, so the bytes `TextEncoder` gives are not the context's `Uint8Array`,
+ * which a Worker's are; the driver copies them into the context's own, as the verifier checks for its own.
+ */
 function workersGlobals() {
 	return { crypto: globalThis.crypto, atob, btoa, TextEncoder, TextDecoder, console };
 }
@@ -544,7 +607,7 @@ async function inAWorkersContext(): Promise<void> {
 					teamId: ${JSON.stringify(sample.teamId)},
 					bundleId: ${JSON.stringify(sample.bundleId)},
 					keyId: bytes(${JSON.stringify(sample.keyId)}),
-					clientDataHash: new TextEncoder().encode(${JSON.stringify(clientData)}),
+					clientDataHash: Uint8Array.from(new TextEncoder().encode(${JSON.stringify(clientData)})),
 					environments: [${JSON.stringify(sample.environment)}],
 					now: ${expectationsOf(sample).now},
 				});

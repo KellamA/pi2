@@ -17,6 +17,16 @@
 // heads, keys in order, no tags, floats or indefinite lengths), DER with minimal lengths, exactly two certificates (the
 // leaf and Apple's intermediate), and certificates of the one shape Apple issues. No third-party library: what is read
 // is small, and an attestation is the first thing a stranger can send the relay.
+//
+// Time: an attestation can be checked only while its leaf certificate is valid, and Apple makes the leaf valid from
+// about a day before the attestation until two days after (in Apple's sample, 24 hours before to 48 after). So an
+// attestation is checked when it arrives, once, never later; a verifier whose clock is more than a day off refuses it,
+// and the refusal says which certificate and which way, to tell a wrong clock from a stale attestation. A production
+// caller leaves `now` out; only a test gives it.
+//
+// Not made: Apple's macOS-only step, the aclBlob extension (1.2.840.113635.100.8.6) that says the Mac's key policy.
+// pi² for iPhone is not offered on Macs, and Apple turns App Attest off for an iOS app running on one, so an
+// attestation for pi² for iPhone's App ID comes from an iPhone or iPad (docs/iphone.md 3.3).
 
 export type AppAttestEnvironment = "production" | "development";
 
@@ -31,7 +41,11 @@ export type AppAttestExpected = {
 	clientDataHash: Uint8Array;
 	/** The App Attest environments taken: a release build's key is `production`, a debug build's `development`. */
 	environments: readonly AppAttestEnvironment[];
-	/** The time the certificates must be valid at, in milliseconds since 1970; now if left out. */
+	/**
+	 * The time the certificates must be valid at, in milliseconds since 1970; now if left out. A production caller leaves
+	 * it out: the leaf is valid only from about a day before the attestation was made until two days after, so the
+	 * attestation is checked as it arrives (see the head of this file).
+	 */
 	now?: number;
 };
 
@@ -125,6 +139,7 @@ const CURVE_SIZE: Record<Curve, number> = { "P-256": 32, "P-384": 48 };
  */
 export async function verifyAttestation(attestation: Uint8Array, expected: AppAttestExpected): Promise<AppAttestResult> {
 	const { appId, keyId, clientDataHash, environments, now } = readExpected(expected);
+	if (!(attestation instanceof Uint8Array)) refuse("malformed", "The attestation is not bytes.");
 	if (attestation.length > MAX_ATTESTATION) refuse("malformed", "The attestation is larger than App Attest makes.");
 	// A copy, so that nothing the caller changes while this waits on Web Crypto changes what was checked.
 	const object = readAttestationObject(new Uint8Array(attestation));
@@ -146,9 +161,15 @@ export async function verifyAttestation(attestation: Uint8Array, expected: AppAt
 	if (!same(auth.credentialId, keyId)) refuse("key-id", "The attestation is for another key than the one named.");
 
 	// Step 1: the leaf and Apple's intermediate, chained to the pinned root, each within its dates.
-	for (const certificate of [root, intermediate, leaf]) {
-		if (now < certificate.notBefore) refuse("not-yet-valid", "A certificate of the attestation is not valid yet.");
-		if (now > certificate.notAfter) refuse("expired", "A certificate of the attestation has expired.");
+	// Which certificate, and which way, so that a log tells a clock that is off from an attestation kept too long.
+	const dated: [Certificate, string][] = [
+		[root, "Apple's App Attest root"],
+		[intermediate, "The attestation's intermediate certificate"],
+		[leaf, "The attestation's leaf certificate"],
+	];
+	for (const [certificate, name] of dated) {
+		if (now < certificate.notBefore) refuse("not-yet-valid", `${name} is not valid yet: is this computer's clock right?`);
+		if (now > certificate.notAfter) refuse("expired", `${name} has expired: an attestation is checked as it arrives, or is this computer's clock wrong?`);
 	}
 	if (!same(intermediate.issuer, root.subject)) refuse("root", "The attestation's intermediate certificate is not issued by Apple's App Attest root.");
 	if (!isAuthority(intermediate)) refuse("chain", "The attestation's intermediate certificate is not a certificate authority.");
@@ -185,9 +206,11 @@ function readExpected(expected: AppAttestExpected) {
 	const { teamId, bundleId, environments } = expected;
 	if (typeof teamId !== "string" || !/^[A-Z0-9]{10}$/.test(teamId)) refuse("options", "The team id is not ten upper-case letters or digits.");
 	if (typeof bundleId !== "string" || !/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(bundleId)) refuse("options", "The bundle id is not one.");
-	if (expected.keyId?.length !== 32) refuse("options", "The key id is not 32 bytes.");
-	const length = expected.clientDataHash?.length;
-	if (typeof length !== "number" || length < 1 || length > 1024) refuse("options", "The client data hash is empty or too long.");
+	if (!(expected.keyId instanceof Uint8Array) || expected.keyId.length !== 32) refuse("options", "The key id is not 32 bytes.");
+	const { clientDataHash } = expected;
+	if (!(clientDataHash instanceof Uint8Array) || clientDataHash.length < 1 || clientDataHash.length > 1024) {
+		refuse("options", "The client data hash is not bytes, or is empty or too long.");
+	}
 	if (!Array.isArray(environments) || environments.length === 0 || !environments.every((name) => name === "production" || name === "development")) {
 		refuse("options", "The environments taken are not production, development or both.");
 	}
@@ -657,8 +680,9 @@ function concat(first: Bytes, second: Bytes): Bytes {
 	return joined;
 }
 
+/** Equal and not empty: nothing compared here may be empty, so two empty values are not taken as a match. */
 function same(first: Uint8Array, second: Uint8Array): boolean {
-	if (first.length !== second.length) return false;
+	if (first.length === 0 || first.length !== second.length) return false;
 	let difference = 0;
 	for (let i = 0; i < first.length; i++) difference |= first[i] ^ second[i];
 	return difference === 0;
