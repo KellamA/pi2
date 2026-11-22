@@ -16,7 +16,7 @@ A model on this Mac starts when a conversation starts using it, and stops a minu
 
 A conversation **uses** the model while its model is that one and:
 
-- it is open in one of the agent view's panes (whichever page the window shows, and whether or not the window is open), or is chat mode's chat on screen (whichever side the window shows, since each keeps what it shows while the other is up); or
+- it is shown in a project's hub, the orchestrator's panel or one of the board's panes (whichever page the window shows, and whether or not the window is open), or is chat mode's chat on screen (whichever side the window shows, since each keeps what it shows while the other is up); or
 - its agent is working: a run, a sub-chat's run, or a scheduled one, whether or not it is open.
 
 It stops counting when its pane is closed or shows another conversation, when it is archived or deleted, or when its model is changed. An idle open conversation keeps the model loaded: it is not started and stopped between messages.
