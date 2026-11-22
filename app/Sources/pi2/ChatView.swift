@@ -4,6 +4,7 @@ import BrowserKit
 import MenuKit
 import PiModels
 import SwiftUI
+import TranscriptKit
 import WebKit
 import WindowKit
 
