@@ -117,7 +117,7 @@ export function globToRegExp(glob: string): RegExp {
 }
 
 /** The folder a call works in, as the app would show it, resolved so that no link can hide where it really is. */
-async function rootOf(api: { conversationId: unknown; snapshot: (...args: any[]) => Promise<any> }, scratch: string, context: Context): Promise<string> {
+export async function rootOf(api: { conversationId: unknown; snapshot: (...args: any[]) => Promise<any> }, scratch: string, context: Context): Promise<string> {
 	const doc = (await api.snapshot(AgentDoc, api.conversationId, context)) as { cwd?: string | null } | undefined;
 	return realpath(doc?.cwd ?? scratch);
 }
@@ -130,9 +130,9 @@ async function rootOf(api: { conversationId: unknown; snapshot: (...args: any[])
  *
  * `base` is the folder the path is under, `prefix` how a path found in it is written back to the agent (nothing for the
  * conversation's folder, `$PI2_SCRATCH/` for the scratch one) and `here` the path itself written that way, so that what
- * the agent is shown it can write again.
+ * the agent is shown it can write again. `looks` begins the refusal's last sentence, saying what keeps to the two folders.
  */
-export async function locate(root: string, path: string | undefined, scratchOf?: () => string | undefined): Promise<{ real: string; base: string; prefix: string; here: string } | { refused: string }> {
+export async function locate(root: string, path: string | undefined, scratchOf?: () => string | undefined, looks = "These tools look"): Promise<{ real: string; base: string; prefix: string; here: string } | { refused: string }> {
 	const wanted = (path ?? "").trim();
 	// A path that does not begin with $ needs no scratch folder, and asking for one would make it.
 	const asks = wanted.startsWith("$");
@@ -162,7 +162,7 @@ export async function locate(root: string, path: string | undefined, scratchOf?:
 	const inside = (folder: string) => real === folder || real.startsWith(folder.endsWith(sep) ? folder : folder + sep);
 	const base = folders.find(inside);
 	if (base === undefined) {
-		return { refused: `"${wanted}" is outside this conversation's folder (${root}). These tools look inside it, or in its scratch folder under $PI2_SCRATCH.` };
+		return { refused: `"${wanted}" is outside this conversation's folder (${root}). ${looks} inside it, or in its scratch folder under $PI2_SCRATCH.` };
 	}
 	const prefix = base === root ? "" : `$${SCRATCH_VARIABLE}/`;
 	const below = relative(base, real);

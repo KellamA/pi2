@@ -89,6 +89,21 @@ struct AgentEditor: View {
     @State private var confirmingDelete = false
     private var engine: EngineClient { model.engine }
     private var saved: AgentProfile? { engine.agent(agentID) }
+
+    /// Where this agent's schedules are listed: Activity, with the preview off; with it on, its project's Settings tab
+    /// for an agent of a project, and this page for a template (docs/projects.md, 3.13).
+    private var schedulesShow: String {
+        guard engine.projectsPreview else { return "They show in Activity" }
+        if let project = saved?.projectId { return "They show on the Settings tab of \(engine.project(project)?.name ?? "its project")" }
+        return "They show above"
+    }
+
+    /// Where the person can schedule this agent themselves.
+    private var scheduleHere: String {
+        guard engine.projectsPreview else { return "in Activity" }
+        if let project = saved?.projectId { return "on the Settings tab of \(engine.project(project)?.name ?? "its project")" }
+        return "above"
+    }
     /// "App default (Anthropic · Opus 5.5)": the default model for agents (#617), by the model it starts on now.
     private var appDefault: String { engine.defaultModelName.map { "App default (\($0))" } ?? "App default" }
     private var changed: Bool {
@@ -397,12 +412,22 @@ struct AgentEditor: View {
                         get: { agent.schedule?.enabled ?? false },
                         set: { draft.wrappedValue.schedule = ScheduleSettings(enabled: $0) }
                     ))
+                    // With the preview on, a template's schedules are listed here; a project's agent's, on its project's
+                    // Settings tab (docs/projects.md, 3.13).
+                    if engine.projectsPreview, saved?.projectId == nil, let saved {
+                        ScheduleList(
+                            model: model,
+                            schedules: engine.schedules(ofTemplate: saved.id),
+                            agents: [saved],
+                            empty: "No schedules. A schedule of this template whose folder has a project runs as that project’s copy, and is listed there."
+                        )
+                    }
                 } header: {
                     Text("Schedules")
                 } footer: {
                     Text(agent.schedule?.enabled == true
-                        ? "When you ask it to do something later or regularly, such as every morning or in two hours, the agent can set a schedule for itself. You approve each one before it is set. Each run then starts a new conversation with this agent, with its tools and access, and works with no one watching. It can run at most every 15 minutes, and the agent can have 20 at most. The agent can list its schedules and cancel the ones it set, but not yours. They show in Activity, marked “set by \(agent.name)”. In a sub-chat, where it works on a task another agent handed it, it cannot schedule."
-                        : "Off: the agent cannot set schedules. You can still schedule it yourself in Activity.").formFooter()
+                        ? "When you ask it to do something later or regularly, such as every morning or in two hours, the agent can set a schedule for itself. You approve each one before it is set. Each run then starts a new conversation with this agent, with its tools and access, and works with no one watching. It can run at most every 15 minutes, and the agent can have 20 at most. The agent can list its schedules and cancel the ones it set, but not yours. \(schedulesShow), marked “set by \(agent.name)”. In a sub-chat, where it works on a task another agent handed it, it cannot schedule."
+                        : "Off: the agent cannot set schedules. You can still schedule it yourself \(scheduleHere).").formFooter()
                 }
                 .id(AgentSection.schedule)
 

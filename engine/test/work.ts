@@ -9,6 +9,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DEFAULT_ORCHESTRATOR, PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
+import { makeScratch } from "../src/scratch.ts";
 import { Agents } from "../src/state.ts";
 import { recordWork, Work, type WorkItem } from "../src/work.ts";
 import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
@@ -212,6 +213,26 @@ try {
 	assert.equal(classed.text, `Filed #${filedId(classed)} “Classed by the orchestrator”, cloud model.`, "the orchestrator's class is kept");
 	assert.equal((await show(filedId(classed))).class, "cloud");
 	for (const item of [unclassedId, filedId(classed)]) await act(item, "close", { as: "dropped" });
+
+	// A long text from a file (#662): from the scratch folder, as `$PI2_SCRATCH/…` and as its real path; refused with a
+	// text as well, from outside the conversation's two folders, and when missing; a path given as the text refused.
+	const scratch = makeScratch(home, worker);
+	writeFileSync(join(scratch, "body.md"), "A body\nwritten to a file.");
+	const fromFile = await socket.tool(worker, "file", { title: "From a file", text_file: "$PI2_SCRATCH/body.md" });
+	const fromFileId = filedId(fromFile);
+	assert.equal((await show(fromFileId)).text, "A body\nwritten to a file.");
+	assert.equal(answered(await socket.tool(worker, "note", { id: fromFileId, text_file: realpathSync(join(scratch, "body.md")) })), `Noted on #${fromFileId} “From a file” (1 note).`);
+	assert.equal((await show(fromFileId)).notes[0]!.text, "A body\nwritten to a file.");
+	refusal(await socket.tool(worker, "note", { id: fromFileId, text: "Both", text_file: "$PI2_SCRATCH/body.md" }), /^Give text or text_file, not both\.$/);
+	refusal(await socket.tool(worker, "note", { id: fromFileId, text_file: join(ghFolder, "state.json") }), /^text_file: ".*state\.json" is outside this conversation's folder \(.*\)\. text_file reads a file inside it, or in its scratch folder under \$PI2_SCRATCH\.$/);
+	refusal(await socket.tool(worker, "note", { id: fromFileId, text_file: "$PI2_SCRATCH/missing.md" }), /^text_file: Not found: /);
+	for (const path of ["$PI2_SCRATCH/body.md", " @notes/body.md ", join(scratch, "body.md")]) {
+		refusal(await socket.tool(worker, "note", { id: fromFileId, text: path }), /^text is only the path of a file: give the path as text_file, which reads the file, or put the words themselves in text\.$/);
+	}
+	assert.equal(answered(await socket.tool(worker, "note", { id: fromFileId, text: "@Worker: done." })), `Noted on #${fromFileId} “From a file” (2 notes).`, "a text that is no path is noted");
+	assert.equal((await show(fromFileId)).notes.length, 2, "no path noted");
+	await act(fromFileId, "close", { as: "dropped" });
+	step("a text from a file in the scratch folder, and refused: both given, a file outside the two folders, a missing one, and a path as the text");
 
 	const projectSettings = (withoutAsking: Record<string, boolean>) => socket.call("projects.set", { id: projectId, settings: { withoutAsking } });
 	await socket.call("conversation.configure", { id: worker, access: "none" });

@@ -10,6 +10,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PREVIEW_OFF, Projects } from "../src/projects.ts";
+import { makeScratch } from "../src/scratch.ts";
 import { EngineClient, previewOn, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-github-"));
@@ -547,6 +548,28 @@ try {
 	const dropped = widgets().issues.find((one) => one.number === pathy.id);
 	assert.deepEqual([dropped.state, dropped.stateReason, dropped.labels.map((label: any) => label.name)], ["CLOSED", "NOT_PLANNED", ["agent"]]);
 	step("an issue taken with scripts/issue is refused saying so until the orchestrator releases it; resume posts a line; the home folder is posted as ~; finish and close take the status label off");
+
+	// ---- A pull request's body from a file, and a path given as the text refused rather than posted (#662)
+	const scratch = makeScratch(home, worker);
+	writeFileSync(join(scratch, "pr-body.md"), `What changed, in ${homeFolder}/widgets.\n\nTested by hand.`);
+	const pullsBefore = widgets().pulls.length;
+	refusal(await client.work(worker, "pull_request", { id: pathy.id, title: "From a file", text: "$PI2_SCRATCH/pr-body.md" }), /^text is only the path of a file: give the path as text_file, which reads the file, or put the words themselves in text\.$/);
+	refusal(await client.work(worker, "pull_request", { id: pathy.id, title: "From a file", text: join(scratch, "pr-body.md") }), /^text is only the path of a file: give the path as text_file/);
+	refusal(await client.work(worker, "pull_request", { title: "Both", text: "A body", text_file: "$PI2_SCRATCH/pr-body.md" }), /^Give text or text_file, not both\.$/);
+	refusal(await client.work(worker, "pull_request", { title: "Outside", text_file: state }), /^text_file: ".*state\.json" is outside this conversation's folder \(.*\)\. text_file reads a file inside it, or in its scratch folder under \$PI2_SCRATCH\.$/);
+	assert.equal(widgets().pulls.length, pullsBefore, "no pull request opened by a refusal");
+	const fromFile = await client.work(worker, "pull_request", { id: pathy.id, title: "From a file", text_file: "$PI2_SCRATCH/pr-body.md" });
+	const fromFileNumber = Number(/^Opened pull request #(\d+) from feature into main: /.exec(said(fromFile))![1]);
+	const bodyFromFile = widgets().pulls.find((one) => one.number === fromFileNumber).body;
+	assert.match(bodyFromFile, new RegExp(`^\\*From Worker, an agent of the pi² project “Widgets”\\.\\*\\n\\nWhat changed, in ~/widgets\\.\\n\\nTested by hand\\.\\n\\nFixes #${pathy.id}\\n\\n<!-- pi2:[0-9a-f]{16} -->$`));
+	// A file in the conversation's folder, by a path relative to it.
+	writeFileSync(join(folder, "finding.md"), "Looks right.");
+	await client.call("conversation.open", { id: reviewer });
+	const reviewed = await client.work(reviewer, "review", { id: fromFileNumber, verdict: "approve", text_file: "finding.md" });
+	rmSync(join(folder, "finding.md"));
+	assert.match(said(reviewed), /^Posted your finding \(approved\) on pull request #\d+/);
+	assert.match(widgets().pulls.find((one) => one.number === fromFileNumber).comments.at(-1).body, /\n\n\*\*Approved\.\*\* Looks right\.\n\n<!-- pi2:/);
+	step("a pull request's body and a finding from a file, with the agent's line and the home folder as ~; refused: a path as the text, both given, a file outside the two folders");
 
 	// ---- A first read reads everything, and what is closed comes brief until it is opened (#599)
 	const secondFolder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-github-anew-")));
