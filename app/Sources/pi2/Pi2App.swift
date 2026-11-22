@@ -139,6 +139,8 @@ final class AppModel {
     var dashboardConversations: Set<Int> = []
     /// What the View menu's Dashboard keys ask of it (#618).
     let dashboardKeys = DashboardKeys()
+    /// Stop All, from the Dashboard's line or the palette, while it waits for the person to confirm it (#645).
+    var stoppingAll: StopAllRequest?
 
     init() {
         #if PI2_DEVELOPMENT
@@ -541,6 +543,9 @@ struct RootView: View {
                     case .project(let id), .projectAgent(let id, _):
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
+                            // The restart notice, over the hub rather than in its panels' headers, when the
+                            // Dashboard is not showing (#645).
+                            .safeAreaInset(edge: .top, spacing: 0) { RecoveryBanner(model: model) }
                     case .dashboard:
                         DashboardView(model: model)
                     case .conversation, nil:
@@ -570,6 +575,7 @@ struct RootView: View {
         .worktreeDialogs(engine: engine)
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
         .sheet(item: $model.startPicker) { ask in NewConversationPicker(model: model, ask: ask) }
+        .stopAllConfirmation(model: model)
         .sheet(isPresented: Binding(get: { engine.onboarded == false }, set: { _ in })) {
             OnboardingView(model: model)
                 .interactiveDismissDisabled()

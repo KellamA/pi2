@@ -1654,6 +1654,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | The Settings tab's orchestrator: its model and the size its conversation is summarised at (the orchestrator agent's `compactionTokens`) | `agents`; `compactionSettings` | #478, #632 |
 | Now: Needs you | `needs` | #472 |
 | Now: working, with model, time, last line, waking | `activity` (`lastLine`, `since`), `agents`, `wakes` (`wake`, `batch`) | #472 |
+| Now's and a Dashboard column's working rows: the shell command a run waits on, how long it has run and how long it has printed nothing (a column's shorter: the quiet time in place of the run time once quiet); Stop over the row's end on hover or keyboard focus, and in its menu | `activity` (`commands`); `abort` | #645 |
 | Now: finished today, not yet read | `reports` | #472 |
 | Lines with Undo, cards in the conversation | conversation state (`projectChanges`), `details.change`, `details.need`, `needs` | #474 |
 | Agents tab | `agents` by `projectId`; templates (`agents` with none) | #475 |
@@ -1666,6 +1667,9 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | A Dashboard column's vitals: needs, working and waiting on a limit, finished today and unread, spent today against the project's limit | `needs`; `activity` (`limit`); `reports`; `usage` (`projects`) and `projects` (`settings.limits.dailySpend`) | #618 |
 | A Dashboard column's Finished today, folded; its pull requests to merge | `reports`; `github` (`pulls`, as last read: the Dashboard sends no `projects.watch`) | #618 |
 | The Dashboard's line across all projects | `needs`, `activity`, `usage` (`today`), `limits` (`providers`' windows, `notices` at `reached`); `activity`'s `limit` for a provider with no plan | #618 |
+| Stop All, at the end of the Dashboard's line (the watched projects' runs), in its View menu (⌥⌘.) and in the palette (every agent's run), after a confirmation naming how many; chats are left alone | `activity`; `abort` for each, parents first | #645 |
+| Limit notices under the Dashboard's line, a line each with Details, Show Usage and Dismiss, the Inbox's card when unfolded | `limits` (`notices`); `limits.dismiss` | #645 |
+| The engine's restart notice as a banner over the Dashboard, or over a hub: what was picked up and the commands and set-ups cut off, under Details; Dismiss | `recovery`; `recovery.dismiss` | #645 |
 | A Dashboard column's window onto the orchestrator | the orchestrator's conversation (`projects`' `conversation`), opened with `conversation.open` `tail: true`, which sends only its newest part ([transcript.md](transcript.md#a-long-conversation-newest-first)); `activity` for what it is doing | #618 |
 | The menu bar item's count, the Dock's badge, notifications of what waits | `needs`, in place of the Inbox | #481 |
 | Carrying over's report sheet; **Projects (preview)** | `projects.carryOver` `dryRun`; `projects.setPreview` | #470 |
