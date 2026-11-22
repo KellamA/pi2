@@ -22,6 +22,11 @@ struct UsageView: View {
                         let agent = engine.agent(row.agentId)
                         return (agent?.name ?? "Deleted agent", row.tokens, Formats.usage(tokens: row.tokens, cost: row.cost), AgentColor.color(agent?.color))
                     })
+                    // The engine counts each project's spend for today only, for its daily limit (`usage`'s `projects`,
+                    // docs/projects.md, 8.3), so this one says so where the others above are of all time (#655).
+                    if engine.projectsPreview, let projects = usage.projects {
+                        bars("By project, today", projectRows(projects))
+                    }
                     days(usage)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Conversations that used the most").font(.system(size: 13, weight: .semibold))
@@ -58,6 +63,18 @@ struct UsageView: View {
         if let lookName = row.lookName { return lookName }
         guard let model = engine.allModels.first(where: { "\($0.provider)/\($0.id)" == row.key }) else { return row.key }
         return "\(model.providerName) · \(model.name)"
+    }
+
+    /// Today's spend of each project that spent anything, the most first, in its orchestrator's colour.
+    private func projectRows(_ projects: [UsageSummary.ProjectSpend]) -> [(name: String, value: Int, detail: String, color: Color)] {
+        projects
+            .filter { $0.today.tokens > 0 || $0.today.cost > 0 }
+            .sorted { $0.today.cost != $1.today.cost ? $0.today.cost > $1.today.cost : $0.today.tokens > $1.today.tokens }
+            .map { row in
+                let project = engine.projectStore.project(row.id)
+                let name = project.map { $0.archivedAt == nil ? $0.name : "\($0.name) (archived)" } ?? "Deleted project"
+                return (name, row.today.tokens, Formats.usage(tokens: row.today.tokens, cost: row.today.cost), AgentColor.color(engine.agent(project?.orchestratorId)?.color))
+            }
     }
 
     /// A model's tokens, and its cost when it has one; why it has none when that is not plain.

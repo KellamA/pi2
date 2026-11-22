@@ -53,7 +53,8 @@ struct PaletteView: View {
             result.append(Entry(id: "new-\(agent.id)", icon: "plus.bubble", title: "New conversation with \(agent.name)", detail: "Agent") { model.newConversation(agentId: agent.id) })
         }
         let places: [(String, String, Selection)] = [("Inbox", "tray", .inbox), ("Activity", "waveform.path.ecg", .activity), ("Usage", "chart.bar", .usage), ("Archive", "archivebox", .archive)]
-        for (name, icon, selection) in places where matches("go to \(name)") {
+        // With projects, the Inbox is not offered: Now, the Dashboard and the menu bar item show what waits (#655).
+        for (name, icon, selection) in places where matches("go to \(name)") && !(engine.projectsPreview && selection == .inbox) {
             result.append(Entry(id: "go-\(name)", icon: icon, title: "Go to \(name)", detail: "View") { model.selection = selection })
         }
         if matches("new chat") { result.append(Entry(id: "new-chat", icon: "square.and.pencil", title: "New Chat", detail: "Chat") { model.newChat() }) }
