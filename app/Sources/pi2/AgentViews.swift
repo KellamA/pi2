@@ -51,7 +51,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, summaries, instructions, files, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
+    case profile, model, summaries, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -317,6 +317,9 @@ struct AgentEditor: View {
                     Text("The agent sees this list in every conversation and opens a file when it needs it, so files cost nothing until they are read. They are read from disk each time, so your edits are picked up. The agent can only read them, even with tools off.").formFooter()
                 }
                 .id(AgentSection.files)
+
+                AgentMemorySwitch(engine: engine, agentID: agentID)
+                    .id(AgentSection.memory)
 
                 Section {
                     Picker("Tool access", selection: draft.access) {
@@ -713,6 +716,61 @@ struct AgentVariablesSection: View {
             Text("Variables for its commands")
         } footer: {
             Text("Its shell commands, background commands and set-up command get these as environment variables, without asking you: for example a token a command-line tool reads. The agent can print a value or send it anywhere a command can, so give it only what you would let it use. Values are kept in your macOS Keychain, never in pi²’s files or backups, and cannot be shown here again, only replaced. A sub-chat gets the variables of its own agent; MCP servers get none, and have their own in Settings › Tools. A copy of this agent gets the names without the values. Changes here apply at once, without Save, from the next command.").formFooter()
+        }
+    }
+}
+
+/// An agent's memory switch, which the page lost with the agent's own notes in #716 (#731). For a project's agent it
+/// says whether the agent reads and adds to its project's notes, which are on the project's Notes tab; for a template,
+/// what a project's copy starts with, and whether chats read the template's own notes (docs/projects.md, 3.8). Applies
+/// at once, without Save, as the switch always has: it is the memory document's, not the agent's settings.
+struct AgentMemorySwitch: View {
+    let engine: EngineClient
+    let agentID: String
+
+    @State private var problem: String?
+
+    private var enabled: Bool { AgentMemoryState(engine.extras["memory"]?["agents"]?[agentID]).enabled }
+    /// The name of the agent's project, nil for a template.
+    private var projectName: String? {
+        engine.agent(agentID)?.projectId.map { engine.project($0)?.name ?? "its project" }
+    }
+
+    var body: some View {
+        let enabled = enabled
+        Section {
+            Toggle("Remember things between conversations", isOn: Binding(get: { enabled }, set: { set($0) }))
+            if let problem { Text(problem).foregroundStyle(Theme.bad).font(.callout) }
+        } header: {
+            Text("Memory")
+        } footer: {
+            Text(footer(enabled)).formFooter()
+        }
+    }
+
+    private func footer(_ enabled: Bool) -> String {
+        var text: String
+        if let name = projectName {
+            text = enabled
+                ? "The agent is given \(name)’s notes, on its Notes tab, in every conversation, sub-chats included, and may add to them and remove them as it works. The notes are the project’s, shared by every agent of it with memory on. "
+                : "Off: the agent is not given \(name)’s notes and cannot add to them. The notes stay on the project’s Notes tab for the agents that have memory on. "
+        } else {
+            text = "This is what a project’s copy of this template starts with; the copy’s own switch is on its page in the project’s Agents tab. "
+            text += enabled
+                ? "With it on, chats may read this template’s notes, kept from before projects, when a question calls for it. "
+                : "Off: chats do not read this template’s notes. "
+        }
+        return text + "Changes here apply at once, without Save."
+    }
+
+    private func set(_ on: Bool) {
+        Task {
+            do {
+                try await engine.call("memory.setEnabled", ["agentId": agentID, "enabled": on])
+                problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
         }
     }
 }
