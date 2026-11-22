@@ -6,9 +6,9 @@ The browser has its own profile. Its cookies and sign-ins are kept apart from Sa
 
 ## Turning it on
 
-1. Open an agent and scroll to **Browser**. Switch it on.
+1. Open an agent's page (from its row on a project's Agents tab, or a template under Shared) and scroll to **Browser**. Switch it on.
 2. Ask the agent to look something up, or to open a page. Conversations it already has pick up the change at their next message.
-3. To see what it is doing, choose **Window › Browser** (⇧⌘B), press the globe at the bottom of the sidebar, or press **Browser** in the conversation's toolbar.
+3. To see what it is doing, choose **Window › Browser** (⇧⌘B), or press the globe at the bottom of the sidebar.
 
 If a site needs you to be signed in, sign in before you ask: open the Browser window, press **+** for a page of your own, go to the site and sign in. The agent's pages share that sign-in.
 

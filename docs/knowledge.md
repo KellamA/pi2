@@ -19,7 +19,7 @@ Files in sub-folders of the conversation's folder are not read.
 
 ## Memory
 
-Memory is per agent and **off by default**. A note written in one conversation is given to the model in every later one, so a note planted by something the agent read would persist; the person turns memory on for the agents they want it for. In the agent's settings: "Remember things between conversations".
+Memory is per agent and **off by default**, but for a new project's orchestrator, which has it on. A note written in one conversation is given to the model in every later one, so a note planted by something the agent read would persist. In a project, an agent with memory on keeps the project's notes, not notes of its own ([In a project](#in-a-project)).
 
 With memory on, the agent's conversations get:
 
@@ -31,7 +31,9 @@ Both tools change only pi²'s own notes, so they never ask for approval, whateve
 
 ### In the app
 
-The settings section shows a switch, then the notes, newest first, each editable in place (Return or leaving the field saves; Shift-Return or Option-Return starts a new line, with the rule of the message field in `ComposeKit`) with a delete button and when and by whom it was written; a field to add a note by hand, which takes Return and Shift-Return in the same way; and a footer saying that every note is sent to the model in every conversation with the agent. These changes apply at once; they are not part of the form's Save, because the agent can change its notes at any time. Turning memory off keeps the notes but stops them being sent. Duplicating an agent copies this on/off switch, but starts the copy with no notes: what the original learned stays with it.
+A project's notes are on its board's Notes tab (`ProjectNotesTab.swift`): each editable in place (Return or leaving the field saves; Shift-Return or Option-Return starts a new line, with the rule of the message field in `ComposeKit`), removed, searched, shared with the whole project when it is for one agent, and added by hand. These changes apply at once, because the agents can change the notes at any time. Chat mode's notes are in Settings › Chat ([below](#chat-modes-memory)).
+
+An agent's page has no memory switch: a copy of a template takes the template's, a new project's orchestrator has it on, and the orchestrator turns it on for an agent with `project_agents`, which asks the person, since it widens reach ([projects.md](projects.md#71-every-setting-classed)). Turning memory off keeps the notes but stops them being sent. Duplicating an agent copies the switch, but not its own notes.
 
 ### Where it is stored
 
@@ -50,11 +52,11 @@ One session document, `pi2.memory`: under `agents`, keyed by agent id, `{ enable
 
 After every change, from the app or from a tool, the engine broadcasts `{ event: "memory", agents: { <agentId>: { enabled, notes: [{ id, text, createdAt, conversation }] } }, chat: { notes }, projects }`, and sends the same event to an app when it connects. `conversation` is null for a note the person wrote.
 
-### With the Projects preview on
+### In a project
 
 In a project, a project agent with memory on is given that project's notes instead of its own. `remember` shares a note with the project; `forget` can remove only a note shared with the project or addressed to this agent. The same holds in a sub-chat that runs as that agent. Other conversations, including chats, keep their own memory.
 
-`memory.add`, `memory.edit` and `memory.delete` take `projectId` instead of `agentId` or `chat: true`. A note starts shared; `memory.edit` can change its `audience` to a project agent's id, or to `null` to share it again. The `memory` event's `projects` field is keyed by project id and holds `{ notes }` for each stored project notebook, even with the preview off. The [projects contract](projects.md#38-notes-pi2memory) gives the note shape. The limits are the same as for an agent's notes, but count across the whole project. `memory.setEnabled` still takes an `agentId`.
+`memory.add`, `memory.edit` and `memory.delete` take `projectId` instead of `agentId` or `chat: true`. A note starts shared; `memory.edit` can change its `audience` to a project agent's id, or to `null` to share it again. The `memory` event's `projects` field is keyed by project id and holds `{ notes }` for each stored project notebook. The [projects contract](projects.md#38-notes-pi2memory) gives the note shape. The limits are the same as for an agent's notes, but count across the whole project. `memory.setEnabled` still takes an `agentId`.
 
 ## Chat mode's memory
 
@@ -65,7 +67,7 @@ Chat mode ([chat.md](chat.md)) remembers lasting things the person tells it, acr
 - **The agents' notes** are read with `agent_notes { agent?, search? }`, a tool only a chat with memory on is offered and that refuses anywhere else. It gives one agent's notes by name (or id), or every agent's, and with `search` only the notes with at least one of the words. It reads the notes of agents that exist and have memory on: an agent whose memory is off has its notes kept but not used, by it or by a chat. It gives at most 24,000 characters at once, one agent's full notes; more than that, it says which agents have how many and asks for one agent or some words. It changes nothing, so it is safe to run again.
 - **Why a lookup, not the notes in the prompt.** Everything in the prompt is read again at every turn of every chat. One agent's 60 notes come to about 24,000 characters (some 6,000 tokens), measured with the demo model's `/system sizes`, and each agent with memory on adds as much. Instead, the chat's `memory` section has one line naming the agents with notes (about 330 characters for one), saying they can be read with `agent_notes` when a question may touch what the person told an agent, that they are read-only, and that no agent sees chat mode's notes. It names them without saying how many notes each has, so an agent writing a note does not change every chat's prompt. The three tools' definitions add about 1,350 characters. `engine/test/chatmemory.ts` prints these sizes.
 - **Off**, a chat is offered none of the three tools and has no `memory` section, so nothing is remembered and nothing is read, chat mode's or the agents'. A call that comes anyway is refused. The notes are kept, and come back with the switch, from each chat's next message.
-- **Never to an agent.** An agent's `memory` section and its `remember` and `forget` tools are for its own notes (or its project's notes in the preview), not chat mode's. It is never offered `agent_notes`. A chat's notes are in its system prompt, not its transcript, so a conversation made from a chat's messages is not given them either.
+- **Never to an agent.** An agent's `memory` section and its `remember` and `forget` tools are for its own notes (or, in a project, its project's notes), not chat mode's. It is never offered `agent_notes`. A chat's notes are in its system prompt, not its transcript, so a conversation made from a chat's messages is not given them either.
 - **In the app,** Settings › Chat has the switch and chat mode's notes, edited, deleted and added as an agent's are in its settings, and below them the agents' notes, read-only, by agent ([chat.md](chat.md#in-the-app)).
 
 ## Limits

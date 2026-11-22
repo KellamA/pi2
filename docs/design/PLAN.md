@@ -1,5 +1,7 @@
 # pi² — a native Mac app for pi durable agents
 
+*Kept as history: this is the design as it was made, not the app as it is. For the app as it is, see [the guide](../guide.md); for projects' exact names and shapes, [the contract](../projects.md).*
+
 Mockups: [mockups.html](mockups.html).
 
 ## What pi durable is, and what that means for the app

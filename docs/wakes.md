@@ -50,9 +50,9 @@ When the agent is not woken for a while, the strip says why, and so does a line 
 
 ## In a project
 
-With projects on ([projects.md](projects.md), a preview), a sub-chat that a project's orchestrator hands work to does not always wake it: the orchestrator reads its whole conversation again each time it is woken. Each run of such a sub-chat has a **report** (`engine/src/reports.ts`): how the run ended, kept from the moment it starts, and given to the orchestrator once, by whichever comes first: a wake that carries it, a wait (`delegate` waiting for that run, or `sub_chats` with `wait`), or the orchestrator reading it with its `reports` tool. One function, `settle`, decides each of these, in the commit that gives the report, so it is never given twice.
+In a project ([projects.md](projects.md)), a sub-chat that a project's orchestrator hands work to does not always wake it: the orchestrator reads its whole conversation again each time it is woken. Each run of such a sub-chat has a **report** (`engine/src/reports.ts`): how the run ended, kept from the moment it starts, and given to the orchestrator once, by whichever comes first: a wake that carries it, a wait (`delegate` waiting for that run, or `sub_chats` with `wait`), or the orchestrator reading it with its `reports` tool. One function, `settle`, decides each of these, in the commit that gives the report, so it is never given twice.
 
-When a run ends and nothing waits for it, what happens is chosen for that run with `reports` `wake` (by the orchestrator) or `reports.wake` (by the person), or else by the project's switch **Wake on reports**, which only the person changes ([projects.md](projects.md#82-when-a-report-wakes-the-orchestrator)):
+When a run ends and nothing waits for it, what happens is chosen for that run with `reports` `wake` (by the orchestrator) or `reports.wake` (by the person), or else by the project's switch **Reports wake the orchestrator**, on its Now and Settings tabs, which only the person changes ([projects.md](projects.md#82-when-a-report-wakes-the-orchestrator)):
 
 - **each**: it wakes the orchestrator exactly as a sub-chat's answer does above. A project's switch on means this, and a project made by carrying over has it on, so waking there is as it was.
 - **never**: it wakes nobody. A new project's switch is off, which means this. `delegate` says so in its result: "Its report waits for you unread; you are not woken for it (the project's setting). To be woken, use reports with action wake."
@@ -63,7 +63,7 @@ A report that woke nobody waits, unread: `reports` lists and reads it, `sub_chat
 
 A report that woke nobody is told to the orchestrator at the start of its next turn, in a catch-up in front of whatever starts it, the person's message or a wake (`engine/src/orchestrator.ts`, [projects.md](projects.md#64-the-catch-up-and-the-state-block)). When the person starts the orchestrator's conversation afresh (**Start fresh**), what the old conversation was waiting for moves to the new one in the same commit: the watches of its sub-chats and of its background commands (whose wake says they were started in the earlier conversation), what had arrived and was not handed over, and its wakes of the last hour, so the hourly cap still holds; the person's Stop and a hold for the budget do not move. An answer to a question it put under Needs you goes to the new conversation too.
 
-With the preview off, or in an archived or deleted project, every run wakes as the rest of this page says, and outside a project nothing of this applies.
+In an archived or deleted project, every run wakes as the rest of this page says, and outside a project nothing of this applies.
 
 ## The bounds
 

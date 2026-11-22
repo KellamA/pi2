@@ -6,7 +6,8 @@ Read only the sections that apply to your work. For more on one feature, see its
 
 | Work | Sections to read |
 |---|---|
-| Finding where code lives | [The two programs](#the-two-programs), [Engine files](#engine-files) |
+| Finding where code lives | [The two programs](#the-two-programs), [The app](#the-app), [Engine files](#engine-files) |
+| The window: projects, their hubs, the Dashboard, the pages under Shared, chat mode | [The app](#the-app); what each part is for, as the person sees it, is [guide.md](guide.md) |
 | Connecting the app and engine | [How they talk](#how-they-talk), [Who may answer for the person](#who-may-answer-for-the-person) |
 | App and engine speed | [Keeping the app quick while agents work](#keeping-the-app-quick-while-agents-work), [Staying quick while agents work](#staying-quick-while-agents-work), [Agents' commands at a lower priority](#agents-commands-at-a-lower-priority) |
 | Agent settings and available tools | [Agent settings](#agent-settings), [Built-in tools](#built-in-tools) |
@@ -22,17 +23,19 @@ Read only the sections that apply to your work. For more on one feature, see its
 | MCP servers | [An MCP server changed while a call runs on it](#an-mcp-server-changed-while-a-call-runs-on-it), [What commands can find](#what-commands-can-find), [What an agent's commands get](#what-an-agents-commands-get) |
 | Storage and credentials | [Where things live](#where-things-live) |
 | Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
-| Projects (#450), the only way the app works since #716 | [projects.md](projects.md), the contract every issue of the epic is built against: read its sections 1, 2 and your issue's row in its section 12; the app's side is its section 10 |
+| Projects | [projects.md](projects.md), the contract: its section 1, then the sections your work touches; 12.1 says where each piece several parts share is, and section 10 is the app's side. [The app](#the-app) for the app's files |
 | pi² for iPhone (the epic of #620; not built yet) | [iphone.md](iphone.md), the contract every issue of the epic is built against: read its sections 1, 2, 4 and 5.1, and your issue's row in its section 12; what the person sees is [design/iphone.md](design/iphone.md), with drawings in [design/iphone-drafts.html](design/iphone-drafts.html); the owner's settings for the repository and the relay, and which paths wait for the owner's review, are [relay.md](relay.md) and `.github/CODEOWNERS` |
-| A worker's question that does not hold it (#507) | [design/worker-questions.md](design/worker-questions.md), agreed and built; the contract is [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) (3.9, 5.5) and the code `src/needs.ts` and `src/wakes.ts` |
+| A worker's question that does not hold it (#507) | The contract, [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) 3.9 and 5.5, and the code, `src/needs.ts` and `src/wakes.ts`; the design it came from, kept as history, is [design/worker-questions.md](design/worker-questions.md) |
+| Chat mode | [chat.md](chat.md), [A chat's versions](#a-chats-versions) |
 
 ## The two programs
 
 pi² is two programs:
 
 ```
-app/      SwiftUI app: the window, menu bar, Quick Ask, settings
-          Sources/pi2           the app
+app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick Ask, settings
+          Sources/pi2           the app; its parts are under The app, below
+          Sources/PiStyle       pi²'s look: the palette and the small pieces (tags, buttons, the spinner) every screen is built from
           Sources/ComputerKit   seeing and working other apps' windows
           Sources/BrowserKit    pi²'s own browser: loading web pages, reading them and acting in them
           Sources/pi2-probe     a command-line way to try ComputerKit while developing; not part of the app
@@ -49,11 +52,33 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app
           Sources/TranscriptKit the web view the conversation page lives in, and the page loaded ahead for the next pane
           Sources/pi2-transcript-check checks TranscriptKit, with real pages in windows that never come on screen; not part of the app
+          Sources/PeerKit       whether the process at the other end of a connection to the engine's socket is the pi² app
+          Sources/pi2-peer      the engine's helper that asks PeerKit of one connection; in the app's bundle
+          Sources/pi2-peer-check checks PeerKit and pi2-peer on real connections; not part of the app
+          Sources/LoginItemKit  the login item that starts the engine at login: when it must be installed again
+          Sources/pi2-login-item-check checks LoginItemKit's decisions, with no plist or launchd call; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
 ```
 
 The app is a view of the engine's committed state. It keeps no truth of its own: everything on screen is what the engine last said. The engine is the only process that opens the database.
+
+## The app
+
+The app (`app/Sources/pi2`) is one file per area. `EngineClient.swift` is the connection to the engine and holds what it last said; `Projects.swift` reads the projects' and Needs you's events; `Pi2App.swift` has the app's scenes, its menus and `AppModel`, which holds what the window shows. What each part is for, as the person sees it, is [guide.md](guide.md); what the app reads and keeps for projects is [projects.md section 10](projects.md#10-the-app).
+
+The window has two sides, **Projects** and **Chat** (`ModeSwitch` in `ChatMode.swift`, ⌘1 and ⌘2), and remembers which it was on:
+
+- **The sidebar of projects** (`ProjectsSidebar.swift`): the Dashboard's row, a row for each project (the open one with its working agents and other conversations under it), and **Shared**: Templates, Activity, Usage and the Archive.
+- **The Dashboard** (`DashboardView.swift`; a column's window onto the orchestrator, `DashboardPane.swift`).
+- **A project's hub** (`ProjectHub.swift`, `ProjectHubViews.swift`): its bar, the conversation with the orchestrator, and the board, whose side is a tree of panes (`HubPanes.swift`, `Panes.swift`, PaneKit). The board's tabs are `ProjectNowTab.swift`, `ProjectWorkTab.swift` (with `WorkParts.swift`, and `ProjectWorkGitHub.swift` for a repository's issues and pull requests), `ProjectAgentsTab.swift`, `ProjectRulesTab.swift`, `ProjectNotesTab.swift`, `ProjectBranchesTab.swift` and `ProjectSettingsTab.swift`. A conversation's menu in the hub is `HubConversationMenu.swift`; starting one with a project's agent, ⌘N's picker and Make Orchestrator, `ProjectStart.swift`.
+- **Where a conversation opens** (`OpenConversation.swift`): every Open in the app goes through `AppModel.openConversation`, which opens it where it lives: its project's hub, chat mode, or the Archive's reader. The same file has the page that makes the first project.
+- **Under Shared**: a template's page (`AgentViews.swift`, with `AgentRebase.swift`), Activity (`ActivityPage.swift`), Usage (`UsageView.swift`, with the plan limits and their notices in `LimitsView.swift`) and the Archive (`ArchiveViews.swift`).
+- **Chat mode** (`ChatMode.swift`): its sidebar of chats and a chat; Continue with an Agent is `ChatContinue.swift` ([chat.md](chat.md)).
+- **A conversation**, wherever it shows, is `ChatView.swift`: the conversation page in a web view (`TranscriptWeb.swift`, `TranscriptFeed.swift`, TranscriptKit and `app/Web/transcript`, [transcript.md](transcript.md)), the message field, the strips above it (`PlanStrip.swift`, `WakeViews.swift`, `RunViews.swift`), and the cards of what waits for the person (`InboxViews.swift`).
+- **Over the window**: the notice of the update to projects (`RemovalNotice.swift`) and the engine that could not be started (`EngineTrouble.swift`).
+
+Outside the window: the menu bar item and Quick Ask (`MenuBar.swift`), notifications (`Notifier.swift`), Settings (`SettingsView.swift` and a file for each part, such as `StorageSettings.swift` and `ChatSettings.swift`), the Browser window (`BrowserUse.swift`, BrowserKit), a background command's output window (`BackgroundViews.swift`) and updates (`Updates.swift`). What only a development build does for throwaway copies is in `DevelopmentBuild.swift`, `LaunchPreviews.swift`, `LaunchWindows.swift` and `TestCopyControl.swift` ([development.md](development.md#choosing-what-a-copy-shows)).
 
 ## How they talk
 
@@ -68,7 +93,7 @@ If the engine ends before the app can reach it three starts in a row (Node or th
 
 ### Who may answer for the person
 
-Any program running as the person can connect to the socket, and so can every command an agent runs. Since #504 the engine takes an answer to what waits for the person only from the app itself. Since #513 the requests that change what the person set are the app's alone too: otherwise a command could widen its own reach through the socket without answering anything. The two lists (`FOR_THE_PERSON` and `FOR_THE_PERSON_SETTINGS` in `engine/src/answers.ts`) say which requests are held back, including ones held back only with certain parameters. The engine will not open its socket if a registered handler belongs to zero or more than one list. The answers:
+Any program running as the person can connect to the socket, and so can every command an agent runs. The engine takes an answer to what waits for the person only from the app itself (#504), and the requests that change what the person set are the app's alone too (#513): otherwise a command could widen its own reach through the socket without answering anything. The two lists (`FOR_THE_PERSON` and `FOR_THE_PERSON_SETTINGS` in `engine/src/answers.ts`) say which requests are held back, including ones held back only with certain parameters. The engine will not open its socket if a registered handler belongs to zero or more than one list. The answers:
 
 - `inbox.decide`: an approval, of any kind ([Approvals](#approvals));
 - `inbox.answer`: a question an agent asked;
@@ -103,8 +128,8 @@ With twenty runs going, the engine sends the app dozens of events a second: `act
 - **The app's scene body reads nothing that changes** (`Pi2App.body`). SwiftUI works it out again whenever something it read changes, and with it every scene, setting each window's settings again; when it read the inbox for the menu bar item, every request from a sub-chat did that (#436). The menu bar item's label, the File menu's New Conversation With and what depends on the mode are views of their own (`MenuBarLabel`, `NewItemCommands`, `PaneCommands`), and a development build writes a line to `app.log` if the body reads something that then changes (`BodyWatch` in `WindowKit`).
 - **A long conversation comes newest first** (#380): the engine sends its newest entries, about 64 KB of them, then the rest in parts, and the app hands them to the page the same way, so the page draws a screen's worth before the rest. Entries older than the engine's window of 300 come a part at a time when the reader scrolls up to them (#440). See [transcript.md](transcript.md#a-long-conversation-newest-first).
 - **A page is loaded ahead for the next pane** (#441): each pane has a page of its own, and loading one took 100 to 160 ms of every opening, whatever the conversation. One page waits loaded and idle, and the next pane takes it; another is loaded a second later. See [transcript.md](transcript.md#a-page-loaded-ahead).
-- **Opening a conversation leaves the rest of the window as it is** (#502). Chat mode's `ChatModeDetail` holds its conversation in a stack, not a `Group`, as the old screens' conversation area did before #716: a `Group` gives its modifiers to each of its children, so the window's title and toolbar went with the conversation's own view, which is made anew for each conversation (`.id`), and SwiftUI took the whole toolbar down and made it again at every opening, some 25 ms of the main thread before the page could show. What the first frame does not need waits until the page has drawn the conversation (`TranscriptBridge` tells the pane after the page's next frame; `OpenConversation.shown`): the message field taking the keyboard (about 10 ms), and the Context, Model and Tools menus of a conversation opened for the first time (about 20 ms, made for the toolbar's overflow menu as well). Going back to a conversation took about 80 ms from the click to the page shown, and now about 36; one not open yet about 100, and now about 70.
-- **Spinners turn in Core Animation** (`Spinner` in `Theme.swift`), not with a SwiftUI animation, which laid the window out again every frame for each one: twenty in the sidebar kept the main thread about a third busy on their own.
+- **Opening a conversation leaves the rest of the window as it is** (#502). Chat mode's `ChatModeDetail` holds its conversation in a stack, not a `Group`: a `Group` gives its modifiers to each of its children, so the window's title and toolbar went with the conversation's own view, which is made anew for each conversation (`.id`), and SwiftUI took the whole toolbar down and made it again at every opening, some 25 ms of the main thread before the page could show. What the first frame does not need waits until the page has drawn the conversation (`TranscriptBridge` tells the pane after the page's next frame; `OpenConversation.shown`): the message field taking the keyboard (about 10 ms), and the Context, Model and Tools menus of a conversation opened for the first time (about 20 ms, made for the toolbar's overflow menu as well). Going back to a conversation took about 80 ms from the click to the page shown, and now about 36; one not open yet about 100, and now about 70.
+- **Spinners turn in Core Animation** (`Spinner` in `PiStyle`), not with a SwiftUI animation, which laid the window out again every frame for each one: twenty in a sidebar kept the main thread about a third busy on their own.
 
 A message sent from the message field shows at once as a chip, "Sending", then "Sent" until the conversation shows it (`EngineClient.outgoing`). It goes with a request id, and when no answer comes because the connection to the engine went, it is sent again with the same id once the engine is back, which makes the engine find the submission it may already have taken rather than take it twice. A pane whose conversation has been asked for and has not come yet says it is loading, and its toolbar leaves out the model and tool menus until there is something to show in them.
 
@@ -158,7 +183,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/runcode.ts` | `run_code`: a short program run in a sandbox with no tools, files or network. See [code.md](code.md) |
 | `src/codemode.ts` | What the model is told about code mode: the `codemode` section and the tool's description. See [codemode.md](codemode.md) |
 | `src/projectagents.ts` | Agents of a project, and templates (#457): copying a template into a project, Update from template, putting back an agent removed through a tool, and whom a conversation may hand work to. Which agent a conversation runs as is `runsAs` in `state.ts`. See [projects.md](projects.md#33-agents-and-templates-pi2agents) |
-| `src/projects.ts` | Projects (#450): the `pi2.projects` document, which project a conversation is in (`inProject`), the project requests and the `projects` event, `requireSwitch`, `addNews`, and the places the later issues of the epic fill in; the event keeps `preview: true` for the app built before #483 took the switch out. See [projects.md](projects.md) |
+| `src/projects.ts` | Projects (#450): the `pi2.projects` document, which project a conversation is in (`inProject`), the project requests and the `projects` event, `requireSwitch`, `addNews`, and the `wire…` functions through which other files fill in parts of the event; the event keeps `preview: true` for older versions. See [projects.md](projects.md), 12.1 |
 | `src/reports.ts` | Projects (#463): the reports of a project orchestrator's sub-chats' runs (`pi2.reports`), `settle`, which decides whether each wakes the orchestrator, waits or is read, the `reports` tool and request, and the `reports` event. See [wakes.md](wakes.md#in-a-project) and [projects.md](projects.md#310-reports-and-waking-pi2reports-pi2wakes) |
 | `src/needs.ts` | Needs you (#462): everything that waits for the person as one list, the Inbox's approvals and questions and what is stored in `pi2.needs`; `claim`, the one way any answer is taken; the `needs` event and requests; the tool `needs_you`. See [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) |
 | `src/orchestrator.ts` | Projects (#466): a project's one conversation with its orchestrator, the `project` section, the catch-up and the state block, Start fresh and `projects.setOrchestrator`, the sub-chats of earlier conversations, and what the person writes to another agent of the project. See [projects.md](projects.md#63-why-the-projects-state-is-not-a-section), 6.1 and 6.3 to 6.5 |
@@ -173,7 +198,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/projectlimitstarts.ts` | Projects: a start past a limit allowed from its card, kept (`pi2.allowedStarts`) as the answer is taken and then made as `delegate` or an assignment would have made it. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
 | `src/projectspend.ts` | Projects: what each conversation spent today, from the Usage ledger, so that a project's daily spending counts its sub-chats and its put-away work. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
 | `src/carryplan.ts` | Projects (#458): carrying over's plan, one plan of what becomes what, worked out from the documents alone and the `.git` entries on disk (`Grouping`, `groupingKey`, `lookUp`, `planCarryOver`, with the sub-chats made with the switch off given their project's copy, #715), its fingerprint and its report; and the copies the schedules on templates are given (`scheduleCopies`, #656). It writes nothing: carryover.ts runs it. See [projects.md](projects.md#9-carrying-over), 9.2 to 9.8, and 3.13 |
-| `src/carryover.ts` | Projects (#458): carrying over's run, the plan of carryplan.ts at every engine start since #483 took the switch out (`update`, #715: a copy of the data first, recorded as `carry.removalBackup`, then the plan, committed a project at a time by `applyProject`, then `settings.json`'s switch for the versions before), the variables' values copied to the Keychain after; and restoring one conversation of a deleted project (#531); schedules on templates given their project's copy (`carrySchedules`, #656). See [projects.md](projects.md#9-carrying-over), section 9, and 3.6 and 3.13 |
+| `src/carryover.ts` | Projects (#458): carrying over's run, the plan of carryplan.ts at every engine start (`update`: a copy of the data first, recorded as `carry.removalBackup`, then the plan, committed a project at a time by `applyProject`, then `settings.json`'s `projects.preview` for older versions), the variables' values copied to the Keychain after; and restoring one conversation of a deleted project (#531); schedules on templates given their project's copy (`carrySchedules`, #656). See [projects.md](projects.md#9-carrying-over), section 9, and 3.6 and 3.13 |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, an agent's memory, and chat mode's |
 | `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
@@ -256,7 +281,7 @@ Chat mode's assistant is offered the entries `CHAT_TOOLS` names, and nothing els
 
 ### Approvals
 
-With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox and waits. Every approval, of any kind, goes through `Inbox.ask` (`src/state.ts`), which answers it at once, without showing it, for a conversation whose agent had [Allow everything](allow-everything.md) on at its latest message. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that matches an agent's [allowed commands](allowed-commands.md) for the conversation's folder runs without asking. The hook decides nothing until the engine has loaded its conversations, its agents and its `PATH` (`Host.ready`): the last engine's work can be set going before then, by a feature writing into a transcript as it starts, and a call judged against agents not yet loaded could ask unnecessarily or fail to offer an applicable allowed command. The engine takes the person's answer only from the app ([Who may answer for the person](#who-may-answer-for-the-person)). The answer, from the Inbox, a conversation's card or Needs you, goes through one function, `claim` (`src/needs.ts`), which takes the item off the list as it answers it, so a second answer to it, from any route or app, is refused.
+With tool access set to "Ask first", a hook runs before each tool call that would change something. It puts an item in the Inbox, the engine's list of the calls waiting for the person, which the person sees under Needs you, and waits. Every approval, of any kind, goes through `Inbox.ask` (`src/state.ts`), which answers it at once, without showing it, for a conversation whose agent had [Allow everything](allow-everything.md) on at its latest message. The wait lives in the running engine; after a restart pi durable runs the hook again, so the question reappears. A shell command that matches an agent's [allowed commands](allowed-commands.md) for the conversation's folder runs without asking. The hook decides nothing until the engine has loaded its conversations, its agents and its `PATH` (`Host.ready`): the last engine's work can be set going before then, by a feature writing into a transcript as it starts, and a call judged against agents not yet loaded could ask unnecessarily or fail to offer an applicable allowed command. The engine takes the person's answer only from the app ([Who may answer for the person](#who-may-answer-for-the-person)). The answer, from the Inbox, a conversation's card or Needs you, goes through one function, `claim` (`src/needs.ts`), which takes the item off the list as it answers it, so a second answer to it, from any route or app, is refused.
 
 ### Sub-chats
 
@@ -407,7 +432,7 @@ A command that ran to its end is not an error because its exit code is not 0 (#1
 - could not be started: exit code 127 ("a command it ran was not found") or 126 ("could not be run (it is not executable, or not allowed)");
 - was ended by a signal: 128 and the signal's number, as the shell and pi durable report it ("The command was ended by SIGKILL (exit code 137)."), with the signal's name in `details.signal`.
 
-`exitResult` in `src/commands.ts` decides. Nothing else reads a shell result's error flag to decide what to do: Activity, notifications and the Inbox go by runs and approvals, not by tool results; a Markdown export says "Result:" rather than "Result (error):" for these. A script in code mode gets `{ output, exitCode, … }` from `tools.bash()` for any command that ran to its end, failure or not, as before; it rejects only when the command was stopped, aborted or could not be run at all ([codemode.md](codemode.md)). Results stored before this change keep the error they were given.
+`exitResult` in `src/commands.ts` decides. Nothing else reads a shell result's error flag to decide what to do: Activity, notifications and Needs you go by runs and approvals, not by tool results; a Markdown export says "Result:" rather than "Result (error):" for these. A script in code mode gets `{ output, exitCode, … }` from `tools.bash()` for any command that ran to its end, failure or not, as before; it rejects only when the command was stopped, aborted or could not be run at all ([codemode.md](codemode.md)). Results stored before this change keep the error they were given.
 
 A command the agent starts with `background: true` is not waited for and has no limit unless its call gives one: it is left running, and the agent reads its output and stops it with the `background` tool. See [background.md](background.md).
 
@@ -542,7 +567,8 @@ The engine counts the tool calls running on each copy of an MCP server it starte
 
 | What | Where |
 |---|---|
-| Conversations, agents, schedules, settings | `~/Library/Application Support/pi2` (one SQLite database and a few small files) |
+| Projects, conversations, agents, schedules, settings | `~/Library/Application Support/pi2` (one SQLite database and a few small files) |
+| The copy of the data made at the update to projects | `backups/` in the data folder ([projects.md](projects.md#98-the-report-and-the-run), 9.8) |
 | Keys and sign-ins, and the values of agents' variables | The macOS Keychain, service `dev.pi2.credentials` |
 | Logs | `engine.log` and `app.log` in the data folder. See [The logs](#the-logs) |
 | A shell command's whole output, when its result was shortened | `output/<conversation>/` in the data folder, for 7 days at most |
@@ -602,4 +628,4 @@ What reads the log goes by its wording, not by the start of a line: the app's "e
 - The browser: pi² has to be open; a frame from another site is listed with its address rather than read in place; a page that is not showing in the Browser window counts as hidden to the site. See [browser.md](browser.md).
 - A release is signed with a Developer ID and notarized by the release workflow ([releasing.md](releasing.md)). A build made on a developer's Mac with `app/build.sh` is not, unless `SIGN_IDENTITY` and `NOTARY_PROFILE` are set.
 - Deleting a conversation stops pi² showing it; it does not erase its text from the session file, because pi durable cannot remove a conversation. See [archive.md](archive.md).
-- Not built: remote environments over SSH, MCP sign-in (OAuth), per-run budgets, automatic updates, loading very old messages in very long conversations.
+- Not built: remote environments over SSH, MCP sign-in (OAuth), per-run budgets.
