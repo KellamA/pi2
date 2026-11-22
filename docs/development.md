@@ -11,7 +11,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Allowed commands | [Allowed commands](allowed-commands.md), [Choosing what a copy shows](#choosing-what-a-copy-shows) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [The remote channel](#remote-channel-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Retaking the README's pictures | [Retaking the README's pictures](#retaking-the-readmes-pictures) |
@@ -270,6 +270,22 @@ cd app && swift build --product pi2-peer && swift build --product pi2-peer-check
 
 That the app's own connection is taken for the app, by the helper inside the bundle, is checked on a release build by `app/check-release-build.mts --open-app` in CI, and on a development build in a throwaway copy: its `engine.log` has a line `answers: process … (dev.pi2.app.<suffix>) is the app` once the app has connected.
 
+### Remote channel checks
+
+The channel between a phone and pi² Remote, and the sealed items of the relay's mailbox (`app/Sources/RemoteKit`, #674), are checked by two programs of their own; [remotekit.md](remotekit.md) says what they read and how. `pi2-remote-check` runs Noise against the published test vectors for the two protocols pi² uses and HPKE against RFC 9180's, from the fixtures in `app/Sources/pi2-remote-check/vectors` (`extract.mjs` there makes them again, each source at a pinned commit and checked by its SHA-256), then a pairing and a KK connection between two ends of its own in memory, sealed items both ways, and what each reader refuses; `--verbose` prints every refusal with its error. `pi2-remote-fuzz` runs every parser that reads bytes from the network against mutated and random input, from a seed, for a time shared out among its targets; a parser that traps ends the run with the input that made it, which `--replay <target> <hex>` runs again with the same seed. The fuzzer refuses an argument it does not know, or a value it cannot read, with exit code 2, and `--help` prints its usage and runs nothing. Neither touches a key store or the network. CI runs both after building the app, the fuzzer for a minute. Before building, it runs `scripts/check-protected-targets`, which fails if `app/Package.swift` builds RemoteKit or its checks from anything but their own folders as they are, adds a package, or lets anything but those checks use `@_spi(Vectors)` ([remotekit.md](remotekit.md#how-it-is-checked)); `scripts/test-check-protected-targets` checks it, on Linux:
+
+```bash
+cd app && swift build --product pi2-remote-check && .build/debug/pi2-remote-check
+cd app && swift build --product pi2-remote-fuzz && .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+scripts/check-protected-targets && scripts/test-check-protected-targets
+```
+
+RemoteKit builds for iOS as well as macOS, and CI builds it for iOS too:
+
+```bash
+cd app && swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+```
+
 ### Login item checks
 
 The login item's decisions (`app/Sources/LoginItemKit`): which copy of pi² may change the item (only the one on the usual data folder), whether it must be installed again (out-of-date paths, or a `ProcessType` that is not `Interactive`), and what its switch in Settings says, are checked by a program of its own, which links only the decisions: it makes no plist and calls no launchd. CI runs it after building the app:
@@ -318,7 +334,7 @@ What the app's client reads of the engine (the client in `app/Sources/EngineKit`
 cd app && swift build --product pi2-client-check && .build/debug/pi2-client-check
 ```
 
-A change that alters what a model reads or works out on purpose writes the file again with `--write`, and says so in its pull request; a move must not need it. CI builds the check with the app but does not run it yet.
+A change that alters what a model reads or works out on purpose writes the file again with `--write`, and says so in its pull request; a move must not need it. CI runs it after building the app (#761).
 
 ### Relay tests
 
@@ -546,7 +562,7 @@ What a CI job for the phone would run (the workflow is #681's, and `.github/work
 
 ## CI
 
-Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge` and `scripts/test-docs-lists`). `Relay (tests)` runs on Linux too, on every pull request (the relay's type-check, tests and bundle check, and both deployments built without uploading anything, [Relay tests](#relay-tests)); it is not yet one of the required checks, which the owner makes it ([relay.md, step 2](relay.md#2-branch-protection-on-main)). The relay is deployed only by `.github/workflows/relay.yml`, which only the owner starts and approves ([relay.md](relay.md#deploying-the-relay)). Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
+Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge`, `scripts/test-docs-lists` and `scripts/test-check-protected-targets`). `Relay (tests)` runs on Linux too, on every pull request (the relay's type-check, tests and bundle check, and both deployments built without uploading anything, [Relay tests](#relay-tests)); it is not yet one of the required checks, which the owner makes it ([relay.md, step 2](relay.md#2-branch-protection-on-main)). The relay is deployed only by `.github/workflows/relay.yml`, which only the owner starts and approves ([relay.md](relay.md#deploying-the-relay)). Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
 
 The engine's CI partition is in `engine/scripts/test-platform.ts`. `npm test` still runs the whole suite on a Mac. Both take their list from `engine/scripts/test-files.ts`, and both check afterwards that every file in it reported. The partition discovers the same files automatically: only files verified unchanged on Linux are in its list; a new test stays on macOS until verified. Both halves together cover the whole suite. `credentialsplatform.ts` runs on both deliberately: on macOS it checks that the file store cannot be created, on Linux it checks persistence, permissions and read/modify/delete.
 
