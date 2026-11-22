@@ -1,0 +1,478 @@
+import CryptoKit
+import Foundation
+
+// The lines a channel carries on top of the engine's own (iphone.md 5.6): its first lines (the Mac's proof, `pair` and
+// `paired`, `attach` and `attached`, resuming through `attach`), `presence` inside `attach`, `sessionEnd` and `revoked`.
+// Each is one JSON object with one member, named for what it is. Every byte string is base64url; every P-256 public
+// key is SPKI DER, a channel key its 32 raw bytes; every signature is ECDSA P-256 over the exact `signed` text
+// (SignedStatement), and every `signed` is checked field by field, with no field missing and none unknown.
+
+/// The longest first line taken: a `pair` with its App Attest attestation is the longest, a few kilobytes.
+public let maxControlLineLength = Lines.firstLinesMaxLength
+
+/// How far `at` in an attach may be from the reader's clock (3.4).
+public let attachClockWindow: TimeInterval = 2 * 60
+
+/// The Mac's first transport message on every channel (3.3 step 4, 3.4): a fresh 32-byte challenge, and the identity
+/// key's signature over `{"v":2,"kind":"mac","pairing":…,"binding":<the handshake hash>}`, which the phone checks
+/// against `i`. On a connection the challenge is the engine's, for the attach.
+public struct MacProof: Sendable {
+	public let challenge: Data
+	public let statement: SignedStatement
+
+	public static func make(challenge: Data, pairing: PairingID, binding: Data, identity: some StatementSigner) throws -> MacProof {
+		guard challenge.count == 32 else { throw RemoteKitError("mac proof", "a challenge that is not 32 bytes") }
+		let signed = JSONValue.object([
+			("v", .integer(2)), ("kind", .string("mac")), ("pairing", .string(pairing.text)), ("binding", .string(Base64URL.encode(binding))),
+		])
+		return MacProof(challenge: challenge, statement: try SignedStatement.make(signed, signer: identity))
+	}
+
+	/// The phone's check: the Mac's identity key signed this channel's binding for this pairing.
+	public func verify(identityKey: P256.Signing.PublicKey, pairing: PairingID, binding: Data) throws {
+		let part = "mac proof"
+		guard statement.isSigned(by: identityKey) else { throw RemoteKitError(part, "not signed by the Mac's identity key") }
+		let fields = try Fields(statement.value, part: part, keys: ["v", "kind", "pairing", "binding"])
+		try fields.version()
+		guard try fields.string("kind").sameBytes("mac") else { throw RemoteKitError(part, "not a Mac's proof") }
+		guard try fields.string("pairing").sameBytes(pairing.text) else { throw RemoteKitError(part, "for another pairing") }
+		guard Bytes.constantTimeEqual(try fields.bytes("binding", count: 32), binding) else { throw RemoteKitError(part, "for another channel") }
+	}
+
+	var json: JSONValue {
+		.object([
+			("challenge", .string(Base64URL.encode(challenge))),
+			("mac", .object([("signed", .string(statement.text)), ("signature", .string(statement.signatureText))])),
+		])
+	}
+
+	static func read(_ value: JSONValue) throws -> MacProof {
+		let part = "mac proof"
+		let fields = try Fields(value, part: part, keys: ["challenge", "mac"])
+		let inner = try Fields(fields.value("mac")!, part: part, keys: ["signed", "signature"])
+		return MacProof(
+			challenge: try fields.bytes("challenge", count: 32),
+			statement: try SignedStatement.read(text: inner.value("signed"), signature: inner.value("signature"), part: part))
+	}
+}
+
+/// What the phone says of itself in `pair` (3.3 step 4).
+public struct DeviceDescription: Sendable {
+	public var name: String
+	public var model: String
+	public var system: String
+	public var build: String
+	public var deviceKey: P256.Signing.PublicKey
+	public var presenceKey: P256.Signing.PublicKey
+	public var channelKey: Curve25519.KeyAgreement.PublicKey
+	public var recordKey: P256.KeyAgreement.PublicKey
+
+	public init(
+		name: String, model: String, system: String, build: String, deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey,
+		channelKey: Curve25519.KeyAgreement.PublicKey, recordKey: P256.KeyAgreement.PublicKey
+	) {
+		self.name = name
+		self.model = model
+		self.system = system
+		self.build = build
+		self.deviceKey = deviceKey
+		self.presenceKey = presenceKey
+		self.channelKey = channelKey
+		self.recordKey = recordKey
+	}
+
+	var json: JSONValue {
+		.object([
+			("name", .string(name)), ("model", .string(model)), ("system", .string(system)), ("build", .string(build)),
+			("deviceKey", .string(PublicKeys.text(deviceKey))), ("presenceKey", .string(PublicKeys.text(presenceKey))),
+			("channelKey", .string(PublicKeys.text(channelKey))), ("recordKey", .string(PublicKeys.text(recordKey))),
+		])
+	}
+
+	static func read(_ value: JSONValue) throws -> DeviceDescription {
+		let part = "pair"
+		let fields = try Fields(value, part: part, keys: ["name", "model", "system", "build", "deviceKey", "presenceKey", "channelKey", "recordKey"])
+		func key<K>(_ name: String, _ read: (String) -> K?) throws -> K {
+			guard let key = read(try fields.string(name)) else { throw RemoteKitError(part, "\(name) is not a key") }
+			return key
+		}
+		let description = DeviceDescription(
+			name: try fields.nonEmpty("name", maxLength: 128), model: try fields.nonEmpty("model", maxLength: 128),
+			system: try fields.nonEmpty("system", maxLength: 128), build: try readBuild(fields, part: part),
+			deviceKey: try key("deviceKey", PublicKeys.signingKey), presenceKey: try key("presenceKey", PublicKeys.signingKey),
+			channelKey: try key("channelKey", PublicKeys.channelKey), recordKey: try key("recordKey", PublicKeys.agreementKey))
+		guard !Bytes.constantTimeEqual(description.deviceKey.derRepresentation, description.presenceKey.derRepresentation) else {
+			throw RemoteKitError(part, "the device key and the presence key are one key")
+		}
+		return description
+	}
+}
+
+/// An app's build: 1 to 32 letters, digits, `.`, `-` and `+`.
+func readBuild(_ fields: Fields, part: String) throws -> String {
+	let build = try fields.string("build", maxLength: 32)
+	guard !build.isEmpty, build.utf8.allSatisfy({ byte in
+		switch byte {
+		case UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "0")...UInt8(ascii: "9"),
+			UInt8(ascii: "."), UInt8(ascii: "-"), UInt8(ascii: "+"):
+			true
+		default: false
+		}
+	}) else { throw RemoteKitError(part, "build is not a build") }
+	return build
+}
+
+/// The phone's claim to pair (3.3 step 4): `{"pair":{"v":2,"device":{…},"attestation":…,"keyId":…,"signed":…,"signature":…}}`,
+/// `signed` being `{"v":2,"kind":"pair","pairing":…,"binding":<the handshake hash>}` signed by the device key.
+/// `attestation` and `keyId` are null only from a build without App Attest, which only a throwaway copy's engine takes (10).
+public struct PairClaim: Sendable {
+	public static let maxAttestationLength = 32 * 1024
+
+	public let device: DeviceDescription
+	/// App Attest's attestation object, as `attestKey` gives it.
+	public let attestation: Data?
+	/// App Attest's key id, as `generateKey` gives it (standard base64).
+	public let keyId: String?
+	public let statement: SignedStatement
+
+	public static func make(
+		device: DeviceDescription, attestation: Data?, keyId: String?, pairing: PairingID, binding: Data, deviceKey: some StatementSigner
+	) throws -> PairClaim {
+		guard (attestation == nil) == (keyId == nil) else { throw RemoteKitError("pair", "an attestation without its key id") }
+		guard Bytes.constantTimeEqual(deviceKey.publicKey.derRepresentation, device.deviceKey.derRepresentation) else {
+			throw RemoteKitError("pair", "signed by a key that is not the device key")
+		}
+		let signed = JSONValue.object([
+			("v", .integer(2)), ("kind", .string("pair")), ("pairing", .string(pairing.text)), ("binding", .string(Base64URL.encode(binding))),
+		])
+		return PairClaim(device: device, attestation: attestation, keyId: keyId, statement: try SignedStatement.make(signed, signer: deviceKey))
+	}
+
+	/// pi² Remote's check, before it passes the claim to the engine, which checks it again with the attestation
+	/// (3.3 step 5): the device key signed this channel's binding for this pairing, and the channel key the phone names
+	/// is the one the handshake proved it holds.
+	public func verify(pairing: PairingID, binding: Data, handshakeChannelKey: Data) throws {
+		let part = "pair"
+		guard statement.isSigned(by: device.deviceKey) else { throw RemoteKitError(part, "not signed by the device key it names") }
+		let fields = try Fields(statement.value, part: part, keys: ["v", "kind", "pairing", "binding"])
+		try fields.version()
+		guard try fields.string("kind").sameBytes("pair") else { throw RemoteKitError(part, "not a claim to pair") }
+		guard try fields.string("pairing").sameBytes(pairing.text) else { throw RemoteKitError(part, "for another pairing") }
+		guard Bytes.constantTimeEqual(try fields.bytes("binding", count: 32), binding) else { throw RemoteKitError(part, "for another channel") }
+		guard Bytes.constantTimeEqual(device.channelKey.rawRepresentation, handshakeChannelKey) else {
+			throw RemoteKitError(part, "names a channel key the handshake was not made with")
+		}
+	}
+
+	var json: JSONValue {
+		.object([("pair", .object([
+			("v", .integer(2)), ("device", device.json),
+			("attestation", attestation.map { .string(Base64URL.encode($0)) } ?? .null), ("keyId", keyId.map(JSONValue.string) ?? .null),
+			("signed", .string(statement.text)), ("signature", .string(statement.signatureText)),
+		]))])
+	}
+
+	static func read(_ value: JSONValue) throws -> PairClaim {
+		let part = "pair"
+		let fields = try Fields(value, part: part, keys: ["v", "device", "attestation", "keyId", "signed", "signature"])
+		try fields.version()
+		var attestation: Data?
+		var keyId: String?
+		if !fields.value("attestation")!.isNull { attestation = try fields.bytes("attestation", maxCount: maxAttestationLength) }
+		if !fields.value("keyId")!.isNull {
+			let text = try fields.string("keyId", maxLength: 128)
+			guard !text.isEmpty, text.utf8.allSatisfy({ SessionID.allowed($0) || $0 == UInt8(ascii: "+") || $0 == UInt8(ascii: "/") || $0 == UInt8(ascii: "=") }) else {
+				throw RemoteKitError(part, "keyId is not a key id")
+			}
+			keyId = text
+		}
+		guard (attestation == nil) == (keyId == nil) else { throw RemoteKitError(part, "an attestation without its key id") }
+		return PairClaim(
+			device: try DeviceDescription.read(fields.value("device")!), attestation: attestation, keyId: keyId,
+			statement: try SignedStatement.read(text: fields.value("signed"), signature: fields.value("signature"), part: part))
+	}
+}
+
+/// The Mac's answer once the person typed the digits (3.3 step 8).
+public struct Paired: Sendable, Equatable {
+	public let device: DeviceID
+	public let pairing: PairingID
+	/// The Mac's name.
+	public let name: String
+	public let addresses: [String]
+
+	public init(device: DeviceID, pairing: PairingID, name: String, addresses: [String]) throws {
+		guard !name.isEmpty, name.utf8.count <= PairingPayload.maxNameLength, ShownText.isShowable(name) else {
+			throw RemoteKitError("paired", "name is not a Mac's name")
+		}
+		guard addresses.count <= PairingPayload.maxAddresses, addresses.allSatisfy(PairingPayload.isHostAndPort) else {
+			throw RemoteKitError("paired", "addresses are not addresses")
+		}
+		self.device = device
+		self.pairing = pairing
+		self.name = name
+		self.addresses = addresses
+	}
+
+	public static func == (lhs: Paired, rhs: Paired) -> Bool {
+		lhs.device == rhs.device && lhs.pairing == rhs.pairing && lhs.name.sameBytes(rhs.name)
+			&& lhs.addresses.count == rhs.addresses.count && zip(lhs.addresses, rhs.addresses).allSatisfy { $0.sameBytes($1) }
+	}
+
+	var json: JSONValue {
+		.object([("paired", .object([
+			("device", .string(device.text)), ("pairing", .string(pairing.text)), ("name", .string(name)),
+			("addresses", .array(addresses.map(JSONValue.string))),
+		]))])
+	}
+
+	static func read(_ value: JSONValue) throws -> Paired {
+		let part = "paired"
+		let fields = try Fields(value, part: part, keys: ["device", "pairing", "name", "addresses"])
+		guard let device = DeviceID(try fields.string("device")) else { throw RemoteKitError(part, "device is not a device's id") }
+		guard let pairing = PairingID(try fields.string("pairing")) else { throw RemoteKitError(part, "pairing is not a pairing's id") }
+		guard case let .array(items) = fields.value("addresses")!, items.count <= PairingPayload.maxAddresses else {
+			throw RemoteKitError(part, "addresses are not addresses")
+		}
+		let addresses = try items.map { item -> String in
+			guard let text = item.stringValue else { throw RemoteKitError(part, "addresses are not addresses") }
+			return text
+		}
+		return try Paired(device: device, pairing: pairing, name: try fields.string("name", maxLength: PairingPayload.maxNameLength), addresses: addresses)
+	}
+}
+
+/// The phone's attach, afresh or resuming a session, on every new channel (3.4, 4.3, 5.8):
+/// `{"attach":{"signed":…,"signature":…,"presence":…}}`, with `"received":<count>` beside them when it resumes. `signed`
+/// is `{"v":2,"kind":"attach","pairing":…,"device":…,"session":<null or the session>,"binding":…,"challenge":…,"build":…,"at":…}`,
+/// signed by the device key; `presence` is the presence key's signature over the same text. `received`, the count of
+/// lines the phone has had in the session, is for pi² Remote's buffer and needs no signature: the channel carries it.
+public struct AttachClaim: Sendable {
+	public let statement: SignedStatement
+	public let presence: Data
+	public let received: UInt64?
+
+	public let pairing: PairingID
+	public let device: DeviceID
+	public let session: SessionID?
+	public let binding: Data
+	public let challenge: Data
+	public let build: String
+	/// The phone's clock when it signed, in milliseconds since 1970.
+	public let at: Int64
+
+	public static func make(
+		pairing: PairingID, device: DeviceID, session: SessionID?, received: UInt64?, binding: Data, challenge: Data, build: String,
+		at date: Date = Date(), deviceKey: some StatementSigner, presenceKey: some StatementSigner
+	) throws -> AttachClaim {
+		guard (session == nil) == (received == nil) else { throw RemoteKitError("attach", "a resume without its count, or a count without a session") }
+		if let received, received > UInt64(JSON.maxSafeInteger) { throw RemoteKitError("attach", "received is not a count") }
+		let signed = JSONValue.object([
+			("v", .integer(2)), ("kind", .string("attach")), ("pairing", .string(pairing.text)), ("device", .string(device.text)),
+			("session", session.map { .string($0.text) } ?? .null), ("binding", .string(Base64URL.encode(binding))),
+			("challenge", .string(Base64URL.encode(challenge))), ("build", .string(build)),
+			("at", .integer(Int64((date.timeIntervalSince1970 * 1000).rounded(.down)))),
+		])
+		let statement = try SignedStatement.make(signed, signer: deviceKey)
+		let presence: Data
+		do {
+			presence = try presenceKey.sign(Data(statement.text.utf8))
+		} catch {
+			throw RemoteKitError("attach", "the presence key could not sign")
+		}
+		guard presence.count == SignedStatement.signatureLength else { throw RemoteKitError("attach", "a presence signature of the wrong length") }
+		return try AttachClaim(statement: statement, presence: presence, received: received)
+	}
+
+	private init(statement: SignedStatement, presence: Data, received: UInt64?) throws {
+		let part = "attach"
+		let fields = try Fields(statement.value, part: part, keys: ["v", "kind", "pairing", "device", "session", "binding", "challenge", "build", "at"])
+		try fields.version()
+		guard try fields.string("kind").sameBytes("attach") else { throw RemoteKitError(part, "not an attach") }
+		guard let pairing = PairingID(try fields.string("pairing")) else { throw RemoteKitError(part, "pairing is not a pairing's id") }
+		guard let device = DeviceID(try fields.string("device")) else { throw RemoteKitError(part, "device is not a device's id") }
+		var session: SessionID?
+		if !fields.value("session")!.isNull {
+			guard let id = SessionID(try fields.string("session")) else { throw RemoteKitError(part, "session is not a session's id") }
+			session = id
+		}
+		guard (session == nil) == (received == nil) else { throw RemoteKitError(part, "a resume without its count, or a count without a session") }
+		self.statement = statement
+		self.presence = presence
+		self.received = received
+		self.pairing = pairing
+		self.device = device
+		self.session = session
+		binding = try fields.bytes("binding", count: 32)
+		challenge = try fields.bytes("challenge", count: 32)
+		build = try readBuild(fields, part: part)
+		at = try fields.integer("at")
+	}
+
+	/// pi² Remote's own check against its list of device keys (3.4): this device's key signed an attach for this
+	/// pairing and device, bound to this channel.
+	public func verifyDevice(deviceKey: P256.Signing.PublicKey, pairing: PairingID, device: DeviceID, binding: Data) throws {
+		let part = "attach"
+		guard statement.isSigned(by: deviceKey) else { throw RemoteKitError(part, "not signed by the device key") }
+		guard self.pairing == pairing else { throw RemoteKitError(part, "for another pairing") }
+		guard self.device == device else { throw RemoteKitError(part, "for another device") }
+		guard Bytes.constantTimeEqual(self.binding, binding) else { throw RemoteKitError(part, "for another channel") }
+	}
+
+	/// The whole check the engine makes (3.4), for a test end or a reader in Swift: both signatures, the binding, the
+	/// challenge issued for this channel, and `at` within two minutes of `now`.
+	public func verify(
+		deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey, pairing: PairingID, device: DeviceID, binding: Data,
+		challenge: Data, now: Date = Date()
+	) throws {
+		try verifyDevice(deviceKey: deviceKey, pairing: pairing, device: device, binding: binding)
+		guard SignedStatement.verify(presence, over: Data(statement.text.utf8), by: presenceKey) else {
+			throw RemoteKitError("attach", "no valid presence signature")
+		}
+		guard Bytes.constantTimeEqual(self.challenge, challenge) else { throw RemoteKitError("attach", "for another challenge") }
+		let skew = abs(Double(at) / 1000 - now.timeIntervalSince1970)
+		guard skew <= attachClockWindow else { throw RemoteKitError("attach", "signed more than two minutes from now") }
+	}
+
+	var json: JSONValue {
+		var members: [(String, JSONValue)] = [
+			("signed", .string(statement.text)), ("signature", .string(statement.signatureText)), ("presence", .string(Base64URL.encode(presence))),
+		]
+		if let received { members.append(("received", .integer(Int64(received)))) }
+		return .object([("attach", .object(members))])
+	}
+
+	static func read(_ value: JSONValue) throws -> AttachClaim {
+		let part = "attach"
+		let fields = try Fields(value, part: part, keys: ["signed", "signature", "presence"], optional: ["received"])
+		var received: UInt64?
+		if fields.value("received") != nil {
+			let count = try fields.integer("received")
+			guard count >= 0 else { throw RemoteKitError(part, "received is not a count") }
+			received = UInt64(count)
+		}
+		return try AttachClaim(
+			statement: try SignedStatement.read(text: fields.value("signed"), signature: fields.value("signature"), part: part),
+			presence: try fields.bytes("presence", count: SignedStatement.signatureLength), received: received)
+	}
+}
+
+/// pi² Remote's answer to an attach: the session, and whether it was resumed (5.8: `resume: false` sends the phone to
+/// attach afresh).
+public struct Attached: Sendable, Equatable {
+	public let session: SessionID
+	public let resume: Bool
+
+	public init(session: SessionID, resume: Bool) {
+		self.session = session
+		self.resume = resume
+	}
+
+	var json: JSONValue { .object([("attached", .object([("session", .string(session.text)), ("resume", .bool(resume))]))]) }
+
+	static func read(_ value: JSONValue) throws -> Attached {
+		let part = "attached"
+		let fields = try Fields(value, part: part, keys: ["session", "resume"])
+		guard let session = SessionID(try fields.string("session")) else { throw RemoteKitError(part, "session is not a session's id") }
+		guard let resume = fields.value("resume")?.boolValue else { throw RemoteKitError(part, "resume is not true or false") }
+		return Attached(session: session, resume: resume)
+	}
+}
+
+/// The Mac's word that a device is revoked (3.6), signed by its identity key: `{"revoked":{"signed":…,"signature":…}}`
+/// with `signed` = `{"v":2,"kind":"revoked","pairing":…,"device":…,"at":…}`. The phone acts on no other.
+public struct Revocation: Sendable {
+	public let statement: SignedStatement
+	public let pairing: PairingID
+	public let device: DeviceID
+	public let at: Int64
+
+	public static func make(pairing: PairingID, device: DeviceID, at date: Date = Date(), identity: some StatementSigner) throws -> Revocation {
+		let signed = JSONValue.object([
+			("v", .integer(2)), ("kind", .string("revoked")), ("pairing", .string(pairing.text)), ("device", .string(device.text)),
+			("at", .integer(Int64((date.timeIntervalSince1970 * 1000).rounded(.down)))),
+		])
+		return try Revocation(statement: try SignedStatement.make(signed, signer: identity))
+	}
+
+	private init(statement: SignedStatement) throws {
+		let part = "revoked"
+		let fields = try Fields(statement.value, part: part, keys: ["v", "kind", "pairing", "device", "at"])
+		try fields.version()
+		guard try fields.string("kind").sameBytes("revoked") else { throw RemoteKitError(part, "not a revocation") }
+		guard let pairing = PairingID(try fields.string("pairing")) else { throw RemoteKitError(part, "pairing is not a pairing's id") }
+		guard let device = DeviceID(try fields.string("device")) else { throw RemoteKitError(part, "device is not a device's id") }
+		self.statement = statement
+		self.pairing = pairing
+		self.device = device
+		at = try fields.integer("at")
+	}
+
+	/// The phone's check: its Mac's identity key revoked this very device.
+	public func verify(identityKey: P256.Signing.PublicKey, pairing: PairingID, device: DeviceID) throws {
+		guard statement.isSigned(by: identityKey) else { throw RemoteKitError("revoked", "not signed by the Mac's identity key") }
+		guard self.pairing == pairing, self.device == device else { throw RemoteKitError("revoked", "for another device") }
+	}
+
+	var json: JSONValue {
+		.object([("revoked", .object([("signed", .string(statement.text)), ("signature", .string(statement.signatureText))]))])
+	}
+
+	static func read(_ value: JSONValue) throws -> Revocation {
+		let part = "revoked"
+		let fields = try Fields(value, part: part, keys: ["signed", "signature"])
+		return try Revocation(statement: try SignedStatement.read(text: fields.value("signed"), signature: fields.value("signature"), part: part))
+	}
+}
+
+/// One of a channel's own lines (5.6), as read from or written to the channel.
+public enum ControlLine: Sendable {
+	/// The Mac's first message: a challenge and its proof.
+	case mac(MacProof)
+	case pair(PairClaim)
+	case paired(Paired)
+	case attach(AttachClaim)
+	case attached(Attached)
+	case revoked(Revocation)
+	/// The phone's session ended (4.5): `{"sessionEnd":{}}`.
+	case sessionEnd
+
+	/// Reads one of these lines and nothing else: the line must be exactly one of them.
+	public static func parse(_ line: Data) throws -> ControlLine {
+		guard line.count <= maxControlLineLength else { throw RemoteKitError("channel line", "too long") }
+		let value: JSONValue
+		do {
+			value = try JSON.parse(line)
+		} catch {
+			throw RemoteKitError("channel line", "not JSON as RemoteKit reads it")
+		}
+		guard case let .object(members) = value, !members.isEmpty else { throw RemoteKitError("channel line", "not one of the channel's lines") }
+		if members.count == 2, value["challenge"] != nil, value["mac"] != nil { return .mac(try MacProof.read(value)) }
+		guard members.count == 1 else { throw RemoteKitError("channel line", "not one of the channel's lines") }
+		let (name, inner) = members[0]
+		// Names compared byte for byte, as everywhere a text from outside is compared (String.sameBytes).
+		if name.sameBytes("pair") { return .pair(try PairClaim.read(inner)) }
+		if name.sameBytes("paired") { return .paired(try Paired.read(inner)) }
+		if name.sameBytes("attach") { return .attach(try AttachClaim.read(inner)) }
+		if name.sameBytes("attached") { return .attached(try Attached.read(inner)) }
+		if name.sameBytes("revoked") { return .revoked(try Revocation.read(inner)) }
+		if name.sameBytes("sessionEnd") {
+			guard case let .object(fields) = inner, fields.isEmpty else { throw RemoteKitError("sessionEnd", "not empty") }
+			return .sessionEnd
+		}
+		throw RemoteKitError("channel line", "not one of the channel's lines")
+	}
+
+	/// The line's bytes, ready for `Channel.seal(line:)`.
+	public var line: Data {
+		switch self {
+		case let .mac(proof): JSON.write(proof.json)
+		case let .pair(claim): JSON.write(claim.json)
+		case let .paired(paired): JSON.write(paired.json)
+		case let .attach(claim): JSON.write(claim.json)
+		case let .attached(attached): JSON.write(attached.json)
+		case let .revoked(revocation): JSON.write(revocation.json)
+		case .sessionEnd: JSON.write(.object([("sessionEnd", .object([]))]))
+		}
+	}
+}
