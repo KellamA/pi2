@@ -29,6 +29,9 @@ struct ChatView: View {
     @FocusState private var composerFocused: Bool
     /// Whether the message field is to take the keyboard once the page has shown the conversation.
     @State private var focusOnceShown = false
+    /// Whether the message field is too narrow for the agent's name and Stop's word beside its buttons, as in the
+    /// narrowest of a hub's panes (#657).
+    @State private var narrowComposer = false
 
     private var data: OpenConversation? { engine.open[id] }
     private var items: [Item] { data?.items ?? [] }
@@ -435,7 +438,8 @@ struct ChatView: View {
                 if !isChat, let agent = engine.agent(state?.agent.agentId) {
                     HStack(spacing: 6) {
                         AgentAvatar(agent: agent, size: 16)
-                        Text(agent.name).foregroundStyle(Theme.tx2)
+                        // In a narrow pane the name gives way, so that Stop and Send keep their room (#657).
+                        if !narrowComposer { Text(agent.name).foregroundStyle(Theme.tx2).lineLimit(1) }
                     }
                     .font(.system(size: 12))
                     .padding(.horizontal, 7).padding(.vertical, 3)
@@ -445,8 +449,11 @@ struct ChatView: View {
                 Spacer()
                 if busy {
                     if !isChat { SteerQueuePicker(steer: $steer) }
-                    Button("Stop", systemImage: "stop.fill") { engine.perform("abort", ["id": id]) }
+                    Button { engine.perform("abort", ["id": id]) } label: {
+                        if narrowComposer { Image(systemName: "stop.fill") } else { Label("Stop", systemImage: "stop.fill") }
+                    }
                         .buttonStyle(.piDanger)
+                        .accessibilityLabel("Stop")
                         .help(isChat ? "Stop the answer (⌘.)" : "Stop the run and everything it started (⌘.)")
                 }
                 Button { send(draft) } label: {
@@ -466,6 +473,7 @@ struct ChatView: View {
         }
         .padding(12)
         .panel(radius: 14, border: composerFocused ? Theme.acc.opacity(0.55) : Theme.line2)
+        .onGeometryChange(for: Bool.self) { $0.size.width < 420 } action: { narrowComposer = $0 }
         .animation(.easeOut(duration: 0.15), value: composerFocused)
         .padding(.horizontal, inset).padding(.top, 10).padding(.bottom, 18)
     }

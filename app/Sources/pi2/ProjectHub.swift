@@ -115,6 +115,9 @@ final class ProjectHubs {
     /// Goes up when the person moves to a pane, or to the orchestrator's conversation, with the keyboard, so its message
     /// field takes it.
     var keyboardRequests: [String: Int] = [:]
+    /// The fold each hub was last drawn with: the one chosen, or with the window too narrow, the side that folded by
+    /// itself. Next Pane goes only to what shows.
+    var drawnFolds: [String: HubFold] = [:]
     /// Why the last split or opening beside could not be made, said in a line above the hub until the next one is.
     var refusals: [String: String] = [:]
     /// The room the hub's panes have, and where each pane is in it, as last laid out: for telling whether a split fits,

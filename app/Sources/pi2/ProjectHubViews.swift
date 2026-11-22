@@ -56,6 +56,9 @@ struct ProjectHubView: View {
             .onChange(of: orchestratorKeyed ? project.conversation : layout.focusedConversation ?? project.conversation, initial: true) { _, keyed in
                 model.hubs.setKeyboard(keyed, for: projectID)
             }
+            .onChange(of: shown, initial: true) { _, shown in
+                if model.hubs.drawnFolds[projectID] != shown { model.hubs.drawnFolds[projectID] = shown }
+            }
             .alert("Start a fresh conversation with \(engine.agent(project.orchestratorId)?.name ?? "the orchestrator")?", isPresented: Binding(
                 get: { model.hubs.freshAsked == projectID },
                 set: { if !$0, model.hubs.freshAsked == projectID { model.hubs.freshAsked = nil } }

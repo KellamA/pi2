@@ -83,6 +83,9 @@ final class Feed {
     var hubNarrow = false
     /// Whether an agent's conversation takes the board's place in the hub (#473).
     var hubAgent = false
+    /// How many panes side by side are beside the conversation, and the least width they need together (#657).
+    var hubAcross = 1
+    var hubBoardMinimum: CGFloat = HubFold.narrowWidth - HubFold.columnWidth - 1
     /// Whether the detail shows the Dashboard (#481).
     var dashboard = false
     /// The Dashboard's columns whose window onto the orchestrator is folded away, and those folded to a strip (#618).
@@ -245,7 +248,7 @@ struct HubDetail: View {
     var body: some View {
         VStack(spacing: 0) {
             probe("bar") { Text("Demo project · \(longLine)").lineLimit(1).frame(maxWidth: .infinity, minHeight: 50) }
-            HubPanels(fold: feed.hubFold, narrow: Binding(get: { feed.hubNarrow }, set: { feed.hubNarrow = $0 }), agent: feed.hubAgent) {
+            HubPanels(fold: feed.hubFold, narrow: Binding(get: { feed.hubNarrow }, set: { feed.hubNarrow = $0 }), agent: feed.hubAgent, across: feed.hubAcross, boardMinimum: feed.hubBoardMinimum) {
                 probe("conversation") {
                     VStack(spacing: 0) {
                         Color.gray.opacity(0.2).frame(minHeight: 0, maxHeight: .infinity)
@@ -901,6 +904,49 @@ Task { @MainActor in
             }
         }
         check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
+        check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
+        hub.close()
+    }
+
+    await group("a project's hub with two and three panes beside the conversation, at the smallest size and wider, in each fold (#657)") {
+        let hub = Made(fixed: true, hub: true)
+        hub.feed.hubAgent = true
+        await hub.layOut()
+        hub.window.setContentSize(fixed)
+        await hub.layOut()
+        var sideBySide = 0, folded = 0
+        for across in [2, 3] {
+            hub.feed.hubAcross = across
+            // As `HubLayout.minimum` has it for a row of panes: each 319 points with the divider before it, and the gutters.
+            hub.feed.hubBoardMinimum = CGFloat(across) * (HubFold.columnWidth - 1) + CGFloat(across - 1) * 6
+            let both = HubFold.bothWidth(boardMinimum: hub.feed.hubBoardMinimum)
+            for width in [fixed.width, 1440, 1800] {
+                hub.window.setContentSize(NSSize(width: width, height: fixed.height))
+                for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+                    hub.feed.sidebar = sidebar
+                    for fold in HubFold.allCases {
+                        hub.feed.hubFold = fold
+                        hub.resizes = 0
+                        await hub.layOut()
+                        let frames = hub.feed.frames
+                        let name = "\(across) panes, \(Int(width)) wide, \(sidebar == .all ? "with the sidebar" : "without it"), \(fold.rawValue)"
+                        let hubWidth = frames["bar"]?.width ?? 0
+                        let shown = fold.shown(narrow: hubWidth < both, agent: true)
+                        check("\(name): the window does not resize", hub.resizes == 0, "\(hub.resizes) resizes")
+                        check("\(name): smallest size", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+                        check("\(name): the conversation is \(shown == .conversationFolded ? "folded away" : "shown")", (frames["conversation"] != nil) == (shown != .conversationFolded), "frames \(frames), hub \(hubWidth) wide, both need \(both)")
+                        if fold == .both { if shown == .both { sideBySide += 1 } else { folded += 1 } }
+                        if shown == .both, let conversation = frames["conversation"], let panes = frames["agent"] {
+                            let expected = HubFold.conversationWidth(hubWidth, boardMinimum: hub.feed.hubBoardMinimum, across: across)
+                            check("\(name): the conversation is one column like each pane", abs(conversation.width - expected) <= 2, "conversation \(conversation.width), expected \(expected)")
+                            check("\(name): the panes have their least width", panes.width >= hub.feed.hubBoardMinimum - 0.5, "panes \(panes.width), least \(hub.feed.hubBoardMinimum)")
+                            check("\(name): both inside the window", panes.maxX <= hub.host.frame.width + 0.5, "panes \(panes) in \(hub.host.frame.size)")
+                        }
+                    }
+                }
+            }
+        }
+        check("the conversation showed beside the panes where there was room, and folded by itself where not", sideBySide >= 4 && folded >= 4, "beside \(sideBySide), folded \(folded)")
         check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
         hub.close()
     }

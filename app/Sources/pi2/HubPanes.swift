@@ -79,7 +79,7 @@ extension ProjectHubs {
 
     static func noRoom(_ axis: SplitAxis, room: CGSize) -> String {
         axis == .row
-            ? "There is no room for another pane side by side: each needs \(Int(HubFold.columnWidth)) points across, and the hub is \(Int(room.width)). Widen the window, or split down (⇧⌘D)."
+            ? "There is no room for another pane side by side: each needs \(Int(HubFold.columnWidth)) points across, and the hub is \(Int(room.width)) points wide. Widen the window, or split down (⇧⌘D)."
             : "There is no room for another pane one above another: each needs \(Int(HubLayout.minimumHeight)) points of height, and the panes have \(Int(room.height)). Make the window taller, or split right (⌘D)."
     }
 
@@ -148,7 +148,7 @@ extension AppModel {
     /// Moves to the next or the previous of the hub's conversations and panes, the orchestrator's first, with the keyboard.
     func moveHubPane(_ step: Int) {
         guard let id = shownProject else { return }
-        let fold = hubs.fold(id)
+        let fold = hubs.drawnFolds[id] ?? hubs.fold(id)
         let layout = hubs.layout(id)
         var stops: [UUID?] = []
         if fold != .conversationFolded { stops.append(nil) }
@@ -166,7 +166,7 @@ extension AppModel {
     /// How many stops Next Pane has: the orchestrator's conversation and the panes, as shown.
     var hubPaneStops: Int {
         guard let id = shownProject else { return 0 }
-        let fold = hubs.fold(id)
+        let fold = hubs.drawnFolds[id] ?? hubs.fold(id)
         return (fold != .conversationFolded ? 1 : 0) + (fold != .boardFolded ? hubs.layout(id).panes.count : 0)
     }
 
@@ -241,33 +241,39 @@ struct HubPaneArea: View {
     var body: some View {
         if layout.isSplit {
             let least = HubLayout.minimum(layout.root)
-            let id = project.id
             GeometryReader { geometry in
-                let fits = least.width <= geometry.size.width + 0.5 && least.height <= geometry.size.height + 0.5
-                ScrollView([.horizontal, .vertical]) {
-                    PaneTreeView(node: layout.root, space: space, least: { CGSize(width: HubLayout.minimum($0).width, height: HubLayout.minimum($0).height) }, actions: PaneSplitActions(
-                        resize: { split, fractions in hubs.update(id, save: false) { $0.resize(split, fractions) } },
-                        equalize: { split in hubs.update(id) { $0.equalize(split) } },
-                        save: { hubs.save(id) }
-                    )) { pane in
-                        HubPane(model: model, project: project, layout: layout, pane: pane.id, shown: shown, orchestratorKeyed: orchestratorKeyed, space: space)
+                // Only a window too small for the panes scrolls them: the conversation pages in them scroll themselves.
+                if least.width <= geometry.size.width + 0.5 && least.height <= geometry.size.height + 0.5 {
+                    tree.frame(width: geometry.size.width, height: geometry.size.height)
+                } else {
+                    ScrollView([.horizontal, .vertical]) {
+                        tree.frame(width: max(geometry.size.width, least.width), height: max(geometry.size.height, least.height))
                     }
-                    .frame(width: max(geometry.size.width, least.width), height: max(geometry.size.height, least.height))
-                    .coordinateSpace(.named(space))
-                    .background(PaneClickMonitor { point in
-                        let current = hubs.layout(id)
-                        guard let pane = hubs.pane(at: point, in: current) else { return }
-                        if pane != current.focused || hubs.orchestratorKeyed[id] == true { hubs.focus(pane, in: id) }
-                    })
                 }
-                .scrollDisabled(fits)
-                .scrollIndicators(fits ? .hidden : .automatic)
             }
             .background(Theme.side)
             .environment(\.inSplitPane, true)
         } else {
             HubPane(model: model, project: project, layout: layout, pane: layout.root.id, shown: shown, orchestratorKeyed: orchestratorKeyed, space: space)
         }
+    }
+
+    /// The panes, with the dividers between them and the watch on clicks that moves the focus to the pane clicked in.
+    private var tree: some View {
+        let id = project.id
+        return PaneTreeView(node: layout.root, space: space, least: { CGSize(width: HubLayout.minimum($0).width, height: HubLayout.minimum($0).height) }, actions: PaneSplitActions(
+            resize: { split, fractions in hubs.update(id, save: false) { $0.resize(split, fractions) } },
+            equalize: { split in hubs.update(id) { $0.equalize(split) } },
+            save: { hubs.save(id) }
+        )) { pane in
+            HubPane(model: model, project: project, layout: layout, pane: pane.id, shown: shown, orchestratorKeyed: orchestratorKeyed, space: space)
+        }
+        .coordinateSpace(.named(space))
+        .background(PaneClickMonitor { point in
+            let current = hubs.layout(id)
+            guard let pane = hubs.pane(at: point, in: current) else { return }
+            if pane != current.focused || hubs.orchestratorKeyed[id] == true { hubs.focus(pane, in: id) }
+        })
     }
 }
 
@@ -465,9 +471,10 @@ private struct HubPanePicker: View {
                     .padding(.horizontal, 9).padding(.vertical, 6)
                     .background(Theme.card, in: .rect(cornerRadius: 8))
                     .focused($fieldFocused)
-                    .onSubmit { if choices.indices.contains(marked) { choose(choices[marked]) } }
-                    .onKeyPress(.downArrow) { self.marked = min(marked + 1, max(choices.count - 1, 0)); return .handled }
-                    .onKeyPress(.upArrow) { self.marked = max(marked - 1, 0); return .handled }
+                    // Read as the key is pressed, not as the field was made: the field keeps the first closure it was given.
+                    .onSubmit { chooseMarked() }
+                    .onKeyPress(.downArrow) { step(1); return .handled }
+                    .onKeyPress(.upArrow) { step(-1); return .handled }
                     .onKeyPress(.escape) { close(); return .handled }
                     .onChange(of: query) { self.marked = 0 }
                 if choices.isEmpty {
@@ -533,6 +540,17 @@ private struct HubPanePicker: View {
         }
         .buttonStyle(.plain)
         .help(choice.kind == .board ? "Show the project's board in this pane" : "Show this conversation in this pane")
+    }
+
+    private func step(_ by: Int) {
+        let count = choices.count
+        marked = min(max(min(marked, max(count - 1, 0)) + by, 0), max(count - 1, 0))
+    }
+
+    private func chooseMarked() {
+        let choices = self.choices
+        guard !choices.isEmpty else { return }
+        choose(choices[min(marked, choices.count - 1)])
     }
 
     private func choose(_ choice: Choice) {
