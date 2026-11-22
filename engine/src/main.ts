@@ -64,6 +64,7 @@ import { WAKE_ENTRY } from "./wakes.ts";
 import { type AssistantLike, answeredNeeds, assistantParts, imagesOf, type Item, textOf, toItem, wakeLabel } from "./transcript.ts";
 import { broadcast, type Client, clients, coalesced, send, type Subscription } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, repriceUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, type UsageJson, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
+import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, since, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim, storedNeeds } from "./needs.ts";
@@ -84,9 +85,9 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, scheduleRunsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, inProject, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, type Start, startWithRefusal } from "./projects.ts";
+import { allProjects, inProject, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, startWithRefusal } from "./projects.ts";
 import { orchestratorConversation, orchestratorRole, placeInput, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
-import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
+import { wireProjectSpend } from "./projectlimits.ts";
 import { conversationSpend, dayKey, noSpend } from "./projectspend.ts";
 import { refusal, RequestError } from "./requesterror.ts";
 import { delegateTargets, projectAgentFolder } from "./projectagents.ts";
@@ -1446,25 +1447,6 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 }
 
 // ---- Requests
-
-type Params = Record<string, unknown>;
-const text = (params: Params, key: string): string => {
-	const value = params[key];
-	if (typeof value !== "string") throw new Error(`Missing ${key}`);
-	return value;
-};
-
-function startConfirmation(params: Params): string | undefined {
-	return confirmLimit(params.confirmLimit);
-}
-
-/** The person's start, checked against its project's limits: its agent's, or `projectId`, the one it is carried into. */
-async function checkPersonStart(tx: Tx, agent: AgentProfile, model: ModelRef | null | undefined, confirm: string | undefined, options: Start["options"], task = "", projectId?: string): Promise<string | undefined> {
-	if (agent.projectId !== undefined) refuseStartWith(agent, (await tx.doc(Projects)).projects);
-	const result = await admit({ by: { kind: "person" }, agentId: agent.id, agentName: agent.name, kind: "conversation", parent: null, chat: null, work: null, title: null, task, options }, confirm, { tx, model, ...(projectId === undefined ? {} : { projectId }) });
-	if (!result.ok) throw limitError(result.limit);
-	return result.note;
-}
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
