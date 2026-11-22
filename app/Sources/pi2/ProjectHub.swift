@@ -163,6 +163,9 @@ final class ProjectHubs {
     /// The conversation shown in place of a project's board, if one is.
     func agent(_ id: String) -> Int? { agents[id] }
 
+    /// Every project's conversation in place of its board, by project id.
+    var shownAgents: [String: Int] { agents }
+
     /// Puts a conversation in place of the board, or, with nil, brings the board back.
     func setAgent(_ conversation: Int?, for id: String) {
         guard agents[id] != conversation else { return }
