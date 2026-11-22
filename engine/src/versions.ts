@@ -9,8 +9,9 @@
 // sidebar, the Archive and search leave them out.
 //
 // The chat keeps its id. A document says which version is current; requests on the chat act on that version, and the
-// app's conversation event for the chat follows it (main.ts). A fork is always made from the conversation that owns the
-// entry, so the versions at a point are that conversation's own continuation and the forks made there, oldest first.
+// app's conversation event for the chat follows it (conversationevents.ts). A fork is always made from the
+// conversation that owns the entry, so the versions at a point are that conversation's own continuation and the forks
+// made there, oldest first.
 //
 // Only for chats: an agent's conversation may have changed files that going back would not undo.
 

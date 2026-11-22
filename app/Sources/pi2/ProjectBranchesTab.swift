@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// The board's Branches tab (#478): the branch tracker for this project — the branches and worktrees its conversations

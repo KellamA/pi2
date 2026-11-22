@@ -1,5 +1,6 @@
 import AppKit
 import BrowserKit
+import PiModels
 import SwiftUI
 import UniformTypeIdentifiers
 

@@ -98,8 +98,9 @@ export type Engine = {
 	/** Change a key of settings.json and save the file. The engine keeps the file, so a feature never writes it itself. */
 	saveSetting(key: "projects" | "awake", value: unknown): void;
 	/**
-	 * Save an agent with `agents.save`'s checks and defaults (main.ts, `saveAgent`), and what only the engine sets: for a
-	 * new agent, the project it is made in; the marks of docs/projects.md, 3.3 it is given; the allowed commands a copy takes.
+	 * Save an agent with `agents.save`'s checks and defaults (agentrequests.ts, `saveAgent`), and what only the engine
+	 * sets: for a new agent, the project it is made in; the marks of docs/projects.md, 3.3 it is given; the allowed
+	 * commands a copy takes.
 	 */
 	saveAgent(input: Partial<AgentProfile>, options?: AgentSaveOptions): Promise<{ id: string }>;
 };

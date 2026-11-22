@@ -14,7 +14,7 @@ A short section of the prompt tells the model to use it for work of three or mor
 
 In a durable document per conversation (`pi2.plan`, in `src/plan.ts`). It survives a restart, a fork starts with a copy of its parent's list, and a sub-chat has its own. The conversation state sent to the app carries it as `plan: { items, updatedAt }`, or `null`.
 
-pi durable's conversation view holds only its own documents, so the engine reads the list when the app opens a conversation (`preparePlan`, called from `subscribe` in `main.ts`) and `update_plan` refreshes it as it writes.
+pi durable's conversation view holds only its own documents, so the engine reads the list when the app opens a conversation (`preparePlan`, called from `subscribe` in `conversationevents.ts`) and `update_plan` refreshes it as it writes.
 
 ## In the app
 

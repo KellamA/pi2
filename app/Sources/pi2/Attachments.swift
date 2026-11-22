@@ -2,6 +2,7 @@ import AppKit
 import BrowserKit
 import ImageIO
 import PDFKit
+import PiModels
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -25,15 +26,6 @@ enum AttachmentLimits {
     static let pastedLines = 60
     /// A PDF with no text in it is attached as pictures of this many of its first pages.
     static let scannedPages = 5
-}
-
-/// What the engine keeps about an attachment of a sent message.
-struct AttachmentNote: Codable, Equatable {
-    let name: String
-    /// "image" or "text".
-    let kind: String
-    /// In bytes.
-    let size: Int
 }
 
 enum AttachmentContent: Equatable, Sendable {

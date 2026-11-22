@@ -1,6 +1,7 @@
 import AppKit
 import BrowserKit
 import CryptoKit
+import PiModels
 import SwiftUI
 
 /// A browser action as the engine sends it. BrowserKit reads it, so that the app and the developer probe agree with

@@ -178,7 +178,9 @@ PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" answe
 expect "no copy named test-7 was started from this checkout" reopen test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
 # Every page PI2_SHOW takes goes through the argument checks, not "conversation must be a positive integer" (#553).
-for page in activity usage archive 'settings:general' 'agent:atlas' 'palette:duplicate' 'project:Demo project#work'; do
+# A #<section> goes to the copy with the page, which takes it as at launch (#768).
+for page in activity usage archive 'settings:general' 'settings:chat#memory' 'agent:atlas' 'agent:atlas#computer' \
+	'palette:duplicate' 'project:Demo project#work'; do
 	PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 "$page"
 done
 expect "no copy named test-7 was started from this checkout" size test-7 smallest
@@ -208,8 +210,9 @@ expect "no copy named test-7 was started from this checkout" shot test-7 "$root/
 # start skips the first-run welcome by writing the engine's own setting into the copy's settings.json, as
 # settings.finishOnboarding does. If the engine ever names it otherwise, the welcome comes back over every picture.
 engine="$(dirname -- "$script")/../engine/src/main.ts"
-if ! grep -qF 'settings.onboarded = true;' "$engine"; then
-	echo "FAIL: engine/src/main.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
+settingsRequests="$(dirname -- "$script")/../engine/src/settingsrequests.ts"
+if ! grep -qF 'settings.onboarded = true;' "$settingsRequests"; then
+	echo "FAIL: engine/src/settingsrequests.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
 	failures=$((failures + 1))
 elif ! grep -qF 'const settingsPath = join(home, "settings.json");' "$engine"; then
 	echo "FAIL: engine/src/main.ts no longer keeps its settings in settings.json; change where test-copy start writes them"
@@ -229,6 +232,30 @@ if ! grep -qxF 'MENU_FILE=context-menu.txt' "$script" ||
 	failures=$((failures + 1))
 else
 	echo "ok: test-copy start --menu reads the file the app writes"
+fi
+
+# A running copy's show refuses a section the page does not have, listing the ones it has from the app's own enums;
+# docs/development.md lists them for --show and show, and must name every one (#768, memory was missing after #731).
+agent_sections=$(sed -n 's/^    case \(profile, .*\)$/\1/p' "$sources/AgentViews.swift" | tr -d ' ' | tr ',' ' ')
+settings_sections=$(sed -n '/^enum SettingsSection/,/^}/p' "$sources/SettingsView.swift" | grep -E '^    case ' |
+	sed -E 's/^    case //; s/[a-zA-Z]+ = "([a-z-]+)"/\1/g' | tr -d ' ' | tr ',' ' ')
+docs="$(dirname -- "$script")/../docs/development.md"
+agent_line=$(grep -F 'so `agent:<id>#<section>` opens it' "$docs" || true)
+settings_line=$(grep -F 'so `settings:<tab>#<section>` opens it' "$docs" || true)
+missing=""
+for name in $agent_sections; do [[ $agent_line == *"\`$name\`"* ]] || missing+=" agent:$name"; done
+for name in $settings_sections; do [[ $settings_line == *"\`$name\`"* ]] || missing+=" settings:$name"; done
+if [[ -z $agent_sections || -z $settings_sections ]]; then
+	echo "FAIL: could not read AgentSection or SettingsSection from the app's sources"
+	failures=$((failures + 1))
+elif ! grep -qF 'AgentSection.refusal(page) ?? SettingsLaunch.refusal(page)' "$sources/TestCopyControl.swift"; then
+	echo "FAIL: a running copy's show no longer refuses a section the page does not have"
+	failures=$((failures + 1))
+elif [[ -n $missing ]]; then
+	echo "FAIL: docs/development.md does not name these sections a page can be shown at:$missing"
+	failures=$((failures + 1))
+else
+	echo "ok: every agent and Settings section is named in docs/development.md, and show refuses others"
 fi
 
 # Every context menu in the app can be listed by PI2_MENU only if it is made with .contextMenu(previewAs:), which

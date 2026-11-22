@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// Settings › General › Power: keeping this Mac awake while agents work (#561). The engine keeps the switch and sends it

@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// One piece of work as the engine's `work` event sends it (docs/projects.md, 3.11): a task for the project, in the list

@@ -1,5 +1,6 @@
 import AppKit
 import BrowserKit
+import PiModels
 import SwiftUI
 
 /// The board's Settings tab (#478): the project's own settings — its name and folder, the attached repository, the

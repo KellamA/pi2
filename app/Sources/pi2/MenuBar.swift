@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import ComposeKit
 import LoginItemKit
+import PiModels
 import SwiftUI
 import WindowKit
 

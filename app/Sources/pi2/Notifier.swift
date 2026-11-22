@@ -1,4 +1,5 @@
 import AppKit
+import PiModels
 import UserNotifications
 
 /// Native notifications for things that need the person, when they have turned them on and the app is not in front.
