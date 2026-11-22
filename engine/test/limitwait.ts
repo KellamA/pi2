@@ -6,7 +6,10 @@
 // times it names are a few milliseconds, and a wait of an hour is only looked at, stopped and carried over a restart,
 // never sat through. Each check waits for what the engine does, never for a time. What the engine logged is waited for
 // the same way (`logSays` below): it reaches this test over a pipe, so a line can arrive after the socket event that
-// followed it, and reading `log` once then misses it (#588).
+// followed it, and reading `log` once then misses it (#588). The one exception is the engine's part of #556 at the end: a
+// window a refusal names is the engine's own clock, which the test cannot hold, so it names 1.5 to 4 s and sets up the
+// conversations it holds within that (in about 20 ms on a busy Mac, #791). The same rules, on a clock the test does hold,
+// are checked without an engine below.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -345,8 +348,11 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	const shown: Wait[] = [];
 	// A hold sleeps with a timer that does not keep a process alive by itself, as the engine's must not; this keeps one.
 	const awake = setInterval(() => {}, 250);
+	// The clock is the test's: a window ends when the test moves it past the time, not when a second has passed, which on a
+	// busy Mac can be before the next line has run (#791). A hold still sleeps for real until it looks at the clock again.
+	let now = NOW;
 	const waits = new Waits({ ...DEFAULTS, rememberAtLeastMs: 50 }, {
-		now: Date.now,
+		now: () => now,
 		random: () => 0,
 		providerName: (id) => (id === "anthropic" ? "Anthropic" : id),
 		changed: (_id, wait) => {
@@ -371,6 +377,7 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	assert.equal(shown.at(-1)?.held, true, "the app is shown it as a wait");
 	assert.match(lines.at(-1)!, /^conversation 42 waits for Anthropic's rate limit until .*Z, the time conversation 41 was told, without asking$/);
 	// When the time comes one request goes, and a third conversation waits for its answer.
+	now = until!;
 	await second;
 	assert.equal(waits.get(42), undefined, "the hold ends with its request going");
 	assert.match(lines.at(-1)!, /^conversation 42 stopped waiting for Anthropic's rate limit: the time it named has come, and its request goes now$/);
@@ -396,10 +403,11 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	assert.equal(waits.get(47)?.held, true);
 	waits.stopped(46);
 	waits.ask(46);
-	const started = Date.now();
-	await waits.gate(46, "anthropic");
-	assert.ok(Date.now() - started < 1000, "sent at once, not held");
-	assert.equal(waits.get(46), undefined);
+	// A hold is noted as the gate is called, before it first sleeps: none now means none at all.
+	const asked = waits.gate(46, "anthropic");
+	assert.equal(waits.get(46), undefined, "sent at once, not held");
+	await asked;
+	assert.ok(!lines.some((line) => line.startsWith("conversation 46 waits")), "never held");
 	assert.match(lines.at(-1)!, /^conversation 46 asks Anthropic now, as the person asked it to, rather than waiting until /);
 	waits.answered(46, "anthropic");
 	await behind;
@@ -409,7 +417,7 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	assert.equal(waits.get(47), undefined);
 
 	// A provider that named no time: nothing is remembered, so a conversation asks as it does now.
-	const plain = new Waits({ ...DEFAULTS, rememberAtLeastMs: 50 }, { now: Date.now, random: () => 0, providerName: (id) => id, changed: () => {}, log: () => {} });
+	const plain = new Waits({ ...DEFAULTS, rememberAtLeastMs: 50 }, { now: () => now, random: () => 0, providerName: (id) => id, changed: () => {}, log: () => {} });
 	plain.decide(message("429 rate_limit_error: slow down"), 1, 49);
 	assert.equal(plain.remembered("anthropic"), undefined);
 	await plain.gate(48, "anthropic");
