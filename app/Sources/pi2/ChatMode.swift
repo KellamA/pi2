@@ -480,14 +480,16 @@ struct ChatModeDetail: View {
                 if let id {
                     Button("Continue with an Agent…", systemImage: "arrowshape.turn.up.right") { model.continueWithAgent(id) }
                         .disabled(!engine.canContinueWithAgent(id))
-                        .help("Continue with an Agent: hand this chat to one of your agents, in a folder you choose")
+                        .help(engine.projectsPreview ? "Continue with an Agent: hand this chat to a project’s orchestrator, or another of its agents" : "Continue with an Agent: hand this chat to one of your agents, in a folder you choose")
                     // Left out until the chat has come from the engine and been shown, as in the agent view (#502).
                     if let open = engine.open[id], open.shown, let agent = open.state?.agent { ModelMenu(engine: engine, id: id, agent: agent) }
                 }
             }
         }
         .sheet(isPresented: Binding(get: { model.chats.continuing != nil }, set: { if !$0 { model.chats.continuing = nil } })) {
-            if let chat = model.chats.continuing { ContinueWithAgentSheet(model: model, chat: chat) }
+            if let chat = model.chats.continuing {
+                if engine.projectsPreview { ContinueInProjectSheet(model: model, chat: chat) } else { ContinueWithAgentSheet(model: model, chat: chat) }
+            }
         }
         .task(id: needsChat) { if needsChat { model.newChat() } }
         .onAppear { forgetMissing() }
