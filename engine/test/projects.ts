@@ -1,8 +1,8 @@
 // Projects (#456, docs/projects.md): the project itself and its requests. A real engine on a throwaway data folder,
 // driven over its socket with the demo model, as an app would drive it.
 //
-// First what must not change: a new data folder's app is sent the empty `projects` event, with `preview: true` for the
-// app built before #483 took the switch out, and settings.json says so for the versions before it; a conversation in no
+// First what must not change: a new data folder's app is sent the empty `projects` event, and settings.json says
+// `projects: { preview: true }` for the versions before #483 took the switch out; a conversation in no
 // project is told exactly the same prompt and tool declarations, byte for byte, before any project and after all of
 // them. Then each request, with what it refuses; the operations of 3.6, checking the library and the hub (the
 // `projects` event); two apps connected at once; and an engine stopped and started again.
@@ -110,18 +110,18 @@ try {
 
 	// ---- A new data folder
 
-	assert.deepEqual(client.events.projects, { event: "projects", preview: true, projects: [], carryOver: null });
+	assert.deepEqual(client.events.projects, { event: "projects", projects: [], carryOver: null });
 	// After today's events, each feature's greeting in the order of FEATURES, the projects' last (4.4).
 	assert.ok(client.order.indexOf("projects") > client.order.indexOf("compactionSettings"), client.order.join(" "));
 	assert.ok(client.order.indexOf("projects") > client.order.indexOf("memory"), client.order.join(" "));
-	assert.deepEqual(await client.call("projects.list"), { preview: true, projects: [], carryOver: null });
+	assert.deepEqual(await client.call("projects.list"), { projects: [], carryOver: null });
 	// A dry run waits for the update's own run at the start (carryover.ts), which writes the switch for the versions before.
 	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null);
 	const settingsFile = () => (existsSync(join(home, "settings.json")) ? JSON.parse(readFileSync(join(home, "settings.json"), "utf8")) : {});
 	assert.deepEqual(settingsFile().projects, { preview: true });
 	assert.equal(existsSync(join(home, "backups")), false, "nothing to copy on a new data folder");
 	await refused(client.call("projects.carryOver", {}), "Carrying over runs by itself when the engine starts. Only a dry run is taken: give dryRun: true.");
-	step("a new data folder: the empty projects event, last of the greetings, preview true, and the switch written in settings.json");
+	step("a new data folder: the empty projects event, last of the greetings, and the switch written in settings.json");
 
 	// A conversation made with a template goes into the project of its folder as it is made, here one with no folder
 	// (#458, 9.9); deleting that project leaves it in no project for what it is told, which this test checks below.
@@ -401,7 +401,6 @@ try {
 	// ---- Every project, in the list as in the event
 
 	const listed = await client.call("projects.list");
-	assert.equal(listed.preview, true);
 	assert.equal(listed.projects.length, 8);
 	assert.deepEqual({ event: "projects", ...listed }, client.events.projects);
 	step("projects.list answers what the event holds");

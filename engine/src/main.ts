@@ -499,7 +499,6 @@ const settings: {
 	 * (null for the model's own default). Absent: the model last picked in a conversation, as before.
 	 */
 	agentDefault?: { model: ModelRef; thinkingLevel: string | null };
-	lastAgent?: string;
 	dailyBudget?: number | null;
 	onboarded?: boolean;
 	deviceId?: string;
@@ -1522,7 +1521,7 @@ async function createChat(given: unknown, client: Client): Promise<{ id: Convers
  * it was; it links to the conversation, and a new conversation links back to it. The agent's access, approvals and
  * Allow everything apply from that message, as in any conversation of its own.
  */
-async function continueChat(params: Params, client: Client): Promise<{ id: ConversationId; note?: string }> {
+async function continueChat(params: Params): Promise<{ id: ConversationId; note?: string }> {
 	const shown = await conversation(params.id);
 	const chatId = chatOf(shown.id);
 	const meta = library.conversations[String(chatId)];
@@ -1574,7 +1573,6 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 		},
 		context,
 	);
-	await rememberAgent(agent.id, client);
 	for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 	for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 	const conv = (await harness.conversation(created.id, context))!;
@@ -1641,13 +1639,6 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 
 // ---- Requests
 
-/** A script may choose an agent for a new conversation, but not for the person's next one. */
-async function rememberAgent(id: string, client: Client): Promise<void> {
-	if (settings.lastAgent === id || !(await mayAnswer(client)).allowed) return;
-	settings.lastAgent = id;
-	saveSettings();
-}
-
 type Params = Record<string, unknown>;
 const text = (params: Params, key: string): string => {
 	const value = params[key];
@@ -1681,7 +1672,8 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		if (params.chat === true && params.agentId !== undefined) throw new Error("A chat has no agent: leave agentId out");
 		const confirm = startConfirmation(params);
 		if (params.chat === true) return createChat(params.model, client);
-		const agent = agents[String(params.agentId ?? settings.lastAgent ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
+		// The app always names the agent; a script that names none gets the oldest.
+		const agent = agents[String(params.agentId ?? "")] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) throw new Error("There is no agent to start a conversation with");
 		// An agent removed through a tool is offered to nobody (docs/projects.md, 3.3).
 		if (agent.removedAt !== undefined) throw new Error(`Unknown agent: ${agent.id}`);
@@ -1703,7 +1695,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
-		await rememberAgent(agent.id, client);
 		for (const feature of host.features) await feature.made?.(created.id as unknown as number);
 		for (const feature of host.features) await feature.created?.(created.id as unknown as number, agent);
 		return { id: created.id, ...(note === undefined ? {} : { note }) };

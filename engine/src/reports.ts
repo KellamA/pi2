@@ -15,7 +15,7 @@
 // Outside a project, and in an archived or deleted project, nothing here changes anything: a run
 // there has no report, or its report wakes as wakes.md says.
 //
-// What later issues fill in:
+// Where the other files plug in:
 // - `reports` `wake` is a change with a line and Undo (5.6, 5.9) in #465's record of changes (changes.ts), which
 //   applies its Undo through `setWakeChoicesIn`.
 // - `work` `assign` (#467) starts runs with a report too, through `reportRun` with `work`.

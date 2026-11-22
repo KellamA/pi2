@@ -9,7 +9,8 @@
 // Every answer, by whichever route (`needs.answer`, and today's `inbox.decide` and `inbox.answer`), goes through one
 // function, `claim`, which takes the item off the list in the same step it reads it, so it is taken exactly once.
 //
-// What other issues fill in, each through `onAnswer(kind, handler)`, and what it does until then:
+// What an answer to the other kinds does is registered by other files, each through `onAnswer(kind, handler)`; an answer
+// to a kind with none registered (a stand-in engine in a test) is refused and the item stays:
 //
 // - `reach` and `rule`: a request for more reach, allowed or refused, and a proposed rule, accepted or not. changes.ts
 //   (#465) registers both as the engine makes its feature, and puts them through the orchestrator's tools.

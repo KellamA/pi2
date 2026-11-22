@@ -41,11 +41,11 @@ The design's words ([design/projects.md](design/projects.md#words)) hold: projec
 - **Catch-up**: a short text pi² puts in front of the orchestrator's next input, saying what changed in the project since its last turn ([6.4](#64-the-catch-up-and-the-state-block)).
 - **Start**: any new run of an agent that an agent or the person sets going in a project: a new sub-chat, a sub-chat continued, work assigned. Every start passes one admission check ([8.3](#83-limits-and-the-one-admission-check)).
 - **Allowed commands**: commands an agent may run without asking ([allowed-commands.md](allowed-commands.md)). Their stored fields and requests have an older name (`commandRules`, `rules.add`, `rules.remove`). In this page **rule** always means a project's rule.
-- **Older versions**: the versions of pi² from before projects were the only way, some of which had projects behind a switch. What this page keeps for them (the `agentId` a carried conversation keeps, `preview: true`) lets one of them read the data again if it is restored from the copy the update made (9.8).
+- **Older versions**: the versions of pi² from before projects were the only way, some of which had projects behind a switch. What this page keeps for them (the `agentId` a carried conversation keeps, `settings.json`'s `projects: { preview: true }`) lets one of them read the data again if it is restored from the copy the update made (9.8).
 
 ## 2. The preview switch
 
-Retired: there is no switch, and every conversation that is not a chat is in a project, or in a deleted one's ([3.6](#36-archiving-and-deleting)). What is still written for older versions is in [4.3](#43-events) (`preview: true`), [9.6](#96-conversations-what-each-keeps) and [9.8](#98-the-report-and-the-run) (step 4).
+Retired: there is no switch, and every conversation that is not a chat is in a project, or in a deleted one's ([3.6](#36-archiving-and-deleting)). What is still written for older versions is in [9.6](#96-conversations-what-each-keeps) and [9.8](#98-the-report-and-the-run) (step 4, `settings.json`'s `projects: { preview: true }`). The `projects` event and `projects.list` no longer carry `preview` (#725).
 
 ## 3. Documents
 
@@ -721,7 +721,7 @@ Errors every new request can give, besides its own:
 
 | Request | Answers | Does, and refuses |
 |---|---|---|
-| `projects.list {}` | `{ preview, projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events; `preview` is always `true`, for older versions (section 2) |
+| `projects.list {}` | `{ projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events |
 | `projects.create { folder, name?, template? }` | `{ id, conversation }` | A project from a folder in one step, with its orchestrator and an empty conversation with it. `folder` a folder's path, or null; `name` defaults to the folder's last part ("No folder" for null), with " 2", " 3"… when taken; `template` the id of a template to copy as its orchestrator, else the default orchestrator. Refuses "Not a folder: …" and, for a folder, "There is already a project for this folder: <name>" (an archived one: "…; restore it instead") |
 | `projects.rename { id, name }` | `{}` | Refuses an empty name, one over 80 characters, or one taken |
 | `projects.set { id, folder?, settings? }` | `{ settings }` | Changes the folder (checked as in create; new conversations of its agents start there, those working stay where they are) and any part of the settings ([section 8](#8-settings-without-asking-waking-limits)), each checked; parts not given are kept |
@@ -799,7 +799,7 @@ Errors every new request can give, besides its own:
 New events, each sent whole when what it holds changes, and to each app as it connects:
 
 ```ts
-{ event: "projects"; preview: true; projects: ProjectRow[]; carryOver: CarryOverState | null }   // `preview` always true, for older versions (section 2)
+{ event: "projects"; projects: ProjectRow[]; carryOver: CarryOverState | null }
 
 type ProjectRow = Project & {
 	folderMissing: boolean;
@@ -829,7 +829,7 @@ type CarryOverState = {
 On a new data folder, with nothing made yet, an app is sent exactly:
 
 ```json
-{ "event": "projects", "preview": true, "projects": [], "carryOver": null }
+{ "event": "projects", "projects": [], "carryOver": null }
 { "event": "projectRules", "projects": {} }
 { "event": "needs", "items": [] }
 { "event": "reports", "projects": {} }

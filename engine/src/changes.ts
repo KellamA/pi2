@@ -10,7 +10,7 @@
 // projectrules.ts (projects.rules.*), the note helpers of projectnotes.ts. So an operation cannot do what the person's
 // request could not. An Undo checks first that the target is still what the operation left it, and is itself a change.
 //
-// What other issues fill in, and what it does until then:
+// Where the other files plug in:
 //
 // - `work.local` (#467, here), `work.github` (github.ts, #468) and `wake.choice` (#463) register what they do with
 //   `defineOp`. A project's `repository` is applied through github.ts (`wireRepository`).

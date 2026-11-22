@@ -165,6 +165,8 @@ try {
 
 	/** Where each conversation the test made should end up: its key, and whether it is carried at all. */
 	const made = new Map<number, { key: string; archived: boolean; carried: boolean; subChat: boolean; agentId: string }>();
+	// The welcome finished, as in any data folder in use: so it has a settings.json for the update's copy to take.
+	await client.call("settings.finishOnboarding");
 	const builder = (await client.call("agents.save", { agent: { name: "Builder", access: "ask", cwd: repo, instructions: "Build it." } })).id as string;
 	const temp = (await client.call("agents.save", { agent: { name: "Temp", access: "read" } })).id as string;
 	await client.call("variables.set", { agentId: "forge", name: "GH_TOKEN", value: "token-458" });
@@ -244,7 +246,7 @@ try {
 		memory: structuredClone(client.events.memory),
 		projects: structuredClone(client.events.projects),
 	};
-	assert.deepEqual(before.projects, { event: "projects", preview: true, projects: [], carryOver: null });
+	assert.deepEqual(before.projects, { event: "projects", projects: [], carryOver: null });
 	const counted = { ...client.counts };
 	const report = await client.call("projects.carryOver", { dryRun: true });
 	assert.match(report.plan, /^[0-9a-f]{32}$/);
@@ -419,7 +421,6 @@ try {
 	assert.equal(carryOver.backup, removal.path);
 	assert.deepEqual(carryOver.removalBackup, removal);
 	assert.equal(carryOver.removalFailed, null);
-	assert.equal(client.events.projects.preview, true);
 	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null, "nothing left to do: the record is whole");
 	assert.equal(backupsMade().length, 1);
 	step("the next start finishes the run with no second copy and writes the switch; one cut off before the Keychain step, the start after copies the values");
