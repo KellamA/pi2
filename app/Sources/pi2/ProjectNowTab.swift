@@ -393,7 +393,7 @@ struct NeedCard: View {
     /// A button that opens the conversation the need came from.
     private var openConversation: some View {
         Button("Open “\(need.rootTitle.isEmpty ? "New conversation" : need.rootTitle)”") {
-            model.selection = .conversation(need.rootConversationId)
+            model.openConversation(need.rootConversationId)
         }
         .buttonStyle(.plain)
         .foregroundStyle(Theme.acc)

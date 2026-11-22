@@ -146,7 +146,7 @@ struct ContinueWithAgentSheet: View {
                 dismiss()
                 engine.openConversation(id)
                 // An agent's conversation: the window moves to the agent view, and the chat keeps its place here.
-                model.selection = .conversation(id)
+                model.openConversation(id)
             } catch {
                 problem = error.localizedDescription
             }
@@ -322,20 +322,14 @@ struct ContinueInProjectSheet: View {
         if !toOrchestrator { params["agentId"] = agent.id }
         let next = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !next.isEmpty { params["text"] = next }
-        let orchestrator = toOrchestrator
         Task {
             defer { sending = false }
             do {
                 let result = try await engine.call("chat.continueWithAgent", params)
                 guard let id = result["id"]?.intValue else { return }
                 dismiss()
-                if orchestrator {
-                    // The orchestrator's conversation is the hub's own panel: shown unfolded, with the board as it was.
-                    if model.hubs.fold(project.id) == .conversationFolded { model.hubs.setFold(.both, for: project.id) }
-                    model.showProject(project.id)
-                } else {
-                    model.openAgent(id, in: project.id)
-                }
+                // Where it lives: the orchestrator's in the hub's panel, another agent's in place of the board.
+                model.openConversation(id)
             } catch {
                 problem = error.localizedDescription
             }
@@ -362,7 +356,7 @@ struct ContinuedLinks: View {
                     HStack(spacing: 6) {
                         Image(systemName: link.icon).foregroundStyle(Theme.tx3)
                         Text(link.text).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
-                        Button(link.action) { if link.inHub, let showInHub { showInHub(link.id) } else { engine.onNavigate(link.id) } }
+                        Button(link.action) { if link.inHub, let showInHub { showInHub(link.id) } else { engine.onNavigate(link.id, nil) } }
                             .buttonStyle(.link)
                             .help(link.help)
                         Spacer(minLength: 0)

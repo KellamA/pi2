@@ -108,12 +108,12 @@ struct ProjectsSidebar: View {
 
 extension ProjectsSidebar {
     /// What the list marks as chosen: the window's selection, or, while an agent's conversation is shown in place of the
-    /// project's board, that agent's row, when the sidebar lists one for it.
+    /// project's board, that agent's row, when the sidebar lists one for it, or else the row of the conversation it
+    /// belongs to, such as a finished sub-chat's parent (#644).
     fileprivate var listSelection: Selection? {
-        guard case .project(let id) = model.selection, let agent = model.hubs.agent(id) else { return model.selection }
-        let live = store.live(id)
-        guard live.runs.contains(agent) || live.others.contains(where: { $0.id == agent }) else { return model.selection }
-        return .projectAgent(project: id, conversation: agent)
+        guard case .project(let id) = model.selection, let agent = model.hubs.agent(id),
+              let row = model.sidebarRow(for: agent, in: id) else { return model.selection }
+        return .projectAgent(project: id, conversation: row)
     }
 }
 
@@ -186,7 +186,7 @@ private struct ProjectBlock: View {
             // The rows below carry a tag of their own, so that the arrow keys go from the project to its first working
             // agent and on (#600). Choosing one opens its conversation in place of the board, and the window's selection
             // stays the project's; while it shows, the list marks its row (`listSelection`).
-            let agent = model.hubs.agent(project.id)
+            let agent = model.hubs.agent(project.id).flatMap { model.sidebarRow(for: $0, in: project.id) }
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
                     RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
@@ -505,8 +505,14 @@ private struct ProjectsPreviewFollowing: ViewModifier {
         content
             .onChange(of: model.engine.projectsPreview) { _, on in
                 if on {
-                    if case .conversation(let id) = model.selection, let project = model.engine.conversations.first(where: { $0.id == id })?.projectId {
-                        model.projectsSidebar.open = project
+                    // The old panes are not drawn with the preview on (#644): what the window landed on at launch, before
+                    // the engine said, gives way to the Dashboard, and a conversation chosen opens where it lives.
+                    if model.launchChose {
+                        model.landOnProjects()
+                    } else if case .conversation(let id) = model.selection {
+                        model.openConversation(id)
+                    } else if model.selection == nil {
+                        model.landOnProjects()
                     }
                     return
                 }

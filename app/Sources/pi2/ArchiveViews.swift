@@ -38,6 +38,15 @@ struct ArchiveView: View {
     }
 
     var body: some View {
+        // With the preview on, a conversation opened here reads in place of the list (OpenConversation.swift, #644).
+        if let reading = model.archiveConversation {
+            ArchiveReader(model: model, conversation: reading)
+        } else {
+            page
+        }
+    }
+
+    private var page: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 ArchivedProjects(model: model)
@@ -134,7 +143,7 @@ struct ArchiveView: View {
         if let project, engine.projectsPreview {
             model.openAgent(id, in: project)
         } else {
-            model.selection = .conversation(id)
+            model.openConversation(id)
         }
     }
 
@@ -223,7 +232,7 @@ struct ArchiveRow: View {
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
-            Button("Open") { model.selection = .conversation(row.id) }
+            Button("Open") { model.openConversation(row.id) }
                 .help("Read it without restoring it")
             Button("Restore") { engine.perform("conversation.unarchive", ["id": row.id]) }
                 .help(row.isChat ? "Put it back in chat mode's list, where it can be continued" : "Put it back in the sidebar, where it can be continued")
@@ -234,7 +243,7 @@ struct ArchiveRow: View {
         .padding(.horizontal, 12).padding(.vertical, 9)
         .panel()
         .contextMenu(previewAs: title, String(row.id)) {
-            Button("Open") { model.selection = .conversation(row.id) }
+            Button("Open") { model.openConversation(row.id) }
             Button("Restore") { engine.perform("conversation.unarchive", ["id": row.id]) }
             Button("Delete", role: .destructive) { model.delete(id: row.id, title: row.title) }
         }
@@ -318,7 +327,7 @@ private struct DeletedProject: View {
                         Text(detail(conversation)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Button("Open") { model.selection = .conversation(conversation.id) }
+                    Button("Open") { model.openConversation(conversation.id) }
                         .help("Read it without restoring it")
                     Button("Restore to a Project…") { restore(conversation.id, conversation.title) }
                         .disabled(restoreDisabled)
