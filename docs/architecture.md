@@ -24,7 +24,7 @@ Read only the sections that apply to your work. For more on one feature, see its
 | Storage and credentials | [Where things live](#where-things-live) |
 | Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
 | Projects | [projects.md](projects.md), the contract: its section 1, then the sections your work touches; 12.1 says where each piece several parts share is, and section 10 is the app's side. [The app](#the-app) for the app's files |
-| pi² for iPhone (the epic of #620; not built yet) | [iphone.md](iphone.md), the contract every issue of the epic is built against: read its sections 1, 2, 4 and 5.1, and your issue's row in its section 12; the channel and sealing, byte by byte, are [remotekit.md](remotekit.md); what the person sees is [design/iphone.md](design/iphone.md), with drawings in [design/iphone-drafts.html](design/iphone-drafts.html); the owner's settings for the repository and the relay, and which paths wait for the owner's review, are [relay.md](relay.md) and `.github/CODEOWNERS` |
+| pi² for iPhone (the epic of #620; being built in `iphone/`) | [iphone.md](iphone.md), the contract every issue of the epic is built against: read its sections 1, 2, 4 and 5.1, and your issue's row in its section 12; the channel and sealing, byte by byte, are [remotekit.md](remotekit.md); what the person sees is [design/iphone.md](design/iphone.md), with drawings in [design/iphone-drafts.html](design/iphone-drafts.html); the owner's settings for the repository and the relay, and which paths wait for the owner's review, are [relay.md](relay.md) and `.github/CODEOWNERS` |
 | A worker's question that does not hold it (#507) | The contract, [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) 3.9 and 5.5, and the code, `src/needs.ts` and `src/wakes.ts`; the design it came from, kept as history, is [design/worker-questions.md](design/worker-questions.md) |
 | Chat mode | [chat.md](chat.md), [A chat's versions](#a-chats-versions) |
 
@@ -65,6 +65,11 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/pi2-login-item-check checks LoginItemKit's decisions, with no plist or launchd call; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
 engine/   Node + TypeScript process that hosts the pi durable harness
+iphone/   pi² for iPhone (docs/iphone.md; being built, #680), one Xcode project, pi2.xcodeproj, whose folders Xcode keeps in step by itself
+          Sources/App           the app's entry and its first screen
+          Sources/Keys          where keys are made (KeyPlace); the debug-only check that one Face ID signs a session (docs/iphone.md 4.3)
+          Tests                 its unit tests, run in the simulator
+          It links PiModels, EngineKit and TranscriptKit from app/Package.swift as a local package, through the products declared there
 ```
 
 The app is a view of the engine's committed state. It keeps no truth of its own: everything on screen is what the engine last said. The engine is the only process that opens the database.
