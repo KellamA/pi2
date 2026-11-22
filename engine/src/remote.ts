@@ -50,12 +50,13 @@ import {
 	logDevice,
 	macNameNow,
 	MINIMUM_PHONE_BUILD,
-	maskKeys,
+	maskValue,
 	notify,
 	p256Key,
 	pairClaim,
 	pairedDevice,
 	pairWrong,
+	helperGone,
 	activeDevices,
 	remoteHooks,
 	sessionsChanged,
@@ -96,8 +97,28 @@ let stops: number[] = [];
 const waiters = new Set<{ resolve: (hello: { addresses: string[] }) => void }>();
 let saidMissing = false;
 
-type Session = { id: string; device: string; path: Exclude<DevicePath, "mailbox">; since: number; client: Client; closed: boolean };
+type Session = { id: string; device: string; path: Exclude<DevicePath, "mailbox">; since: number; client: Client; closed: boolean; limit?: ReturnType<typeof setTimeout> };
 const sessions = new Map<string, Session>();
+
+/**
+ * The engine's own bound on a session, whatever pi² Remote does: a session ends when the helper's connection closes,
+ * and at the latest a day after its last attach or resume with a presence signature. A channel lasts at most a day
+ * and is then made again (5.2), and every new channel is a resume with a new presence signature (5.8, decision 28),
+ * so a day is the longest a session can rightly go without one. `PI2_DEVICE_SESSION_MS`, a development engine's test
+ * switch, shortens it for the tests.
+ */
+const SESSION_LIMIT_MS = (() => {
+	const given = Number(testSwitch("PI2_DEVICE_SESSION_MS"));
+	return Number.isSafeInteger(given) && given > 0 ? given : 86_400_000;
+})();
+export const SESSION_OVER = "The session reached its limit. Open pi² with Face ID again.";
+
+/** Starts the session's bound again from now: at an attach or a resume, each signed under Face ID. */
+function bound(session: Session): void {
+	clearTimeout(session.limit);
+	session.limit = setTimeout(() => closeSession(session.id, SESSION_OVER), SESSION_LIMIT_MS);
+	session.limit.unref();
+}
 
 export function wireRemote(parts: RemoteParts): void {
 	({ log, bundle, handlers, greet, drop, approvalSwitch } = parts);
@@ -116,6 +137,7 @@ export function wireRemote(parts: RemoteParts): void {
 			const record = pairedDevice(device);
 			if (record !== undefined) for (const session of sessions.values()) if (session.device === device) send(session.client, deviceEvent(record));
 		},
+		addresses: () => (helper?.hello == null ? null : helper.hello.addresses),
 	} satisfies typeof remoteHooks);
 	reconsider();
 }
@@ -226,6 +248,7 @@ function gone(current: Helper): void {
 	helper = null;
 	current.wire.destroy();
 	for (const session of [...sessions.values()]) closeSession(session.id, "pi² Remote stopped");
+	helperGone();
 	sessionsChanged();
 	if (stopping || current.stopping) {
 		reconsider();
@@ -363,6 +386,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		if (resumed) {
 			session = resuming;
 			session.path = attached.path;
+			bound(session);
 		} else {
 			session = openSession(attached.device, attached.path);
 			// The greeting goes once pi² Remote has the session's id, which this answer gives it: after the answer.
@@ -392,6 +416,7 @@ function openSession(device: Device, path: Session["path"]): Session {
 	session.client = { socket: deviceWire(session), subscriptions: new Map(), shown: new Set(), device: { id: device.id, session: id } };
 	sessions.set(id, session);
 	clients.add(session.client);
+	bound(session);
 	return session;
 }
 
@@ -401,6 +426,7 @@ function closeSession(id: string, why: string): void {
 	if (session === undefined) return;
 	sessions.delete(id);
 	session.closed = true;
+	clearTimeout(session.limit);
 	drop(session.client);
 	toHelper({ kind: "sessionClosed", session: id, why });
 	sessionsChanged();
@@ -451,36 +477,79 @@ function deviceWire(session: Session): Wire {
 	};
 }
 
-/** What is never sent in a device session (5.7): the app's host roles, sign-ins, the Mac's upkeep, pairing and keys. */
-export const NEVER_TO_A_DEVICE: ReadonlySet<string> = new Set(["computer", "browser", "auth", "local", "local.progress", "mcp", "devices", "remote"]);
+/**
+ * The events a device is sent (5.7), by name: an allow-list, so that an event added later reaches no phone until it is
+ * named here. Never `computer`, `browser`, `auth`, `local`, `local.progress`, `local.running`, `mcp`, `devices` or
+ * `remote` (the app's host roles, sign-ins, the Mac's upkeep, pairing and keys), nor `pictures`, `look` and
+ * `priority`, settings a phone cannot change.
+ */
+export const TO_A_DEVICE: ReadonlySet<string> = new Set([
+	"library",
+	"agents",
+	"inbox",
+	"activity",
+	"projects",
+	"needs",
+	"reports",
+	"background",
+	"schedules",
+	"recovery",
+	"usage",
+	"providers",
+	"conversation",
+	"conversation.older",
+	"chat",
+	"compactionSettings",
+	"agentDefault",
+	"work",
+	"wakes",
+	"limits",
+	"projectRules",
+	"memory",
+	"github",
+	"coauthor",
+	"branches",
+	"awake",
+	"device",
+]);
 
-/** A line as a device may be sent it, or null for none (5.7). */
+/** When a line could not be made fit for a device, said in engine.log at most once a minute. */
+let droppedSaid = 0;
+
+/**
+ * A line as a device may be sent it, or null for none (5.7). The line is read whole: an event on the list, or an answer
+ * (`id` with `result` or `error`), and nothing else; endpoints by name only; then every string in it, the keys of its
+ * objects too, masked of key shapes before it is written again. Anything that goes wrong drops the line: a line is
+ * never sent unmasked, and never throws into what wrote it.
+ */
 export function forDevice(line: string): string | null {
-	let event = /^\{"event":"([^"\\]*)"/.exec(line)?.[1];
-	if (event === undefined && !line.startsWith('{"id":')) {
-		try {
-			const parsed = JSON.parse(line) as { event?: unknown };
-			if (typeof parsed?.event === "string") event = parsed.event;
-		} catch {
-			return null;
+	try {
+		const message: unknown = JSON.parse(line);
+		if (typeof message !== "object" || message === null || Array.isArray(message)) return null;
+		const fields = message as Record<string, unknown>;
+		if (Object.hasOwn(fields, "event")) {
+			if (typeof fields.event !== "string" || !TO_A_DEVICE.has(fields.event)) return null;
+			if (fields.event === "providers") endpointsByName(fields);
+		} else if (!Object.hasOwn(fields, "id") || !(Object.hasOwn(fields, "result") || Object.hasOwn(fields, "error"))) return null;
+		return JSON.stringify(maskValue(fields));
+	} catch (error) {
+		const now = Date.now();
+		if (now - droppedSaid > 60_000) {
+			droppedSaid = now;
+			log?.("remote: a line was not sent to a device, since it could not be made fit for one:", error instanceof Error ? error.message : error);
 		}
+		return null;
 	}
-	let out = line;
-	if (event !== undefined) {
-		if (NEVER_TO_A_DEVICE.has(event)) return null;
-		if (event === "providers") out = providersForDevice(line);
-	}
-	return maskKeys(out);
 }
 
 /** Endpoints by name only: their addresses often carry a token typed outside the secret fields (5.7). */
-function providersForDevice(line: string): string {
-	const message = JSON.parse(line) as { providers?: { endpoint?: { id?: unknown; name?: unknown } | null; ask?: { can?: boolean; url?: unknown } | null }[] };
-	for (const provider of message.providers ?? []) {
+function endpointsByName(message: Record<string, unknown>): void {
+	const providers = Array.isArray(message.providers) ? (message.providers as { endpoint?: { id?: unknown; name?: unknown } | null; ask?: { can?: boolean; url?: unknown } | null }[]) : [];
+	for (const provider of providers) {
+		if (typeof provider !== "object" || provider === null) continue;
 		if (provider.endpoint != null) provider.endpoint = { id: provider.endpoint.id, name: provider.endpoint.name };
 		if (provider.ask?.can === true) provider.ask = { can: true, url: null };
 	}
-	return JSON.stringify(message);
 }
 
 /** A device's line in a session: refused outside one, checked against its table, handled as from the app, logged. */
@@ -489,7 +558,10 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	const request = (typeof message === "object" && message !== null && !Array.isArray(message) ? message : {}) as { id?: unknown; method?: unknown; params?: unknown };
 	const reply = (body: Record<string, unknown>) => {
 		if (session !== undefined) send(session.client, { id: request.id ?? null, ...body });
-		else write(helper, `${JSON.stringify({ session: id, message: { id: request.id ?? null, ...body } })}\n`);
+		else {
+			const out = forDevice(JSON.stringify({ id: request.id ?? null, ...body }));
+			if (out !== null) write(helper, `{"session":${JSON.stringify(id)},"message":${out}}\n`);
+		}
 	};
 	const device = session === undefined ? undefined : pairedDevice(session.device);
 	if (session === undefined || device === undefined || device.suspendedAt !== null) {

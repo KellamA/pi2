@@ -23,15 +23,17 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { checkDeviceLists, deviceLogged, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { checkRequestItem, type Device, Devices, fromBase64url, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
-import { forDevice } from "../src/remote.ts";
-import { EngineClient, standInApp, stop, until } from "./patience.ts";
+import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, fromBase64url, logDevice, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { forDevice, SESSION_OVER } from "../src/remote.ts";
+import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-dev-")));
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-devices-${process.pid}`;
 const engines: ChildProcess[] = [];
+// Stopped from outside, it still cleans up: the exit handler below runs.
+process.on("SIGTERM", () => process.exit(143));
 process.on("exit", () => {
 	for (const child of engines) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 	rmSync(work, { recursive: true, force: true });
@@ -80,7 +82,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	"schedules.save": ["schedules start work with nobody there", "always"],
 	"schedules.delete": ["deleting a schedule narrows", "never"],
 	"coauthor.set": ["the person's ordinary act", "never"],
-	"projects.create": ["a new project; with a folder only one the Mac offers (P29), until then none", "never"],
+	"projects.create": ["a new project; with a folder only one the Mac offers (P29), until then none; with a template it copies an agent, which widens", "by its parameters"],
 	"projects.set": ["the switches of 8.1 and the limits", "always"],
 	"projects.archive": ["putting away narrows", "never"],
 	"projects.unarchive": ["puts back what was put away, with its reach", "always"],
@@ -148,6 +150,8 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(deviceMay("chat.set", { memory: false }, relay), "yes");
 	assert.equal(deviceMay("chat.set", { instructions: "x" }, relay), "face");
 	assert.equal(deviceMay("projects.create", { folder: "/Users" }, relay), "no", "a folder the Mac does not offer");
+	assert.equal(deviceMay("projects.create", { folder: null }, relay), "yes");
+	assert.equal(deviceMay("projects.create", { folder: null, template: "forge" }, relay), "face", "a template copies an agent with its reach, as agents.duplicate does");
 	for (const method of ["providers.setKey", "variables.set", "mcp.save", "devices.pairStart", "devices.pairConfirm", "devices.set", "remote.attach", "test-copy.answerer", "settings.setAgentDefault", "no.such"]) {
 		assert.equal(deviceMay(method, {}, relay), "no", method);
 	}
@@ -170,7 +174,10 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.throws(() => checkDeviceLists(["engine.info"], ["remote.made.up"]), /remote\.made\.up is a handler of pi² Remote's connection, and is not in FOR_THE_HELPER/);
 	assert.throws(() => checkDeviceLists(["remote.attach"], []), /remote\.attach belongs to 0 device lists[\s\S]*FOR_THE_HELPER/);
 	assert.throws(() => checkDeviceLists(["engine.info"], [], [new Set(["engine.info"]), new Set(["engine.info"])]), /engine\.info belongs to 2 device lists/);
-	step("the start-up check refuses a handler in no device list, in two, or pi² Remote's anywhere else");
+	assert.throws(() => checkDeviceLists(["engine.info"], [], [new Set(["engine.info", "files.preview"])], new Set()), /files\.preview is in a device list and has no handler/);
+	assert.throws(() => checkDeviceLists(["engine.info"], [], [new Set(["engine.info"])], new Set(["remote.mailboxIn"])), /remote\.mailboxIn is in FOR_THE_HELPER and has no handler/);
+	assert.doesNotThrow(() => checkDeviceLists(["engine.info"], ["remote.attach"], [new Set(["engine.info", "test-copy.fill"])], new Set(["remote.attach"])), "a test copy's own request may be absent");
+	step("the start-up check refuses a handler in no device list, in two, or pi² Remote's anywhere else, and a name placed with no handler");
 }
 
 // ---- Readers, masking, what a device is sent
@@ -184,25 +191,48 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	for (const text of ["AAEC=", "AA+C", "AAF", "AAECD", " AAEC"]) assert.equal(fromBase64url(text), null, text);
 	step("a signed text is read only as written, every field in order and nothing after; base64url in its one form");
 
-	const keys = ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789", "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB", "AKIAABCDEFGHIJKLMNOP", "xoxb-1234567890-abcdefghij"];
+	const keys = ["sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789", "sk-proj-abcdefghijklmnopqrstuvwxyz012345", "sk-abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdefghijklmnopqrstuvwxyz0123456789AB", "AKIAABCDEFGHIJKLMNOP", "xoxb-1234567890-abcdefghij"];
+	const sentOf = (message: unknown) => forDevice(JSON.stringify(message))!;
 	for (const key of keys) {
-		const line = JSON.stringify({ event: "conversation", text: `the key is ${key}, there` });
-		const masked = maskKeys(line);
-		assert.ok(!masked.includes(key) && masked.includes(KEY_HIDDEN), key);
-		assert.doesNotThrow(() => JSON.parse(masked));
+		// Where keys stand in what commands print: after a space, at the start of a line, after a tab, after a colour code,
+		// inside nested arrays, and as an object's key.
+		const places = [`the key is ${key}, there`, `line one\n${key}`, `\n${key}\n`, `\t${key}`, `\u001b[32m${key}\u001b[0m`, `\r${key}`];
+		for (const text of places) {
+			const sent = sentOf({ event: "conversation", items: [[{ text }]] });
+			assert.ok(!sent.includes(key) && JSON.parse(sent).items[0][0].text.includes(KEY_HIDDEN), `${JSON.stringify(text)}: ${sent}`);
+		}
+		const keyed = sentOf({ event: "conversation", items: { [key]: 1, [`\n${key}`]: 2 } });
+		assert.ok(!keyed.includes(key), `as an object's key: ${keyed}`);
 	}
-	const pem = JSON.stringify({ text: "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n-----END PRIVATE KEY-----" });
-	assert.ok(!maskKeys(pem).includes("MIIBVQ") && JSON.parse(maskKeys(pem)));
+	const pem = JSON.stringify({ event: "conversation", text: "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n-----END PRIVATE KEY-----" });
+	assert.ok(!forDevice(pem)!.includes("MIIBVQ"));
+	assert.ok(!maskKeys("-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkq and no end").includes("MIIBVQ"), "a key cut short is hidden to the end");
 	assert.equal(maskKeys("a desk-chair and sk-short"), "a desk-chair and sk-short", "words are left as they are");
-	for (const event of ["computer", "browser", "auth", "local", "local.progress", "mcp", "devices", "remote"]) {
+	const proto = forDevice('{"id":1,"result":{"__proto__":{"polluted":1}}}')!;
+	assert.ok(proto.includes('"__proto__":{"polluted":1}') && ({} as { polluted?: number }).polluted === undefined, "a key __proto__ stays a key");
+	// A long run after a key's prefix: masked whole, at once, and nothing thrown (a greedy pattern overflowed V8's stack).
+	const long = `${"sk-"}${"a".repeat(8 * 1024 * 1024)}`;
+	const began = performance.now();
+	const sentLong = sentOf({ event: "conversation", text: `x ${long} y`, other: `ghp_${"b".repeat(8 * 1024 * 1024)}` });
+	assert.equal(JSON.parse(sentLong).text, `x ${KEY_HIDDEN} y`, "8 MB after sk-, hidden whole");
+	assert.equal(JSON.parse(sentLong).other, KEY_HIDDEN);
+	console.log(`    8 MB twice masked in ${Math.round(performance.now() - began)} ms`);
+	// What cannot be made fit for a device is dropped, never sent as it is, and never throws.
+	const deep = `{"event":"conversation","x":${"[".repeat(200_000)}${"]".repeat(200_000)}}`;
+	assert.equal(forDevice(deep), null, "a line too deep to mask is dropped");
+	assert.equal(forDevice("not JSON"), null);
+	for (const event of ["computer", "browser", "auth", "local", "local.progress", "local.running", "mcp", "devices", "remote", "pictures", "priority", "made.up"]) {
 		assert.equal(forDevice(JSON.stringify({ event, anything: 1 })), null, event);
 		assert.equal(forDevice(JSON.stringify({ other: 1, event })), null, `${event}, not first`);
+		assert.equal(forDevice(JSON.stringify({ id: 1, event, result: {} })), null, `${event}, after an id`);
 	}
+	assert.equal(forDevice(JSON.stringify({ id: 1 })), null, "an id alone is no answer");
+	assert.equal(forDevice(JSON.stringify({ event: 7 })), null);
 	const providers = JSON.parse(forDevice(JSON.stringify({ event: "providers", providers: [{ id: "box", endpoint: { id: "box", name: "Box", baseUrl: "https://h/v1?token=t0p", api: "x", models: [] }, ask: { can: true, url: "https://h" } }] }))!);
 	assert.deepEqual(providers.providers[0].endpoint, { id: "box", name: "Box" });
 	assert.deepEqual(providers.providers[0].ask, { can: true, url: null });
 	assert.equal(forDevice('{"id":3,"result":{"key":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}}'), `{"id":3,"result":{"key":"${KEY_HIDDEN}"}}`);
-	step("what a device is sent: never the events of 5.7, endpoints by name only, and no key-shaped string");
+	step("what a device is sent: only the events named for it, endpoints by name only, and no key-shaped string wherever it stands; a line that cannot be masked is dropped");
 }
 
 // ---- A phone of this test's own
@@ -270,12 +300,25 @@ class Phone {
 	await harness.commit(async (tx) => {
 		const doc = await tx.doc(Devices);
 		doc.pairing = pairing;
+		doc.remote = { ...doc.remote, preview: true, on: true };
 		doc.devices.push(record);
 	}, context);
 	await harness.close(context);
 	harness = await open();
 	const none = () => null;
 	const take = (item: unknown, now?: number) => checkRequestItem(phone.id, item, none, now);
+	const logged = async () => (await harness.snapshot(DeviceLog, context))?.entries.length ?? 0;
+	const suspended = () => devicesState().devices.find((one) => one.id === phone.id)!.suspendedAt !== null;
+	// What the relay could hand pi² Remote "from" the device, with none of its keys: refused, and nothing written or counted.
+	const stranger = new Phone();
+	stranger.id = phone.id;
+	for (let i = 0; i < 20; i++) {
+		const unsignedItem = { ...phone.item(b64url(randomBytes(16)), `made.up.${i}`, {}), signature: "" };
+		await assert.rejects(take(unsignedItem), /not signed by the device key/);
+		await assert.rejects(take(stranger.item(pairing, "submit", { id: 4, text: `${i}` })), /not signed by the device key/);
+	}
+	assert.equal(await logged(), 0, "20 unsigned items and 20 a stranger signed write nothing in the log");
+	assert.equal(suspended(), false, "and do not suspend the device");
 	const good = phone.item(pairing, "submit", { id: 4, text: "from the train" });
 	assert.deepEqual(await take(good), { method: "submit", params: { id: 4, text: "from the train" }, widens: false });
 	await assert.rejects(take(good), /taken before/, "a nonce is taken once");
@@ -298,8 +341,39 @@ class Phone {
 	await harness.close(context);
 	harness = await open();
 	await assert.rejects(take(replay), /taken before/, "after a restart too");
+	assert.equal(suspended(), false, "two refused presence signatures do not suspend");
+	step("sealed items: the device key's signature first, before anything is logged or counted; then the presence signature, a day (an hour if it widens), its row, and each nonce once, stored before the answer, through a restart");
+
+	// ---- The devices' log (4.4): bounded in what an entry holds, by device, and with repeated refusals made one
+	const other = `dev_${b64url(randomBytes(16))}`;
+	await logDevice({ device: other, path: "relay", method: "submit", summary: "Sent a message", presence: true, outcome: "done" });
+	await logDevice({ device: phone.id, path: "relay", method: "pair", summary: "Paired", presence: false, outcome: "done" });
+	await logDevice({ device: phone.id, path: "relay", method: "x".repeat(5_000), summary: "y".repeat(5_000), presence: true, outcome: "refused", why: "z".repeat(5_000) });
+	let entries = (await harness.snapshot(DeviceLog, context))!.entries;
+	const oversized = entries.at(-1)!;
+	assert.equal(oversized.method, "unknown", "a method no list places is logged under one name, never its text");
+	assert.ok(oversized.summary.length <= 200 && oversized.why!.length <= 200, "summary and why are cut short");
+	const refusedOnce = { device: phone.id, path: "relay" as const, summary: "providers.setKey", presence: true, outcome: "refused" as const, why: ONLY_ON_THE_MAC };
+	for (let i = 0; i < 30; i++) {
+		await logDevice({ ...refusedOnce, method: "providers.setKey" });
+		await logDevice({ ...refusedOnce, method: "mcp.save" });
+	}
+	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+		entries = (await harness.snapshot(DeviceLog, context))!.entries;
+		if (entries.at(-2)?.count === 30 && entries.at(-1)?.count === 30) break;
+		assert.ok(Date.now() < deadline, "the counts are added");
+	}
+	assert.deepEqual(entries.slice(-2).map((entry) => entry.method), ["providers.setKey", "mcp.save"], "30 refusals each of two kinds, in turn, within a minute: two entries");
+	const flood = 2_050;
+	const began = performance.now();
+	for (let i = 0; i < flood; i++) await logDevice({ device: phone.id, path: "relay", method: "submit", summary: `Sent a message ${i}`, presence: true, outcome: "done" });
+	console.log(`    ${flood} entries from one device in ${Math.round(performance.now() - began)} ms`);
+	entries = (await harness.snapshot(DeviceLog, context))!.entries;
+	assert.ok(entries.some((entry) => entry.device === other), "another device's entry stays");
+	assert.ok(entries.some((entry) => entry.device === phone.id && entry.method === "pair"), "and the pairing");
+	assert.equal(entries.filter((entry) => entry.device === phone.id && entry.method !== "pair").length, 2_000, "one device keeps its own newest 2,000");
 	await harness.close(context);
-	step("sealed items: both signatures, a day (an hour if it widens), its row, and each nonce once, stored before the answer, through a restart");
+	step(`the devices' log: a method it does not know is "unknown", every field cut short, refusals made one entry with a count, and one device's flood of ${flood} pushes out neither another's entries nor its own pairing`);
 }
 
 // ---- A real engine, and this test as its pi² Remote
@@ -516,15 +590,16 @@ try {
 	step("pairing: the code's payload to the app, s to pi² Remote alone, the claim checked and shown without its digits, paired once the digits are typed");
 
 	// ---- One claim per window, and every other refusal closes it (3.3)
-	const claimIn = async (claimer: Phone, attest: Record<string, unknown> = {}, edit: (line: any) => void = () => {}) => {
+	const claimIn = async (claimer: Phone, attest: Record<string, unknown> = {}, edit: (line: any) => void = () => {}, via = remote) => {
 		const opening = app.call("devices.pairStart");
-		await remote.event("openJoin", remote.events.length);
+		const opened = await via.event("openJoin", via.events.length);
 		await opening;
 		const channel = randomBytes(32);
 		const challenge = randomBytes(32);
 		const line = claimer.claim(remote.pairing, channel, challenge, attest);
 		edit(line);
-		return { channel, reply: await remote.call("remote.pairClaim", { claim: line, binding: b64url(channel), challenge: b64url(challenge), path: "home" }) };
+		const digits = String(createHmac("sha256", Buffer.from(opened.secret, "base64url")).update(Buffer.concat([Buffer.from("pi2-digits"), Buffer.from([0]), channel])).digest().readUInt32BE(0) % 1_000_000).padStart(6, "0");
+		return { channel, digits, reply: await via.call("remote.pairClaim", { claim: line, binding: b64url(channel), challenge: b64url(challenge), path: "home" }) };
 	};
 	const first = await claimIn(new Phone("Sam's iPhone"));
 	assert.ok(first.reply.result.claim);
@@ -582,7 +657,7 @@ try {
 	await app.until("the session shown on the Mac", () => app.devicesEvents.at(-1)?.sessions.some((one: any) => one.session === session && one.device === phone.id));
 
 	const ask = (method: string, params: Record<string, unknown> = {}) => remote.inSession(session, method, params);
-	assert.equal((await ask("engine.info")).result.pid, engine.pid);
+	assert.deepEqual((await ask("engine.info")).result, { build: null, pid: engine.pid }, "no path of the Mac's");
 	assert.deepEqual((await ask("connection.mayAnswer")).result, { mayAnswer: false, why: "this is a paired device's session, which is never the app" });
 	for (const [method, params] of [
 		["agents.allowEverything", { id: "forge", on: true }],
@@ -599,6 +674,30 @@ try {
 	const widened = app.devicesEvents.length;
 	assert.ok((await ask("usage.setBudget", { daily: 25 })).result !== undefined);
 	assert.match((await app.notice("widening", widened)).text, /^Alex's iPhone: usage\.setBudget/, "the Mac is told of a request that widens");
+	// An approval judged by its project's switch, through the engine's own lookup of the waiting approval: once on what
+	// makeAgents holds back widens; once on an ordinary approval does not. (The merge switch is judged by the same
+	// lookup; reaching it would need a pull request on GitHub's stand-in.)
+	const made = await app.call("projects.create", { folder: null });
+	await app.call("projects.set", { id: made.id, settings: { withoutAsking: { makeAgents: false } } });
+	await app.call("conversation.open", { id: made.conversation });
+	void app.call("submit", { id: made.conversation, text: `/tool project_agents ${JSON.stringify({ action: "make", settings: { name: "Temp", access: "read" } })}` });
+	const switched = await app.until("the makeAgents switch's approval", () => app.events.inbox?.items?.find((item: any) => item.projectSwitch === "makeAgents"));
+	const beforeSwitch = app.devicesEvents.length;
+	assert.deepEqual((await ask("inbox.decide", { id: switched.id, decision: "once" })).result, {});
+	assert.match((await app.notice("widening", beforeSwitch)).text, /^Alex's iPhone: Answered an approval: once/, "once past makeAgents widens");
+	const { id: plain } = await app.call("conversation.create", { agentId: "forge" });
+	await app.call("conversation.open", { id: plain });
+	await app.call("conversation.configure", { id: plain, access: "ask", cwd: work });
+	void app.call("submit", { id: plain, text: "/bash echo plain" });
+	const ordinary = await app.until("an ordinary approval", () => app.events.inbox?.items?.find((item: any) => item.conversationId === plain && item.kind === "approval"));
+	assert.equal(ordinary.projectSwitch, undefined);
+	const beforeOrdinary = app.devicesEvents.length;
+	assert.deepEqual((await ask("inbox.decide", { id: ordinary.id, decision: "once" })).result, {});
+	await app.call("engine.info");
+	assert.ok(!app.devicesEvents.slice(beforeOrdinary).some((event) => event.notice?.kind === "widening"), "once on an ordinary approval does not");
+	// A method no list places is logged as "unknown", never as its text; the same refusal again is one entry.
+	assert.equal((await ask("x".repeat(10_000))).error, ONLY_ON_THE_MAC);
+	for (let i = 0; i < 3; i++) assert.equal((await ask("mcp.save", {})).error, ONLY_ON_THE_MAC);
 	const elsewhere = await remote.call("remote.attachBegin");
 	assert.ok(elsewhere.result.challenge, "pi² Remote's own requests still come on its connection");
 	assert.equal((await remote.inSession("s_no-such-session", "engine.info")).error, OPEN_WITH_FACE_ID, "a request outside any session");
@@ -633,11 +732,18 @@ try {
 	assert.deepEqual(resumed.reply.result, { session, resume: true }, "a resume, with a new signature over a new channel");
 	const used = await attach({ session, challenge: resumed.challenge });
 	assert.match(used.reply.error, /not one this Mac issued, or was used/);
+	// Signed by a stranger's key: refused, and never counted against the device, however many.
+	for (let i = 0; i < 6; i++) assert.match((await attach({ device: p256().privateKey })).reply.error, /not signed by the device key/);
+	await app.call("engine.info");
+	assert.equal(app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone.id).suspendedAt, null, "six attaches a stranger signed do not suspend the device");
 	assert.match((await attach({ presence: p256().privateKey })).reply.error, /presence signature is not the presence key's/);
 	assert.match((await attach({ presence: null })).reply.error, /presence signature/, "a presence signature missing");
 	assert.match((await attach({ at: Date.now() - 3 * 60_000 })).reply.error, /more than two minutes/);
 	const closedBefore = remote.events.length;
-	assert.match((await attach({ device: p256().privateKey })).reply.error, /not signed by the device key/);
+	const wrongChannel = randomBytes(32);
+	const challengeNow = (await remote.call("remote.attachBegin")).result.challenge;
+	const otherChannel = await remote.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge: challengeNow, binding: randomBytes(32) }), binding: b64url(wrongChannel), path: "relay" });
+	assert.match(otherChannel.error, /signed for another channel/);
 	assert.match((await app.notice("suspended")).text, /Alex's iPhone was suspended after 5 refused/);
 	assert.equal((await remote.event("sessionClosed", closedBefore)).session, session, "its session closed at once");
 	assert.match((await attach()).reply.error, /suspended/, "a good attach is refused while it is suspended");
@@ -647,7 +753,7 @@ try {
 	assert.equal(again.reply.result.resume, false, "a session that ended cannot be resumed");
 	const session2 = again.reply.result.session as string;
 	assert.notEqual(session2, session);
-	step("a resume is a new attach; a used challenge, a wrong or missing presence signature, a stale time and a wrong key are refused, and five suspend the device until the Mac resumes it");
+	step("a resume is a new attach; a stranger's signature is refused and never counted; a used challenge, a wrong or missing presence signature, a stale time and another channel are refused, and five suspend the device until the Mac resumes it");
 
 	// ---- The end of a session (4.5) and the log (4.4)
 	await until("the second session's greeting", () => remote.sessionLines.get(session2)?.some((line) => line.event === "device"));
@@ -664,6 +770,14 @@ try {
 	assert.ok(!kinds.some((kind: string) => kind.startsWith("engine.info") || kind.startsWith("conversation.open")), "reading is not logged");
 	assert.equal(entries.find((entry: any) => entry.method === "submit").summary, "Sent a message", "a summary says what, never the message");
 	assert.ok(!JSON.stringify(entries).includes(typed), "and nothing key-shaped");
+	assert.ok(!entries.some((entry: any) => entry.why?.includes("not signed by the device key")), "what a stranger signed is not in the log");
+	const unknown = entries.find((entry: any) => entry.method === "unknown");
+	assert.ok(unknown !== undefined && unknown.summary.length <= 200 && !JSON.stringify(entries).includes("x".repeat(300)), "a method no list places is logged as unknown, cut short");
+	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+		const saved = (await app.call("devices.log", { device: phone.id })).entries.filter((entry: any) => entry.method === "mcp.save");
+		if (saved.length === 1 && saved[0].count === 3) break;
+		assert.ok(saved.length === 1 && Date.now() < deadline, `the same refusal three times is one entry: ${JSON.stringify(saved)}`);
+	}
 	step("sessionEnd closes the session at once; the log has the pairing, attaches, resumes, refusals, the suspension and the requests, not the reading");
 
 	// ---- pi² Remote stopping, then revocation (3.6)
@@ -694,9 +808,24 @@ try {
 	assert.match((await restarted.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge: afterRevoke.result.challenge, binding: channel2 }), binding: b64url(channel2), path: "relay" })).error, /revoked/);
 	step("pi² Remote stopping closes its sessions and is started again; a revoked device is told, closed, and refused from then on");
 
+	// ---- A revoked device's key cannot pair again (3.3 step 5); pairing needs a running pi² Remote (3.3 step 8)
+	const sameKey = Object.assign(new Phone("Alex's iPhone"), { device: phone.device });
+	assert.match((await claimIn(sameKey, {}, () => {}, restarted)).reply.error ?? "", /That device key was revoked on this Mac/);
+	const phone2 = new Phone("Robin's iPhone");
+	const second2 = await claimIn(phone2, {}, () => {}, restarted);
+	({ device: phone2.id } = await app.call("devices.pairConfirm", { digits: second2.digits }));
+	const waiting = await claimIn(new Phone("Sky's iPhone"), {}, () => {}, restarted);
+	assert.ok(waiting.reply.result.claim);
+	process.kill(restarted.standIn!.pid, "SIGKILL");
+	await app.until("the window closed with pi² Remote", () => /pi² Remote stopped while the code was open/.test(app.devicesEvents.at(-1)?.closed?.why ?? ""));
+	await assert.rejects(app.call("devices.pairConfirm", { digits: waiting.digits }), /No phone is waiting/, "nothing is saved that the phone could never be told of");
+	const third3 = await nextRemote(3);
+	assert.deepEqual((await third3.event("start")).devices.map((one: any) => one.id), [phone2.id]);
+	step("a revoked device's key cannot pair again; a claim whose pi² Remote stopped closes the window, and nothing is saved");
+
 	// ---- Turning remote access off stops pi² Remote; the devices event went to the app alone
 	await app.call("devices.set", { on: false });
-	await until("pi² Remote stopped", () => restarted.closed);
+	await until("pi² Remote stopped", () => third3.closed);
 	const other = await EngineClient.connect(engine, home);
 	await other.call("engine.info");
 	assert.equal(other.events.devices, undefined, "a connection that did not ask is sent no devices event");
@@ -705,6 +834,53 @@ try {
 		assert.ok(!engineLog.includes(value), `engine.log holds no ${what}`);
 	}
 	step("remote access off stops pi² Remote; the devices event goes only to the app's connection that asked");
+
+	// ---- The engine's own bound on a session (4.5, 5.2): a day after its last attach, here shortened
+	app.close();
+	await stop(engine);
+	const limited = spawn(process.execPath, [main], { env: { ...env, PI2_DEVICE_SESSION_MS: "2000" }, stdio: ["ignore", "ignore", "inherit"] });
+	engines.push(limited);
+	const macApp = await App.connect(limited, home);
+	try {
+		await macApp.call("devices.watch");
+		await macApp.call("devices.set", { on: true });
+		const fourth4 = await nextRemote(4);
+		const challenge4 = (await fourth4.call("remote.attachBegin")).result.challenge;
+		const channel4 = randomBytes(32);
+		const { result } = await fourth4.call("remote.attach", { attach: phone2.attach({ pairing: remote.pairing, challenge: challenge4, binding: channel4 }), binding: b64url(channel4), path: "relay" });
+		const over = await until("the session's bound", () => fourth4.events.find((event) => event.kind === "sessionClosed" && event.session === result.session));
+		assert.equal(over.why, SESSION_OVER, "the engine ended the session itself, with pi² Remote still connected");
+		assert.equal(fourth4.closed, false);
+		assert.equal((await fourth4.inSession(result.session, "engine.info")).error, OPEN_WITH_FACE_ID);
+		step("the engine ends a session itself at its bound after the last attach, whatever pi² Remote does");
+	} finally {
+		macApp.close();
+		await stop(limited);
+	}
+
+	// ---- A record that cannot be read refuses devices, and stops nothing else
+	const store = await Harness.open(await openNodeSqliteStorage(join(home, "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+	await store.commit(async (tx) => {
+		(await tx.doc(Devices) as unknown as { devices: unknown }).devices = "garbled";
+	}, context);
+	await store.close(context);
+	const broken = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inherit"] });
+	engines.push(broken);
+	const brokenApp = await App.connect(broken, home);
+	try {
+		const event = await brokenApp.call("devices.watch");
+		assert.match(event.unreadable, /^pi²'s record of paired devices could not be read \(its devices are not a list\), so no device can pair or connect/);
+		for (const [method, params] of [["devices.pairStart", {}], ["devices.set", { on: true }], ["devices.log", {}], ["devices.revoke", { device: phone2.id }]] as const) {
+			await assert.rejects(brokenApp.call(method, params), /could not be read/, method);
+		}
+		const { id: works } = await brokenApp.call("conversation.create", { model: { provider: "demo", modelId: "demo-1" } });
+		assert.equal(typeof works, "number", "the rest of the engine works");
+		assert.ok(!childrenOf(broken.pid!).some((command) => command.includes(standIn)), "and no pi² Remote is started");
+		step("a record of devices that cannot be read stops no start: devices are refused, the Devices page told why, the rest works");
+	} finally {
+		brokenApp.close();
+		await stop(broken);
+	}
 } finally {
 	app.close();
 	await stop(engine);

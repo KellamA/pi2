@@ -898,7 +898,8 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 // ---- Requests
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
-	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	// A device is told no path of the Mac's (docs/iphone.md 5.7).
+	"engine.info": async (_params, client) => (client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid }),
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
@@ -1635,8 +1636,6 @@ function dropClient(client: Client): boolean {
 	return true;
 }
 
-// pi² Remote, the engine's own child, and the device sessions it carries (remote.ts).
-wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null });
 
 rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
 const server = createServer((socket) => {
@@ -1716,6 +1715,9 @@ phase = "running";
 if (stopWhenStarted) await stop();
 // Tool calls the last engine left, or anything started early, are decided only from here on (see `Host.ready`).
 markReady();
+// pi² Remote, the engine's own child, and the device sessions it carries (remote.ts): the phone's door opens only now,
+// with the engine ready and the person's PATH set, as the socket's does just below.
+wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null });
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished

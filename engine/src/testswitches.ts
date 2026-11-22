@@ -38,7 +38,8 @@ import { fileURLToPath } from "node:url";
  * of pi² Remote (remote.ts); `PI2_APP_ATTEST_STAND_IN`, which takes a test's own attestations in place of App Attest's,
  * and `PI2_APP_ATTEST_TEAM`, the team id a pairing claim's attestation is checked against (devices.ts);
  * `PI2_UNPLACED_HANDLER`, a request added to the engine's table and placed in no list, which must stop it starting
- * (main.ts). The tunings only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
+ * (main.ts); `PI2_DEVICE_SESSION_MS`, the engine's own bound on a device session, shortened (remote.ts). The tunings
+ * only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
  * `PI2_COMMAND_TIMEOUT_SECONDS` (commands.ts), `PI2_OUTPUT_WAIT_SECONDS` (background.ts), `PI2_LIMITS_MIN_INTERVAL_MS`
  * (limits.ts), the `PI2_LIMIT_*_MS` (limitwait.ts), `PI2_LOCAL_STALL_MS`, `PI2_LOCAL_RETRY_MS`, `PI2_LOCAL_RETRIES`,
  * `PI2_LOCAL_KEEP_FREE`, `PI2_LOCAL_MEMORY_GB` (localmodels.ts), `PI2_LOCAL_RUN_RETRY_MS` (localrun.ts) and
@@ -61,6 +62,7 @@ export const TEST_SWITCHES = [
 	"PI2_DEMO_PICTURES",
 	"PI2_DEMO_TEXT_MODEL",
 	"PI2_DEMO_TOKENS_PER_SECOND",
+	"PI2_DEVICE_SESSION_MS",
 	"PI2_LIMITS_ANTHROPIC_URL",
 	"PI2_LIMITS_CODEX_URL",
 	"PI2_LIMITS_KIMI_URL",

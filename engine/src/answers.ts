@@ -420,7 +420,11 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"schedules.delete": { why: "deleting a schedule narrows" },
 	"coauthor.set": { why: "the person's ordinary act" },
 	// With a folder only once the Mac offers it (projects.folders, #696, P29), which no request does yet.
-	"projects.create": { why: "a new project; with a folder only one the Mac offers (P29), until then none", may: (params) => (params.folder == null ? "yes" : "no") },
+	// With a template it copies an agent with its reach, as agents.duplicate does, so it widens (decision 27).
+	"projects.create": {
+		why: "a new project; with a folder only one the Mac offers (P29), until then none; with a template it copies an agent, which widens",
+		may: (params) => (params.folder != null ? "no" : params.template != null ? "face" : "yes"),
+	},
 	"projects.archive": { why: "putting away narrows" },
 	"projects.startFresh": { why: "the person's ordinary act" },
 	"projects.rules.add": { why: "the person's ordinary act" },
@@ -584,19 +588,30 @@ export const PERSON_REQUESTS: readonly string[] = [...Object.keys(FOR_THE_PERSON
 
 const DEVICE_LISTS: readonly ReadonlySet<string>[] = [new Set(Object.keys(FROM_A_DEVICE)), new Set(Object.keys(WITH_FACE_ID)), new Set(Object.keys(MAC_ONLY))];
 
+/** The requests only a throwaway copy's engine has (main.ts): listed, and absent from every other engine. */
+const ONLY_IN_TEST_COPIES: ReadonlySet<string> = new Set(["test-copy.answerer", "test-copy.fill", "test-copy.fillProject"]);
+
 /**
  * Validate the device lists against the completed tables before serving requests (4.1): every handler of the socket
  * in exactly one of FROM_A_DEVICE, WITH_FACE_ID and MAC_ONLY, and in no FOR_THE_HELPER; every handler of the helper's
- * connection in FOR_THE_HELPER alone, and in no request class above, so that no other connection can reach one.
+ * connection in FOR_THE_HELPER alone, and in no request class above, so that no other connection can reach one. And
+ * every name in a list has its handler: nothing is placed for a device ahead of the request it names, which would let
+ * that request through from a phone the day it is added (but a test copy's own, which other engines have not).
  */
 export function checkDeviceLists(methods: Iterable<string>, helperMethods: Iterable<string>, lists = DEVICE_LISTS, helper = FOR_THE_HELPER): void {
 	const mistakes: string[] = [];
-	for (const method of methods) {
+	const handled = new Set(methods);
+	const helperHandled = new Set(helperMethods);
+	for (const list of lists) {
+		for (const method of list) if (!handled.has(method) && !ONLY_IN_TEST_COPIES.has(method)) mistakes.push(`${method} is in a device list and has no handler`);
+	}
+	for (const method of helper) if (!helperHandled.has(method)) mistakes.push(`${method} is in FOR_THE_HELPER and has no handler on pi² Remote's connection`);
+	for (const method of handled) {
 		const count = lists.filter((list) => list.has(method)).length;
 		if (count !== 1) mistakes.push(`${method} belongs to ${count} device lists (expected one)`);
 		if (helper.has(method)) mistakes.push(`${method} is pi² Remote's (FOR_THE_HELPER), and cannot be a handler of the socket`);
 	}
-	for (const method of helperMethods) {
+	for (const method of helperHandled) {
 		if (!helper.has(method)) mistakes.push(`${method} is a handler of pi² Remote's connection, and is not in FOR_THE_HELPER`);
 		if (lists.some((list) => list.has(method)) || REQUEST_CLASSES.some((list) => list.has(method))) {
 			mistakes.push(`${method} is pi² Remote's, and is in a list of the socket's requests too`);

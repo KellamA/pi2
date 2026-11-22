@@ -17,7 +17,7 @@ import { createHash, createHmac, createPublicKey, type KeyObject, randomBytes, t
 import { hostname } from "node:os";
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness } from "@earendil-works/pi-durable";
-import { type DevicePath, deviceMay, ONLY_ON_THE_MAC } from "./answers.ts";
+import { type DevicePath, deviceMay, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
 import { AppAttestError, type AppAttestEnvironment, type AppAttestResult, verifyAttestation } from "./appattest.ts";
 import type { Client } from "./clients.ts";
 import type { SwitchName } from "./projects.ts";
@@ -42,6 +42,8 @@ export type Device = {
 	lastSeenAt: number | null;
 	lastPath: DevicePath | null;
 	revokedAt: number | null; // kept 90 days for the log, then removed
+	/** Once revoked: the SHA-256 of its device key (base64url), so that the same key cannot pair again while the record is kept. */
+	deviceKeyHash?: string;
 };
 
 export type RemoteSwitches = { on: boolean; relay: boolean; home: boolean; direct: boolean; preview: boolean };
@@ -83,6 +85,9 @@ export type DeviceLogEntry = {
 	presence: boolean; // the session or item was opened under a valid presence signature
 	outcome: "done" | "refused" | "failed";
 	why?: string;
+	/** Refusals of the same request for the same reason within a minute of each other, made one entry: how many, and the last's time. */
+	count?: number;
+	lastAt?: number;
 };
 
 /** The document `pi2.deviceLog`: 90 days, at most 10,000 entries, the oldest going first (4.4). */
@@ -145,6 +150,8 @@ export type RemoteHooks = {
 	helper: () => { running: boolean; stoppedInLastHour: number };
 	/** Each device session's record changed: its `device` event is sent again. */
 	recordChanged: (device: string) => void;
+	/** The Mac's addresses as the running pi² Remote said them, or null when none has said hello. */
+	addresses: () => string[] | null;
 };
 
 let harness: Harness;
@@ -153,6 +160,12 @@ let log: DeviceParts["log"];
 let release: boolean;
 let names: Names;
 let state: DevicesState = Devices.definition.initial();
+/**
+ * Why the stored record of devices, their nonces or their log could not be read, or null. Then no device can pair,
+ * attach or send anything, pi² Remote is not started, and the Devices page is told why (`devices` event); the rest of
+ * the engine starts and works as before. Nothing is written over what could not be read.
+ */
+let unreadable: string | null = null;
 export const remoteHooks: RemoteHooks = {
 	changed: () => {},
 	toHelper: () => {},
@@ -163,14 +176,78 @@ export const remoteHooks: RemoteHooks = {
 	sessions: () => [],
 	helper: () => ({ running: false, stoppedInLastHour: 0 }),
 	recordChanged: () => {},
+	addresses: () => null,
 };
 
-/** Reads the record, removes what has been revoked for 90 days and log entries past theirs. */
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const isText = (value: unknown) => typeof value === "string";
+const textOrNull = (value: unknown) => value === null || typeof value === "string";
+const timeOrNull = (value: unknown) => value === null || typeof value === "number";
+
+/** What is wrong with a stored `pi2.devices`, or null for nothing. */
+function devicesProblem(value: unknown): string | null {
+	if (!isObject(value)) return "it is not a record";
+	if (!textOrNull(value.pairing) || !isText(value.relay) || !isText(value.macName)) return "its pairing, relay or name is not one";
+	const switches = value.remote;
+	if (!isObject(switches) || !["on", "relay", "home", "direct", "preview"].every((key) => typeof switches[key] === "boolean")) return "its switches are not ones";
+	const keys = value.macKeys;
+	if (keys !== null && (!isObject(keys) || !["identity", "channel", "record", "relay"].every((key) => isText(keys[key])) || typeof keys.secureEnclave !== "boolean")) {
+		return "the Mac's keys in it are not ones";
+	}
+	if (!Array.isArray(value.devices)) return "its devices are not a list";
+	for (const device of value.devices) {
+		const fine =
+			isObject(device) &&
+			["id", "name", "model", "system", "deviceKey", "channelKey", "recordKey", "attestKeyId", "build"].every((key) => isText(device[key])) &&
+			textOrNull(device.presenceKey) &&
+			textOrNull(device.pendingPresenceKey) &&
+			timeOrNull(device.suspendedAt) &&
+			timeOrNull(device.lastSeenAt) &&
+			timeOrNull(device.revokedAt) &&
+			typeof device.pairedAt === "number" &&
+			[null, "relay", "home", "direct", "mailbox"].includes(device.lastPath as string | null) &&
+			(device.deviceKeyHash === undefined || isText(device.deviceKeyHash));
+		if (!fine) return "a device in it is not one";
+	}
+	return null;
+}
+
+/** What is wrong with the stored nonces or log, or null. */
+function nonceProblem(value: unknown): string | null {
+	return isObject(value) && isObject(value.taken) && Object.values(value.taken).every((at) => typeof at === "number") ? null : "the nonces taken are not a record of them";
+}
+function logProblem(value: unknown): string | null {
+	if (!isObject(value) || !Array.isArray(value.entries)) return "the devices' log is not a list";
+	const fine = (entry: unknown) => isObject(entry) && typeof entry.at === "number" && isText(entry.device) && isText(entry.method) && isText(entry.summary) && isText(entry.outcome);
+	return value.entries.every(fine) ? null : "an entry of the devices' log is not one";
+}
+
+/**
+ * Reads the record, and removes what has been revoked for 90 days. A record, nonces or log that cannot be read refuses
+ * every device, and does not stop the engine (`unreadable`).
+ */
 export async function wireDevices(parts: DeviceParts): Promise<void> {
 	({ harness, context, log, release, names } = parts);
 	const now = Date.now();
 	const gone = (device: Device) => device.revokedAt !== null && now - device.revokedAt >= KEPT;
-	state = (await harness.snapshot(Devices, context)) ?? Devices.definition.initial();
+	unreadable = null;
+	state = Devices.definition.initial();
+	let problem: string | null;
+	try {
+		const stored = await harness.snapshot(Devices, context);
+		const nonces = await harness.snapshot(DeviceNonces, context);
+		const entries = await harness.snapshot(DeviceLog, context);
+		problem =
+			(stored === undefined ? null : devicesProblem(stored)) ?? (nonces === undefined ? null : nonceProblem(nonces)) ?? (entries === undefined ? null : logProblem(entries));
+		if (problem === null && stored !== undefined) state = stored;
+	} catch (error) {
+		problem = error instanceof Error ? error.message : String(error);
+	}
+	if (problem !== null) {
+		unreadable = `pi²'s record of paired devices could not be read (${problem}), so no device can pair or connect. The rest of pi² works as before.`;
+		log("devices:", unreadable);
+		return;
+	}
 	// Nothing is written at start unless something is due to go: with no device, the documents are never made.
 	if (state.devices.some(gone)) {
 		await harness.commit(async (tx) => {
@@ -197,15 +274,16 @@ export function activeDevices(): Device[] {
 
 /** Whether pi² Remote should run (5.5): the preview and remote access on, and a device paired or a pairing open. */
 export function helperWanted(): boolean {
-	return state.remote.preview && state.remote.on && (activeDevices().length > 0 || window !== null);
+	return unreadable === null && state.remote.preview && state.remote.on && (activeDevices().length > 0 || window !== null);
 }
 
 /** Whether devices may pair and attach at all: the preview (decision 19) and remote access on. */
 export function remoteOn(): boolean {
-	return state.remote.preview && state.remote.on;
+	return unreadable === null && state.remote.preview && state.remote.on;
 }
 
 async function change(edit: (doc: DevicesState) => void): Promise<void> {
+	if (unreadable !== null) throw new Error(unreadable);
 	await harness.commit(async (tx) => edit(await tx.doc(Devices)), context);
 	state = (await harness.snapshot(Devices, context)) ?? state;
 	announce();
@@ -320,6 +398,9 @@ export function buildAtLeast(a: string, b: string): boolean {
 	return true;
 }
 
+/** The SHA-256 of a public key's text, in base64url: what a revoked device's record keeps of its device key. */
+const keyHash = (key: string) => createHash("sha256").update(key, "utf8").digest("base64url");
+
 /** HMAC-SHA256 keyed with `secret` over a label, a zero byte and what it is bound to (RemoteKit's PairingSecrets). */
 function pairingMac(secret: Buffer, label: string, bound: Buffer): Buffer {
 	return createHmac("sha256", secret).update(Buffer.concat([Buffer.from(label, "utf8"), Buffer.from([0]), bound])).digest();
@@ -337,35 +418,92 @@ export function joinTokenHash(secret: Buffer, pairing: string): string {
 
 // ---- What is never written down: keys (5.7)
 
-/**
- * The shapes of secrets that are often pasted or printed: providers' and services' API keys and tokens, and private
- * keys in PEM. Masked in every line a device is sent (remote.ts) and in the devices' log. A key of another shape is
- * not caught: the events carry no secret of the person's settings (5.7, engine/test/devices.ts).
- */
-const KEY_SHAPES = new RegExp(
-	[
-		String.raw`sk-ant-[A-Za-z0-9_-]{16,}`,
-		String.raw`sk-(?:proj-|svcacct-|or-v1-)?[A-Za-z0-9_-]{20,}`,
-		String.raw`(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}`,
-		String.raw`github_pat_[A-Za-z0-9_]{30,}`,
-		String.raw`glpat-[A-Za-z0-9_-]{20,}`,
-		String.raw`xox[abposr]-[A-Za-z0-9-]{10,}`,
-		String.raw`AKIA[0-9A-Z]{16}`,
-		String.raw`AIza[0-9A-Za-z_-]{35}`,
-		String.raw`hf_[A-Za-z0-9]{30,}`,
-		String.raw`(?:sk|rk|pk)_live_[A-Za-z0-9]{20,}`,
-		String.raw`npm_[A-Za-z0-9]{36}`,
-		String.raw`-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[A-Za-z0-9+/=\s\\]{0,20000}?-----END [A-Z ]{0,40}PRIVATE KEY-----`,
-	]
-		.map((shape) => `(?<![A-Za-z0-9_-])${shape}`)
-		.join("|"),
-	"g",
-);
+// The shapes of secrets that are often pasted or printed: providers' and services' API keys and tokens, and private
+// keys in PEM. Masked in every string a device is sent (remote.ts walks each line's decoded value, so a key after a
+// line break, a tab or a colour code is a key like any other) and in the devices' log. A key of another shape is not
+// caught: the events carry no secret of the person's settings (5.7, engine/test/devices.ts).
+//
+// Each shape is found by its prefix and a fixed least number of its characters, and its run of characters is then
+// followed by hand to its end: no pattern has an open quantifier, so no input, however long, makes the matcher
+// backtrack through it (a greedy `{20,}` over megabytes overflowed V8's stack), and the whole run is hidden, never only
+// its first part.
+
+type Run = (code: number) => boolean;
+const upper: Run = (c) => c >= 65 && c <= 90;
+const digit: Run = (c) => c >= 48 && c <= 57;
+const ALNUM: Run = (c) => upper(c) || digit(c) || (c >= 97 && c <= 122);
+const TOKEN: Run = (c) => ALNUM(c) || c === 95 || c === 45;
+const KEY_SHAPES: { start: RegExp; run: Run; least: number }[] = [
+	// Prefixes no word has: wherever they stand, after a letter, a colour code or anything else.
+	{ start: /sk-ant-/g, run: TOKEN, least: 16 },
+	{ start: /sk-(?:proj|svcacct|or-v1)-/g, run: TOKEN, least: 16 },
+	{ start: /gh[pousr]_/g, run: ALNUM, least: 30 },
+	{ start: /github_pat_/g, run: (c) => ALNUM(c) || c === 95, least: 30 },
+	{ start: /glpat-/g, run: TOKEN, least: 20 },
+	{ start: /xox[abposr]-/g, run: (c) => ALNUM(c) || c === 45, least: 10 },
+	{ start: /AKIA/g, run: (c) => upper(c) || digit(c), least: 16 },
+	{ start: /AIza/g, run: TOKEN, least: 35 },
+	{ start: /hf_/g, run: ALNUM, least: 30 },
+	{ start: /(?:sk|rk|pk)_live_/g, run: ALNUM, least: 20 },
+	{ start: /npm_/g, run: ALNUM, least: 36 },
+	// `sk-` alone ends words ("desk-"), so it must start one, or follow a colour code.
+	{ start: /(?:(?<![A-Za-z0-9_-])|(?<=\u001b\[[0-9;]{0,16}m))sk-/g, run: TOKEN, least: 20 },
+];
+const PEM_BEGIN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/g;
+const PEM_END = /-----END [A-Z ]{0,40}PRIVATE KEY-----/y;
 export const KEY_HIDDEN = "[key hidden]";
 
-/** `text` with every key-shaped string replaced. Keeps a JSON text JSON: no shape spans a quote. */
+/** `text` with every key-shaped string in it replaced by KEY_HIDDEN. */
 export function maskKeys(text: string): string {
-	return text.replace(KEY_SHAPES, KEY_HIDDEN);
+	const spans: [number, number][] = [];
+	for (const { start, run, least } of KEY_SHAPES) {
+		start.lastIndex = 0;
+		for (let found = start.exec(text); found !== null; found = start.exec(text)) {
+			let end = found.index + found[0].length;
+			while (end < text.length && run(text.charCodeAt(end))) end++;
+			if (end - (found.index + found[0].length) >= least) spans.push([found.index, end]);
+			start.lastIndex = Math.max(end, found.index + 1);
+		}
+	}
+	PEM_BEGIN.lastIndex = 0;
+	for (let found = PEM_BEGIN.exec(text); found !== null; found = PEM_BEGIN.exec(text)) {
+		// To its end line, or, with none, to the end of the text: a key cut short is hidden too.
+		let end = text.length;
+		for (let at = text.indexOf("-----END ", found.index); at !== -1; at = text.indexOf("-----END ", at + 1)) {
+			PEM_END.lastIndex = at;
+			if (PEM_END.test(text)) {
+				end = PEM_END.lastIndex;
+				break;
+			}
+		}
+		spans.push([found.index, end]);
+		PEM_BEGIN.lastIndex = end;
+	}
+	if (spans.length === 0) return text;
+	spans.sort((a, b) => a[0] - b[0]);
+	let out = "";
+	let at = 0;
+	for (const [from, to] of spans) {
+		if (to <= at) continue;
+		if (from >= at) out += text.slice(at, from) + KEY_HIDDEN;
+		at = to;
+	}
+	return out + text.slice(at);
+}
+
+/**
+ * `value`, a decoded JSON value, with every string in it masked, the keys of its objects included. Masking the strings
+ * rather than the JSON text is what makes it hold: in the text a key after a line break follows `\n`, and one after a
+ * colour code follows `\u001b[32m`.
+ */
+export function maskValue(value: unknown): unknown {
+	if (typeof value === "string") return maskKeys(value);
+	if (Array.isArray(value)) return value.map(maskValue);
+	if (typeof value !== "object" || value === null) return value;
+	// No prototype: a key `__proto__` stays a key.
+	const out: Record<string, unknown> = Object.create(null);
+	for (const [key, item] of Object.entries(value)) out[maskKeys(key)] = maskValue(item);
+	return out;
 }
 
 // ---- The devices' log (4.4)
@@ -377,7 +515,8 @@ type Params = Record<string, unknown>;
  * name. An issue that lets a device send a new request adds its line here (12.1). Never the text of a message, which
  * may hold anything.
  */
-export function summarize(method: string, params: Params): string {
+export function summarize(given: string, params: Params): string {
+	const method = loggedMethod(given);
 	const title = typeof params.id === "number" ? names?.conversation(params.id) : undefined;
 	const project = typeof params.projectId === "string" ? names?.project(params.projectId) : undefined;
 	// A conversation not named yet has an empty title: it is left out, as one not found is.
@@ -393,31 +532,105 @@ export function summarize(method: string, params: Params): string {
 		"conversation.rename": () => `Renamed a conversation to “${String(params.title ?? "")}”`,
 		"conversation.delete": () => `Deleted${inConversation}`,
 		"conversation.configure": () => `Changed the settings of${inConversation || " a conversation"}`,
-		"inbox.decide": () => `Answered an approval: ${String(params.decision)}`,
+		"inbox.decide": () => `Answered an approval: ${["once", "always", "rule", "deny"].includes(params.decision as string) ? String(params.decision) : "?"}`,
 		"inbox.answer": () => "Answered a question",
 		"needs.answer": () => `Answered under Needs you${inProject}`,
 		"agents.allowEverything": () => `Turned Allow everything ${params.on === true ? "on" : "off"}`,
 		"agents.save": () => "Changed an agent's settings",
 		"github.merge": () => `Merged #${String(params.number)}${inProject}`,
 		"github.settle": () => `Marked a write ${params.happened === true ? "done" : "not done"}${inProject}`,
-		"work.act": () => `${String(params.action ?? "Acted on")} work #${String(params.id)}${inProject}`,
+		"work.act": () => `${clip(String(params.action ?? "Acted on"), 24)} work #${clip(String(params.id), 12)}${inProject}`,
 		"devices.forgetSelf": () => "Unpaired itself",
 		pair: () => "Paired",
 		attach: () => "Attached",
 		resume: () => "Resumed",
 		suspend: () => "Suspended",
 	};
-	return maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`);
+	return clip(maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`), MAX_SUMMARY);
 }
 
-/** Adds an entry to the devices' log, its summary and why masked. */
+/** At most `max` characters of `text`, with an ellipsis where it was cut. */
+const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
+
+/** What the log may name, beside the requests the device lists place. */
+const LOG_OWN = new Set(["pair", "attach", "resume", "suspend", "unknown"]);
+/** The entries one device's flood cannot push out: they stay their 90 days. */
+const LOG_KEPT = new Set(["pair", "suspend"]);
+const MAX_METHOD = 64;
+const MAX_SUMMARY = 200;
+const MAX_WHY = 200;
+/** Each device's share of the log, so that one device cannot push out another's entries (5 devices, 10,000 in all). */
+const MAX_PER_DEVICE = MAX_LOG / MAX_DEVICES;
+/** Refusals of the same request for the same reason, from the same device and path, within this, are one entry. */
+const COALESCE_MS = 60_000;
+
+/** How often the refusals counted in memory are added to their entry. */
+const FLUSH_MS = 2_000;
+/** The refusal entries written this last minute, by device, path, method and why: refusals like them since, not written yet. */
+const refusalsWritten = new Map<string, { at: number; more: number; lastAt: number; flush?: ReturnType<typeof setTimeout> }>();
+
+/** Adds the refusals counted in memory to their entry. */
+async function flushRefusal(key: string): Promise<void> {
+	const written = refusalsWritten.get(key);
+	if (written === undefined || written.more === 0) return;
+	const { at, more, lastAt } = written;
+	written.more = 0;
+	written.flush = undefined;
+	const [device, path, method, why] = JSON.parse(key) as [string, string, string, string | null];
+	await harness.commit(async (tx) => {
+		const entries = (await tx.doc(DeviceLog)).entries;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const one = entries[i]!;
+			if (one.at !== at || one.device !== device || one.path !== path || one.method !== method || (one.why ?? null) !== why || one.outcome !== "refused") continue;
+			one.count = (one.count ?? 1) + more;
+			one.lastAt = lastAt;
+			return;
+		}
+	}, context);
+}
+
+/** A method as the log names it: a request the lists place, or one of the log's own; anything else is "unknown". */
+function loggedMethod(method: string): string {
+	return method.length <= MAX_METHOD && (LOG_OWN.has(method) || devicePlacement(method) !== null) ? method : "unknown";
+}
+
+/**
+ * Adds an entry to the devices' log: its method one the engine knows, its summary and why masked and cut short. A
+ * refusal like one of the device's from the last minute adds to that entry's `count` instead. Each device keeps its own
+ * newest 2,000 entries, so that no device pushes out another's, and its pairing and suspension stay their 90 days.
+ */
 export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: number }): Promise<void> {
+	if (unreadable !== null) return;
 	const at = entry.at ?? Date.now();
-	const masked: DeviceLogEntry = { ...entry, at, summary: maskKeys(entry.summary), ...(entry.why === undefined ? {} : { why: maskKeys(entry.why) }) };
+	const method = loggedMethod(entry.method);
+	const why = entry.why === undefined ? undefined : clip(maskKeys(entry.why), MAX_WHY);
+	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(entry.summary), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
+	// The same refusal from the same device within a minute of its entry, however others came between, is counted in
+	// memory and added to that entry once every few seconds: a device that sends refused requests as fast as it can
+	// writes one entry for each kind a minute, and costs the engine no write for each.
+	const key = JSON.stringify([made.device, made.path, made.method, made.why ?? null]);
+	if (made.outcome === "refused") {
+		const written = refusalsWritten.get(key);
+		if (written !== undefined && at - written.at < COALESCE_MS) {
+			written.more += 1;
+			written.lastAt = at;
+			written.flush ??= setTimeout(() => void flushRefusal(key).catch((error) => log("devices: the log could not be written:", error instanceof Error ? error.message : error)), FLUSH_MS);
+			return;
+		}
+		for (const [old, one] of refusalsWritten) if (at - one.at >= COALESCE_MS && one.flush === undefined) refusalsWritten.delete(old);
+		refusalsWritten.set(key, { at, more: 0, lastAt: at });
+	}
 	await harness.commit(async (tx) => {
 		const doc = await tx.doc(DeviceLog);
-		doc.entries.push(masked);
-		const kept = doc.entries.filter((one) => at - one.at < KEPT);
+		const entries = doc.entries;
+		entries.push(made);
+		let kept = entries.filter((one) => at - (one.lastAt ?? one.at) < KEPT);
+		const mine = kept.filter((one) => one.device === made.device && !LOG_KEPT.has(one.method));
+		if (mine.length > MAX_PER_DEVICE) {
+			const dropped = new Set(mine.slice(0, mine.length - MAX_PER_DEVICE));
+			kept = kept.filter((one) => !dropped.has(one));
+		}
+		// Past every device's share (a device removed after 90 days leaves its entries to theirs), the oldest go first.
 		doc.entries = kept.length > MAX_LOG ? kept.slice(kept.length - MAX_LOG) : kept;
 	}, context);
 }
@@ -441,6 +654,8 @@ export function devicesEvent(notice?: Notice) {
 	const claim = window?.claim ?? null;
 	return {
 		event: "devices",
+		/** Why the stored record could not be read, and so no device can pair or connect; null when it was read. */
+		unreadable,
 		remote: state.remote,
 		relay: state.relay,
 		macName: macName(),
@@ -511,6 +726,11 @@ function closeWindow(why: string | null): void {
 	if (why !== null) log("devices: the pairing window closed:", why);
 	announce();
 	remoteHooks.changed();
+}
+
+/** pi² Remote stopped: a claim's channel went with it, so its phone could never be answered. The window closes. */
+export function helperGone(): void {
+	if (window !== null && window.pairing !== "") closeWindow("pi² Remote stopped while the code was open. Start again.");
 }
 
 /** The checks a claim's attestation is put through; a test engine's stand-in, or App Attest's verifier (#672). */
@@ -667,6 +887,9 @@ async function checkClaim(open: PairingWindow, params: Params): Promise<Claim> {
 	if (!signedBy(claim.signed as string, claim.signature, deviceKey)) throw new Error("The claim is not signed by the device key it names.");
 	if (activeDevices().length >= MAX_DEVICES) throw new Error(`${MAX_DEVICES} devices are paired already.`);
 	if (state.devices.some((one) => one.deviceKey !== "" && sameText(one.deviceKey, device.deviceKey as string))) throw new Error("That device key is paired already.");
+	// A revoked device keeps only its key's hash: the same key cannot pair again while the record is kept (90 days).
+	const claimedHash = keyHash(device.deviceKey as string);
+	if (state.devices.some((one) => one.deviceKeyHash !== undefined && sameText(one.deviceKeyHash, claimedHash))) throw new Error("That device key was revoked on this Mac.");
 
 	// App Attest (P37): a genuine pi² for iPhone vouches for this very device key on this very channel.
 	const attestation = fromBase64url(claim.attestation);
@@ -719,6 +942,12 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		throw new Error("Those are not the digits the phone shows.");
 	}
 	const replaced = params.replace === true ? claim.replaces : null;
+	// The phone is answered through the pi² Remote that carried its claim: with none running, it never could be.
+	const addresses = remoteHooks.addresses();
+	if (addresses === null) {
+		closeWindow("pi² Remote is not running, so the phone could not be told. Start again.");
+		throw new Error("pi² Remote is not running, so the phone could not be told. Start again.");
+	}
 	const now = Date.now();
 	const device: Device = {
 		id: `dev_${randomBytes(16).toString("base64url")}`,
@@ -738,8 +967,10 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		lastPath: null,
 		revokedAt: null,
 	};
-	// The claim is spent before anything is stored: it pairs once.
+	// The claim is spent, and the window closed, before anything is stored: it pairs once, and no claim can come
+	// while the device is saved.
 	open.claim = null;
+	closeWindow(null);
 	await change((doc) => {
 		if (replaced !== null) for (const old of doc.devices) if (old.id === replaced) forget(old, now);
 		doc.devices.push(device);
@@ -752,9 +983,8 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		kind: "paired",
 		claim: claim.id,
 		device: { id: device.id, deviceKey: device.deviceKey, presenceKey: device.presenceKey, channelKey: device.channelKey, recordKey: device.recordKey, attestKeyId: device.attestKeyId },
-		paired: { device: device.id, pairing: state.pairing, name: macName(), addresses: (await remoteHooks.ready().catch(() => ({ addresses: [] }))).addresses },
+		paired: { device: device.id, pairing: state.pairing, name: macName(), addresses },
 	});
-	closeWindow(null);
 	await logDevice({ device: device.id, path: claim.path, method: "pair", summary: summarize("pair", {}), presence: false, outcome: "done" });
 	notify("paired", device.id, `${device.name} was paired with this Mac.`);
 	return { device: device.id };
@@ -762,6 +992,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 
 /** Revokes a device in the record: from now on no attach, presence signature or sealed item of it is taken (3.6). */
 function forget(device: Device, now: number): void {
+	if (device.deviceKey !== "") device.deviceKeyHash = keyHash(device.deviceKey);
 	device.revokedAt = now;
 	device.deviceKey = "";
 	device.presenceKey = null;
@@ -810,12 +1041,30 @@ function takeChallenge(given: string): boolean {
 /** Refused presence signatures and attaches, by device: five in ten minutes suspend it (3.6, 4.5). */
 const failures = new Map<string, number[]>();
 
-async function refused(device: Device, path: DevicePath, method: string, why: string): Promise<void> {
-	await logDevice({ device: device.id, path, method, summary: summarize(method, {}), presence: false, outcome: "refused", why });
+/**
+ * A refusal of something the device key signed: counted first, so that a log that cannot be written never keeps it from
+ * counting, then logged. Only what the device key proved is the device's can count: a stranger who signs with a key of
+ * its own, or none, neither suspends the real device nor writes its log.
+ */
+async function refused(device: Device, path: DevicePath, method: string, why: string, params: Params = {}): Promise<void> {
 	const now = Date.now();
 	const recent = [...(failures.get(device.id) ?? []), now].filter((at) => now - at < SUSPEND_WITHIN);
 	failures.set(device.id, recent);
+	try {
+		await logDevice({ device: device.id, path, method, summary: summarize(method, params), presence: false, outcome: "refused", why });
+	} catch (error) {
+		log("devices: the log could not be written:", error instanceof Error ? error.message : error);
+	}
 	if (recent.length >= SUSPEND_AFTER && device.suspendedAt === null) await suspend(device, path);
+}
+
+/** What no key of the device's signed: a line in engine.log, at most once a minute for each device, and nothing else. */
+const unsignedSaid = new Map<string, number>();
+function unsigned(device: string, what: string): void {
+	const now = Date.now();
+	if (now - (unsignedSaid.get(device) ?? 0) < 60_000) return;
+	unsignedSaid.set(device, now);
+	log(`devices: refused ${what} for ${device} not signed by its device key (said once a minute)`);
 }
 
 async function suspend(device: Device, path: DevicePath): Promise<void> {
@@ -856,7 +1105,12 @@ export async function checkAttach(params: Params): Promise<Attached> {
 		throw new Error(why);
 	};
 	const text = attach.signed as string;
-	if (!signedBy(text, attach.signature, p256Key(device.deviceKey)!)) return refuse("The attach is not signed by the device key.");
+	// Until the device key proved the attach is the device's, nothing is counted against it (pi² Remote checks the same
+	// signature first, 3.4, so only a faulty one sends such an attach).
+	if (!signedBy(text, attach.signature, p256Key(device.deviceKey)!)) {
+		unsigned(device.id, "an attach");
+		throw new Error("The attach is not signed by the device key.");
+	}
 	const presenceKey = device.presenceKey === null ? null : p256Key(device.presenceKey);
 	if (presenceKey === null) return refuse("This device's Face ID key waits to be accepted on the Mac.");
 	if (!signedBy(text, attach.presence, presenceKey)) return refuse("The attach's presence signature is not the presence key's.");
@@ -895,12 +1149,15 @@ export const ITEM_TOO_OLD_FACE = "Not sent: more than an hour passed before your
 
 /**
  * Checks a request a device sealed into the mailbox, once opened by pi² Remote, before it is handled
- * (remote.mailboxIn, #678, calls this): the device paired and not suspended; both signatures, the device key's and
- * the presence key's, over the exact `signed` text, which says the same request; its row of the device's table
- * allowing the mailbox; `at` at most a day old, an hour for one that widens, and not ahead of the Mac's clock by more
- * than five minutes; and its nonce never taken before, stored before this answers, after a restart too.
+ * (remote.mailboxIn, #678, calls this): remote access on; the device paired and not suspended; first its form and the
+ * device key's signature over the exact `signed` text, before anything is written or counted, since the relay, which
+ * the contract does not trust, can hand pi² Remote any item "from" a device; then, logged and counted, the presence
+ * key's signature, that the request is the one signed, for this pairing, its row of the device's table allowing the
+ * mailbox, `at` at most a day old (an hour for one that widens) and not ahead of the Mac's clock by more than five
+ * minutes, and its nonce never taken before, stored before this answers, after a restart too.
  */
 export async function checkRequestItem(device: string, item: unknown, approvalSwitch: (id: string) => SwitchName | null, now = Date.now()): Promise<{ method: string; params: Params; widens: boolean }> {
+	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
 	const record = pairedDevice(device);
 	if (record === undefined) throw new Error("No such device is paired with this Mac.");
 	if (record.suspendedAt !== null) throw new Error("This device is suspended. Resume it on the Mac's Devices page.");
@@ -911,21 +1168,26 @@ export async function checkRequestItem(device: string, item: unknown, approvalSw
 	}
 	const signed = readSigned(item.signed, ITEM_FIELDS);
 	if (signed === null || signed.v !== 2 || signed.kind !== "request") throw new Error("The item's signed text is not a request.");
-	const refuse = async (why: string, method = String(request.method)): Promise<never> => {
-		await logDevice({ device, path: "mailbox", method, summary: summarize(method, request.params as Params), presence: false, outcome: "refused", why });
-		throw new Error(why);
-	};
-	if (signed.device !== device || typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The item is for another device or pairing.");
-	if (signed.method !== request.method || JSON.stringify(signed.params) !== JSON.stringify(request.params)) return refuse("The item's request is not the one signed.");
 	if (!signedBy(item.signed as string, item.signature, p256Key(record.deviceKey)!)) {
-		await refused(record, "mailbox", String(request.method), "The item is not signed by the device key.");
+		unsigned(device, "a sealed item");
 		throw new Error("The item is not signed by the device key.");
 	}
+	// From here on the device key proved the item is the device's own.
+	const refuse = async (why: string, method = String(request.method)): Promise<never> => {
+		try {
+			await logDevice({ device, path: "mailbox", method, summary: summarize(method, request.params as Params), presence: false, outcome: "refused", why });
+		} catch (error) {
+			log("devices: the log could not be written:", error instanceof Error ? error.message : error);
+		}
+		throw new Error(why);
+	};
 	const presenceKey = record.presenceKey === null ? null : p256Key(record.presenceKey);
 	if (presenceKey === null || !signedBy(item.signed as string, item.presence, presenceKey)) {
-		await refused(record, "mailbox", String(request.method), "The item's presence signature is not the presence key's.");
+		await refused(record, "mailbox", String(request.method), "The item's presence signature is not the presence key's.", request.params as Params);
 		throw new Error("The item's presence signature is not the presence key's.");
 	}
+	if (signed.device !== device || typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The item is for another device or pairing.");
+	if (signed.method !== request.method || JSON.stringify(signed.params) !== JSON.stringify(request.params)) return refuse("The item's request is not the one signed.");
 	const method = request.method;
 	const params = request.params as Params;
 	const answer = deviceMay(method, params, { path: "mailbox", approvalSwitch });
@@ -1028,6 +1290,16 @@ export const deviceRequests: Record<string, (params: Params, client: Client) => 
 		return {};
 	},
 };
+
+// With a record that could not be read, every request but devices.watch (which says why) is refused, and nothing is
+// written over it.
+for (const [name, handler] of Object.entries(deviceRequests)) {
+	if (name === "devices.watch") continue;
+	deviceRequests[name] = async (params, client) => {
+		if (unreadable !== null) throw new Error(unreadable);
+		return handler(params, client);
+	};
+}
 
 /** A relay's address: wss:// anywhere; ws:// only to this Mac, and only in a development engine (iphone.md 10). */
 function relayAddress(text: string): boolean {
