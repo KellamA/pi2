@@ -108,7 +108,12 @@ struct ProjectsSidebar: View {
             .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
             .background(Theme.side)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(engine: engine) }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                SidebarDeviceLine(store: engine.devices)
+                SidebarFooter(engine: engine)
+            }
+        }
         .toolbar {
             ToolbarItem {
                 Button("New Project…", systemImage: "folder.badge.plus") { model.newProject() }
@@ -132,6 +137,21 @@ extension ProjectsSidebar {
         guard case .project(let id) = model.selection, let agent = model.hubs.agent(id),
               let row = model.sidebarRow(for: agent, in: id) else { return model.selection }
         return .projectAgent(project: id, conversation: row)
+    }
+}
+
+/// The paired device attached now, above the foot of the sidebar (docs/iphone.md 4.4): nothing while none is, or with
+/// the iPhone preview off.
+private struct SidebarDeviceLine: View {
+    let store: DevicesStore
+
+    var body: some View {
+        if store.attachedLine != nil {
+            DevicesAttachedLine(store: store)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(Theme.acc.opacity(0.08))
+                .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
+        }
     }
 }
 

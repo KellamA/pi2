@@ -24,6 +24,7 @@ This page is for the person using pi². It says what each part of the app is for
 - [Continue with an Agent](#continue-with-an-agent)
 - [Away from the window](#away-from-the-window)
 - [Your data from before projects](#your-data-from-before-projects)
+- [Devices (preview)](#devices-preview)
 - [Keys](#keys)
 
 ## The idea
@@ -194,6 +195,16 @@ Versions of pi² before projects had a list of agents and a list of conversation
 - **An agent's notes** went to each project with a copy of it, for that copy alone, until you share them on the Notes tab.
 
 The copy holds every conversation, agent, project, note, rule and work item, and your settings. It does not hold keys, sign-ins and variables' values (they stay in the Keychain), chat mode's documents, worktrees or downloaded local models. **Settings › Storage › Restore From Backup…** restores it, and replaces everything done since. The move cannot be switched back: the old screens are gone, and only a version from before projects, restored from that copy, has them.
+
+## Devices (preview)
+
+**Settings › Devices** is where an iPhone is paired with this Mac, for pi² for iPhone, which is not given out yet. It is a preview: until **iPhone (preview)** is on, the tab holds that switch alone, nothing runs and no device can pair. With it on:
+
+- **Reach from an iPhone** lets paired devices reach this Mac while pi² runs; off, they stay paired and can do nothing. **Reach through pi²’s relay** carries them from any network, encrypted end to end, with the relay’s address and whether this Mac is registered there; off, only home and private networks. **Find on this network** talks directly at home; **Direct from any address** takes direct connections from any address, not only home and private networks.
+- **Pair an iPhone…** shows a code to scan with pi² on the iPhone, good for one iPhone and five minutes, and kept out of screen sharing and recordings. The iPhone then shows six digits: type them on the Mac to pair it. Nothing pairs until they match. If another device tries the same code, the code is closed and you start again. An iPhone with the name and model of one already paired can **Replace** it.
+- Each paired device shows when it was paired and last seen, and how. **What It Did…** is its log: every answer and change, connection and refused try, for 90 days. **Rename…** and **Revoke…** are in its … menu. A device this Mac refused five times in ten minutes is suspended until you **Resume** it. When Face ID is set up again on an iPhone, accept the new key only if you did it yourself.
+- Lost an iPhone away from the Mac? Erase it with Find My, then revoke it here.
+- While a device is connected, the menu bar item and the foot of the sidebar say so (*Alex’s iPhone · through the relay*). With notifications on in **Settings › General**, the Mac also tells you when a device pairs, when its Face ID changes, when it is suspended, and when it widens what agents may do.
 
 ## Keys
 

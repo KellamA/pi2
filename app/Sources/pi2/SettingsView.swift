@@ -5,7 +5,7 @@ import SwiftUI
 /// The tabs of the Settings window, by the names a development build can open it on with `PI2_SHOW=settings:<name>`
 /// (docs/development.md). In the order they appear.
 enum SettingsTab: String, CaseIterable {
-    case general, chat, providers, tools, storage
+    case general, chat, providers, tools, storage, devices
 }
 
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
@@ -20,6 +20,8 @@ enum SettingsSection: String {
     case servers, commits, priority
     // Storage
     case folder, backup
+    // Devices
+    case reach, paired
 }
 
 #if PI2_DEVELOPMENT
@@ -32,6 +34,7 @@ extension SettingsSection: CaseIterable {
         case .subscriptions, .endpoints, .local, .keys: .providers
         case .servers, .commits, .priority: .tools
         case .folder, .backup: .storage
+        case .reach, .paired: .devices
         }
     }
 }
@@ -50,6 +53,9 @@ struct SettingsLaunch {
     var localSheet: String?
     /// On Tools, `#variables=<server id>` opens that MCP server's Variables sheet.
     var variablesSheet: String?
+    /// On Devices, `#pair` opens the pairing sheet, which asks the engine for a code, and `#log=<device's name or id>`
+    /// a device's log.
+    var devicesSheet: String?
 
     init?(_ value: String?) {
         guard let value, value == "settings" || value.hasPrefix("settings:") else { return nil }
@@ -68,6 +74,8 @@ struct SettingsLaunch {
                 if let provider = target.first { modelsSheet = (String(provider), target.count > 1 ? String(target[1]) : "") }
             } else if part.hasPrefix("variables=") {
                 variablesSheet = String(part.dropFirst("variables=".count))
+            } else if part == "pair" || part.hasPrefix("log=") {
+                devicesSheet = part
             }
         }
     }
@@ -78,6 +86,7 @@ struct SettingsLaunch {
     @MainActor private static var sheetShown = -1
     @MainActor private static var localShown = -1
     @MainActor private static var variablesShown = -1
+    @MainActor private static var devicesShown = -1
     @MainActor private static var addingShown = -1
 
     /// The provider whose Models sheet was asked for, once.
@@ -96,6 +105,12 @@ struct SettingsLaunch {
     @MainActor static func takeVariablesSheet() -> String? {
         guard let server = asked?.variablesSheet, asked?.tab == .tools, ShowAsked.shared.take(&variablesShown) else { return nil }
         return server
+    }
+
+    /// The Devices tab's sheet that was asked for, once: "pair", or "log=<device's name or id>".
+    @MainActor static func takeDevicesSheet() -> String? {
+        guard let sheet = asked?.devicesSheet, asked?.tab == .devices, ShowAsked.shared.take(&devicesShown) else { return nil }
+        return sheet
     }
 
     /// The id to add to `provider` in its Models sheet, once: empty to open the form with none typed.
@@ -123,7 +138,7 @@ struct SettingsLaunch {
     static func refusal(_ value: String) -> String? {
         guard let asked = SettingsLaunch(value), let hash = value.firstIndex(of: "#") else { return nil }
         let part = String(value[value.index(after: hash)...])
-        if ["models=", "local=", "add-model=", "variables="].contains(where: part.hasPrefix) { return nil }
+        if ["models=", "local=", "add-model=", "variables=", "log="].contains(where: part.hasPrefix) || part == "pair" { return nil }
         if let section = asked.section, section.tab == asked.tab { return nil }
         let sections = SettingsSection.allCases.filter { $0.tab == asked.tab }.map { "#\($0.rawValue)" }.joined(separator: ", ")
         return "Settings' \(asked.tab.rawValue.capitalized) tab has no section #\(part); use \(sections)"
@@ -185,6 +200,10 @@ struct SettingsView: View {
             StorageSettings(engine: engine)
                 .tabItem { Label("Storage", systemImage: "externaldrive") }
                 .tag(SettingsTab.storage)
+            // Behind the iPhone preview (docs/iphone.md decision 19): with it off, the tab holds its switch alone.
+            DevicesSettings(engine: engine)
+                .tabItem { Label("Devices", systemImage: "iphone") }
+                .tag(SettingsTab.devices)
         }
         .frame(width: 660, height: 600)
         #if PI2_DEVELOPMENT

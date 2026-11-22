@@ -50,7 +50,9 @@ Usage: scripts/test-copy <command> [arguments]
                                    for this copy only, for speed measurements. Prints the data folder and process
                                    ids. --env may repeat, for these test variables only:
                                    PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND,
-                                   PI2_GH. Values are explicit (never inherited), kept for reopen, and not secrets.
+                                   PI2_GH, and the paired devices' stand-ins PI2_REMOTE_STAND_IN,
+                                   PI2_APP_ATTEST_STAND_IN and PI2_APP_ATTEST_TEAM. Values are explicit (never
+                                   inherited), kept for reopen, and not secrets.
   reopen <suffix> [--show <what>] [--hub <fold>] [--appearance light|dark]
                                    Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show, --hub and --appearance unless
@@ -220,7 +222,9 @@ add_test_env() {
 	key=${pair%%=*}
 	case $key in
 		PI2_DEMO_PICTURES|PI2_DEMO_TEXT_MODEL|PI2_DEMO_COST|PI2_DEMO_TOKENS_PER_SECOND|PI2_GH) ;;
-		*) die "--env does not allow $key; only PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND and PI2_GH" ;;
+		# The paired devices' stand-ins (#679): honoured by a development engine alone, which every copy's is.
+		PI2_REMOTE_STAND_IN|PI2_APP_ATTEST_STAND_IN|PI2_APP_ATTEST_TEAM) ;;
+		*) die "--env does not allow $key; only PI2_DEMO_PICTURES, PI2_DEMO_TEXT_MODEL, PI2_DEMO_COST, PI2_DEMO_TOKENS_PER_SECOND, PI2_GH, PI2_REMOTE_STAND_IN, PI2_APP_ATTEST_STAND_IN and PI2_APP_ATTEST_TEAM" ;;
 	esac
 	for old in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do
 		[[ ${old%%=*} != "$key" ]] || die "--env repeats $key; give each variable once"
