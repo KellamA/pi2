@@ -333,9 +333,15 @@ test("scheduling: one-line summaries, what a row opens to, and the approval card
 	assert.deepEqual(T.detailFor(call("list_schedules", {}), "done", { text: "It is now …" }, null).map((s) => s.label), ["Schedules"]);
 
 	const pending = { kind: "approval", tool: "schedule_task", agentName: "Atlas", arguments: args, question: "Atlas wants to schedule …", when: "Every day at 07:00, first run Friday 13 November at 07:00" };
-	assert.deepEqual(T.scheduleApproval(pending), { request: "Atlas wants to schedule “Morning news brief”", when: "Every day at 07:00, first run Friday 13 November at 07:00", prompt: "Sum up the news." });
-	assert.deepEqual(T.scheduleApproval({ tool: "schedule_task", arguments: null, question: "Q" }), { request: "The agent wants to schedule work", when: "Q", prompt: "" });
-	assert.deepEqual(T.scheduleApproval(null), { request: "The agent wants to schedule work", when: "", prompt: "" });
+	const approval = T.scheduleApproval(pending);
+	// Where a schedule is turned off since #716: never Activity, which lists only background commands and local models.
+	assert.match(approval.caption, /^Each run starts a new conversation with this agent and works with no one watching\./);
+	assert.match(approval.caption, /on the project's Settings tab, or on the template's page for a template\.$/);
+	assert.doesNotMatch(approval.caption, /Activity/);
+	const caption = approval.caption;
+	assert.deepEqual(approval, { request: "Atlas wants to schedule “Morning news brief”", when: "Every day at 07:00, first run Friday 13 November at 07:00", prompt: "Sum up the news.", caption });
+	assert.deepEqual(T.scheduleApproval({ tool: "schedule_task", arguments: null, question: "Q" }), { request: "The agent wants to schedule work", when: "Q", prompt: "", caption });
+	assert.deepEqual(T.scheduleApproval(null), { request: "The agent wants to schedule work", when: "", prompt: "", caption });
 });
 
 test("diffs: from the result's details, and built from the edits", () => {

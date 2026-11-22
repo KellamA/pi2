@@ -164,7 +164,9 @@ struct InboxCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if isSchedule {
-                    Text("Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it in Activity.")
+                    // The same words as the conversation page's card (`scheduleApproval` in tools.js). The approval does not say
+                    // whether the agent is a project's or a template, so both places are named.
+                    Text("Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it on the project's Settings tab, or on the template's page for a template.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(Theme.tx3)
                         .fixedSize(horizontal: false, vertical: true)
