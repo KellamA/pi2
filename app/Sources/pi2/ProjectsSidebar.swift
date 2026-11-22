@@ -156,7 +156,7 @@ private struct DashboardRow: View {
     }
 }
 
-/// "over budget" on Usage's row, as the old sidebar's row says it.
+/// "over budget" on Usage's row, while the day's budget is used up.
 private struct UsageRowBadge: View {
     let engine: EngineClient
 

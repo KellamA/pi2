@@ -567,6 +567,16 @@ struct RootView: View {
         .onChange(of: model.selection) { _, selection in
             if selection == nil, model.mode == .agents { model.landOnProjects() }
         }
+        // So does one on the page that makes the first project, once there is one, made here or elsewhere.
+        .onChange(of: engine.projectStore.listed.isEmpty) { _, none in
+            guard !none, model.selection == nil, engine.hasLoadedLibrary else { return }
+            #if PI2_DEVELOPMENT
+            if LaunchConversation.waits(ProcessInfo.processInfo.environment["PI2_SHOW"]) { return }
+            #endif
+            model.chats.holdingMode = true
+            model.landOnProjects()
+            model.chats.holdingMode = false
+        }
         .onChange(of: engine.conversations) { old, list in
             // A hub's pane whose conversation leaves the library, archived or deleted, closes (#657).
             if engine.hasLoadedLibrary {

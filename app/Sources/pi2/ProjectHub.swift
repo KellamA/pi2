@@ -196,8 +196,7 @@ final class ProjectHubs {
     func agent(_ id: String) -> Int? { layout(id).focusedConversation }
 
     /// The conversation of each project's hub that has the keyboard, as the hub last drew it: the focused pane's, unless
-    /// the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on
-    /// it, as it acts on the focused pane in the old screens (#632).
+    /// the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on it (#632).
     private(set) var keyboard: [String: Int] = [:]
 
     func setKeyboard(_ conversation: Int?, for id: String) {

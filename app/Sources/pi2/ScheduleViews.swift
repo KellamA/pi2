@@ -31,10 +31,6 @@ struct ScheduleList: View {
     let agents: [AgentProfile]
     /// What the list says while it is empty.
     let empty: String
-    /// Rows in a card of their own each (Activity), or divided within the card they are put in (a tab, a form).
-    var cards = false
-    /// A heading with New Schedule… beside it, as Activity has; without one, the button comes after the rows.
-    var heading: String? = nil
     @State private var editing: Schedule?
     @State private var creating = false
     @State private var problem: String?
@@ -42,30 +38,18 @@ struct ScheduleList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let heading {
-                HStack {
-                    Text(heading).font(.headline)
-                    Spacer()
-                    newButton
-                }
-            }
             if schedules.isEmpty {
                 Text(empty).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            // Rows divided within the card they are put in (a tab, a form).
             ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
-                if cards {
-                    row(schedule).padding(10).panel()
-                } else {
-                    if index > 0 { Divider().overlay(Theme.line) }
-                    row(schedule)
-                }
+                if index > 0 { Divider().overlay(Theme.line) }
+                row(schedule)
             }
             if let problem { Text(problem).font(.callout).foregroundStyle(Theme.bad).fixedSize(horizontal: false, vertical: true) }
-            if heading == nil {
-                HStack {
-                    Spacer()
-                    newButton
-                }
+            HStack {
+                Spacer()
+                newButton
             }
         }
         .sheet(item: $editing) { ScheduleSheet(engine: engine, original: $0, agents: agents) }

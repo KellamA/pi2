@@ -1,0 +1,2 @@
+### For contributors
+- A throwaway copy opens on projects with nothing to turn on. `scripts/test-copy show` and `--show` no longer take `inbox` or `branches`; `activity` is the Activity under Shared, and `agent:<id>` a template's page. A copy's own preference `removal-notice` (`backup` or `failed`) stands in for the notice of the update to projects. `pi2-layout-check` no longer checks the old window's saved layout, which went with the old screens.

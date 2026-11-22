@@ -72,8 +72,8 @@ struct ProjectSettingsTab: View {
             Button("Cancel", role: .cancel) { confirming = nil }
         } message: {
             switch confirming {
-            case .archive: Text("The project leaves the sidebar and nothing new starts in it. Its conversations, agents, rules and notes stay as they are, and with the preview off everything shows as before. You can restore it whenever you like.")
-            case .delete: Text("Its conversations keep their history — with the preview on they show in the Archive, under the project’s name — but its agents can no longer be started or handed work, and their schedules are held. Its rules, notes and work are kept, shown nowhere. This cannot be undone.")
+            case .archive: Text("The project leaves the sidebar and nothing new starts in it. Its conversations, agents, rules and notes stay as they are. You can restore it whenever you like.")
+            case .delete: Text("Its conversations keep their history, and show in the Archive under the project’s name, but its agents can no longer be started or handed work, and their schedules are held. Its rules, notes and work are kept, shown nowhere. This cannot be undone.")
             case .detach: Text("The project’s work list goes back to the one pi² keeps, as it was left.")
             case nil: EmptyView()
             }

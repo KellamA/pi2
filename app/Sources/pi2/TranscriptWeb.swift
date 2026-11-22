@@ -86,8 +86,7 @@ struct TranscriptWebView: NSViewRepresentable {
     let older: TranscriptFeed.Older
     let state: ConversationState?
     let onShown: () -> Void
-    /// The changes made in this conversation of a project, and the needs waiting from it, for their rows and cards, and
-    /// whether the preview is on: with it off the page draws none of them (10.2).
+    /// The changes made in this conversation of a project, and the needs waiting from it, for their rows and cards.
     let changes: [ProjectChangeLine]
     let needs: [TranscriptFeed.Need]
     let inbox: [InboxItem]

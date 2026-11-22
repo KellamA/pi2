@@ -65,7 +65,6 @@ struct ChatView: View {
             return true
         }
         .overlay { if dropTargeted { DropHighlight() } }
-        // The window's title and toolbar are WorkspaceView's: they follow whichever conversation is active.
         .onAppear {
             engine.openConversation(id)
             // The message field takes the keyboard once the page has shown the conversation, not as the pane is made:
@@ -1330,7 +1329,7 @@ struct AgentIntro: View {
             .font(.system(size: 12.5))
             .padding(.horizontal, 16).padding(.vertical, 12)
             .panel(radius: 12)
-            Text("Change the model and tools from the toolbar.")
+            Text("The model and tools are the agent’s: change them on its page, in the project’s Agents tab.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.tx3)
             Spacer(minLength: 0)
         }

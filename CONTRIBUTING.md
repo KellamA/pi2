@@ -80,8 +80,8 @@ For a problem that only happens with optimisation, use `./app/build.sh optimised
 Choose a suffix of your own, in lower-case letters, digits and hyphens, such as `test-` and your issue number, so that several sessions testing on the same Mac at once do not share preferences, data or sign-ins, and cleaning up after yours does not remove theirs. Then:
 
 ```bash
-scripts/test-copy start test-7 --show inbox
-scripts/test-copy shot test-7 app/build/test-copies/test-7/inbox.png
+scripts/test-copy start test-7 --show activity
+scripts/test-copy shot test-7 app/build/test-copies/test-7/activity.png
 scripts/test-copy stop test-7
 ```
 

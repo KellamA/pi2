@@ -1,8 +1,7 @@
 import SwiftUI
 
-// What a run is waiting on and how to stop it, and the engine's notice that it restarted: shown on the old Activity page
-// and, with the Projects preview on, on a project's Now tab, in the Dashboard's columns and over the Dashboard and a
-// hub (#645). They stand apart from ActivityViews.swift, which goes with the old pages (#483), so that they outlive it.
+// What a run is waiting on and how to stop it, and the engine's notice that it restarted: shown on a project's Now tab,
+// in the Dashboard's columns and over the Dashboard and a hub (#645).
 
 // MARK: - The command a run waits on
 
