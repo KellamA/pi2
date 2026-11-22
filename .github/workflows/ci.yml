@@ -53,6 +53,8 @@ jobs:
               # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
               scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
               scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
+              # Checked by Scripts (tests) with stand-ins; the iPhone workflow (iphone.yml) runs the script itself.
+              scripts/iphone-sim | scripts/test-iphone-sim) ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
               # could break that.
               app/VERSION)
@@ -125,6 +127,7 @@ jobs:
     # scripts/issue and its hook need only bash, git and jq, so they are checked on Linux (#235). Neither touches a
     # GitHub issue: the hook's test has a stand-in gh. So does the test of scripts/auto-merge, and it touches no pull
     # request (#553). scripts/test-docs-lists checks that the docs' lists of the engine's files keep up with them (#640).
+    # scripts/test-iphone-sim checks scripts/iphone-sim with stand-ins for xcrun and xcodebuild: no simulator (#681).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -135,6 +138,7 @@ jobs:
       - run: scripts/test-issue-hook
       - run: scripts/test-auto-merge
       - run: scripts/test-docs-lists
+      - run: scripts/test-iphone-sim
 
   app:
     name: App (build)

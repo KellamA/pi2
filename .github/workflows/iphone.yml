@@ -1,0 +1,65 @@
+name: iPhone
+
+# The iPhone app (iphone/, docs/iphone.md section 10, #681): its unit tests in a simulator, then a Release build, on
+# every pull request and every push to main that changes the app, the package it links from app/Package.swift, the
+# targets it shares with the Mac app, or how it is built here. Signs nothing and needs no secret.
+on:
+  pull_request:
+    paths:
+      - iphone/**
+      - app/Package.swift
+      - app/Package.resolved
+      - app/Sources/PiModels/**
+      - app/Sources/EngineKit/**
+      - app/Sources/TranscriptKit/**
+      - app/Sources/RemoteKit/**
+      - scripts/iphone-sim
+      - .github/workflows/iphone.yml
+  push:
+    branches: [main]
+    paths:
+      - iphone/**
+      - app/Package.swift
+      - app/Package.resolved
+      - app/Sources/PiModels/**
+      - app/Sources/EngineKit/**
+      - app/Sources/TranscriptKit/**
+      - app/Sources/RemoteKit/**
+      - scripts/iphone-sim
+      - .github/workflows/iphone.yml
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its run still going; runs on main each finish.
+concurrency:
+  group: iphone-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  iphone:
+    name: iPhone app (tests and Release build)
+    # The xcode-27 image (macOS 27) carries Xcode 27.0 to 27.2 and their iOS 27 simulators; macos-26 has only Xcode 26
+    # and iOS 26. The project was made with Xcode 27.2 (LastUpgradeVersion 2720), and its deployment target is iOS 18.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      # Named, not the image's default (27.1 when this was written), so that the image moving on changes nothing here.
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Xcode and its iOS simulators
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes ios
+      # A simulator of the job's own, made by the same script agents use (docs/development.md, Building the iPhone app):
+      # unsigned builds, its derived data in iphone/build.
+      - name: Make a simulator
+        run: scripts/iphone-sim create ci --type "iPhone 18 Pro" --runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2
+      - name: Unit tests
+        run: scripts/iphone-sim test ci
+      # What has none of the #if DEBUG code, as TestFlight's builds will be (unsigned here).
+      - name: Release build
+        run: scripts/iphone-sim build ci --release
