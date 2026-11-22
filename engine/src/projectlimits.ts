@@ -5,7 +5,7 @@ import type { Host } from "./extensions.ts";
 import type { Feature } from "./features.ts";
 import { type ProviderLimits, subscriptionWords, windowWords } from "./limits.ts";
 import { putNeed } from "./needs.ts";
-import { addNews, type LimitReading, type Project, Projects, projectsOn, type Start } from "./projects.ts";
+import { addNews, type LimitReading, type Project, Projects, type Start } from "./projects.ts";
 import { RequestError } from "./requesterror.ts";
 import { Agents, Library, type ModelRef } from "./state.ts";
 import { installLimitAnswers } from "./projectlimitstarts.ts";
@@ -96,12 +96,11 @@ export function confirmLimit(given: unknown): string | undefined {
 }
 
 export function limitError(limit: LimitReading): RequestError {
-	const advice = projectsOn() ? "" : " Turn on Projects in Settings › General to raise the limit.";
-	return new RequestError(`Past the project's limit: ${limit.reason}. Work already running carries on.${advice}`, { limit });
+	return new RequestError(`Past the project's limit: ${limit.reason}. Work already running carries on.`, { limit });
 }
 
 export function limitRefusal(limit: LimitReading, card: boolean): string {
-	return `Not started: ${limit.reason}. Work already running carries on. ${card ? "The person can start it anyway from the card under Needs you, or raise the limit." : "The person can raise the limit after turning Projects on in Settings › General."}`;
+	return `Not started: ${limit.reason}. Work already running carries on. ${card ? "The person can start it anyway from the card under Needs you, or raise the limit." : "The person can raise the limit in the project's settings."}`;
 }
 
 /**
@@ -126,12 +125,12 @@ export async function admit(start: Start, confirm: string | undefined, site: Adm
 	const approved = site.card ?? (matched ? token!.readings : []);
 	const blocked = uncovered(breaches, approved);
 	const notes = missing ? ["Plan limits: no reading of this plan's windows yet."] : [];
-	if (blocked === undefined || (start.by.kind === "agent" && site.card === undefined && projectsOn() && project.settings.withoutAsking.passLimits)) {
+	if (blocked === undefined || (start.by.kind === "agent" && site.card === undefined && project.settings.withoutAsking.passLimits)) {
 		if (blocked !== undefined) for (const reading of breaches) notes.push(`Passed a project limit: ${reading.reason}.`);
 		return notes.length === 0 ? { ok: true } : { ok: true, note: notes.join("\n") };
 	}
 	const limit = { ...blocked, id: randomUUID() };
-	if (site.card === undefined && projectsOn()) {
+	if (site.card === undefined) {
 		if (start.by.kind === "person") {
 			confirmations.set(limit.id, { start: key, readings: rememberReading(approved, limit), expires: now + CONFIRM_MS });
 		} else if (project.conversation !== null && site.callId !== undefined) {

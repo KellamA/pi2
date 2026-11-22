@@ -14,7 +14,7 @@
 //
 // Start fresh (`projects.startFresh`, and `projects.setOrchestrator`, which also changes the roles) makes that new
 // conversation, and moves to it what the old one was waiting for, in one commit (6.5). The old one stays readable, in
-// the project's `earlier`, and with the preview on takes no messages.
+// the project's `earlier`, and takes no messages.
 //
 // Also here: what the person writes straight to another agent of a project, told to the orchestrator at its next turn
 // (`pi2.toldOrchestrator`, and a piece of news with `keep`); `sub_chats` and `delegate` reaching the sub-chats of earlier
@@ -23,7 +23,7 @@
 //
 // The state block's work for a project with a GitHub repository attached comes from github.ts (#468), through
 // `wireWorkState`; for any other project, from the list kept by pi² (work.ts).
-// Outside a project, and with the preview off, nothing here adds anything to what a conversation is told.
+// Outside a project, nothing here adds anything to what a conversation is told.
 
 import { type ConversationId, defineDoc, type EntryRecord, InboxDoc, LiveDoc, type Tx } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
@@ -39,9 +39,7 @@ import {
 	Projects,
 	type ProjectsDoc,
 	type ProjectRow,
-	projectsOn,
 	reloadProjects,
-	requirePreview,
 	type SwitchName,
 	wireFresh,
 	wireLastWords,
@@ -71,7 +69,7 @@ const LISTED = 30;
 
 /**
  * A conversation with the orchestrator that has not yet been given its state block: one Start fresh or a new project
- * made. The block is given in front of its first input with the preview on, and this is cleared in the same commit.
+ * made. The block is given in front of its first input, and this is cleared in the same commit.
  */
 const Fresh = defineDoc<{ pending: boolean }>({
 	kind: "pi2.orchestratorFresh",
@@ -278,18 +276,17 @@ async function snapshotOf(tx: Tx, project: Project, news: readonly News[], now: 
 
 const userMessage = (text: string, now: number) => ({ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: now });
 
-/** The project whose current conversation with the orchestrator `conversation` is, in the preview: on, neither archived nor deleted. */
+/** The project whose current conversation with the orchestrator `conversation` is, neither archived nor deleted. */
 const currentOf = (doc: ProjectsDoc, conversation: number): Project | undefined =>
 	Object.values(doc.projects).find((project) => project.conversation === conversation && project.archivedAt === undefined && project.deletedAt === undefined);
 
 /**
  * pi durable places an input in conversation `conversationId`, in the commit `tx` (the `placeInput` setting, main.ts):
  * the person's message that starts a turn, a wake, a queued message placed, or a steer placed in the middle of a turn.
- * In a project's current conversation with the orchestrator, with the preview on, the state block or the catch-up goes
+ * In a project's current conversation with the orchestrator, the state block or the catch-up goes
  * in front of it, and the news it gives leaves `news` in the same commit. Anywhere else it does nothing at all.
  */
 export async function placeInput(tx: Tx, conversationId: number, now: number): Promise<void> {
-	if (!projectsOn()) return;
 	const doc = await tx.doc(Projects);
 	const project = currentOf(doc, conversationId);
 	if (project === undefined) return;
@@ -319,7 +316,6 @@ export async function placeInput(tx: Tx, conversationId: number, now: number): P
  * summary still comes in the next catch-up. Undefined anywhere else.
  */
 export async function summaryState(tx: Tx, conversationId: number): Promise<string | undefined> {
-	if (!projectsOn()) return undefined;
 	const doc = await tx.doc(Projects);
 	const project = currentOf(doc, conversationId);
 	if (project === undefined) return undefined;
@@ -329,8 +325,8 @@ export async function summaryState(tx: Tx, conversationId: number): Promise<stri
 // ---- Earlier conversations
 
 /**
- * The earlier conversations of the project whose current conversation with the orchestrator `conversation` is, with
- * the preview on: their sub-chats are its own too (`sub_chats`, `delegate` with `chat`; 5.8). None for any other.
+ * The earlier conversations of the project whose current conversation with the orchestrator `conversation` is: their
+ * sub-chats are its own too (`sub_chats`, `delegate` with `chat`; 5.8). None for any other.
  */
 export function earlierOf(conversation: number): number[] {
 	const project = inProject(conversation);
@@ -362,17 +358,16 @@ export function orchestratorRole(conversation: number): Role | null {
 	return roles.get(conversation) ?? null;
 }
 
-/** An earlier conversation with the orchestrator takes no messages, with the preview on (3.5). */
+/** An earlier conversation with the orchestrator takes no messages (3.5). */
 export function refuseEarlier(conversation: number): void {
 	if (inProject(conversation)?.earlier.includes(conversation) === true) throw new Error("This is an earlier conversation with the orchestrator. Write in the current one.");
 }
 
 /**
  * Where the person's answer to what conversation `conversation` put under Needs you goes (6.5): the current
- * conversation with the orchestrator, with the preview on, when `conversation` is an earlier one; else itself.
+ * conversation with the orchestrator, when `conversation` is an earlier one; else itself.
  */
 export async function answerGoesTo(tx: Tx, conversation: number): Promise<{ to: number; earlier: boolean }> {
-	if (!projectsOn()) return { to: conversation, earlier: false };
 	const project = Object.values((await tx.doc(Projects)).projects).find((each) => each.earlier.includes(conversation) && each.deletedAt === undefined);
 	return project === undefined || project.conversation === null ? { to: conversation, earlier: false } : { to: project.conversation, earlier: true };
 }
@@ -380,7 +375,7 @@ export async function answerGoesTo(tx: Tx, conversation: number): Promise<{ to: 
 // ---- What the person writes to another agent (6.4)
 
 /**
- * For a message the person sends to conversation `conversation`: in a project in the preview, when it is not the current
+ * For a message the person sends to conversation `conversation`: in a project neither archived nor deleted, when it is not the current
  * conversation with the orchestrator, what to do in the commit that takes the message: a piece of news with `keep`, and
  * a line in that conversation saying the orchestrator will be told. Undefined anywhere else, which changes nothing.
  */
@@ -491,7 +486,7 @@ export function projectSection(project: Project, conversation: number, offered: 
 	].join("\n");
 }
 
-/** The `project` section, in its place before `project_rules` (6.1). Nothing outside a project in the preview. */
+/** The `project` section, in its place before `project_rules` (6.1). Nothing outside a project neither archived nor deleted. */
 export const projectPrompt: Feature = (given) => {
 	host = given;
 	return {
@@ -750,13 +745,11 @@ export const orchestrator: Feature = (given, engine) => {
 		handlers: {
 			/** `{ id }`: a fresh conversation with the orchestrator, beginning with the state block (6.5). */
 			"projects.startFresh": async (params) => {
-				requirePreview();
 				if (typeof params.id !== "string") throw new Error("id must be a project's id");
 				return { conversation: await startFresh(given, engine, params.id, undefined) };
 			},
 			/** `{ id, agentId }`: another agent of the project as its orchestrator, with a fresh conversation, in one commit (6.5). */
 			"projects.setOrchestrator": async (params) => {
-				requirePreview();
 				if (typeof params.id !== "string") throw new Error("id must be a project's id");
 				if (typeof params.agentId !== "string") throw new Error("agentId must be an agent's id");
 				return { conversation: await startFresh(given, engine, params.id, params.agentId) };

@@ -33,14 +33,7 @@ export async function fillProject(
 			return !busy && submission.status === "done";
 		});
 	};
-	if (!(await call<{ preview: boolean }>("projects.list")).preview) {
-		// #458 supplies a carry-over plan. Until it lands, turning the preview on carries nothing over.
-		const { plan } = await call<{ plan?: string }>("projects.carryOver", { dryRun: true }).catch((error) => {
-			if (error.message !== "Unknown method: projects.carryOver") throw error;
-			return { plan: undefined };
-		});
-		await call("projects.setPreview", { on: true, ...(plan === undefined ? {} : { plan }) });
-	}
+	// Projects are on in every copy since #483 took the switch out: there is nothing to turn on first.
 	const { projects } = await call<{ projects: { name: string }[] }>("projects.list");
 	const base = given ?? "Demo project";
 	const names = new Set(projects.map(({ name }) => name.toLowerCase()));

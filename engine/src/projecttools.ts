@@ -83,7 +83,7 @@ const NOT_HERE = "This works only in a project's conversation with its orchestra
 const NOT_ORCHESTRATOR = "Only the project's orchestrator, in its conversation with the person, changes the project. Say what you need in your answer, for the orchestrator to do.";
 const NO_ACCESS = "This agent's access does not let it change the project: that takes Ask first or Full access.";
 
-/** The orchestrator's current conversation of a project neither archived nor deleted, with the preview on (5.1); else why not. */
+/** The orchestrator's current conversation of a project neither archived nor deleted (5.1); else why not. */
 function callOf(host: Host, api: ToolExecutionApi): Call | string {
 	const conversationId = api.conversationId as unknown as number;
 	const meta = host.meta(api.conversationId);

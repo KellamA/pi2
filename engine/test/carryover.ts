@@ -1,28 +1,38 @@
-// Carrying over (#458, docs/projects.md section 9), with a real engine on a throwaway data folder and Keychain service,
-// driven over its socket as an app would drive it, on a library built here to the shape of a real one: hundreds of
-// conversations in a repository, its subfolder, a worktree pi² made of it, a second repository, a plain folder and no
-// folder; sub-chats; archived and deleted ones; chats; an agent deleted since; two agents sharing a folder; an agent's
-// notes, written by it and by the person; variables with values; Allow everything.
+// The update that took the projects switch out (#715, #483; docs/projects.md section 9): carrying over, run by the
+// engine itself as it starts, on a data folder as the last version with the switch left it. A real engine on a
+// throwaway data folder and Keychain service, driven over its socket as an app would drive it.
 //
-// The report changes nothing, with the preview off. A plan gone stale is refused, with the new report as the refusal's
-// data. A run cut off between two projects' commits (the engine killed there) is finished by the next run, which doubles
-// nothing; one stopped between its commits and the copying of the variables' values finishes that copying at the next
-// start. The run did what the report said and nothing else; a second run writes nothing. With the preview off, a
-// conversation of each kind is told exactly what it was told before the run, byte for byte, and again after its project's
-// settings, rules, notes and copies were changed with the preview on; the old lists (the `library`, `agents` and `memory`
-// events) are as before the run, field by field, but for the fields the old screens do not read and the project agents.
-// Then what still holds with the preview off (a project's `startAgents`), conversations made later, a fork, and one left
-// in no project carried at the next start. carryplan.ts checks the plan alone on a larger library.
+// The folder is made by this engine with nothing carried (`PI2_CARRY_NEVER`, the last version with the switch never
+// on), to the shape of a real library: hundreds of conversations in a repository, its subfolder, a worktree pi² made of
+// it, a second repository, a plain folder and no folder; sub-chats; archived and deleted ones; chats; an agent deleted
+// since; two agents sharing a folder; an agent's notes, written by it and by the person; variables with values; Allow
+// everything. Its report changes nothing. A copy of the data that cannot be made carries nothing, and says so in the log
+// and the `projects` event. Then the update: the copy made first and recorded (`carry.removalBackup`), the plan run as
+// its report said, cut off between two projects' commits (the engine killed there) and finished by the next start,
+// which makes no second copy; stopped between its commits and the copying of the variables' values, which the next
+// start finishes; `settings.json`'s switch written for the versions before; what the last version reads (the library,
+// the agents and the notes) as it was, but for the fields it does not read and the project agents. A second start writes
+// nothing. Then conversations made later, a fork, a deleted project's, and one left in no project carried at the next
+// start. Last, the owner's case, a folder where the switch was on and carrying over ran long ago: a fresh copy is made,
+// and nothing changes but a stray and a sub-chat made with the switch off, which is given its project's copy.
+// carryplan.ts checks the plan alone on a larger library.
+//
+// `PI2_CARRY_KEEP=<folder>` copies the data folder there at the end, for a look at it with an older engine.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLAN_CHANGED } from "../src/carryover.ts";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { CARRIES_ITSELF } from "../src/carryover.ts";
 import { KeychainObjects } from "../src/credentials.ts";
-import { PROJECT_DELETED } from "../src/projects.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { PROJECT_DELETED, Projects } from "../src/projects.ts";
+import { Library } from "../src/state.ts";
+import { EngineClient, standInApp, stop, until } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -40,6 +50,7 @@ const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-carryover-${process.pid}`;
 const secretsGate = join(work, "secrets-gate");
 const commitGate = join(work, "commit-gate");
 const settingsPath = join(home, "settings.json");
+const backups = join(home, "backups");
 
 let engine: ChildProcess | undefined;
 process.on("exit", () => {
@@ -78,7 +89,7 @@ const fresh = join(work, "fresh");
 for (const folder of [plain, old, fresh]) mkdirSync(folder);
 
 class Client extends EngineClient {
-	/** How many of each event about a stored document came: a run that writes nothing sends none of them. */
+	/** How many of each event about a stored document came: a report that writes nothing sends none of them. */
 	counts: Record<string, number> = { library: 0, agents: 0, memory: 0, projects: 0 };
 	override receive(message: any): void {
 		if (typeof message.event === "string" && message.event in this.counts) this.counts[message.event]! += 1;
@@ -94,13 +105,6 @@ class Client extends EngineClient {
 		});
 		return assistant().at(-1).text as string;
 	}
-	/** What conversation `id` is told: its prompt with every section and its tools (the demo model's `/system full`), and the system messages sent so far. */
-	async told(id: number): Promise<{ full: string; history: string }> {
-		await this.call("conversation.open", { id });
-		const full = await this.answer(id, "/system full");
-		assert.ok(full.startsWith("FULL\n"), full.slice(0, 200));
-		return { full, history: await this.answer(id, "/system history") };
-	}
 	get projects(): any[] {
 		return this.events.projects?.projects ?? [];
 	}
@@ -109,6 +113,10 @@ class Client extends EngineClient {
 	}
 	row(id: number): any {
 		return this.events.library?.conversations?.find((row: any) => row.id === id) ?? this.events.library?.archived?.find((row: any) => row.id === id);
+	}
+	/** Every conversation's place: its project and the agent it runs as. */
+	places(): string[] {
+		return [...(this.events.library?.conversations ?? []), ...(this.events.library?.archived ?? [])].map((row: any) => `${row.id} ${row.projectId} ${row.runsAs}`).sort();
 	}
 }
 
@@ -131,14 +139,27 @@ const refusal = async (promise: Promise<unknown>): Promise<any> => {
 	}
 	assert.fail("not refused");
 };
+const settingsFile = () => (existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, "utf8")) : {});
+const backupsMade = () => (existsSync(backups) && statSync(backups).isDirectory() ? readdirSync(backups).sort() : []);
+const ready = (c: Client) => c.until("the greetings", () => c.events.projects && c.events.agents && c.events.library && c.events.memory);
+/** With the engine stopped: read or change its documents, as an older version stored them. */
+const offline = async <T>(edit: (harness: Harness) => Promise<T>): Promise<T> => {
+	const storage = await openNodeSqliteStorage(join(home, "session.sqlite"));
+	const harness = await Harness.open(storage, { registry: createRegistry(), models: createModels() }, context);
+	try {
+		return await edit(harness);
+	} finally {
+		await harness.close(context);
+	}
+};
 
-// The first engine holds a run before its second project's commit, so that it can be killed there, as by a crash.
-engine = start({ PI2_CARRY_COMMIT_GATE: commitGate });
+// The first engine is the last version with the switch never turned on: it carries nothing.
+engine = start({ PI2_CARRY_NEVER: "1" });
 let client = await Client.connect(engine, home);
 try {
-	await client.until("agents", () => client.events.agents && client.events.library && client.events.memory && client.events.projects);
+	await ready(client);
 
-	// ---- A library to the shape of a real one, made with the preview never on
+	// ---- A library to the shape of a real one, made with the switch never on
 
 	/** Where each conversation the test made should end up: its key, and whether it is carried at all. */
 	const made = new Map<number, { key: string; archived: boolean; carried: boolean; subChat: boolean; agentId: string }>();
@@ -193,9 +214,10 @@ try {
 	const inWorktree = await conversation(builder, repo);
 	const worktree = await client.call("worktree.create", { id: inWorktree });
 	assert.ok(!worktree.path.startsWith(repo), worktree.path);
-	// An agent with notes and a variable, in a plain folder; an ordinary one there too.
-	const withNotes = await conversation("atlas", plain);
+	// An agent with notes and a variable, in a plain folder; an ordinary one there too, and one made last.
+	await conversation("atlas", plain);
 	const ordinary = await conversation("scout", plain);
+	const late = await conversation("forge", plain);
 	// An agent deleted since: its conversation is carried, and runs as it does today; its note is left.
 	const orphan = await conversation(temp, plain);
 	await client.call("agents.delete", { id: temp });
@@ -208,51 +230,11 @@ try {
 	for (let n = 0; n < 2; n++) await client.call("conversation.create", { chat: true });
 	await client.until("the library", () => [...made.keys()].every((id) => made.get(id)!.carried === false || client.row(id) !== undefined));
 	const deleted = [...made.values()].filter((entry) => !entry.carried).length;
+	assert.deepEqual(client.projects, [], "nothing carried as it was made");
+	assert.equal(client.row(ordinary).projectId, null);
 	step(`a library of ${made.size} conversations, with sub-chats, archived and deleted ones, chats, a worktree and an agent deleted since`);
 
-	// ---- What a conversation of each kind is told before anything is carried over: prompt and tools, byte for byte
-
-	const kinds: Record<string, number> = {
-		"an ordinary conversation": ordinary,
-		"one chosen as its project's orchestrator's": orchestratorInRepo,
-		"one in a worktree": inWorktree,
-		"a sub-chat": subChatInRepo,
-		"one of an agent with notes and a variable": withNotes,
-		"one of an agent deleted since": orphan,
-	};
-	const toldBefore: Record<string, { full: string; history: string }> = {};
-	for (const [kind, id] of Object.entries(kinds)) toldBefore[kind] = await client.told(id);
-	assert.match(toldBefore["one of an agent with notes and a variable"]!.full, /The person prefers short answers/);
-	/** What each is told now is what it was told before, byte for byte, and no system message was sent since. */
-	const toldAsBefore = async (when: string) => {
-		for (const [kind, id] of Object.entries(kinds)) {
-			const now = await client.told(id);
-			assert.equal(now.full, toldBefore[kind]!.full, `${kind}, ${when}`);
-			assert.equal(now.history, toldBefore[kind]!.history, `${kind}, ${when}: nothing sent again`);
-		}
-	};
-	step("what a conversation of each kind is told, recorded before the run");
-
-	// A preview flag from an earlier build, with no run or backup, does not sweep the library at startup.
-	client.close();
-	await stop(engine);
-	const beforeAnyRun = JSON.parse(readFileSync(settingsPath, "utf8"));
-	writeFileSync(settingsPath, JSON.stringify({ ...beforeAnyRun, projects: { preview: true } }));
-	engine = start({ PI2_CARRY_COMMIT_GATE: commitGate });
-	client = await Client.connect(engine, home);
-	await client.until("preview on without a run", () => client.events.projects?.preview === true && client.events.agents && client.events.library && client.events.memory);
-	const beforeSweep = await client.call("projects.carryOver", { dryRun: true });
-	assert.equal(beforeSweep.ranAt, null);
-	assert.equal(beforeSweep.backup, null);
-	assert.equal(beforeSweep.projects.reduce((sum: number, entry: any) => sum + entry.conversations + entry.archivedConversations + entry.subChats, 0), made.size - deleted);
-	assert.deepEqual(client.projects, []);
-	assert.equal(client.row(ordinary).projectId, null);
-	assert.equal(existsSync(join(home, "backups")), false);
-	await client.call("projects.setPreview", { on: false });
-	await client.until("off before the first report", () => client.events.projects.preview === false);
-	step("starting with the preview on but no recorded run leaves the library to the report and backup");
-
-	// ---- The report, with the preview off: it changes nothing
+	// ---- The report, before the update: it changes nothing
 
 	const before = {
 		library: structuredClone(client.events.library),
@@ -260,6 +242,7 @@ try {
 		memory: structuredClone(client.events.memory),
 		projects: structuredClone(client.events.projects),
 	};
+	assert.deepEqual(before.projects, { event: "projects", preview: true, projects: [], carryOver: null });
 	const counted = { ...client.counts };
 	const report = await client.call("projects.carryOver", { dryRun: true });
 	assert.match(report.plan, /^[0-9a-f]{32}$/);
@@ -272,6 +255,7 @@ try {
 		assert.equal(entry.conversations, here.filter((one) => !one.subChat && !one.archived).length, `${entry.key}: conversations`);
 		assert.equal(entry.archivedConversations, here.filter((one) => !one.subChat && one.archived).length, `${entry.key}: archived`);
 		assert.equal(entry.subChats, here.filter((one) => one.subChat).length, `${entry.key}: sub-chats`);
+		assert.equal(entry.subChatsPutRight, 0);
 		assert.equal(entry.existing, null);
 		assert.equal(entry.adopted, false);
 		assert.deepEqual(entry.notices, []);
@@ -304,86 +288,82 @@ try {
 	await client.call("projects.list");
 	assert.deepEqual(client.counts, counted);
 	assert.deepEqual(client.events.projects, before.projects);
-	assert.equal(existsSync(join(home, "backups")), false);
-	step("the report, with the preview off: each project, its copies and orchestrator, what is left out; nothing written");
+	assert.deepEqual(backupsMade(), []);
+	assert.equal(settingsFile().projects, undefined);
+	// Only the dry run is taken: the run is the engine's own.
+	assert.equal((await refusal(client.call("projects.carryOver", { plan: report.plan }))).message, CARRIES_ITSELF);
+	step("the report, before the update: each project, its copies and orchestrator, what is left out; nothing written");
 
-	// ---- Refused: no plan, and a plan gone stale, each with the new report as data
+	// ---- A copy of the data that cannot be made: nothing is carried, and the engine says so; the next start tries again
 
-	let refused = await refusal(client.call("projects.setPreview", { on: true }));
-	assert.equal(refused.message, PLAN_CHANGED);
-	assert.deepEqual(refused.data, report);
-	refused = await refusal(client.call("projects.carryOver", { plan: report.plan }));
-	assert.equal(refused.message, "Projects are a preview. Turn them on in Settings › General first.");
-	const late = await conversation("forge", plain);
-	refused = await refusal(client.call("projects.setPreview", { on: true, plan: report.plan }));
-	assert.equal(refused.message, PLAN_CHANGED);
-	const current = refused.data;
-	assert.notEqual(current.plan, report.plan);
-	assert.equal(entryOf(current, plain).conversations, entryOf(report, plain).conversations + 1);
-	assert.equal(client.events.projects.preview, false);
-	assert.deepEqual(client.events.projects, before.projects);
-	before.library = structuredClone(client.events.library);
-	step("a run with no plan, or a plan gone stale, is refused with the new report, and turns nothing on");
+	client.close();
+	await stop(engine);
+	writeFileSync(backups, "a file where the folder of copies goes\n");
+	engine = start();
+	client = await Client.connect(engine, home);
+	await ready(client);
+	const failedWhy = await client.until("the failure told", () => client.events.projects.carryOver?.removalFailed);
+	assert.match(failedWhy, /^The copy of your data could not be made, so nothing was moved into projects: .+\. pi² tries again when it next starts\.$/);
+	assert.equal(client.events.projects.carryOver.removalBackup, null);
+	assert.deepEqual(client.projects, []);
+	assert.equal(client.row(ordinary).projectId, null);
+	assert.equal(settingsFile().projects, undefined, "the switch is not written");
+	assert.ok(readFileSync(logPath, "utf8").includes("carrying over at the update: The copy of your data could not be made"));
+	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, report.plan, "the plan as it was");
+	client.close();
+	await stop(engine);
+	rmSync(backups);
+	step("a copy of the data that cannot be made: nothing is carried, and the log and the projects event say why");
 
-	// ---- The run, cut off between its first two projects' commits, as by a crash
+	// ---- The update, cut off between its first two projects' commits, as by a crash
 
-	assert.equal(current.projects[0].key, other);
+	assert.equal(report.projects[0].key, other);
 	writeFileSync(commitGate, "");
-	const cut = client.call("projects.setPreview", { on: true, plan: current.plan });
-	cut.catch(() => {});
-	await client.until("held before the second commit", () => existsSync(`${commitGate}.started`));
+	engine = start({ PI2_CARRY_COMMIT_GATE: commitGate });
+	await until("held before the second commit", () => existsSync(`${commitGate}.started`), { over: () => (engine!.exitCode !== null ? "the engine stopped" : undefined) });
 	engine.kill("SIGKILL");
 	await stop(engine);
-	client.close();
 	rmSync(commitGate, { force: true });
-	// The next engine holds the Keychain step instead, once the file is there.
+	const cut = await offline(async (harness) => (await harness.snapshot(Projects, context))!);
+	assert.deepEqual(Object.values(cut.projects).map((project) => project.folder), [other], "the first project's commit alone");
+	assert.deepEqual(backupsMade().length, 1, "the copy made first");
+	const removal = cut.carry.removalBackup!;
+	assert.equal(removal.path, join(home, "backups", backupsMade()[0]!));
+	assert.equal(typeof removal.at, "number");
+	assert.ok(existsSync(join(removal.path, "session.sqlite")));
+	assert.ok(existsSync(join(removal.path, "settings.json")));
+	assert.equal(JSON.parse(readFileSync(join(removal.path, "settings.json"), "utf8")).projects, undefined, "a copy from before anything changed");
+	assert.equal(cut.carry.backup, removal.path, "the run's own record of its backup is the same copy");
+	assert.equal(settingsFile().projects, undefined, "the switch is written once the run is whole");
+	step("the update, cut off between two projects' commits: the copy made first and recorded, the first project whole");
+
+	// ---- The next start finishes it, with no second copy, and is stopped before the Keychain step, as by a crash
+
+	writeFileSync(secretsGate, "");
 	engine = start({ PI2_CARRY_SECRETS_GATE: secretsGate });
 	client = await Client.connect(engine, home);
-	await client.until("after the cut", () => client.events.projects && client.events.agents && client.events.library && client.events.memory);
-	assert.equal(client.events.projects.preview, false);
-	assert.deepEqual(
-		client.projects.map((project: any) => project.folder),
-		[other],
-		"the first project's commit alone",
-	);
-	const otherProject = client.projects[0];
-	assert.equal(client.events.memory.projects[otherProject.id].notes.length, 1);
-	// The person changes the note of Atlas's that went there, before the run is finished.
-	await client.call("memory.edit", { agentId: "atlas", id: personNote, text: "The person prefers short answers, in lists." });
-	const finish = await client.call("projects.carryOver", { dryRun: true });
-	assert.deepEqual(
-		finish.projects.map((entry: any) => entry.key),
-		current.projects.map((entry: any) => entry.key).filter((key: string) => key !== other),
-		"the next plan finishes the run, and leaves the project already made alone",
-	);
-	step("a run cut off between two projects' commits: the first stays, whole, and the next plan does the rest");
-
-	// ---- The rest of the run, stopped between its commits and the Keychain step, as by a crash
-
-	// The first project's copies have their values by now: this engine copied them as it started.
-	await client.until("the first project's values copied", () => client.events.projects.carryOver?.secretsPending?.length === 0);
-	writeFileSync(secretsGate, "");
-	const pendingNow = finish.projects.flatMap((entry: any) => entry.copies.filter((copy: any) => copy.variables.length > 0)).length;
+	await ready(client);
+	const pendingNow = report.projects.flatMap((entry: any) => entry.copies.filter((copy: any) => copy.variables.length > 0)).length;
 	assert.ok(pendingNow >= 6, `${pendingNow} copies with values to copy`);
-	const running = client.call("projects.setPreview", { on: true, plan: finish.plan });
-	running.catch(() => {});
-	// The projects event comes once the last commit is stored, listing every copy whose values are still to be copied.
-	await client.until("the commits", () => client.events.projects.carryOver?.secretsPending?.length === pendingNow && client.projects.length === current.projects.length);
+	await client.until("the commits", () => client.events.projects.carryOver?.secretsPending?.length === pendingNow && client.projects.length === report.projects.length);
 	await client.until("the Keychain step held", () => existsSync(`${secretsGate}.started`));
+	await client.until("the switch written", () => settingsFile().projects?.preview === true);
+	assert.deepEqual(client.events.projects.carryOver.removalBackup, removal, "the copy recorded at the first start");
+	assert.equal(client.events.projects.carryOver.removalFailed, null);
+	assert.equal(backupsMade().length, 1, "and no second copy");
 	engine.kill("SIGKILL");
 	await stop(engine);
 	client.close();
 	rmSync(secretsGate, { force: true });
 	engine = start();
 	client = await Client.connect(engine, home);
-	await client.until("after the restart", () => client.events.projects && client.events.agents && client.events.library && client.events.memory);
+	await ready(client);
 	await client.until("the values copied at start", () => client.events.projects.carryOver?.secretsPending?.length === 0);
-	assert.equal(client.events.projects.preview, false, "the run was cut off before it turned the preview on");
 	const keychain = new KeychainObjects(KEYCHAIN_SERVICE);
 	const copies = client.events.agents.agents.filter((agent: any) => agent.projectId !== undefined);
 	for (const [template, values] of [["forge", { GH_TOKEN: "token-458" }], ["atlas", { ATLAS_KEY: "key-458" }]] as const) {
 		const ids = copies.filter((agent: any) => agent.template?.id === template).map((agent: any) => agent.id);
-		assert.equal(ids.length, current.projects.filter((entry: any) => copyIn(entry, template) !== undefined).length);
+		assert.equal(ids.length, report.projects.filter((entry: any) => copyIn(entry, template) !== undefined).length);
 		for (const id of ids) {
 			assert.deepEqual(await keychain.read(`variables/${id}`), values);
 			await client.until("marked set", () => client.agent(id).variables?.[0]?.set === true);
@@ -391,14 +371,18 @@ try {
 	}
 	const { carryOver } = client.events.projects;
 	assert.equal(typeof carryOver.ranAt, "number");
-	assert.ok(existsSync(join(carryOver.backup, "session.sqlite")), "the backup made before the run");
+	assert.equal(carryOver.backup, removal.path);
+	assert.deepEqual(carryOver.removalBackup, removal);
+	assert.equal(carryOver.removalFailed, null);
+	assert.equal(client.events.projects.preview, true);
 	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null, "nothing left to do: the record is whole");
-	step("a run cut off before the Keychain step: the next engine copies the values at start, and the copies have them");
+	assert.equal(backupsMade().length, 1);
+	step("the next start finishes the run with no second copy and writes the switch; one cut off before the Keychain step, the start after copies the values");
 
 	// ---- The run did what the report said, and nothing else
 
 	const projectOf = (key: string) => client.projects.find((project: any) => (project.folder ?? "none") === key || (key === "none" && project.folder === null));
-	for (const entry of current.projects) {
+	for (const entry of report.projects) {
 		const project = projectOf(entry.key);
 		assert.ok(project !== undefined, entry.key);
 		assert.equal(project.name, entry.name);
@@ -438,8 +422,7 @@ try {
 			assert.equal(project.conversation, entry.orchestrator.conversation);
 			assert.equal(theirs.length, madeCopies.length);
 		}
-		// Its notes, for the copy of Atlas alone, each once: the note the person changed meanwhile is as it was where it went
-		// before the cut, and as it is now everywhere else.
+		// Its notes, for the copy of Atlas alone, each once.
 		const notes = client.events.memory.projects[project.id]?.notes ?? [];
 		assert.equal(notes.length, entry.notes, entry.key);
 		const atlasCopy = theirs.find((agent: any) => agent.template?.id === "atlas");
@@ -451,10 +434,10 @@ try {
 		}
 		if (atlasCopy !== undefined) {
 			const persons = notes.filter((note: any) => note.carriedFrom.id === personNote).map((note: any) => note.text);
-			assert.deepEqual(persons, [entry.key === other ? "The person prefers short answers." : "The person prefers short answers, in lists."], entry.key);
+			assert.deepEqual(persons, ["The person prefers short answers."], entry.key);
 		}
 	}
-	assert.equal(client.projects.length, current.projects.length, "no project but the report's");
+	assert.equal(client.projects.length, report.projects.length, "no project but the report's");
 	// Every conversation carried is in its key's project; nothing else.
 	for (const [id, entry] of made) {
 		const row = client.row(id);
@@ -465,17 +448,14 @@ try {
 	for (const row of [...client.events.library.conversations, ...client.events.library.archived]) {
 		if (row.chat) assert.equal(row.projectId, null, "a chat is in no project");
 	}
-	// The person puts the note back as it was: what the agent is told of its own notes is as before again.
-	await client.call("memory.edit", { agentId: "atlas", id: personNote, text: "The person prefers short answers." });
-	await client.until("put back", () => client.events.memory.agents.atlas.notes.some((note: any) => note.text === "The person prefers short answers."));
 	step("the run did what the report said: its projects, copies, orchestrators, notes and conversations, and nothing else");
 
-	// ---- Preview off: the old lists, and what each kind of conversation is told, exactly as before the run
+	// ---- What the last version with the switch reads, as it was
 
 	const unmarkedLibrary = (library: any) => {
-		// The fields the old screens do not read: the project (#456), and whether it is an orchestrator's (#466).
+		// The fields the old screens do not read: the project (#456), whether it is an orchestrator's (#466), what it runs as.
 		const unmarked = (row: any) => {
-			const { projectId: _, orchestrator: __, ...rest } = row;
+			const { projectId: _, orchestrator: __, runsAs: ___, ...rest } = row;
 			return rest;
 		};
 		return { conversations: library.conversations.map(unmarked), archived: library.archived.map(unmarked) };
@@ -490,90 +470,49 @@ try {
 			chat: events.memory.chat,
 		};
 	};
-	const oldBefore = oldLists({ library: before.library, agents: before.agents, memory: before.memory });
-	assert.deepEqual(oldLists({ library: client.events.library, agents: client.events.agents, memory: client.events.memory }), oldBefore);
+	assert.deepEqual(oldLists({ library: client.events.library, agents: client.events.agents, memory: client.events.memory }), oldLists({ library: before.library, agents: before.agents, memory: before.memory }));
 	// No conversation was added: no empty one for any orchestrator.
 	assert.equal(client.events.library.conversations.length + client.events.library.archived.length, before.library.conversations.length + before.library.archived.length);
-	// And the agent each conversation runs as is its own, as before.
-	for (const row of client.events.library.conversations) assert.equal(row.runsAs, row.agentId);
-	await toldAsBefore("with the preview off after the run");
-	step("with the preview off, the old lists are as they were, and each kind of conversation is told what it was before, byte for byte");
+	// Every carried conversation keeps its template as its agent, beside the copy it runs as.
+	for (const [id, entry] of made) if (entry.carried) assert.equal(client.row(id).agentId, entry.agentId, `conversation ${id}`);
+	step("what the last version with the switch reads is as it was: the library, the agents and their notes, each conversation's agentId");
 
-	// ---- The preview on: nothing more to do; conversations run as their project's copies
+	// ---- Every conversation in a project, running as its project's copy
 
-	const on = await client.call("projects.setPreview", { on: true });
-	assert.equal(on.preview, true);
-	assert.equal(on.carryOver.plan, null);
-	// Every top-level conversation is in a project now.
-	assert.equal(on.carryOver.already, [...made.values()].filter((one) => one.carried && !one.subChat).length);
-	await client.until("runs as the copies", () => client.row(late).runsAs !== "forge");
+	const after = await client.call("projects.carryOver", { dryRun: true });
+	assert.equal(after.already, [...made.values()].filter((one) => one.carried && !one.subChat).length);
 	assert.equal(client.agent(client.row(late).runsAs).template.id, "forge");
 	assert.equal(client.row(orphan).runsAs, temp, "an agent deleted since: it runs as it does today");
 	assert.equal(client.row(inWorktree).projectId, projectOf(repo).id, "a worktree pi² made is with its repository");
-	step("turned on with nothing left to do; each conversation runs as its project's copy of its agent");
+	step("every top-level conversation is in a project; each runs as its project's copy of its agent");
 
-	// ---- A second run writes nothing
+	// ---- A second start writes nothing
 
-	const quiet = { ...client.counts };
-	const ranAt = client.events.projects.carryOver.ranAt;
-	const second = await client.call("projects.carryOver", { plan: null });
-	assert.equal(second.plan, null);
-	assert.deepEqual(second.projects, []);
-	assert.equal(second.ranAt, ranAt);
-	await client.call("projects.list");
-	assert.deepEqual(client.counts, quiet, "no event: nothing was stored");
+	const kept = { projects: structuredClone(client.events.projects), agents: structuredClone(client.events.agents.agents), places: client.places() };
+	const settingsBefore = readFileSync(settingsPath, "utf8");
+	const settingsTime = statSync(settingsPath).mtimeMs;
+	const logBefore = readFileSync(logPath, "utf8").length;
+	client.close();
+	await stop(engine);
+	engine = start();
+	client = await Client.connect(engine, home);
+	await ready(client);
+	// A dry run waits for the update's own run at the start: both go one at a time.
+	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null);
+	assert.deepEqual(client.events.projects, kept.projects);
+	assert.deepEqual(client.events.agents.agents, kept.agents);
+	assert.deepEqual(client.places(), kept.places);
+	assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore);
+	assert.equal(statSync(settingsPath).mtimeMs, settingsTime, "settings.json not written again");
+	assert.equal(backupsMade().length, 1, "no second copy");
+	assert.doesNotMatch(readFileSync(logPath, "utf8").slice(logBefore), /carrying over at the update|carried over at the update/);
 	assert.deepEqual(await client.call("projects.retrySecrets"), { secrets: [] });
-	step("a second run has nothing to do, and writes nothing, ranAt included");
-
-	// ---- The carried projects changed with the preview on: with it off, nothing of it reaches those conversations
-
-	const inPlain = projectOf(plain);
-	const inRepo = projectOf(repo);
-	for (const project of [inPlain, inRepo]) {
-		await client.call("projects.set", { id: project.id, settings: { wakeOnReports: false, withoutAsking: { startAgents: false }, limits: { planShare: 50, dailySpend: 100 } } });
-		await client.call("projects.rename", { id: project.id, name: `${project.name}, renamed` });
-		await client.call("projects.rules.add", { projectId: project.id, text: "Write every answer in French.", binds: "everyone" });
-		await client.call("memory.add", { projectId: project.id, text: "A note the whole project shares." });
-	}
-	const plainAtlas = copies.find((agent: any) => agent.projectId === inPlain.id && agent.template?.id === "atlas");
-	await client.call("agents.save", { agent: { ...client.agent(plainAtlas.id), instructions: "You are the project's Atlas now." } });
-	await client.until("the copy changed", () => client.agent(plainAtlas.id).instructions === "You are the project's Atlas now.");
-	await client.call("projects.setPreview", { on: false });
-	await client.until("off", () => client.events.projects.preview === false);
-	await toldAsBefore("with the preview off, after its project was changed with the preview on");
-	step("its project's settings, name, rules and notes, and its copy, changed with the preview on: with it off, each kind is told what it was before");
-
-	// ---- What still holds with the preview off, and a sub-chat made then (9.11)
-
-	// The repository's project's `startAgents`, turned off with the preview on, still asks before its agents start one.
-	void client.call("submit", { id: firstInRepo, text: "/delegate Scout: with the preview off" });
-	await client.call("conversation.open", { id: firstInRepo });
-	const asked = await client.until("the switch asks", () => client.events.inbox?.items?.find((item: any) => item.conversationId === firstInRepo));
-	assert.equal(asked.projectSwitch, "startAgents");
-	await client.call("inbox.decide", { id: asked.id, decision: "once" });
-	const madeOff = await client.until("its sub-chat", () => client.events.library.conversations.find((row: any) => row.parent === firstInRepo && !made.has(row.id)));
-	await client.until("answered", () => client.conversations.get(firstInRepo)?.state?.busy === false);
-	// It takes its parent's project, and no copy: with the preview on it runs as the template, not the project's Scout.
-	assert.equal(madeOff.projectId, inRepo.id);
-	assert.equal(madeOff.runsAs, "scout");
-	await client.call("projects.setPreview", { on: true });
-	await client.until("on", () => client.events.projects.preview === true);
-	await client.until("still the template", () => client.row(madeOff.id)?.runsAs === "scout");
-	step("with the preview off, a carried project's startAgents still asks; a sub-chat made then is in the project, running as its template");
-
-	// ---- Off and on again, and back
-
-	await client.call("projects.setPreview", { on: false });
-	await client.until("off", () => client.events.projects.preview === false);
-	const listsOff = oldLists({ library: client.events.library, agents: client.events.agents, memory: client.events.memory });
-	assert.deepEqual(listsOff.agents, oldBefore.agents);
-	assert.deepEqual(listsOff.memory, oldBefore.memory);
-	await client.call("projects.setPreview", { on: true });
-	await client.until("on", () => client.events.projects.preview === true);
-	step("switched off again, the old agents and notes are as they were before projects; on again, as they were left");
+	step("a second start writes nothing: no copy, no commit, settings.json as it was");
 
 	// ---- Conversations made later (9.9)
 
+	const inPlain = projectOf(plain);
+	await client.call("projects.set", { id: inPlain.id, settings: { limits: { planShare: 50, dailySpend: 100 } } });
 	// With a template whose folder has a project: into it, running as its copy there.
 	const later = (await client.call("conversation.create", { agentId: "forge" })).id as number;
 	const laterRow = await client.until("its row", () => client.row(later)?.projectId !== null && client.row(later));
@@ -659,38 +598,96 @@ try {
 	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null);
 	step("conversations made later go into their folder's project, a new one, or an archived one restored; a fork too; chats stay out");
 
-	// ---- A conversation left in no project while the preview is on is carried at the next start
+	// ---- A conversation left in no project is carried at the next start
 
-	// Made with the preview off, then the engine stopped as if it had been made with the preview on and the engine had
-	// stopped before carrying it over.
-	await client.call("projects.setPreview", { on: false });
-	const stray = await conversation("scout", plain);
-	await client.until("the stray", () => client.row(stray));
+	// Made by an engine that carries nothing, as if the engine had stopped before carrying it over.
 	client.close();
 	await stop(engine);
-	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-	writeFileSync(settingsPath, JSON.stringify({ ...settings, projects: { preview: true } }));
+	engine = start({ PI2_CARRY_NEVER: "1" });
+	client = await Client.connect(engine, home);
+	await ready(client);
+	const stray = await conversation("scout", plain);
+	assert.equal((await client.until("the stray", () => client.row(stray))).projectId, null);
+	client.close();
+	await stop(engine);
 	engine = start();
 	client = await Client.connect(engine, home);
-	await client.until("after the restart", () => client.events.projects && client.events.agents && client.events.library);
+	await ready(client);
 	const strayRow = await client.until("carried at start", () => client.row(stray)?.projectId === inPlain.id && client.row(stray));
 	assert.equal(client.agent(strayRow.runsAs).template.id, "scout");
 	assert.equal((await client.until("the schedule is still held after restart", () => scheduleRow()?.holdReason && scheduleRow())).holdReason, PROJECT_DELETED);
-	step("a conversation left in no project while the preview is on is carried as the engine starts");
+	assert.equal(backupsMade().length, 1, "no second copy for it");
+	step("a conversation left in no project is carried as the engine starts");
+
+	// ---- The owner's case: a folder where the switch was on, and carrying over ran long ago
+
+	// As the last version with the switch left it: no copy of the update's recorded; a sub-chat made with the switch off in
+	// a conversation carried over, in its parent's project and running as its template (9.11 of that version); and a
+	// conversation made since in no project.
+	const repoProject = projectOf(repo);
+	const scoutCopy = copies.find((agent: any) => agent.projectId === repoProject.id && agent.template?.id === "scout").id as string;
+	assert.equal(client.row(subChatInRepo).runsAs, scoutCopy);
+	const ownersBefore = { projects: structuredClone(client.events.projects), agents: structuredClone(client.events.agents.agents), places: client.places() };
+	client.close();
+	await stop(engine);
+	engine = start({ PI2_CARRY_NEVER: "1" });
+	client = await Client.connect(engine, home);
+	await ready(client);
+	const madeSince = await conversation("forge", repo);
+	client.close();
+	await stop(engine);
+	await offline(async (harness) => {
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(Projects);
+			delete doc.carry.removalBackup;
+			const meta = (await tx.doc(Library)).conversations[String(subChatInRepo)]!;
+			assert.equal(meta.projectId, repoProject.id);
+			delete meta.projectAgentId;
+		}, context);
+	});
+	const owners = { settings: readFileSync(settingsPath, "utf8"), settingsTime: statSync(settingsPath).mtimeMs, backups: backupsMade() };
+	assert.equal(owners.backups.length, 1);
+	engine = start();
+	client = await Client.connect(engine, home);
+	await ready(client);
+	const ownersRemoval = await client.until("a fresh copy recorded", () => client.events.projects.carryOver?.removalBackup);
+	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null, "the update's run done");
+	const twoCopies = backupsMade();
+	assert.equal(twoCopies.length, 2, "a fresh copy, though an older one is recorded");
+	assert.equal(ownersRemoval.path, join(backups, twoCopies.find((name) => !owners.backups.includes(name))!));
+	assert.ok(existsSync(join(ownersRemoval.path, "session.sqlite")));
+	assert.equal(client.events.projects.carryOver.backup, removal.path, "the older copy stays recorded as the first run's");
+	assert.equal(client.events.projects.carryOver.removalFailed, null);
+	await client.until("the sub-chat put right", () => client.row(subChatInRepo)?.runsAs === scoutCopy);
+	assert.equal(client.row(subChatInRepo).agentId, "scout", "its template kept beside the copy");
+	await client.until("the one made since carried", () => client.row(madeSince)?.projectId === repoProject.id);
+	assert.equal(readFileSync(settingsPath, "utf8"), owners.settings);
+	assert.equal(statSync(settingsPath).mtimeMs, owners.settingsTime, "settings.json already says so: not written");
+	// Nothing else changed: every other conversation where it was, running as it did, the agents and the projects as they
+	// were, and the record but for the run's time and the copy.
+	assert.deepEqual(client.places().filter((line) => !line.startsWith(`${madeSince} `)), ownersBefore.places);
+	assert.deepEqual(client.events.agents.agents, ownersBefore.agents);
+	assert.deepEqual(client.events.projects.projects, ownersBefore.projects.projects);
+	const unrecorded = (state: any) => ({ ...state, ranAt: 0, removalBackup: null });
+	assert.deepEqual(unrecorded(client.events.projects.carryOver), unrecorded(ownersBefore.projects.carryOver));
+	step("the owner's case: a fresh copy made and recorded beside the older one; nothing changes but a conversation made since and a sub-chat made with the switch off, given its project's copy");
 
 	// ---- An engine stopped and started again keeps it all
 
-	const kept = { projects: client.events.projects, agents: client.events.agents.agents };
+	const keptAgain = { projects: client.events.projects, agents: client.events.agents.agents };
 	client.close();
 	await stop(engine);
 	engine = start();
 	client = await Client.connect(engine, home);
-	await client.until("after the restart", () => client.events.projects && client.events.agents);
-	assert.deepEqual(client.events.projects, kept.projects);
-	assert.deepEqual(client.events.agents.agents, kept.agents);
-	assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).projects.preview, true);
+	await ready(client);
+	assert.equal((await client.call("projects.carryOver", { dryRun: true })).plan, null);
+	assert.deepEqual(client.events.projects, keptAgain.projects);
+	assert.deepEqual(client.events.agents.agents, keptAgain.agents);
+	assert.equal(settingsFile().projects.preview, true);
+	assert.equal(backupsMade().length, 2);
 	step("an engine stopped and started again keeps the projects, the copies and the record");
 } finally {
 	client.close();
 	await stop(engine);
+	if (process.env.PI2_CARRY_KEEP !== undefined) cpSync(home, process.env.PI2_CARRY_KEEP, { recursive: true });
 }

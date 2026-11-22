@@ -74,8 +74,6 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	// Projects.
 	"projects.create": () => true, // claims a folder and its conversations for a project
 	"projects.set": () => true, // the switches of 8.1 and the limits
-	"projects.setPreview": () => true, // the preview switch, the person's alone
-	"projects.carryOver": () => true, // carrying over, not offered to agents
 	"projects.retrySecrets": () => true, // the person's retry of the Keychain step of carrying over
 	"projects.archive": () => true, // archiving, restoring and deleting are the person's
 	"projects.unarchive": () => true, // as above
@@ -203,6 +201,7 @@ const OPEN_TO_ANY = new Set([
 	"memory.delete", // notes never widen (projects.md 7.1)
 	"needs.list",
 	"projects.list",
+	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
 	"wakes.resume",

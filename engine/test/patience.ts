@@ -146,25 +146,16 @@ export async function listening(engine: ChildProcess, home: string, patience = P
 }
 
 /**
- * Turn the projects' preview on as the app does (docs/projects.md, 9.8): with the plan of the report the person was
- * shown, so that what the engine has is carried over as that report says. Answers what `projects.setPreview` answers.
+ * Delete the projects carrying over made (docs/projects.md, 9.9), so that the conversations made before are in no project
+ * for what they are told and offered: a conversation that is not a chat is otherwise always in a project, and a deleted
+ * project's carried ones are in none (`inProject`). For the tests that check what a conversation in no project is told,
+ * byte for byte. Answers the projects it deleted.
  */
-export async function previewOn(client: EngineClient): Promise<any> {
-	const { plan } = await client.call("projects.carryOver", { dryRun: true });
-	return client.call("projects.setPreview", { on: true, plan });
-}
-
-/**
- * Turn the preview on as `previewOn` does, then delete the projects carrying over made, so that the conversations made
- * before are in no project for what they are told and offered, as before #458: with the preview on, a conversation that
- * is not a chat is otherwise always in a project (docs/projects.md, 9.9), and a deleted project's are in none
- * (`inProject`). For the tests that check what a conversation in no project is told, byte for byte, with the preview on.
- */
-export async function previewOnLeavingOut(client: EngineClient): Promise<any> {
-	const answer = await previewOn(client);
+export async function leaveOut(client: EngineClient): Promise<string[]> {
 	const { projects } = await client.call("projects.list");
-	for (const project of projects) if (project.carriedAt !== undefined && project.deletedAt === undefined) await client.call("projects.delete", { id: project.id });
-	return answer;
+	const carried = projects.filter((project: any) => project.carriedAt !== undefined && project.deletedAt === undefined).map((project: any) => project.id as string);
+	for (const id of carried) await client.call("projects.delete", { id });
+	return carried;
 }
 
 /**

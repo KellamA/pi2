@@ -1,8 +1,8 @@
 // Needs you (#462, docs/projects.md 3.9 and 5.5) through a real engine on a throwaway data folder, with the demo model,
 // driven over its socket as an app would drive it.
 //
-// With the preview never on: the empty `needs` event after the projects', the new requests refused, and an approval
-// answered exactly as before, through `inbox.decide`, once. With it on: `needs_you` offered to a project's conversation
+// The empty `needs` event after the projects', and an approval in a conversation in no project answered exactly as
+// before, through `inbox.decide`, once. Then `needs_you` offered to a project's conversation
 // and to no other; a decision and a question put while the agent carries on, listed, withdrawn and answered; the answer
 // waking the agent once, however many apps send it; an approval and an `ask_user` question in the same list, answered
 // by either route, once; a need surviving a restart; and needs withdrawn with their conversation or project.
@@ -13,8 +13,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GONE } from "../src/needs.ts";
-import { PREVIEW_OFF } from "../src/projects.ts";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-needs-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-needs-work-")));
@@ -105,29 +104,27 @@ let second: Client | undefined;
 try {
 	await client.until("providers", () => client.events.providers && client.events.agents && client.events.needs);
 
-	// ---- With the preview never turned on
+	// ---- A conversation in no project
 
 	assert.deepEqual(client.events.needs, { event: "needs", items: [] });
 	assert.ok(client.order.indexOf("needs") > client.order.indexOf("projects"), client.order.join(" "));
-	await refused(client.call("needs.list"), PREVIEW_OFF);
-	await refused(client.call("needs.answer", { id: "n1", answer: { kind: "question", text: "x" } }), PREVIEW_OFF);
-	// An approval, as today: in the Inbox, answered through inbox.decide, once; nothing in Needs you.
+	// An approval in a conversation in no project (its carried project deleted, `leaveOut`): in the Inbox, answered
+	// through inbox.decide, once.
 	const plain = (await client.call("conversation.create", { agentId: "forge" })).id as number;
+	await leaveOut(client);
 	await client.call("conversation.open", { id: plain });
 	const ran = client.tool(plain, "/bash echo as-before");
 	const before = await client.until("an approval", () => client.events.inbox?.items?.find((item: Event) => item.conversationId === plain));
 	assert.equal(before.kind, "approval");
-	assert.deepEqual(client.needs, []);
 	await client.call("inbox.decide", { id: before.id, decision: "once" });
 	await refused(client.call("inbox.decide", { id: before.id, decision: "deny" }), GONE);
 	assert.match((await ran).text, /as-before/);
-	assert.deepEqual(client.needs, []);
+	await client.until("nothing left waiting", () => client.needs.length === 0);
 	assert.equal((await client.offered(plain)).includes("needs_you"), false);
-	step("with the preview never on: the empty needs event after the projects', new requests refused, approvals as before");
+	step("the empty needs event after the projects'; an approval in a conversation in no project is answered as before");
 
-	// ---- The preview on, and a project
+	// ---- A project
 
-	await previewOnLeavingOut(client);
 	const project = await client.call("projects.create", { folder: work });
 	const orchestrator = project.conversation as number;
 	await client.call("conversation.open", { id: orchestrator });
@@ -244,19 +241,14 @@ try {
 	assert.match(client.wakes(orchestrator)[1]!.details.wake.text, /answered your question “Ship it\?”: Yes\.$/);
 	step("a need survives a restart, and its answer wakes the agent");
 
-	// ---- needs.list, and the preview off and on
+	// ---- needs.list
 
 	await client.needsYou(orchestrator, { action: "ask", question: "Still there?" });
 	await client.until("n4", () => client.need("n4"));
 	assert.deepEqual((await client.call("needs.list", { projectId: project.id })).items, client.needs);
 	assert.deepEqual((await client.call("needs.list")).items, client.needs);
 	await refused(client.call("needs.list", { projectId: "p-nothing" }), "Unknown project: p-nothing");
-	await client.call("projects.setPreview", { on: false });
-	await client.until("the empty list with the preview off", () => client.needs.length === 0);
-	assert.equal((await client.offered(orchestrator)).includes("needs_you"), false, "not offered with the preview off");
-	await client.call("projects.setPreview", { on: true });
-	await client.until("back with the preview on", () => client.need("n4"));
-	step("needs.list of one project or all; the list is empty with the preview off, and comes back with it on");
+	step("needs.list of one project or all");
 
 	// ---- Withdrawn with its conversation, and with its project
 

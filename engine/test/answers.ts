@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { ONLY_IN_THE_APP } from "../src/answers.ts";
 import { socketPathFor } from "../src/socket.ts";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
 process.env.PI2_LOGIN_SHELL ??= "off";
@@ -186,7 +186,7 @@ try {
 	// ---- A need that waits while the agent carries on
 	// Turned on as the app does, with the plan that carries what there is over (#458), its projects deleted again so the
 	// folder is free for the one made here.
-	await previewOnLeavingOut(app);
+	await leaveOut(app);
 	const { id: project, conversation: orchestrator } = await app.call("projects.create", { folder: work });
 	await app.call("conversation.open", { id: orchestrator });
 	await app.call("submit", { id: orchestrator, text: '/tool needs_you {"action":"ask","question":"Which branch?"}' });

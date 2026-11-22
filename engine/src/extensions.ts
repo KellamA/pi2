@@ -47,7 +47,7 @@ import { nearlyUsedUp, usedUpUntil } from "./limits.ts";
 import { unlessMessaged } from "./heed.ts";
 import { handOffWords, reportRun, waitForRun } from "./reports.ts";
 import { watch } from "./wakes.ts";
-import { PROJECT_DELETED, projectDeleted, projectOf, projectsOn, requireSwitch, type Start, startWithRefusal } from "./projects.ts";
+import { PROJECT_DELETED, projectDeleted, projectOf, requireSwitch, type Start, startWithRefusal } from "./projects.ts";
 import { admit, limitRefusal } from "./projectlimits.ts";
 import { createDelegateChild } from "./projectlimitstarts.ts";
 import { ownsSubChat } from "./orchestrator.ts";
@@ -85,8 +85,8 @@ export type Host = {
 	 */
 	agentOf(conversationId: ConversationId): AgentProfile | undefined;
 	/**
-	 * The agents a conversation may hand work to, in order: those its agent's `delegates` name, as before projects, and in
-	 * a project with the preview on those of docs/projects.md, 3.3 (projectagents.ts, `delegateTargets`).
+	 * The agents a conversation may hand work to, in order: in a project, those of docs/projects.md, 3.3; outside one, the
+	 * templates its agent's `delegates` name (projectagents.ts, `delegateTargets`).
 	 */
 	delegatesOf(conversationId: ConversationId): AgentProfile[];
 	allowAlways(conversationId: ConversationId, tool: string): Promise<void>;
@@ -339,7 +339,7 @@ export function pi2Extension(host: Host): Extension {
 					limitNote = result.note;
 					return undefined;
 				}
-				const reason = limitRefusal(result.limit, projectsOn() && projectOf(parent)?.conversation != null);
+				const reason = limitRefusal(result.limit, projectOf(parent)?.conversation != null);
 				(await tx.doc(RefusedStart, api.taskId)).reason = reason;
 				return reason;
 			};
@@ -831,8 +831,7 @@ export function pi2Extension(host: Host): Extension {
 
 	/**
 	 * Every start by an agent in a project, a new sub-chat or one continued, asks the person first while the project's
-	 * switch `startAgents` is off (docs/projects.md, 8.1 and 8.3), with the preview on or off (section 2), whatever the
-	 * agent's access or Allow everything (`requireSwitch`). Outside a project, or with the switch on, nothing is asked. A
+	 * switch `startAgents` is off (docs/projects.md, 8.1 and 8.3), whatever the agent's access or Allow everything (`requireSwitch`). Outside a project, or with the switch on, nothing is asked. A
 	 * call that cannot start anything is not worth a question; the tool explains why itself.
 	 */
 	const approveStart = async (call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> => {

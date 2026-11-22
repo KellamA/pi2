@@ -26,7 +26,7 @@ import { answerGoesTo } from "./orchestrator.ts";
 import { removeAgentIn } from "./projectagents.ts";
 import { type ProjectNote, putBackProjectNote, removeProjectNote } from "./projectnotes.ts";
 import { addRule, editRule, moveRule, type ProjectRule, putBackRule, removeRule, rulesIn } from "./projectrules.ts";
-import { addNews, allProjects, applyProjectChange, inProject, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview, type Who } from "./projects.ts";
+import { addNews, allProjects, applyProjectChange, inProject, PROJECT_ARCHIVED, Projects, type Who } from "./projects.ts";
 import { projectTools, TOOL_NAMES } from "./projecttools.ts";
 import { agentFieldWidens, agentValues, copy, type Field, projectFieldWidens, projectValues, same } from "./reach.ts";
 import { type ReportWake, setWakeChoicesIn, wakeChoicesIn } from "./reports.ts";
@@ -86,7 +86,7 @@ export const SHOWN = 100;
 
 const emptyChanges = (): ChangesDoc => ({ projects: {}, next: 1 });
 
-/** The record. Made by the first change recorded: with the preview never on, nothing is written. A plain JSON object's token, as `pi2.needs`'s. */
+/** The record. Made by the first change recorded. A plain JSON object's token, as `pi2.needs`'s. */
 export const Changes = defineDoc<JsonObject>({
 	kind: "pi2.changes",
 	version: 1,
@@ -744,23 +744,20 @@ export const changes: Feature = (host, engine) => {
 			});
 		},
 		tools: projectTools(host, engine),
-		// To the project's current conversation with its orchestrator, with the preview on, in a project neither archived nor
-		// deleted (5.1). A conversation not made yet is known by its agent: the orchestrator, outside a sub-chat. Each tool
+		// To the project's current conversation with its orchestrator, in a project neither archived nor deleted (5.1). A conversation not made yet is known by its agent: the orchestrator, outside a sub-chat. Each tool
 		// checks the conversation itself too.
 		toolNames: (_access, agent, where) => {
-			if (where.subChat || !projectsOn()) return [];
+			if (where.subChat) return [];
 			if (where.conversationId !== undefined) return inProject(where.conversationId)?.conversation === where.conversationId ? [...TOOL_NAMES] : [];
 			if (agent?.role !== "orchestrator" || agent.projectId === undefined) return [];
 			const project = allProjects()[agent.projectId];
 			return project !== undefined && project.deletedAt === undefined && project.archivedAt === undefined ? [...TOOL_NAMES] : [];
 		},
-		// The lines of the changes made in a conversation of a project (3.12); nothing for any other conversation, and
-		// nothing with the preview off (10.2: the old screens show none of the projects' doings).
-		state: (view, meta) => (meta?.projectId === undefined || !projectsOn() ? {} : { projectChanges: linesOf(view.conversation.id as unknown as number) }),
+		// The lines of the changes made in a conversation of a project (3.12); nothing for any other conversation.
+		state: (view, meta) => (meta?.projectId === undefined ? {} : { projectChanges: linesOf(view.conversation.id as unknown as number) }),
 		handlers: {
 			/** `{ projectId, before?, limit? }`: the project's changes, newest first, 50 by default. */
 			"changes.list": async (params) => {
-				requirePreview();
 				if (typeof params.projectId !== "string") throw new Error("projectId must be a project's id");
 				const project = allProjects()[params.projectId];
 				if (project === undefined || project.deletedAt !== undefined) throw new Error(`Unknown project: ${params.projectId}`);
@@ -772,7 +769,6 @@ export const changes: Feature = (host, engine) => {
 			},
 			/** `{ id }`: the person's Undo of a change (3.12). Never checked against reach: the person's own. */
 			"changes.undo": async (params) => {
-				requirePreview();
 				if (!Number.isInteger(params.id)) throw new Error("id must be a change's id");
 				await engine.harness().commit((tx) => undoIn(tx, params.id as number, { kind: "person" }, { kind: "person" }), engine.context());
 				await afterChanges();

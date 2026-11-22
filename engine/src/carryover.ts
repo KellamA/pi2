@@ -12,15 +12,20 @@
 // Copying the variables' values into the Keychain is a step after the commits, taken again at every engine start and
 // with `projects.retrySecrets` until done (`carry.secrets`).
 //
+// Since #483 took the preview switch out, the run is the engine's own, at every start (`update`, #715): the first start
+// of a version without the switch makes a copy of the data before anything changes, records it as
+// `carry.removalBackup`, runs the plan with its own fingerprint, and writes `projects: { preview: true }` into
+// settings.json for the versions before it; every later start finds nothing new and writes nothing.
+//
 // What is not done here, and why:
 //
 // - The watches' `wake` (9.1) is #463's field. A project carrying over makes has `wakeOnReports` on, which #463 reads as
 //   waking for each report, so a sub-chat handed over without waiting wakes the orchestrator as it did.
-// - The backup is made before the first run that changes anything, not before each conversation made later (9.9), which
-//   only adds one conversation's fields to what the backup already holds.
+// - The update's copy of the data is made once, at its first start, not before each conversation made later (9.9),
+//   which only adds one conversation's fields to what the copy already holds.
 // - No conversation is made with a project's default orchestrator: `conversation` stays null until the person first
 //   opens or writes to the orchestrator, when the app makes it with `projects.startFresh` (orchestrator.ts), which marks
-//   it to begin with the state block. A person with thirty folders gets no thirty empty conversations in the old sidebar.
+//   it to begin with the state block. A person with thirty folders gets no thirty empty conversations.
 // - Copies are made here, inside each project's commit, not through `engine.saveAgent`, which commits on its own: a run
 //   cut off part way must never leave a copy without its project. So the features' `agentDuplicated` hooks are not run;
 //   what knowledge.ts's and variables.ts's do (the memory switch, the variables' names) is done here, in the same commit.
@@ -44,8 +49,6 @@ import {
 	type Project,
 	Projects,
 	type ProjectsDoc,
-	projectsOn,
-	requirePreview,
 	wireCarryOver,
 } from "./projects.ts";
 import { RequestError } from "./requesterror.ts";
@@ -54,8 +57,8 @@ import { type AgentProfile, Agents, Library, type Meta } from "./state.ts";
 import { copyAgentValues } from "./variables.ts";
 import { madeWorktrees } from "./worktrees.ts";
 
-/** The refusal of a run whose plan is not the one the person was shown (4.2, 9.8). */
-export const PLAN_CHANGED = "What would be carried over has changed since you looked. Look at it again.";
+/** `projects.carryOver` without `dryRun: true`: the run is the engine's, at every start, since #483 (#715). */
+export const CARRIES_ITSELF = "Carrying over runs by itself when the engine starts. Only a dry run is taken: give dryRun: true.";
 
 // ---- Restoring one conversation of a deleted project (3.6, #531)
 
@@ -282,6 +285,11 @@ export type PlannedProject = {
 	copies: PlannedCopy[];
 	/** The conversations it takes, each with the template whose copy it runs as (null: none, it runs as its agentId). */
 	conversations: { id: number; template: string | null; archived: boolean; subChat: boolean }[];
+	/**
+	 * Sub-chats in the project already, made with the switch off in a conversation carried over, which took its
+	 * `projectId` but no `projectAgentId` (#715): each given the copy the project has of its agent.
+	 */
+	fixes: { id: number; copy: string }[];
 	notes: PlannedNote[];
 	/** Lines for the report: a repository gone, a bare repository's worktrees (9.2). */
 	notices: string[];
@@ -373,6 +381,19 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: 
 
 	const leftOut = { chats: 0, deleted: 0, deletedProject: 0 };
 	let already = 0;
+	/** By project: its sub-chats to put right (`fixes`). */
+	const fixesOf = new Map<string, { id: number; copy: string }[]>();
+	/**
+	 * The copy project `projectId` has of template `templateId`, by 9.5's rules: the one recorded, unless the person deleted
+	 * it since; else the oldest agent of the project made from it. Undefined: none.
+	 */
+	const copyIn = (projectId: string, templateId: string): string | undefined => {
+		const recorded = doc.carry.copies[`${projectId} ${templateId}`];
+		if (recorded !== undefined) return agents[recorded] === undefined ? undefined : recorded;
+		return Object.values(agents)
+			.filter((agent) => agent.projectId === projectId && agent.template?.id === templateId)
+			.sort(byMade)[0]?.id;
+	};
 	let otherUncarried = false;
 	/** Top-level conversations to add, by key; sub-chats to add, by key or by the project their root is in. */
 	const byKey = new Map<string, { tops: number[]; subs: number[] }>();
@@ -404,6 +425,13 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: 
 			if (m.parent === undefined && m.deleted !== true && only === undefined) {
 				if (doc.projects[m.projectId]?.deletedAt !== undefined) leftOut.deletedProject++;
 				else already++;
+			}
+			// A sub-chat made with the switch off in a conversation carried over (9.11 of the versions with the switch): in
+			// the project, running as the template. Given the project's copy, if it has one; none is made for it.
+			const template = m.agentId === undefined ? undefined : agents[m.agentId];
+			if (only === undefined && m.parent !== undefined && m.deleted !== true && m.projectAgentId === undefined && liveById.has(m.projectId) && template !== undefined && template.projectId === undefined) {
+				const copy = copyIn(m.projectId, template.id);
+				if (copy !== undefined) fixesOf.set(m.projectId, [...(fixesOf.get(m.projectId) ?? []), { id, copy }]);
 			}
 			continue;
 		}
@@ -441,6 +469,7 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: 
 			orchestrator: null,
 			copies: [],
 			conversations: [],
+			fixes: [],
 			notes: [],
 			notices: [],
 		};
@@ -472,6 +501,7 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: 
 				orchestrator: null,
 				copies: [],
 				conversations: [],
+				fixes: [],
 				notes: [],
 				notices: [],
 			};
@@ -488,6 +518,7 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: 
 		const entry = entryFor(liveById.get(projectId)!, projectKey.get(projectId)!, false);
 		for (const id of subs) add(entry, id, true);
 	}
+	for (const [projectId, fixes] of fixesOf) entryFor(liveById.get(projectId)!, projectKey.get(projectId)!, false).fixes.push(...fixes);
 
 	// 9.5: the templates each project's conversations ran as, and those they may hand work to, followed through.
 	for (const entry of entries.values()) {
@@ -626,7 +657,7 @@ export function planCarryOver(snapshot: CarrySnapshot, only?: number, options?: 
 	}
 
 	const projects = [...entries.values()]
-		.filter((entry) => entry.conversations.length > 0 || entry.notes.length > 0)
+		.filter((entry) => entry.conversations.length > 0 || entry.notes.length > 0 || entry.fixes.length > 0)
 		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : (a.existing ?? "") < (b.existing ?? "") ? -1 : 1));
 	return { projects, left, leftOut, already };
 }
@@ -668,6 +699,7 @@ export function reportOf(plan: CarryPlan, carry: ProjectsDoc["carry"], agents: R
 			conversations: entry.conversations.filter((one) => !one.subChat && !one.archived).length,
 			archivedConversations: entry.conversations.filter((one) => !one.subChat && one.archived).length,
 			subChats: entry.conversations.filter((one) => one.subChat).length,
+			subChatsPutRight: entry.fixes.length,
 			notes: entry.notes.length,
 			notices: [...entry.notices],
 		})),
@@ -694,6 +726,12 @@ async function gate(name: "PI2_CARRY_SECRETS_GATE" | "PI2_CARRY_COMMIT_GATE" | "
 	while (existsSync(file)) await new Promise((resolve) => setTimeout(resolve, 50));
 }
 
+/**
+ * Tests make a data folder as the last version with the switch left it, the switch never turned on, with this engine:
+ * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing.
+ */
+const carriesNothing = () => process.env.PI2_CARRY_NEVER === "1";
+
 /** An agent's id as made for a project: its name's slug and a UUID, never reused, whatever is deleted later. */
 const agentIdFor = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent"}-${randomUUID()}`;
 
@@ -704,8 +742,8 @@ type Made = {
 	/** The default orchestrator, made whole before the commit. */
 	orchestrator: AgentProfile | undefined;
 	now: number;
-	/** A full run's: `ranAt`, the backup, and the notes left; a conversation made later (9.9) records none of them. */
-	run: { backup: string; left: string[] } | undefined;
+	/** A full run's: `ranAt`, the backup (none when there was nothing to copy), and the notes left; a conversation made later (9.9) records none of them. */
+	run: { backup: string | null; left: string[] } | undefined;
 };
 
 /** Something the plan counted on is no longer so, part way through a run: it stops, and the next run finds what was done. */
@@ -839,6 +877,12 @@ export async function applyProject(tx: Tx, entry: PlannedProject, made: Made, gr
 		if (copy !== undefined) meta.projectAgentId = copy;
 		moved.add(planned.id);
 	}
+	// Sub-chats already in the project that ran as the template: the copy now, if it is still there (#715).
+	for (const fix of entry.fixes) {
+		const meta = conversations[String(fix.id)];
+		if (meta === undefined || meta.deleted === true || meta.projectId !== project.id || meta.projectAgentId !== undefined || agents[fix.copy] === undefined) continue;
+		meta.projectAgentId = fix.copy;
+	}
 	// The conversation chosen as the orchestrator's must be one this commit took: not deleted or taken since.
 	if (entry.existing === null && entry.orchestrator?.conversation != null) {
 		if (!moved.has(entry.orchestrator.conversation)) throw new Error(CHANGED_DURING);
@@ -917,12 +961,12 @@ let projectForFolder: ((cwd: string | null) => Promise<string | undefined>) | un
 
 /**
  * The project a conversation the person starts with `agent`, working in `cwd`, will be carried into as it is made (9.9),
- * so that its start is checked against that project's limits (8.3): with the preview on, for a template, the project of
- * its folder, if one exists. Undefined otherwise: an agent of a project is checked against its own, and a project made
+ * so that its start is checked against that project's limits (8.3): for a template, the project of its folder, if one
+ * exists. Undefined otherwise: an agent of a project is checked against its own, and a project made
  * for the folder has no limits.
  */
 export async function carriedProjectFor(agent: AgentProfile, cwd: string | null): Promise<string | undefined> {
-	if (!projectsOn() || agent.projectId !== undefined || projectForFolder === undefined) return undefined;
+	if (agent.projectId !== undefined || projectForFolder === undefined) return undefined;
 	return projectForFolder(cwd);
 }
 
@@ -1058,8 +1102,7 @@ export const carryOver: Feature = (host, engine) => {
 
 	/**
 	 * Give the schedules on templates their project's copy (3.13), in a commit of the schedules alone, found again inside
-	 * it; nothing is written when there is nothing to carry. Called inside `serially`, after a run or a carry, whose
-	 * callers check the preview: a run turning it on comes before the switch is set.
+	 * it; nothing is written when there is nothing to carry. Called inside `serially`, after a run or a carry.
 	 */
 	const carrySchedules = async (): Promise<void> => {
 		const harness = engine.harness();
@@ -1076,27 +1119,81 @@ export const carryOver: Feature = (host, engine) => {
 		for (const { schedule, copy } of carried) engine.log("carried schedule", schedule, "to", copy);
 	};
 
-	/** Work the plan out again; refuse unless it is `given`; run it; answer its report (9.8). */
-	const run = (given: string | null) =>
-		serially(async () => {
-			const { plan, report, documents } = await look();
-			if (report.plan === null) return report;
-			if (given !== report.plan) throw new RequestError(PLAN_CHANGED, report as unknown as Record<string, unknown>);
-			let backup = documents.projects.carry.backup;
-			if (backup === null) {
-				// Before the first run that changes anything: the database and settings as they were (9.8, 3).
-				const folder = join(engine.home, "backups");
-				mkdirSync(folder, { recursive: true });
-				backup = await createBackup(engine.home, folder);
-				engine.log("carrying over: backed up to", backup);
+	/** Why the update's copy of the data, or its carrying over, failed at this start (#715): the event's `removalFailed`. */
+	let removalFailed: string | null = null;
+	/** Sends the `projects` event again, once `wireCarryOver` has given it: for `removalFailed`, which is no document's. */
+	let announce = () => {};
+	const failed = (reason: string) => {
+		removalFailed = reason;
+		engine.log("carrying over at the update:", reason);
+		announce();
+	};
+	const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+	/** An error's message inside a sentence of the person's: without its own full stop. */
+	const reasonOf = (error: unknown) => message(error).replace(/[.\s]+$/, "");
+
+	/**
+	 * The update that took the switch out (#715), at every engine start, once every feature has started: the first time,
+	 * a copy of the data before anything changes (recorded as `carry.removalBackup`, apart from `carry.backup`); then the
+	 * plan, worked out and applied with its own fingerprint, as a run the person started did (9.8); then `projects:
+	 * { preview: true }` in settings.json, so the last version with the switch shows projects if someone goes back to it.
+	 * Nothing is shown first. With nothing new it writes nothing. If the copy cannot be made, nothing is carried and it is
+	 * tried again at the next start; a run cut off part way is finished by the next. Answers whether the conversations in
+	 * no project may be swept now (`strays`).
+	 */
+	const update = () =>
+		serially(async (): Promise<boolean> => {
+			if (carriesNothing()) return false;
+			const harness = engine.harness();
+			const context = engine.context();
+			const stored = await harness.snapshot(Projects, context);
+			let removal = stored?.carry.removalBackup;
+			if (removal === undefined) {
+				// Nothing to copy on a data folder with no conversation and no project: a new installation.
+				const library = (await harness.snapshot(Library, context))?.conversations ?? {};
+				const notes = Object.values((await harness.snapshot(Memory, context))?.agents ?? {}).some((agent) => agent.notes.length > 0);
+				const anything = stored !== undefined || Object.keys(library).length > 0 || notes;
+				let path: string | null = null;
+				if (anything) {
+					try {
+						const folder = join(engine.home, "backups");
+						mkdirSync(folder, { recursive: true });
+						path = await createBackup(engine.home, folder);
+					} catch (error) {
+						failed(`The copy of your data could not be made, so nothing was moved into projects: ${reasonOf(error)}. pi² tries again when it next starts.`);
+						return false;
+					}
+					engine.log("carrying over at the update: backed up to", path);
+				}
+				const at = Date.now();
+				removal = await harness.commit(async (tx) => {
+					const doc = await tx.doc(Projects);
+					doc.carry.removalBackup ??= { path, at };
+					return { ...doc.carry.removalBackup };
+				}, context);
 			}
-			await apply(plan, documents, { backup, left: plan.left });
-			engine.log(`carried over: ${plan.projects.length} project${plan.projects.length === 1 ? "" : "s"}, plan ${report.plan}`);
-			await carrySchedules().catch((error) => engine.log("could not carry the schedules:", error instanceof Error ? error.message : error));
+			try {
+				const { plan, report, documents } = await look();
+				if (report.plan !== null) {
+					// The run's backup, for 9.8's record, is this copy, unless an older run's is recorded.
+					await apply(plan, documents, { backup: removal.path, left: plan.left });
+					engine.log(`carried over at the update: ${plan.projects.length} project${plan.projects.length === 1 ? "" : "s"}, plan ${report.plan}`);
+				}
+			} catch (error) {
+				failed(`Moving your conversations into projects stopped part way: ${reasonOf(error)}. pi² finishes it when it next starts.`);
+				return false;
+			}
+			if ((engine.setting("projects") as { preview?: unknown } | undefined)?.preview !== true) {
+				engine.saveSetting("projects", { preview: true });
+				engine.log("carrying over at the update: settings.json says projects are on, for the versions before it");
+			}
+			await carrySchedules().catch((error) => engine.log("could not carry the schedules:", message(error)));
 			await retrySecrets().catch(() => {});
-			const stored = (await engine.harness().snapshot(Projects, engine.context()))?.carry ?? carryRecord();
-			const agents = (await engine.harness().snapshot(Agents, engine.context()))?.agents ?? {};
-			return { ...report, ranAt: stored.ranAt, backup: stored.backup, secretsPending: pending(stored, agents) };
+			if (removalFailed !== null) {
+				removalFailed = null;
+				announce();
+			}
+			return true;
 		});
 
 	const checkIdle = (family: ReadonlySet<number>) => {
@@ -1107,7 +1204,6 @@ export const carryOver: Feature = (host, engine) => {
 
 	/** The family and its plan (3.6); in the move's transaction these are read from the documents it will write. */
 	const lookRestore = async (id: number, tx?: Tx) => {
-		requirePreview();
 		const documents = await snapshot(tx);
 		const root = documents.conversations[String(id)];
 		if (root === undefined || root.deleted === true) throw new Error(`Unknown conversation: ${id}`);
@@ -1196,7 +1292,6 @@ export const carryOver: Feature = (host, engine) => {
 				if (source.conversation === id) source.conversation = null;
 				if (source.earlier.includes(id)) source.earlier = source.earlier.filter((other) => other !== id);
 				if (carry.backup === null) carry.backup = backup;
-				requirePreview();
 				checkIdle(family);
 				return { report, entry, from, projectId: made.projectId };
 			}, engine.context()).catch(async (error) => {
@@ -1217,34 +1312,37 @@ export const carryOver: Feature = (host, engine) => {
 			return { ...report, projectId, backup: stored.backup, secretsPending: pending(stored, agents) };
 		});
 
-	/** A top-level conversation not yet in a project, with the preview on: into the project of its folder (9.9). */
+	/** Whether the update's copy of the data is recorded (#715): until it is, nothing is carried. */
+	const updated = async () => !carriesNothing() && (await storedProjects()).carry.removalBackup !== undefined;
+
+	/** A top-level conversation not yet in a project: into the project of its folder (9.9). */
 	const carryOne = (id: number) =>
 		serially(async () => {
-			if (!projectsOn()) return;
+			if (!(await updated())) return;
 			const { plan, documents } = await look(id);
 			if (plan.projects.length === 0) return;
 			await apply(plan, documents, undefined);
-			await carrySchedules().catch((error) => engine.log("could not carry the schedules:", error instanceof Error ? error.message : error));
+			await carrySchedules().catch((error) => engine.log("could not carry the schedules:", message(error)));
 			if (plan.projects.some((entry) => entry.copies.some((copy) => copy.existing === null && copy.variables.length > 0))) void retrySecrets().catch(() => {});
 		});
 
 	/**
-	 * Every top-level conversation that is not a chat, not deleted and in no project, carried one by one, with the preview
-	 * on: at engine start, and after a conversation made later could not be carried, so that one left behind (by a crash
-	 * between the commit that made it and the one that carries it, or by a failure) is carried still. Until a run is
-	 * recorded, the report and backup must come first. A conversation of a deleted project keeps its `projectId` (3.6).
+	 * Every top-level conversation that is not a chat, not deleted and in no project, carried one by one: at engine start,
+	 * after the update's run, and after a conversation made later could not be carried, so that one left behind (by a
+	 * crash between the commit that made it and the one that carries it, or by a failure) is carried still. Not before
+	 * the update's copy of the data is recorded. A conversation of a deleted project keeps its `projectId` (3.6).
 	 */
 	const strays = async (): Promise<void> => {
-		if (!projectsOn() || carryRecord().ranAt === null) return;
+		if (!(await updated())) return;
 		const conversations = (await engine.harness().snapshot(Library, engine.context()))?.conversations ?? {};
 		const left = Object.entries(conversations)
 			.filter(([, meta]) => meta.parent === undefined && meta.chat !== true && meta.version !== true && meta.deleted !== true && meta.projectId === undefined)
 			.map(([id]) => Number(id))
 			.sort((a, b) => a - b);
 		for (const id of left) {
-			await carryOne(id).catch((error) => engine.log("could not carry conversation", id, "into a project:", error instanceof Error ? error.message : error));
+			await carryOne(id).catch((error) => engine.log("could not carry conversation", id, "into a project:", message(error)));
 		}
-		await serially(carrySchedules).catch((error) => engine.log("could not carry the schedules:", error instanceof Error ? error.message : error));
+		await serially(carrySchedules).catch((error) => engine.log("could not carry the schedules:", message(error)));
 	};
 
 	projectForFolder = async (cwd) => {
@@ -1255,12 +1353,12 @@ export const carryOver: Feature = (host, engine) => {
 		return lookUp(grouping.key(cwd), live, keys, projects.carry.folders)?.project.id;
 	};
 
-	wireCarryOver({
-		previewOn: (plan) => run(plan),
+	announce = wireCarryOver({
 		state: () => {
 			const carry = carryRecord();
-			if (carry.ranAt === null && carry.backup === null && carry.secrets.length === 0) return null;
-			return { ranAt: carry.ranAt, backup: carry.backup, secretsPending: pending(carry, engine.agents()) };
+			const removalBackup = carry.removalBackup?.path == null ? null : { path: carry.removalBackup.path, at: carry.removalBackup.at };
+			if (carry.ranAt === null && carry.backup === null && carry.secrets.length === 0 && removalBackup === null && removalFailed === null) return null;
+			return { ranAt: carry.ranAt, backup: carry.backup, removalBackup, removalFailed, secretsPending: pending(carry, engine.agents()) };
 		},
 	});
 
@@ -1268,50 +1366,46 @@ export const carryOver: Feature = (host, engine) => {
 		start: async () => {
 			// Not waited for: the engine need not wait for the Keychain to start.
 			void retrySecrets().catch(() => {});
-			// Once every feature has started, the preview's switch read among them.
-			void host.ready.then(strays).catch((error) => engine.log("could not carry the conversations in no project:", error instanceof Error ? error.message : error));
+			// Once every feature has started: the update's run (#715), then any conversation left in no project.
+			void host.ready
+				.then(update)
+				.then((swept) => (swept ? strays() : undefined))
+				.catch((error) => failed(`Moving your conversations into projects stopped: ${reasonOf(error)}. pi² tries again when it next starts.`));
 		},
 		// The plan for that one conversation leaves out a sub-chat, a chat and one in a project already.
 		made: async (id) => {
-			if (!projectsOn()) return;
 			try {
 				await carryOne(id);
 			} catch (error) {
-				engine.log("could not carry conversation", id, "into a project:", error instanceof Error ? error.message : error);
+				engine.log("could not carry conversation", id, "into a project:", message(error));
 				// Once more, with any other left behind; a failure there is logged, and the next engine start tries again.
 				void strays();
 			}
 		},
 		handlers: {
 			/**
-			 * `{ dryRun?, plan? }`: with `dryRun`, the report of what a run would do, changing nothing, with the preview off too;
-			 * without, the preview must be on, and it runs `plan`, as `projects.setPreview` does, to bring in what is new since.
+			 * `{ dryRun: true }`: the report of what a run would do now, changing nothing, for a script or a test. The run
+			 * itself is the engine's, at every start (`update`).
 			 */
 			"projects.carryOver": async (params) => {
-				if (params.dryRun !== undefined && typeof params.dryRun !== "boolean") throw new Error("dryRun must be true or false");
-				if (params.plan !== undefined && params.plan !== null && typeof params.plan !== "string") throw new Error("plan must be the plan of the report you were shown");
-				if (params.dryRun === true) return (await serially(() => look())).report;
-				requirePreview();
-				return run((params.plan as string | null | undefined) ?? null);
+				if (params.dryRun !== true) throw new Error(CARRIES_ITSELF);
+				return (await serially(() => look())).report;
 			},
 			/** `{}`: try again to copy the variables' values still pending, and answer what is still pending. */
 			"projects.retrySecrets": async () => {
-				requirePreview();
 				await retrySecrets().catch(() => {});
 				const carry = (await engine.harness().snapshot(Projects, engine.context()))?.carry;
 				const agents = (await engine.harness().snapshot(Agents, engine.context()))?.agents ?? {};
 				return { secrets: carry === undefined ? [] : pending(carry, agents) };
 			},
 			/**
-			 * `{ id, dryRun?, plan? }` (3.6, #531): the restore of one conversation of a deleted project, only with the
-			 * preview on. With `dryRun`, the report of what the restore would do, changing nothing; without, `plan` must be
+			 * `{ id, dryRun?, plan? }` (3.6, #531): the restore of one conversation of a deleted project. With `dryRun`, the report of what the restore would do, changing nothing; without, `plan` must be
 			 * the dry run's, and the move is one commit with a backup first, taken only from the app (answers.ts).
 			 */
 			"projects.restoreConversation": async (params) => {
 				if (typeof params.id !== "number") throw new Error("id must be a conversation's id");
 				if (params.dryRun !== undefined && typeof params.dryRun !== "boolean") throw new Error("dryRun must be true or false");
 				if (params.plan !== undefined && params.plan !== null && typeof params.plan !== "string") throw new Error("plan must be the plan of the report you were shown");
-				requirePreview();
 				return restore(params.id, params.dryRun === true, (params.plan as string | null | undefined) ?? null);
 			},
 		},

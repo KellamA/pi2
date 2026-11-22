@@ -3,7 +3,7 @@
 
 import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
-import { AgentDoc, type ConversationId, defineDoc, defineTool, LiveDoc, type LiveState, section, type Tx } from "@earendil-works/pi-durable";
+import { AgentDoc, type ConversationId, defineDoc, defineTool, section, type Tx } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { isChat } from "./chat.ts";
 import type { Feature } from "./features.ts";
@@ -17,7 +17,7 @@ import {
 	projectNotesFor,
 	removeProjectNote,
 } from "./projectnotes.ts";
-import { inProject, projectOf, projectsOn, requirePreview } from "./projects.ts";
+import { inProject, projectOf } from "./projects.ts";
 import { runsAs } from "./state.ts";
 
 // ---- Project instructions
@@ -247,23 +247,16 @@ export const knowledge: Feature = (host, engine) => {
 	 * agent's, whatever it is asked; an agent's conversation's are its agent's. A chat's version counts as the chat.
 	 */
 	// The notes of the agent it runs as (state.ts, `runsAs`; docs/projects.md, 3.4): its `agentId`, but for a
-	// conversation carried over, while the preview is on.
+	// conversation carried over.
 	const memoryAgentId = (id: ConversationId) => runsAs(host.meta(id), engine.agents());
-	// A live run's first input persists through tool rounds and steering. A queued message can start a new run in
-	// the same commit that ends the last one, so watching for an idle conversation would miss that boundary.
-	const runPreview = new Map<ConversationId, { input: NonNullable<LiveState["run"]>["inputs"][number] | undefined; on: boolean }>();
 	const ownerOf = (conversationId: ConversationId): Owner | { projectId: string; agentId: string } | undefined => {
 		if (isChat(host.meta(conversationId))) return engine.chatSettings().memory ? CHAT : undefined;
 		const agentId = memoryAgentId(conversationId);
 		if (agentId === undefined || !enabledFor(agentId)) return undefined;
 		const id = conversationId as unknown as number;
-		if (runPreview.get(conversationId)?.on ?? projectsOn()) {
-			const project = projectsOn() ? inProject(id) : projectOf(id);
-			const agent = host.agent(agentId);
-			if (project !== undefined && project.archivedAt === undefined && project.deletedAt === undefined && agent?.projectId === project.id && agent.removedAt === undefined) {
-				return { projectId: project.id, agentId };
-			}
-		}
+		const project = inProject(id);
+		const agent = host.agent(agentId);
+		if (project !== undefined && agent?.projectId === project.id && agent.removedAt === undefined) return { projectId: project.id, agentId };
 		return { chat: false, agentId };
 	};
 	const memoryOff = (conversationId: unknown) =>
@@ -444,7 +437,6 @@ export const knowledge: Feature = (host, engine) => {
 	};
 	const projectIn = (params: Record<string, unknown>): string | undefined => {
 		if (params.projectId === undefined) return undefined;
-		requirePreview();
 		if (typeof params.projectId !== "string") throw new Error("projectId must be a project's id");
 		if (params.chat !== undefined || params.agentId !== undefined) throw new Error("Give projectId in place of chat or agentId");
 		return params.projectId;
@@ -491,15 +483,6 @@ export const knowledge: Feature = (host, engine) => {
 						if (change.record.kind === Memory.definition.kind) {
 							adopt(change.kind === "change" ? (change.value as MemoryDoc) : undefined);
 							engine.broadcast(event());
-						}
-						if (change.record.kind !== LiveDoc.definition.kind || change.conversationId === undefined) continue;
-						const id = change.conversationId;
-						const run = change.kind === "change" ? (change.value as LiveState).run : undefined;
-						if (run === undefined) runPreview.delete(id);
-						else {
-							const last = runPreview.get(id);
-							const input = run.inputs[0];
-							if (last === undefined || (run.turns === 0 && input !== undefined && input !== last.input)) runPreview.set(id, { input, on: projectsOn() });
 						}
 					}
 				},

@@ -38,7 +38,7 @@ import type { Engine, Feature } from "./features.ts";
 import { runOffThread } from "./offthread.ts";
 import { wireWorkState } from "./orchestrator.ts";
 import { limitError, limitRefusal } from "./projectlimits.ts";
-import { addNews, allProjects, type Project, PROJECT_ARCHIVED, Projects, requirePreview, requireSwitch, type Start, type Who } from "./projects.ts";
+import { addNews, allProjects, type Project, PROJECT_ARCHIVED, Projects, requireSwitch, type Start, type Who } from "./projects.ts";
 import { Library } from "./state.ts";
 import {
 	type Call,
@@ -1563,7 +1563,6 @@ export const github: Feature = (host, running) => {
 		handlers: {
 			/** `{ projectId, tabs }`: this app shows these tabs of this project now; the engine reads GitHub for them. */
 			"projects.watch": async (params, connection) => {
-				requirePreview();
 				const key = connection ?? watching;
 				if (params.projectId === null || (Array.isArray(params.tabs) && params.tabs.length === 0)) {
 					watching.delete(key);
@@ -1578,7 +1577,6 @@ export const github: Feature = (host, running) => {
 				return {};
 			},
 			"github.attach": async (params) => {
-				requirePreview();
 				const project = projectFor(params.projectId, true);
 				if (project.folder === null) throw new Error("This project has no folder. Give it the repository's folder first.");
 				let wanted: Repository | undefined;
@@ -1597,18 +1595,15 @@ export const github: Feature = (host, running) => {
 				return { repository };
 			},
 			"github.detach": async (params) => {
-				requirePreview();
 				const project = projectFor(params.projectId, true);
 				await running.harness().commit((tx) => setRepositoryIn(tx, project.id, null), running.context());
 				return {};
 			},
 			"github.refresh": async (params) => {
-				requirePreview();
 				await readListing(attached(params.projectId));
 				return {};
 			},
 			"github.merge": async (params) => {
-				requirePreview();
 				const project = attached(params.projectId, true);
 				const n = numberOf(params.number);
 				await mergePull(project, n, keysOf(project, randomUUID()).step("merge"), { kind: "person" });
@@ -1616,7 +1611,6 @@ export const github: Feature = (host, running) => {
 				return {};
 			},
 			"github.sendBack": async (params) => {
-				requirePreview();
 				const project = attached(params.projectId, true);
 				if (typeof params.reason !== "string") throw new Error("reason must be text");
 				const n = numberOf(params.number);
@@ -1631,7 +1625,6 @@ export const github: Feature = (host, running) => {
 			 * does not carry (#599). Answers it as `item` or `pull`; the `github` event carries it too.
 			 */
 			"github.show": async (params) => {
-				requirePreview();
 				const project = attached(params.projectId);
 				const n = numberOf(params.number);
 				if (params.pull === true) {
@@ -1648,7 +1641,6 @@ export const github: Feature = (host, running) => {
 				return { item };
 			},
 			"github.diff": async (params) => {
-				requirePreview();
 				const project = attached(params.projectId);
 				const n = numberOf(params.number);
 				const diff = await gh(["pr", "diff", String(n), "--repo", repoName(repositoryOf(project))], folderOf(project));
@@ -1658,12 +1650,10 @@ export const github: Feature = (host, running) => {
 			},
 			/** `{ projectId }`: the writes whose outcome pi² could not tell, with the id each is settled by (#573). */
 			"github.unknown": async (params) => {
-				requirePreview();
 				await readMirror();
 				return { unknown: unknownWrites(attached(params.projectId)) };
 			},
 			"github.settle": async (params) => {
-				requirePreview();
 				const project = attached(params.projectId);
 				if (typeof params.intent !== "string") throw new Error("intent must be the id of a write whose outcome is unknown");
 				if (typeof params.happened !== "boolean") throw new Error("happened must be true or false");

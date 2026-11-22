@@ -1,10 +1,9 @@
 // Agents of a project, and templates (#457, docs/projects.md 3.3, 3.4 and the agent requests of 4.2). A real engine on a
 // throwaway data folder, driven over its socket with the demo model, as an app would drive it.
 //
-// First what must not change: with the preview never on, the new requests are refused, saving an agent writes nothing
-// new, a conversation in no project runs as its own agent (`runsAs` in the library and Activity), and an agent that
-// hands out work is told the same prompt and tool declarations, byte for byte, before the preview was ever on, with it
-// on beside projects with copies of the same agents, and with it off again. Then copying templates into a project,
+// First what must not change: a conversation in no project runs as its own agent (`runsAs` in the library and
+// Activity), and an agent that hands out work is told the same prompt and tool declarations, byte for byte, before a
+// project is made and beside projects with copies of the same agents. Then copying templates into a project,
 // making an agent there, what `agents.save`, `agents.duplicate` and `agents.delete` do for a project agent, Update from
 // template, `delegate` naming only the project's agents and asking first while `startAgents` is off, and an engine
 // stopped and started again. runsas.ts checks `runsAs` itself, and removing an agent, without an engine.
@@ -14,9 +13,9 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 import { AGENT_IN_FOLDER, TEMPLATE_DELETED } from "../src/projectagents.ts";
-import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
+import { PROJECT_ARCHIVED } from "../src/projects.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-pagents-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-pagents-work-")));
@@ -92,23 +91,13 @@ let client = await Client.connect(engine, home);
 try {
 	await client.until("agents", () => client.events.agents && client.events.library && client.events.projects);
 
-	// ---- With the preview never turned on
+	// ---- Conversations in no project: the projects carrying over makes for them are deleted (#458, `leaveOut`)
 
-	for (const [method, params] of [
-		["projects.addAgent", { projectId: "p-x", template: "scout" }],
-		["agents.restore", { id: "scout" }],
-		["agents.updateFromTemplate", { id: "scout", apply: false }],
-	] as const) {
-		await refused(client.call(method, params), PREVIEW_OFF);
-	}
-	// Saving an agent writes nothing new: no `updatedAt`.
-	await client.call("agents.save", { agent: { ...client.agent("forge"), description: "Saved before the preview." } });
-	await client.until("forge saved", () => client.agent("forge").description === "Saved before the preview.");
-	assert.equal(client.agent("forge").updatedAt, undefined);
-	step("with the preview never on: the agent requests are refused, and agents.save writes no updatedAt");
+	const plain = (await client.call("conversation.create", { agentId: "forge" })).id as number;
+	const atlas = (await client.call("conversation.create", { agentId: "atlas" })).id as number;
+	await leaveOut(client);
 
 	// A conversation in no project runs as its own agent, in the library and in Activity.
-	const plain = (await client.call("conversation.create", { agentId: "forge" })).id as number;
 	await client.call("conversation.open", { id: plain });
 	assert.equal((await client.until("its row", () => client.listed(plain))).runsAs, "forge");
 	void client.call("submit", { id: plain, text: "/bash echo waiting" });
@@ -121,18 +110,15 @@ try {
 	await client.until("idle", () => client.conversations.get(plain)?.state?.busy === false);
 	step("a conversation in no project runs as its agentId: runsAs in library and activity");
 
-	// An agent that hands out work (Atlas, to Scout and Forge): what it is told, before the preview was ever on.
-	const atlas = (await client.call("conversation.create", { agentId: "atlas" })).id as number;
+	// An agent that hands out work (Atlas, to Scout and Forge): what it is told, before any project is made.
 	await client.call("conversation.open", { id: atlas });
-	assert.match(await client.answer(atlas, "/delegate Scout: before the preview"), /^Done\. The tool returned: You said: "before the preview"/);
+	assert.match(await client.answer(atlas, "/delegate Scout: before the project"), /^Done\. The tool returned: You said: "before the project"/);
 	const before = await client.told(atlas);
 	assert.ok(before.full.includes('"delegate"'), "Atlas is offered delegate");
 	assert.ok(before.full.includes("- Scout: ") && before.full.includes("- Forge: "), "and told of Scout and Forge");
 
-	// ---- The preview on: a project, and copies of templates in it
+	// ---- A project, and copies of templates in it
 
-	await previewOnLeavingOut(client);
-	await client.until("preview on", () => client.events.projects.preview === true);
 	const made = await client.call("projects.create", { folder: alpha });
 	const project = await client.until("the project", () => client.project(made.id));
 	await client.until("its orchestrator", () => client.agent(project.orchestratorId));
@@ -289,7 +275,7 @@ try {
 	assert.match(await client.answer(own, "/delegate Researcher: from Atlas's copy"), /You said: "from Atlas's copy"/);
 	// The template Atlas, outside any project, still hands work to the templates it names. Its conversation was carried
 	// over into a project deleted since, which leaves it in none (#458, 3.6): not to the copy of Scout made there.
-	assert.match(await client.answer(atlas, "/delegate Scout: with the preview on"), /You said: "with the preview on"/);
+	assert.match(await client.answer(atlas, "/delegate Scout: beside a project"), /You said: "beside a project"/);
 	const fromTemplate = client.events.library.conversations.filter((row: any) => row.parent === atlas).map((row: any) => row.agentId);
 	assert.deepEqual([...new Set(fromTemplate)], ["scout"]);
 	step("delegate names only the project's agents: all of them from the orchestrator's conversation, its delegates from another");
@@ -318,16 +304,10 @@ try {
 	assert.match(item.question, new RegExp(`^Continue sub-chat ${continued}, “.*”, with Researcher\\.$`));
 	await client.call("inbox.decide", { id: item.id, decision: "once" });
 	await client.until("continued", () => client.conversations.get(own)?.state?.busy === false && client.result(own, "delegate")?.text?.includes('You said: "again"'));
-	// The switch holds with the preview off: switching off removes no protection (section 2).
-	await client.call("projects.setPreview", { on: false });
-	item = await asked(own, "/delegate Researcher: with the preview off");
-	await client.call("inbox.decide", { id: item.id, decision: "once" });
-	await client.until("allowed off", () => client.conversations.get(own)?.state?.busy === false && client.result(own, "delegate")?.text?.includes("with the preview off"));
 	// A template outside any project is never asked.
 	assert.match(await client.answer(atlas, "/delegate Forge: no question"), /You said: "no question"/);
-	await client.call("projects.setPreview", { on: true });
 	await client.call("projects.set", { id: made.id, settings: { withoutAsking: { startAgents: true } } });
-	step("with startAgents off, delegate asks before each start, new or continued, with the preview on or off");
+	step("with startAgents off, delegate asks before each start, new or continued");
 
 	// ---- An archived project
 
@@ -345,14 +325,11 @@ try {
 
 	// ---- What a conversation in no project is told, byte for byte
 
-	const during = await client.told(atlas);
-	assert.equal(during.full, before.full);
-	await client.call("projects.setPreview", { on: false });
 	const after = await client.told(atlas);
 	assert.equal(after.full, before.full);
 	assert.equal(after.history, before.history);
 	assert.equal(client.listed(atlas).runsAs, "atlas");
-	step("an agent that hands out work, in no project, is told the same prompt and tools, never on, on and off again");
+	step("an agent that hands out work, in no project, is told the same prompt and tools before a project is made and after");
 
 	// ---- An engine stopped and started again
 

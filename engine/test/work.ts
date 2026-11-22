@@ -8,11 +8,11 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { DEFAULT_ORCHESTRATOR, PREVIEW_OFF, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
+import { DEFAULT_ORCHESTRATOR, PROJECT_ARCHIVED, Projects } from "../src/projects.ts";
 import { makeScratch } from "../src/scratch.ts";
 import { Agents } from "../src/state.ts";
 import { recordWork, Work, type WorkItem } from "../src/work.ts";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-work-"));
 const service = `dev.pi2.credentials.test-work-${process.pid}`;
@@ -90,11 +90,10 @@ try {
 	client = await Client.connect(engine, home);
 	assert.deepEqual(await client.until("greetings", () => client!.events.work), { event: "work", projects: {} });
 	assert.ok(client.order.indexOf("projects") < client.order.indexOf("work"));
-	for (const method of ["work.list", "work.create", "work.act"]) await assert.rejects(client.call(method), { message: PREVIEW_OFF });
-	// A conversation in no project: with the preview on, one whose project was deleted, since carrying over puts every
-	// other in one (#458; `previewOnLeavingOut`).
+	// A conversation in no project: one whose project was deleted, since carrying over puts every other in one (#458;
+	// `leaveOut`).
 	const { id: plain } = await client.call("conversation.create", { agentId: "forge" });
-	await previewOnLeavingOut(client);
+	await leaveOut(client);
 	const { id: projectId, conversation: parent }: { id: string; conversation: number } = await client.call("projects.create", { folder: null, name: "Local" });
 	const { id: other } = await client.call("projects.create", { folder: null, name: "Other" });
 	const { id: github } = await client.call("projects.create", { folder: null, name: "GitHub" });
@@ -138,7 +137,7 @@ try {
 	await assert.rejects(create("Too much", { text: "a".repeat(20_001) }), /20,000/);
 	await assert.rejects(call("list", { states: ["all"] }), /states must/);
 	refusal(await socket.tool(parent, "pull_request"), /kept by pi², which has no pull requests/);
-	step("preview, greeting order, project-only tools, validation, and no GitHub fallback");
+	step("greeting order, project-only tools, validation, and no GitHub fallback");
 
 	const id = await create("  Race  ", { text: "Work description", class: "local" });
 	assert.equal(id, 1);
@@ -425,9 +424,6 @@ try {
 		.filter((line: string) => /\(assign\)\.$/.test(line));
 	assert.equal(told.length, 1, "the person's assignment told to the orchestrator, and not its own");
 	const beforeRestart = await list();
-	await socket.call("projects.setPreview", { on: false });
-	assert.equal(await socket.offered(worker), false);
-	await assert.rejects(call("list"), { message: PREVIEW_OFF });
 	assert.deepEqual(socket.events.work.projects[projectId], beforeRestart);
 	await offline(async (harness) => {
 		const stored = await harness.snapshot(Projects, context);
@@ -437,16 +433,15 @@ try {
 		// #465 owns record(op): for now the unconnected operation does not even ask for another document.
 		await recordWork(new Proxy({}, { get: () => { throw new Error("recordWork used the transaction before #465"); } }) as never, { projectId, by: { kind: "person" }, action: "file", before: null, after: item });
 	});
-	await client.until("work after restart with preview off", () => client?.events.work);
+	await client.until("work after restart", () => client?.events.work);
 	assert.deepEqual(client.events.work.projects[projectId], beforeRestart);
-	await client.call("projects.setPreview", { on: true });
 	assert.deepEqual((await client.call("work.list", { projectId })).items, beforeRestart);
 	await client.call("projects.archive", { id: projectId });
 	assert.deepEqual((await client.call("work.list", { projectId })).items, beforeRestart);
 	await assert.rejects(client.call("work.create", { projectId, title: "Archived" }), { message: PROJECT_ARCHIVED });
 	await client.call("projects.delete", { id: projectId });
 	await assert.rejects(client.call("work.list", { projectId }), /Unknown project/);
-	step("work and news survive restart, preview off retains the event, and archived/deleted projects cannot change work");
+	step("work and news survive restart, and archived/deleted projects cannot change work");
 } finally {
 	peer?.close();
 	client?.close();

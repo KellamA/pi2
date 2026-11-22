@@ -3,7 +3,7 @@
 //
 // First the catch-up's room and the state block's words alone. Then a real engine on a throwaway data folder, driven
 // over its socket with the demo model: a conversation in no project, told the same prompt and given the same context,
-// byte for byte, before the preview, with it on and after everything below; a project whose orchestrator's first
+// byte for byte, before the project is made and after everything below; a project whose orchestrator's first
 // context begins with the state block; a turn with no news that adds nothing; ten finished reports given once in one
 // catch-up, whose cost in tokens is printed; the person writing to a sub-chat, told at the orchestrator's next turn
 // without waking it; a summary that ends with the state block and clears no news; Start fresh refused while the
@@ -11,7 +11,7 @@
 // conversation readable and taking no messages; the fresh conversation's first context (the rules, the notes and the
 // state, and nothing of the old one); `sub_chats` and `delegate` reaching the earlier conversation's sub-chats; an answer
 // to a question asked in the earlier one; a new orchestrator; `lastWords`, `lastLine`, `library`'s `orchestrator` and
-// the conversation state's `project`; and the preview off, with which nothing is added and news waits.
+// the conversation state's `project`.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CATCH_UP_ROOM, catchUp, NEWS_KEPT, type StateSnapshot, stateText } from "../src/orchestrator.ts";
 import type { News } from "../src/projects.ts";
-import { EngineClient, exited, previewOnLeavingOut, running, standInApp, stop } from "./patience.ts";
+import { EngineClient, exited, leaveOut, running, standInApp, stop } from "./patience.ts";
 
 function step(name: string): void {
 	console.log(`ok  ${name}`);
@@ -182,11 +182,13 @@ try {
 	const c = (client = await Client.connect(engine, home));
 	await c.until("first events", () => c.events.agents && c.events.projects && c.events.library);
 
-	// ---- A conversation in no project, as it is before the preview was ever on
+	// ---- A conversation in no project: the project carrying over makes for `plain` is deleted, which leaves it in none
+	// (#458, `leaveOut`)
 
 	const worker = (await c.call("agents.save", { agent: { name: "Worker", description: "Does the work", access: "full", cwd: work } })).id as string;
 	const lead = (await c.call("agents.save", { agent: { name: "Lead", description: "Hands out work", access: "full", cwd: work, delegates: [worker] } })).id as string;
 	const plain = (await c.call("conversation.create", { agentId: lead })).id as number;
+	await leaveOut(c);
 	await c.open(plain);
 	await c.answer(plain, "A first message, in no project.");
 	const plainPrompt = await c.prompt(plain);
@@ -204,10 +206,7 @@ try {
 
 	// ---- A project: the orchestrator's first context begins with the state block
 
-	// Turned on as the app does, with the plan of the report; the project carrying over makes for `plain` is deleted, which
-	// leaves it in no project (#458, `previewOnLeavingOut`).
-	await previewOnLeavingOut(c);
-	await unchanged("with the preview on");
+	await unchanged("before the project is made");
 	const made = await c.call("projects.create", { folder });
 	const projectId = made.id as string;
 	const oc = made.conversation as number;
@@ -406,24 +405,8 @@ try {
 	assert.ok(planned[0]!.startsWith("[pi² — the project as it stands"));
 	step("setOrchestrator: another agent of the project orchestrates, with a fresh conversation, the roles changed in the same commit");
 
-	// ---- The preview off: nothing added, news kept
-
-	await c.answer(part, "A note for the orchestrator, while it is on.");
-	await c.call("projects.setPreview", { on: false });
-	const marks = c.items(pc, "marker").length;
-	const off = await c.context(pc);
-	assert.equal(c.items(pc, "marker").length, marks, "no catch-up with the preview off");
-	assert.ok(!off.some((line) => line.includes("A note for the orchestrator")));
-	assert.equal((await c.answer(oc, "An earlier conversation takes messages with the preview off.")).length > 0, true);
-	await c.answer(part, "Written with the preview off.");
-	assert.equal(c.markers(part, TOLD).length, 4, "nothing is told with the preview off");
-	await unchanged("with the preview off again");
-	await c.call("projects.setPreview", { on: true });
-	const on = await c.context(pc);
-	assert.ok(on.some((line) => line.includes("A note for the orchestrator, while it is on.")), "the news kept is given once the preview is on again");
-	assert.ok(!on.some((line) => line.includes("Written with the preview off.")));
 	await unchanged("after all of it");
-	step("with the preview off nothing is added and nothing told; news kept comes once it is on again; a conversation in no project is told the same, byte for byte");
+	step("a conversation in no project is told the same, byte for byte, after all of it");
 
 	console.log("PASS");
 	passed = true;
