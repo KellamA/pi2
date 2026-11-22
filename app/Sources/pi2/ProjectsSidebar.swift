@@ -179,6 +179,15 @@ private struct ProjectBlock: View {
                     Button("Stop the Orchestrator") { engine.perform("abort", ["id": conversation]) }
                     Divider()
                 }
+                // Its conversation is renamed with the project and archived by Start fresh, so of its own menu's items
+                // only Export is left to offer here (#642).
+                if let conversation = project.conversation.flatMap({ id in engine.conversations.first { $0.id == id } }) {
+                    Menu("Export the Conversation") {
+                        Button("As Markdown…") { StorageActions.export(conversation, format: "markdown", engine: engine) }
+                        Button("As JSON…") { StorageActions.export(conversation, format: "json", engine: engine) }
+                    }
+                    Divider()
+                }
                 Button("Rename…") { model.beginRename(project) }
                 Button("Archive") { model.archiveProject(project.id) }
             }
@@ -190,6 +199,9 @@ private struct ProjectBlock: View {
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
                     RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
+                        .contextMenu(previewAs: run.title.isEmpty ? engine.agent(run.agentId)?.name ?? "New conversation" : run.title, String(id)) {
+                            ConversationActions(model: model, id: id)
+                        }
                         .padding(.leading, 14)
                         .tag(Selection.projectAgent(project: project.id, conversation: id))
                 }
@@ -392,6 +404,9 @@ private struct OtherConversations: View {
                     .padding(.leading, 28)
                     .tag(Selection.projectAgent(project: project.id, conversation: conversation.id))
                     .help("Open its conversation in place of the board")
+                    .contextMenu(previewAs: conversation.title.isEmpty ? "New conversation" : conversation.title, String(conversation.id)) {
+                        ConversationActions(model: model, id: conversation.id)
+                    }
                     .draggable(ConversationDrag(id: conversation.id)) {
                         Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left").padding(6)
                     }
