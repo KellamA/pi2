@@ -64,8 +64,8 @@ struct OnboardingView: View {
             Text("Welcome to pi²").font(.largeTitle.weight(.semibold))
             Text("A home for AI agents that keep working. Every step is saved as it happens, so a crash, a restart or quitting the app never loses a run.")
                 .font(.title3).foregroundStyle(.secondary)
-            point("person.2", "Agents with their own setup", "Give each agent a model, instructions and tools. They can hand work to each other.")
-            point("hand.raised", "You stay in control", "Agents ask before changing files or running commands, and wait for you, even overnight.")
+            point("folder", "A project for each folder", "Its orchestrator plans the work with you and hands it to agents.")
+            point("hand.raised", "You stay in control", "Approvals, questions and decisions wait for you under Needs you, even overnight.")
             point("clock.arrow.circlepath", "Always on", "Schedules, a menu bar icon and Quick Ask keep agents within reach while you do other things.")
         }
     }
@@ -116,9 +116,9 @@ struct OnboardingView: View {
     private var tips: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Three things worth knowing").font(.title.weight(.semibold))
-            point("command", "⌘K finds and starts anything", "Conversations, agents, commands and the text of every message.")
+            point("command", "⌘K finds and starts anything", "Projects, conversations, agents, commands and the text of every message.")
             point("bolt", "⌃⌥Space asks from anywhere", "A small prompt over whatever you are doing. The answer appears in place.")
-            point("wrench.and.screwdriver", "You decide what agents may touch", "Each agent and conversation has a tool level: chat only, read files, ask first, or full access. Tools always work inside one folder.")
+            point("wrench.and.screwdriver", "You decide what agents may touch", "Each agent's tool access is Off, Read files, Ask first or Full access. Its conversations work at that level.")
         }
     }
 
