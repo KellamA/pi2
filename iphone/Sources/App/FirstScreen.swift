@@ -37,6 +37,9 @@ struct FirstScreen: View {
                     .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 14))
                     .accessibilityElement(children: .combine)
 
+                    DemoEntry()
+                        .environment(\.placement, .inline)
+
                     #if DEBUG
                     DebugSection(showsCheck: $showsCheck)
                     #endif

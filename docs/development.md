@@ -16,7 +16,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Retaking the README's pictures | [Retaking the README's pictures](#retaking-the-readmes-pictures) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
-| The iPhone app | [Building the iPhone app](#building-the-iphone-app); the contract is [iphone.md](iphone.md) |
+| The iPhone app | [Building the iPhone app](#building-the-iphone-app); a screen of it: [iphone-app.md](iphone-app.md) (the session, the routes, whose folder is whose, drawing a screen with data in it); the contract is [iphone.md](iphone.md) |
 | Repository scripts, checks and merging | [CI](#ci) |
 
 ## Requirements
@@ -523,7 +523,7 @@ Then make the load ([Measuring under load](#measuring-under-load), with `--keep`
 
 ## Building the iPhone app
 
-The iPhone app is one Xcode project, `iphone/pi2.xcodeproj` ([iphone.md](iphone.md), #680). Its folders are ones Xcode keeps in step by itself: a source file added under `iphone/Sources/` (the app) or `iphone/Tests/` (its unit tests) is built without any change to `project.pbxproj`, so add files in the folder rather than through a target's file list. Only a new target (an extension) changes the project file. It links `PiModels`, `EngineKit` and `TranscriptKit` from `app/Package.swift` as a local package, through the library products declared there: a shared target the phone needs gets a product line beside them.
+The iPhone app is one Xcode project, `iphone/pi2.xcodeproj` ([iphone.md](iphone.md), #680). Its folders are ones Xcode keeps in step by itself: a source file added under `iphone/Sources/` (the app) or `iphone/Tests/` (its unit tests) is built without any change to `project.pbxproj`, so add files in the folder rather than through a target's file list. Only a new target (an extension) changes the project file. It links `PiModels`, `EngineKit` and `TranscriptKit` from `app/Package.swift` as a local package, through the library products declared there: a shared target the phone needs gets a product line beside them. How the app is put together (its session, its routes, which folder is whose) and how to draw a screen with a recorded session in it are [iphone-app.md](iphone-app.md).
 
 Agents build for the simulator only, unsigned, and in a simulator of their own, never the one already booted, which may be the person's. `scripts/iphone-sim` does each step, keeping to that (#681):
 
