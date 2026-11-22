@@ -24,13 +24,17 @@ enum ConversationPlace: Equatable {
 extension AppModel {
     /// Opens a conversation where it lives. `parent`, when the caller knows it, is the conversation it was opened from,
     /// for a sub-chat that neither list names: one of an archived conversation.
-    func openConversation(_ id: Int, from parent: Int? = nil) {
+    /// `beside`, with the preview on, opens one of a project's conversations in a new pane of its hub beside the focused
+    /// one, or beside `parent`'s (a sub-chat card's Beside); nil reads ⌥ (#657).
+    func openConversation(_ id: Int, from parent: Int? = nil, beside: Bool? = nil) {
         guard engine.projectsPreview else {
             selection = .conversation(id)
             return
         }
+        // ⌥ is read as the person asks, not once the conversation has come.
+        let beside = beside ?? NSEvent.modifierFlags.contains(.option)
         if knows(id) {
-            go(to: id, from: parent)
+            go(to: id, from: parent, beside: beside)
             return
         }
         // A conversation just made (⌘N, Quick Ask, a fork, Continue with an Agent) can be answered for before the
@@ -38,7 +42,7 @@ extension AppModel {
         // and is known once it has come.
         Task {
             for _ in 0..<40 where !knows(id) { try? await Task.sleep(for: .milliseconds(50)) }
-            go(to: id, from: parent)
+            go(to: id, from: parent, beside: beside)
         }
     }
 
@@ -66,18 +70,20 @@ extension AppModel {
         engine.conversations.contains { $0.id == id } || engine.archived.contains { $0.id == id } || engine.open[id]?.state != nil
     }
 
-    private func go(to id: Int, from parent: Int?) {
+    private func go(to id: Int, from parent: Int?, beside: Bool) {
         switch place(of: id, from: parent) {
         case .chat:
             showChat(id)
         case .hub(let project):
-            showProject(project)
+            // Its panel, which takes the keyboard; the panes beside it stay as they are (#657).
+            selection = .project(project)
             if hubs.fold(project) == .conversationFolded { hubs.setFold(.both, for: project) }
+            hubs.keyOrchestrator(project)
         case .board(let project):
             // The panel asks for it as it appears; a sub-chat of an archived conversation is known to be one only once it
-            // has come, and the panel waits for that.
+            // has come, and the panel waits for that. It goes to the focused pane, or with ⌥ to a new one (#657).
             engine.openConversation(id)
-            openAgent(id, in: project)
+            openAgent(id, in: project, beside: beside, from: parent)
         case .archive:
             engine.openConversation(id)
             selection = .archive

@@ -228,6 +228,7 @@ private struct ProjectBlock: View {
                 if let run = engine.projectStore.run(id) {
                     RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
                         .contextMenu(previewAs: run.title.isEmpty ? engine.agent(run.agentId)?.name ?? "New conversation" : run.title, String(id)) {
+                            OpenInNewPane(model: model, id: id, project: project.id)
                             // Another conversation with the same agent, in place of the board (#643).
                             if let agent = engine.agent(run.agentId), let row = engine.project(project.id) {
                                 Button("New Conversation with \(agent.name)", systemImage: "plus.bubble") { model.startWith(agent, in: row) }
@@ -237,10 +238,30 @@ private struct ProjectBlock: View {
                         }
                         .padding(.leading, 14)
                         .tag(Selection.projectAgent(project: project.id, conversation: id))
+                        // Dropped on one of the hub's panes, it shows there; on a pane's edge, beside it (#657).
+                        .draggable(ConversationDrag(id: id)) {
+                            Label(run.title.isEmpty ? "New conversation" : run.title, systemImage: "bubble.left").padding(6)
+                        }
                 }
             }
             OtherConversations(model: model, project: project, live: live, agent: agent)
         }
+    }
+}
+
+/// The first item of a project's conversation's menu in the sidebar: the conversation in a new pane of the hub, beside
+/// the focused one, as ⌥ and a click do (#657).
+private struct OpenInNewPane: View {
+    let model: AppModel
+    let id: Int
+    let project: String
+
+    var body: some View {
+        let shown = model.hubs.layout(project).pane(showing: id) != nil
+        Button("Open in New Pane") { model.openAgent(id, in: project, beside: true) }
+            .disabled(shown)
+            .help(shown ? "It is in one of the hub's panes already." : "Show this conversation in a new pane of the hub, beside the focused one (⌥-click)")
+        Divider()
     }
 }
 
@@ -366,7 +387,7 @@ private struct RunRow: View {
         }
         .buttonStyle(.plain)
         // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
-        .help("Open this agent’s conversation in place of the board")
+        .help("Open this agent’s conversation in the hub’s focused pane; with ⌥, in a new pane beside it")
     }
 }
 
@@ -438,8 +459,9 @@ private struct OtherConversations: View {
                     .buttonStyle(.plain)
                     .padding(.leading, 28)
                     .tag(Selection.projectAgent(project: project.id, conversation: conversation.id))
-                    .help("Open its conversation in place of the board")
+                    .help("Open its conversation in the hub’s focused pane; with ⌥, in a new pane beside it")
                     .contextMenu(previewAs: conversation.title.isEmpty ? "New conversation" : conversation.title, String(conversation.id)) {
+                        OpenInNewPane(model: model, id: conversation.id, project: project.id)
                         ConversationActions(model: model, id: conversation.id)
                     }
                     .draggable(ConversationDrag(id: conversation.id)) {

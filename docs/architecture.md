@@ -37,7 +37,7 @@ app/      SwiftUI app: the window, menu bar, Quick Ask, settings
           Sources/BrowserKit    pi²'s own browser: loading web pages, reading them and acting in them
           Sources/pi2-probe     a command-line way to try ComputerKit while developing; not part of the app
           Sources/pi2-browser-probe   checks BrowserKit against pages it serves itself; not part of the app
-          Sources/PaneKit       the tree of panes the conversation area is divided into, and the ready-made layouts
+          Sources/PaneKit       the tree of panes the conversation area and a project hub's board side are divided into, and the ready-made layouts
           Sources/pi2-layout-check    checks PaneKit, built with optimisation; not part of the app
           Sources/ComposeKit    what Return does in a field that sends a message: send, start a new line, or leave it to an input method
           Sources/pi2-compose-check   checks ComposeKit, with a real text field in a window of its own; not part of the app
