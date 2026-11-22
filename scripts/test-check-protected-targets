@@ -14,10 +14,12 @@ command -v jq >/dev/null || { echo "test-check-protected-targets: needs jq" >&2;
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
-# A package description as `swift package dump-package` writes app/Package.swift's: the three protected targets as they
+# A package description as `swift package dump-package` writes app/Package.swift's: the six protected targets as they
 # are, and two others with what only other targets may have (a setting, unsafe flags, a product).
 jq -n '{
 	name: "pi2",
+	toolsVersion: {_version: "6.0.0"},
+	swiftLanguageModes: null,
 	dependencies: [{sourceControl: [{identity: "sparkle", location: {remote: [{urlString: "https://github.com/sparkle-project/Sparkle"}]},
 		productFilter: null, requirement: {exact: ["2.10.1"]}, traits: [{name: "default"}]}]}],
 	targets: [
@@ -29,7 +31,13 @@ jq -n '{
 		{name: "pi2-remote-check", path: "Sources/pi2-remote-check", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
 			exclude: ["vectors"], resources: [], settings: [], packageAccess: true},
 		{name: "pi2-remote-fuzz", path: "Sources/pi2-remote-fuzz", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
-			exclude: [], resources: [], settings: [], packageAccess: true}
+			exclude: [], resources: [], settings: [], packageAccess: true},
+		{name: "pi2-remote", path: "Sources/pi2-remote", type: "regular", dependencies: [{byName: ["RemoteKit", null]}], exclude: [], resources: [],
+			settings: [{condition: {config: "debug", platformNames: []}, kind: {define: {_0: "PI2_DEVELOPMENT"}}, tool: "swift"}], packageAccess: true},
+		{name: "pi2-remote-helper", path: "Sources/pi2-remote-helper", type: "executable", dependencies: [{byName: ["pi2-remote", null]}],
+			exclude: [], resources: [], settings: [], packageAccess: true},
+		{name: "pi2-remote-helper-check", path: "Sources/pi2-remote-helper-check", type: "executable",
+			dependencies: [{byName: ["pi2-remote", null]}, {byName: ["RemoteKit", null]}], exclude: [], resources: [], settings: [], packageAccess: true}
 	],
 	products: [
 		{name: "PiModels", settings: [], targets: ["PiModels"], type: {library: ["automatic"]}},
@@ -37,11 +45,13 @@ jq -n '{
 		{name: "TranscriptKit", settings: [], targets: ["TranscriptKit"], type: {library: ["automatic"]}}
 	]}' >"$T/good.json"
 
-mkdir -p "$T/tree/app/Sources/RemoteKit" "$T/tree/app/Sources/pi2-remote-check" "$T/tree/app/Sources/pi2-remote-fuzz" "$T/tree/app/Sources/pi2"
+mkdir -p "$T/tree/app/Sources/RemoteKit" "$T/tree/app/Sources/pi2-remote-check" "$T/tree/app/Sources/pi2-remote-fuzz" "$T/tree/app/Sources/pi2" \
+	"$T/tree/app/Sources/pi2-remote-helper-check"
 printf '@_spi(Vectors)\npublic init() {}\n' >"$T/tree/app/Sources/RemoteKit/Noise.swift"
 printf '@_spi(Vectors) import RemoteKit\n' >"$T/tree/app/Sources/pi2-remote-check/Vectors.swift"
 printf '@_spi(Vectors) import RemoteKit\n' >"$T/tree/app/Sources/pi2-remote-fuzz/Targets.swift"
 printf 'import RemoteKit\n' >"$T/tree/app/Sources/pi2/Remote.swift"
+printf 'import pi2_remote\nimport RemoteKit\n// @testable import RemoteKit is named in a comment here, which is no import.\n' >"$T/tree/app/Sources/pi2-remote-helper-check/main.swift"
 
 passed=0
 failed=0
@@ -82,8 +92,8 @@ expect_refused "the check excluding more" "it excludes other files than [\"vecto
 expect_refused "the check excluding nothing, so the vectors go unread as source" "it excludes other files than [\"vectors\"]" "$(target pi2-remote-check).exclude = []"
 expect_refused "RemoteKit listing its sources" "it lists its sources" "$(target RemoteKit).sources = [\"Bytes.swift\"]"
 expect_refused "the fuzzer with resources" "it has resources" "$(target pi2-remote-fuzz).resources = [{rule: {process: {}}, path: \"seeds\"}]"
-expect_refused "RemoteKit with unsafe flags" "it has build settings" "$(target RemoteKit).settings = [{kind: {unsafeFlags: {_0: [\"-Xfrontend\", \"-disable-availability-checking\"]}}, tool: \"swift\"}]"
-expect_refused "RemoteKit with a define" "it has build settings" "$(target RemoteKit).settings = [{kind: {define: {_0: \"SKIP_CHECKS\"}}, tool: \"swift\"}]"
+expect_refused "RemoteKit with unsafe flags" "it has other build settings than []" "$(target RemoteKit).settings = [{kind: {unsafeFlags: {_0: [\"-Xfrontend\", \"-disable-availability-checking\"]}}, tool: \"swift\"}]"
+expect_refused "RemoteKit with a define" "it has other build settings than []" "$(target RemoteKit).settings = [{kind: {define: {_0: \"SKIP_CHECKS\"}}, tool: \"swift\"}]"
 expect_refused "RemoteKit with a plugin" "it uses a plugin" "$(target RemoteKit).pluginUsages = [{plugin: [\"Rewrite\", null]}]"
 expect_refused "RemoteKit depending on a target" "it depends on other than []" "$(target RemoteKit).dependencies = [{byName: [\"PiModels\", null]}]"
 expect_refused "RemoteKit depending on a product" "it depends on other than []" "$(target RemoteKit).dependencies = [{product: [\"Sparkle\", \"Sparkle\", null, null]}]"
@@ -102,6 +112,25 @@ expect_refused "a library product with RemoteKit and the fuzzer" "the product Re
 expect_refused "an executable product for the fuzzer" "the product fuzz names one of RemoteKit's checks" ".products += [{name: \"fuzz\", settings: [], targets: [\"pi2-remote-fuzz\"], type: {executable: null}}]"
 expect_refused "a package that is not allowed" "a package dependency that is not allowed: https://example.com/evil" ".dependencies += [{sourceControl: [{identity: \"evil\", location: {remote: [{urlString: \"https://example.com/evil\"}]}, requirement: {exact: [\"1.0.0\"]}}]}]"
 expect_refused "Sparkle from another address" "not allowed: https://github.com/someone/Sparkle" ".dependencies[0].sourceControl[0].location.remote[0].urlString = \"https://github.com/someone/Sparkle\""
+# pi² Remote (#675).
+expect_refused "pi² Remote without PI2_DEVELOPMENT in debug, so its development paths are never compiled" "pi2-remote: it has other build settings than" "$(target pi2-remote).settings = []"
+expect_refused "pi² Remote with PI2_DEVELOPMENT in every build, so a release build has its development paths" "pi2-remote: it has other build settings than" "$(target pi2-remote).settings[0].condition = null"
+expect_refused "pi² Remote with another define besides" "pi2-remote: it has other build settings than" "$(target pi2-remote).settings += [{kind: {define: {_0: \"SKIP_PARENT_CHECK\"}}, tool: \"swift\"}]"
+expect_refused "pi² Remote's program with a define" "pi2-remote-helper: it has other build settings than []" "$(target pi2-remote-helper).settings = [{kind: {define: {_0: \"PI2_DEVELOPMENT\"}}, tool: \"swift\"}]"
+expect_refused "pi² Remote depending on more" "pi2-remote: it depends on other than" "$(target pi2-remote).dependencies += [{byName: [\"PiModels\", null]}]"
+expect_refused "pi² Remote's program built from another target" "pi2-remote-helper: it depends on other than" "$(target pi2-remote-helper).dependencies = [{byName: [\"PiModels\", null]}]"
+expect_refused "pi² Remote's check gone" "pi2-remote-helper-check: there are 0 targets of that name" "del(.targets[] | select(.name == \"pi2-remote-helper-check\"))"
+expect_refused "another target depending on pi² Remote's code" "pi2: it depends on pi2-remote, which only pi2-remote-helper and its check may" "$(target pi2).dependencies += [{byName: [\"pi2-remote\", null]}]"
+expect_refused "another target depending on pi² Remote's code as a target" "Other: it depends on pi2-remote" ".targets += [{name: \"Other\", path: \"Sources/Other\", type: \"executable\", dependencies: [{target: [\"pi2-remote\", null]}], exclude: [], resources: [], settings: []}]"
+expect_refused "a target built from inside pi² Remote's folder" "which is pi2-remote's" ".targets += [{name: \"Relay\", path: \"Sources/pi2-remote/Relay\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: []}]"
+expect_refused "a product for pi² Remote's code" "the product Remote names one of RemoteKit's checks or pi² Remote" ".products += [{name: \"Remote\", settings: [], targets: [\"pi2-remote\"], type: {library: [\"automatic\"]}}]"
+expect_refused "a product for pi² Remote's program" "the product helper names one of RemoteKit's checks or pi² Remote" ".products += [{name: \"helper\", settings: [], targets: [\"pi2-remote-helper\"], type: {executable: null}}]"
+# The package as a whole.
+expect_refused "another Swift tools version" "the Swift tools version is 5.10.0, not 6.0.0" ".toolsVersion._version = \"5.10.0\""
+expect_refused "no tools version" "the Swift tools version is unknown, not 6.0.0" "del(.toolsVersion)"
+expect_refused "the package in Swift 5 mode" "the package sets its Swift language modes" ".swiftLanguageModes = [\"5\"]"
+expect_refused "the package in Swift 5 mode, the older field" "the package sets its Swift language modes" ".swiftLanguageVersions = [\"5\"]"
+
 expect_refused "a package from a folder on disk" "a package dependency that is not allowed: fileSystem" ".dependencies += [{fileSystem: [{identity: \"local\", path: \"/tmp/local\"}]}]"
 
 # @_spi(Vectors) outside RemoteKit and its checks.
@@ -117,6 +146,22 @@ printf '@_spi( Vectors )\nimport RemoteKit\n' >"$T/spi/iphone/Sources/Connection
 if run "$T/good.json" "$T/spi"; then
 	failed=$((failed + 1)); echo "FAIL @_spi( Vectors ) in the iPhone app, spaced and on its own line: was taken"
 else passed=$((passed + 1)); fi
+
+# @testable import of RemoteKit or pi² Remote.
+for case in "pi2/Remote.swift|@testable import RemoteKit" "pi2-remote-helper-check/main.swift|@testable import pi2_remote" \
+	"pi2/Other.swift|@testable  @preconcurrency import RemoteKit" "pi2/Third.swift|  @testable import RemoteKit.Noise" \
+	"pi2/Fourth.swift|@testable\nimport RemoteKit"; do
+	IFS='|' read -r file line <<<"$case"
+	rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
+	printf "$line\n" >"$T/testable/app/Sources/$file"
+	if run "$T/good.json" "$T/testable"; then
+		failed=$((failed + 1)); echo "FAIL \"$line\" in $file: was taken"
+	elif grep -qF "app/Sources/$file names @testable import" "$T/out"; then passed=$((passed + 1))
+	else failed=$((failed + 1)); echo "FAIL \"$line\" in $file: refused, but not by name"; cat "$T/out"; fi
+done
+rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
+printf '@testable import RemoteKitten\nimport RemoteKit\n' >"$T/testable/app/Sources/pi2/Remote.swift"
+if run "$T/good.json" "$T/testable"; then passed=$((passed + 1)); else failed=$((failed + 1)); echo "FAIL @testable import of another module was refused"; cat "$T/out"; fi
 
 # Arguments.
 "$check" --nonsense >/dev/null 2>&1

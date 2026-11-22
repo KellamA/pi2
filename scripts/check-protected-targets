@@ -9,7 +9,11 @@
 # the issue that adds a protected target adds its line to TARGETS below.
 #
 # It also fails if any Swift file outside RemoteKit and its two checks names @_spi(Vectors), the entry points that
-# take a fixed ephemeral key and the unverified steps of opening an item, which only the checks may use.
+# take a fixed ephemeral key and the unverified steps of opening an item, which only the checks may use; if any Swift
+# file names `@testable import` of RemoteKit or pi² Remote, which would reach what they keep internal; if the package's
+# Swift tools version is not the one the owner reviewed; and if the package sets a language mode of its own, which could
+# put the protected targets in Swift 5 mode and turn off its data-race checks (a target's own mode is a setting, which
+# the list below already refuses).
 #
 #   scripts/check-protected-targets                  reads `swift package dump-package` of app/
 #   scripts/check-protected-targets --dump FILE      reads FILE instead (scripts/test-check-protected-targets)
@@ -30,17 +34,31 @@ while [[ $# -gt 0 ]]; do
 done
 command -v jq >/dev/null || { echo "check-protected-targets: needs jq" >&2; exit 2; }
 
-# Each protected target: its name, its type, what it may exclude (a JSON list) and the targets it may depend on (a JSON
-# list of names, in order). Its path must be Sources/<name>, with nothing else in its description: no sources list, no
-# resources, no settings (unsafe flags among them), no plugins, no dependency on a product.
+# Each protected target: its name, its type, what it may exclude (a JSON list), the targets it may depend on (a JSON
+# list of names, in order) and the build settings it has (a JSON list, as dump-package writes them; none for most).
+# Its path must be Sources/<name>, with nothing else in its description: no sources list, no resources, no other
+# settings (unsafe flags among them), no plugins, no dependency on a product.
+#
+# pi² Remote (#675) is three: pi2-remote, the helper's code, whose one setting is PI2_DEVELOPMENT in a debug build (the
+# development paths are compiled only under it, and the Keychain, Secure Enclave and Bonjour calls only without it);
+# pi2-remote-helper, its program; and pi2-remote-helper-check.
+PI2_DEVELOPMENT_IN_DEBUG='[{"condition":{"config":"debug","platformNames":[]},"kind":{"define":{"_0":"PI2_DEVELOPMENT"}},"tool":"swift"}]'
 TARGETS=(
-	'RemoteKit|regular|[]|[]'
-	'pi2-remote-check|executable|["vectors"]|["RemoteKit"]'
-	'pi2-remote-fuzz|executable|[]|["RemoteKit"]'
+	'RemoteKit|regular|[]|[]|[]'
+	'pi2-remote-check|executable|["vectors"]|["RemoteKit"]|[]'
+	'pi2-remote-fuzz|executable|[]|["RemoteKit"]|[]'
+	"pi2-remote|regular|[]|[\"RemoteKit\"]|$PI2_DEVELOPMENT_IN_DEBUG"
+	'pi2-remote-helper|executable|[]|["pi2-remote"]|[]'
+	'pi2-remote-helper-check|executable|[]|["pi2-remote","RemoteKit"]|[]'
 )
-# The protected targets that are checks, not code: no product of the package may name them (a library or executable
-# product would hand the test-only entry points, or a stand-in for the checks, to whatever builds on the package).
-CHECKS_ONLY='["pi2-remote-check","pi2-remote-fuzz"]'
+# The protected targets no product of the package may name: the checks (a library or executable product would hand the
+# test-only entry points, or a stand-in for the checks, to whatever builds on the package) and pi² Remote, which runs
+# only as the engine's own child inside the app's bundle (a product would hand it to the iPhone app's project).
+NO_PRODUCT='["pi2-remote-check","pi2-remote-fuzz","pi2-remote","pi2-remote-helper","pi2-remote-helper-check"]'
+# The targets that may depend on pi² Remote's code: its program and its check, and nothing else.
+REMOTE_USERS='["pi2-remote-helper","pi2-remote-helper-check"]'
+# The Swift tools version the owner reviewed: a new one can change what a description means, and is the owner's.
+TOOLS_VERSION='6.0.0'
 # The packages app/Package.swift may depend on, by address. A new one is the owner's to allow.
 PACKAGES='["https://github.com/sparkle-project/Sparkle"]'
 # The fields a target's description may have, as `swift package dump-package` writes them. A field this list does not
@@ -68,7 +86,7 @@ fail() {
 
 protected_paths=()
 for entry in "${TARGETS[@]}"; do
-	IFS='|' read -r name type exclude dependencies <<<"$entry"
+	IFS='|' read -r name type exclude dependencies settings <<<"$entry"
 	protected_paths+=("Sources/$name")
 	count=$(jq --arg name "$name" '[.targets[] | select(.name == $name)] | length' "$dump")
 	if [[ $count != 1 ]]; then
@@ -83,7 +101,8 @@ for entry in "${TARGETS[@]}"; do
 	jq -e --argjson want "$exclude" '(.exclude // []) == $want' <<<"$target" >/dev/null || fail "$name: it excludes other files than $exclude"
 	jq -e '.sources == null' <<<"$target" >/dev/null || fail "$name: it lists its sources, which can leave files out"
 	jq -e '(.resources // []) == []' <<<"$target" >/dev/null || fail "$name: it has resources"
-	jq -e '(.settings // []) == []' <<<"$target" >/dev/null || fail "$name: it has build settings (unsafe flags among them, or defines)"
+	jq -e --argjson want "$settings" '(.settings // []) == $want' <<<"$target" >/dev/null ||
+		fail "$name: it has other build settings than $settings (unsafe flags among them, or defines)"
 	jq -e '(.pluginUsages // []) == []' <<<"$target" >/dev/null || fail "$name: it uses a plugin"
 	jq -e --argjson want "$dependencies" '
 		(.dependencies // []) | length == ($want | length)
@@ -102,12 +121,25 @@ while IFS=$'\t' read -r name path; do
 done < <(jq -r --argjson names "$(printf '%s\n' "${TARGETS[@]}" | cut -d'|' -f1 | jq -R . | jq -s .)" '
 	.targets[] | select(.name as $n | $names | index($n) | not) | [.name, (.path // ("Sources/" + .name))] | @tsv' "$dump")
 
-# Products: none may name a check. Products for other targets (PiModels, EngineKit, TranscriptKit for the iPhone app)
-# are not this script's to judge.
+# Products: none may name a check or pi² Remote. Products for other targets (PiModels, EngineKit, TranscriptKit for the
+# iPhone app) are not this script's to judge.
 while IFS= read -r product; do
-	fail "the product $product names one of RemoteKit's checks, which no product may"
-done < <(jq -r --argjson checks "$CHECKS_ONLY" '
+	fail "the product $product names one of RemoteKit's checks or pi² Remote, which no product may"
+done < <(jq -r --argjson checks "$NO_PRODUCT" '
 	(.products // [])[] | select([.targets[]?] | any(. as $t | $checks | index($t))) | .name' "$dump")
+
+# pi² Remote's code: only its program and its check depend on it, in any way.
+while IFS= read -r name; do
+	fail "$name: it depends on pi2-remote, which only pi2-remote-helper and its check may"
+done < <(jq -r --argjson users "$REMOTE_USERS" '
+	.targets[] | select(.name as $n | $users | index($n) | not)
+	| select([(.dependencies // [])[] | (.byName // .target // .product // [])[0]] | index("pi2-remote")) | .name' "$dump")
+
+# The tools version, and no language mode for the whole package.
+[[ $(jq -r '.toolsVersion._version // ""' "$dump") == "$TOOLS_VERSION" ]] ||
+	fail "the Swift tools version is $(jq -r '.toolsVersion._version // "unknown"' "$dump"), not $TOOLS_VERSION: a new one is the owner's to review"
+jq -e '(.swiftLanguageModes // null) == null and (.swiftLanguageVersions // null) == null' "$dump" >/dev/null ||
+	fail "the package sets its Swift language modes, which could put the protected targets in Swift 5 mode and turn off their data-race checks"
 
 # Packages: only those allowed, by address; none from a folder on disk.
 while IFS= read -r package; do
@@ -128,8 +160,17 @@ while IFS= read -r file; do
 	esac
 done < <(grep -rlE --include='*.swift' --exclude-dir=.build --exclude-dir=.git '_spi[[:space:]]*\([[:space:]]*Vectors' "$root" 2>/dev/null)
 
+# @testable import of RemoteKit or pi² Remote: nowhere. Their checks use what is public, or package-wide (`package`).
+# Read with line comments taken out and lines joined, so that an attribute on a line of its own counts.
+while IFS= read -r file; do
+	if sed -E 's#//.*$##' "$file" | tr '\n' ' ' |
+		grep -qE '@testable([[:space:]]+@[A-Za-z_]+(\([^)]*\))?)*[[:space:]]+import[[:space:]]+(RemoteKit|pi2_remote)([^A-Za-z0-9_]|$)'; then
+		fail "${file#"$root"/} names @testable import of RemoteKit or pi² Remote, which nothing may"
+	fi
+done < <(grep -rlF --include='*.swift' --exclude-dir=.build --exclude-dir=.git '@testable' "$root" 2>/dev/null)
+
 if [[ $failures -gt 0 ]]; then
 	echo "check-protected-targets: $failures thing(s) wrong. The owner's targets must be built from the owner's folders as they are (.github/CODEOWNERS)." >&2
 	exit 1
 fi
-echo "check-protected-targets: ${#TARGETS[@]} protected targets as they should be, no product naming a check, no other package, and @_spi(Vectors) only in RemoteKit's checks."
+echo "check-protected-targets: ${#TARGETS[@]} protected targets as they should be, Swift tools $TOOLS_VERSION with no package language mode, no product naming a check or pi² Remote, nothing else using pi² Remote's code, no other package, @_spi(Vectors) only in RemoteKit's checks, and no @testable import of either."

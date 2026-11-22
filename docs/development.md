@@ -11,7 +11,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Allowed commands | [Allowed commands](allowed-commands.md), [Choosing what a copy shows](#choosing-what-a-copy-shows) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [The remote channel](#remote-channel-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [The remote channel](#remote-channel-checks), [pi² Remote](#pi-remote-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Retaking the README's pictures | [Retaking the README's pictures](#retaking-the-readmes-pictures) |
@@ -280,11 +280,31 @@ cd app && swift build --product pi2-remote-fuzz && .build/debug/pi2-remote-fuzz 
 scripts/check-protected-targets && scripts/test-check-protected-targets
 ```
 
+The same script holds pi² Remote's three targets to their folders (#675), fails if anything but pi² Remote's program and check depends on its code, if a product names it, if the package's Swift tools version is not 6.0.0, if the package sets a language mode of its own (which could turn off the protected targets' data-race checks), or if any Swift file names `@testable import` of RemoteKit or pi² Remote.
+
 RemoteKit builds for iOS as well as macOS, and CI builds it for iOS too:
 
 ```bash
 cd app && swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
 ```
+
+### pi² Remote checks
+
+pi² Remote, the helper the engine starts for a paired phone (`app/Sources/pi2-remote`, #675), is checked by a program of its own; [pi2-remote.md](pi2-remote.md#how-it-is-checked) says what it checks. In its own process it checks the pieces the helper's decisions rest on, a release build's Keychain and Secure Enclave logic with stand-ins for both, and that the development helper's executable names no Keychain, Secure Enclave or Bonjour call (`nm`). It then starts the helper it was built with, inside a stand-in app bundle in a temporary folder: started wrongly, it must exit before it reads any key; started as the engine starts it, with the check as its engine and a phone made with RemoteKit, it must pair, attach, resume and revoke over 127.0.0.1. With `--engine`, the check also runs a real development engine on a temporary data folder of its own (App Attest's stand-in, a Keychain service of its own, a stand-in `pi2-peer` that takes the check for the app), which starts the helper from that bundle, and pairs and attaches a phone over loopback through it. It needs the engine's packages (`npm --prefix engine ci`) and a `node` on the PATH; it advertises nothing, listens on and connects to 127.0.0.1 alone, and removes its folder. It takes about two minutes, one of them a session's resume window. `--verbose` prints every check. CI runs it after building the app:
+
+```bash
+cd app && swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check
+cd app && .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
+```
+
+`app/build.sh` puts the helper in the app as `Contents/Helpers/pi² Remote.app`, where the engine starts it from. A throwaway copy's helper runs in loopback mode: to see it, turn remote access on through the copy's engine and open a pairing, then read `remote.log` in the copy's data folder:
+
+```bash
+scripts/test-copy call test-7 devices.set '{"on":true,"preview":true,"relayAddress":"ws://127.0.0.1:9/v1"}'
+scripts/test-copy call test-7 devices.pairStart
+```
+
+Until P13 (#681) a copy's engine takes no pairing claim (it has no App Attest stand-in), so a phone pairs and attaches only in the check's own engine.
 
 ### Login item checks
 

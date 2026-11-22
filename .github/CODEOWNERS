@@ -37,6 +37,10 @@
 /scripts/check-protected-targets @KellamA
 /scripts/test-check-protected-targets @KellamA
 /app/Sources/pi2-remote/ @KellamA
+# pi² Remote's program and its check (#675): the program is a line that starts the helper, and the check holds it to
+# its start-up checks and its loopback mode (a weakened check would let a weakened helper through).
+/app/Sources/pi2-remote-helper/ @KellamA
+/app/Sources/pi2-remote-helper-check/ @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
 /engine/test/devices.ts @KellamA
