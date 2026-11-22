@@ -159,6 +159,34 @@ export async function leaveOut(client: EngineClient): Promise<string[]> {
 }
 
 /**
+ * A project for a test about something other than projects, with a copy of each of `templates` in it (#718): since
+ * carrying over runs as conversations are made (docs/projects.md, 9.9), a conversation made with a template runs as
+ * its project's copy, so a test that changes its agent's settings and expects the conversation to follow makes it
+ * with the copy, and changes the copy. Made on `folder` (null: none), the folder its agents work in. They are copied
+ * in the order given, and a copy's `delegates` name only the copies made before it, so give an agent after those it
+ * hands work to (Scout and Forge before Atlas). Answers the project's id and the copies' ids, by their templates' ids.
+ *
+ * The project is left with no conversation with its orchestrator, as one carrying over made for a folder is until the
+ * person opens it (docs/projects.md, 9.6): the person's messages to its agents then tell no orchestrator, and their
+ * transcripts have no line saying so (6.4), as a conversation's had before projects.
+ */
+export async function aProject<T extends string>(client: EngineClient, folder: string | null, templates: T[]): Promise<{ id: string; agents: Record<T, string> }> {
+	const { id, conversation } = await client.call("projects.create", { folder });
+	await client.call("conversation.delete", { id: conversation });
+	// The project lets it go in a commit of its own, after the deletion's (`putAwayChanged`). Asked, since a test's
+	// client may keep no `projects` event.
+	for (const deadline = Date.now() + PATIENT_MS; ; ) {
+		const { projects } = await client.call("projects.list");
+		if ((projects as any[]).some((project) => project.id === id && project.conversation === null)) break;
+		if (Date.now() > deadline) throw new Error("Timed out waiting for: the project with no conversation with its orchestrator");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	const agents = {} as Record<T, string>;
+	for (const template of templates) agents[template] = (await client.call("projects.addAgent", { projectId: id, template })).id;
+	return { id, agents };
+}
+
+/**
  * One connection to an engine, as the app has: requests with their answers, and the events it sends, which a test's own
  * client keeps by overriding `receive`. By default each kind of event is kept by name in `events`, and a conversation's
  * items and state in `conversations`.

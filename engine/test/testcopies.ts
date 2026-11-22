@@ -10,11 +10,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, standInApp, stop } from "./patience.ts";
-
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
+import { aProject, EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-copies-"));
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi2-copies-work-")));
@@ -112,8 +108,10 @@ const client = await Client.connect(engine, home);
 try {
 	await client.until("providers", () => client.events.providers);
 	const saved = (id: string) => client.events.agents?.agents?.find((x: any) => x.id === id);
+	// The agents are a project's, in the folder they work in, as every agent's conversation is a project's (#718).
+	const { id: projectId } = await aProject(client, scratch, []);
 	const agentOf = async (agent: Record<string, unknown>): Promise<string> => {
-		const { id } = await client.call("agents.save", { agent });
+		const { id } = agent.id === undefined ? await client.call("projects.addAgent", { projectId, agent }) : await client.call("agents.save", { agent });
 		const computer = JSON.stringify(agent.computer ?? null);
 		await client.until(`agent ${agent.name}`, () => {
 			const got = saved(id)?.computer;

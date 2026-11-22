@@ -86,7 +86,9 @@ async function gate(name: "PI2_CARRY_SECRETS_GATE" | "PI2_CARRY_COMMIT_GATE" | "
 
 /**
  * Tests make a data folder as the last version with the switch left it, the switch never turned on, with this engine:
- * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing.
+ * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing
+ * (test/carryover.ts, test/projectschedules.ts). Two tests that follow the agents of no project themselves run with it
+ * too, test/engine.ts and test/worktrees.ts (#718); the others make their conversations with a project's agents.
  * Only in a development engine (testswitches.ts): a release engine ignores it, and says so at start.
  */
 const carriesNothing = () => testSwitch("PI2_CARRY_NEVER") === "1";

@@ -14,11 +14,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
+// The agents' notes chat mode reads are the templates' own (docs/projects.md, 9.7), which a conversation writes and is
+// given only in no project: the agent's conversations here are such ones, their carried project deleted (`leaveOut`), as
+// a person still has them (#718).
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -112,6 +112,7 @@ try {
 	await client.call("chat.set", { instructions: "Call me Captain. Answer in British English." });
 	assert.match(await client.section(chat, "chat_instructions"), /Settings, for every chat[\s\S]*\n\nCall me Captain\. Answer in British English\.$/);
 	const agentChat = await client.open({ agentId: "forge" });
+	await leaveOut(client);
 	assert.equal(await client.section(agentChat, "chat_instructions"), "(none)", "an agent is not given the chat instructions");
 	await client.call("chat.set", { instructions: "" });
 	assert.equal(await client.section(chat, "chat_instructions"), "(none)", "cleared, they are gone from the next message");
@@ -129,7 +130,7 @@ try {
 	assert.match(result.text, /Noted \(c1\)/);
 	await client.until("the chat's note", () => client.chatNotes().length === 1);
 	assert.deepEqual([client.chatNotes()[0]!.text, client.chatNotes()[0]!.conversation], ["The person sails a boat called Petrel.", chat]);
-	assert.deepEqual(client.events.memory.agents, {}, "no agent's notes changed");
+	assert.ok(Object.values(client.events.memory.agents).every((agent: any) => agent.notes.length === 0), `no agent's notes changed: ${JSON.stringify(client.events.memory.agents)}`);
 	const nextChat = await client.open({ chat: true });
 	assert.match(await client.section(nextChat, "memory"), /- c1: The person sails a boat called Petrel\./, "the next chat has the note");
 	step("a chat remembers in chat mode's own notes, and the next chat is given them");
@@ -247,6 +248,7 @@ try {
 	const later = await client.open({ chat: true });
 	assert.match(await client.section(later, "memory"), /- c1: The person sails a boat called Petrel\.\n- c3: Lives by the sea/);
 	const laterAgent = await client.open({ agentId: "forge" });
+	await leaveOut(client);
 	assert.ok(!/Petrel|by the sea/.test(await client.section(laterAgent, "memory")));
 	step("after a restart, chat mode's notes are still its own");
 

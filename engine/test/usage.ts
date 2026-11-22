@@ -8,11 +8,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness, UsageDoc, type ConversationId, type UsageState } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { EngineClient, standInApp, stop } from "./patience.ts";
-
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
+import { aProject, EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-usage-"));
 const price = 5;
@@ -46,9 +42,11 @@ try {
 		await socket.call("submit", { id, text });
 		return finished(id, before);
 	};
-	const parent = await create({ agentId: "atlas" });
-	const archived = await create({ agentId: "forge" });
-	const deleted = await create({ agentId: "forge" });
+	// The agents' conversations are a project's, with its copies of the agents, as every agent's conversation is (#718).
+	const { agents: { atlas, forge, scout } } = await aProject(socket, null, ["scout", "forge", "atlas"]);
+	const parent = await create({ agentId: atlas });
+	const archived = await create({ agentId: forge });
+	const deleted = await create({ agentId: forge });
 	const chat = await create({ chat: true });
 
 	// Count a model request that called a tool without waiting for that tool, or the run, to finish.
@@ -104,7 +102,7 @@ try {
 		assert.deepEqual(live.total, total);
 		const demo = all.models[key]!;
 		assert.deepEqual(live.models, [{ key, input: demo.input, output: demo.output, ...total, subscription: false, unpriced: false }]);
-		assert.deepEqual(live.agents, [{ agentId: "atlas", ...p }, { agentId: "forge", ...add(a, d) }, { agentId: "scout", ...s }].sort((x, y) => y.tokens - x.tokens));
+		assert.deepEqual(live.agents, [{ agentId: atlas, ...p }, { agentId: forge, ...add(a, d) }, { agentId: scout, ...s }].sort((x, y) => y.tokens - x.tokens));
 		assert.deepEqual(live.chats, c);
 		assert.deepEqual(live.conversations, [
 			{ id: parent, title, chat: false, ...add(p, s) },

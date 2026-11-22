@@ -20,11 +20,8 @@ import { DEFAULTS, duration, type EpisodeChange, limitOf, namedTime, noticingRef
 import { usedUpUntil } from "../src/limits.ts";
 import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
-import { EngineClient, standInApp, stop, until } from "./patience.ts";
+import { aProject, EngineClient, standInApp, stop, until } from "./patience.ts";
 
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -638,9 +635,9 @@ class Client extends EngineClient {
 		else if (message.event === "providers") this.models = message.models;
 		else super.receive(message);
 	}
-	/** A new conversation on the stand-in, sent `prompt`. */
+	/** A new conversation on the stand-in, sent `prompt`: a chat, or one of the project's agent on the stand-in. */
 	async ask(provider: string, prompt: string, chat = false): Promise<number> {
-		const { id } = await this.call("conversation.create", { ...(chat ? { chat } : {}), model: { provider, modelId: "stand-in" } });
+		const { id } = await this.call("conversation.create", chat ? { chat, model: { provider, modelId: "stand-in" } } : { agentId: agents.asker });
 		await this.call("conversation.open", { id });
 		await this.call("submit", { id, text: prompt });
 		return id;
@@ -656,11 +653,20 @@ class Client extends EngineClient {
 
 const answer = (conv: { items: Item[] }) => conv.items.filter((i) => i.kind === "assistant" && i.stop === "stop").at(-1)?.text;
 
+/** The project's agents the conversations here are made with, once it is made. */
+let agents: Record<"atlas" | "scout" | "asker", string> = { atlas: "", scout: "", asker: "" };
 let engine = startEngine();
 try {
 	let client = await Client.connect(engine, home);
 	const { id: provider } = await client.call("endpoints.save", { name: "Stand-in", baseUrl: standInUrl, api: "openai-completions", models: [{ id: "stand-in" }] });
 	await client.until("stand-in offered", () => client.models.some((m) => m.provider === provider));
+	// The agents' conversations are a project's, as every agent's conversation is (#718), and so each runs on its agent's
+	// model (#726): Atlas on the demo model, and an agent of the project's own on the stand-in, each handing work to Scout.
+	const made = await aProject(client, null, ["scout", "atlas"]);
+	const { atlas, scout } = made.agents;
+	await client.call("agents.save", { agent: { id: atlas, name: "Atlas", model: { provider: "demo", modelId: "demo-1" } } });
+	const { id: asker } = await client.call("projects.addAgent", { projectId: made.id, agent: { name: "Asker", model: { provider, modelId: "stand-in" }, delegates: [scout] } });
+	agents = { atlas, scout, asker };
 
 	// Six refusals with no time named: more than pi-durable's three retries, and the run still answers.
 	const six = await client.ask(provider, "six refusals");
@@ -713,8 +719,8 @@ try {
 	step("an error that is not a limit (a bad key) still ends the run at once, and engine.log says so");
 
 	// A sub-chat whose run ends on the provider's error: delegate's result says why, and how to carry on.
-	await client.call("agents.save", { agent: { id: "scout", name: "Scout", model: { provider, modelId: "stand-in" } } });
-	const { id: lead } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-1" } });
+	await client.call("agents.save", { agent: { id: scout, name: "Scout", model: { provider, modelId: "stand-in" } } });
+	const { id: lead } = await client.call("conversation.create", { agentId: atlas, model: { provider: "demo", modelId: "demo-1" } });
 	await client.call("conversation.open", { id: lead });
 	await client.call("submit", { id: lead, text: "/delegate Scout: bad key" });
 	const handed = await client.until("delegate's result", () => client.conversations.get(lead)?.items.find((i) => i.kind === "tool"));
@@ -785,7 +791,7 @@ try {
 	await client.until("the Inbox's notices as the engine starts", () => client.noticesSent || undefined);
 	assert.equal(client.notices.length, 0, `a notice taken out just before a clean stop stays out after it: ${JSON.stringify(client.notices)}`);
 	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
-	const { id: parent } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-1" } });
+	const { id: parent } = await client.call("conversation.create", { agentId: atlas, model: { provider: "demo", modelId: "demo-1" } });
 	await client.call("conversation.open", { id: parent });
 	await client.call("submit", { id: parent, text: '/tool delegate {"agent":"Scout","task":"held","wait":false}' });
 	const reached = await client.until("the limit reached in the Inbox", () => client.notices.find((notice) => notice.stage === "reached"));
@@ -819,7 +825,7 @@ try {
 	assert.equal((await client.ended(billing)).state.limitWait, null);
 	await assert.rejects(client.call("conversation.carryOn", { id: billing, since: Date.now(), model: demo }), /no run is still waiting/i);
 	assert.equal(requests["billing only"], 1);
-	const { id: single } = await client.call("conversation.create", { model: original });
+	const { id: single } = await client.call("conversation.create", { agentId: asker });
 	await client.call("conversation.open", { id: single });
 	const { submissionId } = await client.call("submit", { id: single, text: "switch this run" });
 	const singleWait = await client.until("the run waiting before choosing", () => client.conversations.get(single)?.state.limitWait ?? undefined);
@@ -835,7 +841,8 @@ try {
 	assert.deepEqual(await select(demo), { switched: [single] });
 	conv = await client.ended(single);
 	assert.equal(conv.state.failure, null);
-	assert.deepEqual(conv.state.agent.model, demo);
+	// The choice held for that run; the next is its agent's again, as a project's conversation's is (#726).
+	await client.until("back on its agent's model", () => JSON.stringify(client.conversations.get(single)?.state.agent.model) === JSON.stringify(original));
 	assert.equal(conv.state.limitWait, null);
 	assert.equal(answer(conv), "CONTEXT\nswitch this run\n/context");
 	assert.equal(requests["switch this run"], 1);
@@ -850,7 +857,7 @@ try {
 	// One choice at the parent changes both live, sleeping sub-chats, without interrupting either blocking delegate.
 	const unrelated = await client.ask(provider, "an hour");
 	await client.until("an unrelated wait", () => client.conversations.get(unrelated)?.state.limitWait ?? undefined);
-	const { id: bulk } = await client.call("conversation.create", { agentId: "atlas", model: demo });
+	const { id: bulk } = await client.call("conversation.create", { agentId: atlas, model: demo });
 	await client.call("conversation.open", { id: bulk });
 	const tools = ["waiting child one", "waiting child two", "non-waiting child"].map((task) => ({ name: "delegate", arguments: { agent: "Scout", task } }));
 	await client.call("submit", { id: bulk, text: `/tools ${JSON.stringify(tools)}` });
@@ -867,7 +874,8 @@ try {
 	for (const id of children) {
 		const child = await client.ended(id);
 		assert.equal(child.state.failure, null);
-		assert.deepEqual(child.state.agent.model, demo);
+		// The choice held for that run; the next is Scout's own model again (#726).
+		await client.until(`sub-chat ${id} back on its agent's model`, () => JSON.stringify(client.conversations.get(id)?.state.agent.model) === JSON.stringify(original));
 		assert.match(answer(child)!, /You said: "waiting child (one|two)"/);
 	}
 	const bulkEnd = await client.ended(bulk);
@@ -962,7 +970,7 @@ try {
 	engine = startEngine({ PI2_NETWORK_WAIT_SCALE: "0.002" });
 	client = await Client.connect(engine, home);
 	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
-	const { id: failedParent } = await client.call("conversation.create", { agentId: "atlas", model: demo });
+	const { id: failedParent } = await client.call("conversation.create", { agentId: atlas, model: demo });
 	await client.call("conversation.open", { id: failedParent });
 	await client.call("submit", { id: failedParent, text: "/delegate Scout: network never" });
 	const failedDelegate = await client.until("delegate reports the original connection failure", () => client.conversations.get(failedParent)?.items.find((i) => i.kind === "tool"));
@@ -1103,7 +1111,7 @@ try {
 	// What an agent that hands out work is told: the window, in the kind of line a subscription gets (#232).
 	const toldWindow = await client.ask(provider, "window told");
 	await client.until("the window remembered again", () => new RegExp(`conversation ${toldWindow} was told Stand-in's limit is used up until`).test(log) || undefined);
-	const { id: toldLead } = await client.call("conversation.create", { agentId: "atlas", model: demo });
+	const { id: toldLead } = await client.call("conversation.create", { agentId: atlas, model: demo });
 	await client.call("conversation.open", { id: toldLead });
 	await client.call("submit", { id: toldLead, text: '/tool sub_chats {"action":"list"}' });
 	const listedAgain = await client.until("sub_chats' list", () => client.conversations.get(toldLead)!.items.find((i) => i.kind === "tool"));
