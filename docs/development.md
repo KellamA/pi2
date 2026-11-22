@@ -197,7 +197,7 @@ No check may depend on how fast the Mac is. With several runs of the suite going
 cd engine && npm run check
 ```
 
-type-checks the engine.
+type-checks the engine. It refuses a local, an import or a parameter that nothing reads (`noUnusedLocals` and `noUnusedParameters` in `engine/tsconfig.json`): remove it. A parameter that must stay unused, because a caller's shape needs it, gets a name beginning with an underscore, and a line above saying why.
 
 ### Browser checks
 

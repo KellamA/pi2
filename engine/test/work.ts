@@ -307,9 +307,9 @@ try {
 	gitIn("commit", "-q", "--allow-empty", "-m", "first");
 	const demo = { provider: "demo", modelId: "demo-1" };
 	const { id: repoProject, conversation: repoParent }: { id: string; conversation: number } = await socket.call("projects.create", { folder: repo, name: "Repository" });
-	const { id: handId } = await socket.call("projects.addAgent", { projectId: repoProject, agent: { name: "Hand", access: "full", model: demo } });
+	await socket.call("projects.addAgent", { projectId: repoProject, agent: { name: "Hand", access: "full", model: demo } });
 	// An agent whose own setting gives every conversation a worktree: it gets its one, never a second.
-	const { id: ownId } = await socket.call("projects.addAgent", { projectId: repoProject, agent: { name: "Own", access: "full", model: demo, worktree: true } });
+	await socket.call("projects.addAgent", { projectId: repoProject, agent: { name: "Own", access: "full", model: demo, worktree: true } });
 	await socket.call("conversation.open", { id: repoParent });
 	await socket.call("conversation.configure", { id: repoParent, access: "full" });
 	const repoCall = (name: string, params: Record<string, unknown> = {}) => socket.call(`work.${name}`, { projectId: repoProject, ...params });

@@ -57,7 +57,7 @@ import { NETWORK_RESUMED_ENTRY, type NetworkWait, retryNetwork, transportFailure
 import { promptCacheLifetimes } from "./cache.ts";
 import { retryThinking, THINKING_RETRY_ENTRY } from "./thinkingretry.ts";
 import { FIRST_BYTES, FIRST_COUNT, ItemJSON, OLDER_BYTES, olderPart, partStart } from "./opening.ts";
-import { lookUsageModel, pictureLook } from "./picturelook.ts";
+import { lookUsageModel } from "./picturelook.ts";
 import { pictureUsageModel } from "./pictures.ts";
 import { preparePlan } from "./plan.ts";
 import { SUBCHATS_ENTRY, subChatsMarker } from "./subchats.ts";

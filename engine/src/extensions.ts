@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import {
 	type AgentChange,
 	AgentDoc,
-	configure,
 	type ConversationId,
 	defineDoc,
 	defineExtension,
@@ -15,9 +14,7 @@ import {
 	hook,
 	type HookApi,
 	section,
-	type ToolExecutionApi,
 	type SettledSubmissionRecord,
-	type SubmissionId,
 	type ToolHookCall,
 	ToolTask,
 	type Tx,
