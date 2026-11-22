@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { forgetRun, type NewRun, newRun, newRunMarker, RUN_VARIABLE, stopLeftOver, sweepRuns, useRunFolder } from "../src/processes.ts";
-import { inspect, linesIn, parseShortstat, parseStatus, statusPaths, suggestBranch, unquotePath } from "../src/worktrees.ts";
+import { type BranchInfo, containedIn, inspect, linesIn, parseShortstat, parseStatus, statusPaths, suggestBranch, unquotePath, whyKeepWorktree } from "../src/worktrees.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 // This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
@@ -56,6 +56,25 @@ assert.equal(parseStatus("# branch.oid (initial)\n# branch.head (detached)").hea
 assert.equal(suggestBranch("Fix the login page!", "x"), "pi2/fix-the-login-page");
 assert.equal(suggestBranch("", "forge-3"), "pi2/forge-3");
 step("git status and branch names are read as expected");
+
+{
+	// Whether removing a worktree loses anything (#778): every commit of HEAD on what it was made from, or on the default
+	// branch as fetched; for a detached HEAD the same test on its commit.
+	const stood = (over: Partial<BranchInfo>): BranchInfo => ({
+		repo: "r", root: "/r", branch: "stacked", head: "abc1234", worktree: true, managed: true, upstream: null, ahead: 0, behind: 0,
+		base: "b3a5a31", unmerged: 29, defaultBranch: "origin/main", unmergedDefault: 0, changes: 0, conflicts: 0, operation: null, added: null, removed: null, state: "merged", ...over,
+	});
+	assert.equal(containedIn(stood({})), "origin/main");
+	assert.equal(whyKeepWorktree(stood({})), undefined, "29 commits not on the commit it was made from, all on origin/main: nothing is lost");
+	assert.equal(whyKeepWorktree(stood({ unmergedDefault: 1, state: "ahead" })), "its branch has 29 commits that are not on b3a5a31 and 1 not on origin/main; fetch first if it merged elsewhere");
+	assert.equal(whyKeepWorktree(stood({ branch: null, state: "detached" })), undefined, "a detached HEAD at a commit on the default branch loses nothing");
+	assert.equal(whyKeepWorktree(stood({ branch: null, state: "detached", unmergedDefault: 2 })), "its HEAD is detached at abc1234, a commit that is not on b3a5a31 or origin/main; fetch first if it merged elsewhere");
+	assert.equal(whyKeepWorktree(stood({ branch: null, state: "detached", unmerged: null, base: null, defaultBranch: null, unmergedDefault: null })), "pi² cannot tell whether its detached commit is merged");
+	assert.equal(whyKeepWorktree(stood({ changes: 1, state: "changes" })), "it has 1 uncommitted change", "uncommitted changes keep it, merged or not");
+	assert.equal(whyKeepWorktree(stood({ base: "main", unmerged: 1, defaultBranch: null, unmergedDefault: null, state: "ahead" })), "its branch has 1 commit that is not on main; fetch first if it merged elsewhere", "made from the default branch, as before");
+	assert.equal(containedIn(stood({ unmerged: 0, unmergedDefault: null, defaultBranch: null })), "b3a5a31", "on what it was made from");
+	step("removal is judged against what the worktree was made from or the default branch, a detached HEAD too");
+}
 
 const plain = repo("plain");
 assert.equal(await inspect(scratch), undefined, "a folder outside any repository has no branch");
@@ -619,6 +638,179 @@ try {
 		await assert.rejects(client.call("worktree.remove", { id: unproven }), /pi² left it alone/);
 		assert.equal(readFileSync(join(unprovenRoot, "new-work"), "utf8"), "not safe to delete");
 		step("archive and Branches finish proven half-removals, but leave replaced and unproven folders alone");
+
+		{
+			// #778: a repository with an origin, where work is merged on the remote and the main checkout's own main is left
+			// behind, as on GitHub. Merged is judged against what a worktree was made from or the default branch as fetched.
+			const land = repo("land");
+			const hub = join(scratch, "hub.git");
+			run(scratch, "init", "-q", "--bare", "-b", "main", hub);
+			run(land, "remote", "add", "origin", hub);
+			run(land, "push", "-q", "-u", "origin", "main");
+			run(land, "remote", "set-head", "origin", "main");
+			// Another clone, where merges that are not fast-forwards are made, as GitHub makes a squash or a rebase.
+			const remoteSide = join(scratch, "land-remote-side");
+			run(scratch, "clone", "-q", hub, remoteSide);
+			const landLead = await open(orchestrator, land);
+			const work = async (branch: string, from?: string) => {
+				const made = await delegate(landLead, { agent: "Plain", task: "Done", worktree: branch, ...(from === undefined ? {} : { from }) });
+				assert.equal(made.isError, false, made.text);
+				const id = made.details.conversationId as number;
+				await client.until(`${branch} tracked`, () => client.branch(id)?.managed === true);
+				// The worktree's path as pi² recorded it, which the tool's answers name (the tracker's is git's, symbolic links resolved).
+				await client.call("conversation.open", { id });
+				const root = (await client.until(`${branch}'s folder`, () => (cwdOf(id) !== undefined && cwdOf(id) !== land ? cwdOf(id) : undefined))) as string;
+				return { id, root };
+			};
+			const commit = (root: string, file: string, text = `${file}\n`) => {
+				writeFileSync(join(root, file), text);
+				run(root, "add", file);
+				run(root, "commit", "-q", "-m", file);
+			};
+			/** Merges a branch on the remote with a fast-forward, then fetches. */
+			const mergeOnRemote = (branch: string) => {
+				run(land, "push", "-q", "origin", `${branch}:main`);
+				run(land, "fetch", "-q", "origin");
+			};
+			/** Puts a branch's changes on the remote's main under other commits, with `how` run in the other clone, then fetches. */
+			const rewriteOnRemote = (branch: string, how: (side: string) => void) => {
+				run(land, "push", "-q", "origin", branch);
+				run(remoteSide, "fetch", "-q", "origin");
+				run(remoteSide, "reset", "-q", "--hard", "origin/main");
+				how(remoteSide);
+				run(remoteSide, "push", "-q", "origin", "main");
+				run(land, "push", "-q", "origin", "--delete", branch);
+				run(land, "fetch", "-q", "--prune", "origin");
+			};
+			const archiveIn = (args: Record<string, unknown>) => client.tool(landLead, `/tool sub_chats ${JSON.stringify({ action: "archive", ...args })}`);
+			const listIn = (args: Record<string, unknown>) => client.tool(landLead, `/tool sub_chats ${JSON.stringify({ action: "list", ...args })}`);
+			const branchesOfLand = () => run(land, "branch", "--format=%(refname:short)").split("\n");
+			const start = run(land, "rev-parse", "origin/main");
+
+			// Made from a commit, and since merged on the remote: 1 commit not on that commit, none on origin/main.
+			const fromCommit = await work("from-commit", start);
+			commit(fromCommit.root, "from-commit.txt");
+			mergeOnRemote("from-commit");
+			await client.call("branches.refresh");
+			const stood = await client.until("merged into origin/main", () => client.branch(fromCommit.id)?.state === "merged" && client.branch(fromCommit.id));
+			assert.deepEqual([stood.base, stood.unmerged, stood.defaultBranch, stood.unmergedDefault], [start, 1, "origin/main", 0]);
+			const leftFromCommit = await archiveIn({ chats: [fromCommit.id] });
+			assert.ok(leftFromCommit.text.includes(`branch from-commit (nothing uncommitted, merged into origin/main), was left where it is. Nothing would be lost by removing it: pass remove_worktree: true to remove it, and delete_branch: true to delete its merged branch too.`), leftFromCommit.text);
+			await client.call("branches.refresh");
+			assert.equal((await client.until("Left Behind", () => client.events.branches?.leftBehind?.find((w: Event) => w.id === fromCommit.id))).status.state, "merged", "Left Behind says merged by the same rule");
+			step("#778: a worktree made from a commit whose work was merged on the remote shows as merged, in the tool and in Left Behind");
+
+			// One commit not on the default branch, nor on the commit it was made from: kept, with its branch.
+			const ahead = await work("ahead-one", start);
+			commit(ahead.root, "ahead-one.txt");
+			const keptAhead = await archiveIn({ chats: [ahead.id], delete_branch: true });
+			assert.ok(keptAhead.text.includes(`Its worktree was not removed: pi² kept it because its branch has 1 commit that is not on ${start} and 1 not on origin/main; fetch first if it merged elsewhere. Check it before retrying. See Branches → Left Behind.`), keptAhead.text);
+			assert.ok(existsSync(ahead.root) && branchesOfLand().includes("ahead-one"));
+
+			// Uncommitted changes keep it, though everything committed is merged.
+			const dirtyMerged = await work("dirty-merged", "origin/main");
+			writeFileSync(join(dirtyMerged.root, "unsaved.txt"), "unsaved\n");
+			const keptDirty = await archiveIn({ chats: [dirtyMerged.id], remove_worktree: true, delete_branch: true });
+			assert.ok(keptDirty.text.includes("Its worktree was not removed: pi² kept it because it has 1 uncommitted change."), keptDirty.text);
+			assert.ok(existsSync(join(dirtyMerged.root, "unsaved.txt")) && branchesOfLand().includes("dirty-merged"));
+			step("#778: a branch with a commit not on the default branch, or uncommitted changes, keeps its worktree and branch");
+
+			// A merged branch checked out in another worktree is not deleted with its own worktree.
+			const shared = await work("shared-branch", "origin/main");
+			commit(shared.root, "shared.txt");
+			mergeOnRemote("shared-branch");
+			const byHand = join(scratch, "land-by-hand");
+			run(land, "worktree", "add", "-q", "-f", byHand, "shared-branch");
+			const keptShared = await archiveIn({ chats: [shared.id], delete_branch: true });
+			assert.ok(keptShared.text.includes(`Removed its worktree at ${shared.root}; the branch shared-branch is kept because it is checked out in another worktree.`), keptShared.text);
+			assert.ok(!existsSync(shared.root) && branchesOfLand().includes("shared-branch"));
+			run(land, "worktree", "remove", byHand);
+
+			// Merged on the remote alone, and checked out nowhere else: the worktree and its local branch go, the remote's main stays.
+			const removedFromCommit = await archiveIn({ chats: [fromCommit.id], delete_branch: true });
+			assert.ok(removedFromCommit.text.includes(`- ${fromCommit.id}: already archived. Removed its worktree at ${fromCommit.root} and deleted its local branch from-commit, whose commits are all merged.`), removedFromCommit.text);
+			assert.ok(!existsSync(fromCommit.root) && !branchesOfLand().includes("from-commit"), branchesOfLand().join(" "));
+			assert.equal(run(land, "rev-parse", "main"), start, "the main checkout's own main was never touched");
+			assert.match(run(hub, "branch"), /main/);
+			const deletedLine = client.conversations.get(landLead).items.filter((i: Event) => i.kind === "marker").at(-1).text;
+			assert.ok(deletedLine.includes("The agent removed a worktree with nothing uncommitted or unmerged, and deleted its merged branch from-commit."), deletedLine);
+			// The same rule for the app's Remove Worktree and Branch: `git branch -d` in the main checkout would have refused,
+			// since its own main is behind.
+			const fromApp = await work("from-app", "origin/main");
+			commit(fromApp.root, "from-app.txt");
+			mergeOnRemote("from-app");
+			assert.equal((await client.call("worktree.remove", { id: fromApp.id, deleteBranch: true })).branchDeleted, true);
+			assert.ok(!branchesOfLand().includes("from-app"));
+			step("#778: delete_branch deletes a branch merged on the remote and checked out nowhere else, and keeps one checked out elsewhere");
+
+			// A reviewer's worktree detached at a commit: kept while its commit is not merged, removed once it is.
+			const reviewer = await work("reviewer");
+			run(reviewer.root, "checkout", "-q", "--detach", "origin/main");
+			commit(reviewer.root, "detached.txt");
+			const detachedHead = run(reviewer.root, "rev-parse", "--short=7", "HEAD");
+			const keptDetached = await archiveIn({ chats: [reviewer.id], remove_worktree: true });
+			assert.ok(keptDetached.text.includes(`Its worktree was not removed: pi² kept it because its HEAD is detached at ${detachedHead}, a commit that is not on main or origin/main; fetch first if it merged elsewhere.`), keptDetached.text);
+			run(reviewer.root, "checkout", "-q", "--detach", "origin/main");
+			const onMain = run(reviewer.root, "rev-parse", "--short=7", "HEAD");
+			const removedDetached = await archiveIn({ chats: [reviewer.id], remove_worktree: true });
+			assert.ok(removedDetached.text.includes(`Removed its worktree at ${reviewer.root} (nothing uncommitted, detached at ${onMain}, a commit on origin/main); the branch reviewer it was made on is kept.`), removedDetached.text);
+			assert.ok(!existsSync(reviewer.root) && branchesOfLand().includes("reviewer"));
+			step("#778: a worktree detached at a commit on the default branch is removed; one at a commit that is not, kept");
+
+			// Squashed on the remote: two commits, neither on main, whose changes are. Reported, removed only when named.
+			const squash = await work("squash-two", "origin/main");
+			commit(squash.root, "squash-a.txt");
+			commit(squash.root, "squash-b.txt");
+			rewriteOnRemote("squash-two", (side) => {
+				run(side, "merge", "-q", "--squash", "origin/squash-two");
+				run(side, "commit", "-q", "-m", "squashed");
+			});
+			const squashWords = "its changes are on origin/main under other commits (merged by a rebase or a squash), but its own commits are not, so it is removed only when named: archive it again with remove_worktree: true and its number in squash_merged. Its branch is kept either way";
+			const keptSquash = await archiveIn({ chats: [squash.id], remove_worktree: true });
+			assert.ok(keptSquash.text.includes(`Its worktree was not removed: ${squashWords}.`), keptSquash.text);
+			assert.ok(existsSync(squash.root));
+
+			// Rebased on the remote: one commit, picked onto a main that moved, and its file changed again since, so only its
+			// patch is on main (`git cherry` says `-`), not its content.
+			const rebased = await work("rebased-one", "origin/main");
+			commit(rebased.root, "rebased.txt");
+			rewriteOnRemote("rebased-one", (side) => {
+				commit(side, "unrelated.txt");
+				run(side, "cherry-pick", "origin/rebased-one");
+				commit(side, "rebased.txt", "rebased.txt\nand changed since\n");
+			});
+			const leftRebased = await archiveIn({ chats: [rebased.id] });
+			assert.ok(leftRebased.text.includes(`was left where it is; it is listed in Branches under Left Behind. I${squashWords.slice(1)}.`), leftRebased.text);
+
+			// The archived list says which still have a worktree, and whether each can go.
+			const plainList = await listIn({});
+			assert.match(plainList.text, /archived; `archived: true` lists them, and `chats` looks one up by its number\. 4 of them still have a worktree of their own: `archived: true, with_worktree: true` lists them\./);
+			const withWorktrees = await listIn({ archived: true, with_worktree: true });
+			assert.match(withWorktrees.text, /^Archived sub-chats of this conversation that still have a worktree of their own, newest first: 1 to 4 of 4\./);
+			const lineOf = (text: string, id: number) => text.split("\n").find((line) => line.startsWith(`- ${id}: `)) ?? "";
+			assert.ok(lineOf(withWorktrees.text, rebased.id).endsWith(`Its worktree is still there: rebased-one, on the branch rebased-one (nothing uncommitted, 1 commit not on origin/main). It is kept: ${squashWords}.`), withWorktrees.text);
+			assert.ok(lineOf(withWorktrees.text, ahead.id).endsWith(`Its worktree is still there: ahead-one, on the branch ahead-one (nothing uncommitted, 1 commit not on ${start}, 1 not on origin/main). It is kept because its branch has 1 commit that is not on ${start} and 1 not on origin/main; fetch first if it merged elsewhere.`), withWorktrees.text);
+			assert.ok(lineOf(withWorktrees.text, dirtyMerged.id).endsWith("Its worktree is still there: dirty-merged, on the branch dirty-merged (1 uncommitted change, no commits that are not on origin/main). It is kept because it has 1 uncommitted change."), withWorktrees.text);
+			assert.equal(lineOf(withWorktrees.text, reviewer.id), "", "one whose worktree was removed is not listed");
+			const looked = await listIn({ chats: [squash.id, reviewer.id] });
+			assert.ok(lineOf(looked.text, squash.id).includes("Its worktree is still there: squash-two, on the branch squash-two (nothing uncommitted, 2 commits not on origin/main). It is kept: its changes are on origin/main under other commits"), looked.text);
+			assert.doesNotMatch(lineOf(looked.text, reviewer.id), /worktree/, "one whose worktree was removed says nothing of one");
+			step("#778: merged by a squash or a rebase is reported as such; the archived list says which still have a worktree and whether each can go");
+
+			// Named, the squashed one goes, and its branch stays even with delete_branch.
+			const removedSquash = await archiveIn({ chats: [squash.id], delete_branch: true, squash_merged: [squash.id] });
+			assert.ok(removedSquash.text.includes(`Removed its worktree at ${squash.root}, whose changes are on origin/main under other commits; the branch squash-two is kept with its own commits, since they are not on origin/main: delete it by hand (git branch -D squash-two) if nothing on it is wanted.`), removedSquash.text);
+			assert.ok(!existsSync(squash.root) && branchesOfLand().includes("squash-two"));
+			const squashLine = client.conversations.get(landLead).items.filter((i: Event) => i.kind === "marker").at(-1).text;
+			assert.ok(squashLine.includes("The agent removed a worktree whose changes are on the default branch under other commits; its branch squash-two is kept."), squashLine);
+			const afterRemoved = await listIn({ archived: true, with_worktree: true, cursor: squash.id });
+			assert.doesNotMatch(afterRemoved.text, /Invalid cursor/, "a cursor naming one whose worktree went since is still good");
+			// Naming one whose changes are not on main removes nothing.
+			const namedAhead = await archiveIn({ chats: [ahead.id], remove_worktree: true, squash_merged: [ahead.id] });
+			assert.match(namedAhead.text, /Its worktree was not removed: pi² kept it because its branch has 1 commit that is not on/);
+			assert.ok(existsSync(ahead.root));
+			step("#778: a squash-merged worktree named in squash_merged is removed, its branch kept; naming an unmerged one removes nothing");
+		}
 	}
 
 	// An agent whose conversations each get a worktree.

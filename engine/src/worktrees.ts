@@ -48,7 +48,12 @@ export type Worktree = {
 	createdAt: number;
 	/** Written only after the removal checks, before Git moves the checkout out of use. */
 	checkoutId?: string;
-	removal?: { holding: string; holdingId: string; checkoutId: string; gitDir: string; gitDirId: string; branch: string; base?: string; deleting?: boolean };
+	/**
+	 * `branch` is null for a detached HEAD. `base` is the ref every commit of HEAD was on when the removal passed its checks
+	 * (the worktree's base or the default branch); `squashed` the default branch its changes were on under other commits,
+	 * for a removal the caller asked for by name (#778). Either is checked again once the checkout is out of use.
+	 */
+	removal?: { holding: string; holdingId: string; checkoutId: string; gitDir: string; gitDirId: string; branch: string | null; base?: string; squashed?: string; deleting?: boolean };
 	/** How the agent's set-up command went in it, when there was one. */
 	setup?: Setup;
 };
@@ -162,6 +167,13 @@ export type BranchInfo = {
 	base: string | null;
 	/** Commits on this branch that are not on `base`; null when this is the base branch or there is none. */
 	unmerged: number | null;
+	/**
+	 * For a worktree pi² made with commits that are not on `base`: the repository's default branch as the repository has
+	 * it now (`origin/HEAD`'s branch, else a local main or master), when it is another ref than `base`, and the commits of
+	 * HEAD that are not on it. Work merged there counts as merged too (#778). Null otherwise.
+	 */
+	defaultBranch: string | null;
+	unmergedDefault: number | null;
 	/** Files changed, added or not yet tracked. */
 	changes: number;
 	/** Files with unresolved conflicts. */
@@ -224,8 +236,16 @@ const worktreeGit = (args: string[], cwd: string) => git(["worktree", ...args], 
 const tryGit = (args: string[], cwd: string) => git(args, cwd).then((out) => out.trim(), () => undefined);
 
 type Repo = { root: string; gitDir: string; commonDir: string; main: string; worktree: boolean };
-type RemoveOptions = { force: boolean; deleteBranch: boolean; onlyIfMerged?: boolean };
-type RemovalResult = { branchDeleted: boolean; note: string | null; branch: string | null };
+/**
+ * `onlyIfMerged`: only when nothing would be lost (`whyKeepWorktree`); with `squashed` too, also when the branch's
+ * changes are on the default branch under other commits (`changesOn`), which the caller asked for by name.
+ */
+type RemoveOptions = { force: boolean; deleteBranch: boolean; onlyIfMerged?: boolean; squashed?: boolean };
+/**
+ * `branch`: the branch the worktree was on, null for a detached HEAD; `keptBecause`, when a branch to delete was kept,
+ * why; `squashed`, the default branch its changes were on when it was removed by name for that.
+ */
+type RemovalResult = { branchDeleted: boolean; note: string | null; branch: string | null; keptBecause: string | null; squashed: string | null };
 
 /** The repository a folder is in, or undefined when it is in none (or git is missing). */
 export async function repoOf(folder: string): Promise<Repo | undefined> {
@@ -533,6 +553,8 @@ function unreadableWorktree(own: Worktree, state: "missing" | "unavailable"): Br
 		behind: 0,
 		base: own.base,
 		unmerged: null,
+		defaultBranch: null,
+		unmergedDefault: null,
 		changes: 0,
 		conflicts: 0,
 		operation: null,
@@ -567,14 +589,26 @@ async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval =
 	let base = managed && own.base !== null ? own.base : await (checkingRemoval ? defaultBranch(repo.root) : kept(defaults, repo.root, () => defaultBranch(repo.root)));
 	if (base !== null && status.head !== null && (base === status.head || base === `origin/${status.head}`)) base = null;
 	let unmerged: number | null = null;
-	let merged = false;
 	if (base !== null && status.oid !== null) {
 		const counted = await tryGit(["rev-list", "--count", `${base}..${status.oid}`], repo.root);
 		unmerged = counted === undefined ? null : Number(counted);
-		// Only a worktree pi² made can be called merged with confidence: it has moved on from where it started and
-		// everything on it is now on the base. Any other branch with nothing of its own may simply be new.
-		if (managed && unmerged === 0 && status.oid !== own.baseCommit) merged = true;
 	}
+	// A worktree made from a commit or another branch than the default (stacked work, a reviewer at a pull request's
+	// head) is merged once its work is on the default branch, whatever became of what it was made from (#778). Asked only
+	// when the base does not already hold it all, so a merged worktree costs no git process more than before.
+	let defaultRef: string | null = null;
+	let unmergedDefault: number | null = null;
+	if (managed && status.oid !== null && unmerged !== 0) {
+		const fetched = await (checkingRemoval ? defaultBranch(repo.root) : kept(defaults, repo.root, () => defaultBranch(repo.root)));
+		if (fetched !== null && fetched !== base && !(status.head !== null && (fetched === status.head || fetched === `origin/${status.head}`))) {
+			const counted = await tryGit(["rev-list", "--count", `${fetched}..${status.oid}`], repo.root);
+			defaultRef = fetched;
+			unmergedDefault = counted === undefined ? null : Number(counted);
+		}
+	}
+	// Only a worktree pi² made can be called merged with confidence: it has moved on from where it started and
+	// everything on it is now on the base or the default branch. Any other branch with nothing of its own may simply be new.
+	const merged = managed && status.oid !== null && status.oid !== own.baseCommit && ((base !== null && unmerged === 0) || unmergedDefault === 0);
 	// Removing a worktree reads its status to decide, not to show it; the size of its change is not wanted there.
 	const size = checkingRemoval ? null : await lineCounts(repo.root, out, status.oid, base, unmerged);
 	const info = {
@@ -589,6 +623,8 @@ async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval =
 		behind: status.behind,
 		base,
 		unmerged,
+		defaultBranch: defaultRef,
+		unmergedDefault,
 		changes: status.changes,
 		conflicts: status.conflicts,
 		operation,
@@ -598,6 +634,13 @@ async function inspectCheckout(folder: string, own?: Worktree, checkingRemoval =
 	return { ...info, state: stateOf(info, { merged }) };
 }
 
+/** The ref that holds every commit of HEAD: the base the worktree was made from, else the default branch; null for neither. */
+export function containedIn(info: Pick<BranchInfo, "base" | "unmerged" | "defaultBranch" | "unmergedDefault">): string | null {
+	if (info.base !== null && info.unmerged === 0) return info.base;
+	if (info.defaultBranch !== null && info.unmergedDefault === 0) return info.defaultBranch;
+	return null;
+}
+
 /** Whether an agent can remove this checkout and keep the branch, without leaving unmerged work behind. */
 export function whyKeepWorktree(info: BranchInfo | undefined): string | undefined {
 	if (info?.state === "missing") return undefined;
@@ -605,9 +648,62 @@ export function whyKeepWorktree(info: BranchInfo | undefined): string | undefine
 	if (info.operation !== null) return `a ${info.operation} is stopped half way in it`;
 	const changes = info.changes + info.conflicts;
 	if (changes > 0) return `it has ${changes} uncommitted change${changes === 1 ? "" : "s"}`;
-	if (info.branch === null || info.unmerged === null || info.base === null) return "pi² cannot tell whether its branch is merged";
-	if (info.unmerged > 0) return `its branch has ${info.unmerged} commit${info.unmerged === 1 ? " that is" : "s that are"} not on ${info.base}; fetch first if it merged elsewhere`;
-	return undefined;
+	// Nothing is lost when every commit of HEAD is on what it was made from or on the default branch (#778).
+	if (containedIn(info) !== null) return undefined;
+	if (info.unmerged === null || info.base === null) return `pi² cannot tell whether its ${info.branch === null ? "detached commit" : "branch"} is merged`;
+	const onDefault = info.defaultBranch !== null && info.unmergedDefault !== null ? ` and ${info.unmergedDefault} not on ${info.defaultBranch}` : "";
+	if (info.branch === null) return `its HEAD is detached at ${info.head}, a commit that is not on ${info.base}${info.defaultBranch === null ? "" : ` or ${info.defaultBranch}`}; fetch first if it merged elsewhere`;
+	return `its branch has ${info.unmerged} commit${info.unmerged === 1 ? " that is" : "s that are"} not on ${info.base}${onDefault}; fetch first if it merged elsewhere`;
+}
+
+/**
+ * Whether a branch with commits that are not on the default branch was merged there by a rebase or a squash: its changes
+ * are on `onto` under other commits (#778). Either every commit's patch is on it (`git cherry` says `-` for each), or,
+ * for a squash of several commits, every file the branch changed since it left `onto` is now as the branch has it there.
+ * Read-only, and asked only when an agent's tool needs it, not at every look. False when git cannot say.
+ */
+export async function changesOn(root: string, onto: string, commit: string): Promise<boolean> {
+	const since = await tryGit(["merge-base", onto, commit], root);
+	if (since === undefined || since === "") return false;
+	const files = (await tryGit(["diff", "--name-only", "-z", "--no-renames", since, commit], root))?.split("\0").filter((path) => path !== "");
+	// A branch that changed no file (empty commits) has no changes to find, and every empty commit has the same patch.
+	if (files === undefined || files.length === 0) return false;
+	const cherry = await tryGit(["cherry", onto, commit], root);
+	if (cherry === undefined) return false;
+	const lines = cherry.split("\n").filter((line) => line !== "");
+	if (lines.length > 0 && lines.every((line) => line.startsWith("-"))) return true;
+	// A branch that changed more than this is not worth the command line it would take; it is reported as unmerged.
+	if (files.length > 1000) return false;
+	return (await tryGit(["--literal-pathspecs", "diff", "--quiet", "--no-ext-diff", "--no-textconv", commit, onto, "--", ...files], root)) !== undefined;
+}
+
+/** The ref a branch with unmerged commits would have been squashed or rebased onto: the default branch, else its base. */
+export const squashTarget = (info: Pick<BranchInfo, "base" | "defaultBranch">): string | null => info.defaultBranch ?? info.base;
+
+/**
+ * Delete a local branch a removed worktree was on, only as `git branch -d` would against the default branch (#778): it
+ * is checked out in no worktree, and every commit on it is on one of `bases`. Deleted with the commit that was checked
+ * as the expected old value, so a branch that moved meanwhile is kept. Undefined when deleted; else why it was kept.
+ */
+async function deleteMergedBranch(root: string, branch: string, bases: (string | null)[]): Promise<string | undefined> {
+	const ref = `refs/heads/${branch}`;
+	const oid = await tryGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], root);
+	if (oid === undefined || oid === "") return "pi² could not find it";
+	if ((await registrations(root)).some((entry) => entry.fields.includes(`branch ${ref}`))) return "it is checked out in another worktree";
+	const against = [...new Set(bases.filter((base): base is string => base !== null))];
+	const counts: string[] = [];
+	for (const base of against) {
+		const counted = await tryGit(["rev-list", "--count", `${base}..${oid}`], root);
+		if (counted !== "0") {
+			if (counted !== undefined) counts.push(`${counted} not on ${base}`);
+			continue;
+		}
+		await git(["update-ref", "-d", ref, oid], root, WORKTREE_TIMEOUT_MS);
+		// What `git branch -d` removes with the branch: its upstream and other settings. Nothing else is touched.
+		await tryGit(["config", "--remove-section", `branch.${branch}`], root);
+		return undefined;
+	}
+	return counts.length === 0 ? "pi² cannot tell whether it is merged" : `it has commits that are not merged (${counts.join(", ")})`;
 }
 
 /** A branch name made from a conversation's title: "pi2/fix-the-login-page". */
@@ -1051,7 +1147,8 @@ export const worktrees: Feature = (_host, engine) => {
 		const repoRoot = common === undefined ? undefined : own.repo;
 		const checkoutId = directoryId(own.path);
 		if (!within(dirname(own.path), join(engine.home, "worktrees"))) throw new Error("The recorded path is outside pi²'s worktree folder. Check it by hand; pi² left it alone");
-		let branch: string | null = own.removal?.branch ?? own.branch;
+		let branch: string | null = own.removal === undefined ? own.branch : own.removal.branch;
+		let squashed: string | null = own.removal?.squashed ?? null;
 		if (checkoutId === null && own.removal !== undefined) {
 			await finishRemoval(id, own, own.removal, common, options.onlyIfMerged === true);
 		} else if (checkoutId !== null) {
@@ -1073,7 +1170,13 @@ export const worktrees: Feature = (_host, engine) => {
 			branch = info.branch;
 			if (options.onlyIfMerged) {
 				const why = whyKeepWorktree(info);
-				if (why !== undefined) throw new Error(`pi² kept it because ${why}. Check it before retrying`);
+				if (why !== undefined) {
+					// Merged by a rebase or a squash, and asked for by name: its commits stay on its branch, which is kept (#778).
+					const onto = squashTarget(info);
+					const named = options.squashed === true && branch !== null && info.operation === null && info.changes + info.conflicts === 0 && info.unmerged !== null && onto !== null;
+					if (!named || !(await changesOn(own.repo, onto, `refs/heads/${branch}`))) throw new Error(`pi² kept it because ${why}. Check it before retrying`);
+					squashed = onto;
+				}
 			}
 			if (options.force) {
 				// Explicit discard is not a proof that nothing would be lost; never recover it by recursive deletion.
@@ -1083,15 +1186,17 @@ export const worktrees: Feature = (_host, engine) => {
 			} else {
 				const changes = info.changes + info.conflicts;
 				if (changes > 0) throw new Error(`The worktree has ${changes} uncommitted change${changes === 1 ? "" : "s"}. Commit them, or remove it anyway to lose them`);
-				if (info.operation !== null || branch === null) throw new Error("Finish the git operation or put the detached commit on a branch, then retry");
+				// A detached HEAD whose commit is on the base or the default branch loses nothing (#778).
+				const contained = containedIn(info);
+				if (info.operation !== null || (branch === null && contained === null)) throw new Error("Finish the git operation or put the detached commit on a branch, then retry");
 				const gitDir = realpathSync(repo.gitDir);
 				const gitDirId = directoryId(gitDir);
 				if (gitDirId === null || dirname(gitDir) !== join(realish(common), "worktrees")) throw new Error("pi² cannot verify the worktree registration. Check it by hand");
 				const entry = (await registrations(own.repo)).find((entry) => realish(entry.path) === realish(own.path));
-				if (entry === undefined || !entry.fields.includes(`branch refs/heads/${branch}`)) throw new Error("The worktree registration changed. Check it by hand, then retry");
+				if (entry === undefined || !entry.fields.includes(branch === null ? "detached" : `branch refs/heads/${branch}`)) throw new Error("The worktree registration changed. Check it by hand, then retry");
 				if (entry.fields.some((field) => field === "locked" || field.startsWith("locked "))) throw new Error("Git has locked this worktree. Unlock it before retrying");
 				const holding = mkdtempSync(join(realpathSync(dirname(own.path)), ".removing-"));
-				const record = { holding, holdingId: directoryId(holding)!, checkoutId, gitDir, gitDirId, branch, ...(info.base !== null && info.unmerged === 0 ? { base: info.base } : {}) };
+				const record = { holding, holdingId: directoryId(holding)!, checkoutId, gitDir, gitDirId, branch, ...(contained !== null ? { base: contained } : {}), ...(squashed !== null ? { squashed } : {}) };
 				await save((doc) => { doc[String(id)]!.removal = record; });
 				try {
 					// Git checks locks, submodules and the linked checkout before moving it. Agents only know the old
@@ -1108,19 +1213,23 @@ export const worktrees: Feature = (_host, engine) => {
 		}
 		let branchDeleted = false;
 		let note: string | null = null;
+		let keptBecause: string | null = null;
 		if (options.deleteBranch && repoRoot !== undefined && branch !== null) {
-			const deleted = await git(["branch", options.force ? "-D" : "-d", branch], repoRoot).then(
-				() => true,
-				() => false,
-			);
-			branchDeleted = deleted;
-			if (!deleted) note = `The branch ${branch} was kept: it has commits that are not merged yet.`;
+			if (options.force) {
+				branchDeleted = await git(["branch", "-D", branch], repoRoot).then(() => true, () => false);
+				if (!branchDeleted) keptBecause = "git could not delete it";
+			} else {
+				// Merged is what it was for the worktree: on what it was made from, or on the default branch (#778).
+				keptBecause = (await deleteMergedBranch(repoRoot, branch, [own.base, await defaultBranch(repoRoot)]).catch((error: Error) => `git could not delete it: ${error.message}`)) ?? null;
+				branchDeleted = keptBecause === null;
+			}
+			if (keptBecause !== null) note = `The branch ${branch} was kept: ${keptBecause}.`;
 		}
 		const back = isFolder(own.origin) ? own.origin : repoRoot;
 		await save((doc) => void delete doc[String(id)]);
 		if (back !== undefined) for (const each of [id, ...joined]) await setFolder(each, back);
 		engine.log("worktree removed for conversation", id);
-		return { branchDeleted, note, branch };
+		return { branchDeleted, note, branch, keptBecause, squashed };
 	}
 
 	async function finishRemoval(id: number, own: Worktree, record: NonNullable<Worktree["removal"]>, common: string | undefined, onlyIfMerged: boolean): Promise<void> {
@@ -1138,10 +1247,11 @@ export const worktrees: Feature = (_host, engine) => {
 				const path = canonicalPath(entry.path);
 				return path === canonicalPath(own.path) || path === checkout;
 			});
-			if (entries.length > 1 || (entries.length === 1 && (admin === null || !entries[0]!.fields.includes(`branch refs/heads/${record.branch}`))) || existsSync(join(gitDir, "locked"))) {
+			const registered = record.branch === null ? "detached" : `branch refs/heads/${record.branch}`;
+			if (entries.length > 1 || (entries.length === 1 && (admin === null || !entries[0]!.fields.includes(registered))) || existsSync(join(gitDir, "locked"))) {
 				throw new Error("The worktree registration changed or is locked");
 			}
-			if (onlyIfMerged && record.base === undefined) throw new Error("The recorded removal did not confirm the branch was merged. Use Branches to finish it and keep the branch");
+			if (onlyIfMerged && record.base === undefined && record.squashed === undefined) throw new Error("The recorded removal did not confirm the branch was merged. Use Branches to finish it and keep the branch");
 			if (files !== null && !record.deleting) {
 				if (admin === null || entries.length !== 1) throw new Error("The checkout can no longer be verified");
 				// Check once more once the old path is out of use. Explicit paths work even if Git moved the
@@ -1151,8 +1261,12 @@ export const worktrees: Feature = (_host, engine) => {
 				if (status.oid === null || status.head !== record.branch || status.changes + status.conflicts > 0 || operationIn(gitDir) !== null) {
 					throw new Error("The isolated checkout changed. Its files were kept");
 				}
-				if (onlyIfMerged && (record.base === undefined || (await git([...gitAt, "rev-list", "--count", `${record.base}..${status.oid}`], checkout)).trim() !== "0")) {
-					throw new Error("The branch is not confirmed merged. Fetch first if it merged elsewhere, or keep its branch using Branches");
+				// A detached commit has no branch to keep it, so it is checked again whoever asked.
+				if (onlyIfMerged || record.branch === null) {
+					const confirmed = record.base !== undefined
+						? (await git([...gitAt, "rev-list", "--count", `${record.base}..${status.oid}`], checkout)).trim() === "0"
+						: record.squashed !== undefined && record.branch !== null && (await changesOn(own.repo, record.squashed, status.oid));
+					if (!confirmed) throw new Error("The branch is not confirmed merged. Fetch first if it merged elsewhere, or keep its branch using Branches");
 				}
 				await save((doc) => { doc[String(id)]!.removal!.deleting = true; });
 			}
@@ -1346,6 +1460,11 @@ export function removeWorktree(id: number, options: RemoveOptions): Promise<Remo
 export async function worktreeOf(read: DocumentReader, id: number, context: Context): Promise<Worktree | undefined> {
 	const doc = await read.snapshot(Worktrees, context);
 	return doc?.conversations[String(id)];
+}
+
+/** Every worktree pi² made and still has a record of, by conversation, read once for a list of many (#778). */
+export async function allWorktrees(read: DocumentReader, context: Context): Promise<Record<string, Worktree>> {
+	return (await read.snapshot(Worktrees, context))?.conversations ?? {};
 }
 
 /** Whether `folder` is in a git repository, for checking an agent's settings. */

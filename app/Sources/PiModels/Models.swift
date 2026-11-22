@@ -119,6 +119,10 @@ public struct BranchStatus: Codable, Equatable, Sendable {
     public let base: String?
     /// Commits not on `base` yet.
     public let unmerged: Int?
+    /// For a worktree pi² made with commits not on `base`: the repository's default branch as last fetched, when it is
+    /// another ref, and the commits not on it. Work merged there counts as merged too (#778). Nil from an older engine.
+    public var defaultBranch: String? = nil
+    public var unmergedDefault: Int? = nil
     public let changes: Int
     public let conflicts: Int
     /// A merge, rebase, cherry-pick or revert that stopped half way.
@@ -132,6 +136,13 @@ public struct BranchStatus: Codable, Equatable, Sendable {
 
     /// Whether removing the worktree would lose uncommitted work.
     public var isDirty: Bool { changes > 0 || conflicts > 0 }
+
+    /// The ref that holds every commit of HEAD: `base`, else the default branch; nil for neither (worktrees.ts, `containedIn`).
+    public var containedIn: String? {
+        if let base, unmerged == 0 { return base }
+        if let defaultBranch, unmergedDefault == 0 { return defaultBranch }
+        return nil
+    }
 }
 
 /// A worktree pi² made for a conversation that was archived or deleted since: still on disk until it is removed.
