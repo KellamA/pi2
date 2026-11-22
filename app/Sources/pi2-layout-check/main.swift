@@ -454,6 +454,10 @@ group("a hub: the board alone, then panes beside it, closed back to the board") 
 }
 
 group("a hub's ready-made layouts keep what shows, the board and the focus") {
+    // The six-pane cap holds for the layouts as it does for splitting: the menu offers none a hub cannot hold.
+    for layout in PaneLayout.all {
+        check("layout \(layout.id) fits in a hub: \(layout.count) of at most \(HubLayout.maxPanes) panes", (1...HubLayout.maxPanes).contains(layout.count))
+    }
     for layout in PaneLayout.all {
         var hub = HubLayout()
         let board = hub.focused
@@ -461,7 +465,7 @@ group("a hub's ready-made layouts keep what shows, the board and the focus") {
         _ = hub.split(hub.focused, .row, showing: 62)
         step("hub layout \(layout.id)")
         let applied = hub.apply(layout, recent: [62, 63, 64, 65, 66, 67, 68])
-        check("layout \(layout.id) applies only up to \(HubLayout.maxPanes) panes", applied == (layout.count <= HubLayout.maxPanes))
+        check("layout \(layout.id) applies", applied)
         guard applied else { continue }
         auditHub(hub, "layout \(layout.id)")
         check("layout \(layout.id): as many panes", hub.panes.count == layout.count, describe(hub.root))
@@ -507,7 +511,7 @@ group("a hub's panes keep their least size, and a long run of everything") {
             hub.forget { $0 == conversation }
         case 10:
             what = "layout"
-            hub.apply(PaneLayout.all.filter { $0.count <= HubLayout.maxPanes }.randomElement(using: &random)!, recent: [1, 2, 3])
+            hub.apply(PaneLayout.all.randomElement(using: &random)!, recent: [1, 2, 3])
         default:
             what = "resize"
             if let split = splits(hub.root).randomElement(using: &random) {
