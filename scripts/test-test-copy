@@ -548,6 +548,15 @@ respond '{"error":"the app does not give its main window to accessibility, even 
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
 	answers 1 "no, computer use cannot click in test-7: the app does not give its main window to accessibility" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
+# And where the copy says the tool, having found the window, would turn it down for the window server's record (#748).
+respond '{"error":"the window server has the main window at 1120×740 at (2880, 1130) and accessibility gives it at 1120×700 at (1760, 1130), so the computer tool would not take it as the same window"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the window server has the main window at 1120×740" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+respond '{"error":"the window server has no record of the main window, which accessibility gives at 1120×740 at (1760, 1130), so the computer tool would not take it"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the window server has no record of the main window" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
 # What #612 was: a copy's answer that is not that, such as the window list's "did not join", which the tool read
 # through regardless, is never a no.
 respond '{"error":"the main window did not join the app'\''s accessibility window list when raised"}'

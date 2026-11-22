@@ -19,7 +19,7 @@ package struct ServerWindow {
         self.onScreen = onScreen
     }
 
-    static func all(of pid: pid_t) -> [Self] {
+    package static func all(of pid: pid_t) -> [Self] {
         let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         return list.compactMap { info in
             guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
@@ -53,6 +53,18 @@ package struct ServerWindow {
         }
         return windows.filter { $0.pid == pid && distance($0) < 12 }.min { distance($0) < distance($1) }
     }
+
+    /// The window-server record of a parked copy's window that accessibility gives at `frame`: the one at that frame,
+    /// or else `parked`, the copy's parked main window, when it is the same size wherever the window server has it.
+    /// The two disagree on where the window is while macOS moves it between Spaces, so an exact match alone turned the
+    /// copy's own main window down then, and the tool read none of its controls (#748). A stale window that has
+    /// closed, such as Settings, is another size and is still turned down. `matching` stays exact, for any other app.
+    package static func backing(_ frame: CGRect, in windows: [Self], pid: pid_t, parked: Self?) -> Self? {
+        if let exact = matching(frame, in: windows, pid: pid) { return exact }
+        guard let parked, parked.pid == pid,
+              abs(parked.frame.width - frame.width) + abs(parked.frame.height - frame.height) < 4 else { return nil }
+        return parked
+    }
 }
 
 package enum WindowChoice {
@@ -72,5 +84,14 @@ package enum WindowChoice {
         }
         if let preferred, candidates.contains(preferred) { return [preferred] + candidates.filter { $0 != preferred } }
         return candidates
+    }
+
+    /// The index of the smallest of `frames` that holds `point`: the listed control a click at a point lands on when a
+    /// hit test cannot say. A hit test reads the screen, so it finds nothing where the window is off the screen or
+    /// behind another window, which is all of a parked copy's window but its corner (#748). A frame that is empty, as a
+    /// menu bar item's is, holds no point.
+    package static func innermost(containing point: CGPoint, in frames: [CGRect]) -> Int? {
+        frames.indices.filter { !frames[$0].isEmpty && frames[$0].contains(point) }
+            .min { frames[$0].width * frames[$0].height < frames[$1].width * frames[$1].height }
     }
 }
