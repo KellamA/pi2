@@ -1,0 +1,15 @@
+▸ Building workspace Northwind with scheme Northwind (Release)
+▸ Resolving package graph
+▸ Compiling 214 Swift files
+▸ Linking Northwind
+▸ Generating Northwind.app.dSYM
+▸ Processing Info.plist
+▸ Copying resources
+▸ Signing Northwind.app
+❌ error: No signing certificate "Apple Distribution" found: No "Apple Distribution" signing certificate matching team ID "A1B2C3D4E5" with a private key was found. (in target 'Northwind' from project 'Northwind')
+note: The certificate "Apple Distribution: Northwind Ltd (A1B2C3D4E5)" expired on 16 Nov at 09:12.
+** ARCHIVE FAILED **
+
+The following build commands failed:
+	CodeSign build/Release-iphoneos/Northwind.app (in target 'Northwind' from project 'Northwind')
+(1 failure)

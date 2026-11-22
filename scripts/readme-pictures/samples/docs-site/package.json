@@ -1,0 +1,9 @@
+{
+	"name": "docs-site",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "astro build",
+		"docs:diff": "node scripts/schema-diff.mjs"
+	}
+}
