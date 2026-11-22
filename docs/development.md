@@ -482,28 +482,29 @@ Then make the load ([Measuring under load](#measuring-under-load), with `--keep`
 
 The iPhone app is one Xcode project, `iphone/pi2.xcodeproj` ([iphone.md](iphone.md), #680). Its folders are ones Xcode keeps in step by itself: a source file added under `iphone/Sources/` (the app) or `iphone/Tests/` (its unit tests) is built without any change to `project.pbxproj`, so add files in the folder rather than through a target's file list. Only a new target (an extension) changes the project file. It links `PiModels`, `EngineKit` and `TranscriptKit` from `app/Package.swift` as a local package, through the library products declared there: a shared target the phone needs gets a product line beside them.
 
-Agents build for the simulator only, unsigned, and in a simulator of their own, never the one already booted, which may be the person's:
+Agents build for the simulator only, unsigned, and in a simulator of their own, never the one already booted, which may be the person's. `scripts/iphone-sim` does each step, keeping to that (#681):
 
 ```bash
-xcrun simctl create pi2-680 "iPhone 18 Pro"           # prints the new simulator's id
-xcrun simctl boot <id>
-nice -n 15 xcodebuild test -project iphone/pi2.xcodeproj -scheme pi2 \
-  -destination 'platform=iOS Simulator,id=<id>' CODE_SIGNING_ALLOWED=NO \
-  -derivedDataPath "$PI2_SCRATCH/iphone-build"
-xcrun simctl install <id> "$PI2_SCRATCH/iphone-build/Build/Products/Debug-iphonesimulator/pi2.app"
-xcrun simctl launch <id> dev.pi2.ios
-xcrun simctl io <id> screenshot app/build/shots/<issue>/first.png
-xcrun simctl delete <id>                              # when done
+scripts/iphone-sim create pi2-680                     # a simulator of your own; prints its id
+scripts/iphone-sim test pi2-680                       # the unit tests
+scripts/iphone-sim build pi2-680                      # the debug build; --release for a Release build
+scripts/iphone-sim run pi2-680 --env PI2_SHOW=face-id-check
+scripts/iphone-sim shot pi2-680 app/build/shots/680/first.png
+scripts/iphone-sim shot pi2-680 app/build/shots/680/dark.png --appearance dark --text-size accessibility-extra-extra-extra-large
+scripts/iphone-sim delete pi2-680                     # when done
 ```
 
-- `xcodebuild build` in place of `test` builds without running the tests; `-configuration Release` builds a release build, which has none of what is marked `#if DEBUG`.
-- `xcrun simctl ui <id> appearance dark` (or `light`) and `xcrun simctl ui <id> content_size accessibility-extra-extra-extra-large` (or `large`) change the simulator's appearance and text size, for pictures of both and of the largest Dynamic Type.
-- `SIMCTL_CHILD_PI2_SHOW=face-id-check xcrun simctl launch <id> dev.pi2.ios` opens a debug build on the Face ID check, which says there that it cannot run, since the simulator has no Secure Enclave.
-- Use the simulator's id everywhere, never `booted`, which can name the person's.
+- **`create <name>`** makes a simulator under a name of your own (lower-case letters, digits and hyphens: use `pi2-` and your issue number), of `--type` (`iPhone 18 Pro` unless given) and `--runtime` (the newest iOS unless given), and prints its id. It refuses a name a simulator has already, and `booted`. It keeps the id in `iphone/build/simulators/<name>` in the checkout, and every other command works only on a simulator named there, still under its name: so none ever touches a simulator someone else made, such as the one booted.
+- **`build <name>`** and **`test <name>`** run `xcodebuild build` or `test` for that simulator, at `nice -n 15`, with `CODE_SIGNING_ALLOWED=NO` and parallel testing off (which would boot clones of the simulator). `build --release` builds a release build, which has none of what is marked `#if DEBUG`. After `--`, both take `-only-testing:<id>`, `-skip-testing:<id>`, `-quiet` and `-resultBundlePath <path>`; a destination, an SDK, signing and provisioning options are refused, and so is anything else.
+- The builds go in a derived-data folder: `$PI2_SCRATCH/iphone-build` in a pi² conversation, `iphone/build/DerivedData` without one, or the folder `--derived-data` names, at `create` for every command after it or at each `build`, `test` and `run`. Never under `~/Library`, which is refused: Xcode's own folder there holds the person's builds. Swift packages' caches go in the same folder (`-packageCachePath`).
+- **`run <name>`** boots the simulator (with no window: Simulator.app is not opened), installs what `build` made (`--release`: the release build) and launches it again. `--env NAME=VALUE`, as often as needed, sets the app's environment, and nothing the shell has reaches it; after `--` come its launch arguments. `--env PI2_SHOW=face-id-check` opens a debug build on the Face ID check, which says there that it cannot run, since the simulator counts as having no Secure Enclave.
+- **`shot <name> <file.png>`** takes a picture of the simulator's screen; `--appearance light|dark` and `--text-size <size>` set them first. **`appearance <name> light|dark`** and **`text-size <name> <size>`** set them alone (`large` is the default size, `accessibility-extra-extra-extra-large` the largest Dynamic Type). They stay set until changed.
+- **`shutdown <name>`** shuts it down and keeps it; **`delete <name>`** shuts it down and deletes it, and leaves the derived data. **`list`** says which simulators the checkout made and each one's state; **`id <name>`** prints its id, for an `xcrun simctl` command the script does not have, such as `xcrun simctl openurl "$(scripts/iphone-sim id pi2-680)" '<url>'`. Use the id, never `booted`, which can name the person's.
+- `scripts/test-iphone-sim` checks the script's commands and refusals with stand-ins for `xcrun`, `xcodebuild` and `nice`, in a temporary folder: it makes, boots and builds nothing, and runs on Linux too. Run it after changing the script.
 
 **Nothing is signed by an agent.** The project has no development team (`DEVELOPMENT_TEAM` is empty, with automatic signing): the owner chooses theirs in Xcode, under the target's Signing & Capabilities, to run a build on a phone, and does not commit that choice. An agent never builds for a device, never runs `codesign` with an identity, and never touches a provisioning profile or the Keychain: a signing step can put a Keychain prompt on the person's screen. Identifiers, capabilities and profiles are #682's.
 
-What a CI job for the phone would run (the workflow is #681's, and `.github/workflows/` waits for the owner): on a macOS runner, `xcrun simctl create` a simulator, then the `xcodebuild test` above, then `xcodebuild build -configuration Release` for the same destination.
+What a CI job for the phone would run (the workflow is #681's, and `.github/workflows/` waits for the owner): on a macOS runner, `scripts/iphone-sim create` a simulator, then `test`, then `build --release` for it.
 
 ## CI
 
@@ -535,7 +536,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 
 - `engine/src` is the engine; `engine/test` its tests.
 - `iphone/` is pi² for iPhone, one Xcode project ([Building the iPhone app](#building-the-iphone-app)).
-- `scripts/` holds the repository's scripts: `test-copy` for throwaway copies, `issue` and `auto-merge` for the work, and `readme-pictures/`, the kit that stages the README's pictures ([Retaking the README's pictures](#retaking-the-readmes-pictures)).
+- `scripts/` holds the repository's scripts: `test-copy` for throwaway copies, `iphone-sim` for the iPhone app in a simulator, `issue` and `auto-merge` for the work, and `readme-pictures/`, the kit that stages the README's pictures ([Retaking the README's pictures](#retaking-the-readmes-pictures)).
 - `app/Sources/pi2` is the app: one file per area, listed under [The app](architecture.md#the-app). `EngineClient.swift` is the Mac's side of the connection to the engine, over the client in `app/Sources/EngineKit`; `Theme.swift` the app's shared pieces, over `app/Sources/PiStyle`, which holds the palette, tags, buttons and the spinner.
 - `app/Sources/ComputerKit` is the part of computer use that touches the screen. See [computer-use.md](computer-use.md).
 - `app/Web/transcript` is the conversation page the app shows in a web view; `app/Web/test` its tests. See [transcript.md](transcript.md).
