@@ -5,6 +5,13 @@ let package = Package(
     name: "pi2",
     // iOS for the targets the iPhone app shares with the Mac app (docs/iphone.md section 8): PiModels and EngineKit so far.
     platforms: [.macOS(.v15), .iOS(.v18)],
+    // What the iPhone app's Xcode project (iphone/pi2.xcodeproj, #680) links from this package as a local package: Xcode
+    // links only a package's products, never its bare targets. The Mac app's build is unchanged by them.
+    products: [
+        .library(name: "PiModels", targets: ["PiModels"]),
+        .library(name: "EngineKit", targets: ["EngineKit"]),
+        .library(name: "TranscriptKit", targets: ["TranscriptKit"]),
+    ],
     dependencies: [
         // Updates for release builds. build.sh copies the framework into the app.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
