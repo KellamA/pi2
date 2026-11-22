@@ -128,7 +128,9 @@ class Client extends EngineClient {
 	async runNow(id: string): Promise<number> {
 		const { conversationId } = await this.call("schedules.runNow", { id });
 		assert.equal(typeof conversationId, "number");
-		await this.until(`the run of ${id} answered`, () => this.row(conversationId) !== undefined && this.row(conversationId).busy === false && this.schedule(id)?.pending === null);
+		// The schedule as it was before this run has no `pending` either: only one that names the run as its last is from after
+		// it was made, and sent apart from the library (#746).
+		await this.until(`the run of ${id} answered`, () => this.row(conversationId) !== undefined && this.row(conversationId).busy === false && this.schedule(id)?.lastConversationId === conversationId && this.schedule(id)?.pending === null);
 		return conversationId;
 	}
 }
@@ -179,11 +181,17 @@ try {
 	engine = start();
 	client = await Client.connect(engine, home);
 	await client.until("the engine's greetings", () => client.events.agents && client.events.library && client.events.schedules && client.events.projects);
-	await client.until("carried at the start", () => typeof client.row(inRepo)?.projectId === "string");
+	// The library, the projects and the agents are three events, sent apart: the row can show its project before the other
+	// two show the project and its copies (#746). A boolean, since `until` takes `null` for an answer.
+	const noFolderProject = () => client.events.projects?.projects?.find((row: any) => row.folder === null);
+	await client.until("carried at the start", () => {
+		const project = client.row(inRepo)?.projectId;
+		const noFolder = noFolderProject()?.id;
+		return typeof project === "string" && client.project(project) !== undefined && client.copyOf(forge, project) !== undefined && noFolder !== undefined && client.copyOf(loose, noFolder) !== undefined;
+	});
 	const project = client.row(inRepo).projectId as string;
-	assert.equal(typeof project, "string");
 	const forgeCopy = client.copyOf(forge, project).id as string;
-	const noFolder = client.events.projects.projects.find((row: any) => row.folder === null).id as string;
+	const noFolder = noFolderProject().id as string;
 	const looseCopy = client.copyOf(loose, noFolder).id as string;
 	await client.until("the schedules carried", () => client.schedule(nightly).projectAgentId === forgeCopy && client.schedule(tidy).projectAgentId === looseCopy);
 	assert.equal(client.schedule(own.id).projectAgentId, forgeCopy);

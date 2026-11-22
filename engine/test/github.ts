@@ -607,7 +607,8 @@ try {
 	// A `gh` the engine started a moment before it stopped outlives it, as the real one would, and writes its line to
 	// the stand-in's log as it ends: into the folder the exit removes, which failed once in CI with "directory not empty"
 	// (#707). So the test ends once every one has; those it held were killed as it went.
-	const started = () => readFileSync(`${state}.started`, "utf8").trim().split("\n").map(Number);
+	// None at all if the test failed before the first: then the failure is what it ends with.
+	const started = () => (existsSync(`${state}.started`) ? readFileSync(`${state}.started`, "utf8").trim().split("\n").map(Number).filter((pid) => pid > 0) : []);
 	const runs = (pid: number) => {
 		try {
 			process.kill(pid, 0);
