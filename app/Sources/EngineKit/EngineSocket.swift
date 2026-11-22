@@ -8,12 +8,12 @@ import Foundation
 /// `/tmp/pi2-<uid>/<first 16 hex digits of the SHA-256 of the folder's path>`, the path resolved and in Unicode NFC.
 /// The socket file itself stays in the data folder. The engine works out the same path in engine/src/socket.ts; keep
 /// the two in step.
-enum EngineSocket {
+public enum EngineSocket {
     /// The longest socket path macOS accepts: `sun_path` holds 104 bytes, including the closing zero.
     static let maxPathLength = 103
 
     /// The path to connect to for the engine whose data folder is `home`. Makes the short link if needed.
-    static func path(for home: URL, linkRoot: String = "/tmp/pi2-\(getuid())") throws -> String {
+    public static func path(for home: URL, linkRoot: String = "/tmp/pi2-\(getuid())") throws -> String {
         // Composed (NFC), as the engine has it: URL gives decomposed accents, and the hash is of the exact bytes.
         let folder = resolved(home.path).precomposedStringWithCanonicalMapping
         let direct = (folder as NSString).appendingPathComponent("engine.sock")
