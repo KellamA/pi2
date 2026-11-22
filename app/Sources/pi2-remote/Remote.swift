@@ -51,6 +51,8 @@ package final class Remote: @unchecked Sendable {
 	private var started = false
 	var switches = Switches()
 	var relay = ""
+	/// The relay key of the relay in use (`relay`): one for each relay address, never shown to another relay.
+	package private(set) var relayKey: SigningKey?
 	package private(set) var pairing: PairingID?
 	var minimumBuild = "1"
 	var window: JoinWindow?
@@ -139,8 +141,21 @@ package final class Remote: @unchecked Sendable {
 			saveDevices()
 		}
 		applySwitches()
-		var hello: [(String, JSONValue)] = [("macKeys", keys.report), ("pairing", pairing.map { .string($0.text) } ?? .null)]
-		hello.append(("addresses", .array(addresses.map(JSONValue.string))))
+		hello()
+	}
+
+	/// `remote.hello`: the Mac's public keys, with the relay key of the relay in use, the pairing and the addresses. Said
+	/// again when the relay's address changes, since each relay has a key of its own; the engine takes the new one.
+	private func hello() {
+		do {
+			relayKey = try vault.relayKey(for: relay)
+		} catch {
+			log("the relay key could not be read or made: \(error); stopping")
+			exit(1)
+		}
+		let hello: [(String, JSONValue)] = [
+			("macKeys", keys.report(relay: relayKey!)), ("pairing", pairing.map { .string($0.text) } ?? .null), ("addresses", .array(addresses.map(JSONValue.string))),
+		]
 		engine.request("remote.hello", .object(hello)) { result in
 			if case let .failure(refusal) = result {
 				log("the engine refused remote.hello: \(refusal); stopping")
@@ -151,10 +166,17 @@ package final class Remote: @unchecked Sendable {
 	}
 
 	private func settings(_ event: JSONValue) {
+		let before = relay
 		relay = event["relay"]?.stringValue ?? relay
 		switches = Switches(event["switches"])
 		applySwitches()
-		reportAddresses()
+		if relay.utf8.elementsEqual(before.utf8) {
+			reportAddresses()
+		} else {
+			log("the relay's address changed: its own relay key is told to the engine")
+			addresses = listener?.addresses ?? []
+			hello()
+		}
 	}
 
 	/// The relay's `register`. The relay's client is #678's (P10, `Relay/`); until it is here, a development build gives

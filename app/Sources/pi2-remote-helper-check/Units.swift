@@ -139,22 +139,32 @@ enum Units {
 		let vault = KeychainVault(items: items, enclave: enclave)
 		let first = try! vault.macKeys()
 		func place(_ account: String) -> String? { items.items[account].flatMap { try? JSON.parse($0) }?["in"]?.stringValue }
-		Check.expect(place("identity") == "enclave" && place("relay") == "enclave" && place("record") == "enclave", "with a Secure Enclave, the identity, relay and record keys are made in it")
+		let relayA = try! vault.relayKey(for: "wss://relay.one/v1"), relayB = try! vault.relayKey(for: "wss://relay.two/v1")
+		Check.expect(place("identity") == "enclave" && place("record") == "enclave" && place("relay wss://relay.one/v1") == "enclave", "with a Secure Enclave, the identity, record and relay keys are made in it")
 		Check.expect(place("channel") == "software", "the channel key, Curve25519, is in the Keychain")
-		Check.expect(enclave.made == 3, "three keys made in the Secure Enclave", "\(enclave.made)")
+		Check.expect(enclave.made == 4, "four keys made in the Secure Enclave: identity, record, and a relay key for each of two relays", "\(enclave.made)")
+		Check.expect(relayA.publicKey.derRepresentation != relayB.publicKey.derRepresentation, "each relay address has a relay key of its own (#678's security read)")
+		// secureEnclave in the report is read from the keys' own kind, which only a real Secure Enclave key has; the
+		// stand-in's keys are in software.
+		Check.expect(first.report(relay: relayA)["relay"]?.stringValue == PublicKeys.text(relayA.publicKey), "remote.hello gives the relay key of the relay in use")
 		let again = try! vault.macKeys()
-		Check.expect(again.identity.publicKey.derRepresentation == first.identity.publicKey.derRepresentation && again.channel.publicKey.rawRepresentation == first.channel.publicKey.rawRepresentation && enclave.made == 3, "read again, the same keys, none made")
+		let relayAgain = try! vault.relayKey(for: "wss://relay.one/v1")
+		Check.expect(again.identity.publicKey.derRepresentation == first.identity.publicKey.derRepresentation && again.channel.publicKey.rawRepresentation == first.channel.publicKey.rawRepresentation
+			&& relayAgain.publicKey.derRepresentation == relayA.publicKey.derRepresentation && enclave.made == 4, "read again, the same keys, the same relay key for the same address, none made")
 		enclave.usable = false
-		Check.expect((try? vault.macKeys()) == nil && enclave.made == 3, "a Secure Enclave key that cannot be used is a refusal, never a new key made in silence")
+		Check.expect((try? vault.macKeys()) == nil && (try? vault.relayKey(for: "wss://relay.one/v1")) == nil && enclave.made == 4, "a Secure Enclave key that cannot be used is a refusal, never a new key made in silence")
 		let plain = MemoryItems()
-		let without = try! KeychainVault(items: plain, enclave: StandInEnclave(available: false)).macKeys()
-		Check.expect(!without.secureEnclave && plain.items.values.allSatisfy { (try? JSON.parse($0))?["in"]?.stringValue == "software" }, "without a Secure Enclave, every key in the Keychain, and the report says so")
-		Check.expect(without.report["secureEnclave"]?.boolValue == false, "secureEnclave: false in remote.hello")
+		let plainVault = KeychainVault(items: plain, enclave: StandInEnclave(available: false))
+		let without = try! plainVault.macKeys()
+		let withoutRelay = try! plainVault.relayKey(for: "wss://relay.one/v1")
+		Check.expect(plain.items.values.allSatisfy { (try? JSON.parse($0))?["in"]?.stringValue == "software" }, "without a Secure Enclave, every key in the Keychain")
+		Check.expect(without.report(relay: withoutRelay)["secureEnclave"]?.boolValue == false, "and secureEnclave: false in remote.hello")
 		plain.items["identity"] = Data("{\"in\":\"elsewhere\",\"key\":\"AA\"}".utf8)
 		Check.expect((try? KeychainVault(items: plain, enclave: StandInEnclave(available: false)).macKeys()) == nil, "an item pi² Remote did not write is refused")
-		let device = ListedDevice(id: DeviceID.random(), deviceKey: P256.Signing.PrivateKey().publicKey, presenceKey: nil, channelKey: Curve25519.KeyAgreement.PrivateKey().publicKey, recordKey: P256.KeyAgreement.PrivateKey().publicKey)
+		let device = ListedDevice(id: DeviceID.random(), deviceKey: P256.Signing.PrivateKey().publicKey, presenceKey: nil, channelKey: Curve25519.KeyAgreement.PrivateKey().publicKey, recordKey: P256.KeyAgreement.PrivateKey().publicKey, attestKeyId: "a2V5+aWQ/=")
 		try! vault.saveDevices([device])
-		Check.expect((try? vault.devices())?.map(\.id) == [device.id], "the list of devices is kept in the Keychain and read back")
+		let back = try? vault.devices()
+		Check.expect(back?.map(\.id) == [device.id] && back?.first?.attestKeyId == "a2V5+aWQ/=", "the list of devices is kept in the Keychain and read back, with each one's App Attest key id")
 		Check.expect((try? KeyVaults.forBuild(.release, folder: URL(fileURLWithPath: "/nonexistent"))) == nil, "a development build cannot make a release build's vault: the Keychain is not compiled into it")
 	}
 
@@ -167,7 +177,9 @@ enum Units {
 		let file = folder.appendingPathComponent("remote-keys.json")
 		let mode = (try? FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int) ?? -1
 		Check.expect(mode == 0o600, "remote-keys.json is readable by the person alone", String(mode, radix: 8))
-		Check.expect(!keys.secureEnclave && keys.report["secureEnclave"]?.boolValue == false, "and says its keys are not in a Secure Enclave")
+		let relayA = try! vault.relayKey(for: "ws://127.0.0.1:9/v1"), relayB = try! vault.relayKey(for: "ws://127.0.0.1:10/v1")
+		Check.expect(keys.report(relay: relayA)["secureEnclave"]?.boolValue == false, "and says its keys are not in a Secure Enclave")
+		Check.expect(relayA.publicKey.derRepresentation != relayB.publicKey.derRepresentation && (try? vault.relayKey(for: "ws://127.0.0.1:9/v1"))?.publicKey.derRepresentation == relayA.publicKey.derRepresentation, "a relay key for each relay address, the same one read again")
 		Check.expect((try? vault.macKeys())?.identity.publicKey.derRepresentation == keys.identity.publicKey.derRepresentation, "the same keys read again")
 		chmod(file.path, 0o644)
 		Check.expect((try? vault.macKeys()) == nil, "a key file others can read is refused")

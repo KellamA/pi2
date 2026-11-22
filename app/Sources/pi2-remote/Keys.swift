@@ -50,43 +50,47 @@ package enum RecordKey: @unchecked Sendable {
 	package var inEnclave: Bool { if case .enclave = self { true } else { false } }
 }
 
-/// The Mac's four keys.
+/// The Mac's identity, channel and record keys. Its relay keys are one for each relay address (`KeyVault.relayKey`): a
+/// relay is not trusted, so no key it has seen proves this Mac to another, and a pairing registered at one relay is
+/// never shown to another (#678's security read).
 package struct MacKeys: Sendable {
 	package let identity: SigningKey
-	package let relay: SigningKey
 	package let channel: Curve25519.KeyAgreement.PrivateKey
 	package let record: RecordKey
 
-	/// Whether the keys that can be in the Secure Enclave are: the Devices page says so when they are not (3.2).
-	package var secureEnclave: Bool { identity.inEnclave && relay.inEnclave }
-
-	/// The public halves, as `remote.hello` gives them to the engine.
-	package var report: JSONValue {
+	/// The public halves, as `remote.hello` gives them to the engine, with the relay key of the relay in use. Whether the
+	/// keys that can be in the Secure Enclave are: the Devices page says so when they are not (3.2).
+	package func report(relay: SigningKey) -> JSONValue {
 		.object([
 			("identity", .string(PublicKeys.text(identity.publicKey))),
 			("channel", .string(PublicKeys.text(channel.publicKey))),
 			("record", .string(PublicKeys.text(record.publicKey))),
 			("relay", .string(PublicKeys.text(relay.publicKey))),
-			("secureEnclave", .bool(secureEnclave)),
+			("secureEnclave", .bool(identity.inEnclave && relay.inEnclave)),
 		])
 	}
 }
 
 /// One paired device, as pi² Remote keeps it in its own list: added only when the engine says it paired the device
-/// (`paired`), never from what `start` lists (3.4, 5.5).
+/// (`paired`), never from what `start` lists (3.4, 5.5), and never on a relay's word: the device key and the App Attest
+/// key id the relay's `addDevice` is given (#678) are these, the engine's verified claim's, never what a relay's
+/// `joined` says. Nothing but the engine's `paired`, `revoke` and `start` changes the list.
 package struct ListedDevice: Sendable {
 	package let id: DeviceID
 	package let deviceKey: P256.Signing.PublicKey
 	package let presenceKey: P256.Signing.PublicKey?
 	package let channelKey: Curve25519.KeyAgreement.PublicKey
 	package let recordKey: P256.KeyAgreement.PublicKey
+	/// The App Attest key the engine checked at pairing (DCAppAttestService's id, base64), for the relay's `addDevice`.
+	package let attestKeyId: String?
 
-	package init(id: DeviceID, deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey?, channelKey: Curve25519.KeyAgreement.PublicKey, recordKey: P256.KeyAgreement.PublicKey) {
+	package init(id: DeviceID, deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey?, channelKey: Curve25519.KeyAgreement.PublicKey, recordKey: P256.KeyAgreement.PublicKey, attestKeyId: String? = nil) {
 		self.id = id
 		self.deviceKey = deviceKey
 		self.presenceKey = presenceKey
 		self.channelKey = channelKey
 		self.recordKey = recordKey
+		self.attestKeyId = attestKeyId
 	}
 
 	/// From the engine's `paired` event's `device`, whose keys are written as RemoteKit writes them.
@@ -101,7 +105,14 @@ package struct ListedDevice: Sendable {
 			guard let text = presence.stringValue, let key = PublicKeys.signingKey(fromBase64URL: text) else { return nil }
 			presenceKey = key
 		}
-		self.init(id: id, deviceKey: deviceKey, presenceKey: presenceKey, channelKey: channelKey, recordKey: recordKey)
+		var attestKeyId: String?
+		if let given = json["attestKeyId"], !given.isNull {
+			guard let text = given.stringValue, (1 ... 128).contains(text.utf8.count),
+			      text.utf8.allSatisfy({ SessionID.idByte($0) || $0 == UInt8(ascii: "+") || $0 == UInt8(ascii: "/") || $0 == UInt8(ascii: "=") })
+			else { return nil }
+			attestKeyId = text
+		}
+		self.init(id: id, deviceKey: deviceKey, presenceKey: presenceKey, channelKey: channelKey, recordKey: recordKey, attestKeyId: attestKeyId)
 	}
 
 	package var json: JSONValue {
@@ -109,6 +120,7 @@ package struct ListedDevice: Sendable {
 			("id", .string(id.text)), ("deviceKey", .string(PublicKeys.text(deviceKey))),
 			("presenceKey", presenceKey.map { .string(PublicKeys.text($0)) } ?? .null),
 			("channelKey", .string(PublicKeys.text(channelKey))), ("recordKey", .string(PublicKeys.text(recordKey))),
+			("attestKeyId", attestKeyId.map(JSONValue.string) ?? .null),
 		])
 	}
 
@@ -132,6 +144,8 @@ package protocol KeyVault: Sendable {
 	var name: String { get }
 	/// The Mac's keys, made the first time.
 	func macKeys() throws -> MacKeys
+	/// The relay key for the relay at `address`, made the first time that address is used: one key for each relay.
+	func relayKey(for address: String) throws -> SigningKey
 	func devices() throws -> [ListedDevice]
 	func saveDevices(_ devices: [ListedDevice]) throws
 }
@@ -191,8 +205,11 @@ package struct KeychainVault: KeyVault {
 	}
 
 	package func macKeys() throws -> MacKeys {
-		MacKeys(identity: try signing("identity"), relay: try signing("relay"), channel: try channel(), record: try record())
+		MacKeys(identity: try signing("identity"), channel: try channel(), record: try record())
 	}
+
+	/// The relay key for `address`, in its own item, `relay <address>`.
+	package func relayKey(for address: String) throws -> SigningKey { try signing("relay \(address)") }
 
 	private func stored(_ account: String) throws -> (inEnclave: Bool, key: Data)? {
 		guard let data = try items.read(account) else { return nil }
@@ -269,27 +286,49 @@ package struct KeyFiles: KeyVault {
 	package var keysFile: URL { folder.appendingPathComponent("remote-keys.json") }
 	package var devicesFile: URL { folder.appendingPathComponent("remote-devices.json") }
 
-	package func macKeys() throws -> MacKeys {
-		if let data = try PrivateFile.read(keysFile) {
-			guard let value = try? JSON.parse(data), value["v"]?.integerValue == 1 else { throw Refusal("remote-keys.json is not one pi² Remote wrote") }
-			func raw(_ name: String) throws -> Data {
-				guard let text = value[name]?.stringValue, let bytes = Base64URL.decode(text) else { throw Refusal("remote-keys.json has no \(name) key") }
-				return bytes
-			}
-			return MacKeys(
-				identity: .software(try P256.Signing.PrivateKey(rawRepresentation: raw("identity"))),
-				relay: .software(try P256.Signing.PrivateKey(rawRepresentation: raw("relay"))),
-				channel: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw("channel")),
-				record: .software(try P256.KeyAgreement.PrivateKey(rawRepresentation: raw("record"))))
+	/// The file read: `{"v":1,"identity","channel","record","relays":{<address>:<key>}}`, each key's raw bytes in base64url.
+	private func stored() throws -> [(String, JSONValue)]? {
+		guard let data = try PrivateFile.read(keysFile) else { return nil }
+		guard let value = try? JSON.parse(data), value["v"]?.integerValue == 1, case let .object(members) = value else {
+			throw Refusal("remote-keys.json is not one pi² Remote wrote")
 		}
-		let identity = P256.Signing.PrivateKey(), relay = P256.Signing.PrivateKey()
-		let channel = Curve25519.KeyAgreement.PrivateKey(), record = P256.KeyAgreement.PrivateKey()
+		return members
+	}
+
+	private static func raw(_ members: [(String, JSONValue)], _ name: String) throws -> Data {
+		guard let text = JSONValue.object(members)[name]?.stringValue, let bytes = Base64URL.decode(text) else { throw Refusal("remote-keys.json has no \(name) key") }
+		return bytes
+	}
+
+	package func macKeys() throws -> MacKeys {
+		if let members = try stored() {
+			return MacKeys(
+				identity: .software(try P256.Signing.PrivateKey(rawRepresentation: Self.raw(members, "identity"))),
+				channel: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: Self.raw(members, "channel")),
+				record: .software(try P256.KeyAgreement.PrivateKey(rawRepresentation: Self.raw(members, "record"))))
+		}
+		let identity = P256.Signing.PrivateKey(), channel = Curve25519.KeyAgreement.PrivateKey(), record = P256.KeyAgreement.PrivateKey()
 		try PrivateFile.write(keysFile, JSON.write(.object([
 			("v", .integer(1)), ("identity", .string(Base64URL.encode(identity.rawRepresentation))),
-			("relay", .string(Base64URL.encode(relay.rawRepresentation))), ("channel", .string(Base64URL.encode(channel.rawRepresentation))),
-			("record", .string(Base64URL.encode(record.rawRepresentation))),
+			("channel", .string(Base64URL.encode(channel.rawRepresentation))), ("record", .string(Base64URL.encode(record.rawRepresentation))),
+			("relays", .object([])),
 		])))
-		return MacKeys(identity: .software(identity), relay: .software(relay), channel: channel, record: .software(record))
+		return MacKeys(identity: .software(identity), channel: channel, record: .software(record))
+	}
+
+	package func relayKey(for address: String) throws -> SigningKey {
+		guard var members = try stored() else { throw Refusal("remote-keys.json does not exist yet") }
+		var relays: [(String, JSONValue)] = []
+		if case let .object(given)? = JSONValue.object(members)["relays"] { relays = given }
+		if let text = relays.first(where: { $0.0.utf8.elementsEqual(address.utf8) })?.1.stringValue, let bytes = Base64URL.decode(text) {
+			return .software(try P256.Signing.PrivateKey(rawRepresentation: bytes))
+		}
+		let key = P256.Signing.PrivateKey()
+		relays.append((address, .string(Base64URL.encode(key.rawRepresentation))))
+		members.removeAll { $0.0 == "relays" || $0.0 == "relay" }
+		members.append(("relays", .object(relays)))
+		try PrivateFile.write(keysFile, JSON.write(.object(members)))
+		return .software(key)
 	}
 
 	package func devices() throws -> [ListedDevice] {

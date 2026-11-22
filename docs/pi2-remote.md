@@ -43,9 +43,19 @@ It reads no argument and none of its own environment variables, in any build; `p
 
 ## The keys and the list of devices
 
-The Mac's four keys are made the first time and read after ([iphone.md 3.2](iphone.md#32-the-keys)); their public halves go to the engine in `remote.hello`, with `secureEnclave` saying whether the identity and relay keys are in a Secure Enclave. A key the Keychain holds as being in the Secure Enclave that cannot be used there (the Keychain was carried to another Mac) is a refusal, never a new key made in silence, which would unpair every phone.
+The Mac's identity, channel and record keys are made the first time and read after ([iphone.md 3.2](iphone.md#32-the-keys)). **Its relay key is one for each relay address**, made the first time that address is used (`relayKey(for:)`; in a release build its own Keychain item, `relay <address>`, in the Secure Enclave where there is one; in a development build, under `relays` in `remote-keys.json`): a relay is not trusted, so no key one relay has seen proves this Mac to another. Their public halves go to the engine in `remote.hello`, the relay key being the one for the relay in use, with `secureEnclave` saying whether the identity and relay keys are in a Secure Enclave. When the engine's `settings` names another relay address, pi² Remote says `remote.hello` again with that relay's key, which the engine takes. A key the Keychain holds as being in the Secure Enclave that cannot be used there (the Keychain was carried to another Mac) is a refusal, never a new key made in silence, which would unpair every phone.
 
-**Its own list of the paired devices' keys** (3.4, 5.5) is written only when the engine says it paired a device (`paired`), and attaches no device outside it: a device written into the engine's store by hand is never attached. `start`, which the engine builds from its own store, is used only to drop devices: one the list holds that `start` does not name was revoked while pi² Remote was not running, and goes. `revoke` drops a device at once.
+**Its own list of the paired devices' keys** (3.4, 5.5) is written only when the engine says it paired a device (`paired`), with the device key and the App Attest key id of the engine's verified claim, and attaches no device outside it: a device written into the engine's store by hand is never attached. `start`, which the engine builds from its own store, is used only to drop devices: one the list holds that `start` does not name was revoked while pi² Remote was not running, and goes. `revoke` drops a device at once.
+
+## The relay's word
+
+The relay's client is #678's, and pi² Remote's use of it the second part of #678; the security read of that client set what pi² Remote may take from a relay, which is nothing it acts on alone. What this part already decides is built that way:
+
+- **Nothing on the relay's word changes the list of devices or the pairing.** Only the engine's `paired`, `revoke` and `start` change pi² Remote's own list; a relay's `deleted`, `removed`, `left`, `not-listed`, `unknown-pairing` or `signature` must never forget, revoke, wipe or register again a pairing or a device. A relay's `left` is "this device stopped using the relay", shown to the person, not a revocation, until the relay passes on the phone's own signed `leave`.
+- **`addDevice` takes the device key and the App Attest key id from the list**, which holds the engine's verified claim's (`attestKeyId` is kept for it), never from a relay's `joined`, and goes before the relay's `closeJoin` and before the window expires. The engine closes its window (`closeJoin` to pi² Remote) before it says `paired`, so the relay's `closeJoin` must wait for `addDevice`.
+- **One relay key for each relay address** (above), and a pairing's id is never shown to a relay other than the one it was registered at.
+- **A relay that stops** (`stopped`) is reported to the engine, and the client starts again only on the person's action, after a long wait, or at the next launch. There is nothing to report yet: no relay runs here, and the engine has no request for it; #678's second part adds one with the engine's side.
+- `online`, `offline`, the lists of `ready`, `held` and `anotherMac` are hints a relay can forge; `.data(from:)` goes to that device's channel, and only the channel proves who sent it.
 
 ## The control connection
 

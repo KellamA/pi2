@@ -19,6 +19,9 @@ enum Flows {
 		let record: P256.KeyAgreement.PublicKey
 	}
 
+	nonisolated(unsafe) static var hello0: JSONValue?
+	nonisolated(unsafe) static var relayKeyText: String?
+
 	static func listed(_ home: URL) -> [String] {
 		guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path), let value = try? JSON.parse(data),
 		      case let .array(items)? = value["devices"]
@@ -34,6 +37,8 @@ enum Flows {
 		])
 		guard let hello = engine.request("remote.hello") else { return nil }
 		engine.answer(hello.id)
+		hello0 = hello.params
+		relayKeyText = hello.params["macKeys"]?["relay"]?.stringValue
 		let keys = hello.params["macKeys"]
 		guard let identity = keys?["identity"]?.stringValue.flatMap(PublicKeys.signingKey), let channel = keys?["channel"]?.stringValue.flatMap(PublicKeys.channelKey),
 		      let record = keys?["record"]?.stringValue.flatMap(PublicKeys.agreementKey), PublicKeys.signingKey(fromBase64URL: keys?["relay"]?.stringValue ?? "") != nil,
@@ -174,6 +179,23 @@ enum Flows {
 
 		guard let device = pair(engine, mac: mac, keys: keys, claim: "claim_1") else { Check.stop("a phone paired") }
 		Check.expect(listed(home) == [device.text], "the device is on pi² Remote's own list once the engine paired it")
+		let kept = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path).flatMap { try? JSON.parse($0) }
+		Check.expect(kept?["devices"].flatMap { if case let .array(items) = $0 { items.first } else { nil } }?["attestKeyId"]?.stringValue == keys.keyId, "with the App Attest key id of the engine's verified claim, for the relay's addDevice")
+
+		Check.section("a relay key for each relay address (#678's security read)")
+		let firstRelay = relayKeyText
+		engine.event("settings", [("relay", .string("ws://127.0.0.1:10/v1")), ("switches", switches)])
+		let other = engine.request("remote.hello")
+		if let other { engine.answer(other.id) }
+		let otherRelay = other?.params["macKeys"]?["relay"]?.stringValue
+		Check.expect(otherRelay != nil && otherRelay != firstRelay, "another relay's address: remote.hello again, with a relay key of its own")
+		Check.expect(other?.params["macKeys"]?["identity"] == hello0?["macKeys"]?["identity"] && other?.params["macKeys"]?["channel"] == hello0?["macKeys"]?["channel"], "and the same identity and channel keys")
+		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches)])
+		let back = engine.request("remote.hello")
+		if let back { engine.answer(back.id) }
+		Check.expect(back?.params["macKeys"]?["relay"]?.stringValue == firstRelay, "back to the first relay, its own key again")
+		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches)])
+		Check.expect(engine.quiet(for: 1), "the same address again says nothing")
 
 		Check.section("attaching, a session's lines, resuming (3.4, 5.6, 5.8)")
 		guard let (first, attached) = attach(engine, mac: mac, device: device, keys: keys, session: "s_one") else { Check.stop("the phone attached") }
