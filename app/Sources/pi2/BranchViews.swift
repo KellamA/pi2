@@ -619,7 +619,7 @@ struct BranchTracker: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Button(row.conversation.title.isEmpty ? "New conversation" : row.conversation.title) {
-                    model.selection = .conversation(row.conversation.id)
+                    model.openConversation(row.conversation.id)
                 }
                 .buttonStyle(.plain)
                 .lineLimit(1)
@@ -635,7 +635,7 @@ struct BranchTracker: View {
             ChangeSize(status: row.status, size: 11.5)
             Tag(row.status.stateTitle, row.status.tone).help(row.status.facts.joined(separator: "\n"))
             Menu {
-                Button("Open Conversation") { model.selection = .conversation(row.conversation.id) }
+                Button("Open Conversation") { model.openConversation(row.conversation.id) }
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: row.status.root)]) }
                     .disabled(row.status.state == "missing")
                 Divider()
@@ -683,7 +683,7 @@ struct BranchTracker: View {
                 .help(archived ? "Its conversation is in the Archive" : "Its conversation was deleted")
             VStack(alignment: .leading, spacing: 3) {
                 if archived {
-                    Button(title) { model.selection = .conversation(item.id) }
+                    Button(title) { model.openConversation(item.id) }
                         .buttonStyle(.plain)
                         .lineLimit(1)
                 } else {
@@ -703,7 +703,7 @@ struct BranchTracker: View {
                 .buttonStyle(.piSecondary)
                 .help("Remove this worktree’s folder; you can keep or delete its branch")
             Menu {
-                if archived { Button("Open Conversation") { model.selection = .conversation(item.id) } }
+                if archived { Button("Open Conversation") { model.openConversation(item.id) } }
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.status.root)]) }
                     .disabled(item.status.state == "missing")
                 if let branch = item.status.branch {

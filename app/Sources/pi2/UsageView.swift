@@ -28,7 +28,7 @@ struct UsageView: View {
                         if usage.conversations.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
                         ForEach(usage.conversations) { row in
                             HStack {
-                                Button(row.title.isEmpty ? "New conversation" : row.title) { model.selection = .conversation(row.id) }
+                                Button(row.title.isEmpty ? "New conversation" : row.title) { model.openConversation(row.id) }
                                     .buttonStyle(.plain)
                                     .foregroundStyle(Theme.acc)
                                     .lineLimit(1)

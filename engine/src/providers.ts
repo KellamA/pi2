@@ -27,6 +27,7 @@ import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from "@e
 import { isAttachmentBlock } from "./attachments.ts";
 import type { LocalSetup } from "./localengine.ts";
 import { FileModelsStore, type ListedModel, listerFor } from "./modellists.ts";
+import { placingPromptChanges } from "./promptchanges.ts";
 import { THINKING_LEVELS } from "./thinkingretry.ts";
 
 export const DEMO_PROVIDER = "demo";
@@ -641,7 +642,9 @@ function endpointProvider(config: EndpointConfig): Provider {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
 			maxTokens: Math.min(16_384, Math.floor(contextWindow / 4)),
-			// Local and self-hosted servers rarely know the newer OpenAI request fields, such as the long prompt cache's.
+			// Local and self-hosted servers rarely know the newer OpenAI request fields, such as the long prompt cache's. Nor
+			// do many chat templates take a system message after the first, so a changed section of the prompt is sent them
+			// as a user message in place, by pi² (promptchanges.ts, #629).
 			...(config.api === "openai-completions" ? { compat: { supportsDeveloperRole: false, supportsReasoningEffort: m.reasoning ?? false, supportsLongCacheRetention: false } } : {}),
 		} as Model<EndpointApi>;
 	});
@@ -760,11 +763,14 @@ export class Providers {
 		this.#credentials = credentials;
 		this.#deviceId = deviceId;
 		this.#log = options.log ?? (() => {});
-		this.models = (options.builtins ?? builtinModels)({
-			credentials,
-			modelsStore: new FileModelsStore(join(home, "model-catalogs.json")),
-			identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
-		});
+		// A model that would have a changed section of the system prompt folded into the first is sent it in place (#629).
+		this.models = placingPromptChanges(
+			(options.builtins ?? builtinModels)({
+				credentials,
+				modelsStore: new FileModelsStore(join(home, "model-catalogs.json")),
+				identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
+			}),
+		);
 		this.#addedPath = join(home, "added-models.json");
 		try {
 			this.#added = JSON.parse(readFileSync(this.#addedPath, "utf8"));

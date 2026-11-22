@@ -15,9 +15,9 @@ struct ProjectHubView: View {
     private var engine: EngineClient { model.engine }
 
     /// The conversation of one of the project's agents shown in place of the board, while it is still in the library
-    /// (#473).
+    /// (#473), or in the Archive, where it reads with its Restore bar (#644).
     private var agentConversation: Int? {
-        guard let id = model.hubs.agent(projectID), engine.conversations.contains(where: { $0.id == id }) else { return nil }
+        guard let id = model.hubs.agent(projectID), engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else { return nil }
         return id
     }
 
@@ -489,8 +489,11 @@ private struct HubAgentPanel: View {
     let onFocus: () -> Void
     private var engine: EngineClient { model.engine }
     private var summary: ConversationSummary? { engine.conversations.first { $0.id == conversation } }
-    private var agent: AgentProfile? { engine.agent(summary?.agentId) }
-    private var title: String { summary?.title ?? "" }
+    /// An archived one is in the Archive's list, or, a sub-chat of one, in neither: its state names it (#644).
+    private var agent: AgentProfile? {
+        engine.agent(summary?.agentId ?? engine.archived.first { $0.id == conversation }?.agentId ?? engine.open[conversation]?.state?.agent.agentId)
+    }
+    private var title: String { summary?.title ?? engine.archived.first { $0.id == conversation }?.title ?? engine.open[conversation]?.state?.title ?? "" }
 
     var body: some View {
         VStack(spacing: 0) {
