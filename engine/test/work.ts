@@ -1,7 +1,7 @@
 // The built-in work list, driven through a real engine with a throwaway home and the scripted demo model.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -12,14 +12,16 @@ import { DEFAULT_ORCHESTRATOR, PROJECT_ARCHIVED, Projects } from "../src/project
 import { makeScratch } from "../src/scratch.ts";
 import { Agents } from "../src/state.ts";
 import { recordWork, Work, type WorkItem } from "../src/work.ts";
-import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-work-"));
 const service = `dev.pi2.credentials.test-work-${process.pid}`;
 // A stand-in gh (gh-stand-in.mjs) that knows no repository: the project with one attached is never read from GitHub.
 const ghFolder = mkdtempSync(join(tmpdir(), "pi2-work-gh-"));
-writeFileSync(join(ghFolder, "state.json"), JSON.stringify({ repos: {} }));
-writeFileSync(join(ghFolder, "gh"), `#!/bin/sh\nGH_STAND_IN_STATE='${join(ghFolder, "state.json")}' exec '${process.execPath}' '${join(import.meta.dirname, "gh-stand-in.mjs")}' "$@"\n`, { mode: 0o755 });
+const ghState = join(ghFolder, "state.json");
+writeFileSync(ghState, JSON.stringify({ repos: {} }));
+// Each says its process id first, which `exec` keeps, so that the test can wait for the last of them to end (#707, #746).
+writeFileSync(join(ghFolder, "gh"), `#!/bin/sh\necho $$ >> '${ghState}.started'\nGH_STAND_IN_STATE='${ghState}' exec '${process.execPath}' '${join(import.meta.dirname, "gh-stand-in.mjs")}' "$@"\n`, { mode: 0o755 });
 // A folder of its own for the git repositories assignments are given worktrees of (#596).
 const repos = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-repos-")));
 const env = { ...process.env, PI2_HOME: home, PI2_KEYCHAIN_SERVICE: service, PI2_LOGIN_SHELL: "off", PI2_DEMO_TOKENS_PER_SECOND: "100000", PI2_APP_BUNDLE: standInApp(), PI2_GH: join(ghFolder, "gh") };
@@ -446,4 +448,17 @@ try {
 	peer?.close();
 	client?.close();
 	await stop(engine);
+	// A `gh` the engine started a moment before it stopped outlives it, as the real one would, and writes its line to the
+	// stand-in's log as it ends: into the folder the exit removes, which failed once in CI with "directory not empty"
+	// (#746, as github.ts in #707). So the test ends once every one has.
+	const started = () => (existsSync(`${ghState}.started`) ? readFileSync(`${ghState}.started`, "utf8").trim().split("\n").map(Number).filter((pid) => pid > 0) : []);
+	const runs = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	await until("every gh the engines started to have ended", () => started().every((pid) => !runs(pid)));
 }
