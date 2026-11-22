@@ -1,6 +1,6 @@
 # Retaking the README's pictures
 
-The pictures in `docs/images/` that the README and the guide show (all but `providers.png`, `models.png` and `icon.png`) are staged with this kit in a throwaway copy of pi² (#729, #757). The demo model can only give its canned answers, so the copy is given an endpoint, "Ollama", that points at `server.mjs`: a stand-in OpenAI-compatible server on 127.0.0.1 whose answers come from `scenario.mjs`. The tools run for real in the copy, on three small sample repositories made from `samples/`, so every tool step, approval, report, wake, work item and token count is pi²'s own. The README says under its first picture that the answers are scripted.
+The pictures in `docs/images/` that the README and the guide show (all but `providers.png` and `icon.png`, below) are staged with this kit in a throwaway copy of pi² (#729, #757). The demo model can only give its canned answers, so the copy is given an endpoint, "Ollama", that points at `server.mjs`: a stand-in OpenAI-compatible server on 127.0.0.1 whose answers come from `scenario.mjs`. The tools run for real in the copy, on three small sample repositories made from `samples/`, so every tool step, approval, report, wake, work item and token count is pi²'s own. The README says under its first picture that the answers are scripted.
 
 Everything goes through `scripts/test-copy`, which refuses any copy this checkout did not start and keeps to the rules in [Testing safely](../../CONTRIBUTING.md#testing-safely); the kit adds no guard of its own. Nothing here calls a real provider.
 
@@ -25,6 +25,22 @@ From the checkout, with a development build (`./app/build.sh`) and `jq`:
 | (`computer-use.png`) | `reopen test-N --show 'agent:<Scout>#computer'` (an agent's `#section` is reached at launch, not by `show`). Not in the README for now: in a copy both permissions show as not granted, and the section ends with a sentence only a development build has. |
 
 5. `scripts/test-copy stop test-N`, stop the server, and `scripts/readme-pictures/reset.sh /Users/Shared/Projects --remove`.
+
+## `providers.png`
+
+Settings needs no scenario, only sample entries, so this one is taken in a copy of its own (#777). The keys are made-up strings that go to the copy's own Keychain service and are never sent anywhere; the endpoint is never asked.
+
+```bash
+scripts/test-copy start test-N
+scripts/test-copy call test-N endpoints.save '{"name":"Ollama","baseUrl":"http://127.0.0.1:11434/v1","api":"openai-completions","models":[{"id":"qwen3-coder:30b"},{"id":"gpt-oss:120b"},{"id":"gemma3:27b"}]}'
+scripts/test-copy call test-N providers.setKey '{"id":"anthropic","key":"sk-ant-sample-not-a-real-key"}'
+scripts/test-copy call test-N providers.setKey '{"id":"deepseek","key":"sk-sample-not-a-real-key"}'
+scripts/test-copy call test-N providers.setHiddenModels '{"id":"anthropic","newest":true}'
+scripts/test-copy show test-N 'settings:providers#endpoints'
+scripts/test-copy shot test-N docs/images/providers.png --window Providers
+```
+
+A sheet over Settings, such as a provider's Models list, cannot be pictured this way: the copy's Settings window is parked in the screen's corner, its sheet falls off every screen, and macOS gives no image of a window that is on none.
 
 ## Changing the scenario
 

@@ -34,6 +34,8 @@ Work is organised in **projects**. A project is a folder, an **orchestrator** yo
 
 For a question that needs no folder and no agents, there is **chat mode**, a plain chat with an assistant.
 
+Connecting models, choosing which show in the menus and the model new agents start on are in [models.md](models.md).
+
 ## The window
 
 The sidebar has, from the top:
