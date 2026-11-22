@@ -2,16 +2,16 @@ import ComposeKit
 import ComputerKit
 import SwiftUI
 
-/// One thing waiting on the person, with the controls to answer it. Used in the transcript, the inbox, and above the
-/// composer for a subagent's requests.
+/// One thing waiting on the person, with the controls to answer it. Used in the transcript, above the composer for a
+/// sub-chat's requests, on a project's Now tab and in a Dashboard column, and in the menu bar.
 struct InboxCard: View {
     let engine: EngineClient
     let item: InboxItem
     /// Whether to say which agent and conversation is asking; off where the surrounding view already shows it.
     let showsSource: Bool
-    /// Whether the card is in a narrower place than the Inbox, such as a Dashboard column (#481): its row then takes
-    /// two lines rather than folding every part of it down a word at a time. Off everywhere else, so the Inbox's and the
-    /// menu bar's cards read exactly as they did.
+    /// Whether the card is in a narrow place, such as a Dashboard column (#481): its row then takes two lines rather
+    /// than folding every part of it down a word at a time. Off everywhere else, so the menu bar's and a conversation's
+    /// cards read exactly as they did.
     var compact = false
     @State private var answer = ""
     /// The answer's request is on its way: a second click while it goes does nothing (#481).
@@ -104,7 +104,7 @@ struct InboxCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             if compact {
-                // A Dashboard column's card is narrower than the Inbox's: what is asked takes up to two lines and the
+                // A Dashboard column's card is narrower than the others: what is asked takes up to two lines and the
                 // hint shortens, rather than every part of the row folding down a word at a time (#481).
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {

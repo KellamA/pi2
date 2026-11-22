@@ -788,8 +788,8 @@ private struct StopAllButton: View {
     }
 }
 
-/// The limit notices, each one line until unfolded, under the line across all projects (#645): the Inbox's own cards,
-/// with their Dismiss and Show Usage. However many there are, they scroll within at most a few lines' room, and in a
+/// The limit notices, each one line until unfolded, under the line across all projects (#645): the usual limit cards
+/// (`LimitNoticeCard`), with their Dismiss and Show Usage. However many there are, they scroll within at most a few lines' room, and in a
 /// short window one line's, with a line saying how many more there are, so that the columns keep the window.
 private struct DashboardLimitNotices: View {
     let model: AppModel

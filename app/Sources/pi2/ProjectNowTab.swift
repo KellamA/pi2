@@ -227,7 +227,7 @@ struct QuietLine: View {
 // MARK: - The cards
 
 /// One need's card: what is asked, which agent asks and on what, and the controls that answer it in place. Approvals
-/// and questions the Inbox already answers reuse its card; every other kind has its own here. Shown in the board's Now
+/// and questions, which a conversation answers too, reuse its card (`InboxCard`); every other kind has its own here. Shown in the board's Now
 /// tab and in a Dashboard column (#481).
 struct NeedCard: View {
     let model: AppModel
@@ -336,7 +336,7 @@ struct NeedCard: View {
         return "#\(id) \(title)"
     }
 
-    /// A card of one's own, in the Inbox card's manner.
+    /// A card of one's own, in `InboxCard`'s manner.
     private func own(_ label: String, @ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             // A wide card puts the name, the conversation and the kind on one line; a narrow one, such as a

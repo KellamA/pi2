@@ -1,6 +1,6 @@
 
 // The panes of a project's hub (#657): the place beside the conversation with the orchestrator, where the board shows,
-// divided with the same tree the old screens' panes use. Here, apart from SwiftUI and the engine, so that
+// divided with PaneKit's tree of panes (`PaneNode`). Here, apart from SwiftUI and the engine, so that
 // `pi2-layout-check` checks its rules built with optimisation, as it checks the tree's (#134). The app keeps one for each
 // project (`ProjectHubs`) and draws it (`HubPanes.swift`); docs/projects.md, 10.1, says what is remembered of it.
 
