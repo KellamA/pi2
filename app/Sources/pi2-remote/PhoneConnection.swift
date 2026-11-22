@@ -307,9 +307,16 @@ final class PhoneConnection: @unchecked Sendable {
 			log("device \(session.device) sent a line that is not one JSON object; closed")
 			return end()
 		}
-		if members.count == 1, members[0].0 == "sessionEnd" {
+		if members.count == 1, members[0].0.utf8.elementsEqual("sessionEnd".utf8) {
 			remote.end(session, why: "the phone's session ended")
 			return
+		}
+		// The channel's own lines are the Mac's to send, or a phone's first lines (5.6): none is taken from a phone in a
+		// session, nor passed to the engine as a request. A `refused` line, the Mac's word that it did not attach the phone
+		// (#820), is refused from a phone above all.
+		if members.count == 1, Self.macLines.contains(where: { members[0].0.utf8.elementsEqual($0.utf8) }) || value["challenge"] != nil {
+			log("device \(session.device) sent one of the channel's own lines in its session; closed")
+			return end()
 		}
 		remote.engine.send(session: session.id, message: line)
 		if receivedBytesSinceAck >= 64 * 1024 {
@@ -322,6 +329,9 @@ final class PhoneConnection: @unchecked Sendable {
 			}
 		}
 	}
+
+	/// The channel's own lines (remotekit.md), and `refused` (#820), by their one member's name.
+	static let macLines = ["pair", "paired", "attach", "attached", "revoked", "refused", "mac"]
 
 	private func sendAck() {
 		guard case let .attached(channel, _) = phase, let ack = try? channel.sealAck(received), let framed = try? LengthFraming.encode(ack) else { return }

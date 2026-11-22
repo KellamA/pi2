@@ -248,8 +248,11 @@ enum Flows {
 		engine.event("sessionClosed", [("session", .string("s_two")), ("why", .string("check"))])
 		Check.expect(closing.event() == .bye, "a session the engine closes ends its channel")
 		guard let (lapsing, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_three") else { Check.stop("the second phone attached") }
+		// A `refused` line is the Mac's alone (#820): from a phone it closes the channel, and the session waits for a resume.
+		lapsing.sendLine(Data(#"{"refused":{"reason":"update"}}"#.utf8))
+		Check.expect(lapsing.closesWithin(10), "a refused line from a phone, which only the Mac may send, closes the channel")
 		let dropped = Date()
-		lapsing.end()
+		Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
 		guard let (revoked, _) = attach(engine, mac: mac, device: device, keys: keys, session: "s_four") else { Check.stop("attached once more") }
 		engine.event("revoke", [("device", .string(device.text))])
 		if let line = revoked.line(), case let .revoked(revocation)? = try? ControlLine.parse(line) {

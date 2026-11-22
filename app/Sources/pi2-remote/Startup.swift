@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import RemoteKit
 import Security
 
 /// The checks pi² Remote makes before anything else, and before it reads any key (docs/iphone.md 5.5, decision 24): it
@@ -11,10 +12,14 @@ import Security
 ///   satisfies that file's designated requirement (as `PeerKit` checks the app). A development build's engine runs on
 ///   the Node on the person's PATH, so there is no such file to hold it to.
 ///
-/// An agent's command runs as the person and can start a copy of `pi² Remote.app` with a socket of its own as
-/// descriptor 3; it cannot make itself the process `engine.pid` names, nor the bundle's Node, without going round pi² on
-/// purpose (rewriting the data folder), which [projects.md 7.3] leaves out and pi² Remote's own list of device keys
-/// narrows.
+/// **These checks are not enough by themselves.** Every command an agent runs is the engine's own child too, with a
+/// socket pair to the engine as its standard output: `exec "…/pi² Remote" 3>&1` keeps the command's process id and
+/// passes every check here, in a release build the code check as well (the parent is the engine). What proves the
+/// engine is the first line on descriptor 3: the engine sends `start` first, and only on the socket pair it made for
+/// pi² Remote (`firstLine`). So pi² Remote reads and makes no key, reads no list of devices and writes nothing until a
+/// well-formed `start` has come, and exits if none comes within ten seconds. A command that rewrites the data folder
+/// (`engine.pid`) and starts an engine of its own goes round pi² on purpose, which [projects.md 7.3] leaves out and
+/// pi² Remote's own list of device keys narrows.
 package enum Startup {
 	package static let controlDescriptor: Int32 = 3
 
@@ -41,6 +46,40 @@ package enum Startup {
 		} catch {
 			return .failure(Refusal("the start-up checks failed: \(error)"))
 		}
+	}
+
+	/// How long the engine's `start` may take to come: it is written as pi² Remote is started.
+	package static let startWithin: TimeInterval = 10
+	/// The longest first line taken: a `start` names the relay, the switches and at most a few devices.
+	package static let startMaxLength = 64 * 1024
+
+	/// The first line on `descriptor`, which must be the engine's `start`: `{"event":"remote","kind":"start",…}` with a
+	/// relay, switches, a pairing (or null), a list of devices and a minimum build. Read a byte at a time, so that nothing
+	/// after it is taken from the control connection. Anything else, nothing within `seconds`, or the connection
+	/// closing, is a refusal.
+	package static func firstLine(_ descriptor: Int32 = controlDescriptor, within seconds: TimeInterval = startWithin) -> Result<JSONValue, Refusal> {
+		let deadline = Date().addingTimeInterval(seconds)
+		var line = [UInt8]()
+		while true {
+			let left = deadline.timeIntervalSinceNow
+			guard left > 0 else { return .failure(Refusal("the engine's start did not come within \(Int(seconds)) seconds: pi² Remote was not started by pi²'s engine")) }
+			var poller = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+			let ready = poll(&poller, 1, Int32(max(1, left * 1000)))
+			if ready < 0, errno == EINTR { continue }
+			guard ready > 0 else { continue }
+			var byte: UInt8 = 0
+			let count = read(descriptor, &byte, 1)
+			if count < 0, errno == EINTR || errno == EAGAIN { continue }
+			guard count == 1 else { return .failure(Refusal("the control connection closed before the engine's start")) }
+			if byte == 0x0A { break }
+			line.append(byte)
+			guard line.count <= startMaxLength else { return .failure(Refusal("the first line on descriptor \(descriptor) is too long to be the engine's start")) }
+		}
+		guard let value = try? JSON.parse(line), value["event"]?.stringValue == "remote", value["kind"]?.stringValue == "start",
+		      value["relay"]?.stringValue != nil, case .object? = value["switches"], let pairing = value["pairing"], pairing.isNull || pairing.stringValue != nil,
+		      case .array? = value["devices"], value["minimumBuild"]?.stringValue != nil
+		else { return .failure(Refusal("the first line on descriptor \(descriptor) is not the engine's start: pi² Remote was not started by pi²'s engine")) }
+		return .success(value)
 	}
 
 	/// Descriptor `descriptor` is a Unix stream socket whose other end is this process's parent, of the same user.

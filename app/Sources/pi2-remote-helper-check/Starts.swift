@@ -29,6 +29,31 @@ enum Starts {
 
 		refused("with no descriptor 3", three: nil, saying: "descriptor 3 is not open")
 
+		// Every check passed, and still not the engine's helper (#675's security read A, M1): an agent's command is the
+		// engine's child with a socket pair to it as its standard output, and `exec … 3>&1` keeps its pid. Here this check
+		// is that engine: a shell it started execs pi² Remote with its standard output as descriptor 3, and sends nothing;
+		// beside it, a pi² Remote on a socket pair of the check's that sends nothing, and one sent another line first.
+		let (execMine, execTheirs) = socketPair()
+		let execed = Child.spawn("/bin/bash", ["-c", "exec \"$0\" 3>&1", helper.path], environment: steeringEnvironment, stdout: execTheirs)
+		close(execTheirs)
+		let (silentMine, silentTheirs) = socketPair()
+		let silent = Child.spawn(helper.path, steering, environment: steeringEnvironment, three: silentTheirs)
+		close(silentTheirs)
+		let (otherMine, otherTheirs) = socketPair()
+		let other = Child.spawn(helper.path, steering, environment: steeringEnvironment, three: otherTheirs)
+		close(otherTheirs)
+		_ = Data("{\"id\":1,\"result\":{}}\n".utf8).withUnsafeBytes { write(otherMine, $0.baseAddress, $0.count) }
+		let otherCode = other.wait(30)
+		Check.expect(otherCode == 78 && other.stderrText.contains("is not the engine's start"), "a pi² Remote whose first line is not the engine's start exits at once", "exit \(otherCode.map(String.init) ?? "none"); \(other.stderrText)")
+		let began = Date()
+		let execCode = execed.wait(40), silentCode = silent.wait(40)
+		let waited = Date().timeIntervalSince(began)
+		Check.expect(execCode == 78 && execed.stderrText.contains("start did not come within 10 seconds"), "a pi² Remote an agent's command execs with its standard output as descriptor 3 passes every check, is sent no start, and exits", "exit \(execCode.map(String.init) ?? "none"); \(execed.stderrText)")
+		Check.expect(silentCode == 78 && silent.stderrText.contains("start did not come within 10 seconds") && waited >= 8, "a pi² Remote on the engine's socket pair that is sent nothing exits after ten seconds", String(format: "%.0f s; %@", waited, silent.stderrText))
+		for child in [execed, silent, other] { child.stop() }
+		for end in [execMine, silentMine, otherMine] { close(end) }
+		Check.expect(!keyFilesExist(home) && !FileManager.default.fileExists(atPath: home.appendingPathComponent("remote.log").path), "none of the three read or made a key, read a list of devices, or wrote anything")
+
 		var pipeEnds: [Int32] = [0, 0]
 		pipe(&pipeEnds)
 		refused("with a pipe as descriptor 3", three: pipeEnds[0], saying: "is not a socket")

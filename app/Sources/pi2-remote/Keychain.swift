@@ -36,6 +36,16 @@ struct KeychainItems: SecretItems {
 		return data
 	}
 
+	func add(_ account: String, _ data: Data) throws -> Bool {
+		var item = base(account)
+		item[kSecValueData] = data
+		item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+		let added = SecItemAdd(item as CFDictionary, nil)
+		if added == errSecDuplicateItem { return false }
+		guard added == errSecSuccess else { throw Refusal("the Keychain's \(account) item could not be added (status \(added))") }
+		return true
+	}
+
 	func write(_ account: String, _ data: Data) throws {
 		let update = SecItemUpdate(base(account) as CFDictionary, [kSecValueData: data] as CFDictionary)
 		if update == errSecSuccess { return }

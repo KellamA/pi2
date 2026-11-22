@@ -57,13 +57,13 @@ final class Child {
 
 	/// Starts `executable` with `arguments` and `environment`, standard input from nothing, standard output nowhere,
 	/// standard error to a pipe, and descriptor 3 as `three` when given. No other descriptor is inherited.
-	static func spawn(_ executable: String, _ arguments: [String] = [], environment: [String: String] = [:], three: Int32? = nil) -> Child {
+	static func spawn(_ executable: String, _ arguments: [String] = [], environment: [String: String] = [:], three: Int32? = nil, stdout: Int32? = nil) -> Child {
 		var pipeEnds: [Int32] = [0, 0]
 		guard pipe(&pipeEnds) == 0 else { Check.stop("a pipe could not be made") }
 		var actions: posix_spawn_file_actions_t?
 		posix_spawn_file_actions_init(&actions)
 		posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-		posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+		if let stdout { posix_spawn_file_actions_adddup2(&actions, stdout, 1) } else { posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0) }
 		posix_spawn_file_actions_adddup2(&actions, pipeEnds[1], 2)
 		if let three { posix_spawn_file_actions_adddup2(&actions, three, 3) }
 		var attributes: posix_spawnattr_t?

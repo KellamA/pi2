@@ -176,8 +176,10 @@ package enum KeyVaults {
 /// Items of the data-protection Keychain, by account.
 package protocol SecretItems: Sendable {
 	func read(_ account: String) throws -> Data?
-	/// Adds the item, or replaces it.
+	/// Adds the item, or replaces it (the list of devices).
 	func write(_ account: String, _ data: Data) throws
+	/// Adds the item if there is none: true if added, false if one was there (a key, which is never replaced).
+	func add(_ account: String, _ data: Data) throws -> Bool
 }
 
 /// The Secure Enclave, as far as pi² Remote uses it. A key in it is kept as CryptoKit's `dataRepresentation`, which is
@@ -219,48 +221,55 @@ package struct KeychainVault: KeyVault {
 		return (place == "enclave", key)
 	}
 
-	private func store(_ account: String, inEnclave: Bool, _ key: Data) throws {
-		try items.write(account, JSON.write(.object([("in", .string(inEnclave ? "enclave" : "software")), ("key", .string(Base64URL.encode(key)))])))
+	private func encoded(_ inEnclave: Bool, _ key: Data) -> Data {
+		JSON.write(.object([("in", .string(inEnclave ? "enclave" : "software")), ("key", .string(Base64URL.encode(key)))]))
+	}
+
+	/// A key read, or made and added once, never written over: if another pi² Remote added one meanwhile (two started
+	/// at once), its key is read back and the one made here dropped, so no helper goes on signing with a key whose item
+	/// is gone (#675's security read A, S2).
+	private func key<K>(_ account: String, load: (_ inEnclave: Bool, _ data: Data) throws -> K, make: () throws -> (key: K, inEnclave: Bool, data: Data)) throws -> K {
+		if let (inEnclave, data) = try stored(account) { return try load(inEnclave, data) }
+		let made = try make()
+		if try items.add(account, encoded(made.inEnclave, made.data)) { return made.key }
+		guard let (inEnclave, data) = try stored(account) else { throw Refusal("the Keychain's \(account) key was added by another pi² Remote, and cannot be read") }
+		return try load(inEnclave, data)
 	}
 
 	private func signing(_ account: String) throws -> SigningKey {
-		if let (inEnclave, data) = try stored(account) {
-			if inEnclave { return try enclave.signingKey(blob: data) }
-			return .software(try P256.Signing.PrivateKey(rawRepresentation: data))
-		}
-		if enclave.isAvailable {
-			let (key, blob) = try enclave.makeSigningKey()
-			try store(account, inEnclave: true, blob)
-			return key
-		}
-		let key = P256.Signing.PrivateKey()
-		try store(account, inEnclave: false, key.rawRepresentation)
-		return .software(key)
+		try key(account, load: { inEnclave, data in
+			inEnclave ? try enclave.signingKey(blob: data) : .software(try P256.Signing.PrivateKey(rawRepresentation: data))
+		}, make: {
+			if enclave.isAvailable {
+				let (key, blob) = try enclave.makeSigningKey()
+				return (key, true, blob)
+			}
+			let key = P256.Signing.PrivateKey()
+			return (.software(key), false, key.rawRepresentation)
+		})
 	}
 
 	private func record() throws -> RecordKey {
-		if let (inEnclave, data) = try stored("record") {
-			if inEnclave { return try enclave.agreementKey(blob: data) }
-			return .software(try P256.KeyAgreement.PrivateKey(rawRepresentation: data))
-		}
-		if enclave.isAvailable {
-			let (key, blob) = try enclave.makeAgreementKey()
-			try store("record", inEnclave: true, blob)
-			return key
-		}
-		let key = P256.KeyAgreement.PrivateKey()
-		try store("record", inEnclave: false, key.rawRepresentation)
-		return .software(key)
+		try key("record", load: { inEnclave, data in
+			inEnclave ? try enclave.agreementKey(blob: data) : .software(try P256.KeyAgreement.PrivateKey(rawRepresentation: data))
+		}, make: {
+			if enclave.isAvailable {
+				let (key, blob) = try enclave.makeAgreementKey()
+				return (key, true, blob)
+			}
+			let key = P256.KeyAgreement.PrivateKey()
+			return (.software(key), false, key.rawRepresentation)
+		})
 	}
 
 	private func channel() throws -> Curve25519.KeyAgreement.PrivateKey {
-		if let (inEnclave, data) = try stored("channel") {
+		try key("channel", load: { inEnclave, data in
 			guard !inEnclave else { throw Refusal("the Keychain's channel key is not one pi² Remote wrote") }
 			return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
-		}
-		let key = Curve25519.KeyAgreement.PrivateKey()
-		try store("channel", inEnclave: false, key.rawRepresentation)
-		return key
+		}, make: {
+			let key = Curve25519.KeyAgreement.PrivateKey()
+			return (key, false, key.rawRepresentation)
+		})
 	}
 
 	package func devices() throws -> [ListedDevice] {
@@ -308,11 +317,13 @@ package struct KeyFiles: KeyVault {
 				record: .software(try P256.KeyAgreement.PrivateKey(rawRepresentation: Self.raw(members, "record"))))
 		}
 		let identity = P256.Signing.PrivateKey(), channel = Curve25519.KeyAgreement.PrivateKey(), record = P256.KeyAgreement.PrivateKey()
-		try PrivateFile.write(keysFile, JSON.write(.object([
+		// Made once: if another pi² Remote made the file meanwhile, its keys are the Mac's (S2).
+		guard try PrivateFile.create(keysFile, JSON.write(.object([
 			("v", .integer(1)), ("identity", .string(Base64URL.encode(identity.rawRepresentation))),
 			("channel", .string(Base64URL.encode(channel.rawRepresentation))), ("record", .string(Base64URL.encode(record.rawRepresentation))),
 			("relays", .object([])),
 		])))
+		else { return try macKeys() }
 		return MacKeys(identity: .software(identity), channel: channel, record: .software(record))
 	}
 
@@ -360,6 +371,30 @@ package enum PrivateFile {
 		let count = data.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
 		guard count == Int(info.st_size) else { throw Refusal("\(url.lastPathComponent) could not be read") }
 		return data
+	}
+
+	/// Writes `url` only if there is no such file: true if written, false if one was there.
+	package static func create(_ url: URL, _ data: Data) throws -> Bool {
+		let temporary = try written(beside: url, data)
+		defer { unlink(temporary.path) }
+		if link(temporary.path, url.path) == 0 { return true }
+		if errno == EEXIST { return false }
+		throw Refusal("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))")
+	}
+
+	/// `data` in a new file beside `url`, 0600, synced.
+	private static func written(beside url: URL, _ data: Data) throws -> URL {
+		let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UInt32.random(in: 0 ... .max))")
+		let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+		guard descriptor >= 0 else { throw Refusal("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))") }
+		let count = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+		let synced = fsync(descriptor) == 0
+		close(descriptor)
+		guard count == data.count, synced else {
+			unlink(temporary.path)
+			throw Refusal("\(url.lastPathComponent) could not be written")
+		}
+		return temporary
 	}
 
 	package static func write(_ url: URL, _ data: Data) throws {

@@ -83,6 +83,9 @@ package final class Remote: @unchecked Sendable {
 
 	// ---- The engine's `remote` events
 
+	/// The engine's `start`, read before anything else (`Startup.firstLine`); then the control connection's own lines.
+	package func begin(_ start: JSONValue) { heard(start) }
+
 	private func heard(_ event: JSONValue) {
 		guard let kind = event["kind"]?.stringValue else { return }
 		switch kind {

@@ -102,6 +102,15 @@ enum Units {
 		}
 
 		func write(_ account: String, _ data: Data) throws { items[account] = data }
+
+		/// A stand-in for another pi² Remote adding the same account between this one's read and its add.
+		var raceWith: [String: Data] = [:]
+		func add(_ account: String, _ data: Data) throws -> Bool {
+			if let other = raceWith.removeValue(forKey: account) { items[account] = other }
+			guard items[account] == nil else { return false }
+			items[account] = data
+			return true
+		}
 	}
 
 	final class StandInEnclave: Enclave, @unchecked Sendable {
@@ -159,6 +168,11 @@ enum Units {
 		let withoutRelay = try! plainVault.relayKey(for: "wss://relay.one/v1")
 		Check.expect(plain.items.values.allSatisfy { (try? JSON.parse($0))?["in"]?.stringValue == "software" }, "without a Secure Enclave, every key in the Keychain")
 		Check.expect(without.report(relay: withoutRelay)["secureEnclave"]?.boolValue == false, "and secureEnclave: false in remote.hello")
+		let racing = MemoryItems()
+		let theirs = P256.Signing.PrivateKey()
+		racing.raceWith["identity"] = Data("{\"in\":\"software\",\"key\":\"\(Base64URL.encode(theirs.rawRepresentation))\"}".utf8)
+		let raced = try? KeychainVault(items: racing, enclave: StandInEnclave(available: false)).macKeys()
+		Check.expect(raced?.identity.publicKey.derRepresentation == theirs.publicKey.derRepresentation, "two pi² Remotes making a key at once: the second reads back the first's, never writes over it (S2)")
 		plain.items["identity"] = Data("{\"in\":\"elsewhere\",\"key\":\"AA\"}".utf8)
 		Check.expect((try? KeychainVault(items: plain, enclave: StandInEnclave(available: false)).macKeys()) == nil, "an item pi² Remote did not write is refused")
 		let device = ListedDevice(id: DeviceID.random(), deviceKey: P256.Signing.PrivateKey().publicKey, presenceKey: nil, channelKey: Curve25519.KeyAgreement.PrivateKey().publicKey, recordKey: P256.KeyAgreement.PrivateKey().publicKey, attestKeyId: "a2V5+aWQ/=")
@@ -199,6 +213,7 @@ enum Units {
 		for bad in [#"{"session":"s 1","message":{}}"#, #"{"session":"s1","message":[1]}"#, #"{"session":"s1","other":{}}"#, #"{"id":1,"result":{}}"#] {
 			Check.expect(EngineLink.sessionLine(Data(bad.utf8)) == nil, "not a session's line: \(bad)")
 		}
+		Check.expect(Log.oneLine("refused\nFAKE 2026 line\r\u{2028}\u{202E}x\u{1B}[31m") == "refused FAKE 2026 line   x [31m", "a text from outside is logged as one line, its breaks and control characters replaced (S6)", Log.oneLine("refused\nFAKE 2026 line\r\u{2028}\u{202E}x\u{1B}[31m"))
 		Check.expect(EngineLink.maxLineLength == Lines.defaultMaxLength, "the control connection takes lines of at most \(EngineLink.maxLineLength) bytes")
 	}
 

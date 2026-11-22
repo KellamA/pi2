@@ -19,7 +19,22 @@ package final class Log: @unchecked Sendable {
 		lock.withLock { file = folder.appendingPathComponent("remote.log") }
 	}
 
+	/// `text` as one line: line breaks, control characters and the direction-changing ones replaced by a space, and cut
+	/// to 1,000 characters, so that a text from outside (the engine's refusal) cannot make a line of its own (S6).
+	package static func oneLine(_ text: String) -> String {
+		let scalars = text.unicodeScalars.map { scalar -> Unicode.Scalar in
+			switch scalar.value {
+			case 0 ..< 0x20, 0x7F ..< 0xA0, 0x2028, 0x2029, 0x200B ... 0x200F, 0x202A ... 0x202E, 0x2066 ... 0x2069, 0xFEFF: " "
+			default: scalar
+			}
+		}
+		var line = String(String.UnicodeScalarView(scalars))
+		if line.count > 1_000 { line = String(line.prefix(1_000)) + "…" }
+		return line
+	}
+
 	package func say(_ text: String) {
+		let text = Self.oneLine(text)
 		let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .gmt, formatOptions: [.withInternetDateTime, .withFractionalSeconds])
 		let line = "\(stamp) \(text)\n"
 		lock.withLock {
@@ -34,6 +49,8 @@ package final class Log: @unchecked Sendable {
 			let descriptor = Darwin.open(file.path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
 			guard descriptor >= 0 else { return }
 			defer { close(descriptor) }
+			// Readable by the person alone, whatever mode a log already there had.
+			_ = fchmod(descriptor, 0o600)
 			let bytes = Array(line.utf8)
 			_ = bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) }
 		}
