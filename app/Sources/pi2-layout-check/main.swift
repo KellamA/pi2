@@ -1,6 +1,8 @@
 // Checks PaneKit, the tree of panes behind the conversation area: splitting, closing panes down to one, giving panes
 // equal room, filling them with conversations, saving the layout and reading it back, and that a layout saved damaged
-// or unreadable gives a single pane rather than a crash at launch.
+// or unreadable gives a single pane rather than a crash at launch. Then the same for a project hub's panes (`HubLayout`,
+// #657): the board in one pane at most and always within reach, where an opened conversation goes, the ready-made
+// layouts, the least size every pane keeps, and damaged saved panes.
 //
 //   cd app && swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
 //
