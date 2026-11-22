@@ -32,9 +32,20 @@ struct CarryOverState: Codable, Equatable {
         let variables: [String]
         let error: String?
     }
+    /// The copy of the data the update to projects made before it carried anything (docs/projects.md, 9.8): where, and
+    /// when, in milliseconds.
+    struct RemovalBackup: Codable, Equatable {
+        let path: String
+        let at: Double
+    }
     let ranAt: Double?
     let backup: String?
     let secretsPending: [Pending]
+    /// Set once the update to projects has made its copy of the data (#715). Nil from an engine that does not send it.
+    let removalBackup: RemovalBackup?
+    /// Why the update to projects could not make its copy or carry everything over, while it could not; it tries again
+    /// at the engine's next start. Nil from an engine that does not send it.
+    let removalFailed: String?
 }
 
 /// What carrying over would do, or did (docs/projects.md, 9.8).

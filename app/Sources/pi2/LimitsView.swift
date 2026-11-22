@@ -28,7 +28,7 @@ struct PlanLimits: Decodable, Equatable {
         let refreshing: Bool?
     }
 
-    /// A subscription's window in the Inbox, one story in up to three stages (engine/src/limits.ts): it passed 90% while
+    /// A subscription's window on the Dashboard, one story in up to three stages (engine/src/limits.ts): it passed 90% while
     /// runs on it were going (`nearly`), the provider refused runs for its limit and they wait (`reached`), and it
     /// answered again so they carry on (`carried_on`).
     struct Notice: Decodable, Equatable, Identifiable {
@@ -122,27 +122,22 @@ struct PlanLimits: Decodable, Equatable {
     }
 }
 
-/// A window nearly used up while runs on its subscription were going, in the Inbox. Information, not a request: a run the
-/// provider refuses waits for the reset and carries on by itself, so the card is calm and only offers to put it away.
-/// `foldable`, under the Dashboard's line across all projects (#645), it is one line with Dismiss and Show Usage until
-/// Details unfolds the rest.
+/// A window nearly used up while runs on its subscription were going, under the Dashboard's line across all projects
+/// (#645). Information, not a request: a run the provider refuses waits for the reset and carries on by itself, so the
+/// card is calm and only offers to put it away. It is one line with Dismiss and Show Usage until Details unfolds the
+/// rest.
 struct LimitNoticeCard: View {
     let engine: EngineClient
     let notice: PlanLimits.Notice
     /// Show a conversation, by its id in the sidebar.
     let open: (Int) -> Void
     let showUsage: () -> Void
-    var foldable = false
     @State private var unfolded = false
 
     var body: some View {
         // Re-drawn every half minute so "in 2 h" and "noticed" stay true.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            if foldable {
-                folded(now: context.date)
-            } else {
-                content(now: context.date)
-            }
+            folded(now: context.date)
         }
     }
 
@@ -219,35 +214,6 @@ struct LimitNoticeCard: View {
                     "\(when) \(count == 1 ? "One run was" : "\(count) runs were") going on this subscription when it passed 90%:",
                     "If \(notice.name) refuses a request before then, that run waits for the reset and carries on by itself. Nothing needs doing.")
         }
-    }
-
-    private func content(now: Date) -> some View {
-        let words = words(now: now)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: words.icon).foregroundStyle(words.color)
-                Text(words.title)
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer(minLength: 6)
-                Text("noticed \(LimitsFormat.ago(LimitsFormat.date(notice.at), now: now))")
-                    .font(.system(size: 11)).foregroundStyle(Theme.tx3)
-                    .help(LimitsFormat.exact(LimitsFormat.date(notice.at)))
-            }
-            details(words)
-            HStack(spacing: 8) {
-                Button("Dismiss") { engine.perform("limits.dismiss", ["id": notice.id]) }
-                    .buttonStyle(.piSecondary)
-                    .help("Put this notice away. It is not shown again for this window before it resets.")
-                Button("Show Usage") { showUsage() }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Theme.acc)
-            }
-        }
-        .font(.system(size: 12.5))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 13).padding(.vertical, 11)
-        .panel(fill: Theme.panel, border: Theme.line2)
-        .accessibilityElement(children: .contain)
     }
 
     /// What the card says under its headline: the stage, the runs it is about, what came before, and what happens next.

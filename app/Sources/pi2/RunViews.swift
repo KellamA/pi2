@@ -113,16 +113,15 @@ private struct StopAllConfirmation: ViewModifier {
 // MARK: - The engine restarted
 
 /// What an engine that started after an unclean stop found: the conversations it picked up, and the commands and
-/// worktree set-ups it found cut off, with what became of each, and Dismiss (`recovery.dismiss`). Shown whole at the top
-/// of Activity; `foldable`, over the Dashboard or a hub (#645), it is its headline and a line of counts until Details
-/// unfolds the rest, which then scrolls within a space of its own rather than push the page below out of the window.
+/// worktree set-ups it found cut off, with what became of each, and Dismiss (`recovery.dismiss`). Over the Dashboard or
+/// a hub (#645), it is its headline and a line of counts until Details unfolds the rest, which then scrolls within a
+/// space of its own rather than push the page below out of the window.
 struct RecoveryNotice: View {
     let engine: EngineClient
     let recovery: RecoveryReport
     /// Shows a conversation: the one named, and the conversation in the sidebar it belongs to (the same, but for a
     /// sub-chat's command).
     let open: (_ conversation: Int, _ root: Int) -> Void
-    var foldable = false
     @State private var unfolded = false
     @State private var detailsHeight: CGFloat = 0
 
@@ -131,45 +130,29 @@ struct RecoveryNotice: View {
     private var nothing: Bool { recovery.conversations.isEmpty && left.isEmpty && setups.isEmpty }
 
     var body: some View {
-        Group {
-            if foldable {
-                VStack(alignment: .leading, spacing: 6) {
-                    // One line whatever the width, so that the page below keeps the window: the counts go first, then
-                    // the headline shortens, and the counts are in its help.
-                    ViewThatFits(in: .horizontal) {
-                        headline("The engine restarted after stopping unexpectedly (\(when))", counts: true)
-                        headline("The engine restarted after stopping unexpectedly (\(when))", counts: false)
-                        headline("The engine restarted (\(when))", counts: false)
-                    }
-                    if unfolded {
-                        ScrollView {
-                            details
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
-                        }
-                        .frame(height: min(max(detailsHeight, 1), 200))
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    title
+        VStack(alignment: .leading, spacing: 6) {
+            // One line whatever the width, so that the page below keeps the window: the counts go first, then the
+            // headline shortens, and the counts are in its help.
+            ViewThatFits(in: .horizontal) {
+                headline("The engine restarted after stopping unexpectedly (\(when))", counts: true)
+                headline("The engine restarted after stopping unexpectedly (\(when))", counts: false)
+                headline("The engine restarted (\(when))", counts: false)
+            }
+            if unfolded {
+                ScrollView {
                     details
-                    Button("Dismiss") { engine.perform("recovery.dismiss") }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
                 }
-                .padding(12)
+                .frame(height: min(max(detailsHeight, 1), 200))
             }
         }
+        .padding(.horizontal, 12).padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .panel(fill: Theme.ok.opacity(0.08), border: Theme.ok.opacity(0.35))
     }
 
     private var when: String { Date(timeIntervalSince1970: recovery.at / 1000).formatted(date: .omitted, time: .shortened) }
-
-    private var title: some View {
-        Label("The engine restarted after stopping unexpectedly (\(when))", systemImage: "arrow.clockwise.circle.fill")
-            .font(.callout.weight(.semibold))
-    }
 
     /// The headline on one line, with Details and Dismiss, and the counts beside it when they fit.
     private func headline(_ words: String, counts showsCounts: Bool) -> some View {
@@ -312,7 +295,7 @@ struct RecoveryBanner: View {
 
     var body: some View {
         if let recovery = engine.recovery {
-            RecoveryNotice(engine: engine, recovery: recovery, open: { conversation, root in model.openConversation(conversation, from: root == conversation ? nil : root) }, foldable: true)
+            RecoveryNotice(engine: engine, recovery: recovery, open: { conversation, root in model.openConversation(conversation, from: root == conversation ? nil : root) })
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(Theme.window)
                 .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }

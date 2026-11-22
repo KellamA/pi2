@@ -1,7 +1,6 @@
-// Checks PaneKit, the tree of panes behind the conversation area: splitting, closing panes down to one, giving panes
-// equal room, filling them with conversations, saving the layout and reading it back, and that a layout saved damaged
-// or unreadable gives a single pane rather than a crash at launch. Then the same for a project hub's panes (`HubLayout`,
-// #657): the board in one pane at most and always within reach, where an opened conversation goes, the ready-made
+// Checks PaneKit, the tree of panes behind a project hub's panes: splitting, closing panes down to one, giving panes
+// equal room, filling them with conversations, encoding the tree and reading it back, and that a tree saved damaged or
+// unreadable is not taken rather than a crash at launch. Then a project hub's panes themselves (`HubLayout`, #657): the board in one pane at most and always within reach, where an opened conversation goes, the ready-made
 // layouts, the least size every pane keeps, and damaged saved panes.
 //
 //   cd app && swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
@@ -82,7 +81,7 @@ func describe(_ node: PaneNode) -> String {
 func splits(_ node: PaneNode) -> [PaneNode] { node.isPane ? [] : [node] + node.children.flatMap(splits) }
 
 /// What has to hold of any tree the app is left with: it can be laid out, every split's shares add up to 1, and it
-/// saves and reads back as itself. Reading every share is also what found #134: the save crashed on a damaged one.
+/// encodes and reads back as itself. Reading every share is also what found #134: the save crashed on a damaged one.
 func audit(_ tree: PaneNode, _ context: @autoclosure () -> String) {
     audited += 1
     check("valid: \(context())", tree.isValid, describe(tree))
@@ -96,9 +95,13 @@ func audit(_ tree: PaneNode, _ context: @autoclosure () -> String) {
         let decoded = try? JSONDecoder().decode(PaneNode.self, from: encoded)
         check("decodes as itself: \(context())", decoded == tree, describe(tree))
     }
-    let focus = tree.leaves[tree.leaves.count / 2].id
-    let saved = SavedLayout(root: tree, focused: focus).encoded()
-    check("saves and restores: \(context())", SavedLayout.restore(saved, maxPanes: 16) == SavedLayout(root: tree, focused: focus))
+}
+
+/// A tree read back as the app would take it, or nil when it cannot be read or laid out: a damaged tree, or more than
+/// sixteen panes.
+func restore(_ data: Data?) -> PaneNode? {
+    guard let data, let tree = try? JSONDecoder().decode(PaneNode.self, from: data), tree.isValid, (1...16).contains(tree.leaves.count) else { return nil }
+    return tree
 }
 
 /// A tree with its panes given conversations 1, 2, 3… in reading order.
@@ -290,39 +293,36 @@ group("a long run of everything, mixed") {
             tree.fill(leaves.map { _ in Int.random(in: 0..<3, using: &random) == 0 ? nil : Int.random(in: 1...500, using: &random) })
         default:
             what = "save and restore"
-            let restored = SavedLayout.restore(SavedLayout(root: tree, focused: leaves[0].id).encoded(), maxPanes: 16)
-            if let restored { tree = restored.root }
+            let restored = restore(try? JSONEncoder().encode(tree))
+            if let restored { tree = restored }
             check("turn \(turn): restored", restored != nil, describe(tree))
         }
         audit(tree, "turn \(turn), after \(what)")
     }
 }
 
-group("a saved layout that is damaged or unreadable gives a single pane") {
-    func restores(_ json: String) -> SavedLayout? { SavedLayout.restore(Data(json.utf8), maxPanes: 16) }
+group("a saved tree that is damaged or unreadable is not taken") {
+    func restores(_ json: String) -> PaneNode? { restore(Data(json.utf8)) }
     let a = "00000000-0000-0000-0000-00000000000A", b = "00000000-0000-0000-0000-00000000000B"
-    let c = "00000000-0000-0000-0000-00000000000C", r = "00000000-0000-0000-0000-000000000001"
+    let r = "00000000-0000-0000-0000-000000000001"
     func pane(_ id: String, _ conversation: Int? = nil) -> String {
         #"{"id":"\#(id)","axis":"row","children":[],"fractions":[]\#(conversation.map { #","conversation":\#($0)"# } ?? "")}"#
     }
     func split(_ fractions: String, _ children: String...) -> String {
         #"{"id":"\#(r)","axis":"row","children":[\#(children.joined(separator: ","))],"fractions":\#(fractions)}"#
     }
-    func saved(_ root: String, focused: String = "00000000-0000-0000-0000-00000000000A") -> String { #"{"root":\#(root),"focused":"\#(focused)"}"# }
+    func saved(_ root: String) -> String { root }
 
-    // What 0.7.5 saves reads back as it was.
-    let good = restores(saved(split("[0.25,0.75]", pane(a, 4), pane(b)), focused: b))
-    check("a layout as 0.7.5 saves it reads back", good != nil && good.map { describe($0.root) } == "row[0.25,0.75](4 _)" && good?.focused.uuidString == b)
-    check("a focus on a split moves to the first pane", restores(saved(split("[0.5,0.5]", pane(a), pane(b)), focused: r))?.focused.uuidString == a)
-    check("a focus on no pane moves to the first pane", restores(saved(split("[0.5,0.5]", pane(a), pane(b)), focused: c))?.focused.uuidString == a)
-    check("a single pane reads back", restores(saved(pane(a)))?.root.isPane == true)
+    let good = restores(saved(split("[0.25,0.75]", pane(a, 4), pane(b))))
+    check("a tree as the app saves it reads back", good.map { describe($0) } == "row[0.25,0.75](4 _)")
+    check("a single pane reads back", restores(saved(pane(a)))?.isPane == true)
 
     let damaged: [(String, Data?)] = [
         ("nothing saved", nil),
         ("empty", Data()),
         ("not JSON", Data("workspace".utf8)),
-        ("not a layout", Data("[1,2,3]".utf8)),
-        ("no tree", Data(#"{"focused":"\#(a)"}"#.utf8)),
+        ("not a tree", Data("[1,2,3]".utf8)),
+        ("a tree inside an object", Data(#"{"root":\#(pane(a)),"focused":"\#(a)"}"#.utf8)),
         ("an empty tree", Data(saved("{}").utf8)),
         ("shares missing", Data(saved(#"{"id":"\#(r)","axis":"row","children":[\#(pane(a)),\#(pane(b))]}"#).utf8)),
         ("shares null", Data(saved(split("null", pane(a), pane(b))).utf8)),
@@ -342,9 +342,9 @@ group("a saved layout that is damaged or unreadable gives a single pane") {
         ("splits nested ten thousand deep", Data(saved(String(repeating: #"{"id":"\#(r)","axis":"row","fractions":[1],"children":["#, count: 10_000) + pane(a) + String(repeating: "]}", count: 10_000)).utf8)),
     ]
     for (name, data) in damaged {
-        step("restoring a layout: \(name)")
-        let restored = SavedLayout.restore(data, maxPanes: 16)
-        check("\(name): not restored, so the app starts on a single pane", restored == nil, restored.map { describe($0.root) } ?? "")
+        step("restoring a tree: \(name)")
+        let restored = restore(data)
+        check("\(name): not restored", restored == nil, restored.map { describe($0) } ?? "")
     }
 }
 

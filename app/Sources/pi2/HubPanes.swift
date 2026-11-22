@@ -113,7 +113,7 @@ extension ProjectHubs {
 extension AppModel {
     /// Why the View menu's pane commands do not apply to what the window shows, or nil when they act on a hub's panes.
     var paneRefusal: String? {
-        if mode == .chat { return "Panes are the agent view's. Chat mode shows one chat at a time." }
+        if mode == .chat { return "Panes are a project hub's. Chat mode shows one chat at a time." }
         if shownProject != nil { return nil }
         if selection == .dashboard { return "The Dashboard shows every project. Open a project to split its hub." }
         return "Panes divide a project's hub. Open a project first."

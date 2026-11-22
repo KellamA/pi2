@@ -95,7 +95,7 @@ struct ConversationSummary: Codable, Identifiable, Equatable {
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
-/// the conversation's toolbar and the Branches page; see BranchViews.swift.
+/// the hub's headers and a project's Branches tab; see BranchViews.swift.
 struct BranchStatus: Codable, Equatable {
     /// The repository's name.
     let repo: String
@@ -130,7 +130,7 @@ struct BranchStatus: Codable, Equatable {
 }
 
 /// A worktree pi² made for a conversation that was archived or deleted since: still on disk until it is removed.
-/// Listed on the Branches page.
+/// Listed on a project's Branches tab.
 struct LeftBehindWorktree: Codable, Identifiable, Equatable {
     let id: Int
     let title: String

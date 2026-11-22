@@ -147,7 +147,7 @@ expect "--show needs what to open on" start test-8 --show
 # --welcome is an option of start's, taking no value: the option after it is still read, and refused.
 expect "unknown option --bogus" start test-8 --welcome --bogus
 expect "unknown option --bogus" start test-8 --no-app-nap --bogus
-expect "unknown option --bogus" start test-8 --show inbox --welcome --bogus
+expect "unknown option --bogus" start test-8 --show activity --welcome --bogus
 expect "--env needs NAME=VALUE" start test-8 --env
 expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\nPI2_HOME=elsewhere'
@@ -174,7 +174,7 @@ PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" answe
 expect "no copy named test-7 was started from this checkout" reopen test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
 # Every page PI2_SHOW takes goes through the argument checks, not "conversation must be a positive integer" (#553).
-for page in usage archive inbox 'settings:general' 'agent:atlas' 'palette:duplicate' 'project:Demo project#work'; do
+for page in activity usage archive 'settings:general' 'agent:atlas' 'palette:duplicate' 'project:Demo project#work'; do
 	PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 "$page"
 done
 expect "no copy named test-7 was started from this checkout" size test-7 smallest

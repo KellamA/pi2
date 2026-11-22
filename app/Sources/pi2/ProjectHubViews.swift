@@ -84,7 +84,7 @@ struct ProjectHubView: View {
             ContentUnavailableView(
                 "No Project Here",
                 systemImage: "folder.badge.questionmark",
-                description: Text(engine.projectsPreview ? "This project was deleted, or has not reached the app yet." : "Projects are a preview. Turn them on in Settings › General.")
+                description: Text("This project was deleted, or has not reached the app yet.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.window)

@@ -3,10 +3,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 import PaneKit
 
-// What both uses of panes share: the old screens' (Workspace.swift, which goes with #483) and a project's hub's
-// (HubPanes.swift, #657). Moved here from Workspace.swift so that it outlasts the old screens: the split with its
-// dividers, the watch on clicks that tells which pane a click landed in, a conversation dragged from the sidebar, the
-// environment values a conversation in a pane reads, and a conversation's title as a pane shows it.
+// The parts of a project's hub's panes (HubPanes.swift, #657) that are not about the hub: the split with its dividers,
+// the watch on clicks that tells which pane a click landed in, a conversation dragged from the sidebar, the environment
+// values a conversation in a pane reads, and a conversation's title as a pane shows it.
 
 enum PaneMetrics {
     /// The room between two panes, which holds the divider.
@@ -28,9 +27,8 @@ struct PaneTreeView<Leaf: View>: View {
     let node: PaneNode
     /// The coordinate space the panes are measured in, which a divider's drag is measured in too.
     let space: String
-    /// The least room a node keeps, for a hub's panes (#657); nil for the old panes, which share their room by their
-    /// shares alone and keep 180 by 130 points only while a divider is dragged.
-    let least: ((PaneNode) -> CGSize)?
+    /// The least room a node keeps (#657).
+    let least: (PaneNode) -> CGSize
     let actions: PaneSplitActions
     let leaf: (PaneNode) -> Leaf
 
@@ -47,23 +45,18 @@ struct PaneTreeView<Leaf: View>: View {
 struct PaneSplit<Leaf: View>: View {
     let node: PaneNode
     let space: String
-    let least: ((PaneNode) -> CGSize)?
+    let least: (PaneNode) -> CGSize
     let actions: PaneSplitActions
     let leaf: (PaneNode) -> Leaf
     /// The shares when the current drag began.
     @State private var dragStart: [Double]?
     @State private var dragging: Int?
 
-    /// The least room the old panes keep when a divider is dragged towards one, when there is that much to go round.
-    private static var minimumWidth: CGFloat { 180 }
-    private static var minimumHeight: CGFloat { 130 }
-
     private var horizontal: Bool { node.axis == .row }
 
-    /// Each child's least length along the split, when it has one.
-    private var leasts: [CGFloat]? {
-        guard let least else { return nil }
-        return node.children.map { child in
+    /// Each child's least length along the split.
+    private var leasts: [CGFloat] {
+        node.children.map { child in
             let size = least(child)
             return horizontal ? size.width : size.height
         }
@@ -73,9 +66,7 @@ struct PaneSplit<Leaf: View>: View {
         GeometryReader { geometry in
             let length = horizontal ? geometry.size.width : geometry.size.height
             let room = max(length - PaneMetrics.gutter * CGFloat(node.children.count - 1), 1)
-            let lengths: [CGFloat] = leasts.map { leasts in
-                HubLayout.lengths(fractions: node.fractions, least: leasts.map(Double.init), room: Double(room)).map { CGFloat($0) }
-            } ?? node.fractions.map { room * CGFloat($0) }
+            let lengths = HubLayout.lengths(fractions: node.fractions, least: leasts.map(Double.init), room: Double(room)).map { CGFloat($0) }
             let stack = horizontal ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             stack {
                 ForEach(Array(node.children.enumerated()), id: \.element.id) { index, child in
@@ -105,16 +96,12 @@ struct PaneSplit<Leaf: View>: View {
                 guard start.count == node.fractions.count, index + 1 < start.count else { return }
                 let moved = Double((horizontal ? value.translation.width : value.translation.height) / room)
                 let pair = start[index] + start[index + 1]
-                let before: Double, after: Double
-                if let leasts, index + 1 < leasts.count {
-                    // Each side keeps its least; with less room than that, the divider stays.
-                    before = Double(leasts[index] / room)
-                    after = Double(leasts[index + 1] / room)
-                    guard before + after < pair else { return }
-                } else {
-                    before = min(Double((horizontal ? Self.minimumWidth : Self.minimumHeight) / room), pair / 2)
-                    after = before
-                }
+                // Each side keeps its least; with less room than that, the divider stays.
+                let leasts = leasts
+                guard index + 1 < leasts.count else { return }
+                let before = Double(leasts[index] / room)
+                let after = Double(leasts[index + 1] / room)
+                guard before + after < pair else { return }
                 var fractions = start
                 fractions[index] = min(max(start[index] + moved, before), pair - after)
                 fractions[index + 1] = pair - fractions[index]
@@ -206,14 +193,6 @@ extension EngineClient {
         // One that is archived is not in the sidebar's list; its title comes with its state.
         let title = conversations.first { $0.id == id }?.title ?? archived.first { $0.id == id }?.title ?? open[id]?.state?.title ?? ""
         return title.isEmpty ? "New conversation" : title
-    }
-
-    /// Who a conversation is with, and for a sub-chat, whose it is.
-    func conversationSubtitle(_ id: Int) -> String {
-        let agent = agent(open[id]?.state?.agent.agentId)?.name ?? ""
-        guard let parentID = conversations.first(where: { $0.id == id })?.parent,
-              let parent = conversations.first(where: { $0.id == parentID }) else { return agent }
-        return "\(agent) · sub-chat of “\(parent.title.isEmpty ? "New conversation" : parent.title)”"
     }
 }
 

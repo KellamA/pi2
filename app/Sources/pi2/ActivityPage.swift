@@ -1,10 +1,8 @@
 import SwiftUI
 
-// Activity with the Projects preview on (#655; docs/projects.md, 10.3): what keeps running on this Mac across every
+// Activity, under Shared in the sidebar (#655; docs/projects.md, 10.3): what keeps running on this Mac across every
 // conversation, apart from the agents' runs. Those are on Now and the Dashboard, with Stop (#645), with the restart
-// notice; schedules are each project's Settings tab's (#656). A view of its own rather than the old page with sections
-// off, so that it outlives ActivityViews.swift, which goes with the old pages (#483), and so that what the old page
-// shows with the switch off stays exactly as it was.
+// notice; schedules are each project's Settings tab's (#656).
 
 /// Background commands left running and models running on this Mac, each with what can be done to it.
 struct ActivityPage: View {
@@ -54,7 +52,7 @@ struct ActivityCounts {
 }
 
 /// The row of Activity under Shared in the sidebar of projects: how many things it lists, with what they are in its
-/// help. A view of its own, as the old row's badges are, so that a command starting or ending draws only this.
+/// help. A view of its own, so that a command starting or ending draws only this.
 struct ActivityRowBadge: View {
     let engine: EngineClient
 
@@ -150,14 +148,9 @@ struct BackgroundCommandRow: View {
         .panel()
     }
 
-    /// With the projects preview on, the conversation that started it, a sub-chat's in place of the board; with it off,
-    /// the conversation it belongs to, in the old panes, as before.
+    /// The conversation that started it, where it lives: a sub-chat's in place of the board.
     private func open() {
-        if engine.projectsPreview {
-            model.openConversation(command.conversationId, from: command.rootConversationId == command.conversationId ? nil : command.rootConversationId)
-        } else {
-            model.openConversation(command.rootConversationId)
-        }
+        model.openConversation(command.conversationId, from: command.rootConversationId == command.conversationId ? nil : command.rootConversationId)
     }
 
     private func elapsed(until now: Date) -> String {

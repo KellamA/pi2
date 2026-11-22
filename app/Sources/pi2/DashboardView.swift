@@ -78,30 +78,28 @@ final class DashboardKeys {
 }
 
 /// The View menu's commands for the Dashboard (#618): ⌥⌘1 to ⌥⌘9 put the keyboard in that column's field, and ⌥⌘0 brings
-/// the first thing that needs the person into view. ⌘1 and ⌘2 are the window's Agents and Chat already, so the keys
+/// the first thing that needs the person into view. ⌘1 and ⌘2 are the window's Projects and Chat already, so the keys
 /// have ⌥ as well, as the hub's do. A view of its own, so that what it reads draws this menu again and not every scene.
 struct DashboardCommands: View {
     let model: AppModel
 
     var body: some View {
-        if model.engine.projectsPreview {
-            let shown = model.selection == .dashboard
-            Menu("Dashboard") {
-                Button("Show What Needs You First") { model.dashboardKeys.showFirstNeed() }
-                    .keyboardShortcut("0", modifiers: [.command, .option])
+        let shown = model.selection == .dashboard
+        Menu("Dashboard") {
+            Button("Show What Needs You First") { model.dashboardKeys.showFirstNeed() }
+                .keyboardShortcut("0", modifiers: [.command, .option])
+                .disabled(!shown)
+            // The line's Stop All from the keyboard (#645). Not disabled by what runs, which changes many times a
+            // second while agents work and would draw the menu again each time; the confirmation says when nothing
+            // does.
+            Button("Stop All Runs…") { model.stoppingAll = StopAllRequest(projects: DashboardView.watchedIDs(model.engine)) }
+                .keyboardShortcut(".", modifiers: [.command, .option])
+                .disabled(!shown)
+            Divider()
+            ForEach(1...9, id: \.self) { number in
+                Button("Message the Orchestrator in Column \(number)") { model.dashboardKeys.messageColumn(number) }
+                    .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: [.command, .option])
                     .disabled(!shown)
-                // The line's Stop All from the keyboard (#645). Not disabled by what runs, which changes many times a
-                // second while agents work and would draw the menu again each time; the confirmation says when nothing
-                // does.
-                Button("Stop All Runs…") { model.stoppingAll = StopAllRequest(projects: DashboardView.watchedIDs(model.engine)) }
-                    .keyboardShortcut(".", modifiers: [.command, .option])
-                    .disabled(!shown)
-                Divider()
-                ForEach(1...9, id: \.self) { number in
-                    Button("Message the Orchestrator in Column \(number)") { model.dashboardKeys.messageColumn(number) }
-                        .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: [.command, .option])
-                        .disabled(!shown)
-                }
             }
         }
     }
@@ -151,7 +149,9 @@ struct DashboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // The engine's notice that it restarted, over the whole Dashboard (#645).
+            // The notice of the update to projects (#716), and the engine's notice that it restarted, over the whole
+            // Dashboard (#645).
+            RemovalNotice(model: model)
             RecoveryBanner(model: model)
             bar
             // A subscription's window at 90%, or its limit reached, while runs used it: about a subscription, not a
@@ -811,8 +811,7 @@ private struct DashboardLimitNotices: View {
                             LimitNoticeCard(
                                 engine: model.engine, notice: notice,
                                 open: { model.openConversation($0) },
-                                showUsage: { model.selection = .usage },
-                                foldable: true
+                                showUsage: { model.selection = .usage }
                             )
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if index == 0 { first = $0 } }
                         }

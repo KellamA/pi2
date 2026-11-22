@@ -280,55 +280,6 @@ struct InboxCard: View {
     }
 }
 
-/// Everything waiting on the person, across all conversations.
-struct InboxView: View {
-    @Bindable var model: AppModel
-    private var engine: EngineClient { model.engine }
-    /// Windows of a subscription nearly used up while runs on it were going (limits.ts): below what waits on the person.
-    private var notices: [PlanLimits.Notice] { PlanLimits(engine.extras["limits"])?.notices ?? [] }
-
-    var body: some View {
-        Group {
-            if engine.inbox.isEmpty && notices.isEmpty {
-                EmptyState(icon: "checkmark.seal", title: "Nothing needs you", message: "Approvals and questions from your agents land here. You can answer them from the transcript too.")
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(engine.inbox) { item in
-                            VStack(alignment: .leading, spacing: 6) {
-                                InboxCard(engine: engine, item: item, showsSource: true)
-                                Button("Open “\(item.rootTitle.isEmpty ? "New conversation" : item.rootTitle)”") {
-                                    model.openConversation(item.rootConversationId)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(Theme.acc)
-                                .font(.system(size: 12))
-                            }
-                        }
-                        ForEach(notices) { notice in
-                            LimitNoticeCard(engine: engine, notice: notice, open: { model.openConversation($0) }, showUsage: { model.selection = .usage })
-                        }
-                    }
-                    .padding(.horizontal, 28).padding(.vertical, 22)
-                    .frame(maxWidth: 760)
-                    .frame(maxWidth: .infinity)
-                }
-            }
-        }
-        .background(Theme.window)
-        .navigationTitle("Inbox")
-        .navigationSubtitle(subtitle)
-    }
-
-    private var subtitle: String {
-        let parts = [
-            engine.inbox.isEmpty ? nil : "\(engine.inbox.count) waiting",
-            notices.isEmpty ? nil : notices.count == 1 ? "1 notice" : "\(notices.count) notices",
-        ]
-        return parts.compactMap { $0 }.joined(separator: ", ")
-    }
-}
-
 /// A calm, centred "nothing here" with the pi² accent.
 struct EmptyState: View {
     let icon: String

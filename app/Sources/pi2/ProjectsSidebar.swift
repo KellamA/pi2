@@ -1,7 +1,7 @@
 import BrowserKit
 import SwiftUI
 
-// The sidebar with the Projects preview on (#470; docs/design/projects.md, The sidebar): the Dashboard, the projects
+// The sidebar of projects (#470; docs/design/projects.md, The sidebar): the Dashboard, the projects
 // with their badges, the open project's orchestrator, the agents working now and its other conversations, then the
 // templates and the Archive. Every part that changes while agents work is a view of its own reading an object of its
 // own (`ProjectLive`, `RunLive`), so that a change to one agent draws its row again and nothing else (#446).
@@ -513,14 +513,14 @@ private struct TemplateRows: View {
     }
 }
 
-/// Archived projects, at the top of the Archive while the preview is on, each with Restore.
+/// Archived projects, at the top of the Archive, each with Restore.
 struct ArchivedProjects: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
 
     var body: some View {
         let projects = engine.projectStore.archivedProjects
-        if engine.projectsPreview, !projects.isEmpty {
+        if !projects.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Projects").font(.headline)
                 ForEach(projects) { project in
@@ -554,58 +554,5 @@ enum ProjectActions {
             panel.prompt = "Make Project"
             panel.message = "Choose the folder the project works in. pi² makes the project and its orchestrator in one step."
         }?.first?.path
-    }
-}
-
-// MARK: - Following the switch
-
-extension View {
-    /// Keeps the window's selection to what the sidebar on screen can show as the preview is switched, and in a
-    /// development build opens the project `PI2_SHOW` names once the engine has listed it.
-    func projectsPreviewFollowing(model: AppModel) -> some View {
-        modifier(ProjectsPreviewFollowing(model: model))
-    }
-}
-
-private struct ProjectsPreviewFollowing: ViewModifier {
-    let model: AppModel
-    #if PI2_DEVELOPMENT
-    @State private var launchTaken = false
-    #endif
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: model.engine.projectsPreview) { _, on in
-                if on {
-                    // The old panes are not drawn with the preview on (#644): what the window landed on at launch, before
-                    // the engine said, gives way to the Dashboard, and a conversation chosen opens where it lives.
-                    if model.launchChose {
-                        model.landOnProjects()
-                    } else if case .conversation(let id) = model.selection {
-                        model.openConversation(id)
-                    } else if model.selection == nil || model.selection == .inbox || model.selection == .branches {
-                        // Neither the Inbox nor the page of every conversation's branches is offered with projects (#655).
-                        model.landOnProjects()
-                    }
-                    return
-                }
-                // The old sidebar has no Dashboard or project to select: show the orchestrator's conversation instead.
-                let project = model.projectsSidebar.open.flatMap { model.engine.projectStore.project($0) }
-                model.projectsSidebar.open = nil
-                switch model.selection {
-                case .dashboard: model.selection = nil
-                case .project: model.selection = project?.conversation.map { .conversation($0) }
-                default: break
-                }
-            }
-            #if PI2_DEVELOPMENT
-            // `PI2_SHOW=dashboard` selects the Dashboard's row once the engine has said the preview is on. A project named
-            // there is opened by the test copy's hook as it comes (TestCopyControl.swift).
-            .onChange(of: model.engine.projectsPreview, initial: true) { _, on in
-                guard on, !launchTaken, ProjectCopyView.launch?.show == "dashboard" else { return }
-                launchTaken = true
-                model.selection = .dashboard
-            }
-            #endif
     }
 }

@@ -2,18 +2,17 @@ import LoginItemKit
 import SwiftUI
 import WindowKit
 
-/// What the main window is showing.
+/// What the main window is showing, beside chat mode. Every conversation opens where it lives
+/// (`AppModel.openConversation`, OpenConversation.swift): in its project's hub, in chat mode or in the Archive's reader.
 enum Selection: Hashable {
-    case inbox
+    /// The Shared pages of the sidebar of projects: Activity, Usage and the Archive; a template's page.
     case activity
     case usage
     case archive
-    case branches
     case agent(String)
-    case conversation(Int)
-    /// A project's hub, by the project's id (ProjectHub.swift), with the projects preview on.
+    /// A project's hub, by the project's id (ProjectHub.swift).
     case project(String)
-    /// The Dashboard's row in the sidebar of projects, with the preview on (ProjectsSidebar.swift; drawn by #481).
+    /// The Dashboard's row in the sidebar of projects (ProjectsSidebar.swift; drawn by #481).
     case dashboard
     /// A row under the open project in the sidebar of projects: one of its agents' conversations, shown in place of the
     /// board (#473). Only the sidebar's list holds it, so that the arrow keys reach those rows (#600); choosing it opens the
@@ -23,31 +22,57 @@ enum Selection: Hashable {
 
 #if PI2_DEVELOPMENT
 extension Selection {
-    /// What a development build was asked to open on, in `PI2_SHOW`: "inbox", "activity", "usage", "archive", "branches", "agent:<id>", or
-    /// a conversation's number or title, in the sidebar or the Archive (including archived sub-chats). For taking
-    /// pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the agent's page at one of its
-    /// sections, which the page reads for itself (`AgentSection`). "settings" and what follows
-    /// it is not about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual; so does
+    /// What a development build was asked to open on, in `PI2_SHOW`: "activity", "usage", "archive" or "agent:<id>" (a
+    /// template's page). For taking pictures of the app; see docs/development.md. "agent:<id>#<section>" opens the
+    /// agent's page at one of its sections, which the page reads for itself (`AgentSection`). A conversation's number or
+    /// title is `LaunchConversation`'s, and opens where the conversation lives. "settings" and what follows it is not
+    /// about this window: it opens the Settings window (`SettingsLaunch`), and this one opens as usual; so does
     /// "output:<id>", which opens a background command's output window (`OutputLaunch`).
-    init?(launch value: String?, conversations: [ConversationSummary], archived: [ArchivedConversation]) {
+    init?(launch value: String?) {
         guard let value, !value.isEmpty, !ProjectCopyView.reserves(value) else { return nil }
         switch value {
-        case "inbox": self = .inbox
         case "activity": self = .activity
         case "usage": self = .usage
         case "archive": self = .archive
-        case "branches": self = .branches
         default:
-            if value.hasPrefix("agent:") {
-                self = .agent(String(value.dropFirst("agent:".count).prefix { $0 != "#" }))
-            } else if let found = conversations.first(where: { String($0.id) == value || $0.title == value }) {
-                self = .conversation(found.id)
-            } else if let found = archived.first(where: { String($0.id) == value || $0.title == value }) {
-                self = .conversation(found.id)
-            } else {
-                return nil
-            }
+            guard value.hasPrefix("agent:") else { return nil }
+            self = .agent(String(value.dropFirst("agent:".count).prefix { $0 != "#" }))
         }
+    }
+}
+
+/// The conversation a development build was asked to open on, in `PI2_SHOW`: its number or title, matched exactly in the
+/// library first, then the Archive (archived sub-chats included). It opens where it lives, as every Open does.
+@MainActor
+enum LaunchConversation {
+    /// Set once the conversation has been opened, so that it is opened once.
+    private static var taken = false
+
+    /// The launch's conversation, once: nil after it has been found.
+    static func find(_ value: String?, conversations: [ConversationSummary], archived: [ArchivedConversation]) -> Int? {
+        guard waits(value) else { return nil }
+        let found = match(value, conversations: conversations, archived: archived)
+        if found != nil { taken = true }
+        return found
+    }
+
+    /// The conversation a value names, if it names one: for the launch, and a test copy's `show` while it runs.
+    static func match(_ value: String?, conversations: [ConversationSummary], archived: [ArchivedConversation]) -> Int? {
+        guard let value, names(value) else { return nil }
+        return conversations.first(where: { String($0.id) == value || $0.title == value })?.id
+            ?? archived.first(where: { String($0.id) == value || $0.title == value })?.id
+    }
+
+    /// Whether `PI2_SHOW` names a conversation not opened yet, which the window waits for rather than landing elsewhere.
+    static func waits(_ value: String?) -> Bool {
+        guard !taken, let value else { return false }
+        return names(value)
+    }
+
+    /// Whether a value can only name a conversation: no page, project, chat mode or other window.
+    private static func names(_ value: String) -> Bool {
+        guard !value.isEmpty, !ProjectCopyView.reserves(value), Selection(launch: value) == nil, !value.hasPrefix("output:") else { return false }
+        return !["chat", "settings", "palette"].contains { value == $0 || value.hasPrefix($0 + ":") }
     }
 }
 
@@ -74,55 +99,25 @@ enum OutputLaunch {
 @Observable
 final class AppModel {
     let engine = EngineClient()
-    /// The panes the conversation area is split into.
-    let workspace = Workspace()
     /// Chat mode's side of the window, and which side shows (ChatMode.swift).
     let chats = ChatModeState()
     /// How each project's hub was left (ProjectHub.swift).
     let hubs = ProjectHubs()
     var selection: Selection? {
         didSet {
-            if chats.redirecting { return }
-            launchChose = false
-            // With the projects preview on, a conversation chosen anywhere opens where it lives, never in the old panes
-            // (#644): a chat in chat mode, any other in its project's hub.
-            if case .conversation(let id) = selection, engine.projectsPreview {
-                chats.redirecting = true
-                selection = oldValue
-                chats.redirecting = false
-                openConversation(id)
-                return
-            }
-            // A chat chosen anywhere opens in chat mode; this side keeps what it had.
-            if case .conversation(let id) = selection, engine.isChat(id) {
-                chats.redirecting = true
-                selection = oldValue
-                chats.redirecting = false
-                showChat(id)
-                return
-            }
-            // Anything else chosen (from the menu bar, the palette, a notification) is shown in the agent view.
+            // Anything chosen (from the menu bar, the palette, a notification) is shown on the projects' side.
             if selection != nil, !chats.holdingMode { mode = .agents }
-            // A conversation chosen anywhere goes to the pane that has it, or else the focused pane.
-            if case .conversation(let id) = selection, selection != oldValue {
-                workspace.show(id)
-                // With the projects preview on, the sidebar unfolds the project the conversation belongs to.
-                if engine.projectsPreview, let project = engine.conversations.first(where: { $0.id == id })?.projectId { projectsSidebar.open = project }
-            }
             if case .project(let id) = selection { projectsSidebar.open = id }
             // Coming to the Archive from elsewhere shows its list, not the conversation it was last reading.
             if selection == .archive, oldValue != .archive { archiveReading = nil }
         }
     }
-    /// The conversation the Archive reads in place of its list, with the preview on (OpenConversation.swift).
+    /// The conversation the Archive reads in place of its list (OpenConversation.swift).
     var archiveReading: Int?
-    /// Whether the selection is the one the window landed on at launch, before the engine said whether the preview is on:
-    /// a window that turns out to have it on lands on the Dashboard instead (`landOnProjects`).
-    var launchChose = false
     /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
-    /// ⌘N's picker of a project's agents, with the preview on (ProjectStart.swift).
+    /// ⌘N's picker of a project's agents (ProjectStart.swift).
     var startPicker: StartPickerAsk?
     #if PI2_DEVELOPMENT
     /// Opens the Settings window and a background command's output window, for `scripts/test-copy show` while the copy
@@ -132,8 +127,6 @@ final class AppModel {
     /// The Settings tab the running copy was asked for, for a Settings window that is already open to move to (#553).
     var settingsTabLive: SettingsTab?
     #endif
-    /// Conversations whose sub-chats are folded away in the sidebar.
-    var collapsed: Set<Int> = []
     /// The orchestrators' conversations the Dashboard's columns show the end of, while they are on screen and not
     /// folded away (#618). Set by the Dashboard, and empty while it is not shown.
     var dashboardConversations: Set<Int> = []
@@ -147,12 +140,9 @@ final class AppModel {
         TestCopyPanels.install(engine: engine)
         #endif
         engine.onNavigate = { [weak self] id, from in self?.openConversation(id, from: from) }
-        // With the projects preview on, a sub-chat card's Beside opens it in a new pane of its project's hub, beside the
-        // conversation it came from (#657), or where it lives, as Open does, when that is not a hub (#644).
-        engine.onOpenBeside = { [weak self] id, beside in
-            guard let self else { return }
-            if engine.projectsPreview { openConversation(id, from: beside, beside: true) } else { openBeside(id, beside: beside) }
-        }
+        // A sub-chat card's Beside opens it in a new pane of its project's hub, beside the conversation it came from
+        // (#657), or where it lives, as Open does, when that is not a hub (#644).
+        engine.onOpenBeside = { [weak self] id, beside in self?.openConversation(id, from: beside, beside: true) }
     }
 
     /// The conversation whose rename prompt is showing.
@@ -168,33 +158,17 @@ final class AppModel {
     /// Brings back the main window after it was closed; set by the views that can open windows.
     var showMainWindow: () -> Void = {}
 
-    /// Whether the detail shows agent conversations, including a split whose focused pane is empty.
-    var showsWorkspace: Bool {
-        // With the projects preview on, the panes are never drawn (#644).
-        guard mode == .agents, !engine.projectsPreview else { return false }
-        switch selection {
-        case .conversation: return true
-        case nil: return workspace.isSplit
-        default: return false
-        }
-    }
-
-    /// The conversations the window has on screen: those open in the agent view's panes and chat mode's chat, whichever
-    /// side shows, since each keeps what it shows while the other is up. The engine is told (docs/local-models-running.md).
+    /// The conversations the window has on screen: chat mode's chat, the hub's and the Archive reader's, and the ends
+    /// of the Dashboard's orchestrators. The engine is told (docs/local-models-running.md).
     var shownConversations: Set<Int> {
-        workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
+        Set(chats.selection.map { [$0] } ?? [])
             .union(hubConversation.map { [$0] } ?? []).union(hubPaneConversations)
             .union(archiveConversation.map { [$0] } ?? [])
             .union(dashboardConversations)
     }
 
-    var selectedConversationID: Int? {
-        if case .conversation(let id) = selection { return id }
-        return nil
-    }
-
-    /// Starts a conversation with `agentId`, or with the agent used last when nil.
-    func newConversation(agentId: String? = nil) {
+    /// Starts a conversation with an agent, and opens it where it lives.
+    func newConversation(agentId: String) {
         Task {
             if let id = await engine.createConversation(agentId: agentId) { openConversation(id) }
         }
@@ -260,7 +234,6 @@ final class AppModel {
     func confirmDelete(removingWorktree: Bool = false) {
         if let deleting {
             moveOnFromChat(deleting.id)
-            if selectedConversationID == deleting.id { selection = nextAfter(deleting.id) }
             // Shown in place of a project's board, the board comes back (#642).
             hubs.boardBack(from: [deleting.id])
             let id = deleting.id
@@ -286,21 +259,12 @@ final class AppModel {
         return engine.leftBehind.first { $0.id == id }?.status
     }
 
-    /// Puts a conversation in the Archive. The window moves on to the next conversation, as it would in a mail app.
+    /// Puts a conversation in the Archive. A chat on screen gives way to the next, as it would in a mail app.
     func archive(_ conversation: ConversationSummary) {
         moveOnFromChat(conversation.id)
-        if selectedConversationID == conversation.id { selection = nextAfter(conversation.id) }
         // Shown in place of a project's board, it or one of its sub-chats, which go with it, the board comes back (#642).
         hubs.boardBack(from: withSubChats(conversation.id))
         engine.perform("conversation.archive", ["id": conversation.id])
-    }
-
-    /// What to show once `id` leaves the sidebar: the conversation below it, else the one above, else nothing.
-    private func nextAfter(_ id: Int) -> Selection? {
-        let roots = engine.rootConversations
-        guard let index = roots.firstIndex(where: { $0.id == id }) else { return engine.archived.contains { $0.id == id } ? .archive : nil }
-        let next = index + 1 < roots.count ? roots[index + 1] : index > 0 ? roots[index - 1] : nil
-        return next.map { .conversation($0.id) }
     }
 
     /// Whether a conversation is one the app may show although the sidebar does not list it: an archived one, or a
@@ -367,14 +331,13 @@ struct Pi2App: App {
             CommandGroup(after: .sidebar) {
                 ModeCommands(model: model)
                 Divider()
-                InboxCommand(model: model)
                 Button("Show Activity") { model.selection = .activity }
                     .keyboardShortcut("a", modifiers: [.command, .shift])
                 Button("Show Usage") { model.selection = .usage }
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("Show Archive") { model.selection = .archive }
                 Divider()
-                PaneCommands(model: model)
+                HubPaneCommands(model: model)
                 HubCommands(model: model)
                 DashboardCommands(model: model)
             }
@@ -447,23 +410,9 @@ struct MenuBarLabel: View {
     }
 }
 
-/// View › Show Inbox (⇧⌘I), offered only with the Projects preview off: with it on, Now, the Dashboard and the menu bar
-/// item show what waits, and the Dashboard the limit notices (#655). A view of its own, so that the switch changing draws
-/// the menu again and not every scene (#436).
-struct InboxCommand: View {
-    let model: AppModel
-
-    var body: some View {
-        if !model.engine.projectsPreview {
-            Button("Show Inbox") { model.selection = .inbox }
-                .keyboardShortcut("i", modifiers: [.command, .shift])
-        }
-    }
-}
-
 /// The File menu's ways to start something new that depend on what changes while the app runs: ⌘N, which starts
-/// whatever the window is showing (a chat in chat mode), and a conversation with each agent. A view of its own, so that
-/// the mode or the agents changing draws the menu again and not every scene (#436).
+/// whatever the window is showing (a chat in chat mode), and a conversation with each of a project's agents. A view of
+/// its own, so that the mode or the agents changing draws the menu again and not every scene (#436).
 struct NewItemCommands: View {
     let model: AppModel
 
@@ -471,22 +420,13 @@ struct NewItemCommands: View {
         if model.mode == .chat {
             Button("New Chat") { model.newChat() }
                 .keyboardShortcut("n")
-        } else if model.engine.projectsPreview {
-            // With projects, a conversation is started with one of a project's agents, chosen in a short picker (#643).
-            Button("New Conversation…") { model.askNewConversation() }
-                .keyboardShortcut("n")
         } else {
-            Button("New Conversation") { model.newConversation() }
+            // A conversation is started with one of a project's agents, chosen in a short picker (#643).
+            Button("New Conversation…") { model.askNewConversation() }
                 .keyboardShortcut("n")
         }
         Menu("New Conversation With") {
-            if model.engine.projectsPreview {
-                ProjectAgentChoices(model: model)
-            } else {
-                ForEach(model.engine.agents) { agent in
-                    Button(agent.name) { model.newConversation(agentId: agent.id) }
-                }
-            }
+            ProjectAgentChoices(model: model)
         }
     }
 }
@@ -527,35 +467,25 @@ struct RootView: View {
             Group {
                 if model.mode == .chat {
                     ChatSidebar(model: model)
-                } else if engine.projectsPreview {
-                    ProjectsSidebar(model: model)
                 } else {
-                    SidebarView(model: model)
+                    ProjectsSidebar(model: model)
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) { ModeSwitch(model: model) }
             .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
         } detail: {
-            // One branch for every way the conversation area shows, so moving between panes, or to an empty one, keeps
-            // the panes' pages loaded.
             Group {
                 if model.mode == .chat {
                     ChatModeDetail(model: model)
-                } else if model.showsWorkspace {
-                    WorkspaceView(model: model)
                 } else {
                     switch model.selection {
-                    case .inbox:
-                        InboxView(model: model)
                     case .activity:
-                        // With projects, only what runs apart from the agents' runs (ActivityPage.swift, #655).
-                        if engine.projectsPreview { ActivityPage(model: model) } else { ActivityView(model: model) }
+                        // What runs apart from the agents' runs (ActivityPage.swift, #655).
+                        ActivityPage(model: model)
                     case .usage:
                         UsageView(model: model)
                     case .archive:
                         ArchiveView(model: model)
-                    case .branches:
-                        BranchesView(model: model)
                     case .agent(let id):
                         AgentEditor(model: model, agentID: id)
                             .id(id)
@@ -563,20 +493,22 @@ struct RootView: View {
                         ProjectHubView(model: model, projectID: id)
                             .id(id)
                             // The restart notice, over the hub rather than in its panels' headers, when the
-                            // Dashboard is not showing (#645).
-                            .safeAreaInset(edge: .top, spacing: 0) { RecoveryBanner(model: model) }
+                            // Dashboard is not showing (#645), and the notice of the update to projects (#716).
+                            .safeAreaInset(edge: .top, spacing: 0) {
+                                VStack(spacing: 0) {
+                                    RemovalNotice(model: model)
+                                    RecoveryBanner(model: model)
+                                }
+                            }
                     case .dashboard:
                         DashboardView(model: model)
-                    case .conversation, nil:
-                        if engine.projectsPreview {
-                            // Nothing chosen, with projects: what `landOnProjects` chooses, drawn until it has (#644).
-                            if engine.projectStore.listed.isEmpty {
-                                NoProjectsPage(model: model)
-                            } else {
-                                DashboardView(model: model)
-                            }
+                    case nil:
+                        // Nothing chosen: what `landOnProjects` chooses, drawn until it has (#644).
+                        if engine.projectStore.listed.isEmpty {
+                            NoProjectsPage(model: model)
+                                .safeAreaInset(edge: .top, spacing: 0) { RemovalNotice(model: model) }
                         } else {
-                            WelcomeView(model: model)
+                            DashboardView(model: model)
                         }
                     }
                 }
@@ -590,7 +522,6 @@ struct RootView: View {
             .columnGivesWay()
         }
         .background(WindowOpener(model: model))
-        .projectsPreviewFollowing(model: model)
         .worktreeDialogs(engine: engine)
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
         .sheet(item: $model.startPicker) { ask in NewConversationPicker(model: model, ask: ask) }
@@ -599,66 +530,55 @@ struct RootView: View {
             OnboardingView(model: model)
                 .interactiveDismissDisabled()
         }
-        .onChange(of: model.selection) { _, selection in
-            if case .conversation(let id) = selection {
-                engine.openConversation(id)
-                // Showing a sub-chat unfolds its parent, so the selection is visible in the sidebar.
-                if let parent = engine.conversations.first(where: { $0.id == id })?.parent { model.collapsed.remove(parent) }
-            }
-        }
         // Which conversations are on screen, for the engine: it keeps a model on this Mac loaded while one using it is.
         .onChange(of: model.shownConversations, initial: true) { _, shown in engine.setShown(shown) }
         .onChange(of: engine.hasLoadedLibrary) { _, loaded in
-            guard loaded else { return }
-            // Panes kept from last time that show conversations since deleted are emptied.
-            model.workspace.forget { id in !engine.conversations.contains { $0.id == id } && !model.isArchived(id) }
             // A hub's panes kept from last time whose conversations were archived or deleted since close (#657).
-            model.hubs.forget(projects: engine.projectStore.listed.map(\.id)) { id in !engine.conversations.contains { $0.id == id } }
-            guard model.selection == nil else { return }
-            #if PI2_DEVELOPMENT
-            if ChatLaunch.apply(ProcessInfo.processInfo.environment["PI2_SHOW"], to: model) { return }
-            if let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: engine.conversations, archived: engine.archived) {
-                model.selection = asked
-                return
-            }
-            #endif
-            if engine.projectsPreview {
-                model.landOnProjects()
-                return
-            }
-            // Split into panes last time: come back to the same panes. The window stays on the side it was last on.
-            if model.workspace.isSplit {
-                model.restoreSelection(model.workspace.focusedConversation.map { .conversation($0) })
-                model.launchChose = true
-                return
-            }
-            // On launch, land on the most recent conversation.
-            if let first = engine.rootConversations.first { model.restoreSelection(.conversation(first.id)) }
-            model.launchChose = true
+            if loaded { model.hubs.forget(projects: engine.projectStore.listed.map(\.id)) { id in !engine.conversations.contains { $0.id == id } } }
         }
-        // With the preview on, a window left with nothing chosen lands on the Dashboard, or the one project's hub (#644).
+        // At launch, once the engine has listed both the conversations and the projects, the window lands on the hub of
+        // the one project, the Dashboard for several, or the page that makes the first (#644).
+        .onChange(of: engine.hasLoadedLibrary && engine.projectStore.loaded, initial: true) { _, ready in
+            guard ready, model.selection == nil else { return }
+            #if PI2_DEVELOPMENT
+            let asked = ProcessInfo.processInfo.environment["PI2_SHOW"]
+            if ChatLaunch.apply(asked, to: model) { return }
+            if let page = Selection(launch: asked) {
+                model.selection = page
+                return
+            }
+            if let id = LaunchConversation.find(asked, conversations: engine.conversations, archived: engine.archived) {
+                model.openConversation(id)
+                return
+            }
+            if ProjectCopyView.launch?.show == "dashboard" {
+                model.selection = .dashboard
+                return
+            }
+            // A conversation named there that is made after launch opens when it comes (below), so the window waits.
+            if LaunchConversation.waits(asked) { return }
+            #endif
+            // The window stays on the side it was last on.
+            model.chats.holdingMode = true
+            model.landOnProjects()
+            model.chats.holdingMode = false
+        }
+        // A window left with nothing chosen lands on the Dashboard, or the one project's hub (#644).
         .onChange(of: model.selection) { _, selection in
-            if selection == nil, engine.projectsPreview, model.mode == .agents { model.landOnProjects() }
+            if selection == nil, model.mode == .agents { model.landOnProjects() }
         }
         .onChange(of: engine.conversations) { old, list in
-            // Panes showing a deleted conversation are emptied; the focused one moves on below.
+            // A hub's pane whose conversation leaves the library, archived or deleted, closes (#657).
             if engine.hasLoadedLibrary {
-                model.workspace.forget { id in id != model.selectedConversationID && !list.contains { $0.id == id } && !model.isArchived(id) }
-                // A hub's pane whose conversation leaves the library, archived or deleted, closes (#657).
                 let gone = Set(old.map(\.id)).subtracting(list.map(\.id))
                 if !gone.isEmpty { model.hubs.forget(projects: engine.projectStore.listed.map(\.id)) { gone.contains($0) } }
-            }
-            // The conversation on screen was deleted: move to the next one. An archived one may stay on screen: it can
-            // still be read.
-            if let id = model.selectedConversationID, engine.hasLoadedLibrary, !list.contains(where: { $0.id == id }), !model.isArchived(id) {
-                model.restoreSelection(engine.rootConversations.first.map { .conversation($0.id) })
             }
             #if PI2_DEVELOPMENT
             // A conversation `PI2_SHOW` names that is made after launch, through the engine's socket, opens when it comes,
             // as long as nothing else has been chosen.
             if model.selection == nil, engine.hasLoadedLibrary,
-               let asked = Selection(launch: ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: list, archived: engine.archived) {
-                model.selection = asked
+               let id = LaunchConversation.find(ProcessInfo.processInfo.environment["PI2_SHOW"], conversations: list, archived: engine.archived) {
+                model.openConversation(id)
             }
             #endif
         }
@@ -690,7 +610,7 @@ struct RootView: View {
             } else if let worktree {
                 let branch = worktree.branch.map { "Its branch \($0)" } ?? "Its commits"
                 Text(worktree.isDirty
-                    ? "\(base)\n\nIts worktree of \(worktree.repo) has uncommitted changes, so it is kept. Branches lists it under Left Behind, where it can be removed later."
+                    ? "\(base)\n\nIts worktree of \(worktree.repo) has uncommitted changes, so it is kept. Its project’s Branches tab lists it under Left Behind, where it can be removed later."
                     : "\(base)\n\nIts worktree of \(worktree.repo) can be removed with it. \(branch) stay\(worktree.branch == nil ? "" : "s") in the repository either way.")
             } else {
                 Text(base)
@@ -700,250 +620,6 @@ struct RootView: View {
             Button("OK") { engine.lastError = nil }
         } message: {
             Text(engine.lastError ?? "")
-        }
-    }
-}
-
-struct SidebarView: View {
-    @Bindable var model: AppModel
-    private var engine: EngineClient { model.engine }
-
-    var body: some View {
-        List(selection: $model.selection) {
-            InboxRow(engine: engine)
-                .tag(Selection.inbox)
-            navRow("Activity", icon: "waveform.path.ecg", tag: .activity) {
-                ActivityBadges(engine: engine)
-            }
-            navRow("Usage", icon: "chart.bar", tag: .usage) {
-                if engine.usage?.overBudget == true {
-                    Tag("over budget", .bad)
-                }
-            }
-            navRow("Archive", icon: "archivebox", tag: .archive) {
-                if !engine.archived.isEmpty {
-                    Text("\(engine.archived.count)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
-                        .accessibilityLabel("\(engine.archived.count) archived")
-                }
-            }
-
-            if !engine.branches.isEmpty || !engine.leftBehind.isEmpty || model.selection == .branches {
-                navRow("Branches", icon: "arrow.triangle.branch", tag: .branches) {
-                    let worktrees = engine.branches.values.filter(\.managed).count
-                    if engine.branches.values.contains(where: { $0.state == "conflict" }) {
-                        Tag("conflict", .bad)
-                    } else if worktrees > 0 {
-                        Text("\(worktrees)").font(.caption).monospacedDigit().foregroundStyle(Theme.tx3)
-                            .help("\(worktrees) conversation\(worktrees == 1 ? "" : "s") in a worktree of its own")
-                            .accessibilityLabel("\(worktrees) worktrees")
-                    }
-                }
-            }
-
-            Section {
-                ForEach(engine.agents) { agent in
-                    AgentRow(model: model, agent: agent)
-                        .tag(Selection.agent(agent.id))
-                }
-            } header: {
-                HStack {
-                    Text("Agents").sectionLabel()
-                    Spacer()
-                    Button("New Agent", systemImage: "plus") { model.newAgent() }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(Theme.tx3)
-                        .help("New agent (⇧⌘N)")
-                }
-            }
-
-            Section {
-                if engine.rootConversations.isEmpty && engine.hasLoadedLibrary {
-                    Text("No conversations yet").font(.callout).foregroundStyle(Theme.tx3)
-                }
-                ForEach(engine.rootConversations) { conversation in
-                    let subChats = engine.subChats(of: conversation.id)
-                    conversationRow(conversation, subChats: subChats.count)
-                    // An agent's sub-chats sit under the conversation that opened them, like files in a folder.
-                    if !model.collapsed.contains(conversation.id) {
-                        ForEach(subChats) { subChat in
-                            conversationRow(subChat, subChats: 0)
-                                .padding(.leading, 16)
-                        }
-                    }
-                }
-            } header: {
-                Text("Conversations").sectionLabel()
-            }
-        }
-        .scrollContentBackground(.hidden)
-        .background(Theme.side)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            Button { model.showingPalette = true } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 11))
-                    Text("Search or run a command")
-                    Spacer(minLength: 4)
-                    Text("⌘K").font(.system(size: 11))
-                }
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.tx3)
-                .padding(.horizontal, 9).padding(.vertical, 6)
-                .background(Theme.window.opacity(0.6), in: .rect(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line))
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .help("Search conversations and run commands (⌘K)")
-            .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
-            .background(Theme.side)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(engine: engine) }
-        .toolbar {
-            ToolbarItem {
-                Button("New Conversation", systemImage: "square.and.pencil") { model.newConversation() }
-                    .disabled(engine.status != .connected)
-                    .help("New conversation (⌘N)")
-            }
-        }
-    }
-
-    private func navRow<Trailing: View>(_ title: String, icon: String, tag: Selection, @ViewBuilder trailing: () -> Trailing) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon).foregroundStyle(Theme.tx2).frame(width: 20)
-            Text(title)
-            Spacer(minLength: 4)
-            trailing()
-        }
-        .tag(tag)
-    }
-    private func conversationRow(_ conversation: ConversationSummary, subChats: Int) -> some View {
-        let wait = engine.limitWaits[conversation.id]
-        return HStack(spacing: 8) {
-            if let wait {
-                // Waiting for a provider's limit is not working: no spinner (#343).
-                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
-                    .help(wait.sentence)
-                    .accessibilityLabel(wait.tag)
-            } else if engine.heldByLimits.contains(conversation.id) {
-                // Nothing of it works: all its sub-chats wait for a limit.
-                Image(systemName: "hourglass").foregroundStyle(Theme.warn).frame(width: 16)
-                    .help(LimitWait.subChatsLine(engine.subChatLimitWaits[conversation.id] ?? []) ?? "")
-                    .accessibilityLabel("Waiting for a limit")
-            } else if conversation.busy {
-                Spinner().frame(width: 16)
-            } else {
-                AgentAvatar(agent: engine.agent(conversation.agentId), size: 16)
-            }
-            Text(conversation.title.isEmpty ? "New conversation" : conversation.title)
-                .lineLimit(1)
-                .foregroundStyle(conversation.title.isEmpty ? Theme.tx2 : Theme.tx)
-            AllowEverythingMark(engine: engine, conversation: conversation)
-            Spacer(minLength: 0)
-            let needsYou = conversation.parent == nil
-                ? engine.inbox.contains { $0.rootConversationId == conversation.id }
-                : engine.inbox.contains { $0.conversationId == conversation.id }
-            if needsYou {
-                Tag("needs you", .warn).accessibilityLabel("Needs you")
-            } else if let wait {
-                // The title gives way, not the time.
-                Tag(wait.shortTag, .warn).fixedSize().help(wait.sentence)
-            } else if subChats > 0, model.collapsed.contains(conversation.id), let waits = engine.subChatLimitWaits[conversation.id] {
-                // Folded away, its sub-chats' rows cannot say it.
-                Tag("\(waits.count) at limit", .warn).fixedSize().help(LimitWait.subChatsLine(waits) ?? "")
-            }
-            // Which branch the conversation's folder is on, coloured by how it stands. On every row, sub-chats too, so
-            // each one's branch can be followed from the sidebar; one in its parent's checkout draws it faded.
-            if let branch = engine.branches[conversation.id] {
-                BranchBadge(engine: engine, conversationID: conversation.id, status: branch)
-            }
-            if subChats > 0 {
-                let collapsed = model.collapsed.contains(conversation.id)
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        if collapsed { model.collapsed.remove(conversation.id) } else { model.collapsed.insert(conversation.id) }
-                    }
-                } label: {
-                    HStack(spacing: 2) {
-                        Text("\(subChats)").font(.system(size: 10.5, weight: .medium))
-                        Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .bold))
-                            .rotationEffect(.degrees(collapsed ? 0 : 90))
-                    }
-                    .foregroundStyle(Theme.tx3)
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .help(collapsed ? "Show \(subChats) sub-chat\(subChats == 1 ? "" : "s")" : "Hide sub-chats")
-                .accessibilityLabel(collapsed ? "Show \(subChats) sub-chats" : "Hide \(subChats) sub-chats")
-            }
-        }
-        .tag(Selection.conversation(conversation.id))
-        // Dropped on a pane, the conversation shows there.
-        .draggable(ConversationDrag(id: conversation.id)) {
-            Label(conversation.title.isEmpty ? "New conversation" : conversation.title, systemImage: "bubble.left")
-                .padding(6)
-        }
-        .contextMenu(previewAs: conversation.title.isEmpty ? "New conversation" : conversation.title, String(conversation.id)) {
-            Button("Rename…") { model.beginRename(conversation) }
-            if model.workspace.canSplit {
-                Button("Open in New Pane") {
-                    model.splitPane(.row)
-                    model.put(conversation.id, in: model.workspace.focused)
-                }
-            }
-            // A sub-chat is archived with the conversation it belongs to.
-            if conversation.parent == nil { Button("Archive") { model.archive(conversation) } }
-            Button("Delete", role: .destructive) { model.delete(conversation) }
-        }
-    }
-}
-
-/// The Inbox's row in the sidebar, with what waits there. A view of its own, so that a plan's limits, which can change
-/// with every answer from a subscription, draw only this row again.
-private struct InboxRow: View {
-    let engine: EngineClient
-
-    var body: some View {
-        let notices = PlanLimits(engine.extras["limits"])?.notices.count ?? 0
-        HStack(spacing: 8) {
-            Image(systemName: engine.inbox.isEmpty && notices == 0 ? "tray" : "tray.full").foregroundStyle(Theme.tx2).frame(width: 20)
-            Text("Inbox")
-            Spacer(minLength: 4)
-            if !engine.inbox.isEmpty {
-                Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting")
-            } else if notices > 0 {
-                // A notice of a plan's window waits on nobody, so it is counted without the colour of a request.
-                Tag("\(notices)").accessibilityLabel(notices == 1 ? "1 notice" : "\(notices) notices")
-            }
-        }
-    }
-}
-
-/// Activity's row in the sidebar: how many runs there are, and whether the engine restarted. A view of its own, since
-/// the engine says what is running several times a second while agents work, and only this needs drawing again for it,
-/// not the whole sidebar (#347).
-private struct ActivityBadges: View {
-    let engine: EngineClient
-
-    var body: some View {
-        if engine.recovery != nil {
-            Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(Theme.ok)
-                .help("The engine restarted after stopping unexpectedly")
-                .accessibilityLabel("Engine restarted")
-        }
-        // A run waiting for a provider's limit is counted apart from those working (#343).
-        let waiting = engine.limitWaits.count
-        if engine.runningCount > waiting {
-            // Beside the count at the limit, the word gives way so that the row's own title fits.
-            let running = engine.runningCount - waiting
-            Tag(waiting > 0 ? "\(running)" : "\(running) running", .acc).fixedSize()
-                .help("\(running) running")
-                .accessibilityLabel("\(running) running")
-        }
-        if waiting > 0 {
-            Tag("\(waiting) at limit", .warn).fixedSize()
-                .help("\(waiting) waiting for a provider’s limit; they carry on by themselves")
-                .accessibilityLabel("\(waiting) waiting for a limit")
         }
     }
 }
@@ -1070,9 +746,9 @@ extension EngineClient {
     }
 }
 
-/// Menu bar equivalents of the toolbar controls, for the keyboard and for accessibility. They act on the focused pane,
-/// chat mode's chat, or, with a project's hub shown, the hub's conversation that has the keyboard (#632): the agent's in
-/// place of the board, else the orchestrator's. Each says in its help why it does not apply when it does not.
+/// Menu bar equivalents of the toolbar controls, for the keyboard and for accessibility. They act on chat mode's chat, or,
+/// with a project's hub shown, the hub's conversation that has the keyboard (#632): the agent's in place of the board,
+/// else the orchestrator's. Each says in its help why it does not apply when it does not.
 struct ConversationCommands: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
@@ -1085,26 +761,13 @@ struct ConversationCommands: View {
         let orchestrator = model.commandOrchestratorProject
         let inHub = model.shownProject != nil
         let none = inHub ? "The project's conversation with the orchestrator is still being started." : "No conversation is shown."
-        // A chat's assistant has no tools on this Mac and no folder.
+        // Only a chat is continued with an agent.
         let chat = id.map(engine.isChat) ?? false
         let lastAnswer = id.flatMap { engine.open[$0]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) }
         // In a hub, the agent the conversation runs as, whose model the Model menu changes.
         let hubAgent = inHub ? engine.agent(conversation.flatMap { $0.runsAs ?? $0.agentId }) : nil
         // The orchestrator's current conversation is renamed with the project and archived by Start fresh (#642).
         let current = conversation?.orchestrator == "current" && inHub
-        Picker("Tool Access", selection: Binding(
-            get: { state?.agent.access ?? "none" },
-            set: { value in if let id { engine.setAccess(value, for: id) } }
-        )) {
-            ForEach(AccessLevel.all, id: \.id) { Text($0.title).tag($0.id) }
-        }
-        .pickerStyle(.inline)
-        .disabled(id == nil || chat)
-        .help(id == nil ? none : chat ? "A chat has no tools on this Mac." : "What the agent may do on this Mac in this conversation")
-        Button("Choose Folder…") { if let id { engine.chooseFolder(for: id) } }
-            .disabled(id == nil || chat)
-            .help(id == nil ? none : chat ? "A chat has no folder." : "The folder this conversation's agent works in")
-        Divider()
         Menu("Model") {
             ForEach(engine.modelGroups, id: \.provider) { group in
                 Menu(group.name) {
@@ -1180,72 +843,6 @@ struct ConversationCommands: View {
         Button("Continue") { if let id { engine.perform("continue", ["id": id]) } }
             .disabled(state?.failure == nil || state?.busy == true)
             .help(state?.busy == true ? "The conversation is answering." : state?.failure == nil ? "There is no stopped run to continue." : "Resume the run from where it stopped")
-    }
-}
-
-/// What the window shows with nothing selected: the pi² mark and the agents to start with.
-struct WelcomeView: View {
-    let model: AppModel
-    private var engine: EngineClient { model.engine }
-
-    var body: some View {
-        VStack(spacing: 18) {
-            PiMark(size: 64)
-            VStack(spacing: 6) {
-                Text("What should we work on?").font(.system(size: 22, weight: .semibold)).tracking(-0.3)
-                Text("Pick an agent to start a conversation. Each one has its own model, instructions and tools.")
-                    .foregroundStyle(Theme.tx2)
-                    .multilineTextAlignment(.center)
-            }
-            HStack(spacing: 10) {
-                ForEach(engine.agents.prefix(4)) { agent in
-                    Button { model.newConversation(agentId: agent.id) } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                AgentAvatar(agent: agent, size: 24)
-                                Text(agent.name).font(.system(size: 13, weight: .semibold))
-                                Spacer(minLength: 0)
-                                Text(engine.shortModelName(agent.model)).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(1)
-                            }
-                            Text(agent.description.isEmpty ? "No description yet." : agent.description)
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.tx2)
-                                .lineLimit(3)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
-                        }
-                        .padding(12)
-                        .frame(width: 190, alignment: .leading)
-                        .panel(radius: 12)
-                        .contentShape(.rect)
-                    }
-                    .buttonStyle(LiftButtonStyle())
-                    .disabled(engine.status != .connected)
-                    .help("New conversation with \(agent.name)")
-                }
-            }
-            Text("⌘N starts a conversation with the agent you used last · ⌘K finds anything")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Theme.tx3)
-        }
-        .padding(30)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.window)
-    }
-}
-
-/// A card that lifts slightly under the pointer.
-struct LiftButtonStyle: ButtonStyle {
-    @State private var hovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(hovering ? Theme.acc.opacity(0.5) : .clear))
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .offset(y: hovering ? -2 : 0)
-            .shadow(color: .black.opacity(hovering ? 0.25 : 0), radius: 10, y: 6)
-            .animation(.snappy(duration: 0.18), value: hovering)
-            .onHover { hovering = $0 }
     }
 }
 
