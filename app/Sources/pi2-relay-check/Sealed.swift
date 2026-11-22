@@ -160,7 +160,7 @@ enum SealedSession {
 
 		// The Mac registers and connects.
 		let pairing = try await RelayClient.register(relay: url, build: macBuild, relayKey: RelaySigner(relayKey), connector: connector)
-		let mac = RelayClient(relay: url, role: .mac(pairing), build: macBuild, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
+		let mac = try RelayClient(relay: url, role: .mac(pairing), build: macBuild, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
 		let macEvents = Inbox(mac.events)
 		await mac.start()
 		_ = try await macEvents.next("the Mac's ready") { if case .macReady = $0 { true } else { nil } }
@@ -171,7 +171,7 @@ enum SealedSession {
 		// The window, and the phone joining it with the stand-in's attestation.
 		let token = PairingSecrets.joinToken(secret: secret, pairing: pairing)
 		try await mac.openJoin(tokenHash: PairingSecrets.joinTokenHash(token), expires: SystemRelayClock().now() + 300_000)
-		let relayAttestKey = AttestKeyID(bytes: Bytes.random(32))
+		let relayAttestKey = AttestKeyID(bytes: Bytes.random(32))!
 		let link = try await RelayClient.join(
 			relay: url, pairing: pairing, build: phoneBuild, deviceKey: deviceKey.publicKey, token: token,
 			attest: { hash in RelayAttestation(attestation: hash + Data(base64Encoded: relayAttestKey.text)!, keyId: relayAttestKey) },
@@ -205,7 +205,7 @@ enum SealedSession {
 		try await macToSlot.say(.mac(try MacProof.make(challenge: Bytes.random(32), pairing: pairing, binding: macPairingChannel.handshakeHash, identity: identity)))
 		guard case let .mac(proof) = try await phonePairing.hearControl() else { throw RemoteKitError("marker session", "not the Mac's proof") }
 		try proof.verify(identityKey: identity.publicKey, pairing: pairing, binding: phonePairing.channel.handshakeHash)
-		let macAttestKey = AttestKeyID(bytes: Bytes.random(32))
+		let macAttestKey = AttestKeyID(bytes: Bytes.random(32))!
 		let description = DeviceDescription(
 			name: m("device name"), model: m("device model"), system: m("device system"), build: phoneBuild.text, deviceKey: deviceKey.publicKey,
 			presenceKey: presenceKey.publicKey, channelKey: phoneChannelKey.publicKey, recordKey: phoneRecord.publicKey)
@@ -231,7 +231,7 @@ enum SealedSession {
 		print("ok   paired over the relay")
 
 		// The phone connects as itself: KK, the Mac's proof with the engine's challenge, attach, attached.
-		let phone = RelayClient(
+		let phone = try RelayClient(
 			relay: url, role: .device(pairing, device), build: phoneBuild, signer: RelaySigner(deviceKey), connector: connector, options: ProtocolTest.options())
 		let phoneEvents = Inbox(phone.events)
 		await phone.start()
@@ -390,13 +390,13 @@ enum SealedSession {
 		let relayKey = P256.Signing.PrivateKey()
 		let deviceKey = P256.Signing.PrivateKey()
 		let pairing = try await RelayClient.register(relay: url, build: RelayBuild("200")!, relayKey: RelaySigner(relayKey), connector: connector)
-		let mac = RelayClient(relay: url, role: .mac(pairing), build: RelayBuild("200")!, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
+		let mac = try RelayClient(relay: url, role: .mac(pairing), build: RelayBuild("200")!, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
 		let macEvents = Inbox(mac.events)
 		await mac.start()
 		_ = try await macEvents.next("the Mac's ready") { if case .macReady = $0 { true } else { nil } }
 		let token = Bytes.random(32)
 		try await mac.openJoin(tokenHash: PairingSecrets.joinTokenHash(token), expires: SystemRelayClock().now() + 300_000)
-		let attestKey = AttestKeyID(bytes: Bytes.random(32))
+		let attestKey = AttestKeyID(bytes: Bytes.random(32))!
 		let link = try await RelayClient.join(
 			relay: url, pairing: pairing, build: RelayBuild("3.1")!, deviceKey: deviceKey.publicKey, token: token,
 			attest: { hash in RelayAttestation(attestation: hash + Data(base64Encoded: attestKey.text)!, keyId: attestKey) }, connector: connector)
@@ -407,7 +407,7 @@ enum SealedSession {
 		Check.equal(bytes, Data(marker.utf8), "the planted bytes pass the relay as they are")
 
 		let device = DeviceID.random()
-		try await mac.addDevice(device, deviceKey: deviceKey.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32)))
+		try await mac.addDevice(device, deviceKey: deviceKey.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
 		try await mac.closeJoin()
 		// An uncompressed point's first byte and then the marker in clear: the relay takes it for a sealed item.
 		let item = Data([4]) + Data(repeating: 0, count: 80) + Data(marker.utf8)
