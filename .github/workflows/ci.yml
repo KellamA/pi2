@@ -138,6 +138,8 @@ jobs:
       - run: scripts/test-issue-hook
       - run: scripts/test-auto-merge
       - run: scripts/test-docs-lists
+      # scripts/check-protected-targets against package descriptions made in the test, one for each tampering (#674).
+      - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
 
   app:
@@ -155,6 +157,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
+      # app/Package.swift is not an owner's path, but it decides what the targets in the owner's folders are built from:
+      # this fails if a protected target's path, files, dependencies, settings or plugins changed, if a package was
+      # added, or if anything but RemoteKit's checks names @_spi(Vectors) (#674).
+      - name: Check the owner's targets in Package.swift
+        run: scripts/check-protected-targets
       - name: Build the app, ComputerKit and the probe
         working-directory: app
         run: swift build
@@ -196,3 +203,22 @@ jobs:
       - name: Check the conversation page loaded ahead
         working-directory: app
         run: .build/debug/pi2-transcript-check
+      # What the client reads of a recorded session of the engine, compared with what it read before its models moved
+      # into PiModels (#669). Reads two files in the checkout; touches nothing.
+      - name: Check what the client reads of the engine
+        working-directory: app
+        run: .build/debug/pi2-client-check
+      # RemoteKit, the channel to a phone and its sealed items (#674): Noise against the published vectors for IKpsk2 and
+      # KK, HPKE against RFC 9180's, a pairing and a KK connection between two ends in memory, and what each reader
+      # refuses. No key store, no network.
+      - name: Check RemoteKit's channel and sealing
+        working-directory: app
+        run: .build/debug/pi2-remote-check
+      # Every RemoteKit parser that reads bytes from the network, against mutated and random input: a fixed seed, a minute.
+      - name: Fuzz RemoteKit's parsers
+        working-directory: app
+        run: .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+      # RemoteKit is shared with the iPhone app, so it must keep building for iOS: CryptoKit only, nothing of the Mac's.
+      - name: Build RemoteKit for iOS
+        working-directory: app
+        run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios

@@ -27,6 +27,14 @@
 # (a weakened test would let a weakened verifier pass).
 /relay/ @KellamA
 /app/Sources/RemoteKit/ @KellamA
+# RemoteKit's checks: the published vectors it is held to, the check that runs them, and the fuzzer (#674). Weakening
+# one would let a change to the channel through unnoticed.
+/app/Sources/pi2-remote-check/ @KellamA
+/app/Sources/pi2-remote-fuzz/ @KellamA
+# What keeps app/Package.swift from building those targets from anything else, and its test (#674). The issue that adds
+# a protected target adds its line to the script's list.
+/scripts/check-protected-targets @KellamA
+/scripts/test-check-protected-targets @KellamA
 /app/Sources/pi2-remote/ @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
