@@ -331,7 +331,7 @@ What the app's client reads of the engine, through the models in `app/Sources/Pi
 cd app && swift build --product pi2-client-check && .build/debug/pi2-client-check
 ```
 
-A change that alters what a model reads or works out on purpose writes the file again with `--write`, and says so in its pull request; a move must not need it. CI builds the check with the app but does not run it yet.
+A change that alters what a model reads or works out on purpose writes the file again with `--write`, and says so in its pull request; a move must not need it. CI runs it after building the app (#761).
 
 ### Trying changes in a throwaway copy
 
