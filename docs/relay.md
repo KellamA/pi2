@@ -4,6 +4,8 @@ The relay is the small service on Cloudflare that carries sealed bytes between a
 
 ## The owner's settings, before anything is built
 
+**Where things stand.** These steps are written now and made later: the owner decided (2026-11-21) to defer the agents' account and GitHub's settings until a real phone is first paired, as [#712](https://github.com/KellamA/pi2/issues/712), which the first real pairing over the relay and the production relay's deploy wait for. Until then the rule is kept by convention: `scripts/auto-merge` refuses a pull request that touches the owner's paths, a second agent reads each such change for security, and the owner merges it. That stops an accident; it does not stop an agent talked into merging around the script, since the agents hold the owner's sign-in. [Checking the settings](#checking-the-settings) is #712's.
+
 Agents write pi² and merge their own pull requests once CI passes, and they read issues and comments anyone on GitHub can write. A planted comment that talks one into weakening the device lists, RemoteKit's checks or the relay would be merged and deployed. So the paths that decide who is the person, and the files that guard them, wait for the owner's review: `.github/CODEOWNERS` names them, and `scripts/auto-merge` refuses a pull request that touches one, saying it waits for the owner. Neither is the guard. The guard is a set of settings on GitHub that **only the owner makes, in GitHub's pages, signed in as themselves. No agent makes or changes any of them.**
 
 Make them in this order. Each takes a few minutes; the first takes longest.
