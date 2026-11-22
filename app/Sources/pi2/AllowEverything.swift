@@ -142,6 +142,33 @@ struct AllowEverythingBanner: View {
     }
 }
 
+/// The red tag on an agent's row whose agent allows everything: a template's in the sidebar, a project agent's on the
+/// Agents tab and a working agent's in the sidebar of projects (#643).
+struct AllowEverythingTag: View {
+    let name: String
+    /// In a row whose title has the room, such as a working agent's in the sidebar, the tag gives way to the banner's
+    /// small mark when it does not fit beside the title.
+    var givesWay = false
+
+    var body: some View {
+        let tag = Tag(AllowEverything.tag, .bad).fixedSize()
+        Group {
+            if givesWay {
+                ViewThatFits(in: .horizontal) {
+                    tag
+                    Image(systemName: "exclamationmark.octagon.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.bad)
+                        .accessibilityLabel("Allows everything")
+                }
+            } else {
+                tag
+            }
+        }
+        .help("\(name) asks you about nothing and may use any app")
+    }
+}
+
 /// The banner's mark, small, on a conversation's row in the sidebar (#328), so the list shows which conversations run
 /// unasked before one is opened. It reads only the conversation's row and the agents, which change rarely and are set
 /// only when they change, so it adds nothing to what makes a row draw again while agents work.

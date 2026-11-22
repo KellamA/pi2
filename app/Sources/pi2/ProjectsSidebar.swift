@@ -189,7 +189,9 @@ private struct ProjectBlock: View {
             let agent = model.hubs.agent(project.id).flatMap { model.sidebarRow(for: $0, in: project.id) }
             ForEach(live.runs, id: \.self) { id in
                 if let run = engine.projectStore.run(id) {
-                    RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
+                    RunRow(engine: engine, id: id, run: run, open: { model.openAgent(id, in: project.id) }, start: { agent in
+                        if let row = engine.project(project.id) { model.startWith(agent, in: row) }
+                    })
                         .padding(.leading, 14)
                         .tag(Selection.projectAgent(project: project.id, conversation: id))
                 }
@@ -290,6 +292,8 @@ private struct RunRow: View {
     let run: RunLive
     /// Opens its conversation in place of the board, in the project's hub (#473).
     let open: () -> Void
+    /// Starts another conversation with its agent, in place of the board (#643).
+    let start: (AgentProfile) -> Void
 
     var body: some View {
         #if PI2_DEVELOPMENT
@@ -310,6 +314,8 @@ private struct RunRow: View {
                     }
                     // The title has the room: the agent's name gives way first (#598).
                     Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1).layoutPriority(1)
+                    // The warning that it asks about nothing, as a template's row has it (#643).
+                    if let agent, agent.allowEverything == true { AllowEverythingTag(name: agent.name, givesWay: true) }
                     Spacer(minLength: 4)
                     if let agent, !run.title.isEmpty { AgentNameGivingWay(agent: agent) }
                 }
@@ -320,6 +326,11 @@ private struct RunRow: View {
         .buttonStyle(.plain)
         // One thing only, what the row does: the spinner, dot or hourglass in it already says how the agent is.
         .help("Open this agent’s conversation in place of the board")
+        .contextMenu(previewAs: run.title, String(id)) {
+            if let agent {
+                Button("New Conversation with \(agent.name)", systemImage: "plus.bubble") { start(agent) }
+            }
+        }
     }
 }
 

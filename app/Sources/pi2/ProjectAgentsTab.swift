@@ -33,15 +33,21 @@ private struct ProjectSwitch {
 struct ProjectAgentsTab: View {
     let model: AppModel
     let project: ProjectRow
-    /// The agent whose own page shows in the tab, or nil for the list. The project's orchestrator among them.
-    @State private var openAgent: String?
     @State private var updating: AgentProfile?
+    /// The agent the person asked to make the orchestrator, while the confirmation shows (docs/projects.md, 6.5).
+    @State private var promoting: AgentProfile?
 
     private var engine: EngineClient { model.engine }
 
+    /// The agent whose own page shows in the tab, or nil for the list; the project's orchestrator among them. Kept by the
+    /// hub, so that the palette and Duplicate can open one here (#643).
+    private var openAgent: String? { model.hubs.agentPage(project.id) }
+
+    private func open(_ agent: String?) { model.hubs.setAgentPage(agent, for: project.id) }
+
     var body: some View {
         if let id = openAgent, engine.agent(id) != nil {
-            AgentPageInTab(model: model, agentID: id) { openAgent = nil }
+            AgentPageInTab(model: model, agentID: id) { open(nil) }
         } else {
             list
         }
@@ -50,7 +56,7 @@ struct ProjectAgentsTab: View {
     private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                OrchestratorCard(model: model, project: project, openPage: { openAgent = project.orchestratorId })
+                OrchestratorCard(model: model, project: project, openPage: { open(project.orchestratorId) })
                 agentsList
                 if !removed.isEmpty { removedList }
                 templatesNote
@@ -76,6 +82,19 @@ struct ProjectAgentsTab: View {
                     }
                 }
                 .padding(16).frame(width: 440)
+            }
+        }
+        .alert(promoting.map { MakeOrchestrator.title($0, project: project) } ?? "", isPresented: Binding(
+            get: { promoting != nil },
+            set: { if !$0 { promoting = nil } }
+        )) {
+            if let agent = promoting {
+                Button("Make Orchestrator") { model.makeOrchestrator(agent, of: project) }
+                Button("Cancel", role: .cancel) {}
+            }
+        } message: {
+            if let agent = promoting {
+                Text(MakeOrchestrator.words(agent, previous: engine.agent(project.orchestratorId)))
             }
         }
     }
@@ -123,7 +142,8 @@ struct ProjectAgentsTab: View {
                     .font(.system(size: 12.5)).foregroundStyle(Theme.tx2)
             }
             ForEach(agents) { agent in
-                AgentListRow(model: model, project: project, agent: agent, update: { updating = agent }, open: { openAgent = agent.id })
+                AgentListRow(model: model, project: project, agent: agent, update: { updating = agent }, open: { open(agent.id) },
+                             promote: { promoting = agent })
             }
         }
     }
@@ -213,7 +233,7 @@ struct ProjectAgentsTab: View {
         Task {
             do {
                 let result = try await engine.call("projects.addAgent", ["projectId": project.id, "template": template.id])
-                if let id = result["id"]?.stringValue { openAgent = id }
+                if let id = result["id"]?.stringValue { open(id) }
             } catch { engine.lastError = error.localizedDescription }
         }
     }
@@ -222,7 +242,7 @@ struct ProjectAgentsTab: View {
         Task {
             do {
                 let result = try await engine.call("projects.addAgent", ["projectId": project.id, "agent": agent])
-                if let id = result["id"]?.stringValue { openAgent = id }
+                if let id = result["id"]?.stringValue { open(id) }
             } catch { engine.lastError = error.localizedDescription }
         }
     }
@@ -267,6 +287,7 @@ private struct OrchestratorCard: View {
                         .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.tx)
                     HStack(spacing: 6) {
                         Tag("Orchestrator", .acc).fixedSize()
+                        if orchestrator?.allowEverything == true { AllowEverythingTag(name: orchestrator?.name ?? "The orchestrator") }
                         Text(engine.shortModelName(orchestrator?.model)).font(.caption).foregroundStyle(Theme.tx3).lineLimit(1)
                     }
                 }
@@ -274,6 +295,7 @@ private struct OrchestratorCard: View {
                 Button("Open Page…") { openPage() }
                     .buttonStyle(.piSecondary)
                     .controlSize(.small)
+                    .fixedSize()
                     .help("The orchestrator's own settings, as any agent's page shows them")
             }
             Divider().overlay(Theme.line)
@@ -337,6 +359,8 @@ private struct AgentListRow: View {
     let agent: AgentProfile
     let update: () -> Void
     let open: () -> Void
+    /// Asks to make this agent the project's orchestrator.
+    let promote: () -> Void
     private var engine: EngineClient { model.engine }
 
     private var working: Bool {
@@ -374,6 +398,7 @@ private struct AgentListRow: View {
                             Text(agent.name)
                                 .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.tx)
                                 .lineLimit(1)
+                            if agent.allowEverything == true { AllowEverythingTag(name: agent.name) }
                             if let madeBy { Tag(madeBy, .acc).fixedSize().help("Made through a tool, in this project's conversation") }
                         }
                         Text(agent.description.isEmpty ? engine.shortModelName(agent.model) : "\(engine.shortModelName(agent.model)) · \(agent.description)")
@@ -397,10 +422,46 @@ private struct AgentListRow: View {
             if working {
                 Tag("working", .acc).fixedSize().help("\(agent.name) is working now")
             }
+            Button("New Conversation", systemImage: "plus.bubble") { model.startWith(agent, in: project) }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(Theme.tx2)
+                .disabled(startRefusal != nil)
+                .help(startRefusal ?? "New conversation with \(agent.name), in place of the board")
+            Menu {
+                items
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("More for \(agent.name)")
+            .help("More for \(agent.name)")
             Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.tx3)
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .panel()
+        .contextMenu(previewAs: agent.name, agent.id) { items }
+    }
+
+    /// What the row's menu and its context menu offer.
+    @ViewBuilder
+    private var items: some View {
+        Button("New Conversation", systemImage: "plus.bubble") { model.startWith(agent, in: project) }
+            .disabled(startRefusal != nil)
+        Button("Open Page", systemImage: "person.crop.circle") { open() }
+        Divider()
+        Button("Make Orchestrator…", systemImage: "crown") { promote() }
+            .disabled(engine.freshRefusal(project) != nil)
+            .help(engine.freshRefusal(project) ?? "Make \(agent.name) the project's orchestrator, with a fresh conversation")
+    }
+
+    /// Why a conversation cannot be started with this agent now, in the engine's words.
+    private var startRefusal: String? {
+        if engine.status != .connected { return "pi² is not connected to its engine." }
+        if project.archivedAt != nil { return "This project is archived. Restore it first." }
+        return nil
     }
 }
 
@@ -432,7 +493,9 @@ private struct AgentPageInTab: View {
             .frame(height: 30)
             .background(Theme.panel)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+            // Drawn anew for another agent: Duplicate opens the copy's page here in place of this one (#643).
             AgentEditor(model: model, agentID: agentID, onDeleted: back)
+                .id(agentID)
         }
     }
 }

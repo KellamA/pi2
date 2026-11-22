@@ -117,10 +117,19 @@ struct AgentEditor: View {
         .navigationSubtitle(engine.projectsPreview && saved?.projectId == nil ? "Template" : "Agent")
         .toolbar {
             ToolbarItem {
-                Button("New Conversation", systemImage: "plus.bubble") { model.newConversation(agentId: agentID) }
-                    .labelStyle(.titleAndIcon)
-                    .help("Start a conversation with this agent")
-                    .disabled(changed)
+                // A project's agent starts one in place of its board; its orchestrator's is Start fresh, which asks first,
+                // since a project has one conversation with its orchestrator (docs/projects.md, 3.5, 6.5; #643).
+                if let saved, let project = saved.projectId.flatMap(engine.project), saved.id == project.orchestratorId {
+                    Button("Start Fresh…", systemImage: "plus.bubble") { model.startWith(saved, in: project) }
+                        .labelStyle(.titleAndIcon)
+                        .help(engine.freshRefusal(project) ?? "Begin a fresh conversation with the orchestrator; the present one is kept")
+                        .disabled(changed || engine.freshRefusal(project) != nil)
+                } else {
+                    Button("New Conversation", systemImage: "plus.bubble") { model.newConversation(agentId: agentID) }
+                        .labelStyle(.titleAndIcon)
+                        .help(saved?.projectId.flatMap(engine.project) != nil ? "Start a conversation with this agent, in place of the board" : "Start a conversation with this agent")
+                        .disabled(changed || saved?.removedAt != nil)
+                }
             }
         }
         .onAppear(perform: load)
