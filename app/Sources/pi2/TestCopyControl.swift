@@ -321,7 +321,8 @@ struct TestCopyControl: NSViewRepresentable {
             if let asked = Selection(launch: page) {
                 model.selection = asked
                 if case .agent(let id) = asked {
-                    return ["result": "Showing the page of agent \(id); test-copy cannot wait for its page to be drawn"]
+                    let section = AgentSection.asked(in: page).map { " at #\($0.section.rawValue)" } ?? ""
+                    return ["result": "Showing the page of agent \(id)\(section); test-copy cannot wait for its page to be drawn"]
                 }
                 return ["result": "Showing \(page); test-copy cannot wait for its page to be drawn"]
             }
@@ -345,7 +346,8 @@ struct TestCopyControl: NSViewRepresentable {
                 }
                 model.settingsTabLive = asked.tab
                 open()
-                return ["result": "Opened Settings on \(asked.tab.rawValue.capitalized); test-copy cannot wait for it to be drawn"]
+                let section = asked.section.map { " at #\($0.rawValue)" } ?? ""
+                return ["result": "Opened Settings on \(asked.tab.rawValue.capitalized)\(section); test-copy cannot wait for it to be drawn"]
             }
             if page.hasPrefix("output:") {
                 let id = String(page.dropFirst("output:".count))
@@ -365,6 +367,13 @@ struct TestCopyControl: NSViewRepresentable {
                 guard let paths = request.paths else { return ["error": "missing panel answer"] }
                 return TestCopyPanels.choose(paths)
             case "show":
+                // A section the page does not have is refused, with those it has.
+                if let page = request.page, let refusal = AgentSection.refusal(page) ?? SettingsLaunch.refusal(page) {
+                    return ["error": refusal]
+                }
+                // What was last asked, where an agent's page, its Allow everything confirmation and Settings' tabs take
+                // their section from, as they take the launch's (#768).
+                if let value = request.page ?? request.show ?? request.id.map({ String($0) }) { ShowAsked.shared.ask(value) }
                 if request.show != nil || request.hub != nil {
                     do {
                         let view = try ProjectCopyView(show: request.show, hub: request.hub)
