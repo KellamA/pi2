@@ -191,7 +191,7 @@ async function holding(pids: number[], marker: string): Promise<Set<number>> {
 	const file = await lstat(runFile(runFolder, marker), { bigint: true }).catch(() => undefined);
 	if (file === undefined || !file.isFile() || (file.mode & 0o7777n) !== 0n || file.uid !== BigInt(process.getuid?.() ?? -1)) return found;
 	const listed = await new Promise<string | undefined>((resolve) => {
-		execFileOffThread("/usr/sbin/lsof", ["-w", "-n", "-P", "-p", pids.join(","), "-F", "pDi"], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+		execFileOffThread("/usr/sbin/lsof", ["-w", "-n", "-P", "-p", pids.join(","), "-F", "pDi"], { timeout: PROOF_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
 			// lsof exits 1 when one of the processes asked about is not there: what it listed of the others still stands.
 			resolve(error && (error as { code?: unknown }).code !== 1 ? undefined : String(stdout));
 		});
@@ -219,6 +219,14 @@ async function holding(pids: number[], marker: string): Promise<Set<number>> {
 /** After SIGTERM, how long what is left over gets before SIGKILL. */
 const GRACE_MS = 3_000;
 const PS_TIMEOUT_MS = 10_000;
+/**
+ * The limit on a query whose answer is proof: noting a command's process, and what the next engine reads to tell what an
+ * engine that died left running. On a quiet Mac each takes some tens of milliseconds; on a busy one `lsof` was held past
+ * ten seconds (#707), and an answer given up on proves nothing, so the run's processes were left running and the
+ * conversation told something may still be. Nothing waits on these but start-up's recovery and the call that started the
+ * command, so they wait for the answer; the limit is only there for a query that hangs.
+ */
+const PROOF_TIMEOUT_MS = 120_000;
 /** UTC and the C locale, so the same process reads the same whoever asks and whenever. */
 const psEnv = () => ({ ...process.env, LC_ALL: "C", TZ: "UTC" });
 
@@ -229,10 +237,10 @@ export type Listed = { group: number; start: string };
  * Processes as `ps` lists them, by pid: their process group and start time. Only `pid` when given, else all of them.
  * Processes that have ended and wait only to be reaped are left out: they run nothing.
  */
-export function processes(pid?: number): Promise<Map<number, Listed>> {
+export function processes(pid?: number, timeout = PS_TIMEOUT_MS): Promise<Map<number, Listed>> {
 	return new Promise((resolve, reject) => {
 		const which = pid === undefined ? ["-A"] : ["-p", String(pid)];
-		execFileOffThread("/bin/ps", [...which, "-o", "pid=,pgid=,stat=,lstart="], { timeout: PS_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+		execFileOffThread("/bin/ps", [...which, "-o", "pid=,pgid=,stat=,lstart="], { timeout, maxBuffer: 16 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
 			const found = new Map<number, Listed>();
 			for (const line of String(stdout).split("\n")) {
 				const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S.*?)\s*$/.exec(line);
@@ -256,7 +264,7 @@ export const signallable = (n: unknown): n is number => typeof n === "number" &&
 export async function noteProcess(child: ChildProcess, marker: string): Promise<RunProcess | undefined> {
 	const group = child.pid;
 	if (!signallable(group)) return undefined;
-	const own = (await processes(group)).get(group);
+	const own = (await processes(group, PROOF_TIMEOUT_MS)).get(group);
 	if (own === undefined || own.group !== group || child.exitCode !== null || child.signalCode !== null) return undefined;
 	return { group, start: own.start, marker };
 }
@@ -269,7 +277,7 @@ export async function noteProcess(child: ChildProcess, marker: string): Promise<
 function commandLines(pids: number[], environment: boolean): Promise<Map<number, Listed & { command: string }>> {
 	return new Promise((resolve, reject) => {
 		const args = [...(environment ? ["-E"] : []), "-ww", "-p", pids.join(","), "-o", "pid=,pgid=,stat=,lstart=,command="];
-		execFileOffThread("/bin/ps", args, { timeout: PS_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
+		execFileOffThread("/bin/ps", args, { timeout: PROOF_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, env: psEnv() }, (error, stdout) => {
 			const found = new Map<number, Listed & { command: string }>();
 			for (const line of String(stdout).split("\n")) {
 				// The start time is five words ("Mon Nov 16 20:57:27 2026"); the command is everything after it.
@@ -372,7 +380,7 @@ async function stopRun(left: RunProcess, graceMs: number): Promise<LeftOver> {
 	// The record comes from a stored document, and a group number of 1 would signal every process the person owns, and 0
 	// this engine's own group. Anything a command could never have been recorded with is refused before looking.
 	if (!signallable(left.group) || typeof left.start !== "string" || left.start === "") return "unsure";
-	const all = await processes();
+	const all = await processes(undefined, PROOF_TIMEOUT_MS);
 	// Nor the group this engine is in, or one whose number it cannot read.
 	const ownGroup = all.get(process.pid)?.group;
 	if (ownGroup === undefined || ownGroup === left.group) return "unsure";
