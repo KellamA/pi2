@@ -277,8 +277,18 @@ export class AppCheck {
 		if (bundle === null) return { verdict: { app: false, why: "this engine does not know which app it belongs to" }, lasting: true };
 		const helper = join(bundle, "Contents", "MacOS", "pi2-peer");
 		if (!existsSync(helper)) return { verdict: { app: false, why: `there is no ${helper} to ask whether a connection is the app's` }, lasting: false };
+		// A Mac under load can hold the helper past its limit (#707). Refusing the app then would tell the person that only
+		// they can do what they just did, in the app they did it in; so a helper that did not answer is asked once more.
+		const first = await this.#askHelper(socket, helper, bundle);
+		if (!first.slow) return first;
+		this.#log("answers:", first.verdict.why, "(asking once more)");
+		return this.#askHelper(socket, helper, bundle);
+	}
+
+	/** One run of the helper. `slow`: it did not answer within the limit, and was stopped. */
+	#askHelper(socket: Socket, helper: string, bundle: string): Promise<{ verdict: Verdict; lasting: boolean; slow?: boolean }> {
 		return new Promise((resolve) => {
-			const unchecked = (why: string) => resolve({ verdict: { app: false, why: `the connection could not be checked: ${why}` }, lasting: false });
+			const unchecked = (why: string, slow = false) => resolve({ verdict: { app: false, why: `the connection could not be checked: ${why}` }, lasting: false, slow });
 			// The connection's descriptor, not the socket: given a stream, Node stops reading it in this process for good, as it
 			// would if the child were to take it over. The helper only asks the socket about its other end, and never reads.
 			const descriptor = (socket as unknown as { _handle?: { fd?: unknown } })._handle?.fd;
@@ -296,7 +306,7 @@ export class AppCheck {
 			}
 			const timer = setTimeout(() => {
 				child.kill("SIGKILL");
-				unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`);
+				unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
 			}, this.#patienceMs);
 			child.stdout!.setEncoding("utf8").on("data", (text: string) => (output += text));
 			child.once("error", (error) => {
