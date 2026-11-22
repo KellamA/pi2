@@ -1,13 +1,15 @@
+#if os(macOS)
 import AppKit
 import WebKit
 
-/// The web view a conversation's transcript lives in (docs/transcript.md). It loads the page once and nothing after:
-/// every later navigation (a link, a reload, a script, a dropped file) is cancelled, it opens no windows, keeps nothing
-/// on disk, takes no drops, and its menu offers no way to navigate, open or download. Messages from the page itself
-/// arrive as they were posted, for the app to check (`TranscriptAction`).
+/// The web view a conversation's transcript lives in on the Mac (docs/transcript.md). It loads the page once and nothing
+/// after: every later navigation (a link, a reload, a script, a dropped file) is cancelled, it opens no windows, keeps
+/// nothing on disk, takes no drops, and its menu offers no way to navigate, open or download. Messages from the page
+/// itself arrive as they were posted, for the app to check (`TranscriptAction`). The loading is shared with the phone's
+/// view (`TranscriptLoading`); the menu, drops, focus and the page loaded ahead are the Mac's.
 ///
 /// Its own module so that pi2-transcript-check can load real pages in it, and hand them over as the app does (#441).
-public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate {
+public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDelegate, TranscriptMessageReceiver {
     /// A message the page posted to the `pi2` handler, from this view's main frame and the transcript page itself.
     public var onMessage: (Any) -> Void = { _ in }
     /// The page was loaded again (its process ended); it has forgotten everything it was sent.
@@ -19,30 +21,22 @@ public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDe
     public var fileMenuItems: (items: [(title: String, choose: () -> Void)], at: Date)?
     /// Whether the page has loaded and said it is ready, since it was last loaded. A page loaded ahead (`SparePage`)
     /// says so before anyone listens, so whoever takes it reads this instead of waiting for the message.
-    public private(set) var isReady = false
+    public var isReady: Bool { pageLoad.isReady }
     /// Whether the page is waiting to be handed over (`SparePage`): it then takes no focus.
     var isWaiting = false
     /// How many times the view has been taken out of a window. A page loaded ahead goes from where it waited to its pane
     /// without leaving the window (`TranscriptPane`); pi2-transcript-check counts on this to see that it does.
     public private(set) var timesOutOfWindow = 0
 
-    private let folder: URL
-    private var page: URL { folder.appendingPathComponent("index.html") }
-    /// Set only between asking for the page and WebKit asking whether it may load it.
-    private var expecting: URL?
-    private let messages = MessageHandler()
+    private let pageLoad: TranscriptLoading
 
-    /// Makes the view and starts loading the page from `folder`, which holds `index.html` and its scripts.
-    public init(folder: URL) {
-        self.folder = folder
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        configuration.preferences.isElementFullscreenEnabled = false
-        configuration.preferences.isFraudulentWebsiteWarningEnabled = false
-        configuration.userContentController.add(messages, contentWorld: .page, name: "pi2")
-        super.init(frame: .zero, configuration: configuration)
-        messages.view = self
+    /// Makes the view and starts loading the page from `folder`, which holds `index.html` and its scripts. The app's
+    /// panes are always `.wide`; pi2-transcript-check draws `.phone` here too, as the phone's view marks the page.
+    public init(folder: URL, layout: TranscriptLayout = .wide) {
+        let pageLoad = TranscriptLoading(folder: folder)
+        self.pageLoad = pageLoad
+        super.init(frame: .zero, configuration: pageLoad.configuration(layout: layout))
+        pageLoad.messages.receiver = self
         navigationDelegate = self
         uiDelegate = self
         allowsLinkPreview = false
@@ -71,34 +65,24 @@ public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDe
     required init?(coder: NSCoder) { fatalError("not used") }
 
     private func load() {
-        isReady = false
-        expecting = page
-        loadFileURL(page, allowingReadAccessTo: folder)
+        pageLoad.load(into: self)
     }
 
     /// Stops listening to the page, for a view that is going away.
     public func close() {
-        configuration.userContentController.removeAllScriptMessageHandlers()
-        messages.view = nil
+        pageLoad.close(self)
     }
 
-    fileprivate func received(_ message: WKScriptMessage) {
+    func received(_ message: WKScriptMessage) {
         // Only the transcript page itself, in this view's main frame, is listened to.
-        guard message.webView === self, message.frameInfo.isMainFrame,
-              message.frameInfo.request.url?.isFileURL == true, message.frameInfo.request.url?.path == page.path else { return }
-        if (message.body as? [String: Any])?["type"] as? String == "ready" { isReady = true }
-        onMessage(message.body)
+        guard let body = pageLoad.body(of: message, in: self) else { return }
+        onMessage(body)
     }
 
     // MARK: Navigation
 
     public func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
-        if let expecting, navigationAction.targetFrame?.isMainFrame == true, navigationAction.request.url?.isFileURL == true,
-           navigationAction.request.url?.path == expecting.path {
-            self.expecting = nil
-            return .allow
-        }
-        return .cancel
+        pageLoad.policy(for: navigationAction)
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
@@ -177,12 +161,4 @@ private final class ActionMenuItem: NSMenuItem {
 
     @objc private func chosen() { choose() }
 }
-
-/// Hands the page's messages to the view without the view's own configuration keeping it alive.
-private final class MessageHandler: NSObject, WKScriptMessageHandler {
-    weak var view: TranscriptWebKitView?
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        view?.received(message)
-    }
-}
+#endif
