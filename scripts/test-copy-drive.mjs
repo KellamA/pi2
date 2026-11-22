@@ -20,7 +20,7 @@ function integer(value, label, max = Number.MAX_SAFE_INTEGER) {
 	return n;
 }
 
-async function windowCommand(folder, request) {
+async function windowCommand(folder, request, wait = limit) {
 	mkdirSync(folder, { recursive: true, mode: 0o700 });
 	if (!lstatSync(folder).isDirectory()) throw new Error('the copy’s window control path is not a directory');
 	const dir = mkdtempSync(join(folder, 'request-'));
@@ -28,7 +28,7 @@ async function windowCommand(folder, request) {
 		const pending = join(dir, 'pending.json');
 		writeFileSync(pending, JSON.stringify(request));
 		renameSync(pending, join(dir, 'request.json'));
-		const deadline = performance.now() + limit;
+		const deadline = performance.now() + wait;
 		while (performance.now() < deadline) {
 			try {
 				const response = JSON.parse(readFileSync(join(dir, 'response.json'), 'utf8'));
@@ -40,7 +40,7 @@ async function windowCommand(folder, request) {
 			}
 			await sleep(100);
 		}
-		throw new Error('the main window did not answer within 30 seconds; check it is open and rebuild and reopen the copy if needed');
+		throw new Error(`the main window did not answer within ${wait / 1000} seconds; check it is open and rebuild and reopen the copy if needed`);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -117,6 +117,13 @@ try {
 		case 'expose': {
 			const [pid] = args;
 			summary = await windowCommand(target, { pid: Number(pid), command });
+			break;
+		}
+		case 'attached': {
+			// The windows attached to one of the copy's windows, for shot to draw over it (#779). Printed as the copy says
+			// them, numbers separated by spaces, and asked for briefly: shot captures the window alone if no answer comes.
+			const [pid, window] = args;
+			console.log(await windowCommand(target, { pid: Number(pid), command, window: integer(window, 'window') }, 10_000));
 			break;
 		}
 		case 'choose': {
