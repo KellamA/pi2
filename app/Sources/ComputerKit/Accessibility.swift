@@ -96,7 +96,6 @@ enum AX {
 struct Control {
     let element: AXUIElement
     let role: String
-    let subrole: String?
     /// What kind of thing it is, in plain words: "button", "text field".
     let kind: String
     let label: String?
@@ -198,7 +197,7 @@ struct WindowReader {
         if kind != nil, frame != nil, !listed { truncated = true }
         // Hold the place now so a row comes before the buttons inside it.
         if listed, let kind, let frame {
-            controls.append(Control(element: element, role: role, subrole: subrole, kind: kind, label: nil, value: nil, frame: frame, enabled: true, focused: false, selected: false))
+            controls.append(Control(element: element, role: role, kind: kind, label: nil, value: nil, frame: frame, enabled: true, focused: false, selected: false))
         }
 
         var inner: [String] = []
@@ -223,7 +222,7 @@ struct WindowReader {
                 value = (got[4] as? NSNumber).map { $0.intValue == 0 ? "closed" : "open" }
             }
             controls[index] = Control(
-                element: element, role: role, subrole: subrole, kind: kind, label: label, value: value, frame: frame,
+                element: element, role: role, kind: kind, label: label, value: value, frame: frame,
                 enabled: (got[7] as? Bool) ?? true, focused: (got[8] as? Bool) ?? false, selected: (got[9] as? Bool) ?? false
             )
         }

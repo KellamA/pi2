@@ -5,8 +5,6 @@ import SwiftUI
 /// Nothing when there is no list. Otherwise one line with a ring, the count and the step in hand; opened, the whole
 /// checklist. When every step is done and the agent has stopped, it says so quietly and can be dismissed.
 struct PlanStrip: View {
-    let engine: EngineClient
-    let id: Int
     let state: ConversationState?
 
     @State private var expanded = false

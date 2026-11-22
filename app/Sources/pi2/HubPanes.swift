@@ -179,7 +179,6 @@ extension AppModel {
     /// Why a ready-made layout cannot be had in the shown hub, or nil when it can.
     func hubLayoutRefusal(_ layout: PaneLayout) -> String? {
         guard let id = shownProject else { return paneRefusal }
-        if layout.count > HubLayout.maxPanes { return "A hub holds up to \(HubLayout.maxPanes) panes." }
         guard let room = hubs.rooms[id] else { return nil }
         let least = HubLayout.minimum(layout.make())
         if least.width > room.width + 0.5 { return "The hub is too narrow for this layout: it needs \(Int(least.width + 1)) points across." }
@@ -605,7 +604,7 @@ struct HubPaneCommands: View {
             .disabled(refusal != nil || stops < 2)
             .help(refusal ?? (stops < 2 ? "There is one pane on screen." : "Move to the previous pane, the conversation with the orchestrator among them"))
         Menu("Layout") {
-            ForEach(PaneLayout.all.filter { $0.count <= HubLayout.maxPanes }) { layout in
+            ForEach(PaneLayout.all) { layout in
                 let why = model.hubLayoutRefusal(layout)
                 Button("\(layout.name) (\(layout.count))") { model.applyHubLayout(layout) }
                     .disabled(why != nil)

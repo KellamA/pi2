@@ -4,7 +4,6 @@ import Network
 /// A very small web server on this Mac, for the pages the probe checks BrowserKit against.
 final class FixtureServer: @unchecked Sendable {
     struct Request {
-        let method: String
         let path: String
         let headers: [String: String]
         let body: Data
@@ -107,7 +106,7 @@ final class FixtureServer: @unchecked Sendable {
         let length = Int(headers["content-length"] ?? "") ?? 0
         let body = data[headEnd.upperBound...]
         guard body.count >= length else { return nil }
-        return Request(method: String(first[0]), path: String(first[1]), headers: headers, body: Data(body.prefix(length)))
+        return Request(path: String(first[1]), headers: headers, body: Data(body.prefix(length)))
     }
 
     private func send(_ response: Response, on connection: NWConnection) {
