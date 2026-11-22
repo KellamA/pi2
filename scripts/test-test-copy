@@ -203,8 +203,9 @@ expect "no copy named test-7 was started from this checkout" shot test-7 "$root/
 # start skips the first-run welcome by writing the engine's own setting into the copy's settings.json, as
 # settings.finishOnboarding does. If the engine ever names it otherwise, the welcome comes back over every picture.
 engine="$(dirname -- "$script")/../engine/src/main.ts"
-if ! grep -qF 'settings.onboarded = true;' "$engine"; then
-	echo "FAIL: engine/src/main.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
+settingsRequests="$(dirname -- "$script")/../engine/src/settingsrequests.ts"
+if ! grep -qF 'settings.onboarded = true;' "$settingsRequests"; then
+	echo "FAIL: engine/src/settingsrequests.ts no longer marks the welcome done with settings.onboarded; change what test-copy start writes"
 	failures=$((failures + 1))
 elif ! grep -qF 'const settingsPath = join(home, "settings.json");' "$engine"; then
 	echo "FAIL: engine/src/main.ts no longer keeps its settings in settings.json; change where test-copy start writes them"
