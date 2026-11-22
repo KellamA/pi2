@@ -510,15 +510,38 @@ struct ConversationLoading: View {
 
 // MARK: - Toolbar menus
 
-/// How full the context is and what this conversation has cost, with the ways to make room.
+/// The project's own Start fresh, for the meter of an orchestrator's current conversation (docs/projects.md, 6.5; #632):
+/// why it cannot be done now, if it cannot, and what asks for its confirmation, which the hub shows.
+struct ProjectFresh {
+    let refusal: String?
+    let ask: () -> Void
+}
+
+/// How full the context is and what this conversation has cost, with the ways to make room. In the conversation's
+/// toolbar, and in the header of a project's hub's conversation panels (#632).
 struct ContextMeter: View {
     let engine: EngineClient
     let id: Int
     let state: ConversationState?
+    /// For the orchestrator's current conversation in a project: Start Fresh is the project's, not a fresh context of this
+    /// conversation, and Fork does not apply, since a project has one conversation with its orchestrator (#632).
+    var project: ProjectFresh? = nil
+    /// Where a fork goes once made: the hub shows it in place of its board. Nil selects it, as anywhere else.
+    var forked: ((Int) -> Void)? = nil
     @State private var resetting = false
     @State private var note = ""
+    @State private var summarising = false
+    @State private var summaryNote = ""
 
     private var lastAnswer: Item? { engine.open[id]?.items.last { $0.kind == "assistant" && $0.stop == "stop" } }
+
+    /// Why a summary cannot be asked for now, if it cannot.
+    private var summaryRefusal: String? {
+        if let earlier = engine.earlierRefusal(id) { return earlier }
+        if state?.compacting == true { return "Earlier messages are being summarised now." }
+        if state?.archived == true { return "This conversation is archived. Restore it to carry on." }
+        return nil
+    }
 
     var body: some View {
         Menu {
@@ -533,10 +556,31 @@ struct ContextMeter: View {
             }
             Divider()
             Button("Summarise Earlier Messages") { engine.perform("conversation.compact", ["id": id]) }
-                .disabled(state?.compacting == true)
-            Button("Start Fresh Context…") { resetting = true }
-            Button("Fork From Last Answer") { if let lastAnswer { engine.fork(id, at: lastAnswer.id) } }
-                .disabled(lastAnswer == nil)
+                .disabled(summaryRefusal != nil)
+                .help(summaryRefusal ?? "Replace the earlier part of what the model reads with a summary. The messages stay here for you.")
+            // The note the failed-summary banner's Try Again… offers (#538), without waiting for a summary to fail.
+            Button("Summarise With a Note…") {
+                summaryNote = ""
+                summarising = true
+            }
+            .disabled(summaryRefusal != nil)
+            .help(summaryRefusal ?? "Say what the summary must keep, then summarise earlier messages")
+            if let project {
+                Button("Start Fresh…") { project.ask() }
+                    .disabled(project.refusal != nil)
+                    .help(project.refusal ?? "Begin a new conversation with the orchestrator, which starts with the project as it stands. This one is kept, to read.")
+            } else {
+                Button("Start Fresh Context…") { resetting = true }
+                    .disabled(engine.earlierRefusal(id) != nil)
+                    .help(engine.earlierRefusal(id) ?? "The model stops seeing earlier messages. They stay in the conversation for you.")
+                Button("Fork From Last Answer") {
+                    if let lastAnswer {
+                        if let forked { engine.fork(id, at: lastAnswer.id, then: forked) } else { engine.fork(id, at: lastAnswer.id) }
+                    }
+                }
+                .disabled(lastAnswer == nil || engine.forkRefusal(id) != nil)
+                .help(engine.forkRefusal(id) ?? "A new conversation that goes on from the last answer")
+            }
         } label: {
             Label(label, systemImage: "gauge.with.dots.needle.33percent")
                 .labelStyle(.titleAndIcon)
@@ -547,6 +591,13 @@ struct ContextMeter: View {
         .onChange(of: id) {
             resetting = false
             note = ""
+            summarising = false
+            summaryNote = ""
+        }
+        .alert("Summarise earlier messages?", isPresented: $summarising) {
+            TextField("What should the summary keep? (optional)", text: $summaryNote)
+            Button("Summarise") { engine.perform("conversation.compact", ["id": id, "instructions": summaryNote]) }
+            Button("Cancel", role: .cancel) {}
         }
         .alert("Start a fresh context?", isPresented: $resetting) {
             TextField("Note to carry over (optional)", text: $note)
@@ -1135,7 +1186,7 @@ struct SubagentCard: View {
                 if let subagent {
                     Button {
                         engine.openConversation(subagent.id)
-                        engine.onNavigate(subagent.id)
+                        engine.onNavigate(subagent.id, nil)
                     } label: {
                         Label("Open", systemImage: "arrow.up.right").labelStyle(.titleAndIcon)
                     }

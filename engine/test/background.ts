@@ -455,7 +455,6 @@ try {
 	assert.match(firstRead.text, /\[[\d,]+ characters more: read again for them\.\]$/);
 	assert.ok(firstRead.text.length < 31_000, `one read is bounded: ${firstRead.text.length}`);
 	const dropped = Number(/\[([\d,]+) characters it printed before/.exec(firstRead.text)![1]!.replaceAll(",", ""));
-	const waiting = Number(/\[([\d,]+) characters more/.exec(firstRead.text)![1]!.replaceAll(",", ""));
 	assert.ok(dropped >= 600_000 - 2 * 128 * 1024, `most of 600,000 characters were let go: ${dropped}`);
 	const noisyStop = await client.background(a, { action: "stop", id: noisy.bg });
 	assert.ok(noisyStop.text.length < 31_500 && noisyStop.text.includes("What it printed since you last read it:\n") && /more: read again for them\.\]$/.test(noisyStop.text), noisyStop.text.slice(0, 200));

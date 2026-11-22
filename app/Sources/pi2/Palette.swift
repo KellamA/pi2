@@ -77,20 +77,20 @@ struct PaletteView: View {
             let agent = (owner?.name ?? "") + (conversation.parent == nil ? "" : " · sub-chat")
                 + (AllowEverything.warning(conversation, agent: owner) == nil ? "" : " · \(AllowEverything.tag)")
             result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: conversation.busy ? "\(agent) · working" : agent) {
-                model.selection = .conversation(conversation.id)
+                model.openConversation(conversation.id)
             })
         }
         // Archived conversations are found only by typing: they were put away so as not to be in the way.
         for conversation in engine.archived where !needle.isEmpty && matches(conversation.title) {
             let agent = conversation.isChat ? "Chat" : engine.agent(conversation.agentId)?.name ?? ""
             result.append(Entry(id: "a-\(conversation.id)", icon: "archivebox", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: agent.isEmpty ? "Archived" : "\(agent) · archived") {
-                model.selection = .conversation(conversation.id)
+                model.openConversation(conversation.id)
             })
         }
         for message in messages {
             let chat = message.chat == true || engine.isChat(message.conversationId)
             result.append(Entry(id: "m-\(message.entryId)", icon: "text.magnifyingglass", title: message.snippet, detail: "In “\(message.title.isEmpty ? (chat ? "New chat" : "New conversation") : message.title)”\(chat ? " · chat" : "")\(message.archived == true ? " · archived" : "")") {
-                model.selection = .conversation(message.conversationId)
+                model.openConversation(message.conversationId)
             })
         }
         return Array(result.prefix(60))

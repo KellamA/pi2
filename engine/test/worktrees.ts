@@ -500,7 +500,7 @@ try {
 			{ name: "sub_chats", arguments: { action: "list" } },
 		])}`);
 		const removed = client.conversations.get(lead).items.filter((item: Event) => item.kind === "tool").at(-2);
-		assert.match(listedAfter.text, new RegExp(`Archived: [^\\n]*${dirty} `));
+		assert.match(listedAfter.text, /^2 archived; `archived: true` lists them/m);
 		assert.doesNotMatch(listedAfter.text, /on the branch sub-dirty/);
 		assert.equal(removed.isError, false, removed.text);
 		assert.ok(removed.text.includes(`- ${one}: already archived. Removed its worktree at ${oneRoot}; the branch sub-one is kept.`), removed.text);

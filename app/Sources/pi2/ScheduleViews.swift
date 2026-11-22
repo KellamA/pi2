@@ -101,13 +101,9 @@ struct ScheduleList: View {
         .opacity(schedule.enabled && schedule.holdReason == nil ? 1 : 0.6)
     }
 
-    /// A run opens where it lives: in place of its project's board with the preview on, else as a conversation.
+    /// A run opens where it lives (#644): in place of its project's board with the preview on, else as a conversation.
     private func openRun(_ id: Int) {
-        if let project = engine.conversations.first(where: { $0.id == id })?.projectId, engine.project(project) != nil {
-            model.openAgent(id, in: project)
-        } else {
-            model.selection = .conversation(id)
-        }
+        model.openConversation(id)
     }
 
     private func act(_ method: String, _ schedule: Schedule) {

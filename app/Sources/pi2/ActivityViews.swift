@@ -63,7 +63,7 @@ struct ActivityView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 ForEach(recovery.conversations) { conversation in
                     Button(conversation.title.isEmpty ? "New conversation" : conversation.title) {
-                        model.selection = .conversation(conversation.id)
+                        model.openConversation(conversation.id)
                     }
                     .buttonStyle(.plain).foregroundStyle(Theme.acc)
                 }
@@ -127,7 +127,7 @@ struct ActivityView: View {
         let settled = outcome == "stopped" || outcome == "gone"
         return VStack(alignment: .leading, spacing: 1) {
             Button(title.isEmpty ? "New conversation" : title) {
-                model.selection = .conversation(conversation)
+                model.openConversation(conversation)
             }
             .buttonStyle(.plain).foregroundStyle(Theme.acc)
             .lineLimit(1).truncationMode(.tail)
@@ -226,7 +226,7 @@ private struct RunRow: View {
                 Text(elapsed(until: context.date)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.tx2)
                     .frame(minWidth: 52, alignment: .trailing)
             }
-            Button("Open") { model.selection = .conversation(run.rootConversationId) }
+            Button("Open") { model.openConversation(run.rootConversationId) }
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
             Button("Stop", systemImage: "stop.fill") { engine.perform("abort", ["id": run.conversationId]) }
                 .labelStyle(.iconOnly)
@@ -323,7 +323,7 @@ private struct BackgroundCommandRow: View {
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
                 .fixedSize()
                 .help("Show what it has printed, as it prints it")
-            Button("Open") { model.selection = .conversation(command.rootConversationId) }
+            Button("Open") { model.openConversation(command.rootConversationId) }
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
                 .fixedSize()
                 .help("Open the conversation that started it")

@@ -1257,7 +1257,7 @@ export function githubItem(entry: EntryRecord): { id: number; kind: "marker"; te
  * Send back pull request `number`: the reason on it, then to the conversation that opened it, as an input of its own
  * kind (`pi2.sentBack`). Answers what was done, in words.
  */
-async function sendBack(project: Project, number: number, reason: string, by: Who, key: string, call?: Call): Promise<string> {
+async function sendBack(project: Project, number: number, reason: string, by: Who, key: string): Promise<string> {
 	if (reason.trim() === "") throw new Error("Say why it goes back, in text.");
 	const pull = await viewPull(project, number);
 	await write(project, key, "pr.comment", { by, number, role: "send_back", body: compose(project, by, `**Sent back.** ${reason}`, key), summary: `sending back pull request #${number}` });
@@ -1340,7 +1340,7 @@ async function pull(project: Project, action: PullAction, by: Who, args: Record<
 		summary = `Merged pull request #${n} “${short(pr.title)}” on GitHub`;
 	} else {
 		const n = number();
-		text = await sendBack(project, n, reasonOf(), by, key, call);
+		text = await sendBack(project, n, reasonOf(), by, key);
 		summary = `Sent back pull request #${n} on GitHub`;
 	}
 	const done = await commit(async (tx) => {
