@@ -135,6 +135,8 @@ jobs:
       - run: scripts/test-issue-hook
       - run: scripts/test-auto-merge
       - run: scripts/test-docs-lists
+      # scripts/check-protected-targets against package descriptions made in the test, one for each tampering (#674).
+      - run: scripts/test-check-protected-targets
 
   app:
     name: App (build)
@@ -151,6 +153,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
+      # app/Package.swift is not an owner's path, but it decides what the targets in the owner's folders are built from:
+      # this fails if a protected target's path, files, dependencies, settings or plugins changed, if a package was
+      # added, or if anything but RemoteKit's checks names @_spi(Vectors) (#674).
+      - name: Check the owner's targets in Package.swift
+        run: scripts/check-protected-targets
       - name: Build the app, ComputerKit and the probe
         working-directory: app
         run: swift build

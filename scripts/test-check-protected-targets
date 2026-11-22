@@ -1,0 +1,120 @@
+#!/bin/bash
+# Checks scripts/check-protected-targets against package descriptions made here, one good and one for each way of
+# getting round CODEOWNERS through app/Package.swift, and against Swift files that name @_spi(Vectors) in a folder of
+# their own. Needs only bash and jq, so CI runs it on Linux with the other scripts' tests. Touches nothing outside a
+# temporary folder.
+#
+#   scripts/test-check-protected-targets
+
+set -uo pipefail
+
+check="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/check-protected-targets"
+command -v jq >/dev/null || { echo "test-check-protected-targets: needs jq" >&2; exit 1; }
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+
+# A package description as `swift package dump-package` writes app/Package.swift's: the three protected targets as they
+# are, and two others with what only other targets may have (a setting, unsafe flags, a product).
+jq -n '{
+	name: "pi2",
+	dependencies: [{sourceControl: [{identity: "sparkle", location: {remote: [{urlString: "https://github.com/sparkle-project/Sparkle"}]},
+		productFilter: null, requirement: {exact: ["2.10.1"]}, traits: [{name: "default"}]}]}],
+	targets: [
+		{name: "PiModels", path: "Sources/PiModels", type: "regular", dependencies: [], exclude: [], resources: [], settings: [], packageAccess: true},
+		{name: "RemoteKit", path: "Sources/RemoteKit", type: "regular", dependencies: [], exclude: [], resources: [], settings: [], packageAccess: true},
+		{name: "pi2", path: "Sources/pi2", type: "executable",
+			dependencies: [{byName: ["PiModels", null]}, {product: ["Sparkle", "Sparkle", null, null]}], exclude: [], resources: [],
+			settings: [{kind: {unsafeFlags: {_0: ["-Xlinker", "-rpath"]}}, tool: "linker"}], packageAccess: true},
+		{name: "pi2-remote-check", path: "Sources/pi2-remote-check", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
+			exclude: ["vectors"], resources: [], settings: [], packageAccess: true},
+		{name: "pi2-remote-fuzz", path: "Sources/pi2-remote-fuzz", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
+			exclude: [], resources: [], settings: [], packageAccess: true}
+	]}' >"$T/good.json"
+
+mkdir -p "$T/tree/app/Sources/RemoteKit" "$T/tree/app/Sources/pi2-remote-check" "$T/tree/app/Sources/pi2-remote-fuzz" "$T/tree/app/Sources/pi2"
+printf '@_spi(Vectors)\npublic init() {}\n' >"$T/tree/app/Sources/RemoteKit/Noise.swift"
+printf '@_spi(Vectors) import RemoteKit\n' >"$T/tree/app/Sources/pi2-remote-check/Vectors.swift"
+printf '@_spi(Vectors) import RemoteKit\n' >"$T/tree/app/Sources/pi2-remote-fuzz/Targets.swift"
+printf 'import RemoteKit\n' >"$T/tree/app/Sources/pi2/Remote.swift"
+
+passed=0
+failed=0
+run() { "$check" --dump "$1" --root "${2:-$T/tree}" >"$T/out" 2>&1; }
+expect_pass() {
+	if run "$@"; then
+		passed=$((passed + 1))
+	else
+		failed=$((failed + 1))
+		echo "FAIL a good package was refused:"
+		cat "$T/out"
+	fi
+}
+# A tampering: a jq program applied to the good description, which the check must refuse, saying `$2`.
+expect_refused() {
+	local why=$1 says=$2 program=$3
+	jq "$program" "$T/good.json" >"$T/case.json" || { echo "FAIL $why: the case's jq does not run"; failed=$((failed + 1)); return; }
+	if run "$T/case.json"; then
+		failed=$((failed + 1))
+		echo "FAIL $why: was taken"
+	elif ! grep -qF -- "$says" "$T/out"; then
+		failed=$((failed + 1))
+		echo "FAIL $why: refused, but not saying \"$says\":"
+		cat "$T/out"
+	else
+		passed=$((passed + 1))
+	fi
+}
+target() { printf '(.targets[] | select(.name == "%s"))' "$1"; }
+
+expect_pass "$T/good.json"
+
+expect_refused "RemoteKit built from another folder" "its path is not Sources/RemoteKit" "$(target RemoteKit).path = \"Sources/Other\""
+expect_refused "RemoteKit with no path, which is the same folder said otherwise" "its path is not Sources/RemoteKit" "$(target RemoteKit) |= del(.path)"
+expect_refused "a check built from another folder" "its path is not Sources/pi2-remote-check" "$(target pi2-remote-check).path = \"Sources/pi2\""
+expect_refused "RemoteKit excluding a file" "it excludes other files than []" "$(target RemoteKit).exclude = [\"Noise.swift\"]"
+expect_refused "the check excluding more" "it excludes other files than [\"vectors\"]" "$(target pi2-remote-check).exclude = [\"vectors\", \"Sessions.swift\"]"
+expect_refused "the check excluding nothing, so the vectors go unread as source" "it excludes other files than [\"vectors\"]" "$(target pi2-remote-check).exclude = []"
+expect_refused "RemoteKit listing its sources" "it lists its sources" "$(target RemoteKit).sources = [\"Bytes.swift\"]"
+expect_refused "the fuzzer with resources" "it has resources" "$(target pi2-remote-fuzz).resources = [{rule: {process: {}}, path: \"seeds\"}]"
+expect_refused "RemoteKit with unsafe flags" "it has build settings" "$(target RemoteKit).settings = [{kind: {unsafeFlags: {_0: [\"-Xfrontend\", \"-disable-availability-checking\"]}}, tool: \"swift\"}]"
+expect_refused "RemoteKit with a define" "it has build settings" "$(target RemoteKit).settings = [{kind: {define: {_0: \"SKIP_CHECKS\"}}, tool: \"swift\"}]"
+expect_refused "RemoteKit with a plugin" "it uses a plugin" "$(target RemoteKit).pluginUsages = [{plugin: [\"Rewrite\", null]}]"
+expect_refused "RemoteKit depending on a target" "it depends on other than []" "$(target RemoteKit).dependencies = [{byName: [\"PiModels\", null]}]"
+expect_refused "RemoteKit depending on a product" "it depends on other than []" "$(target RemoteKit).dependencies = [{product: [\"Sparkle\", \"Sparkle\", null, null]}]"
+expect_refused "the check depending on more" "it depends on other than [\"RemoteKit\"]" "$(target pi2-remote-check).dependencies += [{byName: [\"PiModels\", null]}]"
+expect_refused "the fuzzer depending on RemoteKit on one platform only" "it depends on other than [\"RemoteKit\"]" "$(target pi2-remote-fuzz).dependencies = [{byName: [\"RemoteKit\", {platformNames: [\"linux\"]}]}]"
+expect_refused "the fuzzer as a target dependency of another kind" "it depends on other than [\"RemoteKit\"]" "$(target pi2-remote-fuzz).dependencies = [{target: [\"RemoteKit\", null]}]"
+expect_refused "RemoteKit made an executable" "it is not a regular target" "$(target RemoteKit).type = \"executable\""
+expect_refused "a field the check does not know" "fields this check does not know: linkerHints" "$(target RemoteKit).linkerHints = []"
+expect_refused "RemoteKit gone" "there are 0 targets of that name" "del(.targets[] | select(.name == \"RemoteKit\"))"
+expect_refused "RemoteKit twice" "there are 2 targets of that name" ".targets += [$(target RemoteKit)]"
+expect_refused "another target built from RemoteKit's folder" "it is built from Sources/RemoteKit, which is RemoteKit's" ".targets += [{name: \"Shadow\", path: \"Sources/RemoteKit\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: [{kind: {unsafeFlags: {_0: [\"-Onone\"]}}, tool: \"swift\"}]}]"
+expect_refused "another target built from inside the check's folder" "which is pi2-remote-check's" ".targets += [{name: \"Inside\", path: \"Sources/pi2-remote-check/vectors\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: []}]"
+expect_refused "another target named for a protected folder, with no path" "which is pi2-remote-fuzz's" ".targets += [{name: \"pi2-remote-fuzz/x\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: []}]"
+expect_refused "a package that is not allowed" "a package dependency that is not allowed: https://example.com/evil" ".dependencies += [{sourceControl: [{identity: \"evil\", location: {remote: [{urlString: \"https://example.com/evil\"}]}, requirement: {exact: [\"1.0.0\"]}}]}]"
+expect_refused "Sparkle from another address" "not allowed: https://github.com/someone/Sparkle" ".dependencies[0].sourceControl[0].location.remote[0].urlString = \"https://github.com/someone/Sparkle\""
+expect_refused "a package from a folder on disk" "a package dependency that is not allowed: fileSystem" ".dependencies += [{fileSystem: [{identity: \"local\", path: \"/tmp/local\"}]}]"
+
+# @_spi(Vectors) outside RemoteKit and its checks.
+cp -R "$T/tree" "$T/spi"
+printf '@_spi(Vectors) import RemoteKit\n' >"$T/spi/app/Sources/pi2/Remote.swift"
+if run "$T/good.json" "$T/spi"; then
+	failed=$((failed + 1)); echo "FAIL @_spi(Vectors) in the app: was taken"
+elif grep -qF "app/Sources/pi2/Remote.swift names @_spi(Vectors)" "$T/out"; then passed=$((passed + 1))
+else failed=$((failed + 1)); echo "FAIL @_spi(Vectors) in the app: refused, but not by name"; cat "$T/out"; fi
+rm -rf "$T/spi"; cp -R "$T/tree" "$T/spi"
+mkdir -p "$T/spi/iphone/Sources/Connection"
+printf '@_spi( Vectors )\nimport RemoteKit\n' >"$T/spi/iphone/Sources/Connection/Pairing.swift"
+if run "$T/good.json" "$T/spi"; then
+	failed=$((failed + 1)); echo "FAIL @_spi( Vectors ) in the iPhone app, spaced and on its own line: was taken"
+else passed=$((passed + 1)); fi
+
+# Arguments.
+"$check" --nonsense >/dev/null 2>&1
+if [[ $? == 2 ]]; then passed=$((passed + 1)); else failed=$((failed + 1)); echo "FAIL an unknown argument did not exit 2"; fi
+printf 'not json' >"$T/broken.json"
+if run "$T/broken.json"; then failed=$((failed + 1)); echo "FAIL a description that is not JSON was taken"; else passed=$((passed + 1)); fi
+
+echo "$passed passed, $failed failed"
+[[ $failed == 0 ]]
