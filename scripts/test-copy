@@ -76,8 +76,10 @@ Usage: scripts/test-copy <command> [arguments]
                                    the copy raised its parked window and gives it to accessibility where the tool
                                    looks. No (exit 1), with its cause: the pi² app not running (only the person can
                                    reopen it), no window in the window server after 30 seconds, a window the copy
-                                   does not give to accessibility, or one the window server has at another size or
-                                   not at all, which the tool turns down. Cannot tell from here (exit 2): the copy did not
+                                   does not give to accessibility, or one the window server and accessibility
+                                   disagree on, which the tool turns down: at another size, not at all, or elsewhere
+                                   at that size for a window that is not the app's main window or shares its size
+                                   with another of the copy's windows. Cannot tell from here (exit 2): the copy did not
                                    say, or its build predates the request (rebuild and reopen it). pi²'s own
                                    Accessibility permission can never be told from here. Run this before planning
                                    checks that need clicks.
@@ -701,7 +703,7 @@ case $cmd in
 			case $out in
 				*"does not give its main window to accessibility"*) no "$out" ;;
 				# The tool finds the window but turns it down when the window server has it elsewhere at another size,
-				# or not at all (#748).
+				# or not at all (#748), or at that size where the size cannot say which window it is (#770).
 				*"so the computer tool would not take it"*) no "$out" ;;
 				*unknown\ test-copy\ window\ command*)
 					cannot_tell "the copy's build predates the request that raises its parked window and says whether the tool can find it; rebuild the app (./app/build.sh), run scripts/test-copy reopen $SUFFIX, and ask again" ;;

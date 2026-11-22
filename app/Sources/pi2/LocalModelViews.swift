@@ -1,31 +1,11 @@
 import AppKit
+import EngineKit
 import PiModels
 import SwiftUI
 
 // Models run on this Mac (#291, part of #173): what the conversation, Activity and the menu bar show of them. The engine
 // starts and stops them (engine/src/localrun.ts); the app says which conversations it shows, sees what runs, and can stop
-// one. See docs/local-models-running.md.
-
-/// A model running on this Mac, as the engine's `local.running` event lists it.
-struct LocalServer: Codable, Equatable, Identifiable {
-    let id: String
-    let name: String
-    /// "starting", "ready" or "stopping".
-    let status: String
-    let startedAt: Double
-    let readyAt: Double?
-    let progress: Double?
-    let stage: String?
-    /// Bytes its processes hold in memory, at the engine's last look: its own and those it started.
-    let memory: Double?
-    /// The conversations using it.
-    let users: [Int]
-    /// When it stops for want of anyone using it, while that is counting down.
-    let stopsAt: Double?
-    let log: String
-}
-
-struct LocalRunningEvent: Decodable { let running: [LocalServer] }
+// one. See docs/local-models-running.md. The models themselves (`LocalServer`) are EngineKit's, which reads the event.
 
 enum LocalModels {
     /// "63.2 GB": memory as the person reads it.

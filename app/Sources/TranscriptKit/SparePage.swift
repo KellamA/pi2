@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 /// One transcript page loaded ahead and idle, for the next pane that opens (#441).
@@ -153,3 +154,4 @@ public final class SparePageHost: NSView {
     override public func accessibilityChildren() -> [Any]? { [] }
     override public func isAccessibilityElement() -> Bool { false }
 }
+#endif
