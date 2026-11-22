@@ -1,12 +1,21 @@
 import SwiftUI
 
-/// pi² for iPhone (docs/iphone.md). For now the app is its first screen, as for a phone not yet paired with a Mac:
-/// pairing, the keys and the channel come with the rest of #680.
+/// pi² for iPhone (docs/iphone.md; how the app is put together: docs/iphone-app.md). One `AppSession` for the whole
+/// app, started by `Launch`, and one navigation root, `RootView`.
 @main
 struct Pi2App: App {
+    @State private var session: AppSession
+
+    init() {
+        let session = AppSession()
+        Launch.start(session)
+        _session = State(initialValue: session)
+    }
+
     var body: some Scene {
         WindowGroup {
-            FirstScreen()
+            RootView()
+                .environment(session)
         }
     }
 }

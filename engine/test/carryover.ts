@@ -370,7 +370,8 @@ try {
 	rmSync(commitGate, { force: true });
 	const cut = await offline(async (harness) => (await harness.snapshot(Projects, context))!);
 	assert.deepEqual(Object.values(cut.projects).map((project) => project.folder), [other], "the first project's commit alone");
-	assert.ok(readFileSync(logPath, "utf8").includes("carrying over at the update: removed 1 unfinished copy of the data"));
+	// Removed as the engine starts, before the update looks (backup.ts, #792).
+	assert.ok(readFileSync(logPath, "utf8").includes("backup: removed the unfinished copy"));
 	assert.ok(existsSync(theirs), "a folder without the mark stays");
 	rmdirSync(theirs);
 	assert.deepEqual(backupsMade().length, 1, "the copy made first, and the unfinished one gone");
