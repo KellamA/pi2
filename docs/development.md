@@ -11,7 +11,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Allowed commands | [Allowed commands](allowed-commands.md), [Choosing what a copy shows](#choosing-what-a-copy-shows) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests) or [The page loaded ahead](#the-page-loaded-ahead) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [The remote channel](#remote-channel-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests) or [The page loaded ahead](#the-page-loaded-ahead) |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
@@ -264,6 +264,21 @@ cd app && swift build --product pi2-peer && swift build --product pi2-peer-check
 ```
 
 That the app's own connection is taken for the app, by the helper inside the bundle, is checked on a release build by `app/check-release-build.mts --open-app` in CI, and on a development build in a throwaway copy: its `engine.log` has a line `answers: process … (dev.pi2.app.<suffix>) is the app` once the app has connected.
+
+### Remote channel checks
+
+The channel between a phone and pi² Remote, and the sealed items of the relay's mailbox (`app/Sources/RemoteKit`, #674), are checked by two programs of their own; [remotekit.md](remotekit.md) says what they read and how. `pi2-remote-check` runs Noise against the published test vectors for the two protocols pi² uses and HPKE against RFC 9180's, from the fixtures in `app/Sources/pi2-remote-check/vectors` (`extract.mjs` there makes them again, each source at a pinned commit and checked by its SHA-256), then a pairing and a KK connection between two ends of its own in memory, sealed items both ways, and what each reader refuses; `--verbose` prints every refusal with its error. `pi2-remote-fuzz` runs every parser that reads bytes from the network against mutated and random input, from a seed, for a time shared out among its targets; a parser that traps ends the run with the input that made it, which `--replay <target> <hex>` runs again with the same seed. Neither touches a key store or the network. CI runs both after building the app, the fuzzer for a minute:
+
+```bash
+cd app && swift build --product pi2-remote-check && .build/debug/pi2-remote-check
+cd app && swift build --product pi2-remote-fuzz && .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+```
+
+RemoteKit builds for iOS as well as macOS, and CI builds it for iOS too:
+
+```bash
+cd app && swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+```
 
 ### Login item checks
 

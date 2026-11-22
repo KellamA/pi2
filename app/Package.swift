@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "pi2",
-    platforms: [.macOS(.v15)],
+    // iOS for the shared targets the iPhone app builds on (docs/iphone.md section 8); the Mac's targets build for macOS only.
+    platforms: [.macOS(.v15), .iOS(.v18)],
     dependencies: [
         // Updates for release builds. build.sh copies the framework into the app.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
@@ -35,6 +36,10 @@ let package = Package(
         // Whether the process at the other end of a connection to the engine's socket is the app (#504). Its own module
         // so pi2-peer-check can check it.
         .target(name: "PeerKit", path: "Sources/PeerKit"),
+        // The channel between a phone and pi² Remote, and sealing (#674, docs/iphone.md 5.2, 5.3): Noise, framing, HPKE
+        // items signed by their writer, the pairing payload, pair, attach and presence. CryptoKit only, nothing of the Mac
+        // app's: pi² Remote and the iPhone app share it. Relay/ is the relay's client (#678).
+        .target(name: "RemoteKit", path: "Sources/RemoteKit"),
         .executableTarget(
             name: "pi2",
             dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "MenuKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
@@ -72,5 +77,11 @@ let package = Package(
         .executableTarget(name: "pi2-peer", dependencies: ["PeerKit"], path: "Sources/pi2-peer"),
         // Checks PeerKit and pi2-peer on connections of its own, from itself and from /usr/bin/nc.
         .executableTarget(name: "pi2-peer-check", dependencies: ["PeerKit"], path: "Sources/pi2-peer-check"),
+        // Checks RemoteKit against the published Noise and HPKE test vectors in vectors/, and runs a pairing and a
+        // connection between two ends of its own, in memory. Touches no key store and no network.
+        .executableTarget(name: "pi2-remote-check", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-check", exclude: ["vectors"]),
+        // Runs every parser in RemoteKit that reads bytes from the network against mutated and random input, from a fixed
+        // seed for a bounded time (#674).
+        .executableTarget(name: "pi2-remote-fuzz", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-fuzz"),
     ]
 )

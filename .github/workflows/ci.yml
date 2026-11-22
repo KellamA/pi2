@@ -192,3 +192,17 @@ jobs:
       - name: Check the conversation page loaded ahead
         working-directory: app
         run: .build/debug/pi2-transcript-check
+      # RemoteKit, the channel to a phone and its sealed items (#674): Noise against the published vectors for IKpsk2 and
+      # KK, HPKE against RFC 9180's, a pairing and a KK connection between two ends in memory, and what each reader
+      # refuses. No key store, no network.
+      - name: Check RemoteKit's channel and sealing
+        working-directory: app
+        run: .build/debug/pi2-remote-check
+      # Every RemoteKit parser that reads bytes from the network, against mutated and random input: a fixed seed, a minute.
+      - name: Fuzz RemoteKit's parsers
+        working-directory: app
+        run: .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+      # RemoteKit is shared with the iPhone app, so it must keep building for iOS: CryptoKit only, nothing of the Mac's.
+      - name: Build RemoteKit for iOS
+        working-directory: app
+        run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios

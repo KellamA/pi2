@@ -26,6 +26,10 @@
 # device lists (in answers.ts) and App Attest's verifier.
 /relay/ @KellamA
 /app/Sources/RemoteKit/ @KellamA
+# RemoteKit's checks: the published vectors it is held to, the check that runs them, and the fuzzer (#674). Weakening
+# one would let a change to the channel through unnoticed.
+/app/Sources/pi2-remote-check/ @KellamA
+/app/Sources/pi2-remote-fuzz/ @KellamA
 /app/Sources/pi2-remote/ @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
