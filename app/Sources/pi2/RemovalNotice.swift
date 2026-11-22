@@ -151,15 +151,17 @@ struct RemovalNotice: View {
 ///     defaults write dev.pi2.app.test-7 removal-notice -string 'backup'
 ///     defaults write dev.pi2.app.test-7 removal-notice -string 'failed'
 ///
-/// `backup` tells of a copy of the data made at launch, in the copy's own data folder's `backups/`, once, as the update
-/// does; `failed` shows the banner of an update that could not make its copy. See docs/development.md.
+/// `backup` tells of a copy of the data made when the data folder was, in its `backups/`, once, as the update does: OK
+/// keeps it gone across launches; `failed` shows the banner of an update that could not make its copy. See docs/development.md.
 @MainActor
 enum RemovalNoticePreview {
     static let asked: (backup: CarryOverState.RemovalBackup?, failed: String?)? = {
         switch UserDefaults.standard.string(forKey: "removal-notice") {
         case "backup":
             let home = DevelopmentBuild.defaults(bundleID: Bundle.main.bundleIdentifier, applicationSupport: DevelopmentBuild.usualHome.deletingLastPathComponent()).home
-            return (CarryOverState.RemovalBackup(path: home.appendingPathComponent("backups/pi2-backup-before-projects").path, at: Date().timeIntervalSince1970 * 1000), nil)
+            // When the data folder was made, so that the stand-in is the same copy at every launch, and OK keeps it gone.
+            let made = (try? FileManager.default.attributesOfItem(atPath: home.path)[.creationDate] as? Date) ?? Date()
+            return (CarryOverState.RemovalBackup(path: home.appendingPathComponent("backups/pi2-backup-before-projects").path, at: (made.timeIntervalSince1970 * 1000).rounded()), nil)
         case "failed":
             return (nil, "The copy of the data could not be made: there is not enough room on the disk (a stand-in reason).")
         default:
