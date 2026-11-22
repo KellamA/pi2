@@ -22,6 +22,10 @@
 //   enhanced accessibility is put back after the raise; that the tool's request reaches the copy's control folder and
 //   is taken for its answer; the words given for each reason a copy's window cannot be read; and that a click on a
 //   window with no listed controls is never said to have changed nothing;
+// - that a parked copy's main window is taken while the window server has it, the same size, somewhere else, as while
+//   macOS moves it between Spaces, and that the copy's own answer to `can-click` turns it down exactly where the tool
+//   would; and that a click at a point lands on the innermost listed control there, which a hit test cannot find off
+//   the screen (#748);
 // - the size and direction of the wheel event (as AppKit decodes it, without posting it), and how actual movement
 //   is reported.
 //
@@ -384,6 +388,54 @@ Task { @MainActor in
         check("use the largest eligible window for this PID, even offscreen and at layer -1", ServerWindow.parkedCopy(in: windows, pid: pid)?.id == 1)
         check("use the parked window ID for input without needing an image", ServerWindow.matching(mainBounds, in: windows, pid: pid)?.id == 1)
         check("never pair controls with another window's image or ID", ServerWindow.matching(mainBounds.offsetBy(dx: 200, dy: 0), in: windows, pid: pid) == nil)
+    }
+
+    await group("a parked copy's main window is taken while the window server has it elsewhere (#748)") {
+        // What a live copy gave while macOS moved its parked window between Spaces: accessibility answered the main
+        // window with its frame, and the window server had the same window, the same size, somewhere else. The exact
+        // match turned it down, so the tool listed no controls and said the copy "still cannot read its controls".
+        let pid: pid_t = 42
+        let ax = CGRect(x: 1760, y: 1130, width: 1120, height: 740)
+        let moving = ServerWindow(id: 1, pid: pid, layer: -1, frame: ax.offsetBy(dx: 1800, dy: 0))
+        let helper = ServerWindow(id: 2, pid: pid, layer: 0, frame: CGRect(x: 0, y: 682, width: 500, height: 500))
+        let server = [moving, helper]
+        let parked = ServerWindow.parkedCopy(in: server, pid: pid)
+        check("an exact match alone turns it down, as the tool did", ServerWindow.matching(ax, in: server, pid: pid) == nil)
+        check("the parked window of the same size backs it", ServerWindow.backing(ax, in: server, pid: pid, parked: parked)?.id == 1)
+        check("an exact match is still preferred",
+              ServerWindow.backing(helper.frame, in: server, pid: pid, parked: parked)?.id == 2)
+        let settings = CGRect(x: 600, y: 300, width: 660, height: 420)
+        check("a closed window's stale frame, another size, is still turned down",
+              ServerWindow.backing(settings, in: server, pid: pid, parked: parked) == nil)
+        check("another process's window never backs it",
+              ServerWindow.backing(ax, in: [ServerWindow(id: 3, pid: pid + 1, layer: -1, frame: moving.frame)], pid: pid,
+                                   parked: ServerWindow(id: 3, pid: pid + 1, layer: -1, frame: moving.frame)) == nil)
+        // can-click asks the copy the same question, from its side, so that it says no where the tool would.
+        check("the copy says yes for its window where the tool would take it",
+              ParkedWindow.refusal(id: 1, frame: ax, server: server, pid: pid) == nil)
+        let resized = ParkedWindow.refusal(id: 1, frame: CGRect(x: 1760, y: 1130, width: 1120, height: 700), server: server, pid: pid)
+        check("and no, with both places, where the window server has it at another size",
+              resized?.contains("window server has the main window at 1120×740 at (3560, 1130)") == true
+                  && resized?.contains("accessibility gives it at 1120×700 at (1760, 1130)") == true, resized ?? "nil")
+        let missing = ParkedWindow.refusal(id: 9, frame: ax, server: server, pid: pid)
+        check("and no where the window server has no record of it", missing?.contains("no record of the main window") == true, missing ?? "nil")
+        check("and no where the window server's parked window is another one",
+              ParkedWindow.refusal(id: 2, frame: CGRect(x: 0, y: 0, width: 500, height: 500), server: server, pid: pid) != nil)
+    }
+
+    await group("a click at a point in a parked copy lands on the listed control there (#748)") {
+        // A hit test reads the screen, and all of a parked copy's window but its corner is off it, so the tool's
+        // clicks at a point went as real clicks, which a copy in the background ignores. The listed controls say.
+        let row = CGRect(x: 1770, y: 1440, width: 270, height: 30)
+        let label = CGRect(x: 1800, y: 1445, width: 80, height: 20)
+        let tab = CGRect(x: 2660, y: 1250, width: 50, height: 24)
+        let frames = [row, label, tab, .zero, CGRect.null]
+        check("the innermost control holding the point", WindowChoice.innermost(containing: CGPoint(x: 1810, y: 1450), in: frames) == 1)
+        check("its container where only that holds it", WindowChoice.innermost(containing: CGPoint(x: 2000, y: 1450), in: frames) == 0)
+        check("another control elsewhere", WindowChoice.innermost(containing: CGPoint(x: 2680, y: 1260), in: frames) == 2)
+        check("nothing where no control is, and never a menu bar item's empty frame",
+              WindowChoice.innermost(containing: CGPoint(x: 0, y: 0), in: frames) == nil
+                  && WindowChoice.innermost(containing: CGPoint(x: 2300, y: 1300), in: frames) == nil)
     }
 
     await group("a parked window joins the app's accessibility list when the copy raises it once") {

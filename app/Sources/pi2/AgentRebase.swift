@@ -1,4 +1,5 @@
 import Foundation
+import PiModels
 
 /// An agent's page keeps the person's edits when the agent is saved elsewhere meanwhile (#299): the page shows the agent
 /// as it is now with the fields the person changed on top, and Save sends only those, so it never puts back the values

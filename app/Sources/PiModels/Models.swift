@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// Any JSON value, for payloads the app shows but does not interpret (tool arguments, request results).
-enum JSONValue: Codable, Equatable, Sendable {
+public enum JSONValue: Codable, Equatable, Sendable {
     case null
     case bool(Bool)
     case number(Double)
@@ -10,7 +10,7 @@ enum JSONValue: Codable, Equatable, Sendable {
     case array([JSONValue])
     case object([String: JSONValue])
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if container.decodeNil() { self = .null }
         else if let value = try? container.decode(Bool.self) { self = .bool(value) }
@@ -20,7 +20,7 @@ enum JSONValue: Codable, Equatable, Sendable {
         else { self = .object(try container.decode([String: JSONValue].self)) }
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
         case .null: try container.encodeNil()
@@ -32,138 +32,143 @@ enum JSONValue: Codable, Equatable, Sendable {
         }
     }
 
-    subscript(key: String) -> JSONValue? {
+    public subscript(key: String) -> JSONValue? {
         if case .object(let object) = self { return object[key] }
         return nil
     }
 
-    var stringValue: String? {
+    public var stringValue: String? {
         if case .string(let value) = self { return value }
         return nil
     }
 
-    var intValue: Int? {
+    public var intValue: Int? {
         if case .number(let value) = self { return Int(value) }
         return nil
     }
 
-    var arrayValue: [JSONValue]? {
+    public var arrayValue: [JSONValue]? {
         if case .array(let value) = self { return value }
         return nil
     }
 
     /// Compact text for display.
-    var displayText: String {
+    public var displayText: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return (try? encoder.encode(self)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
     }
 }
 
-struct ModelRef: Codable, Hashable, Sendable {
-    let provider: String
-    let modelId: String
+public struct ModelRef: Codable, Hashable, Sendable {
+    public let provider: String
+    public let modelId: String
+
+    public init(provider: String, modelId: String) {
+        self.provider = provider
+        self.modelId = modelId
+    }
 }
 
-struct ConversationSummary: Codable, Identifiable, Equatable {
-    let id: Int
-    let title: String
-    let updatedAt: Double
-    let busy: Bool
-    let agentId: String?
-    let createdAt: Double?
+public struct ConversationSummary: Codable, Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let title: String
+    public let updatedAt: Double
+    public let busy: Bool
+    public let agentId: String?
+    public let createdAt: Double?
     /// Set for a sub-chat: the conversation whose agent opened it.
-    let parent: Int?
+    public let parent: Int?
     /// A chat with pi²'s own assistant, shown in chat mode only (ChatMode.swift), rather than an agent's conversation.
-    var chat: Bool? = nil
+    public var chat: Bool? = nil
     /// A chat kept at the top of chat mode's sidebar.
-    var pinned: Bool? = nil
+    public var pinned: Bool? = nil
     /// An agent's conversation a chat was continued in (Continue with an Agent, ChatContinue.swift): that chat.
-    var continuedFrom: Int? = nil
+    public var continuedFrom: Int? = nil
     /// A chat continued with an agent: the conversations it went on in, oldest first.
-    var continuedIn: [Int]? = nil
+    public var continuedIn: [Int]? = nil
     /// Allow everything as the conversation took it at its latest message: nothing it does is asked about.
-    var allowEverything: Bool? = nil
+    public var allowEverything: Bool? = nil
     /// The project it belongs to (docs/projects.md, 3.5).
-    var projectId: String? = nil
+    public var projectId: String? = nil
     /// The agent it runs as now: its `agentId`, but for a conversation carried over, its project's copy (3.4).
-    var runsAs: String? = nil
+    public var runsAs: String? = nil
     /// "current" or "earlier" for a project's conversation with its orchestrator; nil for any other.
-    var orchestrator: String? = nil
+    public var orchestrator: String? = nil
     /// A conversation with a project's orchestrator begun with Start fresh: the one it followed (docs/projects.md, 6.5).
-    var freshFrom: Int? = nil
+    public var freshFrom: Int? = nil
 }
 
 /// The branch a conversation's folder is on, as the engine's tracker last saw it (worktrees.ts). Shown in the sidebar,
 /// the hub's headers and a project's Branches tab; see BranchViews.swift.
-struct BranchStatus: Codable, Equatable {
+public struct BranchStatus: Codable, Equatable, Sendable {
     /// The repository's name.
-    let repo: String
+    public let repo: String
     /// The top of the checkout the conversation works in.
-    let root: String
+    public let root: String
     /// Nil when HEAD is detached.
-    let branch: String?
-    let head: String?
+    public let branch: String?
+    public let head: String?
     /// A linked worktree rather than the repository's main checkout.
-    let worktree: Bool
+    public let worktree: Bool
     /// A worktree pi² made for this conversation, which it can remove.
-    let managed: Bool
-    let upstream: String?
-    let ahead: Int
-    let behind: Int
-    let base: String?
+    public let managed: Bool
+    public let upstream: String?
+    public let ahead: Int
+    public let behind: Int
+    public let base: String?
     /// Commits not on `base` yet.
-    let unmerged: Int?
-    let changes: Int
-    let conflicts: Int
+    public let unmerged: Int?
+    public let changes: Int
+    public let conflicts: Int
     /// A merge, rebase, cherry-pick or revert that stopped half way.
-    let operation: String?
+    public let operation: String?
     /// The size of the change in lines: what is committed beyond where the branch left `base`, plus what is not committed
     /// yet, new files included. Nil when it could not be measured, or from an engine older than #598.
-    var added: Int? = nil
-    var removed: Int? = nil
+    public var added: Int? = nil
+    public var removed: Int? = nil
     /// "conflict", "changes", "detached", "merged", "ahead", "behind", "clean" or "missing".
-    let state: String
+    public let state: String
 
     /// Whether removing the worktree would lose uncommitted work.
-    var isDirty: Bool { changes > 0 || conflicts > 0 }
+    public var isDirty: Bool { changes > 0 || conflicts > 0 }
 }
 
 /// A worktree pi² made for a conversation that was archived or deleted since: still on disk until it is removed.
 /// Listed on a project's Branches tab.
-struct LeftBehindWorktree: Codable, Identifiable, Equatable {
-    let id: Int
-    let title: String
+public struct LeftBehindWorktree: Codable, Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let title: String
     /// "archived" (it can be restored, and may still want its worktree) or "deleted".
-    let reason: String
-    let status: BranchStatus
+    public let reason: String
+    public let status: BranchStatus
 }
 
 /// A conversation in the Archive: out of the sidebar, still readable and searchable, and restorable.
-struct ArchivedConversation: Codable, Identifiable, Equatable {
-    let id: Int
-    let title: String
-    let archivedAt: Double
-    let agentId: String?
+public struct ArchivedConversation: Codable, Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let title: String
+    public let archivedAt: Double
+    public let agentId: String?
     /// How many sub-chats went into the Archive with it.
-    let subChats: Int
+    public let subChats: Int
     /// For a sub-chat its conversation's agent archived on its own: that conversation, which stays in the sidebar.
-    let parent: Int?
-    let parentTitle: String?
+    public let parent: Int?
+    public let parentTitle: String?
     /// An archived chat with pi²'s own assistant.
-    var chat: Bool? = nil
+    public var chat: Bool? = nil
     /// The project it belongs to, if any.
-    var projectId: String? = nil
+    public var projectId: String? = nil
 }
 
-struct ToolCall: Codable, Equatable, Identifiable {
-    let callId: String
-    let name: String
-    let arguments: JSONValue
-    var id: String { callId }
+public struct ToolCall: Codable, Equatable, Identifiable, Sendable {
+    public let callId: String
+    public let name: String
+    public let arguments: JSONValue
+    public var id: String { callId }
 
     /// The one line worth showing for a call: the command, the path, or the raw arguments.
-    var summary: String {
+    public var summary: String {
         if let command = arguments["command"]?.stringValue { return command }
         if let path = arguments["path"]?.stringValue { return path }
         if let task = arguments["task"]?.stringValue { return task }
@@ -171,71 +176,77 @@ struct ToolCall: Codable, Equatable, Identifiable {
         if let question = arguments["question"]?.stringValue { return question }
         return arguments.displayText.replacingOccurrences(of: "\n", with: " ")
     }
+
+    public init(callId: String, name: String, arguments: JSONValue) {
+        self.callId = callId
+        self.name = name
+        self.arguments = arguments
+    }
 }
 
 /// One transcript entry. `kind` is "user", "assistant", "tool" or "marker".
-struct Item: Codable, Identifiable, Equatable {
-    let id: Int
-    let kind: String
-    let text: String
-    var thinking: String?
-    var toolCalls: [ToolCall]?
-    var stop: String?
-    var error: String?
-    var model: String?
-    var callId: String?
-    var name: String?
-    var isError: Bool?
-    var details: JSONValue?
+public struct Item: Codable, Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let kind: String
+    public let text: String
+    public var thinking: String?
+    public var toolCalls: [ToolCall]?
+    public var stop: String?
+    public var error: String?
+    public var model: String?
+    public var callId: String?
+    public var name: String?
+    public var isError: Bool?
+    public var details: JSONValue?
     /// How many pictures a tool result or a message holds; they are fetched when shown, not sent with the transcript.
-    var images: Int?
+    public var images: Int?
     /// What a message was sent with: its pictures and files, by name.
-    var attachments: [AttachmentNote]?
+    public var attachments: [AttachmentNote]?
 }
 
-struct PartialAnswer: Codable, Equatable {
-    let text: String
-    let thinking: String
-    let toolCalls: [ToolCall]
+public struct PartialAnswer: Codable, Equatable, Sendable {
+    public let text: String
+    public let thinking: String
+    public let toolCalls: [ToolCall]
 }
 
-struct LiveTool: Codable, Equatable {
-    let callId: String
-    let name: String
-    let status: String
-    let output: String
-    let details: JSONValue?
+public struct LiveTool: Codable, Equatable, Sendable {
+    public let callId: String
+    public let name: String
+    public let status: String
+    public let output: String
+    public let details: JSONValue?
     /// For a shell command running in the foreground: when it started, and when it last printed (nil until it has),
     /// in ms since 1970. The conversation page ticks its clock from them (#196).
-    var startedAt: Double?
-    var lastOutputAt: Double?
+    public var startedAt: Double?
+    public var lastOutputAt: Double?
 }
 
-struct RetryInfo: Codable, Equatable {
-    let error: String
+public struct RetryInfo: Codable, Equatable, Sendable {
+    public let error: String
     /// The network is away, rather than the provider closing the stream.
-    let network: Bool?
+    public let network: Bool?
     /// The provider closed the stream before or during the answer (#550): the conversation says so instead.
-    let closed: Bool?
+    public let closed: Bool?
 }
 
 /// A run waiting for a provider's rate limit, or for it to stop being overloaded, before it asks again by itself.
-struct LimitWait: Codable, Equatable {
+public struct LimitWait: Codable, Equatable, Sendable {
     /// "rate_limit" or "overloaded".
-    let kind: String
+    public let kind: String
     /// When the first refusal of this wait came, and when the run asks again, in milliseconds since 1970.
-    let since: Double
-    let until: Double
+    public let since: Double
+    public let until: Double
     /// Whether the provider named that time; otherwise it is pi²'s own backoff.
-    let told: Bool
-    let refusals: Int
+    public let told: Bool
+    public let refusals: Int
     /// The provider's name, as Settings shows it.
-    let provider: String
+    public let provider: String
     /// The model that refused, which may differ from the model now picked in the toolbar.
-    let model: ModelRef?
+    public let model: ModelRef?
 
     /// "14:32" within the next 20 hours, which cannot be mistaken for another day's; "Thu 09:00" within the week; else the date.
-    var untilText: String {
+    public var untilText: String {
         let date = Date(timeIntervalSince1970: until / 1000)
         let ahead = date.timeIntervalSinceNow
         if ahead < 20 * 3600 { return date.formatted(date: .omitted, time: .shortened) }
@@ -244,7 +255,7 @@ struct LimitWait: Codable, Equatable {
     }
 
     /// What the conversation says while it waits.
-    var sentence: String {
+    public var sentence: String {
         let what = kind == "overloaded" ? "\(provider) is overloaded" : "\(provider) refused the request for its rate limit"
         let refused = refusals > 1 ? ", \(refusals) times so far" : ""
         if told {
@@ -254,12 +265,12 @@ struct LimitWait: Codable, Equatable {
     }
 
     /// The short form, for a run's row in the menu bar.
-    var tag: String {
+    public var tag: String {
         kind == "overloaded" ? "\(provider) overloaded · until \(untilText)" : "waiting for \(provider)’s limit · until \(untilText)"
     }
 
     /// What a parent conversation says of its sub-chats that wait (#343): one line per provider, kept up to date.
-    static func subChatsLine(_ waits: [LimitWait]) -> String? {
+    public static func subChatsLine(_ waits: [LimitWait]) -> String? {
         guard !waits.isEmpty else { return nil }
         let groups = Dictionary(grouping: waits) { "\($0.provider)\u{0}\($0.kind)" }.values.sorted { $0.count > $1.count }
         let parts = groups.map { group -> String in
@@ -274,11 +285,11 @@ struct LimitWait: Codable, Equatable {
     }
 }
 
-struct RunFailure: Codable, Equatable {
-    let reason: String
-    let detail: String?
+public struct RunFailure: Codable, Equatable, Sendable {
+    public let reason: String
+    public let detail: String?
 
-    var message: String {
+    public var message: String {
         let what: String = switch reason {
         case "model_error": "The model returned an error"
         case "no_model": "The model is not available"
@@ -295,178 +306,205 @@ struct RunFailure: Codable, Equatable {
 }
 
 /// A message the person sent that the conversation does not show yet: on its way to the engine, or taken by it.
-struct OutgoingMessage: Equatable, Identifiable {
+public struct OutgoingMessage: Equatable, Identifiable, Sendable {
     /// The request id it is sent with, which the engine uses to recognise it if it is sent again.
-    let id: String
+    public let id: String
     /// Its text, or what it carries when it is only attachments.
-    let summary: String
+    public let summary: String
     /// The engine's id for it, once the engine has taken it.
-    var submission: Int?
+    public var submission: Int?
+
+    public init(id: String, summary: String, submission: Int? = nil) {
+        self.id = id
+        self.summary = summary
+        self.submission = submission
+    }
 }
 
-struct QueuedInput: Codable, Equatable, Identifiable {
-    let id: Int
-    let mode: String
-    let text: String
-    var attachments: [AttachmentNote]? = nil
+public struct QueuedInput: Codable, Equatable, Identifiable, Sendable {
+    public let id: Int
+    public let mode: String
+    public let text: String
+    public var attachments: [AttachmentNote]? = nil
 }
 
-struct AgentInfo: Codable, Equatable {
-    let model: ModelRef?
-    let thinkingLevel: String?
-    let cwd: String?
-    let access: String
-    let agentId: String?
+public struct AgentInfo: Codable, Equatable, Sendable {
+    public let model: ModelRef?
+    public let thinkingLevel: String?
+    public let cwd: String?
+    public let access: String
+    public let agentId: String?
     /// Set for a subagent's conversation: the conversation that delegated to it.
-    let parent: Int?
+    public let parent: Int?
 }
 
 /// One change made in a conversation of a project, as the conversation's state carries it (docs/projects.md, 3.12):
 /// what changed, in the record's own words, whether it was undone and whether the person can undo it. Nil from an
 /// engine older than projects, and for any conversation in no project.
-struct ProjectChangeLine: Codable, Equatable, Identifiable {
-    let id: Int
-    let summary: String
-    let undone: Bool
-    let canUndo: Bool
+public struct ProjectChangeLine: Codable, Equatable, Identifiable, Sendable {
+    public let id: Int
+    public let summary: String
+    public let undone: Bool
+    public let canUndo: Bool
     /// Why it has no Undo, in a few words; null for a change that has one.
-    let noUndo: String?
+    public let noUndo: String?
     /// When it was undone, in ms since 1970; null while it was not.
-    var undoneAt: Double? = nil
+    public var undoneAt: Double? = nil
     /// The request whose allowing made this change (docs/projects.md, 3.12), for a change with no call of its own;
     /// null for any other.
-    var need: String? = nil
+    public var need: String? = nil
 }
 
 /// Whether an agent may use apps on this Mac: which ones, and whether it asks before acting.
-struct ComputerSettings: Codable, Equatable {
-    var enabled = false
-    var apps: [String] = []
-    var ask = true
+public struct ComputerSettings: Codable, Equatable, Sendable {
+    public var enabled = false
+    public var apps: [String] = []
+    public var ask = true
     /// Whether the agent may also use throwaway test copies of pi² (#146). Optional: agents saved before it have none.
-    var testCopies: Bool?
+    public var testCopies: Bool?
+
+    public init(enabled: Bool = false, apps: [String] = [], ask: Bool = true, testCopies: Bool? = nil) {
+        self.enabled = enabled
+        self.apps = apps
+        self.ask = ask
+        self.testCopies = testCopies
+    }
 }
 
 /// Whether an agent may browse the web in pi²'s own browser, and whether it asks before acting on a page.
-struct BrowserSettings: Codable, Equatable {
-    var enabled = false
-    var ask = true
+public struct BrowserSettings: Codable, Equatable, Sendable {
+    public var enabled = false
+    public var ask = true
+
+    public init(enabled: Bool = false, ask: Bool = true) {
+        self.enabled = enabled
+        self.ask = ask
+    }
 }
 
 /// Whether an agent may set schedules for itself. You approve each one before it is set.
-struct ScheduleSettings: Codable, Equatable {
-    var enabled = false
+public struct ScheduleSettings: Codable, Equatable, Sendable {
+    public var enabled = false
+
+    public init(enabled: Bool = false) {
+        self.enabled = enabled
+    }
 }
 
 /// One of the built-in tools an agent's settings list, as the engine describes it (engine/src/builtins.ts).
-struct BuiltInTool: Codable, Equatable, Identifiable {
-    let key: String
-    let title: String
-    let detail: String
+public struct BuiltInTool: Codable, Equatable, Identifiable, Sendable {
+    public let key: String
+    public let title: String
+    public let detail: String
     /// Where it is offered at all: "files" (any access but none), "changes" (Ask first or Full access), "browser" (the
     /// browser on); nil for anywhere.
-    let needs: String?
+    public let needs: String?
     /// Off unless the agent turns it on (`toolsOn`), rather than on unless it leaves it out (`toolsOff`).
-    let offByDefault: Bool?
-    var id: String { key }
+    public let offByDefault: Bool?
+    public var id: String { key }
 }
 
 /// A file or folder an agent may always read, with a note on what it is for.
-struct ReferenceFile: Codable, Equatable, Identifiable {
-    var path: String
-    var note: String
-    var id: String { path }
+public struct ReferenceFile: Codable, Equatable, Identifiable, Sendable {
+    public var path: String
+    public var note: String
+    public var id: String { path }
+
+    public init(path: String, note: String) {
+        self.path = path
+        self.note = note
+    }
 }
 
 /// Shell commands an agent may run without asking, in one folder: those that start with `words`.
-struct CommandRule: Codable, Equatable, Identifiable {
-    let folder: String
-    let words: [String]
-    let createdAt: Double
-    var id: String { folder + "\n" + command }
-    var command: String { words.joined(separator: " ") }
+public struct CommandRule: Codable, Equatable, Identifiable, Sendable {
+    public let folder: String
+    public let words: [String]
+    public let createdAt: Double
+    public var id: String { folder + "\n" + command }
+    public var command: String { words.joined(separator: " ") }
 }
 
 /// An environment variable of an agent's own: its name, and whether a value is kept for it. The value stays in the
 /// Keychain and never comes to the app.
-struct AgentVariable: Codable, Equatable, Identifiable {
-    let name: String
-    let set: Bool
-    var id: String { name }
+public struct AgentVariable: Codable, Equatable, Identifiable, Sendable {
+    public let name: String
+    public let set: Bool
+    public var id: String { name }
 }
 
 /// The template a project agent was made from, when it was copied, and the template's `updatedAt` then
 /// (docs/projects.md, 3.3): what tells the board the template has changed since.
-struct TemplateMark: Codable, Equatable {
-    let id: String
-    let copiedAt: Double
-    let templateUpdatedAt: Double
+public struct TemplateMark: Codable, Equatable, Sendable {
+    public let id: String
+    public let copiedAt: Double
+    public let templateUpdatedAt: Double
 }
 
 /// Which agent made this one through a tool, and in which conversation (docs/projects.md, 3.3).
-struct MadeByMark: Codable, Equatable {
-    let agentId: String
-    let conversationId: Int
+public struct MadeByMark: Codable, Equatable, Sendable {
+    public let agentId: String
+    public let conversationId: Int
 }
 
 /// A saved setup that conversations start from.
-struct AgentProfile: Codable, Equatable, Identifiable {
-    var id: String
-    var name: String
-    var description: String
-    var color: String
-    var model: ModelRef?
-    var thinkingLevel: String?
-    var instructions: String
-    var access: String
-    var cwd: String?
+public struct AgentProfile: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var description: String
+    public var color: String
+    public var model: ModelRef?
+    public var thinkingLevel: String?
+    public var instructions: String
+    public var access: String
+    public var cwd: String?
     /// Whether each conversation the person starts gets a git worktree of its own, made from `cwd`.
-    var worktree: Bool?
+    public var worktree: Bool?
     /// A shell command run once in each new worktree of the agent's conversations. Empty for none.
-    var setup: String?
-    var delegates: [String]
-    var maxTurns: Int?
-    var codeMode: Bool?
-    var mcpServers: [String]?
+    public var setup: String?
+    public var delegates: [String]
+    public var maxTurns: Int?
+    public var codeMode: Bool?
+    public var mcpServers: [String]?
     /// Files and folders every conversation of the agent may read.
-    var files: [ReferenceFile]?
+    public var files: [ReferenceFile]?
     /// Whether the agent may use apps on this Mac, and which.
-    var computer: ComputerSettings?
+    public var computer: ComputerSettings?
     /// Whether the agent may browse the web in pi²'s own browser.
-    var browser: BrowserSettings?
+    public var browser: BrowserSettings?
     /// Whether the agent may set schedules for itself.
-    var schedule: ScheduleSettings?
+    public var schedule: ScheduleSettings?
     /// Keys of the built-in tools it is not offered, in the engine's order. Nil or empty: all of them.
-    var toolsOff: [String]?
+    public var toolsOff: [String]?
     /// Keys of the built-in tools off by default that it is offered, in the engine's order. Nil or empty: none of them.
-    var toolsOn: [String]?
+    public var toolsOn: [String]?
     /// The size in tokens at which its conversations' earlier messages are summarised; nil uses the default for all agents.
-    var compactionTokens: Int?
+    public var compactionTokens: Int?
     /// Commands it may run without asking. Changed through their own requests, never by saving the agent.
-    var commandRules: [CommandRule]?
+    public var commandRules: [CommandRule]?
     /// Variables its commands get. Changed through their own requests, never by saving the agent.
-    var variables: [AgentVariable]?
+    public var variables: [AgentVariable]?
     /// Allow everything: nothing is asked about and any app may be used. Changed only through `agents.allowEverything`,
     /// after a confirmation, never by saving the agent, and not copied to a duplicate.
-    var allowEverything: Bool?
-    var createdAt: Double
+    public var allowEverything: Bool?
+    public var createdAt: Double
     /// The project it belongs to (docs/projects.md, 3.3). Nil for a template, kept under Shared to make a project's agents from.
     /// Kept as stored by the engine, whatever `agents.save` is sent.
-    var projectId: String? = nil
+    public var projectId: String? = nil
     /// "orchestrator" for a project's orchestrator.
-    var role: String? = nil
+    public var role: String? = nil
     /// A copy: the template it was made from, when, and the template's `updatedAt` then. Kept as stored (3.3).
-    var template: TemplateMark? = nil
+    public var template: TemplateMark? = nil
     /// Made by an agent through a tool (the board's mark): which agent, in which conversation. Absent: made by the
     /// person or by carrying over. Kept as stored.
-    var madeBy: MadeByMark? = nil
+    public var madeBy: MadeByMark? = nil
     /// When it was last saved; read as `createdAt` when absent (3.3).
-    var updatedAt: Double? = nil
+    public var updatedAt: Double? = nil
     /// Removed through a tool (3.3): kept whole for Undo, offered to nobody, and put back by `agents.restore`.
-    var removedAt: Double? = nil
+    public var removedAt: Double? = nil
 
     /// What the engine's `agents.save` takes. Nulls are sent, so clearing a field clears it.
-    var payload: [String: Any] {
+    public var payload: [String: Any] {
         [
             "id": id, "name": name, "description": description, "color": color,
             "model": model.map { ["provider": $0.provider, "modelId": $0.modelId] as Any } ?? NSNull(),
@@ -496,7 +534,7 @@ struct AgentProfile: Codable, Equatable, Identifiable {
     /// the engine tidies it. Rules are left out, since saving never changes them. Two agents that are the same here
     /// save the same, so the editor compares these to tell whether there is anything to save. The starter agents are
     /// made without most of the optional settings, and saving fills them in.
-    var asSaved: AgentProfile {
+    public var asSaved: AgentProfile {
         var agent = self
         agent.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         agent.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -529,151 +567,151 @@ struct AgentProfile: Codable, Equatable, Identifiable {
 }
 
 /// Something a run is waiting on the person for: approval of a tool call, or an answer to a question.
-struct InboxItem: Codable, Equatable, Identifiable {
-    let id: String
-    let kind: String
-    let conversationId: Int
-    let callId: String
-    let tool: String
-    let arguments: JSONValue
-    let question: String?
+public struct InboxItem: Codable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let kind: String
+    public let conversationId: Int
+    public let callId: String
+    public let tool: String
+    public let arguments: JSONValue
+    public let question: String?
     /// For a browser action: the site it would act on, which is what "always allow" then covers.
-    var site: String? = nil
+    public var site: String? = nil
     /// For a schedule an agent asks to set: when it would run, in words.
-    var when: String? = nil
+    public var when: String? = nil
     /// For a command: the rule the engine offers to make of it. Answering "rule" makes this rule; nothing else is sent.
-    var rule: RuleOffer? = nil
+    public var rule: RuleOffer? = nil
     /// For an approval a project's switch asked for: the switch's name (docs/projects.md, 8.1). Only Allow Once and Deny
     /// answer it: the asking is the project's setting, and the conversation cannot change it.
-    var projectSwitch: String? = nil
+    public var projectSwitch: String? = nil
     /// For a command: it would be started and left running in the background, so the card says so.
-    var background: Bool? = nil
-    let title: String
-    let agentName: String?
+    public var background: Bool? = nil
+    public let title: String
+    public let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
-    let rootConversationId: Int
+    public let rootConversationId: Int
 
-    var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
+    public var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
 }
 
 /// The rule an approval for a command offers: commands that start with `words`, in `folder`.
-struct RuleOffer: Codable, Equatable {
-    let words: [String]
-    let folder: String
+public struct RuleOffer: Codable, Equatable, Sendable {
+    public let words: [String]
+    public let folder: String
     /// The rule is kept for a repository's main checkout, so it also holds in the worktrees pi² makes from it.
-    var worktrees: Bool? = nil
-    var command: String { words.joined(separator: " ") }
+    public var worktrees: Bool? = nil
+    public var command: String { words.joined(separator: " ") }
     /// How the approval's button ends, after the command: "Here", or "in This Repository" when the rule also holds in
     /// the repository's main checkout and its pi² worktrees. The conversation page says the same (`ruleOffer` in tools.js).
-    var place: String { worktrees == true ? "in This Repository" : "Here" }
+    public var place: String { worktrees == true ? "in This Repository" : "Here" }
 }
 
 /// A command an agent left running in the background, as the Activity view lists it.
-struct BackgroundCommand: Codable, Equatable, Identifiable {
+public struct BackgroundCommand: Codable, Equatable, Identifiable, Sendable {
     /// "bg-3": what the agent and the transcript call it.
-    let id: String
-    let conversationId: Int
+    public let id: String
+    public let conversationId: Int
     /// The conversation in the sidebar it belongs to; differs from `conversationId` for a sub-chat's command.
-    let rootConversationId: Int
-    let command: String
+    public let rootConversationId: Int
+    public let command: String
     /// The folder it was started in.
-    let cwd: String
-    let startedAt: Double
+    public let cwd: String
+    public let startedAt: Double
 }
 
 /// Something that will wake a conversation's agent when it ends: a sub-chat handed work without waiting, or a background
 /// command started with `wake`. Or one that has ended and waits for the agent to stop answering (docs/wakes.md).
-struct WakeItem: Codable, Equatable, Identifiable {
-    let key: String
+public struct WakeItem: Codable, Equatable, Identifiable, Sendable {
+    public let key: String
     /// The conversation that will be woken.
-    let conversationId: Int
+    public let conversationId: Int
     /// "subchat" or "background".
-    let kind: String
+    public let kind: String
     /// The sub-chat's number, or the command's id.
-    let ref: String
+    public let ref: String
     /// For a sub-chat of a project's orchestrator, when its report wakes it and the batch it belongs to
     /// (docs/projects.md, 4.3). Absent from an engine older than these fields.
-    var wake: String?
-    var batch: String?
+    public var wake: String?
+    public var batch: String?
     /// "sub-chat 12 “Fix login”", "background command bg-3 (`npm test`)".
-    let label: String
-    let startedAt: Double
+    public let label: String
+    public let startedAt: Double
     /// "running", or "arrived": over, and waiting to be handed to the agent.
-    let state: String
-    var id: String { key }
+    public let state: String
+    public var id: String { key }
 }
 
 /// Why a conversation's agent is not woken for now: "stopped" (the person's Stop), "cap" (woken too often this hour,
 /// until `until`) or "budget".
-struct WakeHold: Codable, Equatable {
-    let conversationId: Int
-    let why: String
-    let until: Double?
+public struct WakeHold: Codable, Equatable, Sendable {
+    public let conversationId: Int
+    public let why: String
+    public let until: Double?
 }
 
 /// A background command and the output of it the engine keeps, as the person reads it (`background.output`).
-struct BackgroundOutput: Decodable, Equatable {
-    struct Ended: Decodable, Equatable {
+public struct BackgroundOutput: Decodable, Equatable, Sendable {
+    public struct Ended: Decodable, Equatable, Sendable {
         /// Worded to follow "It": "exited with code 1 after 4 seconds".
-        let how: String
-        let failed: Bool
+        public let how: String
+        public let failed: Bool
     }
 
-    let conversationId: Int
-    let rootConversationId: Int
-    let command: String
-    let cwd: String
-    let startedAt: Double
-    let running: Bool
+    public let conversationId: Int
+    public let rootConversationId: Int
+    public let command: String
+    public let cwd: String
+    public let startedAt: Double
+    public let running: Bool
     /// Asked to stop, and not yet over.
-    let stopping: Bool
-    let ended: Ended?
+    public let stopping: Bool
+    public let ended: Ended?
     /// False for a command an engine that stopped had started: its output went with that engine.
-    let kept: Bool
+    public let kept: Bool
     /// Characters it has printed in all, counted as the engine counts them (UTF-16 units). The next request starts here.
-    let total: Int
+    public let total: Int
     /// Where `output` begins, counted from the first character it printed.
-    let from: Int
+    public let from: Int
     /// Characters printed after the point asked for that were not kept.
-    let dropped: Int
-    let output: String
+    public let dropped: Int
+    public let output: String
 }
 
 /// A conversation with work in flight, as the Activity view lists it.
-struct ActivityRun: Codable, Equatable, Identifiable {
-    let conversationId: Int
-    let parent: Int?
-    let rootConversationId: Int
-    let title: String
-    let agentId: String?
-    let status: String
-    let since: Double
+public struct ActivityRun: Codable, Equatable, Identifiable, Sendable {
+    public let conversationId: Int
+    public let parent: Int?
+    public let rootConversationId: Int
+    public let title: String
+    public let agentId: String?
+    public let status: String
+    public let since: Double
     /// Set while the run waits for a provider's limit; nil otherwise, and from an engine older than this field.
-    let limit: LimitWait?
+    public let limit: LimitWait?
     /// Its shell commands running in the foreground, oldest first, with their clocks (#196). Absent from an older engine.
-    var commands: [RunningCommand]?
+    public var commands: [RunningCommand]?
     /// A chat answering, rather than an agent's work (docs/chat.md).
-    var chat: Bool?
+    public var chat: Bool?
     /// The project its conversation belongs to, and the agent it runs as (docs/projects.md, 4.3).
-    var projectId: String?
-    var runsAs: String?
+    public var projectId: String?
+    public var runsAs: String?
     /// The last line of text its agent wrote, at most 140 characters, or nil from an engine older than this field
     /// (docs/projects.md, 4.3): the Now tab's "working" row.
-    var lastLine: String?
-    var id: Int { conversationId }
+    public var lastLine: String?
+    public var id: Int { conversationId }
 }
 
 /// A shell command running in the foreground: what it runs, when it started and when it last printed, in ms since 1970.
-struct RunningCommand: Codable, Equatable {
-    let command: String
-    let startedAt: Double
-    let lastOutputAt: Double?
+public struct RunningCommand: Codable, Equatable, Sendable {
+    public let command: String
+    public let startedAt: Double
+    public let lastOutputAt: Double?
 
     /// A command shows how long it has been quiet only after this long, so a busy one's row is still.
-    static let quietAfter: TimeInterval = 30
+    public static let quietAfter: TimeInterval = 30
 
     /// "45s", "3m 12s", "1h 4m", as the conversation page writes them.
-    static func short(_ seconds: TimeInterval) -> String {
+    public static func short(_ seconds: TimeInterval) -> String {
         let s = max(0, Int(seconds))
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m \(s % 60)s" }
@@ -681,25 +719,25 @@ struct RunningCommand: Codable, Equatable {
     }
 
     /// How long it has run at `now`.
-    func elapsed(at now: Date) -> String { Self.short(now.timeIntervalSince1970 - startedAt / 1000) }
+    public func elapsed(at now: Date) -> String { Self.short(now.timeIntervalSince1970 - startedAt / 1000) }
 
     /// "quiet for 45s" once it has printed nothing for `quietAfter`, else nil.
-    func quiet(at now: Date) -> String? {
+    public func quiet(at now: Date) -> String? {
         let since = max(startedAt, lastOutputAt ?? startedAt) / 1000
         let seconds = now.timeIntervalSince1970 - since
         return seconds >= Self.quietAfter ? "quiet for \(Self.short(seconds))" : nil
     }
 }
 
-struct Repeat: Codable, Equatable {
-    var kind: String
-    var at: Double?
-    var minutes: Int?
-    var hour: Int?
-    var minute: Int?
-    var weekday: Int?
+public struct Repeat: Codable, Equatable, Sendable {
+    public var kind: String
+    public var at: Double?
+    public var minutes: Int?
+    public var hour: Int?
+    public var minute: Int?
+    public var weekday: Int?
 
-    var payload: [String: Any] {
+    public var payload: [String: Any] {
         switch kind {
         case "once": ["kind": kind, "at": at ?? 0]
         case "interval": ["kind": kind, "minutes": minutes ?? 60]
@@ -708,7 +746,7 @@ struct Repeat: Codable, Equatable {
         }
     }
 
-    var summary: String {
+    public var summary: String {
         let time = String(format: "%02d:%02d", hour ?? 0, minute ?? 0)
         switch kind {
         case "once":
@@ -722,76 +760,99 @@ struct Repeat: Codable, Equatable {
             return "Every day at \(time)"
         }
     }
+
+    public init(kind: String, at: Double? = nil, minutes: Int? = nil, hour: Int? = nil, minute: Int? = nil, weekday: Int? = nil) {
+        self.kind = kind
+        self.at = at
+        self.minutes = minutes
+        self.hour = hour
+        self.minute = minute
+        self.weekday = weekday
+    }
 }
 
-struct Schedule: Codable, Equatable, Identifiable {
-    var id: String
-    var title: String
-    var agentId: String
-    var prompt: String
-    var `repeat`: Repeat
-    var enabled: Bool
-    var holdReason: String?
-    var nextRunAt: Double?
-    var lastConversationId: Int?
+public struct Schedule: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var title: String
+    public var agentId: String
+    public var prompt: String
+    public var `repeat`: Repeat
+    public var enabled: Bool
+    public var holdReason: String?
+    public var nextRunAt: Double?
+    public var lastConversationId: Int?
     /// Set when an agent made it, with your approval; nil when you did. Only the engine sets it.
-    var createdBy: Creator?
+    public var createdBy: Creator?
     /// For a schedule on a template carried over: the project's copy of it, which it runs as
     /// (docs/projects.md, 3.13; `EngineClient.runsAs`). Only the engine sets it.
-    var projectAgentId: String? = nil
+    public var projectAgentId: String? = nil
 
-    struct Creator: Codable, Equatable {
-        let agentId: String
-        let conversationId: Int
+    public struct Creator: Codable, Equatable, Sendable {
+        public let agentId: String
+        public let conversationId: Int
     }
 
-    func payload(isNew: Bool) -> [String: Any] {
+    public func payload(isNew: Bool) -> [String: Any] {
         var result: [String: Any] = ["title": title, "agentId": agentId, "prompt": prompt, "repeat": `repeat`.payload, "enabled": enabled]
         if !isNew { result["id"] = id }
         return result
     }
+
+    public init(id: String, title: String, agentId: String, prompt: String, repeat: Repeat, enabled: Bool, holdReason: String? = nil, nextRunAt: Double? = nil, lastConversationId: Int? = nil, createdBy: Creator? = nil, projectAgentId: String? = nil) {
+        self.id = id
+        self.title = title
+        self.agentId = agentId
+        self.prompt = prompt
+        self.`repeat` = `repeat`
+        self.enabled = enabled
+        self.holdReason = holdReason
+        self.nextRunAt = nextRunAt
+        self.lastConversationId = lastConversationId
+        self.createdBy = createdBy
+        self.projectAgentId = projectAgentId
+    }
 }
 
 /// What an engine that started after an unclean stop found and resumed.
-struct RecoveryReport: Codable, Equatable {
-    struct Resumed: Codable, Equatable, Identifiable {
-        let id: Int
-        let title: String
+public struct RecoveryReport: Codable, Equatable, Sendable {
+    public struct Resumed: Codable, Equatable, Identifiable, Sendable {
+        public let id: Int
+        public let title: String
     }
     /// A command an agent had left running in the background, and what the new engine did about it.
-    struct LeftCommand: Codable, Equatable, Identifiable {
+    public struct LeftCommand: Codable, Equatable, Identifiable, Sendable {
         /// "bg-3".
-        let id: String
-        let conversationId: Int
+        public let id: String
+        public let conversationId: Int
         /// The conversation in the sidebar it belongs to, and its title; differs from `conversationId` for a sub-chat's command.
-        let rootConversationId: Int
-        let title: String
-        let command: String
+        public let rootConversationId: Int
+        public let title: String
+        public let command: String
         /// "stopped", "partly" (what carried the run's marker was stopped, the rest left), "gone" (it had ended), "unsure"
         /// (left alone, as pi² could not tell it was the same) or "unknown" (left alone: its process had not been noted yet).
-        let outcome: String
-        let group: Int?
+        public let outcome: String
+        public let group: Int?
     }
     /// A worktree's set-up command that was running, and what the new engine did about it. One per conversation at most.
-    struct LeftSetup: Codable, Equatable, Identifiable {
-        var id: Int { conversationId }
-        let conversationId: Int
-        let rootConversationId: Int
-        let title: String
-        let command: String
+    public struct LeftSetup: Codable, Equatable, Identifiable, Sendable {
+        public var id: Int { conversationId }
+        public let conversationId: Int
+        public let rootConversationId: Int
+        public let title: String
+        public let command: String
         /// As for `LeftCommand`, but for "unknown": a set-up whose process was not noted yet counts as "gone".
-        let outcome: String
-        let group: Int?
+        public let outcome: String
+        public let group: Int?
     }
-    let at: Double
-    let conversations: [Resumed]
+    public let at: Double
+    public let conversations: [Resumed]
     /// Absent from an engine older than this app.
-    let background: [LeftCommand]?
-    let setups: [LeftSetup]?
+    public let background: [LeftCommand]?
+    public let setups: [LeftSetup]?
 }
 
-enum AccessLevel {
-    static let all: [(id: String, title: String, detail: String)] = [
+public enum AccessLevel: Sendable {
+    public static let all: [(id: String, title: String, detail: String)] = [
         ("none", "Off", "Chat only"),
         ("read", "Read files", "Can read files in its folder"),
         ("ask", "Ask first", "Can edit files and run commands after you approve each one"),
@@ -799,65 +860,65 @@ enum AccessLevel {
     ]
 }
 
-struct ConversationState: Codable, Equatable {
-    let busy: Bool
-    let partial: PartialAnswer?
-    let retry: RetryInfo?
+public struct ConversationState: Codable, Equatable, Sendable {
+    public let busy: Bool
+    public let partial: PartialAnswer?
+    public let retry: RetryInfo?
     /// Set while the run waits for a provider's limit; nil otherwise, and from an engine older than this field.
-    let limitWait: LimitWait?
-    let tools: [LiveTool]
-    let failure: RunFailure?
-    let queued: [QueuedInput]
-    let agent: AgentInfo
-    let usage: Spend
-    let context: ContextSize
-    let compacting: Bool
-    let compactionError: String?
-    var compactionErrorId: Int? = nil
+    public let limitWait: LimitWait?
+    public let tools: [LiveTool]
+    public let failure: RunFailure?
+    public let queued: [QueuedInput]
+    public let agent: AgentInfo
+    public let usage: Spend
+    public let context: ContextSize
+    public let compacting: Bool
+    public let compactionError: String?
+    public var compactionErrorId: Int? = nil
     /// What the last request to the model read, in tokens (input and the prompt cache, not the answer). Nil when it is not
     /// known, and from an engine older than this field.
-    var lastRequestInputTokens: Int? = nil
+    public var lastRequestInputTokens: Int? = nil
     /// The agent's task list; nil when it keeps none.
-    let plan: TaskList?
+    public let plan: TaskList?
     /// The nearest project instructions file (AGENTS.md or CLAUDE.md) in effect, if there is one.
-    let projectInstructions: String?
+    public let projectInstructions: String?
     /// Every project instructions file in effect: in the conversation's folder and the folders above it up to the top of its
     /// git repository, the outermost first. Nil from an engine older than this field.
-    let projectInstructionFiles: [ProjectInstructionsFile]?
+    public let projectInstructionFiles: [ProjectInstructionsFile]?
     /// The conversation's title, for one that is not in the sidebar's list (an archived one, or its sub-chat).
-    let title: String?
+    public let title: String?
     /// It, or the conversation it is a sub-chat of, is archived: it can be read but not continued.
-    let archived: Bool?
+    public let archived: Bool?
     /// The agent's set-up command running in the conversation's new worktree, with what it has printed so far. Nil when
     /// none is running, and from an engine older than this field.
-    let setup: LiveSetup?
+    public let setup: LiveSetup?
     /// Its model runs on this Mac: whether it is loading, loaded, stopped or could not start. Nil for any other model,
     /// and from an engine older than this field.
-    let local: LocalModelState?
+    public let local: LocalModelState?
     /// A chat with pi²'s own assistant (docs/chat.md). Nil from an engine older than chat mode.
-    var chat: Bool? = nil
+    public var chat: Bool? = nil
     /// A chat's web switch (#287): whether its next message may search the web and read pages. Nil for any other
     /// conversation, and from an engine older than the switch.
-    var web: Bool? = nil
+    public var web: Bool? = nil
     /// While it works: what a message sent to steer it now would wait for, and which waits it would end. Nil when idle,
     /// and from an engine older than this field.
-    var messageWaits: MessageWaits? = nil
+    public var messageWaits: MessageWaits? = nil
     /// Where the versions of what is shown part, and which is shown (Try Again and Edit). Nil where versions are not
     /// offered: an agent's conversation, or an engine older than this field.
-    var versions: [VersionPoint]? = nil
+    public var versions: [VersionPoint]? = nil
     /// The changes made in this conversation by its project's agents, oldest first (docs/projects.md, 3.12), each drawn
     /// where the tool call that made it is. Nil in no project, and from an engine older than this field.
-    var projectChanges: [ProjectChangeLine]? = nil
+    public var projectChanges: [ProjectChangeLine]? = nil
 }
 
 /// What a message sent to steer a working agent waits for (engine/src/heed.ts): `holds`, the calls it comes after, such
 /// as "the command `npm test`"; and `ends`, the waits it ends at once, such as "the wait for Scout's sub-chat 12".
-struct MessageWaits: Codable, Equatable {
-    let holds: [String]
-    let ends: [String]
+public struct MessageWaits: Codable, Equatable, Sendable {
+    public let holds: [String]
+    public let ends: [String]
     /// Set while the run waits to ask the model again (a retry, or a provider's limit): a message sent to steer is placed
     /// when it does, so that request carries it (#324). Ms since 1970; absent from an engine older than this field.
-    var retryAt: Double? = nil
+    public var retryAt: Double? = nil
 
     private static func joined(_ parts: [String]) -> String {
         ListFormatter.localizedString(byJoining: parts)
@@ -865,7 +926,7 @@ struct MessageWaits: Codable, Equatable {
 
     /// What happens to a message sent now, in a line for the message field: steered, or queued until the answer.
     /// `limit` is the provider's limit the run waits for, if it does.
-    func sentence(agent: String, steer: Bool, limit: LimitWait? = nil) -> String {
+    public func sentence(agent: String, steer: Bool, limit: LimitWait? = nil) -> String {
         if let limit {
             // It cannot be answered before the limit resets, and does not end the wait: the provider would only refuse it.
             let wait = limit.kind == "overloaded" ? "\(limit.provider) to stop being overloaded" : "\(limit.provider)’s limit"
@@ -884,20 +945,20 @@ struct MessageWaits: Codable, Equatable {
     }
 
     /// What a message already sent to steer is waiting for, for its chip; nil when it is only waiting for the current step.
-    var waitingFor: String? {
+    public var waitingFor: String? {
         holds.isEmpty ? nil : Self.joined(holds)
     }
 }
 
 /// A point where a chat's versions part: after entry `after` (nil: before the first message), version `index` of `count`.
-struct VersionPoint: Codable, Equatable {
-    let after: Int?
-    let index: Int
-    let count: Int
+public struct VersionPoint: Codable, Equatable, Sendable {
+    public let after: Int?
+    public let index: Int
+    public let count: Int
 
     private enum CodingKeys: String, CodingKey { case after, index, count }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         after = try container.decodeIfPresent(Int.self, forKey: .after)
         index = try container.decode(Int.self, forKey: .index)
@@ -905,7 +966,7 @@ struct VersionPoint: Codable, Equatable {
     }
 
     /// `after` as null when there is none: the page tells "before the first message" from a missing field.
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(after, forKey: .after)
         try container.encode(index, forKey: .index)
@@ -914,32 +975,32 @@ struct VersionPoint: Codable, Equatable {
 }
 
 /// A worktree set-up command still running: which run it is (its transcript entry's `details.run`) and the end of its output.
-struct LiveSetup: Codable, Equatable {
-    let run: String
-    let output: String
+public struct LiveSetup: Codable, Equatable, Sendable {
+    public let run: String
+    public let output: String
 }
 
 /// One project instructions file in effect for a conversation: its name, and the real path of the folder it is in.
-struct ProjectInstructionsFile: Codable, Equatable {
-    let folder: String
-    let file: String
+public struct ProjectInstructionsFile: Codable, Equatable, Sendable {
+    public let folder: String
+    public let file: String
 }
 
 /// The task list an agent keeps for a conversation (`update_plan`). `updatedAt` tells one version of it from the next.
-struct TaskList: Codable, Equatable {
-    let items: [TaskItem]
-    let updatedAt: Double
+public struct TaskList: Codable, Equatable, Sendable {
+    public let items: [TaskItem]
+    public let updatedAt: Double
 
-    var doneCount: Int { items.filter { $0.state == .completed }.count }
-    var isFinished: Bool { !items.isEmpty && doneCount == items.count }
+    public var doneCount: Int { items.filter { $0.state == .completed }.count }
+    public var isFinished: Bool { !items.isEmpty && doneCount == items.count }
     /// The step in hand, or the next one waiting.
-    var current: TaskItem? { items.first { $0.state == .inProgress } ?? items.first { $0.state == .pending } }
+    public var current: TaskItem? { items.first { $0.state == .inProgress } ?? items.first { $0.state == .pending } }
 }
 
-struct TaskItem: Codable, Equatable {
-    enum Step { case pending, inProgress, completed
+public struct TaskItem: Codable, Equatable, Sendable {
+    public enum Step: Sendable { case pending, inProgress, completed
 
-        var words: String {
+        public var words: String {
             switch self {
             case .pending: "to do"
             case .inProgress: "in progress"
@@ -948,43 +1009,43 @@ struct TaskItem: Codable, Equatable {
         }
     }
 
-    let content: String
-    let status: String
+    public let content: String
+    public let status: String
 
-    var state: Step { status == "completed" ? .completed : (status == "in_progress" ? .inProgress : .pending) }
+    public var state: Step { status == "completed" ? .completed : (status == "in_progress" ? .inProgress : .pending) }
 }
 
-struct Spend: Codable, Equatable {
-    let cost: Double
-    let tokens: Int
+public struct Spend: Codable, Equatable, Sendable {
+    public let cost: Double
+    public let tokens: Int
 
-    var costText: String { Formats.cost(cost) }
-    var tokensText: String { Formats.tokens(tokens) }
+    public var costText: String { Formats.cost(cost) }
+    public var tokensText: String { Formats.tokens(tokens) }
 }
 
 /// How full a conversation's context is. `window` is nil when the model's size is not known.
-struct ContextSize: Codable, Equatable {
-    let used: Int
-    let window: Int?
+public struct ContextSize: Codable, Equatable, Sendable {
+    public let used: Int
+    public let window: Int?
 
-    var fraction: Double? {
+    public var fraction: Double? {
         guard let window, window > 0 else { return nil }
         return min(1, Double(used) / Double(window))
     }
 }
 
-enum Formats {
-    static func cost(_ value: Double) -> String {
+public enum Formats: Sendable {
+    public static func cost(_ value: Double) -> String {
         if value == 0 { return "$0.00" }
         return value < 0.01 ? "< $0.01" : String(format: "$%.2f", value)
     }
 
     /// Tokens, with the cost only when there is one: subscription and local use has no price.
-    static func usage(tokens: Int, cost: Double) -> String {
+    public static func usage(tokens: Int, cost: Double) -> String {
         cost > 0 ? "\(Formats.tokens(tokens)) · \(Formats.cost(cost))" : "\(Formats.tokens(tokens)) tokens"
     }
 
-    static func tokens(_ value: Int) -> String {
+    public static func tokens(_ value: Int) -> String {
         switch value {
         case 1_000_000...: String(format: "%.1fM", Double(value) / 1_000_000)
         case 1_000...: String(format: "%.0fk", Double(value) / 1_000)
@@ -994,98 +1055,98 @@ enum Formats {
 }
 
 /// Spend across the whole app, as the engine summarises it.
-struct UsageSummary: Codable, Equatable {
-    struct ModelRow: Codable, Equatable, Identifiable {
-        let key: String
-        let tokens: Int
-        let cost: Double
+public struct UsageSummary: Codable, Equatable, Sendable {
+    public struct ModelRow: Codable, Equatable, Identifiable, Sendable {
+        public let key: String
+        public let tokens: Int
+        public let cost: Double
         /// Paid for by a subscription sign-in, so there is no per-use cost to show.
-        var subscription: Bool? = nil
+        public var subscription: Bool? = nil
         /// Some or all of the use had no known price: the tokens are counted, the cost is not.
-        var unpriced: Bool? = nil
+        public var unpriced: Bool? = nil
         /// Picture models are in a different catalog from the models that answer in a conversation.
-        var pictureName: String? = nil
+        public var pictureName: String? = nil
         /// A model that looked at pictures for one that cannot see them (#540): its own spend, apart from its answers.
-        var lookName: String? = nil
-        var id: String { pictureName == nil && lookName == nil ? key : "extra:\(pictureName ?? lookName ?? key)" }
+        public var lookName: String? = nil
+        public var id: String { pictureName == nil && lookName == nil ? key : "extra:\(pictureName ?? lookName ?? key)" }
     }
-    struct AgentRow: Codable, Equatable, Identifiable {
-        let agentId: String
-        let cost: Double
-        let tokens: Int
-        var id: String { agentId }
+    public struct AgentRow: Codable, Equatable, Identifiable, Sendable {
+        public let agentId: String
+        public let cost: Double
+        public let tokens: Int
+        public var id: String { agentId }
     }
     /// Today's spending of one project (docs/projects.md, 4.3), as the board's Settings tab reads of its limits (#478).
-    struct ProjectSpend: Codable, Equatable, Identifiable {
-        let id: String
-        let today: Spend
+    public struct ProjectSpend: Codable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let today: Spend
     }
-    struct ConversationRow: Codable, Equatable, Identifiable {
-        let id: Int
-        let title: String
-        let cost: Double
-        let tokens: Int
+    public struct ConversationRow: Codable, Equatable, Identifiable, Sendable {
+        public let id: Int
+        public let title: String
+        public let cost: Double
+        public let tokens: Int
     }
-    struct Day: Codable, Equatable, Identifiable {
-        let day: String
-        let cost: Double
-        let tokens: Int
-        var id: String { day }
+    public struct Day: Codable, Equatable, Identifiable, Sendable {
+        public let day: String
+        public let cost: Double
+        public let tokens: Int
+        public var id: String { day }
     }
-    struct Budget: Codable, Equatable {
-        let daily: Double?
+    public struct Budget: Codable, Equatable, Sendable {
+        public let daily: Double?
     }
-    let models: [ModelRow]
-    let agents: [AgentRow]
-    var projects: [ProjectSpend]? = nil
-    let conversations: [ConversationRow]
-    let total: Spend
-    let today: Spend
-    let days: [Day]
-    let budget: Budget
-    let overBudget: Bool
+    public let models: [ModelRow]
+    public let agents: [AgentRow]
+    public var projects: [ProjectSpend]? = nil
+    public let conversations: [ConversationRow]
+    public let total: Spend
+    public let today: Spend
+    public let days: [Day]
+    public let budget: Budget
+    public let overBudget: Bool
 }
 
-struct McpServer: Codable, Equatable, Identifiable {
-    struct Tool: Codable, Equatable, Identifiable {
-        let name: String
-        let toolName: String
-        var id: String { toolName }
+public struct McpServer: Codable, Equatable, Identifiable, Sendable {
+    public struct Tool: Codable, Equatable, Identifiable, Sendable {
+        public let name: String
+        public let toolName: String
+        public var id: String { toolName }
     }
-    let id: String
-    let name: String
-    let transport: String
-    let command: String?
-    let args: [String]?
-    let url: String?
+    public let id: String
+    public let name: String
+    public let transport: String
+    public let command: String?
+    public let args: [String]?
+    public let url: String?
     /// A server run as a program: its own environment variables, by name. The values stay in the Keychain.
-    let variables: [AgentVariable]?
-    let status: String
-    let error: String?
-    let tools: [Tool]
+    public let variables: [AgentVariable]?
+    public let status: String
+    public let error: String?
+    public let tools: [Tool]
 }
 
-struct SearchResult: Codable, Equatable, Identifiable {
-    let conversationId: Int
-    let title: String
-    let entryId: Int
-    let snippet: String
+public struct SearchResult: Codable, Equatable, Identifiable, Sendable {
+    public let conversationId: Int
+    public let title: String
+    public let entryId: Int
+    public let snippet: String
     /// Found in an archived conversation.
-    let archived: Bool?
+    public let archived: Bool?
     /// Found in a chat rather than an agent's conversation.
-    var chat: Bool? = nil
-    var id: Int { entryId }
+    public var chat: Bool? = nil
+    public var id: Int { entryId }
 }
 
 /// The latest event of each kind that a feature in a file of its own reads, by kind ("limits", "memory"). Each kind is
 /// observed on its own, so a view that reads one is not drawn again when another comes, and a value is only set when it
 /// changed (#347).
 @MainActor
-final class ExtraEvents {
+public final class ExtraEvents {
     @MainActor
     @Observable
-    final class Slot {
-        var value: JSONValue?
+    public final class Slot {
+        public var value: JSONValue?
     }
 
     private var slots: [String: Slot] = [:]
@@ -1093,7 +1154,7 @@ final class ExtraEvents {
     /// (`WorkListings`, #599). Not observed: what reads it reads the value too.
     private var generations: [String: Int] = [:]
 
-    func generation(_ kind: String) -> Int { generations[kind] ?? 0 }
+    public func generation(_ kind: String) -> Int { generations[kind] ?? 0 }
 
     private func slot(_ kind: String) -> Slot {
         if let slot = slots[kind] { return slot }
@@ -1102,7 +1163,7 @@ final class ExtraEvents {
         return slot
     }
 
-    subscript(kind: String) -> JSONValue? {
+    public subscript(kind: String) -> JSONValue? {
         get { slot(kind).value }
         set {
             let slot = slot(kind)
@@ -1112,85 +1173,20 @@ final class ExtraEvents {
             }
         }
     }
+
+    public init() {}
 }
 
-/// An open conversation as the engine last sent it: its entries and its live state. One object per conversation, so that
-/// an update to one conversation redraws only the views that show it, not every view that shows any (#347).
-@MainActor
-@Observable
-final class OpenConversation {
-    let draft: ConversationDraft
-    private(set) var items: [Item] = []
-
-    init(draft: ConversationDraft) { self.draft = draft }
-    /// Nil until the engine has sent the conversation.
-    private(set) var state: ConversationState?
-    /// Whether the engine has sent the conversation: set once, for a view that needs to know only that and should not be
-    /// drawn again whenever the state changes, as the Dashboard's window onto an orchestrator (#618).
-    private(set) var arrived = false
-    /// How many entries older than `items` the engine is still to send: it sends a long conversation newest first (#380).
-    private(set) var earlier = 0
-    /// Whether the conversation has entries older than all of those, which come when asked for (#440): the engine's view
-    /// of a conversation is a window of its newest 300 entries.
-    private(set) var more = false
-    /// Whether a part of those older entries has been asked for and has not come yet (`EngineClient.loadOlder`).
-    var loadingOlder = false
-    /// Whether a pane has shown the conversation since it was opened. The window's controls for it wait for that, so
-    /// that making them does not hold up the first frame that shows it (#502).
-    private(set) var shown = false
-
-    func markShown() {
-        if !shown { shown = true }
-    }
-
-    /// Takes in one update from the engine, touching only what changed. `earlier` and `more` come with a list sent from
-    /// the start.
-    func apply(reset: Bool, items new: [Item], state: ConversationState, earlier: Int?, more: Bool? = nil) {
-        if reset, !items.isEmpty { items = [] }
-        if !new.isEmpty { items.append(contentsOf: new) }
-        if self.state != state { self.state = state }
-        if !arrived { arrived = true }
-        if reset, self.earlier != (earlier ?? 0) { self.earlier = earlier ?? 0 }
-        if reset, self.more != (more ?? false) { self.more = more ?? false }
-    }
-
-    /// Takes in entries that come before those it has, how many are still to come after them, and whether there are
-    /// older ones still (absent from an engine from before #440).
-    func prepend(_ older: [Item], earlier: Int, more: Bool? = nil) {
-        // Only what goes before the first it has, which is all of them unless a list sent from the start came between.
-        let first = items.first?.id ?? Int.max
-        let before = older.filter { $0.id < first }
-        if !before.isEmpty { items.insert(contentsOf: before, at: 0) }
-        if self.earlier != earlier { self.earlier = earlier }
-        if let more, self.more != more { self.more = more }
-    }
-
-    /// Nothing older is to be had after all: the engine said so, or could not say.
-    func noMore() {
-        if more { more = false }
-    }
-
-    /// Whether the person's message has come after the entry `last` (nil: since the conversation was empty). Entries can
-    /// arrive before those there were too, so this looks past `last` rather than counting.
-    func hasMessage(after last: Int?) -> Bool {
-        for item in items.reversed() {
-            if let last, item.id <= last { return false }
-            if item.kind == "user" { return true }
-        }
-        return false
-    }
-}
-
-struct EndpointModel: Codable, Equatable, Hashable {
-    let id: String
-    var name: String? = nil
-    var contextWindow: Int? = nil
-    var reasoning: Bool? = nil
+public struct EndpointModel: Codable, Equatable, Hashable, Sendable {
+    public let id: String
+    public var name: String? = nil
+    public var contextWindow: Int? = nil
+    public var reasoning: Bool? = nil
     /// Whether the person marked the model as able to see pictures.
-    var vision: Bool? = nil
+    public var vision: Bool? = nil
 
     /// What the engine's `endpoints.save` takes; fields that are not set are left out.
-    var payload: [String: Any] {
+    public var payload: [String: Any] {
         var result: [String: Any] = ["id": id]
         if let name { result["name"] = name }
         if let contextWindow { result["contextWindow"] = contextWindow }
@@ -1198,44 +1194,52 @@ struct EndpointModel: Codable, Equatable, Hashable {
         if vision == true { result["vision"] = true }
         return result
     }
+
+    public init(id: String, name: String? = nil, contextWindow: Int? = nil, reasoning: Bool? = nil, vision: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.contextWindow = contextWindow
+        self.reasoning = reasoning
+        self.vision = vision
+    }
 }
 
-struct EndpointConfig: Codable, Equatable {
-    let id: String
-    let name: String
-    let baseUrl: String
-    let api: String
-    let models: [EndpointModel]
+public struct EndpointConfig: Codable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let baseUrl: String
+    public let api: String
+    public let models: [EndpointModel]
 }
 
-struct ProviderInfo: Codable, Identifiable, Equatable {
-    struct OAuth: Codable, Equatable {
-        let name: String
-        let subscription: Bool
+public struct ProviderInfo: Codable, Identifiable, Equatable, Sendable {
+    public struct OAuth: Codable, Equatable, Sendable {
+        public let name: String
+        public let subscription: Bool
     }
-    struct Status: Codable, Equatable {
-        let type: String
-        let source: String?
+    public struct Status: Codable, Equatable, Sendable {
+        public let type: String
+        public let source: String?
     }
-    let id: String
-    let name: String
-    let kind: String
-    let keyAuth: Bool
-    let oauth: OAuth?
-    let status: Status?
-    let modelCount: Int
-    let endpoint: EndpointConfig?
+    public let id: String
+    public let name: String
+    public let kind: String
+    public let keyAuth: Bool
+    public let oauth: OAuth?
+    public let status: Status?
+    public let modelCount: Int
+    public let endpoint: EndpointConfig?
     /// Whether a signed-in or keyed built-in provider can be asked which models it offers, where, or why not.
-    var ask: Ask? = nil
+    public var ask: Ask? = nil
 
-    struct Ask: Codable, Equatable {
-        let can: Bool
+    public struct Ask: Codable, Equatable, Sendable {
+        public let can: Bool
         /// The address asked; nil for a provider whose list the library refreshes itself.
-        var url: String? = nil
-        var why: String? = nil
+        public var url: String? = nil
+        public var why: String? = nil
     }
 
-    var statusText: String {
+    public var statusText: String {
         guard let status else { return "Not connected" }
         if status.type == "oauth" { return "Signed in" }
         if let source = status.source, source != "stored credential" { return "Using \(source)" }
@@ -1243,104 +1247,122 @@ struct ProviderInfo: Codable, Identifiable, Equatable {
     }
 }
 
-struct ModelInfo: Codable, Equatable, Identifiable {
-    let provider: String
-    let providerName: String
-    let id: String
-    let name: String
-    let thinkingLevels: [String]
+public struct ModelInfo: Codable, Equatable, Identifiable, Sendable {
+    public let provider: String
+    public let providerName: String
+    public let id: String
+    public let name: String
+    public let thinkingLevels: [String]
     /// Left out of the model pickers by the choice made in Settings.
-    var hidden: Bool? = nil
+    public var hidden: Bool? = nil
     /// Whether the model can be sent pictures. Nil from an engine that does not say.
-    var vision: Bool? = nil
+    public var vision: Bool? = nil
     /// Added by its id to a built-in provider whose list pi² has does not have it yet (Settings › Providers › Models…).
-    var addedByHand: Bool? = nil
+    public var addedByHand: Bool? = nil
 
-    var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
+    public var ref: ModelRef { ModelRef(provider: provider, modelId: id) }
     /// The name as a model menu lists it, marked when it was added by hand.
-    var listName: String { addedByHand == true ? "\(name) (added by hand)" : name }
+    public var listName: String { addedByHand == true ? "\(name) (added by hand)" : name }
 }
 
 /// What a provider said when asked which models its key or sign-in can use (`providers.ask`).
-struct ProviderListing: Codable, Equatable {
-    struct Listed: Codable, Equatable, Identifiable {
-        let id: String
-        let name: String
+public struct ProviderListing: Codable, Equatable, Sendable {
+    public struct Listed: Codable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let name: String
         /// In pi²'s own list of the provider's models.
-        let known: Bool
+        public let known: Bool
     }
-    let providerName: String
-    let asked: String?
-    let catalogCount: Int
-    let models: [Listed]
+    public let providerName: String
+    public let asked: String?
+    public let catalogCount: Int
+    public let models: [Listed]
 }
 
 /// What the engine's `providers.draftModel` proposes for a model added by its id: settings taken from a model it knows.
-struct ModelDraft: Codable, Equatable {
-    struct Template: Codable, Equatable, Identifiable {
-        let id: String
-        let name: String
+public struct ModelDraft: Codable, Equatable, Sendable {
+    public struct Template: Codable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let name: String
     }
-    let providerName: String
-    let id: String
-    var name: String
-    let basedOn: String
-    let basedOnName: String
+    public let providerName: String
+    public let id: String
+    public var name: String
+    public let basedOn: String
+    public let basedOnName: String
     /// "family": the newest of the id's family; "nearest": no model of that family, so the closest; "chosen": picked.
-    let match: String
+    public let match: String
     /// What the provider said itself when asked ("context size", "pictures"), in place of the template's.
-    var told: [String]? = nil
-    let api: String
-    let apis: [String]
-    var contextWindow: Int
-    var maxTokens: Int
-    var vision: Bool
-    var thinkingLevels: [String]
-    let templates: [Template]
-    let editing: Bool
+    public var told: [String]? = nil
+    public let api: String
+    public let apis: [String]
+    public var contextWindow: Int
+    public var maxTokens: Int
+    public var vision: Bool
+    public var thinkingLevels: [String]
+    public let templates: [Template]
+    public let editing: Bool
 }
 
 /// What a sign-in flow tells or asks the person, as pi-ai's provider-neutral events and prompts.
-struct AuthNotice: Codable, Equatable {
-    let type: String
-    let message: String?
-    let url: String?
-    let instructions: String?
-    let userCode: String?
-    let verificationUri: String?
+public struct AuthNotice: Codable, Equatable, Sendable {
+    public let type: String
+    public let message: String?
+    public let url: String?
+    public let instructions: String?
+    public let userCode: String?
+    public let verificationUri: String?
 }
 
-struct AuthPromptInfo: Codable, Equatable {
-    struct Option: Codable, Equatable, Identifiable {
-        let id: String
-        let label: String
-        let description: String?
+public struct AuthPromptInfo: Codable, Equatable, Sendable {
+    public struct Option: Codable, Equatable, Identifiable, Sendable {
+        public let id: String
+        public let label: String
+        public let description: String?
     }
-    let type: String
-    let message: String
-    let placeholder: String?
-    let options: [Option]?
+    public let type: String
+    public let message: String
+    public let placeholder: String?
+    public let options: [Option]?
 }
 
-struct SignInFlow: Equatable {
-    var loginId: String?
-    let providerName: String
-    var messages: [String] = []
-    var openURL: String?
-    var userCode: String?
-    var promptId: String?
-    var prompt: AuthPromptInfo?
-    var error: String?
-    var finished = false
+public struct SignInFlow: Equatable, Sendable {
+    public var loginId: String?
+    public let providerName: String
+    public var messages: [String] = []
+    public var openURL: String?
+    public var userCode: String?
+    public var promptId: String?
+    public var prompt: AuthPromptInfo?
+    public var error: String?
+    public var finished = false
+
+    public init(loginId: String? = nil, providerName: String, messages: [String] = [], openURL: String? = nil, userCode: String? = nil, promptId: String? = nil, prompt: AuthPromptInfo? = nil, error: String? = nil, finished: Bool = false) {
+        self.loginId = loginId
+        self.providerName = providerName
+        self.messages = messages
+        self.openURL = openURL
+        self.userCode = userCode
+        self.promptId = promptId
+        self.prompt = prompt
+        self.error = error
+        self.finished = finished
+    }
 }
 
-struct EngineError: LocalizedError {
-    let message: String
+public struct EngineError: LocalizedError, Sendable {
+    public let message: String
     /// No answer came: the engine was not connected, or the connection went before it answered. A request that is safe to
     /// send again (a message with its request id) can be sent again once the engine is back.
-    var unanswered = false
+    public var unanswered = false
     /// What a refusal carries beside its message (docs/projects.md, 4.1): the new report of a plan that changed since the
     /// person looked, say. Nil for most refusals.
-    var data: [String: JSONValue]? = nil
-    var errorDescription: String? { message }
+    public var data: [String: JSONValue]? = nil
+    public var errorDescription: String? { message }
+
+    public init(message: String, unanswered: Bool = false, data: [String: JSONValue]? = nil) {
+        self.message = message
+        self.unanswered = unanswered
+        self.data = data
+    }
 }

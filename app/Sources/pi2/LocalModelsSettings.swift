@@ -1,5 +1,6 @@
 import AppKit
 import BrowserKit
+import PiModels
 import SwiftUI
 
 // Models on this Mac (#292 of #173), in Settings › Providers: getting the Strata engine and a model pack, with their

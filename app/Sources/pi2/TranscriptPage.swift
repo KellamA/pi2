@@ -1,4 +1,5 @@
 import AppKit
+import PiModels
 import SwiftUI
 import TranscriptKit
 

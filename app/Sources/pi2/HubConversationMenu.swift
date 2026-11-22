@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // What can be done to one of a project's conversations from the hub and the sidebar of projects (#642): stop it, rename,

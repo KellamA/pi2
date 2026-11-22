@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// One note of a project, as the engine's `memory` event sends it (docs/projects.md, 3.8): what an agent of the project

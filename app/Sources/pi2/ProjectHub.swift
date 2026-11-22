@@ -1,4 +1,5 @@
 
+import PiModels
 import SwiftUI
 import PaneKit
 import WindowKit
@@ -6,71 +7,6 @@ import WindowKit
 // A project's hub (#471): what opens when a project is selected. The bar, the conversation with
 // the orchestrator and the board side by side, each folding. docs/design/projects.md says what it is for, and
 // docs/projects.md (10.1, 10.3) what it reads and keeps. The views are in ProjectHubViews.swift.
-
-/// A project as the engine's `projects` event sends it (docs/projects.md, 3.2 and 4.3): what the app reads of it.
-struct ProjectRow: Decodable, Equatable, Identifiable {
-    struct Repository: Decodable, Equatable {
-        let owner: String
-        let name: String
-    }
-
-    struct LastWords: Decodable, Equatable {
-        let text: String
-        /// Milliseconds since 1970.
-        let at: Double
-    }
-
-    /// About how many tokens the rules add to each request (docs/projects.md, 6.2): an orchestrator's, and every other
-    /// agent's. Absent from an engine before #459 filled it.
-    struct RuleTokens: Decodable, Equatable {
-        let orchestrator: Int
-        let agents: Int
-    }
-
-    let id: String
-    let name: String
-    /// The real path of its folder, or nil for a project with none.
-    let folder: String?
-    let repository: Repository?
-    /// The project agent that is its orchestrator.
-    let orchestratorId: String
-    /// The orchestrator's conversation now: nil until it is first opened, for a project carried over (3.2).
-    let conversation: Int?
-    let archivedAt: Double?
-    let deletedAt: Double?
-    /// Its folder has gone since it was set.
-    let folderMissing: Bool?
-    /// The last line of the orchestrator's last finished answer, for the folded conversation's strip.
-    let lastWords: LastWords?
-    /// The project's settings (docs/projects.md, section 8) as the `projects` event sends them. The Agents tab reads
-    /// the switches of 8.1; the Settings tab reads the rest: when reports wake the orchestrator, and the limits (#478).
-    var settings: Settings? = nil
-
-    /// A project's settings: the switches of 8.1, which the Agents tab reads, and the rest, which the Settings tab
-    /// reads. A change to one part changes nothing in the tabs reading the other.
-    struct Settings: Decodable, Equatable {
-        /// What the orchestrator may do without asking, by switch name (8.1).
-        let withoutAsking: [String: Bool]?
-        /// The person's switch for reports waking the orchestrator.
-        let wakeOnReports: Bool
-        struct Limits: Decodable, Equatable {
-            /// Percent of a plan window, 1 to 100, or nil for none.
-            let planShare: Int?
-            /// Dollars a day, or nil for none.
-            let dailySpend: Double?
-        }
-        let limits: Limits
-    }
-
-    /// Whether the orchestrator may do what the switch of 8.1 named `name` governs without asking.
-    func allows(_ name: String) -> Bool { settings?.withoutAsking?[name] ?? false }
-    /// What the rules add to each request, for the Rules tab; nil when the engine sends none.
-    let ruleTokens: RuleTokens?
-}
-
-struct ProjectsEvent: Decodable {
-    let projects: [ProjectRow]
-}
 
 /// The board's tabs, which are the project's navigation, in the order they show. The raw values are the ones
 /// `PI2_SHOW=project:<name>#<tab>` and the app's preferences use.

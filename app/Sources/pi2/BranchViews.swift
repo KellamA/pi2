@@ -1,4 +1,5 @@
 import AppKit
+import PiModels
 import SwiftUI
 
 // The branch tracker: which branch each conversation's folder is on, whether that is a worktree of its own, and how

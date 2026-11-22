@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // The window onto each project's orchestrator in its Dashboard column (#618; docs/design/projects.md "The Dashboard"):
