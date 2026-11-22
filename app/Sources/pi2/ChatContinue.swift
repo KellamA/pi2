@@ -144,7 +144,7 @@ struct ContinueWithAgentSheet: View {
                 dismiss()
                 engine.openConversation(id)
                 // An agent's conversation: the window moves to the agent view, and the chat keeps its place here.
-                model.selection = .conversation(id)
+                model.openConversation(id)
             } catch {
                 problem = error.localizedDescription
             }
@@ -169,7 +169,7 @@ struct ContinuedLinks: View {
                     HStack(spacing: 6) {
                         Image(systemName: link.icon).foregroundStyle(Theme.tx3)
                         Text(link.text).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
-                        Button(link.action) { engine.onNavigate(link.id) }
+                        Button(link.action) { engine.onNavigate(link.id, nil) }
                             .buttonStyle(.link)
                             .help(link.help)
                         Spacer(minLength: 0)

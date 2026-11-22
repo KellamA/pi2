@@ -1150,7 +1150,7 @@ struct SubagentCard: View {
                 if let subagent {
                     Button {
                         engine.openConversation(subagent.id)
-                        engine.onNavigate(subagent.id)
+                        engine.onNavigate(subagent.id, nil)
                     } label: {
                         Label("Open", systemImage: "arrow.up.right").labelStyle(.titleAndIcon)
                     }

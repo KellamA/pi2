@@ -83,6 +83,16 @@ final class AppModel {
     var selection: Selection? {
         didSet {
             if chats.redirecting { return }
+            launchChose = false
+            // With the projects preview on, a conversation chosen anywhere opens where it lives, never in the old panes
+            // (#644): a chat in chat mode, any other in its project's hub.
+            if case .conversation(let id) = selection, engine.projectsPreview {
+                chats.redirecting = true
+                selection = oldValue
+                chats.redirecting = false
+                openConversation(id)
+                return
+            }
             // A chat chosen anywhere opens in chat mode; this side keeps what it had.
             if case .conversation(let id) = selection, engine.isChat(id) {
                 chats.redirecting = true
@@ -100,8 +110,15 @@ final class AppModel {
                 if engine.projectsPreview, let project = engine.conversations.first(where: { $0.id == id })?.projectId { projectsSidebar.open = project }
             }
             if case .project(let id) = selection { projectsSidebar.open = id }
+            // Coming to the Archive from elsewhere shows its list, not the conversation it was last reading.
+            if selection == .archive, oldValue != .archive { archiveReading = nil }
         }
     }
+    /// The conversation the Archive reads in place of its list, with the preview on (OpenConversation.swift).
+    var archiveReading: Int?
+    /// Whether the selection is the one the window landed on at launch, before the engine said whether the preview is on:
+    /// a window that turns out to have it on lands on the Dashboard instead (`landOnProjects`).
+    var launchChose = false
     /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
@@ -125,7 +142,7 @@ final class AppModel {
         #if PI2_DEVELOPMENT
         TestCopyPanels.install(engine: engine)
         #endif
-        engine.onNavigate = { [weak self] id in self?.selection = .conversation(id) }
+        engine.onNavigate = { [weak self] id, from in self?.openConversation(id, from: from) }
         engine.onOpenBeside = { [weak self] id, beside in self?.openBeside(id, beside: beside) }
     }
 
@@ -144,7 +161,8 @@ final class AppModel {
 
     /// Whether the detail shows agent conversations, including a split whose focused pane is empty.
     var showsWorkspace: Bool {
-        guard mode == .agents else { return false }
+        // With the projects preview on, the panes are never drawn (#644).
+        guard mode == .agents, !engine.projectsPreview else { return false }
         switch selection {
         case .conversation: return true
         case nil: return workspace.isSplit
@@ -157,6 +175,7 @@ final class AppModel {
     var shownConversations: Set<Int> {
         workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
             .union(hubConversation.map { [$0] } ?? []).union(hubAgentConversation.map { [$0] } ?? [])
+            .union(archiveConversation.map { [$0] } ?? [])
             .union(dashboardConversations)
     }
 
@@ -172,7 +191,7 @@ final class AppModel {
     /// Starts a conversation with `agentId`, or with the agent used last when nil.
     func newConversation(agentId: String? = nil) {
         Task {
-            if let id = await engine.createConversation(agentId: agentId) { selection = .conversation(id) }
+            if let id = await engine.createConversation(agentId: agentId) { openConversation(id) }
         }
     }
 
@@ -509,7 +528,16 @@ struct RootView: View {
                     case .dashboard:
                         DashboardView(model: model)
                     case .conversation, nil:
-                        WelcomeView(model: model)
+                        if engine.projectsPreview {
+                            // Nothing chosen, with projects: what `landOnProjects` chooses, drawn until it has (#644).
+                            if engine.projectStore.listed.isEmpty {
+                                NoProjectsPage(model: model)
+                            } else {
+                                DashboardView(model: model)
+                            }
+                        } else {
+                            WelcomeView(model: model)
+                        }
                     }
                 }
             }
@@ -550,13 +578,23 @@ struct RootView: View {
                 return
             }
             #endif
+            if engine.projectsPreview {
+                model.landOnProjects()
+                return
+            }
             // Split into panes last time: come back to the same panes. The window stays on the side it was last on.
             if model.workspace.isSplit {
                 model.restoreSelection(model.workspace.focusedConversation.map { .conversation($0) })
+                model.launchChose = true
                 return
             }
             // On launch, land on the most recent conversation.
             if let first = engine.rootConversations.first { model.restoreSelection(.conversation(first.id)) }
+            model.launchChose = true
+        }
+        // With the preview on, a window left with nothing chosen lands on the Dashboard, or the one project's hub (#644).
+        .onChange(of: model.selection) { _, selection in
+            if selection == nil, engine.projectsPreview, model.mode == .agents { model.landOnProjects() }
         }
         .onChange(of: engine.conversations) { _, list in
             // Panes showing a deleted conversation are emptied; the focused one moves on below.

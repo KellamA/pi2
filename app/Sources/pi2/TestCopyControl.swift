@@ -292,10 +292,12 @@ struct TestCopyControl: NSViewRepresentable {
             }
             // Moving focus to another visible pane does not redraw its transcript. A pane kept in the layout
             // behind Inbox or Chat, on the other hand, needs to draw again when it comes back on screen.
+            // With the projects preview on, it opens where it lives (#644): a hub's panel, or the Archive's reader.
             let alreadyShown = model.mode == .chat ? model.chats.selection == id
+                : model.engine.projectsPreview ? HubDrawn.current.map { $0.conversation == id || $0.agent == id } == true || model.archiveConversation == id
                 : model.showsWorkspace && model.workspace.panes.contains { $0.conversation == id }
             let before = TranscriptDrawn.drawings[id]
-            model.selection = .conversation(id)
+            model.openConversation(id)
             if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
             waiting.append((dir, id, before ?? 0, Date().addingTimeInterval(Self.limit)))
             return nil

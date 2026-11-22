@@ -323,7 +323,7 @@ final class TranscriptBridge {
             if beside {
                 engine.onOpenBeside(id, conversationID)
             } else {
-                engine.onNavigate(id)
+                engine.onNavigate(id, conversationID)
             }
         case .fork(let entry):
             guard items.contains(where: { $0.id == entry && $0.kind == "assistant" }) else { return }

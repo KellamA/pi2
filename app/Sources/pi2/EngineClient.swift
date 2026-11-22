@@ -110,8 +110,9 @@ final class EngineClient {
     /// The reach requests and proposed rules waiting under Needs you, as the `needs` event sends them (3.9), for the
     /// cards at the calls that asked in a conversation's page (#474).
     private(set) var conversationNeeds: [TranscriptFeed.Need] = []
-    /// Asked to show a conversation, for example a fork that was just made.
-    var onNavigate: (Int) -> Void = { _ in }
+    /// Asked to show a conversation where it lives (`AppModel.openConversation`), for example a fork that was just made;
+    /// `from` is the conversation it was opened from, when there is one, which places a sub-chat no list names.
+    var onNavigate: (_ id: Int, _ from: Int?) -> Void = { _, _ in }
     /// Asked to show a conversation (a sub-chat) in a pane beside another (the conversation it came from).
     var onOpenBeside: (_ id: Int, _ beside: Int) -> Void = { id, _ in }
     var signIn: SignInFlow?
@@ -385,7 +386,7 @@ final class EngineClient {
                 let result = try await call("conversation.fork", ["id": id, "entryId": entryId])
                 if let fork = result["id"]?.intValue {
                     openConversation(fork)
-                    onNavigate(fork)
+                    onNavigate(fork, nil)
                 }
             } catch {
                 lastError = error.localizedDescription
