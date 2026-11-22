@@ -23,7 +23,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { checkDeviceLists, deviceLogged, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, fromBase64url, logDevice, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, fromBase64url, logDevice, macNameNow, shownName, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import { forDevice, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -208,6 +208,11 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.ok(!forDevice(pem)!.includes("MIIBVQ"));
 	assert.ok(!maskKeys("-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkq and no end").includes("MIIBVQ"), "a key cut short is hidden to the end");
 	assert.equal(maskKeys("a desk-chair and sk-short"), "a desk-chair and sk-short", "words are left as they are");
+	// Names as a phone shows them (RemoteKit's ShownText): stripped, cut to 128 bytes between characters, or "Mac".
+	assert.equal(shownName("Kim\u200D's\u202E Mac", "Mac"), "Kim's Mac");
+	assert.equal(shownName("\u200B\u202E\u2066\uFEFF \u0007", "Mac"), "Mac");
+	const emoji = shownName("\u{1F469}\u200D\u{1F4BB}".repeat(40), "Mac");
+	assert.ok(Buffer.byteLength(emoji) <= 128 && Buffer.from(emoji).toString() === emoji && !emoji.includes("\u200D"), emoji);
 	const proto = forDevice('{"id":1,"result":{"__proto__":{"polluted":1}}}')!;
 	assert.ok(proto.includes('"__proto__":{"polluted":1}') && ({} as { polluted?: number }).polluted === undefined, "a key __proto__ stays a key");
 	// A long run after a key's prefix: masked whole, at once, and nothing thrown (a greedy pattern overflowed V8's stack).
@@ -301,10 +306,12 @@ class Phone {
 		const doc = await tx.doc(Devices);
 		doc.pairing = pairing;
 		doc.remote = { ...doc.remote, preview: true, on: true };
+		doc.macName = "Kim\u200D\u202E's Mac";
 		doc.devices.push(record);
 	}, context);
 	await harness.close(context);
 	harness = await open();
+	assert.equal(macNameNow(), "Kim's Mac", "the Mac's name the payload and a phone are given, stripped");
 	const none = () => null;
 	const take = (item: unknown, now?: number) => checkRequestItem(phone.id, item, none, now);
 	const logged = async () => (await harness.snapshot(DeviceLog, context))?.entries.length ?? 0;
@@ -811,9 +818,15 @@ try {
 	// ---- A revoked device's key cannot pair again (3.3 step 5); pairing needs a running pi² Remote (3.3 step 8)
 	const sameKey = Object.assign(new Phone("Alex's iPhone"), { device: phone.device });
 	assert.match((await claimIn(sameKey, {}, () => {}, restarted)).reply.error ?? "", /That device key was revoked on this Mac/);
-	const phone2 = new Phone("Robin's iPhone");
+	// A name with a zero-width joiner and a right-to-left override, which RemoteKit does not show: stripped, not refused.
+	const phone2 = new Phone("Robin\u200D's\u202E iPhone");
 	const second2 = await claimIn(phone2, {}, () => {}, restarted);
+	const pairedBefore = restarted.events.length;
 	({ device: phone2.id } = await app.call("devices.pairConfirm", { digits: second2.digits }));
+	assert.equal(app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone2.id).name, "Robin's iPhone");
+	assert.doesNotMatch((await restarted.event("paired", pairedBefore)).paired.name, /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\p{Cc}]/u);
+	await app.call("devices.rename", { device: phone2.id, name: "\u200D\u202E\u2066" });
+	assert.equal(app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone2.id).name, "iPhone 17 Pro", "a name of nothing shown falls back");
 	const waiting = await claimIn(new Phone("Sky's iPhone"), {}, () => {}, restarted);
 	assert.ok(waiting.reply.result.claim);
 	process.kill(restarted.standIn!.pid, "SIGKILL");
