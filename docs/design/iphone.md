@@ -2,7 +2,7 @@
 
 This is the design for epic [#620](https://github.com/KellamA/pi2/issues/620): an iPhone app that does nothing by itself and, once paired with pi² on a Mac, is the whole of pi² from the pocket. Nothing here is built yet. The drawings are in [iphone-drafts.html](iphone-drafts.html): open it in a browser; the buttons along its top switch between the screens, and one switches between dark and light (an address ending in `:light`, such as `iphone-drafts.html#card:light`, opens a screen in light). The contract that every later issue is built against is [../iphone.md](../iphone.md); this page says what the person sees and does, and that page says exactly how.
 
-The owner has answered two of three decisions: the phone must work on any network, with the Mac on another; and it may do everything the person does at the Mac, with Face ID for the risky answers and a Devices page on the Mac. The third, who it is for, is open; the owner asked what changes if the App Store is planned for from the start, and this page is written for that (below). This page is written for the answers given and for the likely answer of the open one, and each is kept in one place, so a different answer changes that section and the contract's matching section, not the whole.
+The owner has answered two of three decisions: the phone must work on any network, with the Mac on another; and it may do everything the person does at the Mac, with a Devices page on the Mac; Face ID opens the app, and nothing is asked after. The third, who it is for, is open; the owner asked what changes if the App Store is planned for from the start, and this page is written for that (below). This page is written for the answers given and for the likely answer of the open one, and each is kept in one place, so a different answer changes that section and the contract's matching section, not the whole.
 
 ## What the phone is, and is not
 
@@ -13,7 +13,7 @@ The phone runs no agents, holds no provider's key, and keeps nothing of its own 
 | Decision | Written for | Where it lives |
 |---|---|---|
 | 1. How the phone reaches the Mac away from home | **Answered**: "it needs to work on separate networks or it defeats the purpose." The whole of pi², the live conversation included, works with the phone on any network and the Mac on another, with nothing to set up beyond pairing. The way recommended: **a small relay pi² runs**, on Cloudflare, which passes only sealed messages and sends the pushes; at home the phone talks to the Mac directly. | [On any network](#on-any-network) here; [sections 5 and 6](../iphone.md#5-transport) of the contract |
-| 2. What the phone may do | **Answered, as recommended**: everything the person does at the Mac, but what needs the Mac's hands or a secret; the riskiest answers (more reach, Allow everything, a merge, starting past a limit) ask for Face ID first; a Devices page on the Mac. The same on every network. | [What the phone may do](#what-the-phone-may-do) here; [4.2](../iphone.md#42-what-a-device-may-send) of the contract |
+| 2. What the phone may do | **Answered**: everything the person does at the Mac, but what needs the Mac's hands or a secret; a Devices page on the Mac. After the security reading: **"Face ID to open the app, nothing after."** The same on every network. | [What the phone may do](#what-the-phone-may-do) here; [4.2](../iphone.md#42-what-a-device-may-send) of the contract |
 | 3. Who it is for at first | **Open.** Written for what is likely: **built so that the App Store stays possible, given out to the owner alone through TestFlight first.** | [Who it is for](#who-it-is-for-at-first) here; [section 9](../iphone.md#9-who-it-is-for-and-how-it-is-given-out) of the contract, with [9.5, If it goes to the App Store](../iphone.md#95-if-it-goes-to-the-app-store) |
 
 ## The screens
@@ -26,7 +26,7 @@ On the Mac: **Settings › Devices › Pair an iPhone** shows a code to scan, go
 
 ### The demo mode
 
-The whole app against canned data, with no Mac and no network: demo projects with agents at work, a card of every kind, notifications with their buttons, a conversation that answers, a pull request to merge with Face ID. A **Demo** bar across the top of every screen says so, with **Leave**, which deletes what the demo wrote. It is there for a person who has installed the app and has nothing paired yet, and for App Review, whose reviewer has no Mac running pi². Every screen in it is the real one, fed by a recording instead of a Mac.
+The whole app against canned data, with no Mac and no network: demo projects with agents at work, a card of every kind, notifications with their buttons, a conversation that answers, a pull request to merge. A **Demo** bar across the top of every screen says so, with **Leave**, which deletes what the demo wrote. It is there for a person who has installed the app and has nothing paired yet, and for App Review, whose reviewer has no Mac running pi². Every screen in it is the real one, fed by a recording instead of a Mac.
 
 ### The projects list, with what needs the person at the top
 
@@ -42,7 +42,7 @@ A project opens on its **conversation with the orchestrator**, full width, as on
 
 ### A card that needs the person, in the app and as a notification
 
-In the app a card looks as on the Mac: who asks, in which project, what, and its buttons (Allow once, Deny; Answer; Allow…, Refuse; Accept, Refuse; Start anyway, Wait). A card that asks for Face ID says so on its button (**Allow with Face ID**). As a notification: the title names the agent and the kind ("Forge needs approval"), the body the project and the short line the card shows, and the buttons are the card's, as far as a notification can carry them: a question gets **Reply**, which types an answer in the notification; a decision opens the app. A button that needs Face ID opens the app on the card and asks there, since Face ID cannot be asked for from a notification in the background.[^fg] Every button asks for the phone to be unlocked first.[^auth] **Allow once** is on a notification only when it shows the whole command; a longer one has **Open** and **Deny**, so that a harmful end cut off after a harmless start is never allowed unseen. On the Lock Screen, a notification says only who needs the person and why ("Forge needs approval") until the phone is unlocked, unless the person turns details on. A card answered elsewhere (on the Mac, or on another device) takes its notification away.
+In the app a card looks as on the Mac: who asks, in which project, what, and its buttons (Allow once, Deny; Answer; Allow…, Refuse; Accept, Refuse; Start anyway, Wait). As a notification: the title names the agent and the kind ("Forge needs approval"), the body the project and the short line the card shows, and the buttons are the card's, as far as a notification can carry them: a question gets **Reply**, which types an answer in the notification; a decision opens the app. Every button opens pi² on the card: it asks Face ID if pi² is not already open, shows the whole card, and then does what was chosen, since Face ID cannot be asked for from a notification in the background.[^fg] The phone must be unlocked first.[^auth] **Allow once** is on a notification only when it shows the whole command, and acts only after the app has shown it whole, so that a harmful end cut off after a harmless start is never allowed unseen. On the Lock Screen, a notification says only who needs the person and why ("Forge needs approval") until the phone is unlocked, unless the person turns details on. A card answered elsewhere (on the Mac, or on another device) takes its notification away.
 
 ### An agent's conversation
 
@@ -50,11 +50,11 @@ From Now, Agents, or a link in the orchestrator's conversation, an agent's conve
 
 ### The Work tab, and a pull request with its diff
 
-Work is a list in the states the Mac uses (open, in progress, waiting, blocked, done), filtered by a segmented control. A piece of work opens with its text, its notes and **Give to an agent**. A pull request shows its checks, what a reviewing agent found, and its files; a file opens its diff, one file at a time, lines wrapped, with additions and removals coloured. **Merge** asks for Face ID; **Send back** asks why.
+Work is a list in the states the Mac uses (open, in progress, waiting, blocked, done), filtered by a segmented control. A piece of work opens with its text, its notes and **Give to an agent**. A pull request shows its checks, what a reviewing agent found, and its files; a file opens its diff, one file at a time, lines wrapped, with additions and removals coloured. **Send back** asks why.
 
 ### The Devices page on the Mac
 
-A new tab in Settings, **Devices**: the switch for **Reach from an iPhone**, **Reach through pi²'s relay** with the relay's address and whether it can be reached, and **Find on this network** (the direct path at home); **Direct from any address** (off: the Mac takes direct connections only from home and private networks); each paired device with its name, model, when it was paired and last seen, and how (at home, through the relay, direct, from the mailbox); **Revoke** beside each, and **Resume** for one the Mac suspended after repeated failed tries; **What this device did**, a log of every answer and change it made, every connection and every file it read, with the time, the path and whether Face ID was given; a waiting Face ID key to accept, with *Accept only if you did it yourself*; the line *Lost your iPhone away from this Mac? Erase it with Find My*; and **Pair an iPhone**. While a device is connected, the menu bar item and the sidebar say so (*Alex's iPhone · through the relay*), and the Mac posts a notification when a device is paired, when its Face ID is set up again, and when it gives a Face ID answer.
+A new tab in Settings, **Devices**: the switch for **Reach from an iPhone**, **Reach through pi²'s relay** with the relay's address and whether it can be reached, and **Find on this network** (the direct path at home); **Direct from any address** (off: the Mac takes direct connections only from home and private networks); each paired device with its name, model, when it was paired and last seen, and how (at home, through the relay, direct, from the mailbox); **Revoke** beside each, and **Resume** for one the Mac suspended after repeated failed tries; **What this device did**, a log of every answer and change it made, every connection and every file it read, with the time, the path and whether Face ID was given; a waiting Face ID key to accept, with *Accept only if you did it yourself*; the line *Lost your iPhone away from this Mac? Erase it with Find My*; and **Pair an iPhone**. While a device is connected, the menu bar item and the sidebar say so (*Alex's iPhone · through the relay*), and the Mac posts a notification when a device is paired, when its Face ID is set up again, and when it makes a change that widens what agents may do.
 
 ### The phone when the Mac is asleep or out of reach
 
@@ -62,16 +62,19 @@ The bar says so plainly, with the time the phone last heard from the Mac ("Mac a
 
 ## What the phone may do
 
-Everything the person does at the Mac, but what needs the Mac's hands or a secret ([the table below](#every-screen-and-function-of-the-mac-app) says which, screen by screen). Answers and settings are taken from the phone because it holds a key made at pairing; the riskiest ask for Face ID on the phone first, and the Mac checks that it was given. The list that asks for Face ID is decided by what an answer does, not what it is called: more reach for an agent, Allow everything, an allowed command added, starting past a limit, a merge or a release (by hand, or by approving an agent's request to), a change to an agent's, a chat's or a project's settings, forking or bringing back from the archive what has reach, Undo of a change, deleting anything. The same list holds on every network. While the Mac is asleep, only answers and short messages can wait for it in the relay's mailbox; everything else waits until it can be reached. The Mac keeps a log of everything each device did.
+Everything the person does at the Mac, but what needs the Mac's hands or a secret ([the table below](#every-screen-and-function-of-the-mac-app) says which, screen by screen). Answers and settings are taken from the phone because it holds keys made at pairing, and only once Face ID has opened pi² on it; the Mac checks that it was. Nothing is asked again while pi² is open. One switch stays on the Mac: **Allow everything**, which ends all asking for an agent. When a phone makes a change that widens what agents may do (more reach, an allowed command, starting past a limit, a merge or a release, a change to an agent's, a chat's or a project's settings, bringing back from the archive, deleting), the Mac notifies the person. The same holds on every network. While the Mac is asleep, only answers and short messages can wait for it in the relay's mailbox; everything else waits until it can be reached. The Mac keeps a log of everything each device did.
 
 ## A stolen or unlocked phone
 
-Whoever holds the phone unlocked can use the reach the agents already have: a message to an agent with Full access runs what it says, and **Allow once** runs a waiting command. The common theft today is to watch the passcode, then take the phone. Revoking needs the Mac. So the owner is asked to choose between two ways (the contract's [4.5](../iphone.md#45-a-stolen-or-unlocked-phone-the-owners-choice)):
+Whoever holds the phone unlocked could use the reach the agents already have: a message to an agent with Full access runs what it says, and **Allow once** runs a waiting command. The common theft today is to watch the passcode, then take the phone, and revoking needs the Mac. The owner chose (the contract's [4.5](../iphone.md#45-a-stolen-or-unlocked-phone-the-owners-choice)): **"Face ID to open the app, nothing after."**
 
-- **A, recommended: Face ID opens the app**, at most every five minutes of use; a notification's buttons act only within five minutes of the last Face ID (but **Deny** and **Refuse**, at any time); and the phone's copy of conversations opens only after Face ID.
-- **B: Face ID only for the risky answers**, as decided before, plus messages to agents with more than Ask first, **Allow once** on a command, and reading a file.
+- **Face ID opens pi² on the phone**, with no passcode instead: the passcode is what a thief who watched it has. Without the owner's face, an unlocked phone shows pi²'s notifications and nothing else; its copy of conversations stays locked.
+- **Nothing is asked again** while pi² is open.
+- **pi² closes itself** a minute after the person leaves it, when the phone locks, and when it is restarted; opening it again asks Face ID.
+- **A notification's buttons open pi²**, which asks Face ID if it was closed, shows the whole card, then does what was chosen.
+- Siri and Shortcuts do nothing on a locked phone; widgets on the Lock Screen hide their content; the Mac suspends a device after repeated failed tries; away from the Mac the remedy is Find My's **Erase iPhone**, which destroys the keys that pair it.
 
-Whichever way: Siri and Shortcuts do nothing on a locked phone, widgets on the Lock Screen hide their content, the Mac suspends a device after repeated failed tries, and away from the Mac the remedy is Find My's **Erase iPhone**, which destroys the keys that pair it.
+The security reading recommended Face ID again for the risky answers too. Without it, a phone taken from the hand while pi² is open can, for up to a minute after, merge, approve and change agents with one tap; the Mac notifies the person of each such change, and keeps Allow everything to itself.
 
 ## On any network
 
@@ -96,7 +99,7 @@ The owner's answer to decision 1: "it needs to work on separate networks or it d
 | **Shortcuts and Siri** | "Ask pi² to …": sends a message to a project's orchestrator (chosen, or the last one used) and speaks or shows the answer when it comes; "What needs me in pi²"; "Stop pi² in <project>". | The same requests the app makes, on any network. If the Mac is asleep, the message waits in the relay's mailbox and the Shortcut says the answer will come later. |
 | **The share sheet** | Send a link, a text, a photo or a file from any app to an orchestrator or an agent, with a line of instructions. | `submit` with attachments, as the Mac's message field sends them, on any network; only text waits in the mailbox while the Mac sleeps. |
 | **Camera and dictation** | The message field takes a photo, a scan, or dictation (Apple's own, on the keyboard), as attachments or text. | Nothing new: pictures are attachments as on the Mac. |
-| **Face ID** | Asked before the riskiest answers. | The Mac checks a fresh signature made only after Face ID for that one request. |
+| **Face ID** | Asked to open pi²; nothing is asked after. | The Mac checks, on every connection, a signature the phone can make only under that Face ID. |
 
 An Apple Watch glance and an iPad layout are left for later, if wanted.
 
@@ -107,6 +110,7 @@ An Apple Watch glance and an iPad layout are left for later, if wanted.
 - **Sign-ins and providers' keys, agents' variables' values, MCP servers**: secrets, and programs started on the Mac; the phone never receives a secret, so cannot show or send one.
 - **Setting up local models**, installing and removing software, backups and restoring, the projects preview and carrying over, updates, the login item: the Mac's own upkeep, done where its consequences are seen.
 - **Pairing another device**: only at the Mac, so that a stolen phone cannot add one.
+- **Turning Allow everything on** for an agent: it ends all asking, and with no second Face ID while pi² is open, a phone taken from the hand could otherwise give it in one tap. Turning it off works from the phone.
 - **The relay's switches and address**: on the Mac's Devices page, so that a phone cannot change where its own messages go.
 
 ## Every screen and function of the Mac app
@@ -122,21 +126,21 @@ An Apple Watch glance and an iPad layout are left for later, if wanted.
 | A project's hub: the board and its folding | Another shape: a tab bar (Chat · Now · Work · More) |
 | Now | As it is |
 | Work: the list, a piece of work, giving it to an agent | As it is |
-| A pull request: checks, findings, diff, merge, send back | Another shape: one file's diff at a time, lines wrapped; merge with Face ID |
-| Agents (of a project), and an agent's page | Another shape: grouped settings; changes with Face ID |
-| Templates | Another shape: listed and edited as agents, with Face ID |
-| Rules, Notes | As it is; removing a rule with Face ID |
-| Branches and worktrees | As it is: read; removing a worktree with Face ID |
-| A project's settings and limits | Another shape: grouped settings; changes with Face ID |
-| Changes with Undo in a conversation | As it is; Undo with Face ID |
+| A pull request: checks, findings, diff, merge, send back | Another shape: one file's diff at a time, lines wrapped |
+| Agents (of a project), and an agent's page | Another shape: grouped settings |
+| Templates | Another shape: listed and edited as agents |
+| Rules, Notes | As it is |
+| Branches and worktrees | As it is |
+| A project's settings and limits | Another shape: grouped settings |
+| Changes with Undo in a conversation | As it is |
 | An agent's conversation in place of the board | Another shape: a screen of its own |
 | Chat mode | As it is |
 | Conversations outside projects, sub-chats | As it is |
-| Archive | As it is; deleting with Face ID |
+| Archive | As it is |
 | Activity (runs going now) | Another shape: Now and the Dashboard |
 | Background commands and their output window | Another shape: a list; output read on a screen of its own; stop |
 | Wakes | As it is |
-| Schedules | As it is; a new or changed schedule with Face ID |
+| Schedules | As it is |
 | Usage, limits, the plan strip | Another shape: a page, and a widget |
 | Search | As it is |
 | Command palette | Not: the phone has search, Shortcuts and Siri |
@@ -150,7 +154,7 @@ An Apple Watch glance and an iPad layout are left for later, if wanted.
 | Settings › General (awake, auto-archive) | As it is for those two; the login item, appearance of the Mac app and command priority: not |
 | Settings › Chat | As it is |
 | Settings › Providers: keys, sign-ins, endpoints, models | Not; choosing a model from those set up is on the phone |
-| Settings › Tools: allowed commands | As it is: read and remove; adding one with Face ID |
+| Settings › Tools: allowed commands | As it is: read, add and remove |
 | Settings › Tools: variables | Another shape: names only; values set on the Mac |
 | Settings › Tools: MCP servers, computer use, browser use | Not |
 | Settings › Tools: co-author line | As it is |
