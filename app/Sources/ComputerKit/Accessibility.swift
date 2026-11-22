@@ -107,7 +107,6 @@ struct Control {
     let selected: Bool
     var statusItem = false
 
-    var isSecure: Bool { subrole == "AXSecureTextField" }
     var isText: Bool { role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" }
 
     /// "the “Send” button", for sentences.

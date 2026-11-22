@@ -236,6 +236,9 @@ extension EngineClient {
 extension EnvironmentValues {
     /// Whether the view is in one of several panes, where room is short.
     @Entry var inSplitPane = false
+    /// In a project's hub: shows a conversation in place of the board, as the hub's links to another conversation do
+    /// (#632). Nil elsewhere, where a link selects the conversation.
+    @Entry var showInHub: ((Int) -> Void)? = nil
 }
 
 /// A conversation being dragged from the sidebar onto a pane.
@@ -301,7 +304,7 @@ struct WorkspaceView: View {
         // The sidebar's list knows a sub-chat's parent; for a sub-chat of an archived conversation, its state does.
         let listed = engine.conversations.first(where: { $0.id == id })?.parent.flatMap { parent in engine.conversations.first { $0.id == parent }?.id }
         if let parentID = listed ?? state?.agent.parent {
-            Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parentID) }
+            Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parentID, nil) }
                 .labelStyle(.titleAndIcon)
                 .help("Go to the conversation whose agent opened this sub-chat")
         }
@@ -792,9 +795,10 @@ struct PaneCommands: View {
     private var workspace: Workspace { model.workspace }
 
     var body: some View {
-        // Panes are the agent view's; in chat mode they would change it out of sight.
+        // Panes are the agent view's; in chat mode they would change it out of sight. With the projects preview on they
+        // are not drawn at all (#644).
         Group { commands }
-            .disabled(model.mode == .chat)
+            .disabled(model.mode == .chat || model.engine.projectsPreview)
     }
 
     @ViewBuilder private var commands: some View {

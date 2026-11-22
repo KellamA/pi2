@@ -169,6 +169,31 @@ final class ProjectHubs {
         agents[id] = conversation
     }
 
+    /// The conversation of each project's hub that has the keyboard, as the hub last drew it: the agent's in place of the
+    /// board, unless the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on
+    /// it, as it acts on the focused pane in the old screens (#632).
+    private(set) var keyboard: [String: Int] = [:]
+
+    func setKeyboard(_ conversation: Int?, for id: String) {
+        guard keyboard[id] != conversation else { return }
+        keyboard[id] = conversation
+    }
+
+    /// The project whose Start fresh confirmation shows, asked for from the context meter or the Conversation menu (#632).
+    var freshAsked: String?
+
+    /// A fresh conversation with the orchestrator (docs/projects.md, 6.5), once the person has confirmed it. The
+    /// `projects` event then names it, and the hub shows it; a refusal is said as any failed request is.
+    func startFresh(_ project: ProjectRow, engine: EngineClient) {
+        Task {
+            do {
+                _ = try await engine.call("projects.startFresh", ["id": project.id])
+            } catch {
+                engine.lastError = error.localizedDescription
+            }
+        }
+    }
+
     /// A pull request to open on a project's Work tab as it next shows, asked for from a Dashboard column (#618).
     @ObservationIgnored private var pullsToOpen: [String: Int] = [:]
 
@@ -200,6 +225,38 @@ extension EngineClient {
     func project(_ id: String) -> ProjectRow? {
         guard projectsPreview else { return nil }
         return projects.first { $0.id == id && $0.deletedAt == nil }
+    }
+
+    /// Why a conversation cannot be summarised or given a fresh context: an earlier conversation with a project's
+    /// orchestrator takes no messages with the preview on (docs/projects.md, 3.5), and the current one has those.
+    func earlierRefusal(_ id: Int) -> String? {
+        guard projectsPreview, conversations.first(where: { $0.id == id })?.orchestrator == "earlier" else { return nil }
+        return "This is an earlier conversation with the orchestrator. Write in the current one."
+    }
+
+    /// Why a conversation cannot be forked: one with a project's orchestrator, current or earlier, since a project has one
+    /// conversation with its orchestrator, which Start fresh begins again (docs/projects.md, 6.5).
+    func forkRefusal(_ id: Int) -> String? {
+        guard projectsPreview, conversations.first(where: { $0.id == id })?.orchestrator != nil else { return nil }
+        return "A project has one conversation with its orchestrator. To begin it again, use Start Fresh…"
+    }
+
+    /// Why Start fresh cannot be done for a project now, in the words the engine refuses it with (docs/projects.md, 6.5),
+    /// so the control can say so before it is chosen; nil when it can. A project with no conversation yet gets one as its
+    /// hub opens.
+    func freshRefusal(_ project: ProjectRow) -> String? {
+        if status != .connected { return "pi² is not connected to its engine." }
+        if project.archivedAt != nil { return "This project is archived. Restore it first." }
+        guard let id = project.conversation else { return "The conversation with the orchestrator is still being started." }
+        if inbox.contains(where: { $0.conversationId == id }) { return "Answer what the orchestrator is waiting for first." }
+        let state = open[id]?.state
+        if state?.queued.contains(where: { $0.mode != "write" }) == true || outgoing[id]?.isEmpty == false {
+            return "Send or take back your queued message first."
+        }
+        if state?.busy == true || conversations.first(where: { $0.id == id })?.busy == true {
+            return "The orchestrator is answering. Let it finish, or stop it, first."
+        }
+        return nil
     }
 }
 
@@ -290,6 +347,26 @@ extension AppModel {
     var hubAgentConversation: Int? {
         guard let id = shownProject, hubs.fold(id) != .boardFolded else { return nil }
         return hubs.agent(id)
+    }
+
+    /// The conversation the Conversation menu acts on (#632): with a hub shown, the one of its two that has the keyboard,
+    /// the orchestrator's when the hub has not said (its conversation folded, say, which the strip still writes to); else
+    /// the focused pane's, or chat mode's chat.
+    var commandConversationID: Int? {
+        if let id = shownProject {
+            let orchestrator = engine.project(id)?.conversation
+            guard let keyed = hubs.keyboard[id], keyed == orchestrator || keyed == hubs.agent(id) else { return orchestrator }
+            return keyed
+        }
+        return activeConversationID
+    }
+
+    /// The project whose orchestrator's current conversation the Conversation menu acts on, if it does: Start Fresh is
+    /// then the project's own, and Fork does not apply (#632).
+    var commandOrchestratorProject: ProjectRow? {
+        guard let id = shownProject, let project = engine.project(id), let conversation = project.conversation,
+              commandConversationID == conversation else { return nil }
+        return project
     }
 }
 

@@ -144,7 +144,7 @@ struct ContinueWithAgentSheet: View {
                 dismiss()
                 engine.openConversation(id)
                 // An agent's conversation: the window moves to the agent view, and the chat keeps its place here.
-                model.selection = .conversation(id)
+                model.openConversation(id)
             } catch {
                 problem = error.localizedDescription
             }
@@ -159,17 +159,19 @@ struct ContinuedLinks: View {
     let id: Int
     var inset: CGFloat = 28
 
+    @Environment(\.showInHub) private var showInHub
+
     private var summary: ConversationSummary? { engine.conversations.first { $0.id == id } }
 
     var body: some View {
-        let links = self.links
+        let links = self.links + freshLinks
         if !links.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(links, id: \.id) { link in
                     HStack(spacing: 6) {
                         Image(systemName: link.icon).foregroundStyle(Theme.tx3)
                         Text(link.text).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
-                        Button(link.action) { engine.onNavigate(link.id) }
+                        Button(link.action) { if link.inHub, let showInHub { showInHub(link.id) } else { engine.onNavigate(link.id, nil) } }
                             .buttonStyle(.link)
                             .help(link.help)
                         Spacer(minLength: 0)
@@ -189,6 +191,22 @@ struct ContinuedLinks: View {
         let text: String
         let action: String
         let help: String
+        /// A link between a project's conversations with its orchestrator, which the hub shows in place of its board.
+        var inHub = false
+    }
+
+    /// A conversation with a project's orchestrator begun with Start fresh, and the one it followed, each linking to the
+    /// other (docs/projects.md, 6.5; #632).
+    private var freshLinks: [Link] {
+        guard let summary else { return [] }
+        var links: [Link] = []
+        if let from = summary.freshFrom, engine.conversations.contains(where: { $0.id == from }) || engine.archived.contains(where: { $0.id == from }) {
+            links.append(Link(id: from, icon: "arrow.uturn.backward", text: "Started fresh from an earlier conversation with the orchestrator", action: "Open", help: "Read the conversation this one followed. It is kept, but takes no more messages.", inHub: true))
+        }
+        if let next = engine.conversations.first(where: { $0.freshFrom == id }) {
+            links.append(Link(id: next.id, icon: "arrow.forward", text: "Continued in a fresh conversation", action: "Open", help: "Open the conversation with the orchestrator that followed this one", inHub: true))
+        }
+        return links
     }
 
     /// The other side of each link that still exists, listed or archived.

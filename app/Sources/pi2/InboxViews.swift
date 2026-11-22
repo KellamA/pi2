@@ -298,7 +298,7 @@ struct InboxView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 InboxCard(engine: engine, item: item, showsSource: true)
                                 Button("Open “\(item.rootTitle.isEmpty ? "New conversation" : item.rootTitle)”") {
-                                    model.selection = .conversation(item.rootConversationId)
+                                    model.openConversation(item.rootConversationId)
                                 }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Theme.acc)
@@ -306,7 +306,7 @@ struct InboxView: View {
                             }
                         }
                         ForEach(notices) { notice in
-                            LimitNoticeCard(engine: engine, notice: notice, open: { model.selection = .conversation($0) }, showUsage: { model.selection = .usage })
+                            LimitNoticeCard(engine: engine, notice: notice, open: { model.openConversation($0) }, showUsage: { model.selection = .usage })
                         }
                     }
                     .padding(.horizontal, 28).padding(.vertical, 22)

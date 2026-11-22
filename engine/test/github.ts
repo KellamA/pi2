@@ -113,10 +113,14 @@ class Client extends EngineClient {
 }
 
 const step = (text: string) => console.log(`ok  ${text}`);
-const value = (tool: { isError: boolean; text: string }) => {
+/** What an action answered (#636): a line saying what was done, never the item whole. */
+const said = (tool: { isError: boolean; text: string }) => {
 	assert.equal(tool.isError, false, tool.text);
-	return JSON.parse(tool.text.split("\n\n(GitHub's listing")[0]!);
+	assert.ok(!tool.text.includes("{"), `no JSON: ${tool.text}`);
+	return tool.text as string;
 };
+/** The number of the item a `file` answer names. */
+const filedId = (tool: { isError: boolean; text: string }) => Number(/^Filed #(\d+) /.exec(said(tool))![1]);
 const refusal = (tool: { isError: boolean; text: string }, why: RegExp) => {
 	assert.equal(tool.isError, true, tool.text);
 	assert.match(tool.text, why);
@@ -186,15 +190,16 @@ try {
 	// ---- An agent files an issue, two take it at once, and the holder opens a pull request
 	// A worker's class is left for the orchestrator (#604), and the tool says so in a line after the item.
 	const filedAnswer = await client.work(worker, "file", { title: "Make widgets blue", text: "They are grey.", class: "cloud" });
-	assert.match(filedAnswer.text, /\n\nFiled without a class: only the orchestrator classifies work, and it will\.$/);
-	const filed = value({ ...filedAnswer, text: filedAnswer.text.split("\n\n")[0]! });
-	assert.deepEqual([filed.id, filed.state, filed.class, filed.filedBy, filed.text, filed.url], [1, "open", null, { kind: "agent", agentId: workerId, conversationId: worker }, "They are grey.", "https://github.com/example/widgets/issues/1"]);
+	// A line saying what was filed, with its new page (#636).
+	assert.equal(said(filedAnswer), "Filed #1 “Make widgets blue”, not classified.\nIts page: https://github.com/example/widgets/issues/1\nFiled without a class: only the orchestrator classifies work, and it will.");
+	const filed = await client.until("the filed issue listed", () => client.github(projectId)?.issues?.find((one: any) => one.id === 1));
+	assert.deepEqual([filed.state, filed.class, filed.filedBy, filed.text], ["open", null, { kind: "agent", agentId: workerId, conversationId: worker }, "They are grey."]);
 	const issue = widgets().issues[0];
 	assert.match(issue.body, /^\*From Worker, an agent of the pi² project “Widgets”\.\*\n\nThey are grey\.\n\n<!-- pi2:[0-9a-f]{16} -->$/);
 	// An agent's issue carries the `agent` label, as scripts/issue's do (#604).
 	assert.deepEqual(issue.labels.map((label: any) => label.name).sort(), ["agent", "backlog"]);
 	assert.deepEqual(widgets().labels.map((label) => label.name).sort(), ["agent", "backlog", "blocked", "cloud model", "in progress", "local model", "waiting"]);
-	assert.equal(value(await client.work(parent, "classify", { id: 1, class: "cloud" })).class, "cloud", "the orchestrator classifies it");
+	assert.equal(said(await client.work(parent, "classify", { id: 1, class: "cloud" })), "Classified #1 “Make widgets blue”: cloud model.", "the orchestrator classifies it");
 	const { items, readAt } = await client.call("work.list", { projectId });
 	assert.deepEqual(items.map((item: any) => item.id), [1]);
 	assert.equal(typeof readAt, "number");
@@ -208,7 +213,8 @@ try {
 	const winnerAgent = a.isError ? reviewerId : workerId;
 	const loser = (a.isError ? a : b).text;
 	assert.equal(loser, `#1 is taken by ${winner === worker ? "Worker" : "Reviewer"}, in sub-chat ${winner}`);
-	assert.deepEqual(value(a.isError ? b : a).takenBy, { agentId: winnerAgent, conversationId: winner });
+	assert.equal(said(a.isError ? b : a), "Took #1 “Make widgets blue”: in progress, held by you.");
+	await client.until("the holder listed", () => client.github(projectId)?.issues?.find((one: any) => one.id === 1 && one.takenBy?.agentId === winnerAgent && one.takenBy.conversationId === winner));
 	// Both claimed and the later one let go, or the later one read the issue after the first was in progress and claimed
 	// nothing: either way, one claim stands.
 	const comments = widgets().issues[0].comments.map((comment: any) => comment.body.split("\n\n")[1]);
@@ -218,13 +224,13 @@ try {
 	assert.deepEqual(widgets().issues[0].labels.map((label: any) => label.name).sort(), ["agent", "cloud model", "in progress"]);
 	if (winner !== worker) {
 		await client.work(winner, "release", { id: 1 });
-		value(await client.work(worker, "take", { id: 1 }));
+		said(await client.work(worker, "take", { id: 1 }));
 	}
 	// Taking what it holds already is no error (#604).
 	const commentsBefore = widgets().issues[0].comments.length;
 	const again = await client.work(worker, "take", { id: 1 });
 	assert.equal(again.isError, false, again.text);
-	assert.match(again.text, /^#1 is yours already: carry on\.\n\n\{/);
+	assert.match(again.text, /^#1 is yours already: carry on\.\n#1 in progress · cloud model · Worker, sub-chat \d+ · changed .+ · Make widgets blue$/);
 	assert.equal(widgets().issues[0].comments.length, commentsBefore, "nothing posted");
 	// `show` answers in plain lines: its line, its text, and its notes (#595).
 	const shown = (await client.work(reviewer, "show", { id: 1 })).text;
@@ -265,7 +271,7 @@ try {
 	});
 	// The listing is read at most once a minute, so the orchestrator's classify of #1 as what it already is changes
 	// nothing there and makes the read that brings the roll-up in.
-	value(await client.work(parent, "classify", { id: 1, class: "cloud" }));
+	said(await client.work(parent, "classify", { id: 1, class: "cloud" }));
 	const named = await client.until("the failing checks named", () => {
 		const failing = client.github(projectId)?.pulls?.find((one: any) => one.number === 2)?.failingChecks;
 		return Array.isArray(failing) && failing.length === 2 ? failing : undefined;
@@ -277,7 +283,7 @@ try {
 	assert.deepEqual((client.github(projectId)?.pulls ?? []).map((one: any) => [one.number, one.checks, one.failingChecks]), [[3, "none", []], [2, "failing", named]]);
 	assert.match((await client.work(reviewer, "list")).text, /^#2 pull request open · checks failing · no review · Blue widgets$/m, "a pull request's checks, in a word (#595)");
 	changeStandIn((whole) => void (whole.repos["example/widgets"].pulls[0].statusCheckRollup = []));
-	value(await client.work(parent, "classify", { id: 1, class: "cloud" }));
+	said(await client.work(parent, "classify", { id: 1, class: "cloud" }));
 	const calmed = await client.until("none failing", () => {
 		const pull = client.github(projectId)?.pulls?.find((one: any) => one.number === 2);
 		return pull?.checks === "none" && pull.failingChecks?.length === 0 ? pull : undefined;
@@ -319,8 +325,9 @@ try {
 	// The holder still posts its summary on the issue the merge closed, and the status label comes off (#604).
 	assert.deepEqual(closed.heldAtClose, { agentId: workerId, conversationId: worker });
 	refusal(await client.work(reviewer, "finish", { id: 1, text: "Not mine" }), /^Only the holder can finish #1\./);
-	const summed = value(await client.work(worker, "finish", { id: 1, text: "Blue now; tested by hand." }));
-	assert.deepEqual([summed.state, summed.result, summed.heldAtClose], ["done", "Blue now; tested by hand.", undefined]);
+	assert.equal(said(await client.work(worker, "finish", { id: 1, text: "Blue now; tested by hand." })), "Finished #1 “Make widgets blue”: done, with your summary.");
+	const summed = await client.until("the summary listed", () => client.github(projectId)?.issues?.find((one: any) => one.id === 1 && one.result === "Blue now; tested by hand."));
+	assert.deepEqual([summed.state, summed.heldAtClose], ["done", undefined]);
 	const one = widgets().issues[0];
 	assert.deepEqual([one.state, one.stateReason], ["CLOSED", "COMPLETED"]);
 	assert.deepEqual(one.labels.map((label: any) => label.name).sort(), ["agent", "cloud model"]);
@@ -342,13 +349,13 @@ try {
 	step("every gh command names the repository with --repo (gh repo view, as its argument)");
 
 	// ---- What the orchestrator did itself is not news to it, for both kinds of list
-	value(await client.work(worker, "file", { title: "Second" }));
-	value(await client.work(worker, "take", { id: 4 }));
-	value(await client.work(parent, "note", { id: 4, text: "The orchestrator's note" }));
-	value(await client.work(worker, "note", { id: 4, text: "The worker's note" }));
+	said(await client.work(worker, "file", { title: "Second" }));
+	said(await client.work(worker, "take", { id: 4 }));
+	said(await client.work(parent, "note", { id: 4, text: "The orchestrator's note" }));
+	said(await client.work(worker, "note", { id: 4, text: "The worker's note" }));
 	const { id: localItem } = await client.call("work.create", { projectId: local, title: "Local work" });
-	value(await client.work(localParent, "note", { id: localItem, text: "The orchestrator's note" }));
-	value(await client.work(localWorker, "note", { id: localItem, text: "The helper's note" }));
+	said(await client.work(localParent, "note", { id: localItem, text: "The orchestrator's note" }));
+	said(await client.work(localWorker, "note", { id: localItem, text: "The helper's note" }));
 	await offline(async (harness) => {
 		const news = (await harness.snapshot(Projects, context))!.news;
 		const notes = (id: string) => (news[id] ?? []).filter((item) => item.kind === "work" && item.text.endsWith("(note)."));
@@ -359,7 +366,7 @@ try {
 	step("an action by the orchestrator adds no news for the orchestrator, on GitHub and in the list kept by pi²");
 
 	// ---- The admission check comes before a GitHub assignment claims an item
-	value(await client.work(worker, "file", { title: "Held back" }));
+	said(await client.work(worker, "file", { title: "Held back" }));
 	await client.until("spending counted", () => client.events.usage?.projects?.find((row: any) => row.id === projectId && row.today.cost > 0));
 	await client.call("projects.set", { id: projectId, settings: { limits: { planShare: null, dailySpend: 0.01 } } });
 	refusal(await client.work(parent, "assign", { id: 5, agent: "Worker" }), /^Not started: the project has spent \$/);
@@ -443,7 +450,7 @@ try {
 	assert.match((await client.work(worker, "show", { id: 4 })).text, /^#4 /, "the cached item, while GitHub refuses");
 	assert.match((await client.until("rate limited", () => client.github(projectId)?.state === "rate_limited" && client.github(projectId))).error, /rate limit/);
 	changeStandIn((whole) => delete whole.fail);
-	value(await client.work(worker, "note", { id: 4, text: "Back again" }));
+	said(await client.work(worker, "note", { id: 4, text: "Back again" }));
 	await client.until("read again", () => client.github(projectId)?.state === "ok");
 	step("with GitHub unreachable or its rate limit reached, the listing stays as it was, saying why, and a write fails without being unknown");
 
@@ -474,11 +481,11 @@ try {
 	await client.call("github.settle", { projectId, intent: unknown.intent, happened: false });
 	await client.until("settled", () => client.github(projectId)?.unknown?.length === 0);
 	assert.deepEqual((await client.call("github.unknown", { projectId })).unknown, []);
-	value(await client.work(worker, "file", { title: "Lost before the write" }));
+	said(await client.work(worker, "file", { title: "Lost before the write" }));
 	assert.equal(widgets().issues.filter((one) => one.title === "Lost before the write").length, 1, "filed once, by hand, after it was settled");
 
 	const kept = await crash("Made before the crash", "after");
-	assert.equal(value(kept).title, "Made before the crash");
+	assert.match(said(kept), /^Filed #\d+ “Made before the crash”, not classified\.\nIts page: https:\/\/github\.com\/example\/widgets\/issues\/\d+$/);
 	assert.equal(widgets().issues.filter((one) => one.title === "Made before the crash").length, 1, "found by its marker, not made again");
 	assert.deepEqual(client.github(projectId)?.unknown ?? (await client.until("listing", () => client.github(projectId))).unknown, []);
 	const durable = await client.until("pull requests after restarts", () => client.github(projectId)?.pulls?.find((one: any) => one.number === 2));
@@ -508,36 +515,35 @@ try {
 	const byOrchestrator = await client.work(fresh, "assign", { id: scripted, agent: "Worker" });
 	refusal(byOrchestrator, outside);
 	assert.match(byOrchestrator.text, /Release it first: that hands it over to the work tool\.$/);
-	value(await client.work(fresh, "release", { id: scripted }));
+	said(await client.work(fresh, "release", { id: scripted }));
 	const released = widgets().issues.find((one) => one.number === scripted);
 	assert.match(released.comments.at(-1).body, /\n\nReleased: it was taken outside the work tool, and is open again\./);
 	assert.deepEqual(released.labels.map((label: any) => label.name).sort(), ["agent", "backlog"]);
-	value(await client.work(worker, "take", { id: scripted }));
+	said(await client.work(worker, "take", { id: scripted }));
 
 	// resume posts one line, which is no note.
-	value(await client.work(worker, "wait", { id: scripted, text: "On the person" }));
-	const resumed = value(await client.work(worker, "resume", { id: scripted }));
-	assert.equal(resumed.state, "in_progress");
+	said(await client.work(worker, "wait", { id: scripted, text: "On the person" }));
+	assert.equal(said(await client.work(worker, "resume", { id: scripted })), `Resumed #${scripted} “Taken with the script”: in progress, held by you.`);
+	const resumed = await client.until("resumed in the listing", () => client.github(projectId)?.issues?.find((one: any) => one.id === scripted && one.state === "in_progress" && one.notes.some((note: any) => note.text === "On the person")));
 	assert.match(widgets().issues.find((one) => one.number === scripted).comments.at(-1).body, new RegExp(`\\n\\nResumed by Worker, in conversation ${worker}\\.\\n\\n<!-- pi2:`));
 	assert.deepEqual(resumed.notes.map((note: any) => note.text).filter((text: string) => !text.startsWith("Picked up")), ["On the person"], "the line is no note");
 
 	// A path in this Mac's home folder is posted as ~, in a note, a title and a text.
 	const homeFolder = process.env.HOME!;
-	value(await client.work(worker, "note", { id: scripted, text: `The log is at ${homeFolder}/Library/Logs/widgets.log.` }));
+	said(await client.work(worker, "note", { id: scripted, text: `The log is at ${homeFolder}/Library/Logs/widgets.log.` }));
 	assert.match(widgets().issues.find((one) => one.number === scripted).comments.at(-1).body, /The log is at ~\/Library\/Logs\/widgets\.log\./);
-	const pathy = value(await client.work(worker, "file", { title: `Clean ${homeFolder}/tmp`, text: `Files in ${homeFolder}/tmp pile up.` }));
+	const pathy = { id: filedId(await client.work(worker, "file", { title: `Clean ${homeFolder}/tmp`, text: `Files in ${homeFolder}/tmp pile up.` })) };
 	const pathIssue = widgets().issues.find((one) => one.number === pathy.id);
 	assert.equal(pathIssue.title, "Clean ~/tmp");
 	assert.match(pathIssue.body, /\n\nFiles in ~\/tmp pile up\.\n\n/);
 	assert.ok(!JSON.stringify(widgets()).includes(homeFolder), "no home folder anywhere in the repository");
 
 	// finish and close take the status label off.
-	const finished = value(await client.work(worker, "finish", { id: scripted, text: "Done with it." }));
-	assert.equal(finished.state, "done");
+	assert.equal(said(await client.work(worker, "finish", { id: scripted, text: "Done with it." })), `Finished #${scripted} “Taken with the script”: done, with your summary.`);
 	assert.deepEqual(widgets().issues.find((one) => one.number === scripted).labels.map((label: any) => label.name), ["agent"]);
-	value(await client.work(worker, "take", { id: pathy.id }));
-	value(await client.work(worker, "block", { id: pathy.id, text: "On something else" }));
-	assert.equal(value(await client.work(fresh, "close", { id: pathy.id, as: "dropped" })).state, "dropped");
+	said(await client.work(worker, "take", { id: pathy.id }));
+	said(await client.work(worker, "block", { id: pathy.id, text: "On something else" }));
+	assert.match(said(await client.work(fresh, "close", { id: pathy.id, as: "dropped" })), new RegExp(`^Closed #${pathy.id} “.+” as dropped\\.$`));
 	const dropped = widgets().issues.find((one) => one.number === pathy.id);
 	assert.deepEqual([dropped.state, dropped.stateReason, dropped.labels.map((label: any) => label.name)], ["CLOSED", "NOT_PLANNED", ["agent"]]);
 	step("an issue taken with scripts/issue is refused saying so until the orchestrator releases it; resume posts a line; the home folder is posted as ~; finish and close take the status label off");

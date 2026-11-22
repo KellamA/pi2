@@ -262,7 +262,7 @@ try {
 
 	const filed = await c.tool(oc, `/tool work ${JSON.stringify({ action: "file", title: "Fix login", text: "The login times out." })}`);
 	assert.equal(filed.isError, false, filed.text);
-	const item = JSON.parse(filed.text).id as number;
+	const item = Number(/^Filed #(\d+) “Fix login”/.exec(filed.text)![1]);
 	const assigned = await c.tool(oc, `/tool work ${JSON.stringify({ action: "assign", id: item, agent: "Worker", title: "Login", task: asks("Keep the old endpoint?") })}`);
 	assert.equal(assigned.isError, false, assigned.text);
 	const login = c.events.library.conversations.find((row: Event) => row.parent === oc && row.title === "Login").id as number;

@@ -83,6 +83,16 @@ final class AppModel {
     var selection: Selection? {
         didSet {
             if chats.redirecting { return }
+            launchChose = false
+            // With the projects preview on, a conversation chosen anywhere opens where it lives, never in the old panes
+            // (#644): a chat in chat mode, any other in its project's hub.
+            if case .conversation(let id) = selection, engine.projectsPreview {
+                chats.redirecting = true
+                selection = oldValue
+                chats.redirecting = false
+                openConversation(id)
+                return
+            }
             // A chat chosen anywhere opens in chat mode; this side keeps what it had.
             if case .conversation(let id) = selection, engine.isChat(id) {
                 chats.redirecting = true
@@ -100,8 +110,15 @@ final class AppModel {
                 if engine.projectsPreview, let project = engine.conversations.first(where: { $0.id == id })?.projectId { projectsSidebar.open = project }
             }
             if case .project(let id) = selection { projectsSidebar.open = id }
+            // Coming to the Archive from elsewhere shows its list, not the conversation it was last reading.
+            if selection == .archive, oldValue != .archive { archiveReading = nil }
         }
     }
+    /// The conversation the Archive reads in place of its list, with the preview on (OpenConversation.swift).
+    var archiveReading: Int?
+    /// Whether the selection is the one the window landed on at launch, before the engine said whether the preview is on:
+    /// a window that turns out to have it on lands on the Dashboard instead (`landOnProjects`).
+    var launchChose = false
     /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
@@ -125,8 +142,12 @@ final class AppModel {
         #if PI2_DEVELOPMENT
         TestCopyPanels.install(engine: engine)
         #endif
-        engine.onNavigate = { [weak self] id in self?.selection = .conversation(id) }
-        engine.onOpenBeside = { [weak self] id, beside in self?.openBeside(id, beside: beside) }
+        engine.onNavigate = { [weak self] id, from in self?.openConversation(id, from: from) }
+        // With the projects preview on there are no panes to open beside: it opens where it lives, as Open does (#644).
+        engine.onOpenBeside = { [weak self] id, beside in
+            guard let self else { return }
+            if engine.projectsPreview { openConversation(id, from: beside) } else { openBeside(id, beside: beside) }
+        }
     }
 
     /// The conversation whose rename prompt is showing.
@@ -144,7 +165,8 @@ final class AppModel {
 
     /// Whether the detail shows agent conversations, including a split whose focused pane is empty.
     var showsWorkspace: Bool {
-        guard mode == .agents else { return false }
+        // With the projects preview on, the panes are never drawn (#644).
+        guard mode == .agents, !engine.projectsPreview else { return false }
         switch selection {
         case .conversation: return true
         case nil: return workspace.isSplit
@@ -157,6 +179,7 @@ final class AppModel {
     var shownConversations: Set<Int> {
         workspace.shownConversations.union(chats.selection.map { [$0] } ?? [])
             .union(hubConversation.map { [$0] } ?? []).union(hubAgentConversation.map { [$0] } ?? [])
+            .union(archiveConversation.map { [$0] } ?? [])
             .union(dashboardConversations)
     }
 
@@ -165,14 +188,10 @@ final class AppModel {
         return nil
     }
 
-    var selectedConversation: ConversationSummary? {
-        engine.conversations.first { $0.id == selectedConversationID }
-    }
-
     /// Starts a conversation with `agentId`, or with the agent used last when nil.
     func newConversation(agentId: String? = nil) {
         Task {
-            if let id = await engine.createConversation(agentId: agentId) { selection = .conversation(id) }
+            if let id = await engine.createConversation(agentId: agentId) { openConversation(id) }
         }
     }
 
@@ -509,7 +528,16 @@ struct RootView: View {
                     case .dashboard:
                         DashboardView(model: model)
                     case .conversation, nil:
-                        WelcomeView(model: model)
+                        if engine.projectsPreview {
+                            // Nothing chosen, with projects: what `landOnProjects` chooses, drawn until it has (#644).
+                            if engine.projectStore.listed.isEmpty {
+                                NoProjectsPage(model: model)
+                            } else {
+                                DashboardView(model: model)
+                            }
+                        } else {
+                            WelcomeView(model: model)
+                        }
                     }
                 }
             }
@@ -550,13 +578,23 @@ struct RootView: View {
                 return
             }
             #endif
+            if engine.projectsPreview {
+                model.landOnProjects()
+                return
+            }
             // Split into panes last time: come back to the same panes. The window stays on the side it was last on.
             if model.workspace.isSplit {
                 model.restoreSelection(model.workspace.focusedConversation.map { .conversation($0) })
+                model.launchChose = true
                 return
             }
             // On launch, land on the most recent conversation.
             if let first = engine.rootConversations.first { model.restoreSelection(.conversation(first.id)) }
+            model.launchChose = true
+        }
+        // With the preview on, a window left with nothing chosen lands on the Dashboard, or the one project's hub (#644).
+        .onChange(of: model.selection) { _, selection in
+            if selection == nil, engine.projectsPreview, model.mode == .agents { model.landOnProjects() }
         }
         .onChange(of: engine.conversations) { _, list in
             // Panes showing a deleted conversation are emptied; the focused one moves on below.
@@ -987,16 +1025,24 @@ extension EngineClient {
     }
 }
 
-/// Menu bar equivalents of the toolbar controls, for the keyboard and for accessibility.
+/// Menu bar equivalents of the toolbar controls, for the keyboard and for accessibility. They act on the focused pane,
+/// chat mode's chat, or, with a project's hub shown, the hub's conversation that has the keyboard (#632): the agent's in
+/// place of the board, else the orchestrator's. Each says in its help why it does not apply when it does not.
 struct ConversationCommands: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
-    private var state: ConversationState? { model.activeConversationID.flatMap { engine.open[$0]?.state } }
 
     var body: some View {
-        let id = model.activeConversationID
+        let id = model.commandConversationID
+        let state = id.flatMap { engine.open[$0]?.state }
+        let conversation = id.flatMap { id in engine.conversations.first { $0.id == id } }
+        // The orchestrator's current conversation: the project's Start fresh, the orchestrator's model, and no fork.
+        let orchestrator = model.commandOrchestratorProject
+        let inHub = model.shownProject != nil
+        let none = inHub ? "The project's conversation with the orchestrator is still being started." : "No conversation is shown."
         // A chat's assistant has no tools on this Mac and no folder.
         let chat = id.map(engine.isChat) ?? false
+        let lastAnswer = id.flatMap { engine.open[$0]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) }
         Picker("Tool Access", selection: Binding(
             get: { state?.agent.access ?? "none" },
             set: { value in if let id { engine.setAccess(value, for: id) } }
@@ -1005,52 +1051,84 @@ struct ConversationCommands: View {
         }
         .pickerStyle(.inline)
         .disabled(id == nil || chat)
+        .help(id == nil ? none : chat ? "A chat has no tools on this Mac." : "What the agent may do on this Mac in this conversation")
         Button("Choose Folder…") { if let id { engine.chooseFolder(for: id) } }
             .disabled(id == nil || chat)
+            .help(id == nil ? none : chat ? "A chat has no folder." : "The folder this conversation's agent works in")
         Divider()
         Menu("Model") {
             ForEach(engine.modelGroups, id: \.provider) { group in
                 Menu(group.name) {
                     ForEach(group.models, id: \.ref) { item in
                         Button(item.listName) {
-                            if let id { engine.configure(id, ["model": ["provider": item.provider, "modelId": item.id]]) }
+                            // The orchestrator's model is its agent's, as the hub's bar changes it.
+                            if let orchestrator, let agent = engine.agent(orchestrator.orchestratorId) {
+                                OrchestratorModelMenu.choose(item, for: agent, engine: engine)
+                            } else if let id {
+                                engine.configure(id, ["model": ["provider": item.provider, "modelId": item.id]])
+                            }
                         }
                     }
                 }
             }
         }
         .disabled(id == nil)
+        .help(id == nil ? none : orchestrator != nil ? "The orchestrator's model. Changing it changes the orchestrator's agent, from its next message." : "Model for this conversation")
         Divider()
+        // An earlier conversation with a project's orchestrator takes no messages, so it is not summarised or started afresh.
+        let earlier = id.flatMap(engine.earlierRefusal)
         Button("Summarise Earlier Messages") { if let id { engine.perform("conversation.compact", ["id": id]) } }
-            .disabled(id == nil || state?.compacting == true)
-        Button("Start Fresh Context") { if let id { engine.perform("conversation.reset", ["id": id]) } }
-            .disabled(id == nil)
+            .disabled(id == nil || earlier != nil || state?.compacting == true)
+            .help(id == nil ? none : earlier ?? (state?.compacting == true ? "Earlier messages are being summarised now." : "Replace the earlier part of what the model reads with a summary. The messages stay in the conversation."))
+        if let orchestrator {
+            // The project's own (docs/projects.md, 6.5), after the hub's confirmation, never a fresh context.
+            let refusal = engine.freshRefusal(orchestrator)
+            Button("Start Fresh…") { model.hubs.freshAsked = orchestrator.id }
+                .disabled(refusal != nil)
+                .help(refusal ?? "Begin a new conversation with the orchestrator, which starts with the project as it stands. This one is kept, to read.")
+        } else {
+            Button("Start Fresh Context") { if let id { engine.perform("conversation.reset", ["id": id]) } }
+                .disabled(id == nil || earlier != nil)
+                .help(id == nil ? none : earlier ?? "The model stops seeing earlier messages. They stay in the conversation for you.")
+        }
         Button("Continue with an Agent…") { if let id { model.continueWithAgent(id) } }
             .disabled(id == nil || !chat || model.mode != .chat || !engine.canContinueWithAgent(id ?? 0))
+            .help(chat && model.mode == .chat ? "Carry this chat on in a conversation with an agent" : "Only a chat, in chat mode, can be continued with an agent.")
         Button("Fork From Last Answer") {
-            if let id, let last = engine.open[id]?.items.last(where: { $0.kind == "assistant" && $0.stop == "stop" }) { engine.fork(id, at: last.id) }
+            guard let id, let lastAnswer else { return }
+            // A fork of an agent's conversation in the hub is one of the project's, and shows in place of the board.
+            if let project = model.shownProject { engine.fork(id, at: lastAnswer.id) { model.openAgent($0, in: project) } } else { engine.fork(id, at: lastAnswer.id) }
         }
-        .disabled(id == nil)
+        .disabled(id == nil || id.flatMap(engine.forkRefusal) != nil || lastAnswer == nil)
+        .help(id == nil ? none
+            : id.flatMap(engine.forkRefusal) ?? (lastAnswer == nil
+            ? "There is no finished answer to fork from yet." : "A new conversation that goes on from the last answer"))
         Menu("Export") {
-            Button("As Markdown…") { if let conversation = model.activeConversation { StorageActions.export(conversation, format: "markdown", engine: engine) } }
-            Button("As JSON…") { if let conversation = model.activeConversation { StorageActions.export(conversation, format: "json", engine: engine) } }
+            Button("As Markdown…") { if let conversation { StorageActions.export(conversation, format: "markdown", engine: engine) } }
+            Button("As JSON…") { if let conversation { StorageActions.export(conversation, format: "json", engine: engine) } }
         }
-        .disabled(model.activeConversation == nil)
+        .disabled(conversation == nil)
+        .help(conversation == nil ? none : "Save this conversation to a file")
         Divider()
-        Button("Rename…") { if let conversation = model.activeConversation { model.beginRename(conversation) } }
-            .disabled(model.activeConversation == nil)
+        Button("Rename…") { if let conversation { model.beginRename(conversation) } }
+            .disabled(conversation == nil)
+            .help(conversation == nil ? none : "Rename this conversation")
         // The same key as in Mail. A sub-chat is archived with the conversation it belongs to.
-        Button("Archive Conversation") { if let conversation = model.activeConversation { model.archive(conversation) } }
+        Button("Archive Conversation") { if let conversation { model.archive(conversation) } }
             .keyboardShortcut("a", modifiers: [.command, .control])
-            .disabled(model.activeConversation == nil || model.activeConversation?.parent != nil)
-        Button("Delete Conversation") { if let conversation = model.activeConversation { model.delete(conversation) } }
-            .disabled(model.activeConversation == nil)
+            .disabled(conversation == nil || conversation?.parent != nil)
+            .help(conversation == nil ? none : conversation?.parent != nil ? "A sub-chat is archived with the conversation it belongs to." : "Put this conversation away, stopping its work. It can be restored from the Archive.")
+        Button("Delete Conversation") { if let conversation { model.delete(conversation) } }
+            .disabled(conversation == nil)
+            .help(conversation == nil ? none : "Delete this conversation, after asking")
         Divider()
         Button("Stop") { if let id { engine.perform("abort", ["id": id]) } }
             .keyboardShortcut(".")
             .disabled(state?.busy != true)
+            .help(state?.busy == true ? "Stop the run and everything it started" : "Nothing is running in this conversation.")
         Button("Continue") { if let id { engine.perform("continue", ["id": id]) } }
             .disabled(state?.failure == nil || state?.busy == true)
+            .help(state?.busy == true ? "The conversation is answering." : state?.failure == nil ? "There is no stopped run to continue." : "Resume the run from where it stopped")
     }
 }
 
