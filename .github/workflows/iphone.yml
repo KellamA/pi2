@@ -13,6 +13,7 @@ on:
       - app/Sources/EngineKit/**
       - app/Sources/TranscriptKit/**
       - app/Sources/RemoteKit/**
+      - app/Sources/pi2-client-check/Fixture/**
       - scripts/iphone-sim
       - .github/workflows/iphone.yml
   push:
@@ -25,13 +26,15 @@ on:
       - app/Sources/EngineKit/**
       - app/Sources/TranscriptKit/**
       - app/Sources/RemoteKit/**
+      - app/Sources/pi2-client-check/Fixture/**
       - scripts/iphone-sim
       - .github/workflows/iphone.yml
 
 permissions:
   contents: read
 
-# A new push to a pull request cancels its run still going; runs on main each finish.
+# A new push to a pull request cancels its run still going. Runs on main are not cancelled once started, but GitHub
+# keeps one waiting run per group: a third push to main replaces a second whose run has not started yet.
 concurrency:
   group: iphone-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
