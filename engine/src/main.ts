@@ -57,12 +57,13 @@ import { messageSent } from "./heed.ts";
 import { preparedTool } from "./stringargs.ts";
 import { textOf } from "./transcript.ts";
 import { broadcast, type Client, clients, send } from "./clients.ts";
-import { dirtyUsage, overBudget, refreshUsage, repriceUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
+import { dirtyUsage, overBudget, refreshUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
 import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
 import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
 import { activityEvent, agentsEvent, announceActivity, announceInbox, inboxEvent, libraryEvent, wireAppEvents } from "./appevents.ts";
+import { agentDefaultEvent, announceDefault, announceProviders, chatEvent, chatModel, defaultModel, defaultModelThinking, defaultNow, providersEvent, rememberModel, sameModel, usable, wireDefaultModel } from "./defaultmodel.ts";
 import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSchedules, tickSchedules, wireSchedules } from "./scheduleruns.ts";
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
@@ -206,12 +207,6 @@ mcp.log = log;
 const inbox = new Inbox(async (id) => (await harness.snapshot(Library, context))?.conversations[String(id)]?.allowEverything === true);
 const computer = new ComputerHost();
 const browser = new BrowserHost();
-/**
- * The default model for agents as `defaultModel` last worked it out, for what is decided inside a commit, where the
- * providers are not asked (`followedModel`). Worked out again whenever the providers or the settings change, and as
- * each app connects.
- */
-let defaultNow: ModelRef = { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
 let markReady = () => {};
 
 const host: Host = {
@@ -526,6 +521,7 @@ wireProviderRequests({ providers, settings, saveSettings, announceProviders, log
 wireAgentRequests({ harness, context, log, host });
 wireConversationEvents({ providers, host, context, log, conversation, followedModel, chatWeb });
 wireAppEvents({ settings, inbox, host });
+wireDefaultModel({ settings, saveSettings, providers, host, log, followersChanged });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
 function deviceId(): string {
@@ -732,96 +728,6 @@ inbox.onChange = () => {
 	announceInbox();
 	announceActivity();
 };
-
-async function providersEvent() {
-	const [list, all] = await Promise.all([providers.listProviders(), providers.listModels()]);
-	// Hidden models stay in the list, marked: settings shows them, the pickers leave them out, and one already in use keeps working.
-	const models = all.map((model) => ({ ...model, hidden: settings.hiddenModels?.[model.provider]?.includes(model.id) === true }));
-	return { event: "providers", providers: list, models, defaultModel: await defaultModel(), onboarded: settings.onboarded === true };
-}
-async function announceProviders(): Promise<void> {
-	broadcast(await providersEvent());
-	// A provider signed out, or a model switched off, can make the default for agents fall back, or come back.
-	broadcast(await agentDefaultEvent());
-	// Signing in or out changes which usage has a price.
-	repriceUsage();
-	scheduleUsageRefresh();
-	for (const feature of host.features) feature.providersChanged?.();
-}
-
-/**
- * The model an agent with none of its own starts a conversation on: the one chosen in Settings › General (#617) while
- * its provider offers it and it is not switched off; else the one last picked in a conversation, if still usable; else
- * the demo model.
- */
-async function defaultModel(): Promise<ModelRef> {
-	const chosen = settings.agentDefault?.model;
-	const model =
-		chosen !== undefined && !hiddenModel(chosen) && (await usable(chosen))
-			? chosen
-			: settings.defaultModel !== undefined && (await usable(settings.defaultModel))
-				? settings.defaultModel
-				: { provider: DEMO_PROVIDER, modelId: DEMO_MODEL };
-	if (!sameModel(model, defaultNow)) {
-		defaultNow = model;
-		followersChanged();
-	}
-	return model;
-}
-
-const hiddenModel = (model: ModelRef) => settings.hiddenModels?.[model.provider]?.includes(model.modelId) === true;
-const sameModel = (a: ModelRef | null | undefined, b: ModelRef | null | undefined) => a?.provider === b?.provider && a?.modelId === b?.modelId;
-
-/** The thinking level of a conversation on the default model: the one chosen with it in Settings, else the model's own. */
-function defaultModelThinking(model: ModelRef): string | null {
-	const chosen = settings.agentDefault;
-	return chosen !== undefined && chosen.thinkingLevel !== null && sameModel(chosen.model, model) ? chosen.thinkingLevel : defaultThinking(model);
-}
-
-/**
- * Settings › General's default model for agents (#617): what was chosen (null for the model used last), and the model a
- * conversation of an agent with none of its own starts on now, which differs from the choice when it fell back.
- */
-async function agentDefaultEvent() {
-	const chosen = settings.agentDefault ?? null;
-	const using = await defaultModel();
-	return { event: "agentDefault", model: chosen?.model ?? null, thinkingLevel: chosen?.thinkingLevel ?? null, using, fellBack: chosen !== null && !sameModel(chosen.model, using) };
-}
-
-/** A choice in a conversation's model menu counts for future conversations, too. */
-function rememberModel(model: ModelRef, chat: boolean): void {
-	if (chat) settings.lastChatModel = model;
-	else settings.defaultModel = model;
-	saveSettings();
-	// While no default for agents is chosen in Settings, this is it: the app shows it for each agent with no model of its own.
-	if (!chat) void announceDefault().catch((error) => log("announcing the default model failed:", error instanceof Error ? error.message : error));
-}
-
-/** The default model for agents, as the providers event and Settings › General show it. */
-async function announceDefault(): Promise<void> {
-	broadcast(await providersEvent());
-	broadcast(await agentDefaultEvent());
-	// The thinking level chosen with the default model can change without the model changing.
-	followersChanged();
-}
-
-/** Whether `model`'s provider is connected and offers it now. */
-async function usable(model: ModelRef): Promise<boolean> {
-	return (await providers.models.getAvailable(model.provider).catch(() => [])).some((m) => m.id === model.modelId);
-}
-
-/**
- * The model a new chat starts with: the one used last in a chat, else chat mode's default model, else the agent view's.
- * Choosing a default model in Settings forgets the last one used (`chat.set`), so the choice counts from the next chat.
- */
-async function chatModel(): Promise<ModelRef> {
-	for (const wanted of [settings.lastChatModel, chatSettings(settings.chat).defaultModel]) {
-		if (wanted !== undefined && wanted !== null && (await usable(wanted))) return wanted;
-	}
-	return defaultModel();
-}
-
-const chatEvent = () => ({ event: "chat", ...chatSettings(settings.chat) });
 
 /** Start a chat with pi²'s built-in assistant (chat.ts), on `model` if given, else on the model a new chat starts with. */
 async function createChat(given: unknown, client: Client): Promise<{ id: ConversationId }> {
