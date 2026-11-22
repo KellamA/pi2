@@ -1453,7 +1453,7 @@ Two starts at once can each pass: the limit is a check, not a reservation, and t
 
 ## 9. Carrying over
 
-Carrying over puts what a person had before projects into projects, with nothing lost, nothing deleted, and nothing the versions with the switch read changed: it only adds documents, adds fields those versions do not read, and copies agents. The code is `engine/src/carryover.ts` (#458).
+Carrying over puts what a person had before projects into projects, with nothing lost, nothing deleted, and nothing the versions with the switch read changed: it only adds documents, adds fields those versions do not read, and copies agents. The code is `engine/src/carryplan.ts`, the plan, and `engine/src/carryover.ts`, the run (#458, #721).
 
 Since #483 took the switch out (#715), it is the engine's own: it runs by itself at every start, and nothing is shown to the person first. The first start of a version without the switch makes a copy of the data before anything changes, then carries everything over in one run ([9.8](#98-the-report-and-the-run)); every start after finds nothing new and writes nothing, but what was left behind ([9.9](#99-conversations-made-later)). It runs whatever the version before was: one where the switch was never turned on (everything is carried), one where it was on (the plan is empty but for what was made with it off since: 9.6, 9.9), and one with no `pi2.projects` document at all.
 
@@ -1484,7 +1484,7 @@ Since #483 took the switch out (#715), it is the engine's own: it runs by itself
 
 ### 9.2 Grouping by folder
 
-A conversation's folder is its `cwd` as its `pi.agent` document holds it now (null: no folder). Its grouping key is worked out by `groupingKey(cwd)` in `carryover.ts` (`Grouping`, which works each path out once in a plan), without running git, as follows:
+A conversation's folder is its `cwd` as its `pi.agent` document holds it now (null: no folder). Its grouping key is worked out by `groupingKey(cwd)` in `carryplan.ts` (`Grouping`, which works each path out once in a plan), without running git, as follows:
 
 1. A sub-chat: its root conversation's key, wherever it works.
 2. No folder: `none`.
@@ -1836,7 +1836,7 @@ Each piece below has one owner, which builds it, with what the others need of it
 - A copy of a template made by an agent is made at the baseline, and asks for the template's memory switch, allowed commands, delegates and the rest that widen in its one request. It is not given the variables' names, which are the person's.
 - `remember` and `forget` in a project, `work` and `reports` `wake` answer with `details.change` and give the conversation a line with Undo, but their text is as before, without "(change N)" at its end: the person can undo them, and the orchestrator cannot name them to `project_settings` `undo`. Only the three tools' results end with the number.
 
-**As #458 built them.** Carrying over is `engine/src/carryover.ts`: `groupingKey` (and `Grouping`, which works each path out once for a plan), `lookUp`, `planCarryOver(snapshot, only?)`, `fingerprint` and `reportOf` are plain functions of the documents (and of the `.git` entries on disk), and the `carryOver` feature, placed after `orchestrator` and before `projects` in `FEATURES` with no greeting, runs them. What section 9 does not say:
+**As #458 built them.** Carrying over's plan is `engine/src/carryplan.ts` (#721): `groupingKey` (and `Grouping`, which works each path out once for a plan), `lookUp`, `planCarryOver(snapshot, only?)`, `fingerprint`, `reportOf` and `scheduleCopies` are plain functions of the documents (and of the `.git` entries on disk). Its run is `engine/src/carryover.ts`: the `carryOver` feature, placed after `orchestrator` and before `projects` in `FEATURES` with no greeting, runs them. What section 9 does not say:
 
 - It plugs into projects.ts through `wireCarryOver({ state })`, which `carryOverState` calls, and reads the record through `carryRecord()`. Without the feature (a stand-in engine in a test) nothing is carried. Since #715 its run is `update`, at every start (9.8).
 - A request refused with data throws `RequestError(message, data)` (`requesterror.ts`, #464's); the engine answers `{ id, error, data }` (4.1). A restore whose plan is not the one given is refused with the new report as `data`. (Until #715 a carrying-over run was refused so too.)
